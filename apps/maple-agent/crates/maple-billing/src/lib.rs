@@ -88,6 +88,34 @@ pub struct CheckoutRequest {
     pub quantity: Option<u64>,
 }
 
+/// Prepaid API credits: $1 buys 1,000 credits, and one purchase is $10 to
+/// $1,000, matching the Maple web app's credit packages.
+pub const CREDITS_PER_DOLLAR: u64 = 1_000;
+pub const MIN_CREDIT_PURCHASE_DOLLARS: u64 = 10;
+pub const MAX_CREDIT_PURCHASE_DOLLARS: u64 = 1_000;
+
+/// How a credit purchase is paid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentMethod {
+    /// Card checkout through Stripe.
+    Stripe,
+    /// Bitcoin checkout through Zaprite.
+    Zaprite,
+}
+
+/// `POST /v1/maple/api-credits/purchase` and `…/purchase-zaprite`. Zaprite
+/// has no cancel page, so it takes no `cancel_url`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreditPurchaseRequest {
+    pub credits: u64,
+    /// Empty for guest accounts: the server reads the account from the token.
+    pub email: String,
+    pub success_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_url: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum BillingError {
     /// The third-party token was rejected; mint a new one and retry.
@@ -204,6 +232,29 @@ impl BillingClient {
         Ok(response.checkout_url)
     }
 
+    /// A Stripe or Zaprite checkout URL for prepaid API credits.
+    pub async fn credit_checkout_url(
+        &self,
+        token: &str,
+        method: PaymentMethod,
+        request: &CreditPurchaseRequest,
+    ) -> Result<String, BillingError> {
+        let path = match method {
+            PaymentMethod::Stripe => "purchase",
+            PaymentMethod::Zaprite => "purchase-zaprite",
+        };
+        let response: CheckoutResponse = self
+            .send(
+                "credit checkout",
+                self.http
+                    .post(format!("{}/v1/maple/api-credits/{path}", self.base_url))
+                    .bearer_auth(token)
+                    .json(request),
+            )
+            .await?;
+        Ok(response.checkout_url)
+    }
+
     /// Prepaid API credits left on the account.
     pub async fn api_credit_balance(&self, token: &str) -> Result<i64, BillingError> {
         let response: BalanceResponse = self
@@ -304,6 +355,30 @@ mod tests {
         })
         .unwrap();
         assert!(!body.contains("quantity"));
+    }
+
+    #[test]
+    fn credit_purchase_omits_cancel_url_for_zaprite() {
+        let mut request = CreditPurchaseRequest {
+            credits: 20_000,
+            email: String::new(),
+            success_url: "https://s".into(),
+            cancel_url: None,
+        };
+        let body: serde_json::Value = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"credits": 20000, "email": "", "success_url": "https://s"})
+        );
+        request.cancel_url = Some("https://c".into());
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["cancel_url"],
+            "https://c"
+        );
+        assert_eq!(
+            serde_json::to_value(PaymentMethod::Zaprite).unwrap(),
+            "zaprite"
+        );
     }
 }
 

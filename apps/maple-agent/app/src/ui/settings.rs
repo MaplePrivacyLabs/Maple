@@ -32,6 +32,7 @@ use crate::ui::widgets;
 
 mod account;
 mod advanced;
+mod api_credits;
 mod api_keys;
 mod billing;
 mod licenses;

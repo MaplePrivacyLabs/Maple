@@ -382,6 +382,8 @@ mod tests {
             "plan_usage",
             "billing_status",
             "start_checkout",
+            "api_credit_balance",
+            "purchase_api_credits",
             "confirm_account_deletion",
             "setup_integration",
             "stop_runtime",

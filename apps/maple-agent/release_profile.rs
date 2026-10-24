@@ -200,6 +200,10 @@ pub fn emit(manifest_path: &str, helper_path: &str, app: bool) {
     let pricing_url = format!("{}/pricing", profile.web_url);
     let checkout_success_url = format!("{pricing_url}?success=true");
     let checkout_cancel_url = format!("{pricing_url}?canceled=true");
+    // Credit purchases return to the web app like Research's desktop build:
+    // its home route shows the confirmation in API settings.
+    let credits_success_url = format!("{}/?credits_success=true", profile.web_url);
+    let credits_cancel_url = format!("{}/", profile.web_url);
     for (name, value) in [
         ("PROFILE", channel),
         ("DISPLAY_NAME", profile.display_name.as_str()),
@@ -211,6 +215,8 @@ pub fn emit(manifest_path: &str, helper_path: &str, app: bool) {
         ("PRICING_URL", pricing_url.as_str()),
         ("CHECKOUT_SUCCESS_URL", checkout_success_url.as_str()),
         ("CHECKOUT_CANCEL_URL", checkout_cancel_url.as_str()),
+        ("CREDITS_SUCCESS_URL", credits_success_url.as_str()),
+        ("CREDITS_CANCEL_URL", credits_cancel_url.as_str()),
         ("CLIENT_ID", profile.client_id.as_str()),
         ("PCR_ENVIRONMENT", profile.pcr_environment.as_str()),
         ("UPDATE_TAG_PREFIX", profile.update_tag_prefix.as_str()),

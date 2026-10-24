@@ -209,6 +209,8 @@ operations! {
     billing_products() -> Vec<crate::billing::Product>;
     open_billing_portal(user_id: (&str)) -> ();
     start_checkout(user_id: (&str), product_id: (String)) -> ();
+    api_credit_balance(user_id: (&str)) -> i64;
+    purchase_api_credits(user_id: (&str), method: (crate::billing::PaymentMethod), credits: (u64)) -> ();
     start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
     stop_runtime(user_id: (&str)) -> AgentRuntimeStatus;
     select_project_root(user_id: (&str), path: (String)) -> SelectedProject;
