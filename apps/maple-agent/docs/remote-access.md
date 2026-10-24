@@ -60,14 +60,22 @@ is not imported. See [local storage](local-store.md) for scope and backup limits
 
 Each computer loads independently. The desktop first reads project/task
 summaries and opens a transcript only when that computer is used. Cached groups
-stay visible during a disconnect, alongside the connection status. Runs and task
+stay visible while switching computers or refreshing the same connection, and
+during a disconnect alongside the connection status. Runs and task
 updates arrive through the existing event stream; a small folder-list refresh
 every thirty seconds also discovers empty projects selected by another desktop.
 This is an in-memory navigation cache, not offline transcript replication. Search,
 sidebar position and each computer's composer remain intact when switching.
 
-Choose an existing remote project or enter its absolute path; there is no remote
-filesystem browser. Images picked
+**New project…** opens the same folder browser for local and remote computers,
+starting in the selected computer's home directory. Browse folders, go to a
+parent or an absolute path, or create one new folder, then choose **Use folder**.
+Browsing does not change the current project or its trust; creation happens only
+when requested, and selecting a folder uses the existing project trust flow.
+The execution daemon resolves paths and performs filesystem operations. Folder
+lists are paged and bounded, and hidden folders can be shown explicitly. This is
+a folder picker, not a filesystem sandbox for an already paired controller.
+Images picked
 on the controller are explicit uploads. Remote frames are limited to 16 MiB,
 including JSON/base64 overhead; reduce attachments if a send exceeds that bound.
 Microphone, playback, billing and account operations stay on the controller.
@@ -156,23 +164,25 @@ Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
 protocol keeps the `maple-agent/remote/1` ALPN family and currently advertises
-wire version 6 with minimum version 6, independent of application builds. Version
-6 combines shared project names with bounded navigation/history pages, stable
-row identities, attachment ranges, and per-connection task subscriptions.
+wire version 7 with minimum version 7, independent of application builds. Version
+7 adds bounded folder browsing and single-folder creation to version 6's shared
+project names, bounded navigation/history pages, stable row identities,
+attachment ranges, and per-connection task subscriptions.
 Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
-Update both computers to use it; version 5 and earlier peers receive an explicit
+Update both computers to use it; version 6 and earlier peers receive an explicit
 version refusal. Bounded frames and an explicit task-operation allowlist apply.
 Account operations and arbitrary whole-host administration cannot be forwarded.
 The narrow experimental update capability uses the host's own signed updater;
 it does not expose the ordinary host-stop command.
 
-Optional management reports protocol version `6.1.0` and explicit capabilities
-over separate request streams. The wire-6 Hello, acknowledgement and ALPN remain
-unchanged. A bounded capability probe against an older wire-6 peer can fail
-without ending its ordinary task connection. Responses tolerate future optional
-fields; new operations require an advertised capability. Breaking protocol
-changes still require a coordinated major-version compatibility change.
+Optional management reports protocol version `7.0.0` and explicit capabilities
+over separate request streams. Its major tracks the admitted control-wire
+version; the acknowledgement shape and ALPN remain unchanged. Within a compatible
+connection, a bounded capability probe can fail without ending ordinary task
+requests. Responses tolerate future optional fields; management operations
+require an advertised capability. A wire-6 host must update locally before a
+wire-7 controller can connect, including through the remote-update channel.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps

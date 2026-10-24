@@ -54,6 +54,7 @@ pub(crate) struct BrowseState {
     search: String,
     archived_expanded: bool,
     scroll: gpui::ListOffset,
+    computers: computers::ComputerBrowseState,
 }
 
 use std::cell::RefCell;
@@ -565,20 +566,28 @@ impl Sidebar {
             search: self.search_input.read(cx).text(),
             archived_expanded: self.archived_expanded,
             scroll: self.list.logical_scroll_top(),
+            computers: self.computer_browse_state(),
         }
     }
 
     pub(crate) fn restore_browse_state(&mut self, state: BrowseState, cx: &mut Context<Self>) {
+        if state.computers.user_id != self.user_id {
+            return;
+        }
+        let filter = state.search.trim().to_lowercase();
+        let scope_changed = self.filter != filter
+            || self.archived_expanded != state.archived_expanded
+            || self.project_filter.is_some();
         self.search_input
             .update(cx, |input, cx| input.set_text(&state.search, cx));
-        self.filter = state.search.trim().to_lowercase();
+        self.filter = filter;
         self.archived_expanded = state.archived_expanded;
         // A project filter belongs to the previous execution computer.
         self.project_filter = None;
-        if self.pages.enabled {
+        if self.pages.enabled && scope_changed {
             self.refresh_pages(cx);
-            return;
         }
+        self.restore_computer_browse_state(state.computers, cx);
         self.rebuild_sections();
         self.list.scroll_to(state.scroll);
         cx.notify();
@@ -2954,12 +2963,18 @@ impl Sidebar {
     }
 }
 
+impl Sidebar {
+    pub(super) fn sync_popup_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.popup.sync_focus(window, cx);
+        self.project_popup.sync_focus(window, cx);
+    }
+}
+
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // First, so the rename field's focus request below wins over a menu
         // handing focus back.
-        self.popup.sync_focus(window, cx);
-        self.project_popup.sync_focus(window, cx);
+        self.sync_popup_focus(window, cx);
         // A project's rename field lives in the switcher and ends with it,
         // however the switcher closed.
         if matches!(self.rename, Some(RenameTarget::Project(_))) && !self.switcher_menu_open() {

@@ -1,4 +1,4 @@
-//! Optional remote-management messages. The legacy wire-6 handshake stays fixed.
+//! Optional remote-management messages within the admitted control-wire major.
 use super::manager::Node;
 use iroh::EndpointId;
 use semver::Version;
@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::{Arc, Weak};
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "6.1.0";
+pub const PROTOCOL_VERSION: &str = "7.0.0";
 pub const PEER_INFO_CAPABILITY: &str = "peer_info_v1";
 pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
 
@@ -26,7 +26,8 @@ impl ProtocolInfo {
     }
 
     fn supports(&self, capability: &str) -> bool {
-        Version::parse(&self.version).is_ok_and(|version| version.major == 6)
+        Version::parse(&self.version)
+            .is_ok_and(|version| version.major == u64::from(super::wire::VERSION))
             && self.capabilities.iter().any(|value| value == capability)
     }
 }
@@ -482,9 +483,19 @@ mod tests {
     }
 
     #[test]
+    fn management_protocol_major_matches_the_control_wire() {
+        let current = ProtocolInfo::current();
+        assert_eq!(
+            Version::parse(&current.version).unwrap().major,
+            u64::from(super::super::wire::VERSION)
+        );
+        assert!(current.supports(INSTALL_CAPABILITY));
+    }
+
+    #[test]
     fn responses_accept_future_fields_and_unknown_status_without_enabling_mutation() {
         let value = json!({
-            "protocol":{"version":"6.2.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
+            "protocol":{"version":"7.1.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
             "running":{"version":"0.0.6","source_sha":"a".repeat(40),"platform":"linux-x86_64","future":true},
             "update":{"state":"future_state","future":true},
             "future":true
@@ -494,8 +505,11 @@ mod tests {
         assert_eq!(info.update.state, UpdateState::Unknown);
         assert!(info.supports_remote_updates());
         let mut next_major = info.clone();
-        next_major.protocol.version = "7.0.0".into();
+        next_major.protocol.version = "8.0.0".into();
         assert!(!next_major.supports_remote_updates());
+        let mut previous_major = info.clone();
+        previous_major.protocol.version = "6.1.0".into();
+        assert!(!previous_major.supports_remote_updates());
         let mut no_capability = info;
         no_capability.protocol.capabilities.clear();
         assert!(!no_capability.supports_remote_updates());

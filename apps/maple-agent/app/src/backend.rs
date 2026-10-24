@@ -212,6 +212,8 @@ operations! {
     start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
     stop_runtime(user_id: (&str)) -> AgentRuntimeStatus;
     select_project_root(user_id: (&str), path: (String)) -> SelectedProject;
+    browse_project_folders(user_id: (&str), request: (ProjectFolderRequest)) -> ProjectFolderPage;
+    create_project_folder(user_id: (&str), parent_path: (String), name: (String)) -> String;
     rename_project_root(user_id: (&str), path: (String), name: (String)) -> RecentProjectRoot;
     archive_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
     create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
@@ -275,6 +277,13 @@ impl AgentBackend {
             retired_after_update: Arc::new(AtomicBool::new(false)),
             subscription_sequence: AtomicU64::new(0),
         })
+    }
+
+    #[cfg(all(test, feature = "desktop"))]
+    pub(crate) fn for_remote_test(host: &str) -> Result<Self, String> {
+        let mut backend = Self::for_test("http://127.0.0.1:9".into(), String::new())?;
+        backend.remote_host = Some(host.into());
+        Ok(backend)
     }
 
     /// Real-IPC fixtures supply their own contained endpoint and host lifetime.

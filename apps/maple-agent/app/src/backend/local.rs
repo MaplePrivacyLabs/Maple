@@ -35,6 +35,11 @@ use crate::hosted_oauth::{ATTEMPT_TIMEOUT, HandoffListener};
 mod deletion;
 pub use deletion::AccountDeletionStatus;
 
+#[path = "project_folders.rs"]
+mod project_folders;
+#[allow(unused_imports)]
+pub use project_folders::{ProjectFolderEntry, ProjectFolderPage, ProjectFolderRequest};
+
 #[derive(Debug, Clone)]
 pub struct PendingQuestion {
     pub session_id: String,

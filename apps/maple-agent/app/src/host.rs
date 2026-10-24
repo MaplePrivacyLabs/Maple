@@ -4088,6 +4088,8 @@ mod tests {
             "remote_enable",
             "send_message",
             "open_task_page",
+            "browse_project_folders",
+            "create_project_folder",
             "generate_store_passphrase",
             "setup_store",
             "retry_store_persistence",

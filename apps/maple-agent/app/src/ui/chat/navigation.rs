@@ -125,15 +125,16 @@ impl ChatScreen {
     }
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        for input in [
-            self.composer.as_ref(),
-            self.pending_question_input.as_ref(),
-            self.root_input.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect::<Vec<_>>()
+        if let Some(dialog) = self.project_folder_dialog.clone() {
+            dialog.update(cx, |dialog, cx| {
+                dialog.set_application_vim_enabled(enabled, cx)
+            });
+        }
+        for input in [self.composer.as_ref(), self.pending_question_input.as_ref()]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>()
         {
             input.update(cx, |input, cx| {
                 input.set_application_vim_enabled(enabled, cx)
@@ -205,14 +206,10 @@ impl ChatScreen {
             return false;
         }
         let focused = window.focused(cx);
-        !([
-            self.composer.as_ref(),
-            self.pending_question_input.as_ref(),
-            self.root_input.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|input| Some(input.read(cx).focus_handle(cx)) == focused)
+        !([self.composer.as_ref(), self.pending_question_input.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|input| Some(input.read(cx).focus_handle(cx)) == focused)
             || self.sidebar_input_focused(&focused, cx))
     }
 

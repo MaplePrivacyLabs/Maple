@@ -58,6 +58,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn fresh_empty_pages_do_not_publish_retained_display_rows(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        chat.update(cx, |chat, cx| {
+            let published = published.clone();
+            cx.subscribe(&chat.sidebar, move |_, _, event: &SidebarEvent, _| {
+                if let SidebarEvent::PagesReady { sessions, .. } = event {
+                    published.borrow_mut().push(sessions.clone());
+                }
+            })
+            .detach();
+        });
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.selected = None;
+            sidebar.running.clear();
+            // The prior grouped projection stays visible during refresh; the
+            // new authoritative ordinary pages have all completed empty.
+            sidebar.sessions = vec![summary("display-only", AgentTaskState::Active)];
+            sidebar.pages = SidebarPages {
+                enabled: true,
+                ready: HashSet::from([PageKind::Active, PageKind::Settled, PageKind::Pinned]),
+                autoselect_generation: Some(0),
+                ..SidebarPages::default()
+            };
+            sidebar.pages_ready(cx);
+        });
+        let published = published.borrow();
+        assert_eq!(published.len(), 1);
+        assert!(published[0].is_empty());
+    }
+
+    #[gpui::test]
     fn live_task_insert_preserves_the_loaded_cursor_boundary(cx: &mut gpui::TestAppContext) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
@@ -270,6 +307,16 @@ impl Sidebar {
         self.pages.autoselect_generation = Some(generation);
     }
 
+    /// Runtime startup can change summaries without changing their owner.
+    pub(in crate::ui::chat) fn refresh_visible_pages_for_generation(
+        &mut self,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.refresh_pages_with_display(true, cx);
+        self.pages.autoselect_generation = Some(generation);
+    }
+
     fn pages_ready(&mut self, cx: &mut Context<Self>) {
         if ![PageKind::Active, PageKind::Settled, PageKind::Pinned]
             .iter()
@@ -280,7 +327,19 @@ impl Sidebar {
         let Some(generation) = self.pages.autoselect_generation.take() else {
             return;
         };
-        let mut sessions = self.sessions.clone();
+        // A normal refresh may keep grouped rows visible while its owner read
+        // is pending. Those display-only rows cannot become fresh navigation
+        // authority or auto-selection candidates after empty first pages.
+        let mut sessions = self
+            .sessions
+            .iter()
+            .filter(|session| {
+                self.pages.contains(&session.id, false)
+                    || self.running.contains(&session.id)
+                    || self.selected.as_ref() == Some(&session.id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         sessions.sort_by_key(|session| std::cmp::Reverse((session.updated_ms, session.id.clone())));
         sessions.truncate(50);
         cx.emit(SidebarEvent::PagesReady {
@@ -292,14 +351,26 @@ impl Sidebar {
     /// Also used after reconnect: deeper pages are discarded and visible first
     /// pages are re-authorized on the current host/account.
     pub(super) fn refresh_pages(&mut self, cx: &mut Context<Self>) {
+        self.refresh_pages_with_display(false, cx);
+    }
+
+    fn refresh_pages_with_display(&mut self, preserve_display: bool, cx: &mut Context<Self>) {
+        let retained = if preserve_display {
+            self.group_pages.own_task_ids(self.backend.remote_host())
+        } else {
+            HashSet::new()
+        };
         let generation = self.pages.generation.wrapping_add(1);
         self.pages = SidebarPages {
             enabled: true,
             generation,
             ..SidebarPages::default()
         };
-        self.sessions
-            .retain(|s| self.running.contains(&s.id) || self.selected.as_ref() == Some(&s.id));
+        self.sessions.retain(|s| {
+            retained.contains(&s.id)
+                || self.running.contains(&s.id)
+                || self.selected.as_ref() == Some(&s.id)
+        });
         if self.filter.is_empty() {
             self.load_page(PageKind::Active, cx);
             self.load_page(PageKind::Settled, cx);
@@ -314,7 +385,11 @@ impl Sidebar {
         if self.backend.remote_host().is_none() {
             self.load_page(PageKind::Pinned, cx);
         }
-        self.refresh_computer_pages(cx);
+        if preserve_display {
+            self.revalidate_computer_pages(cx);
+        } else {
+            self.refresh_computer_pages(cx);
+        }
         self.rebuild_sections();
         cx.notify();
     }
@@ -697,7 +772,7 @@ impl Sidebar {
                             this.pages.search = None;
                             this.load_page(PageKind::Search, cx);
                         }
-                        this.refresh_computer_pages(cx);
+                        this.revalidate_computer_pages(cx);
                     }
                     Err(message) => {
                         this.pages.ready.insert(PageKind::Pinned);

@@ -38,6 +38,7 @@ mod dialogs;
 mod images;
 mod navigation;
 mod paging;
+mod project_folder;
 mod queue;
 mod sending;
 mod sidebar;
@@ -556,10 +557,8 @@ pub struct ChatScreen {
     /// Whether the project-trust question may open its dialog. Tests that
     /// drive typing turn it off, since the dialog rightly takes focus.
     trust_prompts: bool,
-    /// Manual path entry for the project selector.
-    root_input: Option<Entity<TextInput>>,
-    /// The path field was just offered; the next render gives it focus.
-    root_input_focus_pending: bool,
+    /// Host-owned folder browser shared by local and remote computers.
+    project_folder_dialog: Option<Entity<project_folder::ProjectFolderDialog>>,
     root_selecting: bool,
     /// Header label for the project root; set when the root changes so
     /// render does not format it.
@@ -574,8 +573,6 @@ pub struct ChatScreen {
     /// changes, dropped with the root.
     branch_watcher: Option<notify::RecommendedWatcher>,
     watched_git_dir: Option<std::path::PathBuf>,
-    /// A native folder picker is open; more clicks must not open another.
-    root_picker_open: bool,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
     /// Images staged for the next message.
@@ -1303,15 +1300,13 @@ impl ChatScreen {
             markdown_warmup: None,
             timeline_index: HashMap::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
-            root_input: None,
-            root_input_focus_pending: false,
+            project_folder_dialog: None,
             root_selecting: false,
             project_label: SharedString::from("Choose folder"),
             project_branch: None,
             branch_label: None,
             branch_watcher: None,
             watched_git_dir: None,
-            root_picker_open: false,
             selection_generation: 0,
             reload_generation: 0,
             attachment_images: HashMap::new(),
@@ -1517,7 +1512,10 @@ impl ChatScreen {
                 cx.notify();
                 this.refresh_models(cx);
                 this.refresh_roots(cx);
-                this.refresh_sessions(cx);
+                let generation = this.selection_generation;
+                this.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.refresh_visible_pages_for_generation(generation, cx)
+                });
                 this.refresh_sidebar_plan(cx);
                 this.refresh_audio_capabilities(cx);
                 // Summary requests issued before the runtime was up failed
@@ -1639,7 +1637,7 @@ impl ChatScreen {
         // this point advances the generation and wins over the callback.
         let selection_generation = self.selection_generation;
         self.popup.close(cx);
-        self.root_input = None;
+        self.project_folder_dialog = None;
         self.notice = None;
         cx.notify();
         let backend = self.backend.clone();
@@ -1713,6 +1711,7 @@ impl ChatScreen {
 
     /// Start a navigation that supersedes every task load in flight.
     fn begin_navigation(&mut self) {
+        self.project_folder_dialog = None;
         self.selection_generation += 1;
         self.reload_generation += 1;
     }
@@ -1750,45 +1749,76 @@ impl ChatScreen {
     }
 
     fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
-        if self.backend.remote_host().is_some() {
-            self.show_root_input(cx);
+        self.choose_root_dialog_with_intent(self.navigation_only, cx);
+    }
+
+    fn choose_root_dialog_with_intent(&mut self, draft_on_confirm: bool, cx: &mut Context<Self>) {
+        if self.project_folder_dialog.is_some() || self.root_selecting {
             return;
         }
-        // The platform folder picker through gpui: NSOpenPanel on macOS,
-        // the common file dialog on Windows, the XDG portal on Linux.
-        // The panel closes with the app, so quit is never blocked on it.
-        // Manual entry only when the picker cannot open (e.g. a Linux
-        // desktop with no portal); a cancel just closes.
-        if !self.begin_root_picker(cx) {
+        if self.selected_session.is_none() && self.session_setup_pending {
+            self.notice = Some("Wait for the new task to be created, then switch projects".into());
+            cx.notify();
             return;
         }
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
-        });
-        let bridge = cx.spawn(async move |this, cx| {
-            let picked = receiver.await;
-            this.update(cx, |this, cx| {
-                this.root_picker_open = false;
-                match picked {
-                    Ok(Ok(Some(paths))) => {
-                        if let Some(path) = paths.into_iter().next() {
-                            this.select_project_root(path.to_string_lossy().into_owned(), cx);
-                        }
-                    }
-                    // Cancelled, or the picker dropped its channel.
-                    Ok(Ok(None)) | Err(_) => {}
-                    Ok(Err(_)) => this.show_root_input(cx),
+        self.popup.close(cx);
+        let computer = self
+            .computers
+            .iter()
+            .find(|computer| computer.key.as_deref() == self.backend.remote_host())
+            .map(|computer| computer.label.clone())
+            .unwrap_or_else(|| {
+                if self.backend.remote_host().is_some() {
+                    "Remote computer".into()
+                } else {
+                    "This computer".into()
                 }
-                cx.notify();
-            })
-            .ok();
+            });
+        let dialog = cx.new(|cx| {
+            project_folder::ProjectFolderDialog::new(
+                self.backend.clone(),
+                self.user_id.clone(),
+                computer,
+                self.application_vim_enabled,
+                cx,
+            )
         });
-        // The portal dialog completes on its own thread; retained so the
-        // bridge dies here (see ChatScreen::call).
-        crate::ui::task::retain(&self.bridged_tasks, bridge);
+        let generation = self.selection_generation;
+        cx.subscribe(&dialog, move |this, dialog, event, cx| {
+            if this.project_folder_dialog.as_ref() != Some(&dialog) {
+                return;
+            }
+            this.project_folder_dialog = None;
+            if this.selection_generation != generation {
+                this.screen_focus_pending = true;
+                cx.notify();
+                return;
+            }
+            if let project_folder::FolderDialogEvent::Selected(registration) = event {
+                if draft_on_confirm && !this.draft {
+                    this.new_session(cx);
+                }
+                this.restore_selected_project(registration.project.clone(), cx);
+                this.refresh_roots(cx);
+                this.land_project_selection(
+                    registration.project_root.clone(),
+                    this.selection_generation,
+                    cx,
+                );
+                if this.navigation_only {
+                    this.navigation_only = false;
+                    this.booting = true;
+                    this.refresh_slash_commands(cx);
+                    this.start_runtime(cx);
+                }
+                this.screen_focus_pending = true;
+            }
+            cx.notify();
+        })
+        .detach();
+        dialog.update(cx, |dialog, cx| dialog.open_home(cx));
+        self.project_folder_dialog = Some(dialog);
+        cx.notify();
     }
 
     /// The root changed: update the header label, then read its branch
@@ -1906,51 +1936,6 @@ impl ChatScreen {
         );
     }
 
-    /// Claim the folder picker. One at a time: several at once each
-    /// applied their own result and stalled the app. Returns `false` when
-    /// a picker or a project selection is already in progress.
-    fn begin_root_picker(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.root_picker_open || self.root_selecting {
-            return false;
-        }
-        self.root_picker_open = true;
-        self.popup.close(cx);
-        cx.notify();
-        true
-    }
-
-    /// Manual path entry when the native picker is unavailable.
-    fn show_root_input(&mut self, cx: &mut Context<Self>) {
-        // The native picker could not open: offer manual entry.
-        if self.root_input.is_none() {
-            let chat = cx.entity().downgrade();
-            let apply = chat.clone();
-            let application_vim_enabled = self.application_vim_enabled;
-            let input = cx.new(move |cx| {
-                TextInput::new("/absolute/path/to/project", cx)
-                    .with_tab_index(0)
-                    .application_vim(application_vim_enabled)
-                    .on_application_escape(move |window, cx| {
-                        if let Some(chat) = chat.upgrade() {
-                            chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
-                        }
-                    })
-                    // Enter applies the typed path, like the Go button.
-                    .on_enter(move |path, window, cx| {
-                        let apply = apply.clone();
-                        window.defer(cx, move |_, cx| {
-                            apply
-                                .update(cx, |chat, cx| chat.select_project_root(path, cx))
-                                .ok();
-                        });
-                    })
-            });
-            self.root_input = Some(input);
-        }
-        self.popup.open(ChatPopup::Project, cx);
-        self.root_input_focus_pending = true;
-    }
-
     /// Open or close the project menu from the header chip.
     pub fn toggle_root_menu(&mut self, cx: &mut Context<Self>) {
         self.popup.toggle(ChatPopup::Project, cx);
@@ -2055,7 +2040,10 @@ impl ChatScreen {
             self.sessions.push(retained);
         }
         self.sync_sidebar(cx);
-        if self.selected_session.is_some() || self.draft || self.selection_generation != generation
+        if self.selected_session.is_some()
+            || self.draft
+            || self.selection_generation != generation
+            || self.project_folder_dialog.is_some()
         {
             return;
         }
@@ -2610,6 +2598,7 @@ impl ChatScreen {
         self.reload_generation += 1;
         let generation = match mode {
             LoadMode::Select => {
+                self.project_folder_dialog = None;
                 self.selection_generation += 1;
                 self.selection_generation
             }
@@ -4066,6 +4055,9 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.project_folder_dialog.is_some() {
+            return;
+        }
         let Some(composer) = self.composer.clone() else {
             return;
         };
@@ -6272,14 +6264,12 @@ impl Render for ChatScreen {
         // First, so a dialog's focus request below wins over a menu handing
         // focus back.
         self.popup.sync_focus(window, cx);
-        // The path field inside the project menu takes the typing, not the
-        // menu.
-        if std::mem::take(&mut self.root_input_focus_pending)
-            && let Some(input) = self.root_input.as_ref()
-        {
-            window.focus(&input.read(cx).focus_handle(cx), cx);
+        if let Some(dialog) = self.project_folder_dialog.clone() {
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.sync_popup_focus(window, cx));
+            dialog.update(cx, |dialog, cx| dialog.sync_focus(window, cx));
         }
-        if self.dialog_focus_pending {
+        if self.dialog_focus_pending && self.project_folder_dialog.is_none() {
             self.dialog_focus_pending = false;
             if let Some(handle) = self.dialog_focus.clone() {
                 window.focus(&handle, cx);
@@ -6292,7 +6282,7 @@ impl Render for ChatScreen {
         if window.focused(cx).is_none() {
             self.screen_focus_pending = true;
         }
-        if self.screen_focus_pending {
+        if self.screen_focus_pending && self.project_folder_dialog.is_none() {
             self.screen_focus_pending = false;
             if self.application_vim_enabled {
                 if let Some(handle) = self.application_focus.clone() {
@@ -6303,7 +6293,7 @@ impl Render for ChatScreen {
                 window.focus(&handle, cx);
             }
         }
-        if self.question_focus_pending {
+        if self.question_focus_pending && self.project_folder_dialog.is_none() {
             self.question_focus_pending = false;
             if self.application_vim_enabled {
                 if let Some(handle) = self.application_focus.clone() {
@@ -6546,6 +6536,14 @@ impl Render for ChatScreen {
             })
             .children(confirm)
             .children(trust_prompt)
+            .children(self.project_folder_dialog.clone().map(|dialog| {
+                dialog.cached(
+                    gpui::StyleRefinement::default()
+                        .absolute()
+                        .inset_0()
+                        .size_full(),
+                )
+            }))
     }
 }
 

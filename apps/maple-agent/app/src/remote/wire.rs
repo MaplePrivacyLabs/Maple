@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 pub const MAX_MANAGEMENT_REPLY: usize = 16 * 1024;
@@ -129,6 +129,8 @@ pub enum Method {
     ListMcpDefinitions,
     SaveMcpDefinitionEdits,
     TaskBootstrap,
+    BrowseProjectFolders,
+    CreateProjectFolder,
     SelectProjectRoot,
     RenameProjectRoot,
     CreateSession,
@@ -187,6 +189,8 @@ impl Method {
     pub fn reply_limit(self) -> usize {
         if matches!(self, Self::PeerInfo | Self::RemoteUpdateInstall) {
             MAX_MANAGEMENT_REPLY
+        } else if matches!(self, Self::BrowseProjectFolders | Self::CreateProjectFolder) {
+            256 * 1024
         } else if matches!(
             self,
             Self::NavigationBootstrap
@@ -453,8 +457,19 @@ mod tests {
             "answer_question",
             "set_thinking_level",
             "rename_project_root",
+            "browse_project_folders",
+            "create_project_folder",
         ] {
             assert_eq!(Method::parse(name).unwrap().name(), name);
+        }
+    }
+
+    #[test]
+    fn project_folder_commands_have_bounded_replies() {
+        for method in [Method::BrowseProjectFolders, Method::CreateProjectFolder] {
+            assert_eq!(Method::parse(&method.name()).unwrap(), method);
+            assert_eq!(method.reply_limit(), 256 * 1024);
+            assert!(!method.urgent());
         }
     }
 
@@ -502,7 +517,7 @@ mod tests {
     #[test]
     fn optional_management_keeps_the_shipped_control_ack_and_alpn() {
         assert_eq!(ALPN, b"maple-agent/remote/1");
-        assert_eq!(VERSION, 6);
+        assert_eq!(VERSION, 7);
         assert_eq!(
             serde_json::to_string(&Ok::<(), Refusal>(())).unwrap(),
             r#"{"Ok":null}"#
@@ -528,6 +543,27 @@ mod tests {
         let response = serde_json::to_value(Err::<(), _>(refusal)).unwrap();
         let decoded: Result<(), Refusal> = serde_json::from_value(response).unwrap();
         assert!(decoded.unwrap_err().terminal);
+    }
+
+    #[tokio::test]
+    async fn folder_wire_upgrade_refuses_version_six_before_dispatch() {
+        // Version 6 cannot decode the new folder methods. Refuse the old
+        // handshake explicitly before either side can issue one.
+        let previous: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v6.json")).unwrap();
+        for kind in ["hello", "pair"] {
+            let (mut tx, mut rx) = tokio::io::duplex(4096);
+            write(&mut tx, &previous[kind], MAX_PREFACE).await.unwrap();
+            let refusal = match read_hello(&mut rx).await {
+                Err(refusal) => refusal,
+                Ok(_) => panic!("version 6 must update before folder commands are sent"),
+            };
+            assert!(refusal.terminal);
+            assert!(refusal.message.contains("Update both computers"));
+            let response = serde_json::to_value(Err::<(), _>(refusal)).unwrap();
+            let decoded: Result<(), Refusal> = serde_json::from_value(response).unwrap();
+            assert!(decoded.unwrap_err().terminal);
+        }
     }
 
     #[tokio::test]
@@ -584,7 +620,7 @@ mod tests {
     #[test]
     fn shipped_wire_examples_are_stable() {
         let examples: serde_json::Value =
-            serde_json::from_str(include_str!("wire_v6.json")).unwrap();
+            serde_json::from_str(include_str!("wire_v7.json")).unwrap();
         fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
             let decoded: T = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
@@ -613,6 +649,9 @@ mod tests {
             &examples["image"]["Response"]["result"]["Ok"],
         );
         for value in examples["paged_commands"].as_array().unwrap() {
+            check::<Command>(value);
+        }
+        for value in examples["folder_commands"].as_array().unwrap() {
             check::<Command>(value);
         }
         check::<crate::host::receipts::Outcome>(&examples["receipt"]["Response"]["result"]["Ok"]);
