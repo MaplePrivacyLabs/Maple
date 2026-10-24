@@ -129,3 +129,9 @@ maple-sdk = { path = "../../../../sdk/rust" }
 # The vendored library uses this application's Cargo.lock; its upstream
 # standalone lockfile is intentionally omitted.
 tao = { path = "patches/tao-0.37.1" }
+# tauri-plugin-sign-in-with-apple 1.0.2 (last release 2024-11) declares its Swift
+# entry point `@_cdecl("init_plugin_sign_in_with_apple") func initPlugin()` with
+# internal visibility. Xcode 27 release builds need these entry points `public`
+# to link (Tauri 2.12.3 made its own public: tauri-apps/tauri#16130); the
+# vendored copy only adds that keyword. Remove once upstream publishes the fix.
+tauri-plugin-sign-in-with-apple = { path = "patches/tauri-plugin-sign-in-with-apple-1.0.2" }
