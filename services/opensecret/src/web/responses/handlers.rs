@@ -49,6 +49,8 @@ use crate::{
                 CompactionBudget, CompactionOutput, ContextManagement, SummaryExecutor,
             },
             constants::*,
+            context_observability::{ContextOutcome, ResponseContextObservation},
+            context_policy::{self, ContextPolicy, ContextStrategy},
             error_mapping,
             image_describer::{
                 describe_image_with_fallback, ImageDescriptionAttemptError,
@@ -56,10 +58,10 @@ use crate::{
                 ImageDescriptionCandidate, ImageDescriptionError, ImageDescriptionFailureClass,
                 ImageDescriptionInput, RetryNonTerminalImageDescriptionFallbackPolicy,
             },
-            prompt_token_budget, storage_task, tools, ContentPartBuilder, DeletedObjectResponse,
-            MessageContent, MessageContentConverter, MessageContentPart, OutputItemBuilder,
-            ResponseBuilder, ResponseEvent, ResponseExecution, ResponseExecutionRegistry,
-            ResponseExecutionTaskGuard, SseEventEmitter,
+            legacy_context, prompt_token_budget, storage_task, tools, ContentPartBuilder,
+            DeletedObjectResponse, MessageContent, MessageContentConverter, MessageContentPart,
+            OutputItemBuilder, ResponseBuilder, ResponseEvent, ResponseExecution,
+            ResponseExecutionRegistry, ResponseExecutionTaskGuard, SseEventEmitter,
         },
     },
     ApiError, AppState, ResponseMessageReservation, ResponseMessageReservationError,
@@ -360,6 +362,18 @@ impl PublicResponseFailure {
             Self::RepetitionDetected => "repetition_detected",
             Self::ContextLimit => "message_exceeds_context_limit",
             Self::CapacityOverloaded | Self::DeadlineExceeded | Self::Internal => "server_error",
+        }
+    }
+
+    fn diagnostic_reason(self) -> &'static str {
+        match self {
+            Self::CapacityRateLimited => "capacity_rate_limited",
+            Self::CapacityOverloaded => "capacity_overloaded",
+            Self::Provider(_) => "provider",
+            Self::DeadlineExceeded => "deadline",
+            Self::RepetitionDetected => "repetition",
+            Self::ContextLimit => "context_limit",
+            Self::Internal => "internal",
         }
     }
 
@@ -1717,6 +1731,59 @@ mod tests {
     }
 
     #[test]
+    fn server_context_strategy_cannot_be_enabled_by_request_controls_or_auto_reselection() {
+        use crate::web::responses::context_policy::ContextPolicy;
+
+        // The admitted snapshot remains authoritative even if the flag changes
+        // while Auto changes the selected model or a tool step is rebuilt.
+        let admitted = ContextPolicy::legacy();
+        let later_flag = ContextPolicy::compaction();
+        for model in ["glm-5-3", "kimi-k3", "deepseek-v4-1-flash"] {
+            let mut body = responses_request_for_model(model);
+            for control in [
+                None,
+                Some(Vec::new()),
+                Some(vec![super::ContextManagement::Compaction {
+                    compact_threshold: Some(1),
+                }]),
+            ] {
+                body.context_management = control;
+                let output_limit = body.max_output_tokens;
+                assert!(!super::compaction_recovery_enabled(admitted, &body));
+                assert_eq!(body.max_output_tokens, output_limit);
+                assert_eq!(
+                    super::compaction_recovery_enabled(later_flag, &body),
+                    body.context_management
+                        .as_ref()
+                        .is_none_or(|value| !value.is_empty()),
+                );
+            }
+        }
+        let mut body = responses_request_for_model("glm-5-3");
+        body.context_management = Some(vec![super::ContextManagement::Compaction {
+            compact_threshold: Some(0),
+        }]);
+        assert!(!super::compaction_recovery_enabled(admitted, &body));
+    }
+
+    #[test]
+    fn legacy_terminal_recovery_never_reads_existing_checkpoint_data() {
+        use crate::web::responses::context_policy::ContextPolicy;
+
+        let outputs = super::recover_context_checkpoints(ContextPolicy::legacy(), || {
+            panic!("legacy mode must not read a missing or corrupt checkpoint")
+        })
+        .unwrap();
+        assert!(outputs.is_empty());
+        assert!(matches!(
+            super::recover_context_checkpoints(ContextPolicy::compaction(), || {
+                Err(crate::db::DBError::ConnectionError)
+            }),
+            Err(crate::db::DBError::ConnectionError)
+        ));
+    }
+
+    #[test]
     fn normalized_input_is_model_independent_and_the_budget_check_uses_the_final_model() {
         use crate::model_config::{GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID};
         use crate::web::responses::prompt_token_budget;
@@ -2478,10 +2545,13 @@ mod tests {
         let terminal = ResponseTerminal::Completed {
             finish_reason: "length".to_string(),
         };
-        let forwarder =
-            forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
-                Ok(Vec::new())
-            });
+        let forwarder = forward_authoritative_response_terminal(
+            Uuid::new_v4(),
+            &tx_client,
+            rx_ack,
+            None,
+            || Ok(Vec::new()),
+        );
         tokio::pin!(forwarder);
 
         assert!(futures::poll!(forwarder.as_mut()).is_pending());
@@ -2498,6 +2568,48 @@ mod tests {
             Ok(StorageMessage::Terminal(observed)) if observed == terminal
         ));
         assert!(rx_client.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rollout_outcome_waits_for_storage_ack_and_survives_client_disconnect() {
+        use crate::web::responses::{
+            context_observability::{ContextMetrics, ResponseContextObservation},
+            context_policy::ContextPolicy,
+        };
+        use std::sync::Arc;
+
+        for connected in [true, false] {
+            let observation = ResponseContextObservation::new(
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                "glm-5-3",
+                ContextPolicy::legacy(),
+                Arc::new(ContextMetrics::default()),
+            );
+            observation.accepted();
+            let (tx_client, rx_client) = mpsc::channel(1);
+            let receiver = connected.then_some(rx_client);
+            let (tx_ack, rx_ack) = oneshot::channel();
+            let forwarder = super::forward_authoritative_response_terminal(
+                Uuid::new_v4(),
+                &tx_client,
+                rx_ack,
+                Some(&observation),
+                || Ok(Vec::new()),
+            );
+            tokio::pin!(forwarder);
+            assert!(futures::poll!(forwarder.as_mut()).is_pending());
+            assert!(!observation.has_recorded_outcome());
+            tx_ack
+                .send(Ok(Some(ResponseTerminal::Failed(
+                    PublicResponseFailure::RepetitionDetected,
+                ))))
+                .unwrap();
+            timeout(Duration::from_secs(1), forwarder).await.unwrap();
+            assert!(observation.has_recorded_outcome());
+            drop(receiver);
+        }
     }
 
     #[tokio::test]
@@ -2522,10 +2634,13 @@ mod tests {
             }
             let (tx_ack, rx_ack) = oneshot::channel();
             tx_ack.send(Ok(Some(terminal.clone()))).unwrap();
-            let forwarder =
-                forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
-                    Ok(Vec::new())
-                });
+            let forwarder = forward_authoritative_response_terminal(
+                Uuid::new_v4(),
+                &tx_client,
+                rx_ack,
+                None,
+                || Ok(Vec::new()),
+            );
             tokio::pin!(forwarder);
             assert!(futures::poll!(forwarder.as_mut()).is_pending());
 
@@ -2561,9 +2676,13 @@ mod tests {
             }
             timeout(
                 Duration::from_secs(1),
-                forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
-                    panic!("unacknowledged response must not read checkpoints")
-                }),
+                forward_authoritative_response_terminal(
+                    Uuid::new_v4(),
+                    &tx_client,
+                    rx_ack,
+                    None,
+                    || panic!("unacknowledged response must not read checkpoints"),
+                ),
             )
             .await
             .unwrap();
@@ -2597,11 +2716,16 @@ mod tests {
                 .unwrap();
             let reads = AtomicUsize::new(0);
             let (tx_ack, rx_ack) = oneshot::channel();
-            let forwarder =
-                forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
+            let forwarder = forward_authoritative_response_terminal(
+                Uuid::new_v4(),
+                &tx_client,
+                rx_ack,
+                None,
+                || {
                     reads.fetch_add(1, Ordering::SeqCst);
                     Ok(outputs)
-                });
+                },
+            );
             tokio::pin!(forwarder);
             assert!(futures::poll!(forwarder.as_mut()).is_pending());
             assert_eq!(reads.load(Ordering::SeqCst), 0);
@@ -2646,7 +2770,7 @@ mod tests {
         let (tx_ack, rx_ack) = oneshot::channel();
         let terminal = ResponseTerminal::Failed(PublicResponseFailure::DeadlineExceeded);
         tx_ack.send(Ok(Some(terminal.clone()))).unwrap();
-        forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
+        forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, None, || {
             Err(crate::db::DBError::ConnectionError)
         })
         .await;
@@ -2669,9 +2793,13 @@ mod tests {
                 ResponseTerminal::Failed(PublicResponseFailure::Internal)
             };
             tx_ack.send(Ok(Some(terminal))).unwrap();
-            forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
-                panic!("completed or disconnected response must not recover checkpoints")
-            })
+            forward_authoritative_response_terminal(
+                Uuid::new_v4(),
+                &tx_client,
+                rx_ack,
+                None,
+                || panic!("completed or disconnected response must not recover checkpoints"),
+            )
             .await;
             drop(receiver);
         }
@@ -5021,6 +5149,27 @@ async fn describe_images(
     Ok(pairs)
 }
 
+fn reserved_response_output_tokens(body: &ResponsesCreateRequest) -> usize {
+    body.max_output_tokens
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .unwrap_or(0)
+}
+
+fn compaction_recovery_enabled(policy: ContextPolicy, body: &ResponsesCreateRequest) -> bool {
+    policy.strategy == ContextStrategy::Compaction
+        && compaction::policy_for(body).is_ok_and(|(_, enabled)| enabled)
+}
+
+fn recover_context_checkpoints(
+    policy: ContextPolicy,
+    load: impl FnOnce() -> Result<Vec<CompactionOutput>, DBError>,
+) -> Result<Vec<CompactionOutput>, DBError> {
+    match policy.strategy {
+        ContextStrategy::LegacyWindow => Ok(Vec::new()),
+        ContextStrategy::Compaction => load(),
+    }
+}
+
 /// Context and conversation data after building prompt
 struct BuiltContext {
     conversation: crate::models::responses::Conversation,
@@ -5029,6 +5178,8 @@ struct BuiltContext {
     web_search_enabled: bool,
     compactions: Vec<CompactionOutput>,
     compaction_budget: Arc<CompactionBudget>,
+    context_policy: ContextPolicy,
+    context_observation: ResponseContextObservation,
     current_user_uuid: Uuid,
     allowed_urls: HashSet<String>,
 }
@@ -5404,77 +5555,122 @@ async fn prepare_context_and_check_billing(
     deadline: TokioInstant,
     routing: InferenceRoutingContext,
     cache_policy: &CompletionCachePolicy,
+    context_policy: ContextPolicy,
+    context_observation: &ResponseContextObservation,
     force_compaction: bool,
 ) -> Result<BuiltContext, ApiError> {
     let internal_system_prompt = build_internal_system_prompt(web_search_enabled, model_plan);
 
-    let user_message_for_prompt = json!({
-        "role": "user",
-        "content": MessageContentConverter::to_model_format(&prepared.message_content)
-    });
-    let mut incoming = vec![ContextItem::from_prompt(
-        ContextItemKey {
-            kind: ContextItemKind::User,
-            uuid: prepared.user_message_id,
-        },
-        Some(response_uuid),
-        vec![user_message_for_prompt],
-        prepared.user_message_tokens as usize,
-        false,
-        None,
-    )];
-    for pair in image_descriptions {
-        let messages = pair.prompt_messages();
-        let mut call = ContextItem::from_prompt(
-            ContextItemKey {
-                kind: ContextItemKind::ToolCall,
-                uuid: pair.tool_call_id,
-            },
-            Some(response_uuid),
-            vec![messages[0].clone()],
-            pair.argument_tokens as usize,
-            false,
-            Some(pair.tool_call_id),
-        );
-        call.protected_input = true;
-        incoming.push(call);
-        let mut output = ContextItem::from_prompt(
-            ContextItemKey {
-                kind: ContextItemKind::ToolOutput,
-                uuid: pair.tool_output_id,
-            },
-            Some(response_uuid),
-            vec![messages[1].clone()],
-            pair.output_tokens as usize,
-            false,
-            Some(pair.tool_call_id),
-        );
-        output.protected_input = true;
-        incoming.push(output);
-    }
-    let executor = SummaryExecutor {
-        state,
-        user,
-        body,
-        routing,
-        cache_policy,
-        execution: response_execution,
-        budget: compaction_budget,
-        deadline,
+    context_observation.prepared_model(&body.model);
+    let prompt = match context_policy.strategy {
+        ContextStrategy::LegacyWindow => {
+            let mut incoming_messages = vec![json!({
+                "role": ROLE_USER,
+                "content": MessageContentConverter::to_model_format(&prepared.message_content)
+            })];
+            let mut incoming_tokens = prepared.user_message_tokens.max(0) as usize;
+            for pair in image_descriptions {
+                incoming_messages.extend(pair.prompt_messages());
+                incoming_tokens = incoming_tokens
+                    .saturating_add(pair.argument_tokens.max(0) as usize)
+                    .saturating_add(pair.output_tokens.max(0) as usize);
+            }
+            let metrics = compaction_budget.metrics();
+            let preparation = metrics.start_preparation(false);
+            let result = legacy_context::prepare_initial(
+                state.db.as_ref(),
+                conversation.id,
+                user.uuid,
+                &prepared.user_key,
+                &body.model,
+                body.instructions.as_deref(),
+                &internal_system_prompt,
+                model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message(),
+                &incoming_messages,
+                incoming_tokens,
+                reserved_response_output_tokens(body),
+            );
+            preparation.finish(result.is_err());
+            let prepared = result?;
+            metrics.legacy_source_loaded(
+                prepared.stats.fetched_rows,
+                prepared.stats.fetch_batches,
+                prepared.stats.fetched_bytes,
+                prepared.stats.max_batch_bytes,
+                prepared.stats.projected_bytes,
+            );
+            prepared.prompt
+        }
+        ContextStrategy::Compaction => {
+            let user_message_for_prompt = json!({
+                "role": "user",
+                "content": MessageContentConverter::to_model_format(&prepared.message_content)
+            });
+            let mut incoming = vec![ContextItem::from_prompt(
+                ContextItemKey {
+                    kind: ContextItemKind::User,
+                    uuid: prepared.user_message_id,
+                },
+                Some(response_uuid),
+                vec![user_message_for_prompt],
+                prepared.user_message_tokens as usize,
+                false,
+                None,
+            )];
+            for pair in image_descriptions {
+                let messages = pair.prompt_messages();
+                let mut call = ContextItem::from_prompt(
+                    ContextItemKey {
+                        kind: ContextItemKind::ToolCall,
+                        uuid: pair.tool_call_id,
+                    },
+                    Some(response_uuid),
+                    vec![messages[0].clone()],
+                    pair.argument_tokens as usize,
+                    false,
+                    Some(pair.tool_call_id),
+                );
+                call.protected_input = true;
+                incoming.push(call);
+                let mut output = ContextItem::from_prompt(
+                    ContextItemKey {
+                        kind: ContextItemKind::ToolOutput,
+                        uuid: pair.tool_output_id,
+                    },
+                    Some(response_uuid),
+                    vec![messages[1].clone()],
+                    pair.output_tokens as usize,
+                    false,
+                    Some(pair.tool_call_id),
+                );
+                output.protected_input = true;
+                incoming.push(output);
+            }
+            let executor = SummaryExecutor {
+                state,
+                user,
+                body,
+                routing,
+                cache_policy,
+                execution: response_execution,
+                budget: compaction_budget,
+                deadline,
+            };
+            compaction::prepare_prompt(
+                &executor,
+                conversation.id,
+                &prepared.user_key,
+                prepared.user_message_id,
+                response_uuid,
+                &internal_system_prompt,
+                model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message(),
+                &incoming,
+                billing_access,
+                force_compaction,
+            )
+            .await?
+        }
     };
-    let prompt = compaction::prepare_prompt(
-        &executor,
-        conversation.id,
-        &prepared.user_key,
-        prepared.user_message_id,
-        response_uuid,
-        &internal_system_prompt,
-        model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message(),
-        &incoming,
-        billing_access,
-        force_compaction,
-    )
-    .await?;
     let total_prompt_tokens = prompt.estimated_tokens;
 
     // Check billing with token validation (BEFORE any persistence).
@@ -5514,6 +5710,8 @@ async fn prepare_context_and_check_billing(
         web_search_enabled,
         compactions: prompt.compactions,
         compaction_budget: compaction_budget.clone(),
+        context_policy,
+        context_observation: context_observation.clone(),
         current_user_uuid: prepared.user_message_id,
         allowed_urls: prompt.allowed_urls,
     })
@@ -6405,8 +6603,7 @@ async fn setup_completion_processor(
                         Err(error)
                             if !compacted_after_rejection
                                 && compaction::is_context_rejection(&error)
-                                && compaction::policy_for(body)
-                                    .is_ok_and(|(_, enabled)| enabled) =>
+                                && compaction_recovery_enabled(context.context_policy, body) =>
                         {
                             compacted_after_rejection = true;
                             let next = match prepare_persisted_context(
@@ -6552,30 +6749,60 @@ async fn prepare_persisted_context(
     tools_enabled: bool,
     force: bool,
 ) -> Result<compaction::PreparedPrompt, ApiError> {
-    let routing = InferenceRoutingContext::new(model_plan);
-    let executor = SummaryExecutor {
-        state,
-        user,
-        body,
-        routing,
-        cache_policy,
-        execution: &execution,
-        budget: &context.compaction_budget,
-        deadline,
-    };
-    compaction::prepare_prompt(
-        &executor,
-        context.conversation.id,
-        user_key,
-        context.current_user_uuid,
-        execution.response_id(),
-        &build_internal_system_prompt(context.web_search_enabled, model_plan),
-        model_reasoning_replay(&body.model, tools_enabled),
-        &[],
-        None,
-        force,
-    )
-    .await
+    context.context_observation.prepared_model(&body.model);
+    match context.context_policy.strategy {
+        ContextStrategy::LegacyWindow => {
+            let metrics = context.compaction_budget.metrics();
+            let preparation = metrics.start_preparation(false);
+            let result = legacy_context::prepare_persisted(
+                state.db.as_ref(),
+                context.conversation.id,
+                user.uuid,
+                user_key,
+                &body.model,
+                body.instructions.as_deref(),
+                &build_internal_system_prompt(context.web_search_enabled, model_plan),
+                model_reasoning_replay(&body.model, tools_enabled),
+                reserved_response_output_tokens(body),
+            );
+            preparation.finish(result.is_err());
+            let prepared = result?;
+            metrics.legacy_source_loaded(
+                prepared.stats.fetched_rows,
+                prepared.stats.fetch_batches,
+                prepared.stats.fetched_bytes,
+                prepared.stats.max_batch_bytes,
+                prepared.stats.projected_bytes,
+            );
+            Ok(prepared.prompt)
+        }
+        ContextStrategy::Compaction => {
+            let routing = InferenceRoutingContext::new(model_plan);
+            let executor = SummaryExecutor {
+                state,
+                user,
+                body,
+                routing,
+                cache_policy,
+                execution: &execution,
+                budget: &context.compaction_budget,
+                deadline,
+            };
+            compaction::prepare_prompt(
+                &executor,
+                context.conversation.id,
+                user_key,
+                context.current_user_uuid,
+                execution.response_id(),
+                &build_internal_system_prompt(context.web_search_enabled, model_plan),
+                model_reasoning_replay(&body.model, tools_enabled),
+                &[],
+                None,
+                force,
+            )
+            .await
+        }
+    }
 }
 
 /// Run the independently owned response until an execution terminal is reached.
@@ -6664,15 +6891,24 @@ async fn supervise_response_execution(
             "Storage task closed before terminal persistence: response_uuid={}",
             response_uuid
         );
+        context.context_observation.storage_failed("channel_closed");
         return;
     }
 
-    forward_authoritative_response_terminal(response_uuid, &tx_client, terminal_ack, || {
-        state
-            .db
-            .list_response_compactions(context.conversation.id, user.uuid, response_uuid)
-            .map(|records| records.iter().map(CompactionOutput::from).collect())
-    })
+    forward_authoritative_response_terminal(
+        response_uuid,
+        &tx_client,
+        terminal_ack,
+        Some(&context.context_observation),
+        || {
+            recover_context_checkpoints(context.context_policy, || {
+                state
+                    .db
+                    .list_response_compactions(context.conversation.id, user.uuid, response_uuid)
+                    .map(|records| records.iter().map(CompactionOutput::from).collect())
+            })
+        },
+    )
     .await;
 }
 
@@ -6683,11 +6919,15 @@ async fn forward_authoritative_response_terminal(
     response_uuid: Uuid,
     tx_client: &mpsc::Sender<StorageMessage>,
     terminal_ack: oneshot::Receiver<Result<Option<ResponseTerminal>, String>>,
+    observation: Option<&ResponseContextObservation>,
     recover_checkpoints: impl FnOnce() -> Result<Vec<CompactionOutput>, DBError>,
 ) {
     let authoritative = match terminal_ack.await {
         Ok(Ok(Some(terminal))) => terminal,
         Ok(Ok(None)) => {
+            if let Some(observation) = observation {
+                observation.deleted();
+            }
             debug!(
                 "Response was deleted before terminal persistence completed: response_uuid={}",
                 response_uuid
@@ -6695,6 +6935,9 @@ async fn forward_authoritative_response_terminal(
             return;
         }
         Ok(Err(e)) => {
+            if let Some(observation) = observation {
+                observation.storage_failed("ack_failed");
+            }
             error!(
                 "Storage task could not verify terminal persistence: response_uuid={}, error={}",
                 response_uuid, e
@@ -6702,6 +6945,9 @@ async fn forward_authoritative_response_terminal(
             return;
         }
         Err(_) => {
+            if let Some(observation) = observation {
+                observation.storage_failed("ack_dropped");
+            }
             error!(
                 "Storage task dropped terminal acknowledgement: response_uuid={}",
                 response_uuid
@@ -6709,6 +6955,24 @@ async fn forward_authoritative_response_terminal(
             return;
         }
     };
+
+    // Record the storage-authoritative outcome independently of whether the
+    // client remains connected or consumes its SSE terminal.
+    if let Some(observation) = observation {
+        match &authoritative {
+            ResponseTerminal::Completed { .. } => {
+                observation.terminal(ContextOutcome::Completed, None, None);
+            }
+            ResponseTerminal::Cancelled => {
+                observation.terminal(ContextOutcome::Cancelled, None, None);
+            }
+            ResponseTerminal::Failed(failure) => observation.terminal(
+                ContextOutcome::Failed,
+                Some(failure.openai_code()),
+                Some(failure.diagnostic_reason()),
+            ),
+        }
+    }
 
     // A later helper can fail, time out or be cancelled after an earlier batch
     // was published. Recover the same owner-scoped opaque outputs used by GET,
@@ -6744,6 +7008,34 @@ async fn forward_authoritative_response_terminal(
 }
 
 async fn create_response_stream(
+    state: State<Arc<AppState>>,
+    headers: HeaderMap,
+    session: Extension<TransportSession>,
+    user: Extension<User>,
+    auth_context: Extension<AuthContext>,
+    cache_namespace_root: Option<Extension<CacheNamespaceRoot>>,
+    body: Decrypted<ResponsesCreateRequest>,
+) -> Result<Response, ApiError> {
+    let mut observation = None;
+    let result = create_response_stream_inner(
+        state,
+        headers,
+        session,
+        user,
+        auth_context,
+        cache_namespace_root,
+        body,
+        &mut observation,
+    )
+    .await;
+    if let (Err(error), Some(observation)) = (&result, observation.as_ref()) {
+        observation.preaccept_failed(error);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_response_stream_inner(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Extension(session_id): Extension<TransportSession>,
@@ -6751,6 +7043,7 @@ async fn create_response_stream(
     Extension(auth_context): Extension<AuthContext>,
     cache_namespace_root: Option<Extension<CacheNamespaceRoot>>,
     Decrypted(mut body): Decrypted<ResponsesCreateRequest>,
+    admission_observation: &mut Option<ResponseContextObservation>,
 ) -> Result<Response, ApiError> {
     let require_explicit_terminal = session_id.is_v2();
     let cache_policy = CompletionCachePolicy::for_request(
@@ -6888,6 +7181,20 @@ async fn create_response_stream(
         .map_err(|_| ApiError::InternalServerError)?;
     let response_execution = response_execution_registration.execution();
     let compaction_budget = Arc::new(CompactionBudget::default());
+    let flag_started = Instant::now();
+    let context_policy = context_policy::resolve(&state, user.uuid).await;
+    compaction_budget
+        .metrics()
+        .record_flag_evaluation(flag_started.elapsed());
+    let context_observation = ResponseContextObservation::new(
+        user.uuid,
+        conv_uuid,
+        response_uuid,
+        &body.model,
+        context_policy,
+        compaction_budget.metrics(),
+    );
+    *admission_observation = Some(context_observation.clone());
 
     // Phase 1b/2a: Validate the required input and prepare base context before
     // image description. Settled history may already require paid compaction.
@@ -6924,6 +7231,8 @@ async fn create_response_stream(
                 execution_policy.deadline,
                 routing,
                 &cache_policy,
+                context_policy,
+                &context_observation,
                 false,
             )
             .await?;
@@ -7013,6 +7322,8 @@ async fn create_response_stream(
                     execution_policy.deadline,
                     routing,
                     &cache_policy,
+                    context_policy,
+                    &context_observation,
                     false,
                 )
                 .await
@@ -7142,7 +7453,8 @@ async fn create_response_stream(
     {
         Ok(started) => started,
         Err(error)
-            if compaction::is_context_rejection(&error) && compaction::policy_for(&body)?.1 =>
+            if compaction::is_context_rejection(&error)
+                && compaction_recovery_enabled(context_policy, &body) =>
         {
             context = await_initial_response_step(
                 &response_execution,
@@ -7164,6 +7476,8 @@ async fn create_response_stream(
                         execution_policy.deadline,
                         routing,
                         &cache_policy,
+                        context_policy,
+                        &context_observation,
                         true,
                     )
                     .await
@@ -7295,6 +7609,7 @@ async fn create_response_stream(
         }
     }
 
+    context_observation.accepted();
     let storage_db = state.db.clone();
     tokio::spawn(async move {
         let _storage_execution_guard = storage_execution_guard;

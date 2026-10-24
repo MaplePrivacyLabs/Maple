@@ -24,6 +24,7 @@ use crate::{
             load_instruction_messages, normalize_tool_call_ids_for_model, prompt_source_keys,
             snapshot_from_metadata, snapshot_from_raw, snapshot_from_selected,
         },
+        context_observability::ContextMetrics,
         handlers::ResponsesCreateRequest,
     },
     ApiError,
@@ -41,7 +42,7 @@ use std::{
     collections::HashSet,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
 };
 use tracing::Instrument;
@@ -58,6 +59,7 @@ const ENVELOPE_VERSION: u32 = 1;
 /// checkpoint CAS conflicts. It never changes the main generation allowance.
 #[derive(Default)]
 pub(super) struct CompactionBudget {
+    metrics: Arc<ContextMetrics>,
     calls: AtomicUsize,
     paid_work: AtomicBool,
     sources: Mutex<source::SourceLoader>,
@@ -66,6 +68,10 @@ pub(super) struct CompactionBudget {
 }
 
 impl CompactionBudget {
+    pub(super) fn metrics(&self) -> Arc<ContextMetrics> {
+        self.metrics.clone()
+    }
+
     fn begin_call(&self) -> Result<(), ApiError> {
         self.calls
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |calls| {
@@ -80,6 +86,7 @@ impl CompactionBudget {
                 ApiError::ServiceUnavailable
             })?;
         self.paid_work.store(true, Ordering::Release);
+        self.metrics.helper_call_started();
         Ok(())
     }
 
@@ -611,6 +618,7 @@ pub(super) async fn prepare_prompt(
     force: bool,
 ) -> Result<PreparedPrompt, ApiError> {
     let started = std::time::Instant::now();
+    let preparation = executor.budget.metrics.start_preparation(force);
     let span = tracing::info_span!(
         "responses_compaction",
         user_uuid = %executor.user.uuid,
@@ -657,6 +665,7 @@ pub(super) async fn prepare_prompt(
                 "Responses prompt preparation failed"
             ),
         }
+        preparation.finish(result.is_err());
         result
     }
     .instrument(span)
@@ -1196,6 +1205,7 @@ async fn prepare_prompt_inner(
                     continue;
                 }
                 CompactionPublishResult::Published(record) => {
+                    executor.budget.metrics.checkpoint_published();
                     tracing::info!(event = "responses.compaction.checkpoint_published", checkpoint_uuid = %record.uuid,
                         generation = record.generation, covered_items = covered_keys(&next).len(),
                         summary_tokens, forced = force, elapsed_ms = telemetry::elapsed_ms(publication_started),
@@ -1296,6 +1306,7 @@ async fn prepare_prompt_inner(
                 staged = None;
                 policy.keep_recent_tokens = 0;
                 policy.trigger_tokens = 0;
+                executor.budget.metrics.record_forced_preparation();
                 force = true;
                 continue;
             }
@@ -1305,6 +1316,7 @@ async fn prepare_prompt_inner(
                 ApiError::ServiceUnavailable
             });
         }
+        let used_advisory_fallback = advisory_failure.is_some() || fallback_only;
         if let Some(error) = advisory_failure {
             if !may_use_original_prompt(
                 &error,
@@ -1345,14 +1357,21 @@ async fn prepare_prompt_inner(
             }
             allowed_urls.insert(url);
         }
-        return finish_prompt(
+        let prompt = finish_prompt(
             executor,
             conversation_id,
             current_response_uuid,
             messages,
             estimated_tokens,
             allowed_urls,
-        );
+        )?;
+        if durable_checkpoint.is_some() && !made_progress {
+            executor.budget.metrics.checkpoint_reused();
+        }
+        if used_advisory_fallback {
+            executor.budget.metrics.advisory_fallback();
+        }
+        return Ok(prompt);
     }
     tracing::warn!(
         event = "responses.compaction.preparation_exhausted",
@@ -2076,6 +2095,11 @@ mod tests {
         }
         assert!(budget.has_paid_work());
         assert!(budget.begin_call().is_err());
+        assert_eq!(
+            budget.metrics().snapshot().helper_calls,
+            MAX_SUMMARY_CALLS_PER_RESPONSE as u64
+        );
+        assert_eq!(budget.metrics().snapshot().helper_usage_records, 0);
     }
 
     #[test]

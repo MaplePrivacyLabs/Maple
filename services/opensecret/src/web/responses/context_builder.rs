@@ -40,7 +40,10 @@ fn stored_token_count(token_count: Option<i32>) -> Option<usize> {
     token_count.and_then(|count| usize::try_from(count).ok())
 }
 
-fn user_message_prompt_token_count(content_json: &str, token_count: Option<i32>) -> usize {
+pub(super) fn user_message_prompt_token_count(
+    content_json: &str,
+    token_count: Option<i32>,
+) -> usize {
     let stored = stored_token_count(token_count).unwrap_or_else(|| count_tokens(content_json));
     if !content_json.contains(r#""input_image""#) {
         return stored;
@@ -644,7 +647,7 @@ fn build_prompt_from_chat_messages_with_token_reserve(
     Ok((messages, total))
 }
 
-fn format_chat_messages(msgs: Vec<ChatMsg>) -> Result<Vec<Value>, crate::ApiError> {
+pub(super) fn format_chat_messages(msgs: Vec<ChatMsg>) -> Result<Vec<Value>, crate::ApiError> {
     // 5. Convert to JSON array required by chat API
     let mut final_msgs = Vec::new();
     for m in msgs {

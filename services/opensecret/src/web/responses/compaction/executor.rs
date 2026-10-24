@@ -3,6 +3,7 @@
 //! only after every fragment has been successfully folded into the summary.
 
 use super::{context::SummaryWork, policy::CompactionPolicy, summary, CompactionBudget};
+use crate::web::responses::context_observability::ContextMetrics;
 use crate::{
     inference::{AttemptFailureKind, AttemptStage, AttemptTerminal},
     models::users::User,
@@ -254,7 +255,7 @@ impl SummaryExecutor<'_> {
                 )
                 .await
                 .map_err(|error| SummaryExecutionError::Provider(Box::new(error)))?;
-                collect_summary_stream(&mut completion.stream).await
+                collect_summary_stream(&mut completion.stream, self.budget.metrics.as_ref()).await
             };
             let response = tokio::select! {
                 biased;
@@ -365,8 +366,10 @@ fn invalid_stream_summary(error: summary::SummaryError) -> SummaryExecutionError
 
 async fn collect_summary_stream(
     stream: &mut tokio::sync::mpsc::Receiver<CompletionChunk>,
+    metrics: &ContextMetrics,
 ) -> Result<serde_json::Value, SummaryExecutionError> {
     let mut summary = summary::SummaryStreamAccumulator::new(MAX_SUMMARY_TEXT_BYTES);
+    let mut usage_recorded = false;
     while let Some(chunk) = stream.recv().await {
         match chunk {
             CompletionChunk::StreamChunk(chunk) => {
@@ -375,7 +378,15 @@ async fn collect_summary_stream(
             // The existing completion processor owns usage publication. Wait
             // for its terminal after billing, rather than treating finish_reason
             // or a partial answer as a completed, durable summary.
-            CompletionChunk::Usage(_) => {}
+            CompletionChunk::Usage(usage) => {
+                // Numeric observation only. The completion processor has already
+                // published billing, and duplicate consumer chunks must not
+                // inflate the per-helper diagnostic counters.
+                if !usage_recorded {
+                    metrics.helper_usage(&usage);
+                    usage_recorded = true;
+                }
+            }
             CompletionChunk::Terminal(AttemptTerminal::Failed { attempt, failure }) => {
                 let public_error =
                     crate::web::provider_error::PublicProviderError::from_failure(&failure)
@@ -518,14 +529,28 @@ mod tests {
         tx.send(summary_stream_chunk("Visible summary", json!("stop")))
             .await
             .unwrap();
-        let collecting = tokio::spawn(async move { collect_summary_stream(&mut rx).await });
+        let metrics = Arc::new(ContextMetrics::default());
+        let stream_metrics = metrics.clone();
+        let collecting =
+            tokio::spawn(
+                async move { collect_summary_stream(&mut rx, stream_metrics.as_ref()).await },
+            );
         tokio::task::yield_now().await;
         assert!(!collecting.is_finished());
         tx.send(CompletionChunk::Usage(
             crate::web::openai::CompletionUsage {
                 prompt_tokens: 10,
                 completion_tokens: 20,
-                cached_prompt_tokens: None,
+                cached_prompt_tokens: Some(7),
+            },
+        ))
+        .await
+        .unwrap();
+        tx.send(CompletionChunk::Usage(
+            crate::web::openai::CompletionUsage {
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                cached_prompt_tokens: Some(7),
             },
         ))
         .await
@@ -537,6 +562,11 @@ mod tests {
         .await
         .unwrap();
         let result = collecting.await.unwrap().unwrap();
+        let stats = metrics.snapshot();
+        assert_eq!(stats.helper_usage_records, 1);
+        assert_eq!(stats.helper_input_tokens, 10);
+        assert_eq!(stats.helper_output_tokens, 20);
+        assert_eq!(stats.helper_cached_input_tokens, 7);
         assert_eq!(
             summary::parse_summary_response(&result).unwrap(),
             "Visible summary"
@@ -561,7 +591,7 @@ mod tests {
         .unwrap();
         drop(tx);
         assert!(matches!(
-            collect_summary_stream(&mut rx).await,
+            collect_summary_stream(&mut rx, &ContextMetrics::default()).await,
             Err(SummaryExecutionError::Provider(_))
         ));
 
@@ -571,9 +601,45 @@ mod tests {
             .unwrap();
         drop(tx);
         assert!(matches!(
-            collect_summary_stream(&mut rx).await,
+            collect_summary_stream(&mut rx, &ContextMetrics::default()).await,
             Err(SummaryExecutionError::InvalidSummary)
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_summary_stream_retains_numeric_usage_once_without_becoming_successful() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        for _ in 0..2 {
+            tx.send(CompletionChunk::Usage(
+                crate::web::openai::CompletionUsage {
+                    prompt_tokens: 31,
+                    completion_tokens: 9,
+                    cached_prompt_tokens: Some(20),
+                },
+            ))
+            .await
+            .unwrap();
+        }
+        tx.send(CompletionChunk::Terminal(AttemptTerminal::Failed {
+            attempt: attempt(),
+            failure: AttemptFailure::new(
+                AttemptFailureKind::UnexpectedEof,
+                AttemptStage::Stream,
+                ReplaySafety::NotProvenPreAcceptance,
+            ),
+        }))
+        .await
+        .unwrap();
+        let metrics = ContextMetrics::default();
+        assert!(matches!(
+            collect_summary_stream(&mut rx, &metrics).await,
+            Err(SummaryExecutionError::Provider(_))
+        ));
+        let stats = metrics.snapshot();
+        assert_eq!(stats.helper_usage_records, 1);
+        assert_eq!(stats.helper_input_tokens, 31);
+        assert_eq!(stats.helper_output_tokens, 9);
+        assert_eq!(stats.helper_cached_input_tokens, 20);
     }
 
     #[tokio::test]
@@ -583,7 +649,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            collect_summary_stream(&mut rx).await,
+            collect_summary_stream(&mut rx, &ContextMetrics::default()).await,
             Err(SummaryExecutionError::InvalidSummary)
         ));
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -594,7 +660,7 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(
-            collect_summary_stream(&mut rx).await,
+            collect_summary_stream(&mut rx, &ContextMetrics::default()).await,
             Err(SummaryExecutionError::InvalidSummary)
         ));
     }

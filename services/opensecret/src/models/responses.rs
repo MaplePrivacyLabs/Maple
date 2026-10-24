@@ -1964,6 +1964,9 @@ pub struct RawThreadMessageMetadata {
     pub token_count: Option<i32>,
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Uuid>)]
     pub tool_call_id: Option<Uuid>,
+    /// Ciphertext transfer size, independent of model-projected token count.
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub encrypted_bytes: i64,
 }
 
 impl RawThreadMessageMetadata {
@@ -1981,7 +1984,8 @@ impl RawThreadMessageMetadata {
                     um.uuid,
                     um.created_at,
                     um.prompt_tokens as token_count,
-                    NULL::uuid as tool_call_id
+                    NULL::uuid as tool_call_id,
+                    COALESCE(octet_length(um.content_enc), 0)::bigint as encrypted_bytes
                 FROM user_messages um
                 WHERE um.conversation_id = $1
 
@@ -1994,7 +1998,8 @@ impl RawThreadMessageMetadata {
                     am.uuid,
                     am.created_at,
                     am.completion_tokens as token_count,
-                    NULL::uuid as tool_call_id
+                    NULL::uuid as tool_call_id,
+                    COALESCE(octet_length(am.content_enc), 0)::bigint as encrypted_bytes
                 FROM assistant_messages am
                 WHERE am.conversation_id = $1
 
@@ -2007,7 +2012,8 @@ impl RawThreadMessageMetadata {
                     tc.uuid,
                     tc.created_at,
                     tc.argument_tokens as token_count,
-                    tc.uuid as tool_call_id
+                    tc.uuid as tool_call_id,
+                    COALESCE(octet_length(tc.arguments_enc), 0)::bigint as encrypted_bytes
                 FROM tool_calls tc
                 WHERE tc.conversation_id = $1
 
@@ -2020,7 +2026,8 @@ impl RawThreadMessageMetadata {
                     tto.uuid,
                     tto.created_at,
                     tto.output_tokens as token_count,
-                    tc.uuid as tool_call_id
+                    tc.uuid as tool_call_id,
+                    COALESCE(octet_length(tto.output_enc), 0)::bigint as encrypted_bytes
                 FROM tool_outputs tto
                 JOIN tool_calls tc ON tto.tool_call_fk = tc.id
                 WHERE tto.conversation_id = $1
@@ -2036,7 +2043,8 @@ impl RawThreadMessageMetadata {
                     ri.uuid,
                     ri.created_at,
                     ri.reasoning_tokens as token_count,
-                    NULL::uuid as tool_call_id
+                    NULL::uuid as tool_call_id,
+                    COALESCE(octet_length(ri.content_enc), 0)::bigint as encrypted_bytes
                 FROM reasoning_items ri
                 WHERE ri.conversation_id = $1
             )
