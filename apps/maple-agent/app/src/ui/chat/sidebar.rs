@@ -407,6 +407,8 @@ pub(super) struct Sidebar {
     project_filter: Option<String>,
     // Menus.
     popup: Popup<Sidebar, SidebarPopup>,
+    /// The list position when a menu opened.
+    menu_scroll_top: gpui::ListOffset,
     /// Where a right-click opened the task menu; `None` hangs it under the
     /// row's "…" button.
     task_menu_at: Option<gpui::Point<gpui::Pixels>>,
@@ -616,15 +618,26 @@ impl Sidebar {
         })
         .detach();
         let list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.));
-        // A menu hangs off its row: scrolling the list closes it, so it
-        // never drifts from its row or leaves hover state behind.
+        // A menu hangs off its row: close it only when the list moves,
+        // not for a zero-distance wheel event accompanying a right-click.
         let sidebar = cx.weak_entity();
         list.set_scroll_handler(move |_, _, cx| {
-            sidebar
-                .update(cx, |sidebar, cx| {
-                    sidebar.close_popups(cx);
-                })
-                .ok();
+            let sidebar = sidebar.clone();
+            // ListState is still borrowed while its scroll handler runs.
+            cx.defer(move |cx| {
+                sidebar
+                    .update(cx, |sidebar, cx| {
+                        if sidebar.menu_open() {
+                            let top = sidebar.list.logical_scroll_top();
+                            if top.item_ix != sidebar.menu_scroll_top.item_ix
+                                || top.offset_in_item != sidebar.menu_scroll_top.offset_in_item
+                            {
+                                sidebar.close_popups(cx);
+                            }
+                        }
+                    })
+                    .ok();
+            });
         });
         Self {
             pages: SidebarPages::default(),
@@ -659,6 +672,7 @@ impl Sidebar {
             scope_label: "All projects".into(),
             project_filter: None,
             popup: Popup::new(|this| &mut this.popup, cx),
+            menu_scroll_top: gpui::ListOffset::default(),
             task_menu_at: None,
             project_popup: Popup::new(|this| &mut this.project_popup, cx),
             menu_trust: None,
@@ -1617,6 +1631,7 @@ impl Sidebar {
     /// Open or close the project switcher menu from its header.
     pub(super) fn toggle_switcher_menu(&mut self, cx: &mut Context<Self>) {
         self.project_popup.close(cx);
+        self.menu_scroll_top = self.list.logical_scroll_top();
         self.popup.toggle(SidebarPopup::Switcher, cx);
     }
 
@@ -1628,6 +1643,7 @@ impl Sidebar {
         }
         self.project_popup.close(cx);
         if open {
+            self.menu_scroll_top = self.list.logical_scroll_top();
             let current = self
                 .project_filter
                 .as_deref()
@@ -1870,6 +1886,7 @@ impl Sidebar {
     /// Open or close a project's overflow menu. Its trust row appears once
     /// the project's trust status loads.
     fn toggle_project_menu(&mut self, root: &ProjectTarget, cx: &mut Context<Self>) {
+        self.menu_scroll_top = self.list.logical_scroll_top();
         if !self.project_popup.toggle(root.clone(), cx) {
             return;
         }
@@ -1898,6 +1915,7 @@ impl Sidebar {
     /// Open or close a task row's menu from its "…" button.
     fn toggle_task_menu(&mut self, session_id: Arc<str>, cx: &mut Context<Self>) {
         self.task_menu_at = None;
+        self.menu_scroll_top = self.list.logical_scroll_top();
         self.popup.toggle(SidebarPopup::Task(session_id), cx);
     }
 
@@ -1910,6 +1928,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         self.task_menu_at = at;
+        self.menu_scroll_top = self.list.logical_scroll_top();
         self.popup.open(SidebarPopup::Task(session_id), cx);
     }
 

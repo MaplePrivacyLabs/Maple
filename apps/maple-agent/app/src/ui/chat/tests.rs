@@ -5917,6 +5917,57 @@ mod state_tests {
         assert_eq!(open_menu(&chat, cx), "");
     }
 
+    /// A wheel event can accompany a secondary click without moving the
+    /// list. Only a change in position dismisses the task menu.
+    #[gpui::test]
+    fn test_task_menu_stays_open_when_a_scroll_does_not_move_the_list(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = (1..=40)
+                .map(|ix| summary(&format!("s{ix}"), &format!("Task {ix}")))
+                .collect();
+            this.sync_sidebar(cx);
+        });
+        let list = chat.update(cx, |this, cx| this.sidebar.read(cx).list().clone());
+        right_click(cx, "session-s2");
+        let row = on_screen(cx, "session-s2");
+        let beside = gpui::point(row.left() + px(8.), row.center().y + px(120.));
+        let scroll = |cx: &mut gpui::VisualTestContext, x, y| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: beside,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(x), px(y))),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+        };
+        let offset = || {
+            let top = list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        };
+        let before = offset();
+        for (x, y) in [(0., 0.), (0., 20.), (20., 0.)] {
+            scroll(cx, x, y);
+            assert_eq!(offset(), before, "the list did not move");
+            assert_eq!(open_menu(&chat, cx), "Task(s2)");
+            on_screen(cx, "task-menu-s2");
+        }
+
+        // A single pixel within the same first item still counts as a scroll.
+        scroll(cx, 0., -1.);
+        assert_eq!(offset().0, before.0);
+        assert_ne!(offset().1, before.1);
+        assert_eq!(open_menu(&chat, cx), "");
+
+        right_click(cx, "session-s2");
+        let before = offset();
+        scroll(cx, 0., 0.);
+        assert_eq!(offset(), before);
+        assert_eq!(open_menu(&chat, cx), "Task(s2)");
+        on_screen(cx, "task-menu-s2");
+        chat.update(cx, |this, cx| this.step_task(1, cx));
+        cx.run_until_parked();
+        assert_eq!(open_menu(&chat, cx), "", "revealing a row closes the menu");
+    }
+
     /// Opened from the keyboard, the switcher starts on the current scope;
     /// Application Vim's j reaches a project and Enter scopes the sidebar
     /// to it.
