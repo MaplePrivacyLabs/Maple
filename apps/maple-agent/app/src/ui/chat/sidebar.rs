@@ -85,6 +85,9 @@ use crate::ui::widgets;
 
 const SEARCH_ROW_RADIUS: gpui::Pixels = px(6.);
 
+/// Corner radius of a sidebar row's hover and selected highlight.
+const ROW_RADIUS: gpui::Pixels = px(6.);
+
 /// Geometry shared by the expanded wordmark row and the collapsed mark.
 pub(super) const WORDMARK_LEFT: gpui::Pixels = px(16.);
 pub(super) const WORDMARK_HEIGHT: gpui::Pixels = px(16.);
@@ -2476,15 +2479,17 @@ impl Sidebar {
                 let expanded = self.section_expanded(section);
                 div()
                     .id(gpui::SharedString::from(section.element_id()))
+                    .w_auto()
+                    .mx_2()
+                    .my(px(1.))
                     .mt_4()
-                    .w_full()
                     .flex()
                     .items_center()
                     .gap_1p5()
                     .mb_1()
-                    .px_4()
+                    .px_2()
                     .py_1()
-                    .rounded(theme::RADIUS_SM)
+                    .rounded(ROW_RADIUS)
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -2568,15 +2573,17 @@ impl Sidebar {
                     .role(gpui::Role::Button)
                     .aria_label(format!("Archived tasks {count_label}"))
                     .aria_expanded(expanded)
+                    .w_auto()
+                    .mx_2()
+                    .my(px(1.))
                     .mt_5()
-                    .w_full()
                     .flex()
                     .items_center()
                     .gap_1p5()
                     .mb_1()
-                    .px_4()
+                    .px_2()
                     .py_1()
-                    .rounded(theme::RADIUS_SM)
+                    .rounded(ROW_RADIUS)
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -2657,12 +2664,14 @@ impl Sidebar {
             .flex()
             .items_center()
             .gap_1p5()
-            .w_full()
-            .pl_4()
+            .w_auto()
+            .mx_2()
+            .my(px(1.))
+            .pl_2()
             // Room for the new-project button, which sits over this end.
-            .pr(px(46.))
+            .pr(px(38.))
             .py_1()
-            .rounded(theme::RADIUS_SM)
+            .rounded(ROW_RADIUS)
             .text_sm()
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(gpui::rgb(theme::text_primary()))
@@ -2939,7 +2948,9 @@ impl Sidebar {
         let renaming = rename_field.is_some();
         div()
             .relative()
-            .w_full()
+            .w_auto()
+            .mx_2()
+            .my(px(1.))
             .id(row.element_id.clone())
             .role(gpui::Role::ListBoxOption)
             .accessibility_id(row.id.to_string())
@@ -2951,11 +2962,11 @@ impl Sidebar {
             .flex()
             .items_center()
             .gap_1p5()
-            .when(archived, |row| row.pl_6())
-            .when(!archived, |row| row.pl_8())
-            .pr_6()
+            .when(archived, |row| row.pl_4())
+            .when(!archived, |row| row.pl_6())
+            .pr_4()
             .py_1()
-            .rounded(theme::RADIUS_MD)
+            .rounded(ROW_RADIUS)
             .text_sm()
             .when(is_selected, |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
@@ -3035,13 +3046,13 @@ impl Sidebar {
                         .bottom_0()
                         .when(is_pinned, |overlay| overlay.right(px(26.)))
                         .when(!is_pinned, |overlay| {
-                            overlay.right_0().rounded_r(theme::RADIUS_MD)
+                            overlay.right_0().rounded_r(ROW_RADIUS)
                         })
                         .flex()
                         .items_center()
                         .gap_1p5()
                         .pl_2()
-                        .pr_6()
+                        .pr_4()
                         .group_hover(row.group.clone(), |style| {
                             style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         })
