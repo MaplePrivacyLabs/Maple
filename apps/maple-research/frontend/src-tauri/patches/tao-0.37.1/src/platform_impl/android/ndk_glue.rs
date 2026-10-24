@@ -394,7 +394,7 @@ pub unsafe fn onCreate(
   setup: unsafe fn(&str, JNIEnv, &ThreadLooper, GlobalRef),
 ) {
   let intent =
-    jni_call_method!(env, &activity, "getIntent", "()Landroid/content/Intent;", l).unwrap();
+    jni_call_method!(env, &activity, "getIntent", "()Landroid/content/Intent;", l).ok();
 
   let vm = env.get_java_vm().unwrap();
 
@@ -469,7 +469,9 @@ pub unsafe fn onCreate(
     let _ = tx.send(());
   }
 
-  handle_intent(env, intent);
+  if let Some(intent) = intent {
+    handle_intent(env, intent);
+  }
 }
 
 #[allow(non_snake_case)]
@@ -518,14 +520,27 @@ pub unsafe fn onNewIntent(env: JNIEnv, _: JClass, intent: JObject) {
 }
 
 pub unsafe fn handle_intent(mut env: JNIEnv, intent: JObject) {
-  let action = jni_call_method!(env, &intent, "getAction", "()Ljava/lang/String;", l)
-    .unwrap()
-    .into();
-  let action = env
-    .get_string(&action)
-    .map(|action| action.to_string_lossy().to_string());
+  // Maple local patch for https://github.com/tauri-apps/tao/issues/1217.
+  //
+  // Android can provide null intent/action/type objects during cold launch,
+  // task restoration, and OEM deep-link delivery. Upstream tao (still in 0.37)
+  // unwraps these JNI calls, which aborts the process across the Rust
+  // JNI boundary. Treat malformed intent pieces as absent and return/continue.
+  if intent.is_null() {
+    return;
+  }
 
-  let Ok(action) = action else {
+  let Ok(action) = jni_call_method!(env, &intent, "getAction", "()Ljava/lang/String;", l) else {
+    return;
+  };
+  if action.is_null() {
+    return;
+  }
+  let action: JString = action.into();
+  let Ok(action) = env
+    .get_string(&action)
+    .map(|action| action.to_string_lossy().to_string())
+  else {
     return;
   };
 
@@ -604,30 +619,39 @@ pub unsafe fn handle_intent(mut env: JNIEnv, intent: JObject) {
     // getItemCount may return null if the intent has only a single uri in which case the uri can be received by getData|String instead.
     if let Ok(item_count) = jni_call_method!(env, &clip_data, "getItemCount", "()I", i) {
       for i in 0..item_count {
-        let clip_item = jni_call_method!(
+        let Ok(clip_item) = jni_call_method!(
           env,
           &clip_data,
           "getItemAt",
           "(I)Landroid/content/ClipData$Item;",
           &[i.into()],
           l
-        )
-        .unwrap();
+        ) else {
+          continue;
+        };
+        if clip_item.is_null() {
+          continue;
+        }
 
         let uri = jni_call_method!(env, &clip_item, "getUri", "()Landroid/net/Uri;", l)
           .ok()
           .filter(|uri| !uri.is_null());
 
         if let Some(uri) = uri {
-          let uri_string: JString =
-            jni_call_method!(env, &uri, "toString", "()Ljava/lang/String;", l)
-              .unwrap()
-              .into();
-          let uri_str = env
+          let Ok(uri_string) = jni_call_method!(env, &uri, "toString", "()Ljava/lang/String;", l)
+          else {
+            continue;
+          };
+          if uri_string.is_null() {
+            continue;
+          }
+          let uri_string: JString = uri_string.into();
+          let Ok(uri_str) = env
             .get_string(&uri_string)
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+            .map(|uri_str| uri_str.to_string_lossy().to_string())
+          else {
+            continue;
+          };
           if let Ok(url) = url::Url::parse(&uri_str) {
             urls.insert(url);
           } else {
@@ -657,19 +681,29 @@ pub unsafe fn handle_intent(mut env: JNIEnv, intent: JObject) {
     .filter(|extra_stream| !extra_stream.is_null());
 
     if let Some(stream_uri) = extra_stream {
-      let uri_string: JString =
-        jni_call_method!(env, &stream_uri, "toString", "()Ljava/lang/String;", l)
-          .unwrap()
-          .into();
-      let uri_str = env
-        .get_string(&uri_string)
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
-      if let Ok(url) = url::Url::parse(&uri_str) {
-        urls.insert(url);
-      } else {
-        log::error!("failed to parse URI: {}", uri_str);
+      let uri_str = jni_call_method!(
+        env,
+        &stream_uri,
+        "toString",
+        "()Ljava/lang/String;",
+        l
+      )
+      .ok()
+      .filter(|uri_string| !uri_string.is_null())
+      .and_then(|uri_string| {
+        let uri_string: JString = uri_string.into();
+        env
+          .get_string(&uri_string)
+          .ok()
+          .map(|uri_str| uri_str.to_string_lossy().to_string())
+      });
+
+      if let Some(uri_str) = uri_str {
+        if let Ok(url) = url::Url::parse(&uri_str) {
+          urls.insert(url);
+        } else {
+          log::error!("failed to parse URI: {}", uri_str);
+        }
       }
     }
   }
