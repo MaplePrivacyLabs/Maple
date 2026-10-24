@@ -103,10 +103,22 @@ fn header_project_paths(recent_roots: &[RecentProjectRoot]) -> Vec<String> {
 impl ChatScreen {
     pub(super) fn render_header(
         &self,
+        sidebar_expansion: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let title = self.selected_title.clone();
+        let collapsed_progress = 1. - sidebar_expansion;
+        let sidebar_width = super::SIDEBAR_RAIL_WIDTH
+            + (super::SIDEBAR_WIDTH - super::SIDEBAR_RAIL_WIDTH) * sidebar_expansion;
+        // Compensate for the moving pane so the toggle stays beside the
+        // window controls throughout the transition.
+        let toolbar_left = super::SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET - sidebar_width;
+        let toolbar_width = window.rem_size() * 5.75;
+        let header_gap = window.rem_size() * 0.75;
+        let expanded_inset = window.rem_size();
+        let collapsed_inset = SIDEBAR_COLLAPSED_INSET + toolbar_width + header_gap * 2. + px(1.);
+        let inset = expanded_inset + (collapsed_inset - expanded_inset) * collapsed_progress;
         titlebar::drag_region(
             div()
                 .id("chat-header")
@@ -118,27 +130,18 @@ impl ChatScreen {
                 .gap_3()
                 .h(super::CHAT_HEADER_HEIGHT)
                 .flex_none()
-                .pl_4()
+                .pl(inset)
                 .pr_3()
-                .bg(gpui::rgb(theme::bg_sidebar()))
-                .when(self.sidebar_collapsed, |row| {
-                    row.pl(SIDEBAR_COLLAPSED_INSET)
-                }),
+                .bg(gpui::rgb(theme::bg_sidebar())),
         )
         .child(
             div()
+                .absolute()
+                .left(toolbar_left)
+                .top((super::CHAT_HEADER_HEIGHT - super::sidebar::TOP_ROW_HEIGHT) / 2.)
                 .flex()
                 .items_center()
                 .gap_1()
-                .when(!self.sidebar_collapsed, |toolbar| {
-                    toolbar
-                        .absolute()
-                        .left(
-                            super::SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET
-                                - super::SIDEBAR_WIDTH,
-                        )
-                        .top((super::CHAT_HEADER_HEIGHT - super::sidebar::TOP_ROW_HEIGHT) / 2.)
-                })
                 .children(
                     [
                         (
@@ -168,7 +171,7 @@ impl ChatScreen {
                     ]
                     .into_iter()
                     .filter(|(_, _, _, _, command, _)| {
-                        self.sidebar_collapsed || matches!(command, ChatCommand::ToggleSidebar)
+                        collapsed_progress > 0. || matches!(command, ChatCommand::ToggleSidebar)
                     })
                     .map(|(id, name, label, action, command, tab_index)| {
                         widgets::icon_button_for_action(
@@ -181,6 +184,11 @@ impl ChatScreen {
                         )
                         .debug_selector(move || id.to_string())
                         .tab_index(tab_index)
+                        .when(!matches!(command, ChatCommand::ToggleSidebar), |button| {
+                            button
+                                .opacity(collapsed_progress)
+                                .tab_stop(self.sidebar_collapsed)
+                        })
                         .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
                             cx.stop_propagation();
                         })
@@ -193,8 +201,17 @@ impl ChatScreen {
                     }),
                 ),
         )
-        .when(self.sidebar_collapsed, |row| {
-            row.child(div().w(px(1.)).h_4().bg(gpui::rgb(theme::border())))
+        .when(collapsed_progress > 0., |row| {
+            row.child(
+                div()
+                    .absolute()
+                    .left(toolbar_left + toolbar_width + header_gap)
+                    .top((super::CHAT_HEADER_HEIGHT - window.rem_size()) / 2.)
+                    .w(px(1.))
+                    .h_4()
+                    .opacity(collapsed_progress)
+                    .bg(gpui::rgb(theme::border())),
+            )
         })
         .child(
             div()

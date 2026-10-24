@@ -109,6 +109,25 @@ struct QueueEdit {
 const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
 /// Width of the rail that stands in for the sidebar while it is collapsed.
 const SIDEBAR_RAIL_WIDTH: gpui::Pixels = px(48.);
+const SIDEBAR_TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// One reversible transition. Sampling the current position when retargeting
+/// avoids jumping back to an endpoint on a second press.
+struct SidebarTransition {
+    from: f32,
+    to: f32,
+    started: std::time::Instant,
+    duration: std::time::Duration,
+}
+
+impl SidebarTransition {
+    fn value(&self, now: std::time::Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
+        let t = (elapsed / self.duration.as_secs_f32()).clamp(0., 1.);
+        let eased = 1. - (1. - t).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+}
 /// Height of the task header and the clear strip above the collapsed rail.
 const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
 /// Left inset for the header beside the rail: the traffic lights reach
@@ -579,6 +598,7 @@ pub struct ChatScreen {
     watched_git_dir: Option<std::path::PathBuf>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
+    sidebar_transition: Option<SidebarTransition>,
     /// Files staged for the next message.
     draft_attachments: Vec<DraftAttachment>,
     unresolved_sends: HashMap<String, UnresolvedSend>,
@@ -934,8 +954,43 @@ impl ChatScreen {
         if self.sidebar_collapsed == collapsed {
             return;
         }
+        let now = std::time::Instant::now();
+        let from = self
+            .sidebar_transition
+            .as_ref()
+            .map(|transition| transition.value(now))
+            .unwrap_or(if self.sidebar_collapsed { 0. } else { 1. });
+        let to = if collapsed { 0. } else { 1. };
         self.sidebar_collapsed = collapsed;
+        let distance = (to - from).abs();
+        self.sidebar_transition =
+            (!cx.reduce_motion() && distance > f32::EPSILON).then(|| SidebarTransition {
+                from,
+                to,
+                started: now,
+                duration: SIDEBAR_TRANSITION_DURATION.mul_f32(distance),
+            });
+        if collapsed {
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.close_popups(cx);
+            });
+        }
         cx.notify();
+    }
+
+    fn sidebar_expansion(&mut self, window: &mut Window, cx: &Context<Self>) -> f32 {
+        if cx.reduce_motion() {
+            self.sidebar_transition = None;
+        }
+        let now = std::time::Instant::now();
+        if let Some(transition) = &self.sidebar_transition {
+            if now.saturating_duration_since(transition.started) < transition.duration {
+                window.request_animation_frame();
+                return transition.value(now);
+            }
+            self.sidebar_transition = None;
+        }
+        if self.sidebar_collapsed { 0. } else { 1. }
     }
 
     pub(super) fn toggle_sidebar_visibility(&mut self, cx: &mut Context<Self>) {
@@ -1290,6 +1345,7 @@ impl ChatScreen {
             dialog_focus_pending: false,
             trust_prompts: true,
             sidebar_collapsed: false,
+            sidebar_transition: None,
             draft_attachments: Vec::new(),
             unresolved_sends: HashMap::new(),
             attachment_uploads: HashMap::new(),
@@ -6511,7 +6567,7 @@ impl Render for ChatScreen {
             .clone()
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
-        let collapsed = self.sidebar_collapsed;
+        let sidebar_expansion = self.sidebar_expansion(window, cx);
         let loading_overlay = self.render_loading_overlay();
         let main = if empty {
             self.render_empty_state(window, cx)
@@ -6641,19 +6697,7 @@ impl Render for ChatScreen {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .when(collapsed, |row| row.child(self.render_sidebar_rail(cx)))
-                    .when(!collapsed, |row| {
-                        // Cached: the sidebar's subtree is reused until the
-                        // sidebar entity is notified, whatever this screen does.
-                        row.child(
-                            self.sidebar.clone().cached(
-                                gpui::StyleRefinement::default()
-                                    .w(SIDEBAR_WIDTH)
-                                    .h_full()
-                                    .flex_none(),
-                            ),
-                        )
-                    })
+                    .child(self.render_sidebar(sidebar_expansion, cx))
                     .child(
                         div()
                             .relative()
@@ -6666,7 +6710,7 @@ impl Render for ChatScreen {
                             .child(
                                 // The header is the window's title bar; a wheel
                                 // over it scrolls nothing.
-                                self.render_header(window, cx)
+                                self.render_header(sidebar_expansion, window, cx)
                                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
                             )
                             .child(
@@ -6742,6 +6786,79 @@ impl Render for ChatScreen {
 }
 
 impl ChatScreen {
+    fn render_sidebar(&self, expansion: f32, cx: &mut Context<Self>) -> Div {
+        let width = SIDEBAR_RAIL_WIDTH + (SIDEBAR_WIDTH - SIDEBAR_RAIL_WIDTH) * expansion;
+        div()
+            .relative()
+            .flex_none()
+            .w(width)
+            .h_full()
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            // Clip only during motion: settled sidebar menus may extend
+            // into the content pane as before.
+            .when(expansion < 1., |column| column.overflow_hidden())
+            .when(expansion < 1., |column| {
+                column.child(self.render_sidebar_rail(cx))
+            })
+            .when(expansion > 0., |column| {
+                column.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(SIDEBAR_WIDTH)
+                        .h_full()
+                        .opacity(expansion)
+                        // Fixed bounds keep labels from wrapping as the
+                        // outer column narrows; settled frames stay cached.
+                        .child(
+                            self.sidebar.clone().cached(
+                                gpui::StyleRefinement::default()
+                                    .w(SIDEBAR_WIDTH)
+                                    .h_full()
+                                    .flex_none(),
+                            ),
+                        ),
+                )
+            })
+            // Keep one opaque Settings control outside the fading sidebar.
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .w(SIDEBAR_RAIL_WIDTH)
+                    .h_12()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgb(theme::bg_sidebar()))
+                    .child(
+                        widgets::icon_button_for_action(
+                            "open-settings",
+                            "settings",
+                            "Settings",
+                            px(16.),
+                            theme::text_secondary(),
+                            &OpenAppSettings,
+                        )
+                        .debug_selector(|| "open-settings".to_string())
+                        .size(px(32.))
+                        .rounded_full()
+                        .tab_index(6)
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(Self::sidebar_button_key_down)
+                        .on_click(cx.listener(
+                            |this, _event, window, cx| {
+                                this.execute_command(ChatCommand::OpenSettings, window, cx);
+                            },
+                        )),
+                    ),
+            )
+    }
+
     /// Keep unsaved-work feedback beside the composer that produced it.
     /// The desktop owns retries so the local store's lifecycle guards still apply.
     fn render_persistence_failure(&self, cx: &mut Context<Self>) -> Option<Div> {
