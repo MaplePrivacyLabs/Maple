@@ -203,6 +203,8 @@ tokens! {
     // Dark body is Pebble 200 (~12:1 on the well), not Pebble 50, so
     // Regular and SemiBold stay distinct. Headings sit one step brighter.
     text_primary: 0xd1d2dc, 0x171717;
+    /// Sidebar text stays softer than body text in both themes.
+    text_sidebar: 0xbcbdc8, 0x45454b;
     text_heading: 0xe8e8ed, 0x171717;
     text_secondary: 0xbabccb, 0x525252;
     /// Captions. Light sits between neutral-500 and 600: neutral-400 was

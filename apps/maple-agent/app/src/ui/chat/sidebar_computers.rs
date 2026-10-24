@@ -1277,7 +1277,7 @@ impl Sidebar {
                     .items_center()
                     .rounded(ROW_RADIUS)
                     .text_sm()
-                    .text_color(gpui::rgb(theme::text_primary()))
+                    .text_color(gpui::rgb(theme::text_sidebar()))
                     .when(selected, |row| {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))

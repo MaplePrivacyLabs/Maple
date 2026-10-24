@@ -2419,7 +2419,7 @@ impl Sidebar {
                             "New Task",
                             ChatCommand::NewTask,
                             &super::NewTask,
-                            theme::accent(),
+                            theme::text_sidebar(),
                         )
                     };
                 div()
@@ -2673,8 +2673,7 @@ impl Sidebar {
             .py_1()
             .rounded(ROW_RADIUS)
             .text_sm()
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(gpui::rgb(theme::text_primary()))
+            .text_color(gpui::rgb(theme::text_sidebar()))
             .hover(|style| {
                 style
                     .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -2975,9 +2974,8 @@ impl Sidebar {
             .text_sm()
             .when(is_selected, |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                    .font_weight(gpui::FontWeight::MEDIUM)
             })
-            .text_color(gpui::rgb(theme::text_primary()))
+            .text_color(gpui::rgb(theme::text_sidebar()))
             // A row being renamed is a text field: no hover highlight and
             // no hover actions over it, so the edit is plain to see.
             .when(!renaming, |el| {
@@ -3149,7 +3147,7 @@ impl Render for Sidebar {
                             .flex()
                             .items_center()
                             .child(
-                                wordmark(WORDMARK_HEIGHT, theme::text_primary())
+                                wordmark(WORDMARK_HEIGHT, theme::text_sidebar())
                                     .debug_selector(|| "sidebar-wordmark".to_string()),
                             ),
                     ),
