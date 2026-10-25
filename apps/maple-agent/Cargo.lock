@@ -5834,6 +5834,7 @@ dependencies = [
  "percent-encoding",
  "pulldown-cmark",
  "rand 0.8.7",
+ "raw-window-handle",
  "reqwest 0.13.4",
  "rodio",
  "rpassword",

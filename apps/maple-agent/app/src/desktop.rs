@@ -5,8 +5,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use gpui::{
-    App, Bounds, Context, Entity, Pixels, Render, Window, WindowBounds, WindowOptions, actions,
-    div, prelude::*, px, size,
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, actions, div, point,
+    prelude::*, px, size,
 };
 
 actions!(maple_app, [QuitApp, Hide, HideOthers, ShowAll]);
@@ -786,17 +786,27 @@ impl MapleApp {
                         && let Some(saved) = this
                             .settings
                             .window
+                            .clone()
                             .map(crate::settings::WindowState::clamped)
                     {
                         let root_id = cx.entity().entity_id();
                         for handle in cx.windows() {
-                            let _ = handle.update(cx, |_, window, _| {
+                            let _ = handle.update(cx, |_, window, cx| {
                                 if window
                                     .root::<MapleApp>()
                                     .flatten()
                                     .is_some_and(|root| root.entity_id() == root_id)
                                 {
-                                    window.resize(size(px(saved.width), px(saved.height)));
+                                    #[cfg(target_os = "macos")]
+                                    let placed = native_window::place(window, cx, &saved);
+                                    #[cfg(not(target_os = "macos"))]
+                                    let placed = {
+                                        let _ = cx;
+                                        false
+                                    };
+                                    if !placed {
+                                        window.resize(size(px(saved.width), px(saved.height)));
+                                    }
                                     if saved.maximized && !window.is_maximized() {
                                         window.zoom_window();
                                     }
@@ -1846,7 +1856,7 @@ impl Render for MapleApp {
             log::debug!("startup: first render at {} ms", crate::startup_elapsed());
         });
         self.present_pending_store_attention(window, cx);
-        remember_window_state(window);
+        remember_window_state(window, cx);
         if ui::theme::resolve(window.appearance()) {
             // Every view reads the palette in render; make them all redo it.
             cx.refresh_windows();
@@ -1916,6 +1926,8 @@ impl Render for MapleApp {
 
 #[cfg(target_os = "macos")]
 mod native_quit;
+#[cfg(target_os = "macos")]
+mod native_window;
 
 fn persistence_feedback_message(
     failure: &maple_agent::store::PersistenceFailure,
@@ -2552,14 +2564,75 @@ fn restoring_view() -> gpui::Div {
 static WINDOW_STATE: std::sync::Mutex<Option<crate::settings::WindowState>> =
     std::sync::Mutex::new(None);
 
-/// Runs on every root render, which includes every resize and maximize.
-fn remember_window_state(window: &Window) {
-    let Some(state) = window_state_for(window.window_bounds()) else {
+/// The UUID of the display the window was last seen on. Render runs every
+/// frame, so the platform lookup only reruns when the display changes.
+static WINDOW_DISPLAY: std::sync::Mutex<Option<(gpui::DisplayId, Option<String>)>> =
+    std::sync::Mutex::new(None);
+
+/// Runs on every root render, which includes every move, resize and maximize.
+fn remember_window_state(window: &Window, cx: &App) {
+    let bounds = window.window_bounds();
+    let Some(mut state) = window_state_for(bounds) else {
         return;
     };
+    let origin = bounds.get_bounds().origin;
+    state.position = window.display(cx).and_then(|display| {
+        let id = display.id();
+        let mut cached = WINDOW_DISPLAY.lock().ok()?;
+        if cached.as_ref().is_none_or(|(seen, _)| *seen != id) {
+            *cached = Some((id, display.uuid().ok().map(|uuid| uuid.to_string())));
+        }
+        Some(crate::settings::WindowPosition {
+            x: f32::from(origin.x),
+            y: f32::from(origin.y),
+            display: cached.as_ref()?.1.clone()?,
+        })
+    });
     if let Ok(mut slot) = WINDOW_STATE.lock() {
         *slot = Some(state);
     }
+}
+
+/// Opening bounds for the main window: the saved size and position, or a
+/// centered default. Position applies only while its display is attached.
+fn main_window_placement(
+    saved: Option<crate::settings::WindowState>,
+    cx: &App,
+) -> (WindowBounds, Option<gpui::DisplayId>) {
+    let saved = saved.map(crate::settings::WindowState::clamped);
+    let window_size = saved
+        .as_ref()
+        .map(|state| size(px(state.width), px(state.height)))
+        .unwrap_or_else(|| size(px(1280.), px(860.)));
+    let placed = saved.as_ref().and_then(|state| {
+        let position = state.position.as_ref()?;
+        let display = saved_display(position, cx)?;
+        Some((
+            Bounds::new(point(px(position.x), px(position.y)), window_size),
+            display.id(),
+        ))
+    });
+    let (bounds, display) = match placed {
+        Some((bounds, display)) => (bounds, Some(display)),
+        None => (Bounds::centered(None, window_size, cx), None),
+    };
+    let bounds = if saved.is_some_and(|state| state.maximized) {
+        WindowBounds::Maximized(bounds)
+    } else {
+        WindowBounds::Windowed(bounds)
+    };
+    (bounds, display)
+}
+
+fn saved_display(
+    position: &crate::settings::WindowPosition,
+    cx: &App,
+) -> Option<std::rc::Rc<dyn gpui::PlatformDisplay>> {
+    cx.displays().into_iter().find(|display| {
+        display
+            .uuid()
+            .is_ok_and(|uuid| uuid.to_string() == position.display)
+    })
 }
 
 /// The state worth saving for `bounds`. Fullscreen yields `None`: its
@@ -2575,12 +2648,13 @@ fn window_state_for(bounds: WindowBounds) -> Option<crate::settings::WindowState
         width: f32::from(bounds.size.width),
         height: f32::from(bounds.size.height),
         maximized,
+        position: None,
     })
 }
 
 /// Queue the last seen window state for the host-owned settings store.
 fn persist_window_state() {
-    let state = WINDOW_STATE.lock().ok().and_then(|slot| *slot);
+    let state = WINDOW_STATE.lock().ok().and_then(|slot| slot.clone());
     if let Some(state) = state {
         crate::settings::save_window_state(state);
     }
@@ -2593,9 +2667,12 @@ pub(crate) fn register_key_bindings(cx: &mut App) {
     crate::keymap::bootstrap(cx);
 }
 
-fn main_window_options(window_bounds: WindowBounds) -> WindowOptions {
+fn main_window_options(
+    (window_bounds, display_id): (WindowBounds, Option<gpui::DisplayId>),
+) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(window_bounds),
+        display_id,
         // X11 WM_CLASS and Wayland app_id must match the packaged desktop
         // entry, so Dev, Prod, Research, and local debug windows group apart.
         app_id: Some(crate::profile::BUNDLE_ID.to_string()),
@@ -2973,18 +3050,7 @@ pub fn run() {
                 }
             });
             cx.set_reduce_motion(startup_settings.reduce_motion);
-            let saved = startup_settings
-                .window
-                .map(crate::settings::WindowState::clamped);
-            let window_size = saved
-                .map(|state| size(px(state.width), px(state.height)))
-                .unwrap_or_else(|| size(px(1280.), px(860.)));
-            let bounds: Bounds<Pixels> = Bounds::centered(None, window_size, cx);
-            let window_bounds = if saved.is_some_and(|state| state.maximized) {
-                WindowBounds::Maximized(bounds)
-            } else {
-                WindowBounds::Windowed(bounds)
-            };
+            let window_placement = main_window_placement(startup_settings.window.clone(), cx);
             let updater = crate::update::Controller::new(false);
             let mut update_events = updater.subscribe();
             let remote_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3011,7 +3077,7 @@ pub fn run() {
                 let view = startup.clone();
                 let bounds = Bounds::centered(None, size(px(620.), px(320.)), cx);
                 let opened = cx.open_window(
-                    main_window_options(WindowBounds::Windowed(bounds)),
+                    main_window_options((WindowBounds::Windowed(bounds), None)),
                     move |window, cx| {
                         let closing = view.clone();
                         window.on_window_should_close(cx, move |_, cx| {
@@ -3072,7 +3138,7 @@ pub fn run() {
             let root_settings = startup_settings.clone();
             let root_updater = updater.clone();
             let window = cx
-                .open_window(main_window_options(window_bounds), move |_, cx| {
+                .open_window(main_window_options(window_placement), move |_, cx| {
                     cx.new(move |cx| MapleApp {
                         backend: root_backend,
                         screen: Screen::Restoring,
@@ -3230,10 +3296,12 @@ pub fn run() {
                                     if cx.windows().is_empty() {
                                         let root = tray_root.clone();
                                         let enabled = enabled.clone();
-                                        let bounds =
-                                            Bounds::centered(None, size(px(1280.), px(860.)), cx);
+                                        let placement = main_window_placement(
+                                            crate::settings::load_settings().window,
+                                            cx,
+                                        );
                                         let _ = cx.open_window(
-                                            main_window_options(WindowBounds::Windowed(bounds)),
+                                            main_window_options(placement),
                                             move |window, cx| {
                                                 install_close_behavior(window, cx, enabled, true);
                                                 root
@@ -4318,7 +4386,7 @@ mod tests {
         });
     }
 
-    fn bounds(width: f32, height: f32) -> Bounds<Pixels> {
+    fn bounds(width: f32, height: f32) -> Bounds<gpui::Pixels> {
         Bounds::new(gpui::point(px(0.), px(0.)), size(px(width), px(height)))
     }
 
@@ -4356,7 +4424,7 @@ mod tests {
 
     #[test]
     fn window_identity_and_title_match_the_packaging_metadata() {
-        let options = main_window_options(WindowBounds::Windowed(bounds(1280., 860.)));
+        let options = main_window_options((WindowBounds::Windowed(bounds(1280., 860.)), None));
         let info = serde_json::to_value(crate::profile::build_info()).unwrap();
         assert_eq!(options.app_id.as_deref(), info["bundle_id"].as_str());
         assert_eq!(
