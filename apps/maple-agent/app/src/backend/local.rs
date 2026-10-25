@@ -1994,6 +1994,56 @@ impl LocalBackend {
         open_in_browser(&url, "checkout")
     }
 
+    /// Prepaid API credits left on the account. The billing error is
+    /// logged, not shown: it can carry the server's whole response body.
+    pub async fn api_credit_balance(&self, user_id: &str) -> Result<i64, String> {
+        self.billing_call(user_id, |billing, token| async move {
+            billing.api_credit_balance(&token).await
+        })
+        .await
+        .map_err(|error| {
+            log::warn!("Could not load the credit balance: {error}");
+            "Could not load the latest balance. Refresh to try again.".to_string()
+        })
+    }
+
+    /// Start a card or Bitcoin checkout for `credits` prepaid API credits in
+    /// the system browser. The billing service credits the account from the
+    /// provider's webhook; the browser then lands on the web app, so no
+    /// desktop callback is involved. Guests have no email and pay with
+    /// Bitcoin only, as on the web.
+    pub async fn purchase_api_credits(
+        &self,
+        user_id: &str,
+        method: crate::billing::PaymentMethod,
+        credits: u64,
+    ) -> Result<(), String> {
+        use crate::billing::PaymentMethod;
+        if !credits.is_multiple_of(crate::billing::CREDITS_PER_DOLLAR) {
+            return Err("Buy credits in whole dollars".to_string());
+        }
+        crate::billing::credits_for_dollars(credits / crate::billing::CREDITS_PER_DOLLAR)?;
+        let account = self.account(user_id).await?;
+        if method == PaymentMethod::Stripe && account.login_method == MapleLoginMethod::Guest {
+            return Err("Anonymous accounts pay with Bitcoin".to_string());
+        }
+        let request = Arc::new(crate::billing::CreditPurchaseRequest {
+            credits,
+            email: account.email.unwrap_or_default(),
+            success_url: crate::billing::CREDITS_SUCCESS_URL.to_string(),
+            cancel_url: (method == PaymentMethod::Stripe)
+                .then(|| crate::billing::CREDITS_CANCEL_URL.to_string()),
+        });
+        let url = self
+            .billing_call(user_id, |billing, token| {
+                let request = Arc::clone(&request);
+                async move { billing.credit_checkout_url(&token, method, &request).await }
+            })
+            .await
+            .map_err(|error| billing_failure(error, "Could not start the credit checkout"))?;
+        open_in_browser(&url, "checkout")
+    }
+
     /// Run one billing request with the cached token, minting a token
     /// first when there is none and once more after a 401.
     async fn billing_call<T, F, Fut>(&self, user_id: &str, request: F) -> Result<T, String>

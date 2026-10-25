@@ -6,12 +6,20 @@
 // there by design.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
-pub use maple_billing::{BillingClient, BillingError, BillingStatus, CheckoutRequest, Product};
+pub use maple_billing::{
+    BillingClient, BillingError, BillingStatus, CREDITS_PER_DOLLAR, CheckoutRequest,
+    CreditPurchaseRequest, MAX_CREDIT_PURCHASE_DOLLARS, MIN_CREDIT_PURCHASE_DOLLARS, PaymentMethod,
+    Product,
+};
 
 /// Where checkout and the customer portal send the browser afterwards.
 /// The desktop app has no URL scheme yet, so these are the web app's
 /// pages on the compiled channel's web host.
 pub use crate::profile::{CHECKOUT_CANCEL_URL, CHECKOUT_SUCCESS_URL, WEB_URL as PORTAL_RETURN_URL};
+/// Where a credit checkout sends the browser: the web app, which shows the
+/// confirmation in its API settings. The desktop app needs no callback; the
+/// billing service credits the account from the payment provider's webhook.
+pub use crate::profile::{CREDITS_CANCEL_URL, CREDITS_SUCCESS_URL};
 /// The channel's web pricing page, for plans this app cannot start itself.
 pub const PRICING_URL: &str = crate::profile::PRICING_URL;
 
@@ -22,7 +30,6 @@ pub const PRICING_URL: &str = crate::profile::PRICING_URL;
 )]
 pub enum PlanTier {
     Free,
-    Starter,
     Pro,
     Max,
     Team,
@@ -37,8 +44,6 @@ impl PlanTier {
             Self::Max
         } else if name.contains("pro") {
             Self::Pro
-        } else if name.contains("starter") {
-            Self::Starter
         } else {
             Self::Free
         }
@@ -48,6 +53,45 @@ impl PlanTier {
     pub fn has_api_access(self) -> bool {
         self >= Self::Pro
     }
+
+    /// Plans the app lists for sale: Pro, Max, and Team, like the web
+    /// pricing page. Unknown names read as Free.
+    pub fn is_for_sale(self) -> bool {
+        self >= Self::Pro
+    }
+}
+
+/// Preset credit purchases in whole dollars, as on the web.
+pub const CREDIT_PACKAGES_DOLLARS: [u64; 4] = [20, 50, 100, 500];
+
+/// Credits bought by a whole-dollar amount, or why the amount is refused.
+pub fn credits_for_dollars(dollars: u64) -> Result<u64, String> {
+    if dollars < MIN_CREDIT_PURCHASE_DOLLARS {
+        Err(format!("The minimum is ${MIN_CREDIT_PURCHASE_DOLLARS}"))
+    } else if dollars > MAX_CREDIT_PURCHASE_DOLLARS {
+        Err(format!(
+            "The maximum is ${}",
+            format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64)
+        ))
+    } else {
+        Ok(dollars * CREDITS_PER_DOLLAR)
+    }
+}
+
+/// Whole dollars typed for a custom credit purchase, with an optional `$`.
+/// None while the field is empty.
+pub fn parse_custom_dollars(text: &str) -> Option<Result<u64, String>> {
+    let text = text.trim();
+    let digits = text.strip_prefix('$').unwrap_or(text).trim();
+    if digits.is_empty() {
+        return None;
+    }
+    Some(if digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        // Too many digits to parse is over the maximum either way.
+        credits_for_dollars(digits.parse().unwrap_or(u64::MAX))
+    } else {
+        Err("Enter a whole-dollar amount".to_string())
+    })
 }
 
 /// Plan-level readings of a billing status. An extension trait because
@@ -227,6 +271,52 @@ mod tests {
     }
 
     #[test]
+    fn credit_purchases_return_to_the_web_app() {
+        assert_eq!(
+            CREDITS_SUCCESS_URL,
+            format!("{PORTAL_RETURN_URL}/?credits_success=true")
+        );
+        assert_eq!(CREDITS_CANCEL_URL, format!("{PORTAL_RETURN_URL}/"));
+    }
+
+    #[test]
+    fn credit_amounts_are_whole_dollars_in_range() {
+        assert_eq!(credits_for_dollars(20), Ok(20_000));
+        assert_eq!(credits_for_dollars(1_000), Ok(1_000_000));
+        assert!(credits_for_dollars(9).is_err());
+        assert!(credits_for_dollars(1_001).is_err());
+        assert_eq!(parse_custom_dollars("  "), None);
+        assert_eq!(parse_custom_dollars("$ 25"), Some(Ok(25_000)));
+        assert_eq!(parse_custom_dollars("10"), Some(Ok(10_000)));
+        assert!(matches!(parse_custom_dollars("12.5"), Some(Err(_))));
+        assert!(matches!(parse_custom_dollars("-5"), Some(Err(_))));
+        assert!(matches!(
+            parse_custom_dollars("99999999999999999999999"),
+            Some(Err(_))
+        ));
+        for dollars in CREDIT_PACKAGES_DOLLARS {
+            assert!(credits_for_dollars(dollars).is_ok());
+        }
+    }
+
+    #[test]
+    fn only_pro_max_and_team_are_for_sale() {
+        for (name, for_sale) in [
+            ("Free", false),
+            ("Unexpected", false),
+            ("Pro", true),
+            ("Max", true),
+            ("Team", true),
+        ] {
+            assert_eq!(
+                PlanTier::from_product_name(Some(name)).is_for_sale(),
+                for_sale,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn tiers_come_from_the_product_name() {
         assert_eq!(PlanTier::from_product_name(None), PlanTier::Free);
         assert_eq!(
@@ -236,7 +326,7 @@ mod tests {
         assert_eq!(PlanTier::from_product_name(Some("Max Plan")), PlanTier::Max);
         assert_eq!(PlanTier::from_product_name(Some("Team")), PlanTier::Team);
         assert!(PlanTier::Pro.has_api_access());
-        assert!(!PlanTier::Starter.has_api_access());
+        assert!(!PlanTier::Free.has_api_access());
     }
 
     #[test]

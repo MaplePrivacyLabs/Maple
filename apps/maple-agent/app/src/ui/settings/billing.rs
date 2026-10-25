@@ -37,8 +37,8 @@ impl BillingState {
         }
     }
 
-    /// Plans worth listing: active, sold to this build, and priced,
-    /// cheapest first. Computed on load, not in render.
+    /// Plans worth listing (active, sold to this build, priced, and Pro,
+    /// Max, or Team), cheapest first. Computed on load, not in render.
     fn sort_products(products: &mut [Product]) {
         products.sort_by_key(|product| {
             product
@@ -111,6 +111,7 @@ impl SettingsScreen {
                         product.active
                             && product.is_available != Some(false)
                             && product.default_price.is_some()
+                            && PlanTier::from_product_name(Some(&product.name)).is_for_sale()
                     });
                     BillingState::sort_products(&mut products);
                     this.billing.products = Some(products);
