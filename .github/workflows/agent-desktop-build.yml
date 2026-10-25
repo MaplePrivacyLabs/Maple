@@ -80,7 +80,10 @@ jobs:
     name: Build macOS binary (${{ matrix.variant }})
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
-    runs-on: blacksmith-6vcpu-macos-27
+    # gpui compiles Metal shaders, and Blacksmith's macOS 27 image has no Metal
+    # Toolchain for Xcode 27.1 and cannot download it (the MobileAsset catalog
+    # fetch fails). GitHub's xcode-27 image ships it, so build there meanwhile.
+    runs-on: xcode-27
     timeout-minutes: 120
     strategy:
       fail-fast: false

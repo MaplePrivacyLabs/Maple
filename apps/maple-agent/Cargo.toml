@@ -35,6 +35,14 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
+# rustc strips with rust-objcopy, which can leave a dylib's LINKEDIT string table
+# 4-byte aligned. macOS 27 refuses to load such dylibs when they are linked against
+# its SDK, and the build loads its proc-macros as dylibs. Build scripts and
+# proc-macros never ship, so leave them unstripped. Remove once the pinned Rust's
+# rust-objcopy includes llvm/llvm-project#203680.
+[profile.release.build-override]
+strip = false
+
 # The embedded proxy requires `maple-sdk` from the registry; resolve it to the same
 # in-tree source as the workspace dependency above (docs/sdk-publishing.md).
 [patch.crates-io]

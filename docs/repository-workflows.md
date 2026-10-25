@@ -164,15 +164,17 @@ for the baseline, tradeoffs and cold/warm validation procedure.
 
 ## macOS runners and Apple toolchain
 
-Research desktop/iOS builds, Agent release-binary jobs
-and native proxy macOS archives use ARM64 `blacksmith-6vcpu-macos-27` runners.
-Artifact verifiers, TestFlight uploads, and Agent preview packaging/protected
-signing use GitHub's `xcode-27` image runners. Research signed builders retain
+Research desktop/iOS builds and native proxy macOS archives use ARM64
+`blacksmith-6vcpu-macos-27` runners. Artifact verifiers, TestFlight uploads,
+and the Agent's release binaries, preview packaging and protected signing use
+GitHub's `xcode-27` image runners. The Agent binary build moves back to
+Blacksmith once that image can install the Metal Toolchain gpui's shaders need.
+Research signed builders retain
 their existing `desktop-signing` or `apple-signing` environment, so their
 provider receives that environment's secret context. Existing master pushes
 can build and upload independent Dev/Prod TestFlight artifacts after verification.
 The Agent's final signed-package provenance identifies its GitHub
-packaging/signing job; Blacksmith is trusted for prebuilt binary integrity.
+packaging/signing job.
 Research desktop and iOS builds and the Agent's macOS jobs select stable Xcode 27.1,
 build `27A9275`, from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
