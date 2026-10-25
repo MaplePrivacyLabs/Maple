@@ -5922,7 +5922,6 @@ async fn create_response_stream(
         );
     }
     body.model = resolved_model;
-    crate::web::openai::ensure_model_feature_access(&state, user.uuid, &body.model).await?;
     // Validate the caller's effort against the tier's own model before any
     // write. An explicit model rejects an unsupported level; an alias is moved
     // to the nearest level its resolved model accepts when the turn is built.
