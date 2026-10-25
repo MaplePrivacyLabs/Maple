@@ -2299,7 +2299,6 @@ pub(crate) async fn prepare_completion_request(
     }
 
     ensure_completion_model_access(&intent.public_model_id, intent.model_plan)?;
-    ensure_model_feature_access(state, user.uuid, &intent.public_model_id).await?;
     // Helpers and re-plans retain the authenticated account and plan. Model
     // access is checked above; configured providers are selected by Router v2.
     let shadow = state
@@ -3175,36 +3174,6 @@ pub(crate) fn ensure_completion_model_access(
     Ok(())
 }
 
-/// Only the experimental model depends on flags. A denied or unavailable flag
-/// never permits provider work, and unrelated completions avoid that service.
-pub(crate) async fn ensure_model_feature_access(
-    state: &AppState,
-    account_uuid: Uuid,
-    model: &str,
-) -> Result<(), ApiError> {
-    ensure_model_feature_access_with(
-        model,
-        state.is_feature_enabled(
-            account_uuid,
-            crate::os_flags::UNCENSORED_DEEPSEEK_FEATURE_FLAG_KEY,
-        ),
-    )
-    .await
-}
-
-async fn ensure_model_feature_access_with(
-    model: &str,
-    enabled: impl std::future::Future<Output = bool>,
-) -> Result<(), ApiError> {
-    if model != crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID {
-        return Ok(());
-    }
-    if !enabled.await {
-        return Err(ApiError::ModelNotAvailable);
-    }
-    Ok(())
-}
-
 // ============================================================================
 // Centralized Billing Architecture - Internal Functions
 // ============================================================================
@@ -3611,36 +3580,14 @@ fn sse_event_from_encoded_data(event_data: &str) -> Event {
 async fn proxy_models(
     State(state): State<Arc<AppState>>,
     axum::Extension(session_id): axum::Extension<TransportSession>,
-    user: Option<axum::Extension<User>>,
+    _user: Option<axum::Extension<User>>,
 ) -> Result<Response, ApiError> {
-    let uncensored_enabled = match user {
-        Some(axum::Extension(user)) => {
-            state
-                .is_feature_enabled(
-                    user.uuid,
-                    crate::os_flags::UNCENSORED_DEEPSEEK_FEATURE_FLAG_KEY,
-                )
-                .await
-        }
-        None => false,
-    };
     let proxy_config = state.proxy_router.get_completion_proxy();
-    let mut models_response = if proxy_config.provider_name == "tinfoil" {
-        openai_models_response(uncensored_enabled)
+    let models_response = if proxy_config.provider_name == "tinfoil" {
+        openai_models_response()
     } else {
         fetch_provider_models(&state.provider_client, &proxy_config).await?
     };
-    if let Some(models) = models_response
-        .get_mut("data")
-        .and_then(Value::as_array_mut)
-    {
-        models.retain(|model| {
-            model
-                .get("id")
-                .and_then(Value::as_str)
-                .is_none_or(|id| crate::model_config::model_feature_visible(id, uncensored_enabled))
-        });
-    }
     encrypt_response(&state, &session_id, &models_response).await
 }
 
@@ -3701,13 +3648,7 @@ async fn proxy_model_catalog(
     let model_plan = ModelPlan::from_is_paid(
         billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
     );
-    let uncensored_enabled = state
-        .is_feature_enabled(
-            user.uuid,
-            crate::os_flags::UNCENSORED_DEEPSEEK_FEATURE_FLAG_KEY,
-        )
-        .await;
-    let catalog_response = model_catalog_response(model_plan, uncensored_enabled);
+    let catalog_response = model_catalog_response(model_plan);
     encrypt_response(&state, &session_id, &catalog_response).await
 }
 

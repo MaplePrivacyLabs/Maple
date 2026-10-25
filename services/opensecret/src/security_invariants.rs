@@ -355,7 +355,7 @@ fn models_route_allows_optional_identity_but_requires_session_e2ee() {
     let handler_body = extract_function_body(&openai_source, "async fn proxy_models");
     assert!(
         openai_source.contains(
-            "async fn proxy_models(\n    State(state): State<Arc<AppState>>,\n    axum::Extension(session_id): axum::Extension<TransportSession>,\n    user: Option<axum::Extension<User>>,\n)"
+            "async fn proxy_models(\n    State(state): State<Arc<AppState>>,\n    axum::Extension(session_id): axum::Extension<TransportSession>,\n    _user: Option<axum::Extension<User>>,\n)"
         )
             && handler_body.contains("encrypt_response(&state, &session_id, &models_response)"),
         "the models handler must require session E2EE"

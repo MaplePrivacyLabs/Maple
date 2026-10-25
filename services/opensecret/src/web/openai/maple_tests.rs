@@ -2,101 +2,14 @@
 use super::*;
 use crate::provider_registry::{MapleInstanceId, DUAL_INSTANCE_TEST_REGISTRY};
 
-#[tokio::test]
-async fn uncensored_flag_denies_or_allows_only_its_exact_model() {
+#[test]
+fn uncensored_completion_access_uses_the_existing_pro_plan_gate() {
     let model = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
     assert!(matches!(
-        ensure_model_feature_access_with(model, std::future::ready(false)).await,
-        Err(ApiError::ModelNotAvailable)
+        ensure_completion_model_access(model, ModelPlan::Free),
+        Err(ApiError::ModelNotAvailableOnPlan)
     ));
-    assert!(
-        ensure_model_feature_access_with(model, std::future::ready(true))
-            .await
-            .is_ok()
-    );
-    for ordinary_model in [
-        "deepseek-v4-1-flash",
-        "glm-5-3",
-        "kimi-k3",
-        "auto:quick",
-        "auto:powerful",
-    ] {
-        assert!(ensure_model_feature_access_with(ordinary_model, async {
-            panic!("unrelated completion must never poll the feature-flag request");
-        })
-        .await
-        .is_ok());
-    }
-}
-
-#[tokio::test]
-async fn uncensored_flag_uses_account_identity_and_fails_closed_on_missing_or_service_errors() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let calls = Arc::new(AtomicUsize::new(0));
-    let observed = Arc::clone(&calls);
-    let app = Router::new().route(
-        "/v1/users/:user_uuid/flags",
-        get(
-            move |axum::extract::Path(user_uuid): axum::extract::Path<Uuid>,
-                  axum::extract::Query(query): axum::extract::Query<
-                std::collections::HashMap<String, String>,
-            >| {
-                let observed = Arc::clone(&observed);
-                async move {
-                    let key = crate::os_flags::UNCENSORED_DEEPSEEK_FEATURE_FLAG_KEY;
-                    assert_eq!(query.get("keys").map(String::as_str), Some(key));
-                    observed.fetch_add(1, Ordering::SeqCst);
-                    if user_uuid == Uuid::from_u128(3) {
-                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-                    }
-                    let flags = match user_uuid.as_u128() {
-                        1 => json!({(key): false}),
-                        2 => json!({}),
-                        _ => json!({(key): true}),
-                    };
-                    axum::Json(json!({"user_uuid": user_uuid, "flags": flags})).into_response()
-                }
-            },
-        ),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let flags = crate::os_flags::OsFlagsClient::new(url, None).unwrap();
-    let model = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
-    for account in 1..=4 {
-        let checked = async {
-            flags
-                .is_enabled(
-                    Uuid::from_u128(account),
-                    crate::os_flags::UNCENSORED_DEEPSEEK_FEATURE_FLAG_KEY,
-                )
-                .await
-                .unwrap_or(false)
-        };
-        let result = ensure_model_feature_access_with(model, checked).await;
-        if account == 4 {
-            assert!(result.is_ok());
-        } else {
-            assert!(matches!(result, Err(ApiError::ModelNotAvailable)));
-        }
-    }
-    assert_eq!(calls.load(Ordering::SeqCst), 4);
-    assert!(
-        ensure_model_feature_access_with("deepseek-v4-1-flash", async {
-            flags
-                .is_enabled(
-                    Uuid::from_u128(5),
-                    crate::os_flags::UNCENSORED_DEEPSEEK_FEATURE_FLAG_KEY,
-                )
-                .await
-                .unwrap_or(false)
-        })
-        .await
-        .is_ok()
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 4);
-    server.abort();
+    assert!(ensure_completion_model_access(model, ModelPlan::Paid).is_ok());
 }
 
 #[test]

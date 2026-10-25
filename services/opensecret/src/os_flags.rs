@@ -15,7 +15,6 @@ const USER_FLAGS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 // externally configured identifiers.
 #[allow(dead_code)]
 pub const AGENT_FEATURE_FLAG_KEY: &str = "agent";
-pub const UNCENSORED_DEEPSEEK_FEATURE_FLAG_KEY: &str = "uncensored_deepseek";
 
 #[derive(Debug, thiserror::Error)]
 pub enum OsFlagsError {
