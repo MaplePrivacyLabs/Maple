@@ -380,7 +380,7 @@ fn openai_auth_remains_outside_session_decryption() {
     // session receive the access-token refresh signal first.
     assert!(
         main_source.contains(
-            "openai_routes(app_state.clone())\n                .route_layer(from_fn_with_state(app_state.clone(), validate_openai_auth))"
+            "openai_routes(app_state.clone())\n                .route_layer(from_fn_with_state(app_state.clone(), require_internal))\n                .route_layer(from_fn_with_state(app_state.clone(), validate_openai_auth))"
         ),
         "OpenAI routes must apply authentication outside route-local middleware"
     );
@@ -410,7 +410,7 @@ fn web_routes_remain_jwt_authenticated_and_e2ee_wrapped() {
 
     assert!(
         main_source.contains(
-            "web_routes(app_state.clone())\n                .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))"
+            "web_routes(app_state.clone())\n                .route_layer(from_fn_with_state(app_state.clone(), require_internal))\n                .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))"
         ),
         "provider-neutral web routes must remain behind user JWT validation"
     );
