@@ -4,9 +4,7 @@ use crate::{
     backend::AgentBackend,
     remote::{
         manager::{PairingWindow, Status},
-        update::{
-            InstallAccepted, InstallRequest, OperationState, PeerInfo, ReleaseIdentity, UpdateState,
-        },
+        update::{InstallAccepted, InstallRequest, OperationState, PeerInfo, UpdateState},
     },
     ui::{task, text_input::TextInput, theme, widgets},
 };
@@ -71,6 +69,7 @@ struct ComputerUpdate {
     info: Option<PeerInfo>,
     running_label: String,
     update_label: String,
+    version_warning: Option<String>,
     blocked_label: Option<String>,
     install_available: bool,
     attempt: Option<InstallAttempt>,
@@ -95,30 +94,25 @@ struct InstallIntent {
     request: InstallRequest,
 }
 
-const CLIENT_READINESS: &str = "This client must already run this release or have the same verified update available. Client updates remain manual.";
 const UNCONFIRMED_INSTALL: &str = "The update request could not be confirmed. Do not resend it. Refresh this computer’s status, or check the remote computer directly.";
+const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLIENT_VERSION_LABEL: &str = concat!(
     "Client v",
     env!("CARGO_PKG_VERSION"),
     " · client updates are manual"
 );
 
-fn client_can_recover(target: &ReleaseIdentity, local: &crate::update::Snapshot) -> bool {
-    if matches!(
-        local.state,
-        crate::update::State::Installing | crate::update::State::RestartRequired
-    ) {
-        return false;
-    }
-    (crate::profile::PROFILE == "prod"
-        && crate::remote::update::RunningApplication::current().matches_release(target))
-        || local
-            .remote_candidate
-            .as_ref()
-            .is_some_and(|candidate| candidate.same_release(target))
+fn version_warning(info: &PeerInfo, client_version: &str) -> Option<String> {
+    let client = semver::Version::parse(client_version).ok()?;
+    let remote = semver::Version::parse(&info.running.version).ok()?;
+    (client != remote).then(|| {
+        format!(
+            "⚠ Different app versions: client v{client}, remote v{remote}. Some features may be unavailable. Client updates are manual."
+        )
+    })
 }
 
-fn install_blocked(info: &PeerInfo, local: &crate::update::Snapshot) -> Option<String> {
+fn install_blocked(info: &PeerInfo) -> Option<String> {
     if !info.supports_remote_updates() {
         return Some("This version does not support remote update installation.".into());
     }
@@ -137,7 +131,7 @@ fn install_blocked(info: &PeerInfo, local: &crate::update::Snapshot) -> Option<S
     if info.running.matches_release(target) {
         return Some("This release is already running on the remote computer.".into());
     }
-    (!client_can_recover(target, local)).then(|| CLIENT_READINESS.into())
+    None
 }
 
 fn operation_pending(info: &PeerInfo) -> bool {
@@ -153,7 +147,7 @@ fn operation_pending(info: &PeerInfo) -> bool {
 }
 
 impl ComputerUpdate {
-    fn refresh_presentation(&mut self, local: &crate::update::Snapshot) {
+    fn refresh_presentation(&mut self) {
         self.install_available = false;
         let Some(info) = &self.info else {
             self.running_label = "Version unavailable".into();
@@ -164,6 +158,7 @@ impl ComputerUpdate {
                 _ => "Refresh to read this computer’s version and update status.",
             }.into();
             self.blocked_label = None;
+            self.version_warning = None;
             return;
         };
         self.running_label = match &info.running.build {
@@ -179,7 +174,8 @@ impl ComputerUpdate {
         } else {
             info.update.state.label().into()
         };
-        let blocked = install_blocked(info, local);
+        self.version_warning = version_warning(info, CLIENT_VERSION);
+        let blocked = install_blocked(info);
         let healthy_without_offer = info.update.offered.is_none()
             && matches!(
                 info.update.state,
@@ -294,7 +290,6 @@ pub struct RemoteScreen {
     error: Option<String>,
     notice: Option<String>,
     busy: Option<&'static str>,
-    local_update: crate::update::Snapshot,
     computer_updates: HashMap<String, ComputerUpdate>,
     next_update_generation: u64,
     install_confirmation: Option<InstallConfirmation>,
@@ -339,7 +334,6 @@ impl RemoteScreen {
             error: None,
             notice: None,
             busy: None,
-            local_update: crate::update::Snapshot::initial(),
             computer_updates: HashMap::new(),
             next_update_generation: 0,
             install_confirmation: None,
@@ -385,19 +379,6 @@ impl RemoteScreen {
         cx: &mut Context<Self>,
     ) {
         self.names = names;
-        cx.notify();
-    }
-
-    pub(crate) fn set_local_update(
-        &mut self,
-        snapshot: crate::update::Snapshot,
-        cx: &mut Context<Self>,
-    ) {
-        self.local_update = snapshot;
-        for update in self.computer_updates.values_mut() {
-            update.refresh_presentation(&self.local_update);
-        }
-        self.invalidate_confirmation();
         cx.notify();
     }
 
@@ -480,7 +461,7 @@ impl RemoteScreen {
         let update = self.computer_updates.entry(peer.clone()).or_default();
         update.generation = generation;
         update.phase = PeerInfoPhase::Loading;
-        update.refresh_presentation(&self.local_update);
+        update.refresh_presentation();
         self.invalidate_confirmation();
         let backend = self.backend.clone();
         let account = self.account.clone();
@@ -530,7 +511,7 @@ impl RemoteScreen {
             }
             Err(_) => update.phase = PeerInfoPhase::Unreachable,
         }
-        update.refresh_presentation(&self.local_update);
+        update.refresh_presentation();
         self.invalidate_confirmation();
     }
 
@@ -569,13 +550,21 @@ impl RemoteScreen {
         let install_focus = cx.focus_handle();
         let previous_focus = window.focused(cx);
         window.focus(&cancel_focus, cx);
+        let version_notice = if target.version != CLIENT_VERSION {
+            format!(
+                "The remote will run v{} while this client stays on v{CLIENT_VERSION}. Some features may be unavailable between different versions. ",
+                target.version
+            )
+        } else {
+            String::new()
+        };
         self.install_confirmation = Some(InstallConfirmation {
             peer,
             grant,
             generation: update.generation,
             action_label: format!("Update {name}"),
             detail: format!(
-                "Install v{} on {name}? This will stop running work and restart Maple on that computer. Remote access may not return, and you may need to restart, update or repair Maple directly on it. A later manual update of this client may affect compatibility with your other computers. Continue only if you have another way to access {name}. This client will not update or restart automatically.",
+                "Install v{} on {name}? This will stop running work and restart Maple on that computer. Remote access may not return, and you may need to restart, update or repair Maple directly on it. {version_notice}A later manual update of this client may affect compatibility with your other computers. Continue only if you have another way to access {name}. This client will not update or restart automatically.",
                 target.version
             ),
             request: InstallRequest {
@@ -636,7 +625,7 @@ impl RemoteScreen {
             phase: InstallPhase::Sending,
             label: "Requesting the remote update…".into(),
         });
-        update.refresh_presentation(&self.local_update);
+        update.refresh_presentation();
         let backend = self.backend.clone();
         let grant = intent.grant;
         let bridge = task::call(
@@ -687,7 +676,7 @@ impl RemoteScreen {
             attempt.phase = InstallPhase::Uncertain;
             attempt.label = UNCONFIRMED_INSTALL.into();
         }
-        update.refresh_presentation(&self.local_update);
+        update.refresh_presentation();
     }
 
     fn clear_local_code(&mut self) {
@@ -1323,6 +1312,22 @@ impl RemoteScreen {
                             )
                             .to_owned(),
                     ),
+            )
+            .when_some(
+                update.and_then(|update| update.version_warning.as_ref()),
+                |row, warning| {
+                    row.child(
+                        div()
+                            .id(format!("remote-version-warning-{peer}"))
+                            .debug_selector({
+                                let peer = peer.to_owned();
+                                move || format!("remote-version-warning-{peer}")
+                            })
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::status_warning()))
+                            .child(warning.clone()),
+                    )
+                },
             )
             .when_some(
                 update.and_then(|update| update.blocked_label.as_ref()),

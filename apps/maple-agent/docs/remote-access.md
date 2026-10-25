@@ -123,13 +123,15 @@ installation is unavailable. Password-protected computers cannot install
 remotely, including while unlocked. Update those computers locally; this feature
 does not send passwords, transfer unlock keys or add an unlock handoff.
 
-The controller also needs the same release available through its own verified
-updater, or must already be running that release. Cross-platform release matching
-uses the version, build and source, with a missing running build left unknown;
-the execution computer separately binds its exact signed platform document.
-This is recovery readiness, not proof that a future protocol will remain
-compatible. The controller's own update and restart always remain manual, since
-it may be connected to other computers.
+The controller does not need to run or download the execution computer's target
+release first. Different reported application versions show a nonblocking warning;
+they do not disable remote installation. The confirmation also names the target
+and client versions when the update would leave them different. Version equality
+does not prove protocol compatibility, and unknown versions do not imply a match.
+The execution computer still binds its exact prepared, signed platform document
+and checks its current authority and installation state. The controller's own
+update and restart always remain manual, since it may be connected to other
+computers.
 
 The experimental confirmation names the execution computer and target version.
 It warns that updating stops its work and remote access, that reconnecting can

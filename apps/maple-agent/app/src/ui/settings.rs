@@ -265,11 +265,14 @@ impl SettingsScreen {
 
     pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
         if self.update != snapshot {
-            self.update = snapshot.clone();
-            self.remote_screen
-                .update(cx, |screen, cx| screen.set_local_update(snapshot, cx));
+            self.update = snapshot;
             cx.notify();
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn remote_screen_for_test(&self) -> Entity<super::remote::RemoteScreen> {
+        self.remote_screen.clone()
     }
 
     pub(crate) fn settings_snapshot(&self) -> AppSettings {
