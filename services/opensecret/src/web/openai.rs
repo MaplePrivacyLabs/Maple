@@ -2878,6 +2878,15 @@ async fn get_chat_completion_response_with_options(
         if selected_route.provider.is_maple() {
             crate::maple_inference::sanitize_completion_request(&mut request_body_value);
         }
+        if pinned.intent.surface == InferenceSurface::ChatCompletions {
+            request_body_value = crate::web::prompt_validation::validate_chat_prompt(
+                &selected_route.public_model_id,
+                selected_route.provider,
+                request_body_value,
+            )
+            .await
+            .map_err(CompletionExecutionError::from)?;
+        }
         let attempt = execution.begin_attempt(route_identity.clone());
         let mut terminal_guard = AttemptObservationGuard::new_with_probe(
             attempt.clone(),

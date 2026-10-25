@@ -362,9 +362,32 @@ impl StreamFn for MapleStreamFn {
         &self,
         model: &Model,
         mut context: Context,
-        options: StreamOptions,
+        mut options: StreamOptions,
     ) -> AssistantMessageStream {
         bound_tool_result_images(&mut context.messages);
+        if let Some(max_tokens) = options.max_tokens.filter(|tokens| *tokens > 0) {
+            // OpenSecret validates the input plus the caller's output allowance.
+            // Restore that allowance after Pi's clamp and any existing payload hook.
+            let original_hook = options.on_payload.take();
+            let (field, alternate) = match model.compat.max_tokens_field {
+                MaxTokensField::MaxTokens => ("max_tokens", "max_completion_tokens"),
+                MaxTokensField::MaxCompletionTokens => ("max_completion_tokens", "max_tokens"),
+            };
+            options.on_payload = Some(Arc::new(move |payload| {
+                let original_hook = original_hook.clone();
+                Box::pin(async move {
+                    let mut payload = match original_hook {
+                        Some(hook) => hook(payload).await,
+                        None => payload,
+                    };
+                    if let Some(body) = payload.as_object_mut() {
+                        body.remove(alternate);
+                        body.insert(field.into(), json!(max_tokens));
+                    }
+                    payload
+                })
+            }));
+        }
         let stream = self.completions.stream(model, context, options);
         if model.id == KIMI_K3_MODEL_ID {
             return replace_legacy_kimi_k3_tool_ids(stream);

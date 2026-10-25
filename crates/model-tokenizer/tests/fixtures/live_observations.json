@@ -1,0 +1,363 @@
+{
+  "schema": 1,
+  "capture_date_utc": "2026-10-20",
+  "date_context": "2026-10-20",
+  "requests_are_synthetic": true,
+  "offline_only": true,
+  "qualification_notes": [
+    "One short baseline per model/provider and one inert DeepSeek tool schema; finite observations, not general active-provider certification.",
+    "Own dedicated DeepSeek used the approved pinned release and standard attested transport.",
+    "Shared router attestation does not independently establish mutable downstream model/template identity.",
+    "Continuum GLM compares official/Tinfoil candidate renderers; its active custom templates remain NotQualified.",
+    "GPT-OSS compares official HF Jinja references; native Harmony rendering was not independently reproduced."
+  ],
+  "observations": [
+    {
+      "id": "tinfoil-gpt-oss-120b",
+      "provider_label": "Tinfoil",
+      "model": "gpt-oss-120b",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "gpt-oss-120b",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 107,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "GptOss120bJinjaReference",
+          "profile": "gpt-oss-120b/b5c939d/template-a4c9919c/normalizer-v1",
+          "local_prompt_tokens": 107
+        }
+      ]
+    },
+    {
+      "id": "tinfoil-gpt-oss-safeguard-120b",
+      "provider_label": "Tinfoil",
+      "model": "gpt-oss-safeguard-120b",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "gpt-oss-safeguard-120b",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 107,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "GptOssSafeguard120bJinjaReference",
+          "profile": "gpt-oss-safeguard-120b/3c73911/template-589c73db/normalizer-v1",
+          "local_prompt_tokens": 107
+        }
+      ]
+    },
+    {
+      "id": "tinfoil-gemma4-31b",
+      "provider_label": "Tinfoil",
+      "model": "gemma4-31b",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "gemma4-31b",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 55,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "Gemma4Tinfoil",
+          "profile": "gemma4/vllm-db9527a/template-afdbb2ab/normalizer-v1",
+          "local_prompt_tokens": 55
+        }
+      ]
+    },
+    {
+      "id": "tinfoil-llama3-3-70b",
+      "provider_label": "Tinfoil",
+      "model": "llama3-3-70b",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "llama3-3-70b",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 76,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "Llama33Tinfoil",
+          "profile": "llama33/vllm-0b3ba88/template-c22af47e/normalizer-vllm022-v1",
+          "local_prompt_tokens": 76
+        }
+      ]
+    },
+    {
+      "id": "tinfoil-kimi-k3",
+      "provider_label": "Tinfoil",
+      "model": "kimi-k3",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "kimi-k3",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 130,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "KimiK3",
+          "profile": "kimi-k3/a590ce0/encoding-k3-v1",
+          "local_prompt_tokens": 130
+        }
+      ]
+    },
+    {
+      "id": "tinfoil-glm-5-3",
+      "provider_label": "Tinfoil",
+      "model": "glm-5-3",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "glm-5-3",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 53,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "Glm53TinfoilNvfp4",
+          "profile": "glm53-tinfoil/ce67b36/template-69bb3ab5/normalizer-v1",
+          "local_prompt_tokens": 53
+        },
+        {
+          "renderer_id": "Glm53Official",
+          "profile": "glm53/ba32f8c/template-0e2b6268/normalizer-v1",
+          "local_prompt_tokens": 53
+        }
+      ]
+    },
+    {
+      "id": "tinfoil-deepseek-v4-1-flash",
+      "provider_label": "Tinfoil",
+      "model": "deepseek-v4-1-flash",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "deepseek-v4-1-flash",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 72,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "DeepSeekV41Flash1017",
+          "profile": "deepseek-v41-1017/vllm-db9527a/tinfoil-released-reasoning-v1",
+          "local_prompt_tokens": 72
+        }
+      ]
+    },
+    {
+      "id": "maple-deepseek-baseline-a",
+      "provider_label": "Maple dedicated",
+      "model": "deepseek-v4-1-flash",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "deepseek-v4-1-flash",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 72,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "own_release_pinned",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "DeepSeekV41Flash1017",
+          "profile": "deepseek-v41-1017/vllm-db9527a/tinfoil-released-reasoning-v1",
+          "local_prompt_tokens": 72
+        }
+      ]
+    },
+    {
+      "id": "maple-deepseek-tools",
+      "provider_label": "Maple dedicated",
+      "model": "deepseek-v4-1-flash",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test with an unused tool schema. Reply OK; do not call the tool.",
+            "role": "user"
+          }
+        ],
+        "model": "deepseek-v4-1-flash",
+        "stream": false,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "An inert synthetic function schema. No tool will be executed.",
+              "name": "synthetic_label",
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "number": {
+                    "description": "A synthetic integer.",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "number"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "provider_reported_prompt_tokens": 331,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "own_release_pinned",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "DeepSeekV41Flash1017",
+          "profile": "deepseek-v41-1017/vllm-db9527a/tinfoil-released-reasoning-v1",
+          "local_prompt_tokens": 331
+        }
+      ]
+    },
+    {
+      "id": "maple-deepseek-baseline-b",
+      "provider_label": "Maple dedicated",
+      "model": "deepseek-v4-1-flash",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "deepseek-v4-1-flash",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 72,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "own_release_pinned",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "DeepSeekV41Flash1017",
+          "profile": "deepseek-v41-1017/vllm-db9527a/tinfoil-released-reasoning-v1",
+          "local_prompt_tokens": 72
+        }
+      ]
+    },
+    {
+      "id": "continuum-glm-5-3",
+      "provider_label": "Continuum",
+      "model": "glm-5.3",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "glm-5.3",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 53,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "Glm53TinfoilNvfp4",
+          "profile": "glm53-tinfoil/ce67b36/template-69bb3ab5/normalizer-v1",
+          "local_prompt_tokens": 53
+        },
+        {
+          "renderer_id": "Glm53Official",
+          "profile": "glm53/ba32f8c/template-0e2b6268/normalizer-v1",
+          "local_prompt_tokens": 53
+        }
+      ]
+    },
+    {
+      "id": "continuum-glm-5-3-flash",
+      "provider_label": "Continuum",
+      "model": "glm-5.3-flash",
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": "This is a harmless tokenizer accounting test. Reply with the single word OK.\nExample data: {\"count\": 7, \"label\": \"green\"}.\nUnicode sample: café 日本語 🌲.",
+            "role": "user"
+          }
+        ],
+        "model": "glm-5.3-flash",
+        "stream": false
+      },
+      "provider_reported_prompt_tokens": 53,
+      "provider_reported_completion_tokens": 1,
+      "qualification": "empirical_candidate_only",
+      "candidate_snapshots": [
+        {
+          "renderer_id": "Glm53FlashOfficial",
+          "profile": "glm53-flash/46a050b/template-2614a3c8/normalizer-v1",
+          "local_prompt_tokens": 53
+        }
+      ]
+    }
+  ],
+  "request_object_order": "recursively_lexicographic",
+  "request_ordering_evidence": "The capture harness parsed each pre-SDK fixture as serde_json::Value without preserve_order, then serialized it with serde_json::to_vec before sending. These request objects reproduce that recursively sorted wire order; non-prompt cache metadata is omitted. The recorded pre-SDK fixture hashes did not identify the transmitted key order. Provider-reported usage values are unchanged."
+}

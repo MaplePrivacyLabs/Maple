@@ -790,6 +790,16 @@
             touch "$out"
           '';
 
+          tokenizer-build-inputs = pkgs.runCommand "maple-tokenizer-build-input-check" {
+            nativeBuildInputs = [ pkgs.python3 ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_tokenizer_assets.py
+            python3 scripts/ci/test_tokenizer_ci.py
+            touch "$out"
+          '';
+
           opensecret-workflows = pkgs.runCommand "maple-opensecret-workflow-check" {
             nativeBuildInputs = with pkgs; [ mapleBash git jq python3 yq-go ];
             src = ./.;

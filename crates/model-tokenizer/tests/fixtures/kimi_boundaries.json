@@ -1,0 +1,83 @@
+{
+  "reference": {
+    "synthetic_only": true,
+    "packages": {
+      "tokenizers": "0.22.2",
+      "tiktoken": "0.14.0"
+    },
+    "kimi_source_revision": "a590ce090cb049c93a33dfe8c208ec652aa20503",
+    "manifest_sha256": "dc6c1a6071eea6e14f3238ff3d49a7e847bfb25315096223f1562833780ddacd"
+  },
+  "fixtures": [
+    {
+      "name": "marker_at_25k_ascii_run",
+      "unit": "a",
+      "repeats": 24999,
+      "suffix": "<|open|>",
+      "raw": {
+        "count": 3131,
+        "ids_le_sha256": "f47e0ec9ea4ec394b3863d402dc8a7af3e60855a7327e320d67a62911ae4958e"
+      },
+      "ordinary": {
+        "count": 3131,
+        "ids_le_sha256": "f47e0ec9ea4ec394b3863d402dc8a7af3e60855a7327e320d67a62911ae4958e"
+      }
+    },
+    {
+      "name": "marker_at_25k_unicode_run",
+      "unit": "界",
+      "repeats": 24999,
+      "suffix": "<|open|>",
+      "raw": {
+        "count": 25004,
+        "ids_le_sha256": "e452052e74dc9de22a3a402833a8249274b135978fa8bd9d4b9766caf36057f0"
+      },
+      "ordinary": {
+        "count": 25004,
+        "ids_le_sha256": "e452052e74dc9de22a3a402833a8249274b135978fa8bd9d4b9766caf36057f0"
+      }
+    },
+    {
+      "name": "whitespace_at_25k",
+      "unit": " ",
+      "repeats": 25001,
+      "suffix": "tail",
+      "raw": {
+        "count": 100,
+        "ids_le_sha256": "288dbe74cba784a2e2958273743eeffa9e9d9a37f39175acf8847dc7db0738c8"
+      },
+      "ordinary": {
+        "count": 100,
+        "ids_le_sha256": "288dbe74cba784a2e2958273743eeffa9e9d9a37f39175acf8847dc7db0738c8"
+      }
+    },
+    {
+      "name": "marker_at_400k_outer",
+      "unit": "x ",
+      "repeats": 199999,
+      "suffix": "a<|open|>",
+      "raw": {
+        "count": 200005,
+        "ids_le_sha256": "6d6309c756024a60627b705d8cd337797024917e9e63b9336f448fc63fa05303"
+      },
+      "ordinary": {
+        "count": 200005,
+        "ids_le_sha256": "6d6309c756024a60627b705d8cd337797024917e9e63b9336f448fc63fa05303"
+      }
+    },
+    {
+      "name": "python_information_separator",
+      "unit": "a",
+      "repeats": 24999,
+      "suffix": "\u001c<|open|>",
+      "raw": {
+        "count": 3128,
+        "ids_le_sha256": "deb8bdd0df9206e9f074f3428cd5a32d2339c9e1c10c03d22a9bc7a9e148a32a"
+      },
+      "ordinary": {
+        "count": 3132,
+        "ids_le_sha256": "61a6d66e4d2cf6ef0778be93c06ab462437e8782ea7f4066decff127d0d4023d"
+      }
+    }
+  ]
+}

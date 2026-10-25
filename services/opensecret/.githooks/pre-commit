@@ -14,6 +14,13 @@ hook_run cargo fmt --all -- --check
 hook_run cargo clippy --locked --all-targets --all-features -- -D warnings
 hook_run cargo test --locked --all-features
 
+# Consumer tests do not execute a path dependency's own unit/integration goldens.
+# Keep the standalone suite in this one component, not every Agent platform.
+if [ -n "$(hook_staged_matching '^(crates/model-tokenizer/|scripts/ci/tokenizer\.sh$)')" ]; then
+    hook_require bash
+    hook_run bash "$MAPLE_HOOK_REPO_ROOT/scripts/ci/tokenizer.sh"
+fi
+
 # The flake checks that read entrypoint.sh are small runCommand derivations,
 # not the EIF build, so run them whenever the entrypoint changes.
 if [ -n "$(hook_staged_matching '^services/opensecret/(entrypoint\.sh|tests/entrypoint_entropy_preflight\.sh)$')" ]; then

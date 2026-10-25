@@ -15,6 +15,12 @@ class ChangeDetectionTests(unittest.TestCase):
     def assert_routes(self, paths: list[str], *names: str) -> None:
         self.assertEqual(classify_paths(paths), enabled(*names))
 
+    def test_neutral_model_tokenizer_is_not_a_research_build_input(self) -> None:
+        for path in ("crates/model-tokenizer/Cargo.toml", "crates/model-tokenizer/src/lib.rs",
+                     "crates/model-tokenizer/assets/manifest.json", "crates/model-tokenizer/nix/assets.nix",
+                     "scripts/fetch-tokenizer-assets.py"):
+            self.assert_routes([path])
+
     def test_documentation_and_independent_components_skip_maple_app_builds(self) -> None:
         self.assert_routes(["README.md", "docs/monorepo-plan.md"])
         self.assert_routes(["apps/maple-research/README.md", "apps/maple-research/AGENTS.md"])

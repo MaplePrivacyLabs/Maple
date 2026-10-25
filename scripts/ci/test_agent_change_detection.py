@@ -10,6 +10,17 @@ from change_detection import DESKTOP_PLATFORMS, classify_path as research_routes
 
 
 class AgentChangeDetectionTests(unittest.TestCase):
+    def test_backend_model_tokenizer_skips_agent_and_research_packaging(self):
+        for relative in ("Cargo.toml", "build.rs", "src/lib.rs", "assets/manifest.json", "nix/assets.nix", "tests/parity.rs"):
+            path = "crates/model-tokenizer/" + relative
+            with self.subTest(path=path):
+                self.assertFalse(affects_agent(path))
+                self.assertEqual(research_routes(path), frozenset())
+        for relative in ("README.md", "AGENTS.md", "docs/profile.md"):
+            self.assertFalse(affects_agent("crates/model-tokenizer/" + relative))
+        self.assertFalse(affects_agent("scripts/fetch-tokenizer-assets.py"))
+        self.assertEqual(research_routes("scripts/fetch-tokenizer-assets.py"), frozenset())
+
     def test_agent_runtime_build_and_asset_inputs_select_only_agent(self):
         for path in (
             "apps/maple-agent/app/src/main.rs",

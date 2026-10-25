@@ -176,6 +176,191 @@ async fn requests_go_to_chat_completions_and_stream_back() {
     assert!(request.body.get("max_completion_tokens").is_none());
 }
 
+#[tokio::test]
+async fn maple_preserves_explicit_output_while_pi_keeps_its_context_clamp() {
+    for field in [
+        MaxTokensField::MaxTokens,
+        MaxTokensField::MaxCompletionTokens,
+    ] {
+        let mut model = model("glm-5-3");
+        model.context_window = 4_096;
+        model.compat.max_tokens_field = field;
+        let context = Context::new(
+            "You are Maple.",
+            vec![Tool::new("read", "Read a file", json!({"type": "object"}))],
+            context(&"x".repeat(12_000)).messages[1..].to_vec(),
+        );
+        let options = StreamOptions {
+            max_tokens: Some(2_000),
+            ..StreamOptions::default()
+        };
+        let mut expected = pi_ai::openai::build_request_body(&model, &context, &options).unwrap();
+        let (field, alternate) = match field {
+            MaxTokensField::MaxTokens => ("max_tokens", "max_completion_tokens"),
+            MaxTokensField::MaxCompletionTokens => ("max_completion_tokens", "max_tokens"),
+        };
+        let clamped = expected[field].as_u64().unwrap();
+        assert!(
+            clamped > 0 && clamped < 2_000,
+            "Pi retains its original clamp"
+        );
+        expected[field] = json!(2_000);
+
+        let transport = FakeTransport::new(vec![sse(200, TEXT_STREAM.to_vec())]);
+        let message = MapleStreamFn::new(transport.clone())
+            .stream(&model, context, options)
+            .result()
+            .await;
+        assert_eq!(message.stop_reason, StopReason::Stop);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests[0].body, expected, "only the requested cap changes");
+        assert!(requests[0].body.get(alternate).is_none());
+        assert!(requests[0].body.get("tools").is_some());
+    }
+}
+
+#[tokio::test]
+async fn explicit_output_preservation_runs_after_the_existing_payload_hook() {
+    for field in [
+        MaxTokensField::MaxTokens,
+        MaxTokensField::MaxCompletionTokens,
+    ] {
+        let mut model = model("glm-5-3");
+        model.context_window = 4_096;
+        model.compat.max_tokens_field = field;
+        let hook_calls = Arc::new(AtomicUsize::new(0));
+        let calls = hook_calls.clone();
+        let options = StreamOptions {
+            max_tokens: Some(2_000),
+            on_payload: Some(Arc::new(move |mut payload| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                payload["max_tokens"] = json!(1);
+                payload["max_completion_tokens"] = json!(2);
+                payload["temperature"] = json!(0.25);
+                Box::pin(async move { payload })
+            })),
+            ..StreamOptions::default()
+        };
+        let transport = FakeTransport::new(vec![sse(200, TEXT_STREAM.to_vec())]);
+        let message = MapleStreamFn::new(transport.clone())
+            .stream(&model, context(&"x".repeat(12_000)), options)
+            .result()
+            .await;
+        assert_eq!(message.stop_reason, StopReason::Stop);
+        assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+        let requests = transport.requests.lock().unwrap();
+        let body = &requests[0].body;
+        assert_eq!(body["temperature"], 0.25, "existing hook changes survive");
+        let (field, alternate) = match field {
+            MaxTokensField::MaxTokens => ("max_tokens", "max_completion_tokens"),
+            MaxTokensField::MaxCompletionTokens => ("max_completion_tokens", "max_tokens"),
+        };
+        assert_eq!(body[field], 2_000);
+        assert!(
+            body.get(alternate).is_none(),
+            "never send competing cap fields"
+        );
+    }
+}
+
+#[tokio::test]
+async fn default_and_zero_output_limits_keep_pis_payload_and_existing_hook() {
+    for default in [0, 2_000] {
+        for requested in [None, Some(0)] {
+            let mut model = model("glm-5-3");
+            model.context_window = 4_096;
+            model.max_tokens = default;
+            let context = context(&"x".repeat(12_000));
+            let hook_calls = Arc::new(AtomicUsize::new(0));
+            let calls = hook_calls.clone();
+            let options = StreamOptions {
+                max_tokens: requested,
+                on_payload: Some(Arc::new(move |mut payload| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    payload["temperature"] = json!(0.25);
+                    Box::pin(async move { payload })
+                })),
+                ..StreamOptions::default()
+            };
+            let mut expected =
+                pi_ai::openai::build_request_body(&model, &context, &options).unwrap();
+            expected["temperature"] = json!(0.25);
+            let transport = FakeTransport::new(vec![sse(200, TEXT_STREAM.to_vec())]);
+            let message = MapleStreamFn::new(transport.clone())
+                .stream(&model, context, options)
+                .result()
+                .await;
+            assert_eq!(message.stop_reason, StopReason::Stop);
+            assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(transport.requests.lock().unwrap()[0].body, expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_explicit_output_limit_keeps_existing_inflight_cancellation() {
+    let transport = FakeTransport::new(vec![Reply::Stall]);
+    let cancel = CancellationToken::new();
+    let stream = MapleStreamFn::new(transport.clone()).stream(
+        &model("glm-5-3"),
+        context("hi"),
+        StreamOptions {
+            max_tokens: Some(2_000),
+            cancel: cancel.clone(),
+            ..StreamOptions::default()
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while transport.requests.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    cancel.cancel();
+    let message = stream.result().await;
+    assert_eq!(message.stop_reason, StopReason::Aborted);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while transport.settled.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(transport.saw_cancel.load(Ordering::SeqCst));
+    assert_eq!(
+        transport.requests.lock().unwrap()[0].body["max_tokens"],
+        2_000
+    );
+}
+
+#[tokio::test]
+async fn a_server_overflow_with_an_explicit_output_limit_keeps_pis_classification() {
+    let transport = FakeTransport::new(vec![json_reply(
+        413,
+        Vec::new(),
+        "{\"error\":{\"message\":\"context is too large\"}}",
+    )]);
+    let message = MapleStreamFn::new(transport.clone())
+        .stream(
+            &model("glm-5-3"),
+            context("hi"),
+            StreamOptions {
+                max_tokens: Some(2_000),
+                ..StreamOptions::default()
+            },
+        )
+        .result()
+        .await;
+    assert_eq!(message.stop_reason, StopReason::Error);
+    assert!(is_context_overflow(&message, None));
+    assert!(!is_retryable_error(&message));
+    assert_eq!(
+        transport.requests.lock().unwrap()[0].body["max_tokens"],
+        2_000
+    );
+}
+
 fn json_reply(
     status: u16,
     headers: Vec<(&'static str, &'static str)>,

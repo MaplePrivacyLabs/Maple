@@ -9,6 +9,8 @@ on:
     paths:
       - ".github/workflows/**"
       - "scripts/ci/**"
+      - "scripts/fetch-tokenizer-assets.py"
+      - "crates/model-tokenizer/**"
       - "flake.nix"
       - "flake.lock"
   pull_request:
@@ -16,6 +18,8 @@ on:
     paths:
       - ".github/workflows/**"
       - "scripts/ci/**"
+      - "scripts/fetch-tokenizer-assets.py"
+      - "crates/model-tokenizer/**"
       - "flake.nix"
       - "flake.lock"
 

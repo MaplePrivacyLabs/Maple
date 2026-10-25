@@ -48,6 +48,7 @@ KNOWN_INDEPENDENT_PREFIXES = (
     "docs/",
     "scripts/",
     "services/",
+    "crates/model-tokenizer/",
 )
 KNOWN_INDEPENDENT_FILES = frozenset(
     {"AGENTS.md", "README.md", "LICENSE", ".gitignore", ".gitmodules", ".dockerignore",

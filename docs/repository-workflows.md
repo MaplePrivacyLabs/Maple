@@ -15,8 +15,8 @@ checks; the component flakes for `apps/maple-agent/`, `sdk/`, `proxy/`, and
 `services/opensecret?submodules=1`. Without Nix it runs the same commands from
 `PATH` and warns that results may differ. It runs each selected component's format, lint, type-check, and unit-test gates;
 Research Rust runs formatting and tests, without Clippy. Other Rust components
-include their documented Clippy checks; shared
-crates do not fan out to their consumers. It never runs integration suites,
+include their documented Clippy checks. The shared `crates/model-tokenizer/`
+selects OpenSecret; existing SDK/proxy hooks remain independent. It never runs integration suites,
 cargo-deny, `nix flake check`, or packaging. `MAPLE_HOOK_FULL=1` runs the
 slower CI-complete variants (for example the Agent's full `just ci`);
 `MAPLE_HOOK_SKIP=1` or `git commit --no-verify` bypasses it. The hook is a fast
@@ -36,7 +36,15 @@ standalone component lockfiles retain their independent lanes. Update the classi
 its table-driven tests when the dependency graph or component layout changes.
 The backend has its own root `opensecret-ci.yml` workflow and change selector;
 `sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
-same checkout. Backend changes do not imply Research or Agent packaging.
+same checkout. Backend changes do not imply Research or Agent packaging. The neutral
+model-tokenizer crate selects backend CI without desktop packaging;
+the backend Nix shell provides pinned, hash-verified assets through
+`MAPLE_TOKENIZER_ASSETS_DIR` for compile-time embedding. Non-Nix builds run
+`python3 scripts/fetch-tokenizer-assets.py --output BUILD_ASSET_DIRECTORY` and
+export that directory under the same name before invoking Cargo.
+The backend Rust CI job runs the shared crate's own format, lint and offline
+golden tests through `scripts/ci/tokenizer.sh`; its hook does the same when
+shared-crate inputs are staged, since consumer tests do not execute them.
 Agent desktop packages compare master against the last successful ancestor run
 with all four Dev/Prod macOS/Linux download verifiers completed; selector-only
 and failed runs do not consume outstanding changes. Unrelated master pushes skip

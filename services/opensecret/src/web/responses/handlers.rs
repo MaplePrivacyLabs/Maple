@@ -40,11 +40,12 @@ use crate::{
             ResolvedInferenceModel, StartedCompletion,
         },
         openai_auth::AuthMethod,
+        prompt_validation::{renderers_for_model, supports_counted_prompt},
         provider_error::PublicProviderError,
         responses::{
-            build_prompt, build_prompt_with_token_reserve, build_usage,
+            build_prompt_with_token_reserve, build_usage,
             constants::*,
-            context_builder::normalize_tool_call_ids_for_model,
+            context_builder::{build_prompt_for_counted_turn, normalize_tool_call_ids_for_model},
             error_mapping,
             image_describer::{
                 describe_image_with_fallback, ImageDescriptionAttemptError,
@@ -52,6 +53,7 @@ use crate::{
                 ImageDescriptionCandidate, ImageDescriptionError, ImageDescriptionFailureClass,
                 ImageDescriptionInput, RetryNonTerminalImageDescriptionFallbackPolicy,
             },
+            prompt_fit::fit_prompt_request,
             prompt_token_budget, storage_task, tools, ContentPartBuilder, DeletedObjectResponse,
             MessageContent, MessageContentConverter, MessageContentPart, OutputItemBuilder,
             ResponseBuilder, ResponseEvent, ResponseExecution, ResponseExecutionRegistry,
@@ -74,10 +76,12 @@ use axum::{
 };
 use chrono::Utc;
 use futures::{FutureExt, Stream};
+use model_tokenizer::{count_chat_request, PromptAccuracy, RenderContext, RenderError};
 use secp256k1::SecretKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, Instant},
@@ -636,11 +640,12 @@ mod tests {
         append_streamed_tool_calls, apply_responses_model_defaults,
         assistant_turn_finished_with_tool_call, build_internal_system_prompt_for_now,
         build_model_turn_request, build_provider_tools, consume_assistant_turn,
-        ensure_prompt_fits_model, final_assistant_finish_reason, finalize_first_model_tool_call,
+        ensure_estimated_prompt_fits_model, ensure_prompt_and_output_fit, ensure_prompt_fits_model,
+        final_assistant_finish_reason, finalize_first_model_tool_call, fit_model_prompt,
         forward_authoritative_response_terminal, has_streamed_tool_call_entries, image_attachments,
         image_description_access, image_description_api_error,
         image_description_attempt_failure_class, maple_kagi_web_search_prompt,
-        model_turn_request_without_user_payload, normalize_responses_input,
+        model_turn_request_without_user_payload, normalize_responses_input, output_token_reserve,
         reserve_response_message_uuid_with_check, resolve_responses_model,
         resolve_responses_sampling, response_cancellation_ack_decision,
         response_execution_for_status, responses_pre_persistence_api_error, run_response_worker,
@@ -658,7 +663,7 @@ mod tests {
         resolve_reasoning_effort, EffectiveReasoningEffort, ModelSelection,
         RESPONSES_REASONING_EFFORT_PARAM,
     };
-    use crate::web::responses::{constants::*, tools};
+    use crate::web::responses::{constants::*, prompt_token_budget, tools};
     use crate::{
         billing::{BillingClient, ChatBillingAccess},
         inference::{
@@ -1603,7 +1608,7 @@ mod tests {
 
     #[test]
     fn model_turns_preserve_optional_output_limits_without_an_aggregate_budget() {
-        for model in ["llama3-3-70b", "glm-5-3", "kimi-k3"] {
+        for model in ["llama3-3-70b", "glm-5-3", "kimi-k3", "deepseek-v4-1-flash"] {
             for max_output_tokens in [None, Some(16_000), Some(i32::MAX)] {
                 let mut body = responses_request_for_model(model);
                 body.max_output_tokens = max_output_tokens;
@@ -1620,6 +1625,308 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn explicit_output_is_reserved_without_rewriting_the_requested_limit() {
+        for model in ["llama3-3-70b", "glm-5-3", "kimi-k3", "deepseek-v4-1-flash"] {
+            let mut body = responses_request_for_model(model);
+            let window = prompt_token_budget(model);
+            body.max_output_tokens = Some(16_000);
+            assert_eq!(output_token_reserve(&body), 16_000);
+            assert!(ensure_prompt_and_output_fit(window - 16_000, &body).is_ok());
+            assert!(matches!(
+                ensure_prompt_and_output_fit(window - 15_999, &body),
+                Err(ApiError::MessageExceedsContextLimit)
+            ));
+            assert_eq!(body.max_output_tokens, Some(16_000));
+
+            body.max_output_tokens = None;
+            assert_eq!(output_token_reserve(&body), 1);
+            assert!(ensure_prompt_and_output_fit(window - 1, &body).is_ok());
+            assert!(ensure_prompt_and_output_fit(window, &body).is_err());
+            assert!(build_model_turn_request(&body, &[], false)["max_tokens"].is_null());
+
+            body.max_output_tokens = Some(i32::MAX);
+            assert!(ensure_prompt_and_output_fit(1, &body).is_err());
+            assert_eq!(body.max_output_tokens, Some(i32::MAX));
+        }
+    }
+
+    #[test]
+    fn model_coarse_counts_do_not_override_the_final_rendered_count() {
+        for model in [
+            "deepseek-v4-1-flash",
+            "glm-5-3",
+            "glm-5-3-flash",
+            "kimi-k3",
+            "gpt-oss-120b",
+            "gpt-oss-safeguard-120b",
+            "gemma4-31b",
+            "llama3-3-70b",
+        ] {
+            assert!(
+                ensure_estimated_prompt_fits_model(Uuid::nil(), 2_000_000, model, "user message",)
+                    .is_ok(),
+                "{model} uses the final model-specific rendered count"
+            );
+        }
+        assert!(ensure_estimated_prompt_fits_model(
+            Uuid::nil(),
+            2_000_000,
+            "unknown-model",
+            "user message",
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn all_text_models_fit_every_compiled_provider_profile_and_preserve_output() {
+        use crate::model_config::{model_reasoning_replay, ReasoningReplay};
+        use crate::web::{
+            prompt_validation::renderers_for_model,
+            responses::context_builder::normalize_tool_call_ids_for_model,
+        };
+        use model_tokenizer::{count_chat_request, RenderContext};
+        let canonical_messages = vec![
+            json!({"role":"system","content":"Use the available tools when needed."}),
+            json!({"role":"user","content":"Please verify this synthetic fixture."}),
+            json!({"role":"assistant","content":"","reasoning":"I should search before answering.",
+                "tool_calls":[{"id":"12345678-1234-5678-9abc-123456789abc","type":"function",
+                    "function":{"name":"web_search","arguments":"{\"query\":\"synthetic fixture\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"12345678-1234-5678-9abc-123456789abc",
+                "content":"Synthetic search result."}),
+        ];
+        let stored_snapshot = canonical_messages.clone();
+        let mut body = responses_request_for_model("auto:quick");
+        for model in [
+            "deepseek-v4-1-flash",
+            "glm-5-3",
+            "glm-5-3-flash",
+            "kimi-k3",
+            "gpt-oss-120b",
+            "gpt-oss-safeguard-120b",
+            "gemma4-31b",
+            "llama3-3-70b",
+        ] {
+            // Each resolved physical model gets a fresh projection and fresh
+            // profiles, just as an Auto alternate does after model selection.
+            let mut messages = canonical_messages.clone();
+            normalize_tool_call_ids_for_model(&mut messages, model);
+            body.model = model.to_string();
+            body.tools = Some(json!([{"type":"web_search"}]));
+            for tools_enabled in [true, false] {
+                let mut turn_messages = messages.clone();
+                if matches!(
+                    model_reasoning_replay(model, tools_enabled),
+                    ReasoningReplay::None
+                ) {
+                    for message in &mut turn_messages {
+                        message.as_object_mut().unwrap().remove("reasoning");
+                    }
+                }
+                body.max_output_tokens = None;
+                let profiles = renderers_for_model(model);
+                assert!(
+                    !profiles.is_empty(),
+                    "{model} has compiled provider profiles"
+                );
+                let request = build_model_turn_request(&body, &turn_messages, tools_enabled);
+                let counts = profiles
+                    .iter()
+                    .map(|profile| {
+                        count_chat_request(*profile, &request, &RenderContext::default())
+                            .unwrap_or_else(|_| {
+                                panic!(
+                                    "{model} has a qualified text/tool profile: {}",
+                                    profile.profile()
+                                )
+                            })
+                            .tokens
+                    })
+                    .collect::<Vec<_>>();
+                let expected = *counts.iter().max().unwrap();
+                let remaining = prompt_token_budget(model) - expected;
+                body.max_output_tokens = Some(i32::try_from(remaining).unwrap());
+                let (fitted, tokens) = fit_model_prompt(&body, &turn_messages, tools_enabled, 1)
+                    .await
+                    .expect("fit valid text/tool turn")
+                    .expect("all eight deployed text model profiles are qualified");
+                assert_eq!(
+                    tokens, expected,
+                    "{model} must fit the largest provider rendering"
+                );
+                assert_eq!(fitted, turn_messages);
+                let outgoing = build_model_turn_request(&body, &fitted, tools_enabled);
+                assert_eq!(outgoing["max_tokens"], json!(remaining));
+                assert!(outgoing.get("max_completion_tokens").is_none());
+                for count in counts {
+                    assert!(count + remaining <= prompt_token_budget(model));
+                }
+                body.max_output_tokens = Some(i32::try_from(remaining + 1).unwrap());
+                assert!(
+                    matches!(
+                        fit_model_prompt(&body, &turn_messages, tools_enabled, 1).await,
+                        Err(ApiError::MessageExceedsContextLimit)
+                    ),
+                    "{model} cannot drop required inputs to fit output"
+                );
+                body.max_output_tokens = None;
+                assert!(fit_model_prompt(&body, &turn_messages, tools_enabled, 1)
+                    .await
+                    .expect("unlimited output remains valid")
+                    .is_some());
+                assert!(
+                    build_model_turn_request(&body, &turn_messages, tools_enabled)["max_tokens"]
+                        .is_null()
+                );
+            }
+        }
+        assert_eq!(
+            canonical_messages, stored_snapshot,
+            "model changes never rewrite stored history"
+        );
+    }
+
+    #[tokio::test]
+    async fn unqualified_response_forms_retain_existing_handling_instead_of_new_failures() {
+        for model in [
+            "deepseek-v4-1-flash",
+            "glm-5-3",
+            "glm-5-3-flash",
+            "kimi-k3",
+            "gpt-oss-120b",
+            "gpt-oss-safeguard-120b",
+            "gemma4-31b",
+            "llama3-3-70b",
+        ] {
+            let mut body = responses_request_for_model(model);
+            body.max_output_tokens = Some(16_000);
+            let messages = vec![json!({"role":"user","content":[{
+                "type":"image_url","image_url":{"url":"https://example.invalid/synthetic.png"}
+            }]})];
+            let snapshot = messages.clone();
+            assert!(
+                fit_model_prompt(&body, &messages, false, 0)
+                    .await
+                    .expect("unsupported media is not an internal error")
+                    .is_none(),
+                "{model}"
+            );
+            assert_eq!(messages, snapshot);
+            assert_eq!(body.max_output_tokens, Some(16_000));
+        }
+    }
+
+    #[tokio::test]
+    async fn deepseek_final_fit_counts_the_actual_tool_turn_and_preserves_output() {
+        use model_tokenizer::{count_chat_request, RenderContext, RendererId};
+        let mut body = responses_request_for_model("deepseek-v4-1-flash");
+        body.max_output_tokens = Some(16_000);
+        let messages = vec![
+            json!({"role":"system","content":"Use the available tools."}),
+            json!({"role":"user","content":"Please verify this."}),
+            json!({"role":"assistant","content":"","reasoning":"I should search.",
+                "tool_calls":[{"id":"call_1","type":"function","function":{
+                    "name":"web_search","arguments":"{\"query\":\"synthetic fixture\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"call_1","content":"Synthetic result."}),
+        ];
+        for tools_enabled in [true, false] {
+            let request = build_model_turn_request(&body, &messages, tools_enabled);
+            let expected = count_chat_request(
+                RendererId::DeepSeekV41Flash1017,
+                &request,
+                &RenderContext::default(),
+            )
+            .expect("count pinned source profile")
+            .tokens;
+            let (fitted, tokens) = fit_model_prompt(&body, &messages, tools_enabled, 1)
+                .await
+                .expect("fit complete required turn")
+                .expect("qualified text profile");
+            assert_eq!(tokens, expected);
+            assert_eq!(fitted, messages);
+            assert_eq!(
+                build_model_turn_request(&body, &fitted, tools_enabled)["max_tokens"],
+                16_000
+            );
+            assert!(build_model_turn_request(&body, &fitted, tools_enabled)
+                .get("max_completion_tokens")
+                .is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn deepseek_all_fit_durable_partial_tool_history_is_not_newly_rejected() {
+        let body = responses_request_for_model("deepseek-v4-1-flash");
+        let messages = vec![
+            json!({"role":"user","content":"An earlier request."}),
+            json!({"role":"assistant","content":"","reasoning":"A pending historical call.",
+                "tool_calls":[{"id":"partial_call","type":"function","function":{
+                    "name":"web_search","arguments":"{\"query\":\"synthetic fixture\"}"}}]}),
+            json!({"role":"user","content":"The current request."}),
+        ];
+        let (fitted, tokens) = fit_model_prompt(&body, &messages, true, 2)
+            .await
+            .expect("do not add structural rejection to an all-fit history")
+            .expect("qualified text profile");
+        assert_eq!(fitted, messages);
+        assert!(tokens < prompt_token_budget(&body.model));
+    }
+
+    #[tokio::test]
+    #[ignore = "CPU-intensive synthetic million-token fit; no provider calls"]
+    async fn deepseek_near_window_fit_uses_the_rendered_profile() {
+        use model_tokenizer::{count_chat_request, RenderContext, RendererId};
+        let mut body = responses_request_for_model("deepseek-v4-1-flash");
+        body.max_output_tokens = Some(16_000);
+        let fragment = "## Synthetic technical context\n```rust\nfn process(input: &str) -> Result<usize, Error> { let bytes = input.as_bytes(); Ok(bytes.len()) }\n```\nThe caller preserves request identity, output limits, and tool boundaries.\n";
+        let mut messages = vec![json!({"role":"system","content":"Answer the current request."})];
+        for index in 0..128 {
+            messages.push(json!({"role":"user","content":format!("Historical fixture {index}")}));
+            messages.push(json!({"role":"assistant","content":fragment.repeat(220)}));
+        }
+        let required_from = messages.len();
+        messages.push(json!({"role":"user","content":"Summarize the retained synthetic context."}));
+        let unfit_request = build_model_turn_request(&body, &messages, false);
+        let before = count_chat_request(
+            RendererId::DeepSeekV41Flash1017,
+            &unfit_request,
+            &RenderContext::default(),
+        )
+        .expect("count large synthetic source profile")
+        .tokens;
+        let window = prompt_token_budget(&body.model);
+        assert!(
+            before > window,
+            "fixture must exercise real overflow: {before}"
+        );
+        let started = std::time::Instant::now();
+        let (fitted, tokens) = fit_model_prompt(&body, &messages, false, required_from)
+            .await
+            .expect("fit million-token synthetic history")
+            .expect("qualified text profile");
+        assert!(tokens + 16_000 <= window);
+        assert_eq!(
+            fitted.last().unwrap()["content"],
+            "Summarize the retained synthetic context."
+        );
+        let final_request = build_model_turn_request(&body, &fitted, false);
+        assert_eq!(final_request["max_tokens"], 16_000);
+        assert_eq!(
+            tokens,
+            count_chat_request(
+                RendererId::DeepSeekV41Flash1017,
+                &final_request,
+                &RenderContext::default(),
+            )
+            .expect("independently validate final projection")
+            .tokens
+        );
+        eprintln!(
+            "synthetic DeepSeek fit: before={before}, after={tokens}, elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
     }
 
     #[test]
@@ -4337,6 +4644,7 @@ struct BuiltContext {
     prompt_messages: Arc<Vec<Value>>,
     total_prompt_tokens: usize,
     web_search_enabled: bool,
+    required_user_uuid: Uuid,
 }
 
 /// Persisted database records
@@ -4615,6 +4923,130 @@ fn ensure_prompt_fits_model(
     Ok(())
 }
 
+fn uses_counted_prompt(model: &str) -> bool {
+    supports_counted_prompt(resolve_public_model_id(model).unwrap_or(model))
+}
+
+/// Stored counts remain a history-selection estimate. The resolved model's
+/// pinned renderers validate the request after all current-turn inputs exist.
+fn ensure_estimated_prompt_fits_model(
+    user_uuid: Uuid,
+    tokens: usize,
+    model: &str,
+    scope: &'static str,
+) -> Result<(), ApiError> {
+    if uses_counted_prompt(model) {
+        Ok(())
+    } else {
+        ensure_prompt_fits_model(user_uuid, tokens, model, scope)
+    }
+}
+
+fn requested_output_tokens(body: &ResponsesCreateRequest) -> Option<usize> {
+    body.max_output_tokens
+        .and_then(|tokens| usize::try_from(tokens).ok())
+}
+
+/// Reserve input space without rewriting the caller's generation limit. With
+/// no limit, keep at least one token available and let the provider choose it.
+fn output_token_reserve(body: &ResponsesCreateRequest) -> usize {
+    requested_output_tokens(body).unwrap_or(1).max(1)
+}
+
+fn ensure_prompt_and_output_fit(
+    prompt_tokens: usize,
+    body: &ResponsesCreateRequest,
+) -> Result<(), ApiError> {
+    if prompt_tokens.saturating_add(output_token_reserve(body)) > prompt_token_budget(&body.model) {
+        return Err(ApiError::MessageExceedsContextLimit);
+    }
+    Ok(())
+}
+
+/// Before the provider is pinned, fit the maximum full-request count across
+/// its compiled provider profiles. This is a conservative cross-provider bound,
+/// not the eventual selected provider's observed or billed input token count.
+///
+/// An unsupported/malformed projection retains the legacy history path; never
+/// call an approximate count exact or introduce a new rendering failure for it.
+async fn fit_model_prompt(
+    body: &ResponsesCreateRequest,
+    prompt_messages: &[Value],
+    tools_enabled: bool,
+    required_from: usize,
+) -> Result<Option<(Vec<Value>, usize)>, ApiError> {
+    let renderers = renderers_for_model(&body.model);
+    if renderers.is_empty() {
+        return Ok(None);
+    }
+    let request = build_model_turn_request(body, prompt_messages, tools_enabled);
+    let context_window = prompt_token_budget(&body.model);
+    let output_tokens = requested_output_tokens(body);
+    // Rendering and encoding near a million tokens is CPU work. Never execute
+    // it on a Tokio request worker or persist this request-local projection.
+    tokio::task::spawn_blocking(move || {
+        let render_context = RenderContext::default();
+        let unsupported = Cell::new(false);
+        let fitted = fit_prompt_request(
+            request,
+            context_window,
+            output_tokens,
+            required_from,
+            |request| {
+                let mut maximum = 0;
+                for renderer in &renderers {
+                    match count_chat_request(*renderer, request, &render_context) {
+                        Ok(count)
+                            if count.profile == renderer.profile()
+                                && count.accuracy == PromptAccuracy::ExactForPinnedTextProfile =>
+                        {
+                            maximum = maximum.max(count.tokens);
+                        }
+                        Err(RenderError::Unsupported(_) | RenderError::InvalidRequest(_)) => {
+                            unsupported.set(true);
+                            debug!(
+                                profile = renderer.profile(),
+                                category = "unqualified_request_form",
+                                "Responses retained existing prompt handling"
+                            );
+                            return Err(ApiError::InternalServerError);
+                        }
+                        Ok(_) | Err(RenderError::Tokenizer(_)) => {
+                            error!(
+                                profile = renderer.profile(),
+                                category = "pinned_count_failed",
+                                "Pinned prompt counting failed"
+                            );
+                            return Err(ApiError::InternalServerError);
+                        }
+                    }
+                }
+                Ok(maximum)
+            },
+        );
+        if unsupported.get() {
+            return Ok(None);
+        }
+        let fitted = fitted?;
+        let messages = fitted
+            .request
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or(ApiError::InternalServerError)?;
+        debug_assert!(fitted.required_from < messages.len());
+        debug!(
+            profile_policy = "max_compiled_provider_profiles",
+            profile_count = renderers.len(),
+            prompt_tokens = fitted.prompt_tokens,
+            "Fitted Responses prompt across provider profiles"
+        );
+        Ok(Some((messages, fitted.prompt_tokens)))
+    })
+    .await
+    .map_err(|_| ApiError::InternalServerError)?
+}
+
 /// Makes the resolved model the executing model for every later
 /// model-dependent step; `body.model` is written only here.
 fn apply_resolved_model(
@@ -4654,7 +5086,7 @@ async fn prepare_request_storage(
 
     // Validate that the user message doesn't exceed the context budget
     // Even if we drop everything else, we need to fit at least the user's message
-    ensure_prompt_fits_model(
+    ensure_estimated_prompt_fits_model(
         user.uuid,
         user_message_tokens as usize,
         &body.model,
@@ -4685,15 +5117,30 @@ async fn prepare_request_storage(
     })
 }
 
-/// Phase 2: Build context and check billing
-///
-/// Read-only phase that builds conversation context and validates billing quota
-/// before any database writes occur.
-///
-/// Operations:
-/// - Reads the owned conversation's existing messages
-/// - Builds prompt context with new user message (not yet persisted)
-/// - Checks billing quota and token limits
+/// Append current-turn inputs to a request-local history projection. The
+/// returned boundary protects this user and its image descriptions when fitted.
+fn append_current_prompt_inputs(
+    history: (Vec<Value>, usize),
+    prepared: &PreparedRequest,
+    image_descriptions: &[ImageDescriptionToolPair],
+    model: &str,
+) -> (Vec<Value>, usize, usize) {
+    let (mut messages, mut tokens) = history;
+    let required_from = messages.len();
+    messages.push(json!({
+        "role": "user",
+        "content": MessageContentConverter::to_model_format(&prepared.message_content)
+    }));
+    tokens = tokens.saturating_add(prepared.user_message_tokens as usize);
+    for pair in image_descriptions {
+        messages.extend(pair.prompt_messages());
+        tokens = tokens.saturating_add(pair.prompt_tokens());
+    }
+    normalize_tool_call_ids_for_model(&mut messages, model);
+    (messages, tokens, required_from)
+}
+
+/// Phase 2 builds owned conversation context and checks billing before writes.
 #[allow(clippy::too_many_arguments)]
 async fn build_context_and_check_billing(
     state: &Arc<AppState>,
@@ -4714,36 +5161,72 @@ async fn build_context_and_check_billing(
         .iter()
         .map(ImageDescriptionToolPair::prompt_tokens)
         .sum::<usize>();
-    let token_reserve =
-        (prepared.user_message_tokens as usize).saturating_add(image_description_tokens);
-    let (mut prompt_messages, mut total_prompt_tokens) = build_prompt_with_token_reserve(
-        state.db.as_ref(),
-        conversation.id,
-        user.uuid,
-        &prepared.user_key,
-        &body.model,
-        body.instructions.as_deref(),
-        Some(&internal_system_prompt),
-        token_reserve,
-        model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message(),
-    )?;
+    let token_reserve = (prepared.user_message_tokens as usize)
+        .saturating_add(image_description_tokens)
+        .saturating_add(output_token_reserve(body));
+    let reasoning_replay =
+        model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message();
+    let history = if uses_counted_prompt(&body.model) {
+        let context = build_prompt_for_counted_turn(
+            state.db.as_ref(),
+            conversation.id,
+            user.uuid,
+            &prepared.user_key,
+            &body.model,
+            body.instructions.as_deref(),
+            Some(&internal_system_prompt),
+            token_reserve,
+            reasoning_replay,
+            None,
+        )?;
+        (context.messages, context.token_estimate)
+    } else {
+        build_prompt_with_token_reserve(
+            state.db.as_ref(),
+            conversation.id,
+            user.uuid,
+            &prepared.user_key,
+            &body.model,
+            body.instructions.as_deref(),
+            Some(&internal_system_prompt),
+            token_reserve,
+            reasoning_replay,
+        )?
+    };
 
-    // Add the NEW user message to the context (not yet persisted)
-    // This is needed for: 1) billing check, 2) sending to LLM
-    let user_message_for_prompt = json!({
-        "role": "user",
-        "content": MessageContentConverter::to_model_format(&prepared.message_content)
-    });
-    prompt_messages.push(user_message_for_prompt);
-    total_prompt_tokens += prepared.user_message_tokens as usize;
+    let (mut prompt_messages, mut total_prompt_tokens, required_from) =
+        append_current_prompt_inputs(history, prepared, image_descriptions, &body.model);
 
-    for pair in image_descriptions {
-        prompt_messages.extend(pair.prompt_messages());
+    if uses_counted_prompt(&body.model) {
+        if let Some(fitted) =
+            fit_model_prompt(body, &prompt_messages, web_search_enabled, required_from).await?
+        {
+            (prompt_messages, total_prompt_tokens) = fitted;
+        } else {
+            // Media/custom/malformed forms outside the pinned text renderer
+            // retain their existing projection and validation path.
+            let legacy_history = build_prompt_with_token_reserve(
+                state.db.as_ref(),
+                conversation.id,
+                user.uuid,
+                &prepared.user_key,
+                &body.model,
+                body.instructions.as_deref(),
+                Some(&internal_system_prompt),
+                token_reserve,
+                reasoning_replay,
+            )?;
+            (prompt_messages, total_prompt_tokens, _) = append_current_prompt_inputs(
+                legacy_history,
+                prepared,
+                image_descriptions,
+                &body.model,
+            );
+            ensure_prompt_and_output_fit(total_prompt_tokens, body)?;
+        }
+    } else {
+        ensure_prompt_and_output_fit(total_prompt_tokens, body)?;
     }
-    total_prompt_tokens = total_prompt_tokens.saturating_add(image_description_tokens);
-    normalize_tool_call_ids_for_model(&mut prompt_messages, &body.model);
-
-    ensure_prompt_fits_model(user.uuid, total_prompt_tokens, &body.model, "prompt")?;
 
     // Check billing with token validation (BEFORE any persistence).
     if let Some(billing_access) = billing_access {
@@ -4780,6 +5263,7 @@ async fn build_context_and_check_billing(
         prompt_messages: Arc::new(prompt_messages),
         total_prompt_tokens,
         web_search_enabled,
+        required_user_uuid: prepared.user_message_id,
     })
 }
 
@@ -5722,16 +6206,55 @@ async fn setup_completion_processor(
                 let internal_system_prompt =
                     build_internal_system_prompt(tools_requested, model_plan);
                 let next_turn_tools_enabled = tools_requested && !force_final_without_tools;
-                let (rebuilt_messages, rebuilt_tokens) = match build_prompt(
-                    state.db.as_ref(),
-                    context.conversation.id,
-                    user.uuid,
-                    user_key,
-                    &body.model,
-                    body.instructions.as_deref(),
-                    Some(&internal_system_prompt),
-                    model_reasoning_replay(&body.model, next_turn_tools_enabled),
-                ) {
+                let rebuilt: Result<(Vec<Value>, usize), ApiError> = async {
+                    let reasoning_replay =
+                        model_reasoning_replay(&body.model, next_turn_tools_enabled);
+                    let fitted = if uses_counted_prompt(&body.model) {
+                        let rebuilt = build_prompt_for_counted_turn(
+                            state.db.as_ref(),
+                            context.conversation.id,
+                            user.uuid,
+                            user_key,
+                            &body.model,
+                            body.instructions.as_deref(),
+                            Some(&internal_system_prompt),
+                            output_token_reserve(body),
+                            reasoning_replay,
+                            Some(context.required_user_uuid),
+                        )?;
+                        let required_from = rebuilt
+                            .required_from
+                            .ok_or(ApiError::MessageExceedsContextLimit)?;
+                        fit_model_prompt(
+                            body,
+                            &rebuilt.messages,
+                            next_turn_tools_enabled,
+                            required_from,
+                        )
+                        .await?
+                    } else {
+                        None
+                    };
+                    if let Some(fitted) = fitted {
+                        Ok(fitted)
+                    } else {
+                        let rebuilt = build_prompt_with_token_reserve(
+                            state.db.as_ref(),
+                            context.conversation.id,
+                            user.uuid,
+                            user_key,
+                            &body.model,
+                            body.instructions.as_deref(),
+                            Some(&internal_system_prompt),
+                            output_token_reserve(body),
+                            reasoning_replay,
+                        )?;
+                        ensure_prompt_and_output_fit(rebuilt.1, body)?;
+                        Ok(rebuilt)
+                    }
+                }
+                .await;
+                let (rebuilt_messages, rebuilt_tokens) = match rebuilt {
                     Ok(prompt) => prompt,
                     Err(_) => return ResponseTerminal::Failed(PublicResponseFailure::Internal),
                 };
@@ -5959,7 +6482,7 @@ async fn create_response_stream(
     // A message the tier's own model cannot hold keeps its existing error;
     // health never changes that answer.
     let alias_target = body.model.clone();
-    ensure_prompt_fits_model(
+    ensure_estimated_prompt_fits_model(
         user.uuid,
         normalized.user_message_tokens as usize,
         &alias_target,
@@ -6140,7 +6663,7 @@ async fn create_response_stream(
                             responses_pre_persistence_api_error(error.into(), descriptions_done)
                         })?;
                         apply_resolved_model(&mut body, &resolved_model);
-                        ensure_prompt_fits_model(
+                        ensure_estimated_prompt_fits_model(
                             user.uuid,
                             prepared.user_message_tokens as usize,
                             &body.model,
@@ -6179,7 +6702,7 @@ async fn create_response_stream(
                     responses_pre_persistence_api_error(error.into(), descriptions_done)
                 })?;
                 apply_resolved_model(&mut body, &resolved_model);
-                ensure_prompt_fits_model(
+                ensure_estimated_prompt_fits_model(
                     user.uuid,
                     prepared.user_message_tokens as usize,
                     &body.model,

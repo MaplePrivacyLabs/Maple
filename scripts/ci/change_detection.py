@@ -28,10 +28,11 @@ INERT_FILES = frozenset(
         "README.md",
         "repo.meta.json",
         "setup-hooks.sh",
+        "scripts/fetch-tokenizer-assets.py",
         "apps/maple-research/zapstore.yaml",
     }
 )
-INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/")
+INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/", "crates/model-tokenizer/")
 PURE_FRONTEND_PREFIXES = ("apps/maple-research/frontend/public/", "apps/maple-research/frontend/src/")
 PURE_FRONTEND_FILES = frozenset({"apps/maple-research/frontend/icon.svg", "apps/maple-research/frontend/index.html"})
 RUST_SDK_PREFIX = "sdk/rust/"

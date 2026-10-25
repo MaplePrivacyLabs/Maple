@@ -2,8 +2,8 @@
 """Select the component pre-commit checks that staged paths require.
 
 The hook mirrors the lint/test lanes of the GitHub workflows, not the packaging
-lanes. Each component is selected only when its own files are staged; shared
-crates do not fan out to their consumers here (CI still covers consumers).
+lanes. The neutral model tokenizer selects its OpenSecret consumer;
+the existing SDK/proxy components retain their independent hooks.
 """
 
 from __future__ import annotations
@@ -120,6 +120,12 @@ def classify_path(path: str) -> frozenset[str]:
         return frozenset()
     if _inert_name(path):
         return frozenset()
+    if path.startswith("crates/model-tokenizer/"):
+        return frozenset({"opensecret"})
+    if path == "scripts/fetch-tokenizer-assets.py":
+        return frozenset({"repo"})
+    if path == "scripts/ci/tokenizer.sh":
+        return frozenset({"opensecret", "repo"})
 
     if path in RESEARCH_INERT_FILES or path.startswith(RESEARCH_INERT_PREFIXES):
         return frozenset()

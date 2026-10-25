@@ -1,0 +1,13 @@
+{
+  "redhat_repo": "RedHatAI/GLM-5.3-Flash-NVFP4",
+  "revision": "240131d6a447c8d89acd428c5ddfc85598651744",
+  "equal_except_padding_truncation": true,
+  "remaining_config_sha256": "089465d65b4b5db91aab4b15506b637fb84cd3a5f59f80df2fba2643b9e3597f",
+  "canonical_tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+  "redhat_tokenizer_sha256": "0cfe2c099a7702a0921abc315ee039deb51e4a34b4818fc509bd27fa3dc4acc1",
+  "differences": [
+    "truncation"
+  ],
+  "normalization": "Both pipelines disable truncation and padding before encoding; every remaining JSON field is equal. No vocabulary/merge/pretokenizer/special-token substitution.",
+  "source": "https://huggingface.co/RedHatAI/GLM-5.3-Flash-NVFP4/resolve/240131d6a447c8d89acd428c5ddfc85598651744/tokenizer.json"
+}

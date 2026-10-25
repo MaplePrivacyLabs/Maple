@@ -10,7 +10,7 @@ use crate::model_config::ReasoningReplay;
 use crate::tokens::{count_tokens, model_max_ctx};
 use crate::DBConnection;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{error, warn};
 use uuid::Uuid;
 
@@ -81,36 +81,6 @@ pub(crate) fn prompt_token_budget(model: &str) -> usize {
     model_max_ctx(model)
 }
 
-/// Return (messages, total_prompt_tokens)
-///
-/// Optimized two-pass approach:
-/// 1. Fetch metadata only (lightweight, no decryption)
-/// 2. Run truncation logic on metadata to determine which messages to keep
-/// 3. Fetch and decrypt only the needed messages
-#[allow(clippy::too_many_arguments)]
-pub fn build_prompt<D: DBConnection + ?Sized>(
-    db: &D,
-    conversation_id: i64,
-    user_id: uuid::Uuid,
-    user_key: &secp256k1::SecretKey,
-    model: &str,
-    override_instructions: Option<&str>,
-    internal_instructions: Option<&str>,
-    reasoning_replay: ReasoningReplay,
-) -> Result<(Vec<serde_json::Value>, usize), crate::ApiError> {
-    build_prompt_with_token_reserve(
-        db,
-        conversation_id,
-        user_id,
-        user_key,
-        model,
-        override_instructions,
-        internal_instructions,
-        0,
-        reasoning_replay,
-    )
-}
-
 /// Build persisted conversation context while reserving room for a message that
 /// will be appended after history truncation, such as the current user input.
 #[allow(clippy::too_many_arguments)]
@@ -125,6 +95,76 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
     token_reserve: usize,
     reasoning_replay: ReasoningReplay,
 ) -> Result<(Vec<serde_json::Value>, usize), crate::ApiError> {
+    let prompt = build_prompt_internal(
+        db,
+        conversation_id,
+        user_id,
+        user_key,
+        model,
+        override_instructions,
+        internal_instructions,
+        token_reserve,
+        reasoning_replay,
+        None,
+        false,
+    )?;
+    Ok((prompt.messages, prompt.token_estimate))
+}
+
+/// A request-local projection. The source UUID never crosses the provider
+/// boundary; its sidecar index protects this request's user turn when another
+/// concurrent request has appended a newer user message to the conversation.
+pub(crate) struct CountedContext {
+    pub(crate) messages: Vec<serde_json::Value>,
+    pub(crate) token_estimate: usize,
+    pub(crate) required_from: Option<usize>,
+}
+
+/// Metadata still bounds the initial history selection. Its untagged token
+/// estimates do not authorize the final prompt: the caller renders, counts and
+/// fits the selected model after appending all current-turn inputs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_prompt_for_counted_turn<D: DBConnection + ?Sized>(
+    db: &D,
+    conversation_id: i64,
+    user_id: uuid::Uuid,
+    user_key: &secp256k1::SecretKey,
+    model: &str,
+    override_instructions: Option<&str>,
+    internal_instructions: Option<&str>,
+    token_reserve: usize,
+    reasoning_replay: ReasoningReplay,
+    required_user_uuid: Option<Uuid>,
+) -> Result<CountedContext, crate::ApiError> {
+    build_prompt_internal(
+        db,
+        conversation_id,
+        user_id,
+        user_key,
+        model,
+        override_instructions,
+        internal_instructions,
+        token_reserve,
+        reasoning_replay,
+        required_user_uuid,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_prompt_internal<D: DBConnection + ?Sized>(
+    db: &D,
+    conversation_id: i64,
+    user_id: uuid::Uuid,
+    user_key: &secp256k1::SecretKey,
+    model: &str,
+    override_instructions: Option<&str>,
+    internal_instructions: Option<&str>,
+    token_reserve: usize,
+    reasoning_replay: ReasoningReplay,
+    required_user_uuid: Option<Uuid>,
+    counted_turn: bool,
+) -> Result<CountedContext, crate::ApiError> {
     // 1. Get default user instructions if they exist (unless override provided)
     let mut system_tokens = 0usize;
     let mut system_msg_opt = if let Some(instruction_text) = override_instructions {
@@ -188,13 +228,18 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
         .map_err(|_| crate::ApiError::InternalServerError)?;
 
     // 3. Run truncation logic on metadata to determine which messages we need
-    let (needed_ids, did_truncate) = determine_needed_message_ids(
+    let (mut needed_ids, mut did_truncate) = determine_needed_message_ids(
         &metadata,
         model,
         system_tokens,
         token_reserve,
         reasoning_replay,
     )?;
+
+    if let Some(required_user_uuid) = required_user_uuid {
+        (needed_ids, did_truncate) =
+            include_required_turn(&metadata, needed_ids, reasoning_replay, required_user_uuid)?;
+    }
 
     // 4. PASS 2: Fetch and decrypt ONLY the messages we need
     let raw = if needed_ids.is_empty() {
@@ -228,6 +273,7 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
     }
 
     let mut pending_reasoning: Option<PendingReasoning> = None;
+    let mut required_from = None;
 
     // Decrypt and add the messages we fetched
     for r in raw {
@@ -243,6 +289,9 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
                     .map_err(|_| crate::ApiError::InternalServerError)?;
                 let content = String::from_utf8_lossy(&plain).into_owned();
                 let t = user_message_prompt_token_count(&content, r.token_count);
+                if Some(r.uuid) == required_user_uuid {
+                    required_from = Some(msgs.len());
+                }
                 msgs.push(ChatMsg {
                     role: ROLE_USER,
                     content,
@@ -435,19 +484,71 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
         // Only insert if we have enough messages (safety check)
         if msgs.len() > insert_pos {
             msgs.insert(insert_pos, truncation_msg);
+            if let Some(required) = required_from.as_mut() {
+                if insert_pos <= *required {
+                    *required += 1;
+                }
+            }
         }
     }
 
-    // Note: In the Responses API flow, the current user message is already persisted
-    // to the database before this function is called, so it's included in the
-    // get_conversation_context_metadata result above.
+    // Later tool turns include the already persisted current user. The initial
+    // projection contains only history; its caller appends the new user before
+    // final counting and before persisting anything.
 
     // 6. Format for LLM API (no further truncation needed - already done in step 3)
-    if token_reserve == 0 {
-        build_prompt_from_chat_messages(msgs, model)
+    if counted_turn {
+        if required_user_uuid.is_some() && required_from.is_none() {
+            return Err(crate::ApiError::MessageExceedsContextLimit);
+        }
+        let token_estimate = msgs.iter().map(|message| message.tok).sum();
+        Ok(CountedContext {
+            messages: render_chat_messages(msgs, model)?,
+            token_estimate,
+            required_from,
+        })
     } else {
-        build_prompt_from_chat_messages_with_token_reserve(msgs, model, token_reserve)
+        let (messages, token_estimate) = if token_reserve == 0 {
+            build_prompt_from_chat_messages(msgs, model)?
+        } else {
+            build_prompt_from_chat_messages_with_token_reserve(msgs, model, token_reserve)?
+        };
+        Ok(CountedContext {
+            messages,
+            token_estimate,
+            required_from: None,
+        })
     }
+}
+
+fn include_required_turn(
+    metadata: &[crate::models::responses::RawThreadMessageMetadata],
+    needed_ids: Vec<(String, i64)>,
+    reasoning_replay: ReasoningReplay,
+    required_user_uuid: Uuid,
+) -> Result<(Vec<(String, i64)>, bool), crate::ApiError> {
+    let required = metadata
+        .iter()
+        .find(|message| message.message_type == "user" && message.uuid == required_user_uuid)
+        .map(|message| (message.message_type.clone(), message.id))
+        .ok_or(crate::ApiError::MessageExceedsContextLimit)?;
+    let entries = build_context_entries(metadata, reasoning_replay);
+    let required_entry = entries
+        .iter()
+        .position(|entry| entry.ids.contains(&required))
+        .ok_or(crate::ApiError::MessageExceedsContextLimit)?;
+    let mut selected: HashSet<_> = needed_ids.into_iter().collect();
+    for entry in &entries[required_entry..] {
+        selected.extend(entry.ids.iter().cloned());
+    }
+    let needed_ids: Vec<_> = entries
+        .iter()
+        .flat_map(|entry| entry.ids.iter())
+        .filter(|id| selected.contains(*id))
+        .cloned()
+        .collect();
+    let did_truncate = needed_ids.len() < entries.iter().map(|entry| entry.ids.len()).sum();
+    Ok((needed_ids, did_truncate))
 }
 
 fn order_selected_messages(
@@ -838,7 +939,14 @@ pub fn build_prompt_from_chat_messages_with_token_reserve(
         ctx_budget
     );
 
-    // 5. Convert to JSON array required by chat API
+    Ok((render_chat_messages(msgs, model)?, total))
+}
+
+fn render_chat_messages(
+    msgs: Vec<ChatMsg>,
+    model: &str,
+) -> Result<Vec<serde_json::Value>, crate::ApiError> {
+    // Convert to the model-specific chat view without changing stored content.
     let mut final_msgs = Vec::new();
     for m in msgs {
         let msg = if m.role == "tool" {
@@ -918,7 +1026,7 @@ pub fn build_prompt_from_chat_messages_with_token_reserve(
 
     normalize_tool_call_ids_for_model(&mut final_msgs, model);
 
-    Ok((final_msgs, total))
+    Ok(final_msgs)
 }
 
 fn attach_reasoning_to_assistant_message(message: &mut Value, reasoning: Option<&str>) {
@@ -1974,6 +2082,51 @@ mod tests {
         let mut metadata = context_metadata(message_type, id, token_count);
         metadata.tool_call_id = Some(tool_call_id);
         metadata
+    }
+
+    #[test]
+    fn counted_context_protects_the_request_user_and_all_later_tool_groups() {
+        let call_id = Uuid::new_v4();
+        let required = context_metadata("user", 3, 900_000);
+        let required_uuid = required.uuid;
+        let metadata = vec![
+            context_metadata("user", 1, 3),
+            context_metadata("assistant", 2, 900_000),
+            required,
+            context_metadata("reasoning", 4, 100_000),
+            context_tool_metadata("tool_call", 5, 100_000, call_id),
+            context_tool_metadata("tool_output", 6, 100_000, call_id),
+            // A concurrent newer user must not replace this request's boundary.
+            context_metadata("user", 7, 1),
+        ];
+        let selected = vec![("user".into(), 1), ("user".into(), 7)];
+        let (ids, truncated) =
+            include_required_turn(&metadata, selected, ReasoningReplay::All, required_uuid)
+                .expect("protect complete current turn despite coarse metadata overflow");
+        assert!(truncated);
+        assert_eq!(
+            ids,
+            vec![
+                ("user".into(), 1),
+                ("user".into(), 3),
+                ("reasoning".into(), 4),
+                ("tool_call".into(), 5),
+                ("tool_output".into(), 6),
+                ("user".into(), 7),
+            ]
+        );
+        // Selection did not rewrite model-neutral persisted metadata.
+        assert_eq!(metadata[2].token_count, Some(900_000));
+        assert_eq!(metadata[2].uuid, required_uuid);
+    }
+
+    #[test]
+    fn counted_context_never_substitutes_another_user_for_a_missing_required_turn() {
+        let metadata = vec![context_metadata("user", 1, 1)];
+        assert!(matches!(
+            include_required_turn(&metadata, vec![], ReasoningReplay::All, Uuid::new_v4()),
+            Err(crate::ApiError::MessageExceedsContextLimit)
+        ));
     }
 
     fn raw_context_message(

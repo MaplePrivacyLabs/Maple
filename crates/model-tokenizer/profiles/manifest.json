@@ -1,0 +1,79 @@
+[
+  {
+    "file": "glm53-official.jinja",
+    "source": "https://huggingface.co/zai-org/GLM-5.3/resolve/ba32f8c19c8738e2c57c71798c601d477a7bf844/chat_template.jinja",
+    "sha256": "0e2b6268ac54f04d2bc1157e8cfb896cb66f25c0b5e319ea12e56014c3914f24",
+    "license": "LicenseRef-GLM-5.3",
+    "modified": false,
+    "license_file": "licenses/glm53-LICENSE"
+  },
+  {
+    "file": "glm53-flash-official.jinja",
+    "source": "https://huggingface.co/zai-org/GLM-5.3-Flash/resolve/46a050bec13002ad29ee795c16e61cf4fa3c4a9c/chat_template.jinja",
+    "sha256": "2614a3c896d53e265f564c23701173c0049f985dacfbae79fc4bcd9f5ba083f4",
+    "license": "MIT",
+    "modified": false,
+    "license_file": "licenses/glm53-flash-LICENSE"
+  },
+  {
+    "file": "glm53-tinfoil-nvfp4.jinja",
+    "source": "https://huggingface.co/Inferact/GLM-5.3-NVFP4/resolve/ce67b36f3669192b5bb233819f0fda6c8a9837f8/chat_template.jinja",
+    "sha256": "69bb3ab52067898e2466b855407636de559568947f367945842aabcb7fcc1705",
+    "license": "LicenseRef-GLM-5.3",
+    "modified": false,
+    "license_file": "licenses/glm53-tinfoil-LICENSE"
+  },
+  {
+    "file": "gpt-oss-120b.jinja",
+    "source": "https://huggingface.co/openai/gpt-oss-120b/resolve/b5c939de8f754692c1647ca79fbf85e8c1e70f8a/chat_template.jinja",
+    "sha256": "a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146",
+    "license": "Apache-2.0",
+    "modified": false
+  },
+  {
+    "file": "gpt-oss-safeguard-120b.jinja",
+    "source": "https://huggingface.co/openai/gpt-oss-safeguard-120b/resolve/3c7391182603991a904031244e7822488c67796d/chat_template.jinja",
+    "sha256": "589c73db2f7775c5f946b84bd4695fd3be3612e48ebb69a956dc38b7ec70236d",
+    "license": "Apache-2.0",
+    "modified": false
+  },
+  {
+    "file": "llama33-tinfoil.jinja",
+    "source": "https://raw.githubusercontent.com/vllm-project/vllm/0b3ba88f165976e77ca5e6a7a3f5bba4562b80af/examples/tool_chat_template_llama3.2_json.jinja",
+    "sha256": "c22af47e53f444258ba6565bfa6c472c3d74f207105ae49bd1ae9b600e90a3be",
+    "license": "Apache-2.0",
+    "modified": false
+  },
+  {
+    "file": "gemma4-tinfoil.jinja",
+    "source": "https://raw.githubusercontent.com/vllm-project/vllm/db9527a46873454610df6dbedf79a36d6bf1a7f6/examples/tool_chat_template_gemma4.jinja",
+    "sha256": "afdbb2abe3667ccde95cc2f86919f05370339399bab5f750950a4390523b8927",
+    "license": "Apache-2.0",
+    "modified": false
+  },
+  {
+    "file": "glm53-continuum.jinja",
+    "source": "https://huggingface.co/zai-org/GLM-5.3/resolve/c5087a76d148760811ffbdedfe6ff9f194e46e38/chat_template.jinja",
+    "sha256": "3740abcea51c45830cb3ca562084ad5fb2ef53589376f73332e9886f93ade41c",
+    "license": "LicenseRef-GLM-5.3",
+    "license_file": "licenses/glm53-LICENSE",
+    "modified": false,
+    "deployment_source": "https://github.com/edgelesssys/privatemode-public/blob/17ad265a79a39f30596ae2f12ec64ccbd9127275/deployment.yaml",
+    "deployment_runtime": "vLLM 0.31.0",
+    "deployment_content_format": "string"
+  },
+  {
+    "file": "glm53-flash-continuum.jinja",
+    "source": "https://huggingface.co/zai-org/GLM-5.3-Flash/resolve/91b69215804f2d2036a8867f6ce44848e278dcda/chat_template.jinja",
+    "sha256": "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5",
+    "license": "MIT",
+    "license_file": "licenses/glm53-flash-LICENSE",
+    "modified": false,
+    "deployment_source": "https://github.com/edgelesssys/privatemode-public/blob/17ad265a79a39f30596ae2f12ec64ccbd9127275/deployment.yaml",
+    "deployment_runtime": "vLLM 0.31.0",
+    "deployment_content_format": "auto (detected openai)",
+    "also_verified_source": "https://huggingface.co/RedHatAI/GLM-5.3-Flash-NVFP4/resolve/240131d6a447c8d89acd428c5ddfc85598651744/chat_template.jinja",
+    "also_verified_deployment_source": "https://github.com/tinfoilsh/confidential-glm5-3-flash/blob/ba2629f27a1d24877c0841c7d10d5cbc87ae01f7/tinfoil-config.yml",
+    "tinfoil_content_format": "string"
+  }
+]

@@ -23,7 +23,7 @@ if [ -n "$workflows" ]; then
     done
 fi
 
-if [ -n "$(hook_staged_matching '^(scripts/ci/|\.github/workflows/|flake\.(nix|lock)$)')" ]; then
+if [ -n "$(hook_staged_matching '^(scripts/ci/|scripts/fetch-tokenizer-assets\.py$|crates/model-tokenizer/|\.github/workflows/|flake\.(nix|lock)$)')" ]; then
     hook_require python3
     hook_run python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'
 fi

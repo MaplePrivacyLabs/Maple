@@ -1,0 +1,29 @@
+[package]
+name = "model-tokenizer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT AND Apache-2.0"
+description = "Pinned, offline tokenization and serving-profile prompt accounting"
+publish = false
+build = "build.rs"
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+minijinja = { version = "=3.0.1", features = ["json", "loop_controls", "serde"] }
+minijinja-contrib = { version = "=3.0.1", features = ["pycompat"] }
+rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror = "2"
+tiktoken-rs = { version = "=0.12.1", default-features = false }
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
+
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+sha2 = "0.10"

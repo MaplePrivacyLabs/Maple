@@ -60,6 +60,13 @@ def classify_path(path: str) -> frozenset[str]:
         return ALL_CHECKS
     if path in SHARED_INPUTS:
         return ALL_CHECKS
+    if path == "scripts/ci/tokenizer.sh":
+        return frozenset({"rust"})
+    if path.startswith("crates/model-tokenizer/"):
+        relative = path.removeprefix("crates/model-tokenizer/")
+        if relative in BACKEND_INERT_FILES or relative.startswith(("docs/", ".githooks/")):
+            return frozenset()
+        return frozenset({"rust", "nix", "integration", "audit", "eif"})
     if path in EIF_CI_INPUTS:
         return frozenset({"eif"})
     if path == ".github/workflows/opensecret-ci.yml":

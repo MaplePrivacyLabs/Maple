@@ -92,6 +92,7 @@
           cargo = rust;
           rustc = rust;
         };
+        tokenizerAssets = import ../../crates/model-tokenizer/nix/assets.nix { inherit pkgs; };
 
         commonInputs = [
           rust
@@ -501,24 +502,21 @@
         opensecret = appRustPlatform.buildRustPackage {
           pname = "opensecret";
           version = "0.1.0";
-          src = pkgs.lib.cleanSourceWith {
-            src = ./.;
-            filter = path: type:
-              let
-                baseName = baseNameOf path;
-                parts = pkgs.lib.splitString "/" path;
-              in
-                # Explicitly exclude .env files
-                (baseName != ".env" && baseName != ".env.sample") &&
-                (
-                  (builtins.elem "src" parts) ||
-                  (type == "regular" && (
-                    baseName == "Cargo.toml" ||
-                    baseName == "Cargo.lock" ||
-                    baseName == "rust-toolchain.toml"
-                  ))
-                );
+          # Preserve the monorepo layout for the neutral tokenizer path
+          # dependency. Only reviewed build inputs enter the pure source.
+          src = pkgs.lib.fileset.toSource {
+            root = ../..;
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./rust-toolchain.toml
+              ./src
+              ../../crates/model-tokenizer
+            ];
           };
+          cargoRoot = "services/opensecret";
+          buildAndTestSubdir = "services/opensecret";
+          MAPLE_TOKENIZER_ASSETS_DIR = tokenizerAssets;
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = {
@@ -645,6 +643,7 @@
         };
 
         devShells.default = pkgs.mkShell {
+          MAPLE_TOKENIZER_ASSETS_DIR = tokenizerAssets;
           packages = inputs ++ [ secretsPkgs.secretspec secretsPkgs.bws ];
           shellHook = ''
             export PGDATA="''${PGDATA:-$PWD/.pgdata}"

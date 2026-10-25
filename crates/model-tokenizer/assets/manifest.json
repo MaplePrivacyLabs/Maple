@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "id": "deepseek_v41_flash",
+      "filename": "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b.json",
+      "format": "huggingface_json",
+      "sha256": "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b",
+      "size_bytes": 6367257,
+      "sources": [
+        {
+          "model": "deepseek-v4-1-flash",
+          "repository": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+          "revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+          "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/resolve/1bae0e1088993b9b82de08f59de5be5a34e42170/tokenizer.json",
+          "license": "mit",
+          "license_url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/tree/1bae0e1088993b9b82de08f59de5be5a34e42170"
+        }
+      ]
+    },
+    {
+      "id": "glm53",
+      "filename": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d.json",
+      "format": "huggingface_json",
+      "sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+      "size_bytes": 20217442,
+      "sources": [
+        {
+          "model": "glm-5-3",
+          "repository": "zai-org/GLM-5.3",
+          "revision": "ba32f8c19c8738e2c57c71798c601d477a7bf844",
+          "url": "https://huggingface.co/zai-org/GLM-5.3/resolve/ba32f8c19c8738e2c57c71798c601d477a7bf844/tokenizer.json",
+          "license": "other",
+          "license_url": "https://huggingface.co/zai-org/GLM-5.3/tree/ba32f8c19c8738e2c57c71798c601d477a7bf844"
+        },
+        {
+          "model": "glm-5-3-flash",
+          "repository": "zai-org/GLM-5.3-Flash",
+          "revision": "46a050bec13002ad29ee795c16e61cf4fa3c4a9c",
+          "url": "https://huggingface.co/zai-org/GLM-5.3-Flash/resolve/46a050bec13002ad29ee795c16e61cf4fa3c4a9c/tokenizer.json",
+          "license": "mit",
+          "license_url": "https://huggingface.co/zai-org/GLM-5.3-Flash/tree/46a050bec13002ad29ee795c16e61cf4fa3c4a9c"
+        }
+      ]
+    },
+    {
+      "id": "gpt_oss120b",
+      "filename": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3.json",
+      "format": "huggingface_json",
+      "sha256": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3",
+      "size_bytes": 27868174,
+      "sources": [
+        {
+          "model": "gpt-oss-120b",
+          "repository": "openai/gpt-oss-120b",
+          "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+          "url": "https://huggingface.co/openai/gpt-oss-120b/resolve/b5c939de8f754692c1647ca79fbf85e8c1e70f8a/tokenizer.json",
+          "license": "apache-2.0",
+          "license_url": "https://huggingface.co/openai/gpt-oss-120b/tree/b5c939de8f754692c1647ca79fbf85e8c1e70f8a"
+        },
+        {
+          "model": "gpt-oss-safeguard-120b",
+          "repository": "openai/gpt-oss-safeguard-120b",
+          "revision": "3c7391182603991a904031244e7822488c67796d",
+          "url": "https://huggingface.co/openai/gpt-oss-safeguard-120b/resolve/3c7391182603991a904031244e7822488c67796d/tokenizer.json",
+          "license": "apache-2.0",
+          "license_url": "https://huggingface.co/openai/gpt-oss-safeguard-120b/tree/3c7391182603991a904031244e7822488c67796d"
+        }
+      ]
+    },
+    {
+      "id": "gemma4_31b",
+      "filename": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f.json",
+      "format": "huggingface_json",
+      "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+      "size_bytes": 32169626,
+      "sources": [
+        {
+          "model": "gemma4-31b",
+          "repository": "google/gemma-4-31B-it",
+          "revision": "842da3794eaa0b77d5f08bae87a17459d91ff475",
+          "url": "https://huggingface.co/google/gemma-4-31B-it/resolve/842da3794eaa0b77d5f08bae87a17459d91ff475/tokenizer.json",
+          "license": "apache-2.0",
+          "license_url": "https://huggingface.co/google/gemma-4-31B-it/tree/842da3794eaa0b77d5f08bae87a17459d91ff475"
+        }
+      ]
+    },
+    {
+      "id": "llama33_70b",
+      "filename": "384a7e7c676f7be2e5d2e8449c508be9b00e5b18c5b3c39ebc626e96b3f4b988.json",
+      "format": "huggingface_json",
+      "sha256": "384a7e7c676f7be2e5d2e8449c508be9b00e5b18c5b3c39ebc626e96b3f4b988",
+      "size_bytes": 17210019,
+      "sources": [
+        {
+          "model": "llama3-3-70b",
+          "repository": "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
+          "revision": "984c96b73bcf6a675945bac6382b9ed551e5d42b",
+          "url": "https://huggingface.co/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic/resolve/984c96b73bcf6a675945bac6382b9ed551e5d42b/tokenizer.json",
+          "license": "llama3.3",
+          "license_url": "https://huggingface.co/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic/tree/984c96b73bcf6a675945bac6382b9ed551e5d42b"
+        }
+      ]
+    },
+    {
+      "id": "kimi_k3",
+      "filename": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103.tiktoken",
+      "format": "tiktoken_ranks",
+      "sha256": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103",
+      "size_bytes": 2795286,
+      "sources": [
+        {
+          "model": "kimi-k3",
+          "repository": "moonshotai/Kimi-K3",
+          "revision": "a590ce090cb049c93a33dfe8c208ec652aa20503",
+          "url": "https://huggingface.co/moonshotai/Kimi-K3/resolve/a590ce090cb049c93a33dfe8c208ec652aa20503/tiktoken.model",
+          "license": "other",
+          "license_url": "https://huggingface.co/moonshotai/Kimi-K3/tree/a590ce090cb049c93a33dfe8c208ec652aa20503"
+        }
+      ]
+    }
+  ]
+}

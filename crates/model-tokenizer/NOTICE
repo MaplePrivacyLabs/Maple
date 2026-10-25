@@ -1,0 +1,13 @@
+model-tokenizer
+
+Original integration code is distributed under the repository MIT license.
+DeepSeek protocol/normalization code adapted from vLLM is Apache-2.0;
+see source headers and pinned reference metadata in tests/reference.
+Native Harmony Chat normalization and rendering adapted from vLLM and
+OpenAI Harmony are Apache-2.0; see src/harmony.rs and
+assets/harmony-renderer.provenance.json.
+
+Model tokenizer assets, templates and encoding references retain their upstream
+licenses. See assets/manifest.json, assets/kimi-k3-tokenizer-config.provenance.json
+and profiles/manifest.json for source identities and license references.
+No model weights are included.

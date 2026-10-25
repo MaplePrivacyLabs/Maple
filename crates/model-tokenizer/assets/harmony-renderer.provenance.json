@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "models": [
+    "gpt-oss-120b",
+    "gpt-oss-safeguard-120b"
+  ],
+  "vllm_revision": "0b3ba88f165976e77ca5e6a7a3f5bba4562b80af",
+  "harmony_revision": "abd677f7ac962629c808197caa1feb9e3e95d2b0",
+  "scope": "Native vLLM0.22 Chat request preprocessing and OpenAI Harmony0.0.8 text/tools rendering; formatting and ordinary encode-call boundaries retained. No runtime Python/network. Both pinned recipes use same native renderer; model vocab asset already pinned separately.",
+  "assumptions": [
+    "VLLM_SYSTEM_START_DATE is unset or equals explicitly supplied RenderContext date.",
+    "exclude_tools_when_tool_choice_none=false, matching pinned recipe default.",
+    "Default Harmony model identity, knowledge cutoff, channel configuration, no builtin browser/python support.",
+    "Non-text media and unsupported caller template/tokenizer overrides are not exact-count profiles."
+  ],
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/0b3ba88f165976e77ca5e6a7a3f5bba4562b80af/vllm/entrypoints/openai/parser/harmony_utils.py",
+      "sha256": "8b92fe61b4a2db9c5796be46cb7ae00218759255e9d236ced3d2070ec00b27d5",
+      "size_bytes": 15944,
+      "license": "Apache-2.0"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/0b3ba88f165976e77ca5e6a7a3f5bba4562b80af/vllm/entrypoints/serve/render/serving.py",
+      "sha256": "1dc7be234dad01e2013dd7ddcde6549cdf9b109d4ebca59c433fb364262f0066",
+      "size_bytes": 23567,
+      "license": "Apache-2.0"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/0b3ba88f165976e77ca5e6a7a3f5bba4562b80af/vllm/entrypoints/openai/chat_completion/protocol.py",
+      "sha256": "8dca1877812be555fc12235a9edd4775870e122da8e3b8a4de556ad1b534e3ee",
+      "size_bytes": 39772,
+      "license": "Apache-2.0"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/openai/harmony/abd677f7ac962629c808197caa1feb9e3e95d2b0/src/encoding.rs",
+      "sha256": "788675d601fe782e0c9aa7b1111166498a3ab380ca885b7d164e27f7438184ed",
+      "size_bytes": 66027,
+      "license": "Apache-2.0"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/openai/harmony/abd677f7ac962629c808197caa1feb9e3e95d2b0/src/chat.rs",
+      "sha256": "f265e41650cef6bee887e7f21b52a73f92dbcc34b1e2c4150606fd537a7fdc8a",
+      "size_bytes": 17376,
+      "license": "Apache-2.0"
+    }
+  ]
+}

@@ -14,6 +14,20 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
     def assert_routes(self, paths, *selected):
         self.assertEqual(classify_paths(paths), {name: name in selected for name in OUTPUTS})
 
+    def test_neutral_model_tokenizer_selects_backend_without_desktop_packaging(self):
+        for relative in ("Cargo.toml", "build.rs", "src/lib.rs", "assets/manifest.json", "nix/assets.nix", "tests/parity.rs"):
+            path = "crates/model-tokenizer/" + relative
+            with self.subTest(path=path):
+                self.assert_routes([path], "rust", "nix", "integration", "audit", "eif")
+                self.assertFalse(affects_agent(path))
+                self.assertEqual(research_routes(path), frozenset())
+        for relative in ("README.md", "AGENTS.md", "docs/profile.md"):
+            self.assert_routes(["crates/model-tokenizer/" + relative])
+        self.assert_routes(["scripts/ci/tokenizer.sh"], "rust")
+        self.assertEqual(research_routes("scripts/ci/tokenizer.sh"), frozenset())
+        self.assertFalse(affects_agent("scripts/ci/tokenizer.sh"))
+
+
     def test_backend_runtime_and_migrations_select_compatibility_without_packaging_apps(self):
         for relative in ("src/main.rs", "src/web/session.rs", "tests/contracts.rs",
                          "migrations/2026/up.sql", ".cargo/config.toml", "build.rs"):

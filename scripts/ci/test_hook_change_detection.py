@@ -121,6 +121,13 @@ class HookChangeDetectionTests(unittest.TestCase):
             "agent",
         )
 
+    def test_neutral_model_tokenizer_checks_only_its_backend_consumer(self) -> None:
+        for relative in ("Cargo.toml", "build.rs", "src/lib.rs", "assets/manifest.json", "nix/assets.nix", "tests/parity.rs"):
+            self.assert_selects(["crates/model-tokenizer/" + relative], "opensecret")
+        self.assert_selects(["crates/model-tokenizer/README.md"])
+        self.assert_selects(["scripts/fetch-tokenizer-assets.py"], "repo")
+        self.assert_selects(["scripts/ci/tokenizer.sh"], "opensecret", "repo")
+
     def test_repository_inputs(self) -> None:
         for path in (".github/workflows/proxy-rust.yml", "scripts/ci/change_detection.py", "flake.nix", "flake.lock"):
             with self.subTest(path=path):

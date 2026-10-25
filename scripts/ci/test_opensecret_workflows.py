@@ -144,7 +144,10 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             self.assertNotRegex(value, r"upload-artifact|download-artifact|flakehub-cache|gh release")
         cache = next(step["with"] for step in config["jobs"]["rust"]["steps"]
                      if "rust-cache@" in step.get("uses", ""))
-        self.assertEqual(cache["workspaces"], "services/opensecret -> target")
+        self.assertEqual(cache["workspaces"].splitlines(), [
+            "services/opensecret -> target", "crates/model-tokenizer -> target",
+        ])
+        self.assertIn("'crates/model-tokenizer/Cargo.lock'", cache["key"])
         self.assertEqual(cache["save-if"],
                          "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
 
@@ -304,6 +307,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             "nix develop --no-update-lock-file '.?submodules=1' -c cargo fmt --all -- --check",
             "nix develop --no-update-lock-file '.?submodules=1' -c cargo clippy --locked --all-targets --all-features -- -D warnings",
             "nix develop --no-update-lock-file '.?submodules=1' -c cargo test --locked --all-features",
+            "nix develop --no-update-lock-file '.?submodules=1' -c bash ../../scripts/ci/tokenizer.sh",
         ])
         nix_commands = [step["run"] for step in config["jobs"]["nix"]["steps"] if "run" in step]
         self.assertEqual(nix_commands, [
