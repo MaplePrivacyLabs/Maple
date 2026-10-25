@@ -1,5 +1,5 @@
 //! Background work that fills in a loaded transcript: one-line tool
-//! summaries from the title model, and the attachment images the
+//! summaries from the summary model, and the attachment images the
 //! runtime stores out of band.
 
 use std::{collections::HashSet, sync::Arc};
@@ -34,7 +34,7 @@ fn summary_source(item: &AgentTimelineItem) -> Option<String> {
 }
 
 impl ChatScreen {
-    /// Ask the title model for a one-line summary of the completed tool
+    /// Ask the summary model for a one-line summary of the completed tool
     /// call at `index`. At most a few
     /// requests ride at once; the rest wait in `summary_queue`. Each item
     /// is only ever asked once per session visit.
@@ -79,7 +79,7 @@ impl ChatScreen {
         self.start_summary(item_id, output, cx);
     }
 
-    /// Ask the title model for a one-line header of the thinking block at
+    /// Ask the summary model for a one-line header of the thinking block at
     /// `index`, once it is final: a later item follows it or its run
     /// ended. Shares the request slots and store with tool summaries.
     pub(super) fn maybe_summarize_thinking(&mut self, index: usize, cx: &mut Context<Self>) {
