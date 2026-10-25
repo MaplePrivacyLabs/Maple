@@ -23,7 +23,7 @@ case "$(host_os)" in
     prepend_linux_runtime_library_path
     prepare_tauri_linuxdeploy_tools_cache
     verify_linuxdeploy_plugin_metadata
-    run_with_nix_usr_bin "${TAURI_DIR}/target/.tauri/linuxdeploy-$(linuxdeploy_tools_arch).AppImage" --appimage-extract-and-run --list-plugins
+    run_with_nix_usr_bin "$(tauri_linuxdeploy_wrapper)" --appimage-extract-and-run --list-plugins
     run_with_nix_usr_bin pkg-config --modversion glib-2.0
     remove_build_tree "${TAURI_DIR}/target/release/bundle/appimage"
     remove_build_tree "${TAURI_DIR}/target/release/bundle/deb"
