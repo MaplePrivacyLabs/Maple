@@ -113,7 +113,7 @@ export function AgentWorkAnnouncement({ userId }: { userId: string }) {
             <div className="space-y-2 rounded-xl border border-[hsl(var(--maple-primary))]/25 bg-[hsl(var(--maple-primary))]/10 p-4">
               <p className="flex items-center gap-2 font-semibold">
                 <Gift aria-hidden="true" className="h-4 w-4 shrink-0" />
-                Up to 90% off DeepSeek
+                50% off DeepSeek for a limited time
               </p>
               <p className="text-muted-foreground">
                 For a limited time, enjoy special pricing on DeepSeek usage in Maple Work. Your
