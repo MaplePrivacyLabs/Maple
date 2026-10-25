@@ -428,6 +428,103 @@ fn version_advisory_clears_for_equal_unknown_or_unsupported_peer_versions(cx: &m
 }
 
 #[gpui::test]
+fn peer_status_distinguishes_protocol_refusal_from_offline_revoked_and_invalid_frames(
+    cx: &mut TestAppContext,
+) {
+    use crate::remote::wire::{Error, Refusal};
+
+    let screen = screen(cx);
+    let cases = [
+        (
+            Refusal::terminal(Error::Incompatible.to_string()).into_error(),
+            PeerInfoPhase::Incompatible,
+        ),
+        (Error::Disconnected.to_string(), PeerInfoPhase::Unreachable),
+        (Error::TimedOut.to_string(), PeerInfoPhase::Unreachable),
+        (
+            Refusal::terminal("This computer is no longer paired").into_error(),
+            PeerInfoPhase::Unreachable,
+        ),
+        (
+            Refusal::terminal(Error::InvalidFrame.to_string()).into_error(),
+            PeerInfoPhase::Unreachable,
+        ),
+    ];
+    screen.update(cx, |screen, _| {
+        seed_update(screen, "b", [2; 16]);
+        for has_cached_info in [false, true] {
+            for (error, phase) in &cases {
+                seed_update(screen, "a", [1; 16]);
+                if !has_cached_info {
+                    screen.computer_updates.get_mut("a").unwrap().info = None;
+                }
+                screen.apply_peer_info("a", [1; 16], 1, Err(error.clone()));
+                let update = &screen.computer_updates["a"];
+                assert_eq!(update.phase, *phase, "{error}");
+                assert_eq!(
+                    update.update_label.starts_with("Update required"),
+                    *phase == PeerInfoPhase::Incompatible,
+                    "{error}"
+                );
+                assert!(!update.install_available);
+                assert!(update.version_warning.is_none());
+                assert!(update.blocked_label.is_none());
+                if has_cached_info {
+                    assert_eq!(update.running_label, "Last reported v0.0.6 · build 550");
+                    assert!(update.info.is_some(), "the old report remains historical");
+                } else {
+                    assert_eq!(update.running_label, "Version unavailable");
+                }
+                assert!(screen.computer_updates["b"].install_available);
+            }
+        }
+        // Only a new successful report restores current status and install eligibility.
+        screen.apply_peer_info("a", [1; 16], 1, Ok(Some(ready_peer())));
+        let update = &screen.computer_updates["a"];
+        assert_eq!(update.phase, PeerInfoPhase::Loaded);
+        assert!(update.running_label.starts_with("Running v"));
+        assert!(update.install_available);
+    });
+}
+
+#[gpui::test]
+fn protocol_refusal_cancels_consent_and_disables_cached_remote_update_offer(
+    cx: &mut TestAppContext,
+) {
+    let (screen, cx) = show_update(cx);
+    let install = cx.debug_bounds("update-remote-a").unwrap();
+    cx.simulate_click(install.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("remote-update-confirmation").is_some());
+    screen.update(cx, |screen, cx| {
+        screen.apply_peer_info(
+            "a",
+            [1; 16],
+            1,
+            Err(crate::remote::wire::Refusal::terminal(
+                crate::remote::wire::Error::Incompatible.to_string(),
+            )
+            .into_error()),
+        );
+        assert!(screen.take_install_intent().is_none());
+        assert!(screen.computer_updates["a"].attempt.is_none());
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("remote-update-confirmation").is_none());
+    assert!(cx.debug_bounds("remote-version-warning-a").is_none());
+    let install = cx.debug_bounds("update-remote-a").unwrap();
+    cx.simulate_click(install.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("remote-update-confirmation").is_none());
+    screen.read_with(cx, |screen, _| {
+        assert!(!screen.computer_updates["a"].install_available);
+        assert!(screen.computer_updates["a"].attempt.is_none());
+        assert!(screen.status.as_ref().unwrap().peers["a"].can_connect);
+    });
+}
+
+#[gpui::test]
 fn installing_a_different_target_warns_without_requiring_the_client_to_update(
     cx: &mut TestAppContext,
 ) {
@@ -738,6 +835,16 @@ fn old_peer_probe_cannot_replace_newer_generation_or_pairing(cx: &mut TestAppCon
         seed_update(screen, "a", [1; 16]);
         screen.computer_updates.get_mut("a").unwrap().generation = 2;
         screen.apply_peer_info("a", [1; 16], 1, Ok(None));
+        assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Loaded);
+        screen.apply_peer_info(
+            "a",
+            [1; 16],
+            1,
+            Err(crate::remote::wire::Refusal::terminal(
+                crate::remote::wire::Error::Incompatible.to_string(),
+            )
+            .into_error()),
+        );
         assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Loaded);
         let mut status = screen.status.clone().unwrap();
         status.peers.get_mut("a").unwrap().grant = [2; 16];

@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 pub const MAX_MANAGEMENT_REPLY: usize = 16 * 1024;
@@ -124,6 +124,9 @@ pub enum Method {
     TaskFacts,
     ReadRow,
     ReadAttachment,
+    UploadAttachment,
+    AttachmentUploadStatus,
+    CancelAttachmentUpload,
     QueuedMessage,
     Subscribe,
     ListMcpDefinitions,
@@ -179,6 +182,8 @@ impl Method {
     pub fn priority(self) -> i32 {
         if self.urgent() {
             10
+        } else if self == Self::UploadAttachment {
+            -5
         } else if matches!(self, Self::OpenTask | Self::HistoryBefore) {
             5
         } else {
@@ -187,7 +192,14 @@ impl Method {
     }
 
     pub fn reply_limit(self) -> usize {
-        if matches!(self, Self::PeerInfo | Self::RemoteUpdateInstall) {
+        if matches!(
+            self,
+            Self::PeerInfo
+                | Self::RemoteUpdateInstall
+                | Self::UploadAttachment
+                | Self::AttachmentUploadStatus
+                | Self::CancelAttachmentUpload
+        ) {
             MAX_MANAGEMENT_REPLY
         } else if matches!(self, Self::BrowseProjectFolders | Self::CreateProjectFolder) {
             256 * 1024
@@ -216,7 +228,10 @@ impl Method {
     pub fn urgent(self) -> bool {
         matches!(
             self,
-            Self::CancelRun | Self::AnswerQuestion | Self::CancelExternalAgent
+            Self::CancelRun
+                | Self::AnswerQuestion
+                | Self::CancelExternalAgent
+                | Self::CancelAttachmentUpload
         )
     }
     pub fn parse(value: &str) -> Result<Self, String> {
@@ -249,13 +264,25 @@ pub enum Error {
     InvalidFrame,
     Incompatible,
 }
+
+const INCOMPATIBLE_PROTOCOL_MESSAGE: &str =
+    "These Maple remote protocol versions are incompatible. Update both computers.";
+
+/// The GUI receives terminal refusals through the host's string error boundary.
+/// Only the explicit protocol refusal establishes that an update is required;
+/// malformed frames, network failures and revoked authority do not.
+#[cfg(any(feature = "desktop", test))]
+pub(crate) fn is_protocol_incompatibility_refusal(message: &str) -> bool {
+    message.strip_prefix("Remote access ended: ") == Some(INCOMPATIBLE_PROTOCOL_MESSAGE)
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::TimedOut => "Remote transfer stopped making progress",
             Self::Disconnected => "Remote computer disconnected",
             Self::InvalidFrame => "The remote computer sent an invalid message. Update both computers before reconnecting.",
-            Self::Incompatible => "These Maple remote protocol versions are incompatible. Update both computers.",
+            Self::Incompatible => INCOMPATIBLE_PROTOCOL_MESSAGE,
         })
     }
 }
@@ -493,6 +520,23 @@ mod tests {
     }
 
     #[test]
+    fn only_explicit_terminal_protocol_refusal_requires_an_update() {
+        let incompatible = Error::Incompatible.to_string();
+        assert!(is_protocol_incompatibility_refusal(
+            &Refusal::terminal(incompatible.clone()).into_error()
+        ));
+        for error in [
+            Refusal::temporary(incompatible).into_error(),
+            Refusal::terminal(Error::InvalidFrame.to_string()).into_error(),
+            Refusal::terminal("This computer is no longer paired").into_error(),
+            Error::Disconnected.to_string(),
+            Error::TimedOut.to_string(),
+        ] {
+            assert!(!is_protocol_incompatibility_refusal(&error), "{error}");
+        }
+    }
+
+    #[test]
     fn compatible_versions_do_not_depend_on_build_identity() {
         let mut hello = Hello {
             version: VERSION,
@@ -519,7 +563,7 @@ mod tests {
     #[test]
     fn optional_management_keeps_the_shipped_control_ack_and_alpn() {
         assert_eq!(ALPN, b"maple-agent/remote/1");
-        assert_eq!(VERSION, 6);
+        assert_eq!(VERSION, 7);
         assert_eq!(
             serde_json::to_string(&Ok::<(), Refusal>(())).unwrap(),
             r#"{"Ok":null}"#
@@ -548,18 +592,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn optional_folder_commands_preserve_the_shipped_wire_six_handshake() {
-        // Folder commands require optional capability discovery. They do not
-        // change the legacy handshake or prevent ordinary version-6 access.
+    async fn file_upload_wire_upgrade_refuses_six_before_decoding_requests() {
+        // Frozen released fixture: version 6 carries inline image data URLs.
+        // A clean baseline refuses it before those requests reach the decoder.
         let previous: serde_json::Value =
             serde_json::from_str(include_str!("wire_v6.json")).unwrap();
         for kind in ["hello", "pair"] {
             let (mut tx, mut rx) = tokio::io::duplex(4096);
             write(&mut tx, &previous[kind], MAX_PREFACE).await.unwrap();
-            let hello = read_hello(&mut rx).await.unwrap();
-            assert_eq!(hello.version, 6);
-            assert_eq!(hello.minimum_version, 6);
-            assert_eq!(serde_json::to_value(hello).unwrap(), previous[kind]);
+            let refusal = match read_hello(&mut rx).await {
+                Err(refusal) => refusal,
+                Ok(_) => panic!("wire 6 must update before file attachments are sent"),
+            };
+            assert!(is_protocol_incompatibility_refusal(&refusal.into_error()));
+        }
+    }
+
+    #[tokio::test]
+    async fn released_wire_six_refuses_seven_before_reading_any_request() {
+        // Freeze the released reader's version policy and refusal shape. Do not
+        // reuse the current VERSION/check_version when testing the other side.
+        #[derive(Deserialize)]
+        struct ReleasedVersion {
+            version: u32,
+            minimum_version: u32,
+        }
+        #[derive(Serialize)]
+        struct ReleasedRefusal {
+            terminal: bool,
+            message: &'static str,
+        }
+        let current: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v7.json")).unwrap();
+        for kind in ["hello", "pair"] {
+            let (mut client, mut server) = tokio::io::duplex(4096);
+            write(&mut client, &current[kind], MAX_PREFACE)
+                .await
+                .unwrap();
+            let untouched = b"request-body-must-not-be-read";
+            client.write_all(untouched).await.unwrap();
+            let value: serde_json::Value = read(&mut server, 4096).await.unwrap();
+            let version: ReleasedVersion = serde_json::from_value(value).unwrap();
+            let refused = version.minimum_version == 0
+                || version.minimum_version > version.version
+                || version.minimum_version > 6
+                || version.version < 6;
+            assert!(refused, "released wire 6 must refuse the new baseline");
+            write(&mut server, &Err::<(), _>(ReleasedRefusal {
+                terminal: true,
+                message: "These Maple remote protocol versions are incompatible. Update both computers.",
+            }), 4096).await.unwrap();
+            let reply: Result<(), Refusal> = read(&mut client, MAX_PREFACE).await.unwrap();
+            assert!(is_protocol_incompatibility_refusal(
+                &reply.unwrap_err().into_error()
+            ));
+            let mut remaining = vec![0; untouched.len()];
+            server.read_exact(&mut remaining).await.unwrap();
+            assert_eq!(
+                remaining, untouched,
+                "version refusal does not decode or admit queued sends"
+            );
         }
     }
 
@@ -615,9 +707,9 @@ mod tests {
         );
     }
     #[test]
-    fn shipped_wire_examples_are_stable() {
+    fn wire_seven_examples_are_stable() {
         let examples: serde_json::Value =
-            serde_json::from_str(include_str!("wire_v6.json")).unwrap();
+            serde_json::from_str(include_str!("wire_v7.json")).unwrap();
         fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
             let decoded: T = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
@@ -631,6 +723,12 @@ mod tests {
             check::<crate::host::protocol::Message>(&examples[key]);
         }
         check::<Command>(&examples["send"]);
+        check::<super::super::streams::Header>(&examples["upload_header"]);
+        check::<super::super::uploads::Upload>(&examples["upload"]);
+        assert!(
+            Method::parse("import_attachment").is_err(),
+            "local source paths never reach a remote filesystem importer"
+        );
         check::<Command>(&examples["rename_project"]);
         check::<maple_agent::agent::RecentProjectRoot>(
             &examples["project"]["Response"]["result"]["Ok"],

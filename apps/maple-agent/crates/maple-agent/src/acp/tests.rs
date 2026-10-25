@@ -960,7 +960,7 @@ async fn prompt_images_travel_through_the_read_image_helper() {
         .find(|item| item.role.as_deref() == Some("user"))
         .unwrap();
     assert_eq!(item.text.as_deref(), Some("What do you see?"));
-    let attachment = &item.input.as_ref().unwrap()["imageAttachments"][0];
+    let attachment = &item.input.as_ref().unwrap()["attachments"][0];
     assert_eq!(attachment["name"], "acp-image-1.png");
     assert!(
         attachment["source"]

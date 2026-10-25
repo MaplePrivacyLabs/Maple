@@ -44,6 +44,7 @@ fn fixture_journal(paths: &StorePaths, after: ResetAfter) -> Journal {
         previous_mode: StoreMode::Password,
         phase: Phase::RetireOriginal,
         source: DirectoryManifest::capture(&paths.db()).unwrap(),
+        attachments: attachments::root_identity(paths).unwrap(),
     }
 }
 
@@ -475,4 +476,46 @@ fn installed_generation_wins_over_reused_source_directory_identity() {
     );
     assert!(!intent_path(&store.paths).exists());
     assert!(!store.paths.root().join("db.old").exists());
+}
+
+#[test]
+fn unclassified_reset_removes_only_its_captured_attachment_root() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = unqualified(directory.path());
+    let root = store.paths.root().join("attachments");
+    private_directory(&root).unwrap();
+    let nested = root.join("captured");
+    private_directory(&nested).unwrap();
+    let mut file = private_new_file(&nested.join("file.txt")).unwrap();
+    file.write_all(b"owned upload").unwrap();
+    drop(file);
+    store.start_fresh(START_FRESH_CONFIRMATION).unwrap();
+    assert_eq!(store.state(), StoreState::Open);
+    assert!(!root.exists());
+}
+
+#[test]
+fn unclassified_reset_refuses_a_replaced_attachment_root() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = unqualified(directory.path());
+    let root = store.paths.root().join("attachments");
+    private_directory(&root).unwrap();
+    let journal = fixture_journal(&store.paths, ResetAfter::Erase);
+    write_json(&intent_path(&store.paths), &journal).unwrap();
+    let original = directory.path().join("preserved-original-attachments");
+    fs::rename(&root, &original).unwrap();
+    private_directory(&root).unwrap();
+    let mut file = private_new_file(&root.join("other-file")).unwrap();
+    file.write_all(b"do not delete replacement").unwrap();
+    drop(file);
+    assert!(matches!(
+        recover(&store.paths),
+        Err(LifecycleError::Store(StoreError::UnsafePath))
+    ));
+    assert_eq!(
+        fs::read(root.join("other-file")).unwrap(),
+        b"do not delete replacement"
+    );
+    assert!(original.exists());
+    assert!(store.paths.database().exists());
 }

@@ -360,7 +360,7 @@ impl Store {
     }
 
     /// Deterministic planner guards with and without statistics. Fixed queries
-    /// exercise source, paging, projector merge/hide/plan and blob lookups.
+    /// exercise source, paging, projector merge/hide/plan and attachment metadata.
     pub fn bench_query_plans(
         &self,
         account: AccountId,
@@ -396,8 +396,8 @@ impl Store {
                 ("call", "timeline_rows_call", "SELECT row_key FROM timeline_rows WHERE task_id=?1 AND epoch=0 AND call_id='call' AND hidden=0 ORDER BY row_seq DESC LIMIT 1",task.0),
                 ("hide", "timeline_rows_entry", "SELECT id FROM timeline_rows WHERE task_id=?1 AND epoch=0 AND entry_seq=2",task.0),
                 ("plan", "timeline_rows_plan", "SELECT item FROM timeline_rows WHERE task_id=?1 AND epoch=0 AND is_plan=1 AND hidden=0 ORDER BY row_seq DESC LIMIT 1",task.0),
-                ("blob-links", "task_blobs", "SELECT task_id FROM task_blobs WHERE blob_id=?1",-1),
-                ("attachment-collection", "attachments_task_blob", "SELECT public_id FROM attachments WHERE task_id=?1 AND blob_id=1 LIMIT 1000",task.0),
+                ("attachment-unbound", "file_attachments_unbound", "SELECT public_id FROM file_attachments WHERE bound=0 AND updated_ms<?1 ORDER BY updated_ms LIMIT 1",1),
+                ("attachment-collection", "file_attachments_task", "SELECT public_id FROM file_attachments WHERE task_id=?1 LIMIT 1000",task.0),
             ];
             let mut result=Vec::new();
             for (name,expected_index,query,parameter) in tests {
@@ -428,21 +428,10 @@ fn plan_matches(name: &str, expected_index: &str, details: &[String]) -> bool {
     }) {
         return false;
     }
-    // WITHOUT ROWID secondary indexes include the primary key (task_id,
-    // public_id). Either index can cover the selected public_id while seeking
-    // both equality constraints; a blob-only search would not be bounded by task.
+    // The payload is on disk. Collection must seek only this task's metadata;
+    // the index need not cover the selected public identifier.
     details.iter().any(|detail| {
-        ["attachments_task_blob", "attachments_blob"]
-            .iter()
-            .any(|index| {
-                let prefix = format!("SEARCH attachments USING COVERING INDEX {index} (");
-                detail.strip_prefix(&prefix).is_some_and(|constraints| {
-                    matches!(
-                        constraints,
-                        "task_id=? AND blob_id=?)" | "blob_id=? AND task_id=?)"
-                    )
-                })
-            })
+        detail == "SEARCH file_attachments USING INDEX file_attachments_task (task_id=?)"
     })
 }
 
@@ -635,28 +624,25 @@ mod tests {
     }
 
     #[test]
-    fn attachment_plan_accepts_both_covering_indexes_only_with_both_equalities() {
+    fn attachment_plan_requires_the_task_metadata_index() {
         let (_temp, store, account, _writers) = fixture();
-        for index in ["attachments_task_blob", "attachments_blob"] {
-            for (columns, predicate, accepted) in [
-                ("public_id", "task_id=?1 AND blob_id=1", true),
-                ("public_id", "task_id=?1", false),
-                ("public_id", "blob_id=?1", false),
-                ("created_ms", "task_id=?1 AND blob_id=1", false),
-            ] {
-                let details = store.read(|tx| {
+        for (predicate, accepted) in [
+            ("task_id=?1", true),
+            ("task_id>?1", false),
+            ("account_id=?1", false),
+        ] {
+            let details = store.read(|tx| {
                     let task = super::super::tasks::task_key_tx(tx, account, FIXTURE_A)?;
                     let mut statement = tx.prepare(&format!(
-                        "EXPLAIN QUERY PLAN SELECT {columns} FROM attachments INDEXED BY {index} WHERE {predicate} LIMIT 1000"))?;
+                        "EXPLAIN QUERY PLAN SELECT public_id FROM file_attachments INDEXED BY file_attachments_task WHERE {predicate} LIMIT 1000"))?;
                     Ok(statement.query_map([task.0], |row| row.get::<_, String>(3))?
                         .collect::<rusqlite::Result<Vec<_>>>()?)
                 }).unwrap();
-                assert_eq!(
-                    plan_matches("attachment-collection", "attachments_task_blob", &details),
-                    accepted,
-                    "{details:?}"
-                );
-            }
+            assert_eq!(
+                plan_matches("attachment-collection", "file_attachments_task", &details),
+                accepted,
+                "{details:?}"
+            );
         }
     }
 

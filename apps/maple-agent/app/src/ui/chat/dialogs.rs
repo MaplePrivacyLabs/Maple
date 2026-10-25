@@ -460,6 +460,20 @@ impl ChatScreen {
     /// Forget a task the backend no longer has. A deleted selection
     /// moves to the newest live task in the same root.
     pub(super) fn remove_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let sends: Vec<_> = self
+            .sending_previews
+            .iter()
+            .filter(|(_, preview)| preview.session.as_deref() == Some(session_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in sends {
+            self.cancel_attachment_send(&id, cx);
+            self.attachment_uploads.remove(&id);
+            self.sending_previews.remove(&id);
+            self.discarded_sends.insert(id);
+        }
+        self.unresolved_sends
+            .retain(|_, send| send.session != session_id);
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.forget_tasks(&[session_id.to_owned()], cx)
         });

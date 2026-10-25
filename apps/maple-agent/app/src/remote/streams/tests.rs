@@ -3,7 +3,7 @@ use iroh::{Endpoint, RelayMode, endpoint::presets};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub(super) async fn endpoints() -> (Endpoint, Endpoint, Connection, Connection) {
+pub(in crate::remote) async fn endpoints() -> (Endpoint, Endpoint, Connection, Connection) {
     async fn endpoint() -> Endpoint {
         Endpoint::builder(presets::Minimal)
             .alpns(vec![wire::ALPN.to_vec()])
@@ -26,7 +26,7 @@ pub(super) async fn endpoints() -> (Endpoint, Endpoint, Connection, Connection) 
     (a, b, client, server)
 }
 
-pub(super) fn command(id: u64, method: Method) -> Command {
+pub(in crate::remote) fn command(id: u64, method: Method) -> Command {
     Command {
         id,
         method,
@@ -46,7 +46,7 @@ async fn receive(
 }
 
 #[tokio::test]
-async fn legacy_wire_six_rejects_optional_probe_without_losing_ordinary_requests() {
+async fn unsupported_optional_probe_does_not_lose_ordinary_requests() {
     // This decoder is intentionally frozen to the old method set. It must not
     // acquire the new enum variants from the implementation under test.
     #[derive(Deserialize)]
@@ -589,4 +589,126 @@ fn ranges_have_four_slots_and_do_not_consume_urgent_capacity() {
     assert_eq!(Method::OpenTask.priority(), 5);
     assert_eq!(Method::HistoryBefore.priority(), 5);
     assert_eq!(Method::CancelRun.priority(), 10);
+}
+
+#[tokio::test]
+async fn header_admission_queues_a_full_legitimate_burst_without_rejecting_urgent_calls() {
+    let (a, b, client, server) = endpoints().await;
+    let capacity = Arc::new(Capacity::new());
+    let mut callers = tokio::task::JoinSet::new();
+    let mut receivers = tokio::task::JoinSet::new();
+    // Every pool may send at once. Forty short valid headers must not race the
+    // eight active reader limit and receive incidental busy/refused errors.
+    for id in 0..MAX_REQUESTS as u64 {
+        let client = client.clone();
+        callers.spawn(async move {
+            let method = match id {
+                0..32 => Method::ListTasks,
+                32..36 => Method::ReadAttachment,
+                36..38 => Method::UploadAttachment,
+                _ => Method::CancelRun,
+            };
+            call(&client, command(id, method)).await.unwrap()
+        });
+    }
+    for _ in 0..MAX_REQUESTS {
+        let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+        let capacity = capacity.clone();
+        receivers.spawn(async move {
+            // This is the same queued admission and parse path serve_request
+            // executes, with real independently accepted QUIC streams.
+            let header = capacity.read_header(&mut rx).await.unwrap();
+            let id = header.id;
+            header.body(&mut rx).await.unwrap();
+            reply(
+                &mut tx,
+                &Message::Response {
+                    id,
+                    result: Ok(serde_json::Value::Null),
+                },
+            )
+            .await
+            .unwrap();
+        });
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(response) = callers.join_next().await {
+            assert!(matches!(
+                response.unwrap(),
+                Message::Response { result: Ok(_), .. }
+            ));
+        }
+        while let Some(response) = receivers.join_next().await {
+            response.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn incomplete_headers_expire_and_queued_urgent_header_recovers_without_reset() {
+    let (a, b, client, server) = endpoints().await;
+    let capacity = Arc::new(Capacity::new());
+    let mut withheld = Vec::new();
+    let mut readers = tokio::task::JoinSet::new();
+    for _ in 0..MAX_PENDING_HEADERS {
+        let (mut tx, rx) = client.open_bi().await.unwrap();
+        tx.write_u32(100).await.unwrap();
+        tx.write_all(b"{").await.unwrap();
+        withheld.push((tx, rx));
+        let (response, mut body) = server.accept_bi().await.unwrap();
+        let capacity = capacity.clone();
+        readers.spawn(async move {
+            let _response = response;
+            capacity
+                .read_header_with_timeout(&mut body, Duration::from_secs(3))
+                .await
+        });
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while capacity.headers.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let control = call(&client, command(100, Method::CancelRun));
+    let accept = async {
+        let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+        let header = capacity
+            .read_header_with_timeout(&mut rx, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(header.method, Method::CancelRun);
+        let id = header.id;
+        header.body(&mut rx).await.unwrap();
+        reply(
+            &mut tx,
+            &Message::Response {
+                id,
+                result: Ok(serde_json::Value::Null),
+            },
+        )
+        .await
+        .unwrap();
+    };
+    let (answer, ()) = tokio::time::timeout(Duration::from_secs(6), async {
+        tokio::join!(control, accept)
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        answer.unwrap(),
+        Message::Response { result: Ok(_), .. }
+    ));
+    while let Some(result) = readers.join_next().await {
+        assert!(matches!(result.unwrap(),Err(reason) if reason=="Remote request header timed out"));
+    }
+    assert_eq!(capacity.headers.available_permits(), MAX_PENDING_HEADERS);
+    drop(withheld);
+    a.close().await;
+    b.close().await;
 }

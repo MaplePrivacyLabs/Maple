@@ -10,7 +10,7 @@ use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
-    COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftImage, OpenSettingsSection,
+    COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
     ROOT_MENU_RECENTS, SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
 };
 use crate::ui::icons::{icon, spinner};
@@ -254,7 +254,7 @@ impl ChatScreen {
                 let next = !self.web_enabled;
                 self.set_web_enabled(next, cx);
             }
-            ComposerControl::Images => self.pick_images(cx),
+            ComposerControl::Images => self.pick_attachments(cx),
             ComposerControl::Dictate => self.toggle_recording(cx),
         }
     }
@@ -345,7 +345,7 @@ impl ChatScreen {
             ),
             ComposerControl::Images => div().child(
                 div()
-                    .id("add-images")
+                    .id("add-attachments")
                     .size_8()
                     .flex()
                     .items_center()
@@ -357,12 +357,12 @@ impl ChatScreen {
                             .cursor_pointer()
                     })
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
-                    .when(self.image_picking, |el| el.opacity(0.5))
-                    .tooltip(widgets::tooltip("Attach images", None))
+                    .when(self.attachment_picking, |el| el.opacity(0.5))
+                    .tooltip(widgets::tooltip("Attach files or images", None))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.activate_composer_control(ComposerControl::Images, cx);
                     }))
-                    .child(icon("image", px(16.), theme::text_secondary())),
+                    .child(icon("paperclip", px(16.), theme::text_secondary())),
             ),
             ComposerControl::Dictate => {
                 let recording = self.recording;
@@ -982,13 +982,13 @@ impl ChatScreen {
             "Sending…"
         };
         let has_text = self.composer_has_text;
-        let has_images = !self.draft_images.is_empty();
-        let images_ready = self.draft_images.iter().all(DraftImage::ready);
-        let can_send = !disabled && images_ready && (has_text || has_images);
+        let has_attachments = !self.draft_attachments.is_empty();
+        let attachments_ready = self.draft_attachments.iter().all(DraftAttachment::ready);
+        let can_send = !disabled && attachments_ready && (has_text || has_attachments);
         // One control. Stop only while a run is active and nothing is
-        // waiting to send. Text, or an image that is still encoding,
+        // waiting to send. Text, or an file that is still being prepared,
         // turns it back into Send, which queues behind the run.
-        let drafting = has_text || has_images;
+        let drafting = has_text || has_attachments;
         let show_stop = running && !disabled && !drafting;
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
@@ -1042,7 +1042,10 @@ impl ChatScreen {
                 self.render_composer_control(control, selected_control == Some(control), window, cx)
             })
             .collect::<Vec<_>>();
-        let drafts = &self.draft_images;
+        let drafts = &self.draft_attachments;
+        let upload = self
+            .selected_upload()
+            .map(|(id, upload)| (id.to_string(), upload.label.clone()));
         div()
             .w_full()
             .flex()
@@ -1057,7 +1060,7 @@ impl ChatScreen {
             .when(disabled, |container| {
                 container.border_color(gpui::rgb(theme::border()))
             })
-            // Files dragged from the desktop land as image attachments.
+            // Native files are copied locally before any execution-side upload.
             .can_drop(|dragged, _window, _cx| {
                 dragged.downcast_ref::<gpui::ExternalPaths>().is_some()
             })
@@ -1069,38 +1072,92 @@ impl ChatScreen {
             })
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
-                    this.add_image_paths(paths.paths().to_vec(), cx);
+                    this.add_attachment_paths(paths.paths().to_vec(), cx);
                 }),
             )
             .children(queue_chips)
+            .when_some(upload, |container, (id, label)| {
+                container.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_4()
+                        .pt_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child(label),
+                        )
+                        .child(
+                            widgets::secondary_button("cancel-attachment-upload")
+                                .text_xs()
+                                .child("Cancel")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cancel_attachment_send(&id, cx)
+                                })),
+                        ),
+                )
+            })
             .when(!drafts.is_empty(), |container| {
                 container.child(div().flex().flex_wrap().gap_2().px_4().pt_4().children(
-                    drafts.iter().enumerate().map(|(index, image)| {
+                    drafts.iter().map(|attachment| {
+                        let id = attachment.id;
                         div()
                             .relative()
-                            .size_16()
+                            .max_w(px(260.))
+                            .h_16()
                             .rounded(theme::RADIUS_LG)
                             .border_1()
                             .border_color(gpui::rgb(theme::border()))
                             .bg(gpui::rgb(theme::bg_elevated()))
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .map(|frame| match &image.thumbnail {
-                                // The thumbnail is already a square crop, so
-                                // it fills the frame and the corners round.
-                                Some(thumbnail) => frame.child(
+                            .gap_2()
+                            .pr_4()
+                            .child(match &attachment.thumbnail {
+                                Some(thumbnail) => div().size_16().flex_none().child(
                                     gpui::img(gpui::ImageSource::Image(Arc::clone(thumbnail)))
                                         .size_full()
                                         .rounded(theme::RADIUS_LG),
                                 ),
-                                None => {
-                                    frame.child(icon("image", px(20.), theme::text_secondary()))
-                                }
+                                None => div()
+                                    .size_12()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon(
+                                        if attachment.mime_type.starts_with("image/") {
+                                            "image"
+                                        } else {
+                                            "paperclip"
+                                        },
+                                        px(20.),
+                                        theme::text_secondary(),
+                                    )),
                             })
                             .child(
                                 div()
-                                    .id(gpui::SharedString::from(format!("draft-remove-{index}")))
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div().truncate().text_sm().child(attachment.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(gpui::rgb(theme::text_muted()))
+                                            .child(attachment.detail.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id(gpui::SharedString::from(format!("draft-remove-{id}")))
                                     .absolute()
                                     .top(px(-4.))
                                     .right(px(-4.))
@@ -1114,10 +1171,7 @@ impl ChatScreen {
                                     .border_color(gpui::rgb(theme::border()))
                                     .hover(|style| style.cursor_pointer())
                                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                                        if index < this.draft_images.len() {
-                                            this.draft_images.remove(index);
-                                        }
-                                        cx.notify();
+                                        this.remove_attachment(id, cx);
                                     }))
                                     .child(icon("x", px(10.), theme::text_primary())),
                             )

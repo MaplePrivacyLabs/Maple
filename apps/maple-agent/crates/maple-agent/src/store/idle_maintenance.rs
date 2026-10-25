@@ -58,70 +58,80 @@ mod tests {
             .unwrap()
     }
 
-    fn seed_deleted_blob(store: &Store) -> Vec<u8> {
-        let live = vec![0xa6; 64 * 1024];
+    fn seed_deleted_source(store: &Store) -> Vec<u8> {
+        let payload = |id, size| {
+            serde_json::to_vec(&pi_coding_agent::session::SessionEntry {
+                id: format!("entry{id}"),
+                parent_id: None,
+                timestamp: 1,
+                kind: pi_coding_agent::session::EntryKind::CustomMessage {
+                    custom_type: "vacuum-fixture".into(),
+                    content: vec![pi_ai::Content::text("x".repeat(size))],
+                    display: false,
+                    details: None,
+                },
+            })
+            .unwrap()
+        };
+        let retired = payload(1, 1024 * 1024);
+        let live = payload(2, 64 * 1024);
         store
             .write(Durability::Durable, |transaction| {
-                transaction.execute(
-                    "INSERT INTO blobs(id,sha256,mime,size,complete,created_ms)
-                     VALUES(1,?1,'application/octet-stream',1048576,1,1),
-                           (2,?2,'application/octet-stream',65536,1,1)",
-                    params![[1_u8; 32].as_slice(), [2_u8; 32].as_slice()],
-                )?;
-                for index in 0..4 {
+                transaction.execute("INSERT INTO accounts(id,user_key,user_id,created_ms,last_seen_ms) VALUES (1,'a','A',1,1)", [])?;
+                transaction.execute("INSERT INTO projects(id,account_id,root,last_used_ms) VALUES (1,1,'/vacuum-fixture',1)", [])?;
+                transaction.execute("INSERT INTO tasks(id,uuid,account_id,project_id,kind,state,title,title_fold,created_ms,updated_ms) VALUES (1,'vacuum-task',1,1,'desktop','settled','vacuum','vacuum',1,1)", [])?;
+                for (id, bytes) in [(1, &retired), (2, &live)] {
+                    // Leave the fixture uncompressed to create real free pages.
                     transaction.execute(
-                        "INSERT INTO blob_chunks(blob_id,idx,data) VALUES(1,?1,zeroblob(262144))",
-                        [index],
+                        "INSERT INTO entries(id,task_id,seq,entry_id,kind,created_ms,bytes,payload) \
+                         VALUES (?1,1,?1,?2,'custom_message',1,?3,?4)",
+                        params![id, format!("entry{id}"), bytes.len() as i64, bytes],
                     )?;
                 }
-                transaction.execute(
-                    "INSERT INTO blob_chunks(blob_id,idx,data) VALUES(2,0,?1)",
-                    [&live],
-                )?;
                 Ok(())
             })
             .unwrap();
         store
             .write(Durability::Durable, |transaction| {
-                transaction.execute("DELETE FROM blobs WHERE id=1", [])?;
+                transaction.execute("DELETE FROM entries WHERE id=1", [])?;
                 Ok(())
             })
             .unwrap();
         live
     }
 
-    fn assert_live_blob(store: &Store, expected: &[u8]) {
+    fn assert_live_source(store: &Store, expected: &[u8]) {
         let actual: Vec<u8> = store
             .read(|transaction| {
-                Ok(transaction.query_row(
-                    "SELECT data FROM blob_chunks WHERE blob_id=2 AND idx=0",
-                    [],
-                    |row| row.get(0),
-                )?)
+                Ok(
+                    transaction.query_row("SELECT payload FROM entries WHERE id=2", [], |row| {
+                        row.get(0)
+                    })?,
+                )
             })
             .unwrap();
         assert_eq!(actual, expected);
     }
 
     #[test]
-    fn incremental_chunks_reclaim_multiple_pages_with_a_fixed_bound_and_preserve_live_blobs() {
+    fn incremental_chunks_reclaim_multiple_pages_with_a_fixed_bound_and_preserve_live_source() {
         for keyed in [false, true] {
             let (_directory, store) = fixture(keyed);
-            let live = seed_deleted_blob(&store);
+            let live = seed_deleted_source(&store);
             let mut before = free_pages(&store);
             assert!(before > i64::from(VACUUM_PAGE_CAP) * 3);
 
             store.idle_storage_maintenance(false).unwrap();
             let after = free_pages(&store);
             assert_eq!(before - after, i64::from(VACUUM_PAGE_CAP));
-            assert_live_blob(&store, &live);
+            assert_live_source(&store, &live);
             before = after;
 
             for _ in 0..16 {
                 store.idle_storage_maintenance(false).unwrap();
                 let after = free_pages(&store);
                 assert!((0..=i64::from(VACUUM_PAGE_CAP)).contains(&(before - after)));
-                assert_live_blob(&store, &live);
+                assert_live_source(&store, &live);
                 if after == 0 {
                     break;
                 }
@@ -131,7 +141,7 @@ mod tests {
             assert_eq!(free_pages(&store), 0);
             // Repeated idle scheduling remains harmless once reclamation ends.
             store.idle_storage_maintenance(true).unwrap();
-            assert_live_blob(&store, &live);
+            assert_live_source(&store, &live);
             store.close().unwrap();
         }
     }

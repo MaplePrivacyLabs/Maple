@@ -4,18 +4,19 @@ use crate::{
     stats::Samples,
 };
 use anyhow::{Context, Result, ensure};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maple_agent::store::bench::{EffectivePragmas, FixtureOwner, PlanCheck, SeedEntry};
 use maple_agent::store::keys::{KdfParams, KeyFile, LockedKey, generate_passphrase};
 use maple_agent::store::{
-    AccountId, HistoryPageRequest, ImageUpload, NavigationGroupQuery, NavigationSearchQuery,
-    NavigationTaskQuery, NewTask, OpenTaskPageRequest, PageTransport, PinFilter, RowRangeRequest,
-    RowReader, Store, StorePaths, TaskKind, TaskPatch, TaskSection, TaskState,
+    AccountId, AttachmentUploadMetadata, AttachmentUploadStart, HistoryPageRequest,
+    NavigationGroupQuery, NavigationSearchQuery, NavigationTaskQuery, NewTask, OpenTaskPageRequest,
+    PageTransport, PinFilter, RowRangeRequest, RowReader, Store, StorePaths, StoredAttachment,
+    TaskKind, TaskPatch, TaskSection, TaskState,
 };
 use pi_coding_agent::session::{SESSION_VERSION, SessionHeader};
 use pi_coding_agent::store::{JsonlStore, SessionStore};
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
@@ -433,6 +434,33 @@ fn seed(
     )
 }
 
+fn upload_fixture(
+    store: &Store,
+    account: AccountId,
+    task: &str,
+    operation: &str,
+    name: &str,
+    bytes: &[u8],
+) -> Result<StoredAttachment> {
+    let metadata = AttachmentUploadMetadata {
+        name: name.into(),
+        mime_type: "application/octet-stream".into(),
+        size: bytes.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    };
+    let attachment = match store.begin_attachment_upload(account, task, operation, &metadata)? {
+        AttachmentUploadStart::Complete(attachment) => attachment,
+        AttachmentUploadStart::Writing(mut writer) => {
+            for chunk in bytes.chunks(1024 * 1024) {
+                writer.write_chunk(chunk)?;
+            }
+            writer.finish(store)?
+        }
+    };
+    store.pin_attachments(account, task, std::slice::from_ref(&attachment.id))?;
+    Ok(attachment)
+}
+
 fn attachment_scenarios(
     store: &Arc<Store>,
     account: AccountId,
@@ -440,15 +468,14 @@ fn attachment_scenarios(
     scenarios: &mut Vec<Samples>,
     observations: &mut BTreeMap<String, Value>,
 ) -> Result<()> {
-    let mut bytes = vec![0u8; 10 * 1024 * 1024];
-    bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-    let attachments = store.store_image_uploads(
+    let bytes = vec![0u8; 10 * 1024 * 1024];
+    let attachment = upload_fixture(
+        store,
         account,
         &task.uuid,
-        &[ImageUpload {
-            name: "synthetic.png".into(),
-            data_url: format!("data:image/png;base64,{}", STANDARD.encode(&bytes)),
-        }],
+        "benchmark-read-file",
+        "synthetic.bin",
+        &bytes,
     )?;
     let read = || -> Result<usize> {
         let mut offset = 0;
@@ -456,7 +483,7 @@ fn attachment_scenarios(
             let range = store.read_attachment(
                 account,
                 &task.uuid,
-                &attachments[0].id,
+                &attachment.id,
                 offset as u64,
                 1024 * 1024,
             )?;
@@ -473,6 +500,10 @@ fn attachment_scenarios(
     ));
     scenarios.push(measure("attachment_10mib_warm", 5, || read().map(|_| ()))?);
     observations.insert("attachment_bytes".into(), json!(bytes.len()));
+    observations.insert(
+        "attachment_storage".into(),
+        json!("plaintext session-owned file; database metadata only"),
+    );
     Ok(())
 }
 
@@ -502,18 +533,20 @@ fn oversized_scenarios(
             created_ms: task.created_ms,
         },
     )?;
-    // A distinct chunked blob makes this deletion exercise blob payload work,
-    // rather than only removing a shared attachment link from the hot task.
-    let mut blob = vec![0x55; 10 * 1024 * 1024];
-    blob[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-    let upload = ImageUpload {
-        name: "synthetic-deleted.png".into(),
-        data_url: format!("data:image/png;base64,{}", STANDARD.encode(blob)),
-    };
+    // Each task owns a separate file. Deletion measures file unlink and durable
+    // metadata removal, not a SQL payload rewrite or a shared blob reference.
+    let bytes = vec![0x55; 10 * 1024 * 1024];
     let started = Instant::now();
-    store.store_image_uploads(account, &task.uuid, &[upload])?;
+    upload_fixture(
+        store,
+        account,
+        &task.uuid,
+        "benchmark-deleted-file",
+        "synthetic-deleted.bin",
+        &bytes,
+    )?;
     scenarios.push(Samples::micros(
-        "durable_chunked_upload_10mib",
+        "durable_file_upload_10mib",
         vec![micros(started)],
     ));
     let entry = data::oversized_entry(&task, 0, 20 * 1024 * 1024);

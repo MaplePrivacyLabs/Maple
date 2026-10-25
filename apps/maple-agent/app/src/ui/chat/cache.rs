@@ -250,9 +250,18 @@ impl MarkdownCache {
 /// Strings a tool or text card shows, derived once per item revision
 /// instead of on every frame.
 #[derive(Default)]
+pub(super) struct AttachmentDisplay {
+    pub id: String,
+    pub name: SharedString,
+    pub detail: SharedString,
+    pub unavailable: bool,
+}
+
+#[derive(Default)]
 pub(super) struct ItemDerived {
     /// Display text of thinking rows and user bubbles.
     pub(super) text: SharedString,
+    pub(super) attachments: Vec<AttachmentDisplay>,
     /// Readable tool output for the expanded card.
     pub(super) output_text: Option<SharedString>,
     /// `input: {json}` for the expanded card.
@@ -271,6 +280,15 @@ impl ItemDerived {
         let output_text = tool_output_markdown(item).map(SharedString::from);
         Self {
             text: SharedString::from(item.text.clone().unwrap_or_default()),
+            attachments: super::transcript::attachment_metadata(item)
+                .map(|attachment| AttachmentDisplay {
+                    id: attachment.id.to_string(),
+                    name: attachment.name.to_string().into(),
+                    detail: super::attachments::attachment_detail(attachment.mime, attachment.size)
+                        .into(),
+                    unavailable: attachment.unavailable,
+                })
+                .collect(),
             output_text,
             input_line: tool_input_line(item).map(SharedString::from),
             diff_lines: Arc::new(diff_lines_for(item)),

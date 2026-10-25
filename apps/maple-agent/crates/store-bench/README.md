@@ -32,8 +32,8 @@ The report includes nearest-rank median, p99, p99.9, maximum and count over
 5 ms for source appends; warm and fresh-connection list/open/history reads;
 full and compaction-boundary context loads; raw-key connection open; held-reader
 WAL/checkpoint behavior; rebuild preparation and writer chunks; attachment
-chunks; a 20 MiB oversized write and range reads; deletion including its
-oversized source-row exception, blob chunks and final metadata; synthetic JSONL
+file uploads/range reads; a 20 MiB oversized write and range reads; deletion including its
+oversized source-row exception, session-owned files and final metadata; synthetic JSONL
 comparisons; and Argon2. Full plain runs additionally measure conversion with
 the floor password KDF included explicitly in the reported duration.
 
@@ -41,8 +41,17 @@ the floor password KDF included explicitly in the reported duration.
 These measurements do not establish cold-disk, UI, live-overlay, or network
 latency. The JSONL append comparison intentionally uses historical unsynced
 appends and is labeled accordingly. It does not satisfy the Store's durability
-contract. The oversized-row and blob-deletion paths report their actual chunk
-sizes rather than treating exceptions as a 1 MiB guarantee.
+contract. Attachment payloads are plaintext files in both plain and keyed runs;
+only their metadata uses the selected database mode. File reads keep the OS cache
+warm and do not establish encrypted payload performance. The oversized-row paths
+report actual chunk sizes rather than treating exceptions as a 1 MiB guarantee.
+Each attachment cleanup step removes at most 128 filesystem entries from its
+owned subtree, including adjacent tool outputs, outside a SQL transaction, then
+at most one attachment metadata row. Its reported row count is therefore at most
+129. The byte counter reports only the declared original payload (at most
+30 MiB) when metadata removal finishes; it does not measure adjacent output
+bytes. These bounded steps retain the normal call latency gate, without the SQL
+oversized-row exception.
 
 Each rebuild and collection chunk records its row/byte count, elapsed writer
 call and WAL file size before/after. The signed WAL delta measures observed
@@ -83,8 +92,8 @@ The full macOS evaluation also checks the documented absolute limits:
 | One raw-key SQLite connection | median ≤ 1 ms; host startup/password KDF excluded |
 | First full 20k-entry context load including parse | median ≤ 250 ms keyed / 150 ms plain; full dataset only |
 | First keyed context load from compaction | median ≤ 50 ms |
-| Keyed first 10 MiB attachment range assembly | ≤ 25 ms; SQLite-reader caches fresh, OS cache warm |
-| Capped rebuild/collection calls, both modes | maximum of actual chunks ≤ 50 ms |
+| First 10 MiB plaintext attachment range assembly with keyed metadata | ≤ 25 ms; OS cache warm |
+| Capped rebuild/collection and bounded attachment-subtree cleanup calls, both modes | maximum of actual calls ≤ 50 ms |
 
 The full macOS list budget includes 25% hosted-runner headroom after the
 [scheduled run](https://github.com/MaplePrivacyLabs/Maple/actions/runs/39986418131/job/120526655680)

@@ -694,6 +694,27 @@ impl AgentRuntimeHandle {
         Ok(())
     }
 
+    /// ACP's protocol-native images enter the same file store as desktop
+    /// imports and remote streams. Sending subsequently uses committed IDs.
+    pub async fn import_image_attachments(
+        &self,
+        session_id: String,
+        images: Vec<super::AgentImageUpload>,
+    ) -> Result<Vec<super::AgentAttachment>, String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        if tasks.get(&session_id)?.is_none() {
+            return Err(format!("Failed to find Agent task {session_id}"));
+        }
+        let attachments = super::attachments::AgentAttachmentStore::new(
+            Arc::clone(tasks.store()),
+            tasks.account(),
+        );
+        tokio::task::spawn_blocking(move || attachments.store_uploads(&session_id, &images))
+            .await
+            .map_err(|error| format!("Attachment import failed: {error}"))?
+    }
+
     /// Raw bytes of a stored image attachment, for display.
     pub async fn read_image_attachment(
         &self,

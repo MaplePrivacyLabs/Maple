@@ -45,6 +45,7 @@ enum PeerInfoPhase {
     Loaded,
     Unsupported,
     Unreachable,
+    Incompatible,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +96,7 @@ struct InstallIntent {
 }
 
 const UNCONFIRMED_INSTALL: &str = "The update request could not be confirmed. Do not resend it. Refresh this computer’s status, or check the remote computer directly.";
+const PROTOCOL_UPDATE_REQUIRED: &str = "Update required. The computers use incompatible remote protocols. Update Maple on each computer before reconnecting.";
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLIENT_VERSION_LABEL: &str = concat!(
     "Client v",
@@ -155,25 +157,40 @@ impl ComputerUpdate {
                 PeerInfoPhase::Loading => "Reading update status…",
                 PeerInfoPhase::Unsupported => "Remote update status is unavailable. Use Open projects for ordinary remote access.",
                 PeerInfoPhase::Unreachable => "Could not read update status. Check that this computer is online, then refresh.",
+                PeerInfoPhase::Incompatible => PROTOCOL_UPDATE_REQUIRED,
                 _ => "Refresh to read this computer’s version and update status.",
             }.into();
             self.blocked_label = None;
             self.version_warning = None;
             return;
         };
+        let prefix = if self.phase == PeerInfoPhase::Loaded {
+            "Running"
+        } else {
+            "Last reported"
+        };
         self.running_label = match &info.running.build {
-            Some(build) => format!("Running v{} · build {build}", info.running.version),
-            None => format!("Running v{}", info.running.version),
+            Some(build) => format!("{prefix} v{} · build {build}", info.running.version),
+            None => format!("{prefix} v{}", info.running.version),
         };
         self.update_label = if self.phase == PeerInfoPhase::Loading {
             "Refreshing update status…".into()
         } else if self.phase == PeerInfoPhase::Unreachable {
             "Could not refresh update status. The last reported version is shown above.".into()
+        } else if self.phase == PeerInfoPhase::Incompatible {
+            PROTOCOL_UPDATE_REQUIRED.into()
         } else if let Some(offered) = &info.update.offered {
             format!("v{} · {}", offered.version, info.update.state.label())
         } else {
             info.update.state.label().into()
         };
+        // Cached observations remain useful as history, but must not look like
+        // a current offer, policy decision or version comparison after failure.
+        if self.phase != PeerInfoPhase::Loaded {
+            self.version_warning = None;
+            self.blocked_label = None;
+            return;
+        }
         self.version_warning = version_warning(info, CLIENT_VERSION);
         let blocked = install_blocked(info);
         let healthy_without_offer = info.update.offered.is_none()
@@ -509,7 +526,13 @@ impl RemoteScreen {
                 update.phase = PeerInfoPhase::Unsupported;
                 update.info = None;
             }
-            Err(_) => update.phase = PeerInfoPhase::Unreachable,
+            Err(error) => {
+                update.phase = if crate::remote::wire::is_protocol_incompatibility_refusal(&error) {
+                    PeerInfoPhase::Incompatible
+                } else {
+                    PeerInfoPhase::Unreachable
+                };
+            }
         }
         update.refresh_presentation();
         self.invalidate_confirmation();

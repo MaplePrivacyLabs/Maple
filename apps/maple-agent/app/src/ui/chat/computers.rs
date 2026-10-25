@@ -230,7 +230,15 @@ impl ChatScreen {
             loading: !self.navigation_ready && self.host_recovery.events.is_some(),
             error: self.host_recovery.unavailable.then(|| {
                 if self.host_recovery.ended {
-                    "Offline — select to reconnect"
+                    if self
+                        .runtime_error
+                        .as_deref()
+                        .is_some_and(crate::remote::wire::is_protocol_incompatibility_refusal)
+                    {
+                        "Update required"
+                    } else {
+                        "Offline — select to reconnect"
+                    }
                 } else {
                     "Connecting…"
                 }
@@ -412,5 +420,57 @@ impl ChatScreen {
             )
             .icon("settings"),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::wire::{Error, Refusal};
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn catalog_marks_only_actual_protocol_refusal_as_update_required(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let cases = [
+            (
+                Refusal::terminal(Error::Incompatible.to_string()).into_error(),
+                "Update required",
+            ),
+            (
+                Refusal::terminal("This computer is no longer paired").into_error(),
+                "Offline — select to reconnect",
+            ),
+            (
+                Refusal::terminal(Error::InvalidFrame.to_string()).into_error(),
+                "Offline — select to reconnect",
+            ),
+            (
+                Error::Disconnected.to_string(),
+                "Offline — select to reconnect",
+            ),
+        ];
+        for (reason, expected) in cases {
+            let chat = {
+                let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+                let backend = Arc::new(
+                    AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
+                );
+                cx.new(|cx| ChatScreen::new_inner(backend, "account".into(), cx))
+            };
+            chat.update(cx, |chat, cx| {
+                chat.handle_service_event(AgentServiceEvent::RemoteAccessEnded(reason), cx);
+                let snapshot = chat.computer_snapshot("Office".into(), cx);
+                assert_eq!(snapshot.error.as_deref(), Some(expected));
+                assert!(!snapshot.loading);
+                // The generic disconnect following a terminal refusal must
+                // not hide the reason the authenticated connection ended.
+                chat.handle_service_event(AgentServiceEvent::HostDisconnected, cx);
+                assert_eq!(
+                    chat.computer_snapshot("Office".into(), cx).error.as_deref(),
+                    Some(expected)
+                );
+            });
+        }
     }
 }

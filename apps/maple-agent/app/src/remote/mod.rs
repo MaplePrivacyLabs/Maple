@@ -4,6 +4,7 @@ mod pairing;
 mod store;
 pub(crate) mod streams;
 pub(crate) mod update;
+mod uploads;
 pub(crate) mod wire;
 
 pub mod control;

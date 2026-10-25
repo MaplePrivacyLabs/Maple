@@ -10106,7 +10106,6 @@ name = "store-bench"
 version = "0.0.7"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "maple-agent",
  "pi-ai",
  "pi-coding-agent",

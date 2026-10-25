@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::{Arc, Weak};
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "6.2.0";
+pub const PROTOCOL_VERSION: &str = "7.0.0";
 pub const PEER_INFO_CAPABILITY: &str = "peer_info_v1";
 pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
 pub const PROJECT_FOLDERS_CAPABILITY: &str = "project_folders_v1";
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn responses_accept_future_fields_and_unknown_status_without_enabling_mutation() {
         let value = json!({
-            "protocol":{"version":"6.3.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
+            "protocol":{"version":"7.1.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
             "running":{"version":"0.0.6","source_sha":"a".repeat(40),"platform":"linux-x86_64","future":true},
             "update":{"state":"future_state","future":true},
             "future":true
@@ -507,10 +507,10 @@ mod tests {
         assert_eq!(info.update.state, UpdateState::Unknown);
         assert!(info.supports_remote_updates());
         let mut next_major = info.clone();
-        next_major.protocol.version = "7.0.0".into();
+        next_major.protocol.version = "8.0.0".into();
         assert!(!next_major.supports_remote_updates());
         let mut previous_major = info.clone();
-        previous_major.protocol.version = "5.1.0".into();
+        previous_major.protocol.version = "6.2.0".into();
         assert!(!previous_major.supports_remote_updates());
         let mut no_capability = info;
         no_capability.protocol.capabilities.clear();
@@ -735,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn released_v6_1_decoder_preserves_v6_2_updates_and_durable_receipts() {
+    fn released_v6_decoder_recognizes_a_new_major_without_install_authority() {
         let mut current = current_peer_for_compatibility();
         for state in [UpdateState::Ready, UpdateState::RestartRequired] {
             current.update.state = state;
@@ -747,8 +747,11 @@ mod tests {
             );
             let legacy: released_v6_1::PeerInfo = serde_json::from_slice(&bytes).unwrap();
             assert!(legacy.valid());
-            assert_eq!(legacy.protocol.version, "6.2.0");
-            assert!(legacy.supports_remote_updates());
+            assert_eq!(legacy.protocol.version, "7.0.0");
+            assert!(
+                !legacy.supports_remote_updates(),
+                "no cross-major management bridge"
+            );
             assert!(
                 legacy
                     .protocol
@@ -790,31 +793,31 @@ mod tests {
     }
 
     #[test]
-    fn project_folder_support_requires_its_capability_and_wire_six() {
+    fn project_folder_support_requires_its_capability_and_current_major() {
         let mut info = current_peer_for_compatibility();
         assert!(info.supports_project_folders());
-        for version in ["6.1.0", "6.2.0", "6.3.0"] {
+        for version in ["7.0.0", "7.1.0", "7.2.0"] {
             info.protocol.version = version.into();
             assert!(
                 info.supports_project_folders(),
                 "explicit capability in {version}"
             );
         }
-        for version in ["5.2.0", "7.0.0", "invalid"] {
+        for version in ["6.2.0", "8.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_project_folders());
         }
-        info.protocol.version = "6.1.0".into();
+        info.protocol.version = "7.0.0".into();
         info.protocol.capabilities = vec!["peer_info_v1".into(), "remote_update_install_v1".into()];
         assert!(
             info.supports_remote_updates(),
-            "released 6.1 update support remains"
+            "explicit current-major update support remains"
         );
         assert!(
             !info.supports_project_folders(),
-            "6.1 does not advertise folder support"
+            "folder support still requires its capability"
         );
-        info.protocol.version = "6.2.0".into();
+        info.protocol.version = "7.1.0".into();
         assert!(
             !info.supports_project_folders(),
             "a minor version alone is not a capability"

@@ -173,13 +173,10 @@ async fn serve(
                 if event.is_err() || event.ok().is_some_and(|key| key == peer || key == node.endpoint.id()) { break; }
             }
             _ = calls.join_next(), if !calls.is_empty() => {},
-            incoming = connection.accept_bi() => {
-                let Ok((mut tx, mut rx)) = incoming else { break; };
-                if calls.len() >= streams::MAX_REQUESTS {
-                    let _ = tx.reset(1u32.into());
-                    let _ = rx.stop(1u32.into());
-                    continue;
-                }
+            // Stop accepting while the bounded task budget is occupied. QUIC
+            // applies backpressure; already admitted requests/events still drain.
+            incoming = connection.accept_bi(), if calls.len() < streams::MAX_REQUESTS + streams::MAX_PENDING_HEADERS => {
+                let Ok((tx, rx)) = incoming else { break; };
                 let node = node.clone();
                 let capacity = capacity.clone();
                 let subscription = subscription.clone();
@@ -206,7 +203,7 @@ async fn serve_request(
     capacity: Arc<streams::Capacity>,
     subscription: Arc<RwLock<Subscription>>,
 ) -> Result<(), String> {
-    let header = match streams::Header::read(&mut rx).await {
+    let header = match capacity.read_header(&mut rx).await {
         Ok(header) => header,
         Err(reason) => return Err(reason),
     };
@@ -215,6 +212,9 @@ async fn serve_request(
     let _slot = match capacity.acquire(header.method) {
         Ok(slot) => slot,
         Err(error) => {
+            if header.method == wire::Method::UploadAttachment {
+                return super::uploads::refuse(&mut tx, error).await;
+            }
             return streams::reply(
                 &mut tx,
                 &Message::Response {
@@ -227,6 +227,16 @@ async fn serve_request(
     };
     let id = header.id;
     let method = header.method;
+    if method == wire::Method::UploadAttachment {
+        if header.send_id.is_some() {
+            return super::uploads::refuse(
+                &mut tx,
+                "Attachment uploads cannot carry a prompt receipt".into(),
+            )
+            .await;
+        }
+        return super::uploads::serve(node, peer, id, &mut tx, &mut rx).await;
+    }
     let request = match header.body(&mut rx).await {
         Ok(request) => request,
         Err(reason) => {
@@ -619,7 +629,14 @@ pub async fn bridge(
                         local_send(&mut local_tx, &Message::Response { id: request.id, result: Ok(serde_json::Value::Null) }).await?;
                         return Ok(true);
                     }
-                    let selected = if request.method == "start_runtime" { Ok(wire::Method::TaskBootstrap) } else { wire::Method::parse(&request.method) };
+                    let selected = match request.method.as_str() {
+                        "start_runtime" => Ok(wire::Method::TaskBootstrap),
+                        "import_attachment" => Ok(wire::Method::UploadAttachment),
+                        // Binary upload is selected only by the local import
+                        // bridge. Remote metadata contains no local source path.
+                        "upload_attachment" => Err("Use the local attachment importer".into()),
+                        _ => wire::Method::parse(&request.method),
+                    };
                     let method = match selected {
                         Ok(method) => method,
                         Err(error) => { local_send(&mut local_tx, &Message::Response { id: request.id, result: Err(error) }).await?; continue; }
@@ -648,6 +665,21 @@ pub async fn bridge(
                             }
                             Ok(())
                         };
+                        if method == wire::Method::UploadAttachment {
+                            let result = async {
+                                let (user, import): (String, crate::backend::ImportAttachmentRequest) = serde_json::from_value(request.params)
+                                    .map_err(|_| "Invalid attachment import parameters")?;
+                                if user != node.account { return Err("Remote request account mismatch".into()); }
+                                node.backend.authorize_account(&user)?;
+                                let prepared = crate::backend::attachments::prepare(&import).await?;
+                                authorize_folders.await?;
+                                client.upload(id, user, import, prepared).await
+                            }.await;
+                            return match result {
+                                Ok(frame) => frame,
+                                Err(error) => Message::Response { id, result: Err(error) },
+                            };
+                        }
                         match client.call(wire::Command { id, method, send_id: request.send_id, params: request.params }, authorize_folders).await {
                             Ok(frame) => streams::decode_result(method, frame),
                             Err(error) => Message::Response { id, result: Err(match send_id {

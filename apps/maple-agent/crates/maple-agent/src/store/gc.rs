@@ -17,7 +17,7 @@ pub enum CollectionStage {
     Timeline,
     Entries,
     Summaries,
-    Blobs,
+    Attachments,
     TaskMetadata,
     AccountMetadata,
     Done,
@@ -84,8 +84,8 @@ impl Store {
         })
     }
 
-    /// Perform at most one byte-capped payload transaction, or one digest-locked
-    /// blob step. The caller yields to foreground work between calls.
+    /// Perform at most one byte-capped payload transaction, or one attachment
+    /// filesystem cleanup step. The caller yields to foreground work between calls.
     pub fn collect_task_step(
         &self,
         account: AccountId,
@@ -113,14 +113,14 @@ impl Store {
             return Ok(progress.measured(started));
         }
 
-        // Blob collection takes the per-digest lock before the writer. Never
-        // call it from inside a write closure, which would reverse lock order.
-        let blobs = self.collect_task_blobs_step(account, uuid)?;
-        if !blobs.done || blobs.chunks != 0 || blobs.links != 0 {
+        // Attachment cleanup removes the exact owned files before their metadata.
+        // Run outside the writer so filesystem I/O never holds a SQL transaction.
+        let attachments = self.collect_task_attachments_step(account, uuid)?;
+        if !attachments.done || attachments.files != 0 || attachments.links != 0 {
             return Ok(CollectionProgress::new(
-                CollectionStage::Blobs,
-                blobs.chunks + blobs.links,
-                blobs.bytes as u64,
+                CollectionStage::Attachments,
+                attachments.files + attachments.links,
+                attachments.bytes as u64,
             )
             .measured(started));
         }
@@ -132,8 +132,7 @@ impl Store {
                 EXISTS(SELECT 1 FROM entries WHERE task_id=?1) OR
                 EXISTS(SELECT 1 FROM timeline_rows WHERE task_id=?1) OR
                 EXISTS(SELECT 1 FROM tool_summaries WHERE task_id=?1) OR
-                EXISTS(SELECT 1 FROM attachments WHERE task_id=?1) OR
-                EXISTS(SELECT 1 FROM task_blobs WHERE task_id=?1)",
+                EXISTS(SELECT 1 FROM file_attachments WHERE task_id=?1)",
                 [task],
                 |row| row.get(0),
             )?;

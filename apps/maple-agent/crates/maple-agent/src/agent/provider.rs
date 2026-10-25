@@ -343,6 +343,93 @@ pub(crate) fn maple_model(
     }
 }
 
+/// A task-bound provider view. Pi selects effective context before this
+/// boundary; Maple then applies its screenshot limit before reading any files.
+/// The shared provider registry remains live, including scripted test providers.
+pub(super) fn attachment_model_registry(
+    models: &ModelRegistry,
+    attachments: super::attachments::AgentAttachmentStore,
+    session_id: String,
+) -> ModelRegistry {
+    let registry = ModelRegistry::new(Arc::new(NoKeys));
+    registry.register_models(models.models());
+    registry.register_api(
+        MAPLE_API,
+        Arc::new(AttachmentStreamFn {
+            inner: models.stream_fn(),
+            attachments,
+            session_id,
+        }),
+    );
+    registry
+}
+
+struct AttachmentStreamFn {
+    inner: Arc<dyn StreamFn>,
+    attachments: super::attachments::AgentAttachmentStore,
+    session_id: String,
+}
+
+impl StreamFn for AttachmentStreamFn {
+    fn stream(
+        &self,
+        model: &Model,
+        mut context: Context,
+        options: StreamOptions,
+    ) -> AssistantMessageStream {
+        bound_tool_result_images(&mut context.messages);
+        let has_attachments = context.messages.iter().any(|message| {
+            let content = match message {
+                Message::User(user) => &user.content,
+                Message::ToolResult(result) => &result.content,
+                _ => return false,
+            };
+            content.iter().any(|block| match block {
+                Content::Image(image) => image.data.starts_with("maple-attachment"),
+                Content::Text(text) => super::attachments::has_attachment_metadata(&text.text),
+            })
+        });
+        if !has_attachments {
+            return self.inner.stream(model, context, options);
+        }
+        let (sender, stream) = AssistantMessageStream::channel();
+        let model = model.clone();
+        let inner = Arc::clone(&self.inner);
+        let attachments = self.attachments.clone();
+        let session_id = self.session_id.clone();
+        tokio::spawn(async move {
+            let prepared = tokio::task::spawn_blocking(move || {
+                attachments.prepare_model_context(&session_id, &mut context.messages)?;
+                Ok::<_, String>(context)
+            });
+            let prepared = tokio::select! {
+                _ = options.cancel.cancelled() => {
+                    pi_ai::AssistantMessageBuilder::new(sender, &model).fail(pi_ai::StopReason::Aborted, "Request cancelled");
+                    return;
+                }
+                result = prepared => result,
+            };
+            let context = match prepared {
+                Ok(Ok(context)) => context,
+                _ => {
+                    pi_ai::AssistantMessageBuilder::new(sender, &model).fail(
+                        pi_ai::StopReason::Error,
+                        "Maple could not read an image attachment",
+                    );
+                    return;
+                }
+            };
+            let mut events = inner.stream(&model, context, options);
+            while let Some(event) = events.next().await {
+                if sender.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+        stream
+    }
+}
+
 /// Pi's Chat Completions provider over the account's transport, plus the
 /// request and response adjustments Maple's models need.
 pub(crate) struct MapleStreamFn {

@@ -59,17 +59,42 @@ async fn mcp_images_remain_saveable_and_do_not_block_lifecycle_operations() {
             let store = harness.service.host.store.as_ref().unwrap();
             assert!(store.persistence_failure().is_none());
             harness.service.flush_persistence().await.unwrap();
-            assert_eq!(
-                store
-                    .load_session(
-                        runtime.store.account(),
-                        &task,
-                        crate::store::SessionLoad::Full
-                    )
-                    .unwrap()
-                    .entries,
-                retained
-            );
+            let persisted = store
+                .load_session(
+                    runtime.store.account(),
+                    &task,
+                    crate::store::SessionLoad::Full,
+                )
+                .unwrap()
+                .entries;
+            assert_eq!(persisted.len(), retained.len());
+            let images: Vec<_> = persisted.iter().filter_map(|entry| match &entry.kind {
+                pi_coding_agent::session::EntryKind::Message {
+                    message: pi_coding_agent::SessionMessage::Llm(pi_ai::Message::ToolResult(result))
+                } => Some(result),
+                _ => None,
+            }).flat_map(|result| {
+                assert!(!result.is_error, "unavailable media does not turn a successful tool into failure");
+                result.content.iter().filter_map(|block| match block {
+                    pi_ai::Content::Image(image) => Some(image.data.clone()), _ => None,
+                })
+            }).collect();
+            assert_eq!(images.len(), 1);
+            if data == "not base64!" {
+                assert_eq!(images[0], "maple-attachment-unavailable:retired");
+            } else {
+                assert!(images[0].starts_with("maple-attachment://"));
+            }
+            // The argument that happens to contain base64 is ordinary text;
+            // only the typed image result is externalized.
+            assert!(persisted.iter().any(|entry| match &entry.kind {
+                pi_coding_agent::session::EntryKind::Message {
+                    message:
+                        pi_coding_agent::SessionMessage::Llm(pi_ai::Message::Assistant(message)),
+                } => message.content.iter().any(|block| matches!(block,
+                    pi_ai::AssistantContent::ToolCall(call) if call.arguments["text"] == data)),
+                _ => false,
+            }));
             // Exercise each lifecycle barrier while the image-bearing context
             // is still loaded; deleting it first would trivialize the others.
             match finish {

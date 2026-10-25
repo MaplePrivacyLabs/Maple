@@ -41,10 +41,10 @@ def report(full=False):
         rebuild = [{"prepare_micros": 100, "writer_micros": 100, "entries": 100, "bytes": 1000, "done": False, **wal()},
                    {"prepare_micros": 100, "writer_micros": 100, "entries": 0, "bytes": 0, "done": True, **wal()}]
         old = [{"writer_micros": 100, "rows": 100, "bytes": 1000, **wal()}]
-        collection = [{"stage": stage, "rows": 1, "bytes": size, "oversized_row": size > MODULE.MIB,
+        collection = [{"stage": stage, "rows": 3 if stage == "Attachments" else 1, "bytes": size, "oversized_row": size > MODULE.MIB and stage != "Attachments",
                        "elapsed_micros": 100, "done": stage == "TaskMetadata", **wal()}
                       for stage, size in (("Timeline", 20 * MODULE.MIB), ("Entries", 20 * MODULE.MIB),
-                                          ("Blobs", MODULE.MIB), ("TaskMetadata", 0))]
+                                          ("Attachments", 10 * MODULE.MIB), ("TaskMetadata", 0))]
         scenarios["timeline_rebuild_writer_chunk"] = sample("timeline_rebuild_writer_chunk", [100, 100])
         scenarios["timeline_rebuild_prepare_chunk"] = sample("timeline_rebuild_prepare_chunk", [100, 100])
         scenarios["oversized_task_collection_chunk"] = sample("oversized_task_collection_chunk", [100] * 4)
@@ -54,7 +54,7 @@ def report(full=False):
                                  for role in ("writer", "reader-1", "reader-2", "bulk", "checkpointer")],
                      "plans": [{"name": name, "statistics": stats, "expected_index": index,
                                 "passed": True, "details": [
-                                    f"SEARCH attachments USING COVERING INDEX {index} (task_id=? AND blob_id=?)"
+                                    f"SEARCH file_attachments USING INDEX {index} (task_id=?)"
                                     if name == "attachment-collection" else f"SEARCH USING INDEX {index}"]}
                                for name, index in MODULE.PLAN_INDEXES.items() for stats in (False, True)],
                      "seed": {"layout": "globally timestamp-interleaved source and projector rows",
@@ -63,6 +63,7 @@ def report(full=False):
                               "durability": "FULL with fullfsync; synthetic fixture batches outside timed production source-append measurements"},
                      "scenarios": list(scenarios.values()),
                      "observations": {"history_depth_rows": 40000 if full else 1800, "attachment_bytes": 10 * MODULE.MIB,
+                                      "attachment_storage": "plaintext session-owned file; database metadata only",
                                       "oversized_row_total_bytes": 20 * MODULE.MIB,
                                       "model_context_full_cold_entries": [scale["long_entries"]] * 5,
                                       "model_context_boundary_cold_entries": [100] * 5,
@@ -267,29 +268,18 @@ class EvidenceGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "chunk quantile|chunk maximum"):
             MODULE.validate(actual)
 
-    def test_attachment_collection_accepts_both_covering_two_equality_indexes(self):
-        for index in ("attachments_task_blob", "attachments_blob"):
-            for constraints in ("task_id=? AND blob_id=?", "blob_id=? AND task_id=?"):
-                with self.subTest(index=index, constraints=constraints):
-                    actual = report()
-                    for run in actual["runs"]:
-                        for plan in run["plans"]:
-                            if plan["name"] == "attachment-collection":
-                                plan["details"] = [f"SEARCH attachments USING COVERING INDEX {index} ({constraints})"]
-                    MODULE.validate(actual)
+    def test_attachment_collection_seeks_task_metadata(self):
+        MODULE.validate(report())
 
-    def test_attachment_collection_rejects_wrong_incomplete_or_noncovering_plans(self):
+    def test_attachment_collection_rejects_wrong_or_unbounded_plans(self):
         bad_details = (
-            ["SEARCH attachments USING COVERING INDEX attachments_blob (blob_id=?)"],
-            ["SEARCH attachments USING COVERING INDEX attachments_task_blob (task_id=?)"],
-            ["SEARCH attachments USING COVERING INDEX attachments_blob (blob_id=? AND task_id>?)"],
-            ["SEARCH attachments USING INDEX attachments_blob (blob_id=? AND task_id=?)"],
-            ["SEARCH attachments USING COVERING INDEX unrelated (blob_id=? AND task_id=?)"],
-            ["SEARCH attachments USING COVERING INDEX attachments_blob_extra (blob_id=? AND task_id=?)"],
-            ["SCAN attachments USING COVERING INDEX attachments_blob (blob_id=? AND task_id=?)"],
-            ["SEARCH other_table USING COVERING INDEX attachments_blob (blob_id=? AND task_id=?)"],
-            ["SEARCH attachments USING COVERING INDEX attachments_blob (blob_id=? AND task_id=?)", "SCAN attachments"],
-            ["SEARCH attachments USING COVERING INDEX attachments_blob (blob_id=? AND task_id=?)", "USE TEMP B-TREE FOR ORDER BY"],
+            ["SEARCH file_attachments USING INDEX file_attachments_task (task_id>?)"],
+            ["SEARCH file_attachments USING INDEX unrelated (task_id=?)"],
+            ["SEARCH file_attachments USING INDEX file_attachments_task_extra (task_id=?)"],
+            ["SCAN file_attachments USING INDEX file_attachments_task"],
+            ["SEARCH other_table USING INDEX file_attachments_task (task_id=?)"],
+            ["SEARCH file_attachments USING INDEX file_attachments_task (task_id=?)", "SCAN file_attachments"],
+            ["SEARCH file_attachments USING INDEX file_attachments_task (task_id=?)", "USE TEMP B-TREE FOR ORDER BY"],
         )
         for details in bad_details:
             with self.subTest(details=details):
@@ -299,15 +289,56 @@ class EvidenceGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "required index"):
                     MODULE.validate(actual)
 
-    def test_attachment_collection_keeps_primary_expected_field_and_actual_pass_guard(self):
-        for changes in ({"expected_index": "attachments_blob"}, {"passed": False}):
+    def test_attachment_collection_keeps_expected_field_and_actual_pass_guard(self):
+        for changes in ({"expected_index": "wrong_index"}, {"passed": False}):
             with self.subTest(changes=changes):
                 actual = report()
                 plan = next(plan for plan in actual["runs"][1]["plans"] if plan["name"] == "attachment-collection")
-                plan["details"] = ["SEARCH attachments USING COVERING INDEX attachments_blob (blob_id=? AND task_id=?)"]
                 plan.update(changes)
                 with self.assertRaises(ValueError):
                     MODULE.validate(actual)
+
+    def test_file_collection_is_bounded_without_an_oversized_row_exception(self):
+        for rows in (1, 3, 128, 129):
+            actual = report()
+            chunk = next(chunk for chunk in actual["runs"][0]["observations"]["oversized_collection_chunks"]
+                         if chunk["stage"] == "Attachments")
+            chunk["rows"] = rows
+            MODULE.validate(actual)
+        for changes in ({"rows": 0}, {"rows": 130}, {"bytes": 30 * MODULE.MIB + 1}, {"oversized_row": True}):
+            with self.subTest(changes=changes):
+                actual = report()
+                chunk = next(chunk for chunk in actual["runs"][0]["observations"]["oversized_collection_chunks"]
+                             if chunk["stage"] == "Attachments")
+                chunk.update(changes)
+                with self.assertRaisesRegex(ValueError, "bounded subtree step"):
+                    MODULE.validate(actual)
+        actual = report()
+        chunk = next(chunk for chunk in actual["runs"][0]["observations"]["oversized_collection_chunks"]
+                     if chunk["stage"] == "Attachments")
+        chunk["bytes"] = MODULE.MIB
+        with self.assertRaisesRegex(ValueError, "complete 10 MiB file"):
+            MODULE.validate(actual)
+
+    def test_file_cleanup_keeps_the_normal_latency_gate(self):
+        actual = report(True)
+        chunk = next(chunk for chunk in actual["runs"][0]["observations"]["oversized_collection_chunks"]
+                     if chunk["stage"] == "Attachments")
+        chunk["rows"] = 129
+        chunk["elapsed_micros"] = 50001
+        set_sample(actual, "plain", "oversized_task_collection_chunk", [100, 100, 100, 50001])
+        MODULE.validate(actual)
+        outcome = MODULE.absolute_results(actual)
+        result = next(item for item in outcome["checks"]
+                      if item["scenario"] == "plain/oversized_task_collection_chunk/capped")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["actual_us"], 50001)
+
+    def test_old_blob_storage_evidence_cannot_pass_as_file_storage(self):
+        actual = report()
+        del actual["runs"][0]["observations"]["attachment_storage"]
+        with self.assertRaisesRegex(ValueError, "storage boundary"):
+            MODULE.validate(actual)
 
     def test_signed_wal_growth_is_observation_not_bytes_written(self):
         actual = report()

@@ -25,7 +25,7 @@ mod stored;
 use stored::StoredItem;
 
 /// Bump whenever the shared timeline builders or their merge rules change.
-pub(crate) const TIMELINE_FORMAT: i64 = 1;
+pub(crate) const TIMELINE_FORMAT: i64 = 2;
 const CHUNK_ENTRIES: usize = 1_000;
 const CHUNK_ROWS: usize = 1_000;
 const CHUNK_BYTES: usize = 1024 * 1024;
@@ -78,8 +78,29 @@ struct PreparedSourceOperation {
     result_call: Option<String>,
 }
 
-/// Complete source-sized formatting before entering the writer transaction.
+/// Raw-entry fixture formatting. Production projects the persisted image form.
+#[cfg(test)]
 pub(super) fn prepare_entry(entry: &SessionEntry, seq: i64) -> StoreResult<PreparedProjection> {
+    prepare_operations(entry, seq, operations(entry, |_| Ok(None))?)
+}
+
+/// Complete source-sized formatting before entering the writer transaction.
+/// Image lengths come from metadata collected separately, never file bytes.
+pub(super) fn prepare_stored_entry(
+    entry: &SessionEntry,
+    seq: i64,
+    image_sizes: &[usize],
+) -> StoreResult<PreparedProjection> {
+    let mut rows = operations(entry, |_| Ok(None))?;
+    apply_image_sizes(entry, &mut rows, image_sizes)?;
+    prepare_operations(entry, seq, rows)
+}
+
+fn prepare_operations(
+    entry: &SessionEntry,
+    seq: i64,
+    rows: Vec<RowOp>,
+) -> StoreResult<PreparedProjection> {
     if seq < 1 {
         return Err(StoreError::InvalidInput);
     }
@@ -89,7 +110,7 @@ pub(super) fn prepare_entry(entry: &SessionEntry, seq: i64) -> StoreResult<Prepa
         } => Some(result.tool_call_id.clone()),
         _ => None,
     };
-    let operations = operations(entry, |_| Ok(None))?
+    let operations = rows
         .into_iter()
         .enumerate()
         .map(|(index, operation)| {
@@ -221,7 +242,7 @@ fn operations(
 }
 
 // Image payloads in stored entries are references. Timeline rows expose only
-// their length, so rebuilds read blob metadata rather than loading image bytes.
+// their length, so append and rebuild use metadata without loading image bytes.
 fn operations_tx(
     tx: &Transaction<'_>,
     task: TaskKey,
@@ -235,9 +256,21 @@ fn operations_tx(
             message: SessionMessage::Llm(Message::ToolResult(_))
         }
     ) {
-        let sizes = super::blobs::entry_image_sizes_tx(tx, task, entry)?;
-        let mut sizes = sizes.into_iter();
-        for row in &mut rows {
+        let sizes = super::attachments::entry_image_sizes_tx(tx, task, entry)?;
+        apply_image_sizes(entry, &mut rows, &sizes)?;
+    }
+    Ok(rows)
+}
+
+fn apply_image_sizes(entry: &SessionEntry, rows: &mut [RowOp], sizes: &[usize]) -> StoreResult<()> {
+    if matches!(
+        &entry.kind,
+        EntryKind::Message {
+            message: SessionMessage::Llm(Message::ToolResult(_))
+        }
+    ) {
+        let mut sizes = sizes.iter();
+        for row in rows {
             if let Some(content) = row
                 .item
                 .output
@@ -257,7 +290,7 @@ fn operations_tx(
             return Err(StoreError::InvalidData);
         }
     }
-    Ok(rows)
+    Ok(())
 }
 
 /// The UI's todo predicate, shared with persisted plan-page selection.

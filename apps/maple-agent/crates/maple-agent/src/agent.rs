@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::maple_api::{MapleApiSession, account_scope};
-pub use attachments::AgentImageUpload;
+pub use attachments::{AgentAttachment, AgentImageUpload};
 use config::*;
 pub use config::{
     MAPLE_WORKSPACE_DIRECTORY_NAME, MAPLE_WORKSPACE_DISPLAY_NAME, default_maple_workspace_path,

@@ -24,7 +24,8 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::attachments::{
-    AgentAttachmentStore, AgentImageAttachment, image_prompt, split_image_prompt,
+    AgentAttachment, AgentAttachmentStore, attachment_prompt, prompt_has_inline_images,
+    split_attachment_prompt,
 };
 use super::config::unix_ms;
 use super::runtime::AgentRuntime;
@@ -47,7 +48,7 @@ const AGENT_RUN_EVENT_CAPACITY: usize = 256;
 const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
 const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
 const QUEUED_MESSAGE_ATTACHMENTS_ERROR: &str =
-    "New images cannot be added while sending a queued message";
+    "New attachments cannot be added while sending a queued message";
 const EMPTY_PROMPT_ERROR: &str = "Prompt cannot be empty";
 /// How often Stop repeats its abort until the run's prompt returns.
 const STOP_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
@@ -84,7 +85,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone, Debug, Default)]
 struct Outgoing {
     text: String,
-    attachments: Vec<AgentImageAttachment>,
+    attachments: Vec<AgentAttachment>,
     images: Vec<ImageContent>,
     /// Set for a message to the model alone, such as a background agent's
     /// result: Pi gets it as a custom message of this type, which the
@@ -112,9 +113,17 @@ impl Outgoing {
     /// A message read back from the text Pi was given, as when steering
     /// goes back to the queue. Its images are then referred to by source.
     fn from_prompt(prompt: String) -> Self {
-        match split_image_prompt(&prompt) {
+        match split_attachment_prompt(&prompt) {
             Some((text, attachments)) => Self {
                 text,
+                images: attachments
+                    .iter()
+                    .filter(|attachment| attachment.is_image() && prompt_has_inline_images(&prompt))
+                    .map(|attachment| ImageContent {
+                        data: attachment.source.clone(),
+                        mime_type: attachment.mime_type.clone(),
+                    })
+                    .collect(),
                 attachments,
                 ..Self::default()
             },
@@ -126,13 +135,47 @@ impl Outgoing {
         self.text.is_empty() && self.attachments.is_empty()
     }
 
-    /// The text and images Pi gets: the text names the attachments, and a
-    /// model without the images is told to look with `read_image`.
-    fn prompt(&self) -> (String, Vec<ImageContent>) {
-        (
-            image_prompt(&self.text, &self.attachments, !self.images.is_empty()),
-            self.images.clone(),
-        )
+    /// Resolve only this message's selected images just before it enters Pi.
+    /// The queue keeps references, while Pi still receives ordinary pixels for
+    /// its normal image normalization and context-token accounting.
+    async fn prompt(
+        &self,
+        store: &AgentAttachmentStore,
+        session_id: &str,
+    ) -> Result<(String, Vec<ImageContent>), AgentSessionError> {
+        let text = attachment_prompt(&self.text, &self.attachments, !self.images.is_empty());
+        if self.images.is_empty() {
+            return Ok((text, Vec::new()));
+        }
+        let store = store.clone();
+        let session_id = session_id.to_string();
+        let images = self.images.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut messages = [Message::User(pi_ai::UserMessage {
+                content: std::iter::once(Content::text(text))
+                    .chain(images.into_iter().map(Content::Image))
+                    .collect(),
+                timestamp: 0,
+            })];
+            store.prepare_model_context(&session_id, &mut messages)?;
+            let Message::User(user) = &mut messages[0] else {
+                unreachable!()
+            };
+            let mut text = Vec::new();
+            let mut images = Vec::new();
+            for block in std::mem::take(&mut user.content) {
+                match block {
+                    Content::Text(block) => text.push(block.text),
+                    Content::Image(image) => images.push(image),
+                }
+            }
+            Ok::<_, String>((text.join("\n\n"), images))
+        })
+        .await
+        .map_err(|error| {
+            AgentSessionError::Failed(format!("Failed to prepare image attachments: {error}"))
+        })?
+        .map_err(AgentSessionError::Failed)
     }
 
     /// A hidden message as the custom message Pi gets; `None` for a
@@ -148,10 +191,14 @@ impl Outgoing {
 
     /// Steer a message the user sent into the session's turn. A hidden
     /// message never is: it goes to the model as a turn of its own.
-    async fn steer(&self, session: &AgentSession) {
+    async fn steer(&self, session: &AgentSession, store: &AgentAttachmentStore, session_id: &str) {
         debug_assert!(self.hidden.is_none(), "a hidden message is not steered");
-        let (text, images) = self.prompt();
-        if let Err(error) = session.steer(&text, images).await {
+        let prepared = self.prompt(store, session_id).await;
+        let result = match prepared {
+            Ok((text, images)) => session.steer(&text, images).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
             log::warn!("Failed to steer the Agent task: {error}");
         }
     }
@@ -1053,8 +1100,9 @@ impl AgentRuntime {
         }
     }
 
-    /// The message a send carries. Its images are stored with the task
-    /// first; a model that sees images gets them beside the text.
+    /// Resolve committed IDs as one batch before accepting the message. The
+    /// transcript and queue carry file references; only selected model context
+    /// materializes image pixels at the provider boundary.
     async fn outgoing(&self, request: &AgentSendMessageRequest) -> Result<Outgoing, String> {
         let text = request.text.trim().to_string();
         if request.attachments.is_empty() {
@@ -1065,17 +1113,18 @@ impl AgentRuntime {
             return Err(format!("Failed to find Agent task {session_id}"));
         }
         let store = AgentAttachmentStore::new(Arc::clone(self.store.store()), self.store.account());
-        let uploads = request.attachments.clone();
-        let stored =
-            tokio::task::spawn_blocking(move || store.store_uploads(&session_id, &uploads))
+        let ids = request.attachments.clone();
+        let attachments =
+            tokio::task::spawn_blocking(move || store.resolve_and_pin(&session_id, &ids))
                 .await
-                .map_err(|error| format!("Failed to store the images: {error}"))??;
+                .map_err(|error| format!("Failed to prepare attachments: {error}"))??;
         let images = if request.vision_capable {
-            stored
+            attachments
                 .iter()
-                .map(|image| ImageContent {
-                    data: image.base64_data.clone(),
-                    mime_type: image.attachment.mime_type.clone(),
+                .filter(|attachment| attachment.is_image())
+                .map(|attachment| ImageContent {
+                    data: attachment.source.clone(),
+                    mime_type: attachment.mime_type.clone(),
                 })
                 .collect()
         } else {
@@ -1083,7 +1132,7 @@ impl AgentRuntime {
         };
         Ok(Outgoing {
             text,
-            attachments: stored.into_iter().map(|image| image.attachment).collect(),
+            attachments,
             images,
             hidden: None,
         })
@@ -1499,6 +1548,8 @@ impl AgentRuntime {
             usage,
             mut steers,
         } = run;
+        let attachments =
+            AgentAttachmentStore::new(Arc::clone(self.store.store()), self.store.account());
         let watch = RunWatch::default();
         let listener = session.subscribe({
             let events = events.clone();
@@ -1537,10 +1588,10 @@ impl AgentRuntime {
             // Steering queued before the prompt joins its first turn, so
             // several messages make one turn.
             while let Ok(message) = steers.try_recv() {
-                message.steer(&session).await;
+                message.steer(&session, &attachments, &session_id).await;
             }
             for message in &sending {
-                message.steer(&session).await;
+                message.steer(&session, &attachments, &session_id).await;
             }
             prompted = true;
             let result = match first.custom_draft() {
@@ -1548,22 +1599,37 @@ impl AgentRuntime {
                     until_stopped(
                         &session,
                         &stopped,
-                        with_steering(&session, &mut steers, session.send_custom_message(draft)),
+                        with_steering(
+                            &session,
+                            &attachments,
+                            &session_id,
+                            &mut steers,
+                            session.send_custom_message(draft),
+                        ),
                     )
                     .await
                 }
                 None => {
-                    let (text, images) = first.prompt();
-                    let options = PromptOptions {
-                        images,
-                        expand: false,
-                        ..PromptOptions::default()
-                    };
-                    until_stopped(
-                        &session,
-                        &stopped,
-                        with_steering(&session, &mut steers, session.prompt(&text, options)),
-                    )
+                    async {
+                        let (text, images) = first.prompt(&attachments, &session_id).await?;
+                        let options = PromptOptions {
+                            images,
+                            expand: false,
+                            ..PromptOptions::default()
+                        };
+                        until_stopped(
+                            &session,
+                            &stopped,
+                            with_steering(
+                                &session,
+                                &attachments,
+                                &session_id,
+                                &mut steers,
+                                session.prompt(&text, options),
+                            ),
+                        )
+                        .await
+                    }
                     .await
                 }
             };
@@ -1582,7 +1648,7 @@ impl AgentRuntime {
             // everything accepted before that boundary before clearing Pi's queue.
             let chips = self.take_chips_or_close(&run_id, &session_id);
             while let Ok(message) = steers.try_recv() {
-                message.steer(&session).await;
+                message.steer(&session, &attachments, &session_id).await;
             }
             let (stranded, _) = session.clear_queue();
             let waiting = std::mem::take(&mut prompts);
@@ -1734,6 +1800,8 @@ impl AgentRuntime {
 /// drains the inbox, so async input handlers cannot reorder accepted steers.
 async fn with_steering(
     session: &AgentSession,
+    attachments: &AgentAttachmentStore,
+    session_id: &str,
     steers: &mut mpsc::UnboundedReceiver<Outgoing>,
     prompt: impl std::future::Future<Output = Result<PromptOutcome, AgentSessionError>>,
 ) -> Result<PromptOutcome, AgentSessionError> {
@@ -1741,7 +1809,7 @@ async fn with_steering(
     loop {
         tokio::select! {
             result = &mut prompt => return result,
-            Some(message) = steers.recv() => message.steer(session).await,
+            Some(message) = steers.recv() => message.steer(session, attachments, session_id).await,
         }
     }
 }

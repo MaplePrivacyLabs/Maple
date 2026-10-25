@@ -6,7 +6,7 @@ use super::*;
 pub(super) struct SendPreview {
     pub session: Option<String>,
     text: SharedString,
-    images: Vec<(SharedString, Option<Arc<gpui::Image>>)>,
+    attachments: Vec<(SharedString, SharedString, Option<Arc<gpui::Image>>)>,
     show_body: bool,
     acknowledged_run: Option<String>,
     projected_runs: HashSet<String>,
@@ -15,13 +15,23 @@ pub(super) struct SendPreview {
 }
 
 impl SendPreview {
-    pub(super) fn new(session: Option<String>, text: &str, images: &[DraftImage]) -> Self {
+    pub(super) fn new(
+        session: Option<String>,
+        text: &str,
+        attachments: &[DraftAttachment],
+    ) -> Self {
         Self {
             session,
             text: text.to_string().into(),
-            images: images
+            attachments: attachments
                 .iter()
-                .map(|image| (image.name.clone().into(), image.thumbnail.clone()))
+                .map(|attachment| {
+                    (
+                        attachment.name.clone().into(),
+                        attachment.detail.clone(),
+                        attachment.thumbnail.clone(),
+                    )
+                })
                 .collect(),
             show_body: true,
             acknowledged_run: None,
@@ -192,7 +202,7 @@ impl ChatScreen {
                     self.awaiting_first_token = false;
                 }
                 if uncertain {
-                    self.notice = Some("Delivery is uncertain. Your message and images are retained while Maple checks the host; nothing will be resent.".into());
+                    self.notice = Some("Delivery is uncertain. Your message and files are retained while Maple checks the host; nothing will be resent.".into());
                     self.check_unresolved_sends(cx);
                 } else {
                     if self.is_selected(&session) {
@@ -273,16 +283,26 @@ impl ChatScreen {
                             .border_1()
                             .border_color(gpui::rgb(theme::user_bubble_border()))
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .when(!preview.images.is_empty(), |body| {
+                            .when(!preview.attachments.is_empty(), |body| {
                                 body.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                                    preview.images.iter().map(|(name, image)| {
+                                    preview.attachments.iter().map(|(name, detail, image)| {
                                         match image {
                                             Some(image) => div().child(
                                                 gpui::img(gpui::ImageSource::Image(image.clone()))
                                                     .size_16()
                                                     .rounded(theme::RADIUS_SM),
                                             ),
-                                            None => div().text_xs().child(name.clone()),
+                                            None => div()
+                                                .flex()
+                                                .flex_col()
+                                                .text_xs()
+                                                .gap_1()
+                                                .child(name.clone())
+                                                .child(
+                                                    div()
+                                                        .text_color(gpui::rgb(theme::text_muted()))
+                                                        .child(detail.clone()),
+                                                ),
                                         }
                                     }),
                                 ))
@@ -302,11 +322,17 @@ impl ChatScreen {
                             px(12.),
                             theme::text_muted(),
                         ))
-                        .child(if self.send_pending() {
-                            "Sending…"
-                        } else {
-                            "Waiting for response…"
-                        }),
+                        .child(
+                            self.selected_upload()
+                                .map(|(_, upload)| upload.label.clone())
+                                .unwrap_or_else(|| {
+                                    if self.send_pending() {
+                                        "Sending…".into()
+                                    } else {
+                                        "Waiting for response…".into()
+                                    }
+                                }),
+                        ),
                 ),
         )
     }

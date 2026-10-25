@@ -3,10 +3,10 @@
 mod state_tests {
     use std::sync::Arc;
 
+    use crate::ui::chat::attachments::MAX_DRAFT_ATTACHMENTS;
     use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::computers::ProjectTarget;
-    use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
     use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove};
     use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
     use crate::ui::chat::*;
@@ -1020,7 +1020,7 @@ mod state_tests {
                 .expect("backend"),
         );
         // This gpui's test scheduler flags activity on other threads unless
-        // parking is allowed; the backend runtime and image encoder run on tokio.
+        // parking is allowed; the backend runtime and attachment worker run on tokio.
         cx.executor().allow_parking();
         let screen = cx.new(|cx| {
             let mut screen = ChatScreen::new_inner(backend, "user".to_string(), cx);
@@ -1377,7 +1377,7 @@ mod state_tests {
             .unwrap();
         crate::settings::install_test_store(store);
         // This gpui's test scheduler flags activity on other threads unless
-        // parking is allowed; the backend runtime and image encoder run on tokio.
+        // parking is allowed; the backend runtime and attachment worker run on tokio.
         cx.executor().allow_parking();
         let screen = cx.new(|cx| {
             ChatScreen::new_inner(
@@ -3334,12 +3334,7 @@ mod state_tests {
         assert_eq!(shown(cx), "stop", "whitespace is not a draft");
 
         chat.update(cx, |this, cx| {
-            this.draft_images = vec![DraftImage {
-                id: 1,
-                name: "shot.png".into(),
-                data_url: None,
-                thumbnail: None,
-            }];
+            this.draft_attachments = vec![DraftAttachment::for_test(1, "shot.png", false)];
             cx.notify();
         });
         assert_eq!(
@@ -3349,7 +3344,7 @@ mod state_tests {
         );
 
         chat.update(cx, |this, cx| {
-            this.draft_images.clear();
+            this.draft_attachments.clear();
             this.booting = true;
             cx.notify();
         });
@@ -4974,10 +4969,50 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             let mut sent = user_item("u1", "see this");
             sent.input = Some(serde_json::json!({
-                "imageAttachments": [{"id": "att-1", "name": "a.png"}]
+                "attachments": [{"id": "att-1", "name": "a.png", "mimeType": "image/png", "size": 24, "executionPath": "/uploads/a.png"}]
             }));
             this.apply_incoming_item("s1", sent, cx);
             assert!(this.attachment_requests.contains("att-1"));
+        });
+    }
+
+    #[gpui::test]
+    fn generic_and_retired_attachments_never_request_image_bytes(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let mut sent = user_item("files", "");
+            sent.input = Some(serde_json::json!({"attachments": [
+                {"id":"archive", "name":"report.zip", "mimeType":"application/zip", "size":123, "executionPath":"/uploads/report.zip"},
+                {"id":"retired", "name":"old.png", "mimeType":"image/unknown", "size":0, "executionPath":""}
+            ]}));
+            this.apply_incoming_item("s1", sent.clone(), cx);
+            for _ in 0..3 { this.load_attachment_images_for(&sent, cx); }
+            assert!(this.attachment_requests.is_empty());
+            assert!(this.attachment_queue.is_empty());
+            let derived = this.derived.get(&sent, 0);
+            assert_eq!(derived.attachments.len(), 2);
+            assert_eq!(derived.attachments[0].detail.as_ref(), "ZIP · 123 B");
+            assert!(derived.attachments[1].unavailable);
+        });
+    }
+
+    #[gpui::test]
+    fn dropping_a_preparing_attachment_discards_its_late_copy(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let draft = DraftAttachment::for_test(999, "report.zip", true);
+            let path = draft.staged.as_ref().unwrap().path.clone();
+            this.finish_attachment_preparation(
+                999,
+                Ok((draft.staged.unwrap(), "application/zip".into(), 15, None)),
+                cx,
+            );
+            assert!(this.draft_attachments.is_empty());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while path.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(!path.exists());
         });
     }
 
@@ -6985,7 +7020,7 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             let mut promoted = user_item("u1", "queued text");
             promoted.input = Some(serde_json::json!({
-                "imageAttachments": [{ "id": "att-9", "name": "shot.png" }]
+                "attachments": [{ "id": "att-9", "name": "shot.png", "mimeType": "image/png", "size": 24, "executionPath": "/uploads/shot.png" }]
             }));
             this.handle_run_event(
                 "s1",
@@ -7487,19 +7522,13 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, png_bytes());
             this.paste_image(image, cx);
-            assert_eq!(this.draft_images.len(), 1);
-            assert_eq!(this.draft_images[0].name, "pasted-1.png");
-            // The encode runs off the UI thread; the draft is staged at
+            assert_eq!(this.draft_attachments.len(), 1);
+            assert_eq!(this.draft_attachments[0].name, "pasted-1.png");
+            // The stable copy is made off the UI thread; the draft is staged at
             // once and cannot be sent until it lands.
-            assert!(!this.draft_images[0].ready());
+            assert!(!this.draft_attachments[0].ready());
             assert!(this.notice.is_none());
         });
-    }
-
-    #[test]
-    fn test_data_url_encodes_the_signature() {
-        let url = encode_data_url("image/png", &png_bytes());
-        assert!(url.starts_with("data:image/png;base64,iVBORw0KGgo"));
     }
 
     #[gpui::test]
@@ -7509,7 +7538,7 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             let image = gpui::Image::from_bytes(gpui::ImageFormat::Gif, b"GIF89a".to_vec());
             this.paste_image(image, cx);
-            assert!(this.draft_images.is_empty());
+            assert!(this.draft_attachments.is_empty());
             assert!(
                 this.notice
                     .as_deref()
@@ -7523,11 +7552,11 @@ mod state_tests {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            for _ in 0..=MAX_DRAFT_IMAGES {
+            for _ in 0..=MAX_DRAFT_ATTACHMENTS {
                 let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, png_bytes());
                 this.paste_image(image, cx);
             }
-            assert_eq!(this.draft_images.len(), MAX_DRAFT_IMAGES);
+            assert_eq!(this.draft_attachments.len(), MAX_DRAFT_ATTACHMENTS);
             assert!(
                 this.notice
                     .as_deref()
@@ -7557,7 +7586,7 @@ mod state_tests {
         }
 
         // This gpui's test scheduler flags activity on other threads unless
-        // parking is allowed; the backend runtime and image encoder run on tokio.
+        // parking is allowed; the backend runtime and attachment worker run on tokio.
         cx.executor().allow_parking();
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
@@ -8194,7 +8223,7 @@ mod state_tests {
         }
 
         // This gpui's test scheduler flags activity on other threads unless
-        // parking is allowed; the backend runtime and image encoder run on tokio.
+        // parking is allowed; the backend runtime and attachment worker run on tokio.
         cx.executor().allow_parking();
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
@@ -8988,35 +9017,106 @@ mod state_tests {
                 composer.update(cx, |input, cx| input.set_text(draft, cx));
                 let id = uuid::Uuid::new_v4().to_string();
                 chat.finish_send(id.clone(), UnresolvedSend {
+                    backend: chat.backend.clone(),
                     outcome: None,
                     session: "s1".into(),
                     text: "already admitted original message".into(),
                     from_composer: true,
-                    images: vec![DraftImage {
-                        id: 50,
-                        name: "image.png".into(),
-                        data_url: Some(Arc::from("data:image/png;base64,cGljdHVyZQ==")),
-                        thumbnail: None,
-                    }],
+                    attachments: vec![DraftAttachment::for_test(50, "image.png", true)],
                 }, Err(format!("Send outcome unknown ({id}). Reload this task before sending again; it may already be running.")), cx);
                 assert_eq!(composer.read(cx).text_ref(), draft);
-                assert!(chat.draft_images.is_empty());
-                assert_eq!(chat.unresolved_sends[&id].images.len(), 1);
+                assert!(chat.draft_attachments.is_empty());
+                assert_eq!(chat.unresolved_sends[&id].attachments.len(), 1);
+                assert!(chat.unresolved_sends[&id].attachments[0].staged.as_ref().unwrap().path.exists());
                 assert!(chat.unresolved_sends[&id].awaiting_receipt());
                 chat.apply_send_receipt(&id, Some(Outcome::Pending), cx);
                 assert_eq!(composer.read(cx).text_ref(), draft);
-                assert!(chat.draft_images.is_empty());
+                assert!(chat.draft_attachments.is_empty());
                 assert!(chat.unresolved_sends[&id].awaiting_receipt());
                 chat.apply_send_receipt(&id, Some(Outcome::Finished(Ok(serde_json::json!("accepted-run")))), cx);
                 assert_eq!(composer.read(cx).text_ref(), draft);
-                assert!(chat.draft_images.is_empty());
+                assert!(chat.draft_attachments.is_empty());
                 assert!(!chat.unresolved_sends.contains_key(&id));
             }
         });
     }
 
     #[gpui::test]
-    fn uncertain_send_keeps_images_and_does_not_overwrite_another_draft(cx: &mut TestAppContext) {
+    fn deleting_a_task_cancels_its_pending_upload_and_discards_send_recovery(
+        cx: &mut TestAppContext,
+    ) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            let drafts = vec![DraftAttachment::for_test(1, "report.zip", true)];
+            let (fence, progress) = this.begin_uploads("pending", "s1", &drafts, cx);
+            drop(progress);
+            this.sending_previews.insert(
+                "pending".into(),
+                sending::SendPreview::new(Some("s1".into()), "read this", &drafts),
+            );
+            this.unresolved_sends.insert(
+                "uncertain".into(),
+                UnresolvedSend {
+                    backend: this.backend.clone(),
+                    outcome: None,
+                    session: "s1".into(),
+                    text: "older".into(),
+                    attachments: drafts,
+                    from_composer: true,
+                },
+            );
+            this.remove_session("s1", cx);
+            assert!(fence.cancelled());
+            assert!(this.attachment_uploads.is_empty());
+            assert!(this.unresolved_sends.is_empty());
+            assert!(this.discarded_sends.contains("pending"));
+        });
+    }
+
+    #[gpui::test]
+    fn view_teardown_cancels_upload_permission_before_a_detached_import_can_send(
+        cx: &mut TestAppContext,
+    ) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            let drafts = vec![DraftAttachment::for_test(1, "report.zip", true)];
+            let (fence, progress) = this.begin_uploads("pending", "s1", &drafts, cx);
+            drop(progress);
+            this.attachment_uploads.clear();
+            assert!(fence.cancelled());
+            assert!(!fence.hand_off());
+        });
+    }
+
+    #[gpui::test]
+    fn pending_receipts_keep_the_computer_that_received_the_send(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, _| {
+            let origin = Arc::new(AgentBackend::for_remote_test("execution-a").unwrap());
+            this.unresolved_sends.insert(
+                "original".into(),
+                UnresolvedSend {
+                    backend: origin.clone(),
+                    outcome: None,
+                    session: "task-a".into(),
+                    text: "keep".into(),
+                    attachments: vec![],
+                    from_composer: true,
+                },
+            );
+            this.backend = Arc::new(AgentBackend::for_remote_test("execution-b").unwrap());
+            let queries = this.pending_receipt_queries();
+            assert_eq!(queries.len(), 1);
+            assert_eq!(queries[0].id, "original");
+            assert!(Arc::ptr_eq(&queries[0].backend, &origin));
+            assert_eq!(queries[0].backend.remote_host(), Some("execution-a"));
+        });
+    }
+
+    #[gpui::test]
+    fn uncertain_send_keeps_attachments_and_does_not_overwrite_another_draft(
+        cx: &mut TestAppContext,
+    ) {
         use crate::host::receipts::Outcome;
         let chat = screen(cx);
         chat.update(cx, |chat, cx| {
@@ -9026,20 +9126,16 @@ mod state_tests {
             chat.unresolved_sends.insert(
                 "send-original".into(),
                 UnresolvedSend {
+                    backend: chat.backend.clone(),
                     outcome: None,
                     session: "s1".into(),
                     text: "original message".into(),
                     from_composer: true,
-                    images: vec![DraftImage {
-                        id: 50,
-                        name: "image.png".into(),
-                        data_url: Some(Arc::from("data:image/png;base64,cGljdHVyZQ==")),
-                        thumbnail: None,
-                    }],
+                    attachments: vec![DraftAttachment::for_test(50, "image.png", true)],
                 },
             );
             chat.apply_send_receipt("send-original", None, cx);
-            assert_eq!(chat.unresolved_sends["send-original"].images.len(), 1);
+            assert_eq!(chat.unresolved_sends["send-original"].attachments.len(), 1);
             chat.apply_send_receipt("send-original", Some(Outcome::Missing), cx);
             assert_eq!(composer.read(cx).text_ref(), "new draft");
             assert!(chat.unresolved_sends.contains_key("send-original"));
@@ -9050,7 +9146,7 @@ mod state_tests {
             chat.selected_session = Some("s1".into());
             chat.apply_send_receipt("send-original", Some(Outcome::Missing), cx);
             assert_eq!(composer.read(cx).text_ref(), "original message");
-            assert_eq!(chat.draft_images[0].name, "image.png");
+            assert_eq!(chat.draft_attachments[0].name, "image.png");
             assert!(chat.unresolved_sends.is_empty());
         });
     }
@@ -9072,10 +9168,11 @@ mod state_tests {
                 chat.unresolved_sends.insert(
                     "original".into(),
                     UnresolvedSend {
+                        backend: chat.backend.clone(),
                         outcome: None,
                         session: "s1".into(),
                         text: "original draft".into(),
-                        images: vec![],
+                        attachments: vec![],
                         from_composer: true,
                     },
                 );
@@ -9577,24 +9674,15 @@ mod state_tests {
                     .clone()
                     .unwrap()
                     .update(cx, |input, cx| input.set_text("newer draft", cx));
-                this.draft_images = vec![DraftImage {
-                    id: 2,
-                    name: "new.png".into(),
-                    data_url: None,
-                    thumbnail: None,
-                }];
+                this.draft_attachments = vec![DraftAttachment::for_test(2, "new.png", false)];
                 this.finish_send(
                     "send".into(),
                     UnresolvedSend {
+                        backend: this.backend.clone(),
                         outcome: None,
                         session: "s1".into(),
                         text: "original".into(),
-                        images: vec![DraftImage {
-                            id: 1,
-                            name: "original.png".into(),
-                            data_url: None,
-                            thumbnail: None,
-                        }],
+                        attachments: vec![DraftAttachment::for_test(1, "original.png", false)],
                         from_composer: true,
                     },
                     Err("failed".into()),
@@ -9607,16 +9695,19 @@ mod state_tests {
                     "another task's waiting state stays intact"
                 );
                 assert_eq!(this.composer_text(cx).as_deref(), Some("newer draft"));
-                assert_eq!(this.draft_images[0].name, "new.png");
+                assert_eq!(this.draft_attachments[0].name, "new.png");
                 assert_eq!(this.unresolved_sends["send"].text, "original");
-                assert_eq!(this.unresolved_sends["send"].images[0].name, "original.png");
+                assert_eq!(
+                    this.unresolved_sends["send"].attachments[0].name,
+                    "original.png"
+                );
                 // Returning to an empty original task recovers the retained draft.
                 this.selected_session = Some("s1".into());
                 this.composer
                     .clone()
                     .unwrap()
                     .update(cx, |input, cx| input.clear(cx));
-                this.draft_images.clear();
+                this.draft_attachments.clear();
                 this.apply_send_receipt(
                     "send",
                     Some(crate::host::receipts::Outcome::Finished(Err(
@@ -9625,7 +9716,7 @@ mod state_tests {
                     cx,
                 );
                 assert_eq!(this.composer_text(cx).as_deref(), Some("original"));
-                assert_eq!(this.draft_images[0].name, "original.png");
+                assert_eq!(this.draft_attachments[0].name, "original.png");
             });
         }
 

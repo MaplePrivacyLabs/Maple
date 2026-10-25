@@ -1000,7 +1000,7 @@ impl Store {
                 source.pragma_update(Some("dst"), "application_id", schema::APPLICATION_ID)?;
                 let value = notice::new_value(notice)?;
                 source.execute("INSERT INTO dst.app_settings(key,value,updated_ms) VALUES ('store.mode_notice',?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ms=excluded.updated_ms", params![value,super::now_ms()])?;
-                for table in ["tasks", "entries", "blobs"] {
+                for table in ["tasks", "entries", "file_attachments"] {
                     let count: i64 = source.query_row(
                         &format!("SELECT count(*) FROM main.{table}"),
                         [],
@@ -1168,7 +1168,7 @@ impl Store {
             self.verify_or_create_generation()?;
         }
         let mut journal = if pending.is_some() {
-            set_state(self, StoreState::Maintenance)?;
+            freeze_attachment_writers(self, true)?;
             self.close_connections_without_checkpoint()?;
             match recover_filesystem(&self.paths)? {
                 Some(journal) => journal,
@@ -1203,7 +1203,7 @@ impl Store {
             // Publishing the reset intent can succeed before parent syncing
             // fails. Freeze admission first so no newer acknowledged writes can
             // be lost when startup finishes that confirmed reset later.
-            set_state(self, StoreState::Maintenance)?;
+            freeze_attachment_writers(self, true)?;
             // An in-flight checkpoint can publish its own quarantine journal.
             // Join it before publishing reset intent so it cannot overwrite the
             // operation identity used to retire the confirmed source below.
@@ -1224,6 +1224,9 @@ impl Store {
             write_json(&self.paths.setup(), &journal)?;
         }
         set_state(self, StoreState::Maintenance)?;
+        if !self.cancel_attachment_writers()? {
+            return Err(StoreError::Busy.into());
+        }
         self.close_connections_without_checkpoint()?;
         if journal.after == ResetAfter::Erase {
             self.lifecycle_control
@@ -1371,6 +1374,37 @@ fn connection_generation(connection: &Connection) -> LifecycleResult<Generation>
 fn set_state(store: &Store, state: StoreState) -> StoreResult<()> {
     *store.state.write().map_err(|_| StoreError::Busy)? = state;
     Ok(())
+}
+
+/// Freeze new upload admission before cancelling existing writers. A refusal
+/// before durable replacement intent leaves the original store usable while
+/// those already-cancelled handles drain; it must not strand the UI in upkeep.
+fn freeze_attachment_writers(store: &Store, restore_on_busy: bool) -> StoreResult<()> {
+    let previous = {
+        let mut state = store.state.write().map_err(|_| StoreError::Busy)?;
+        let previous = state.clone();
+        *state = StoreState::Maintenance;
+        previous
+    };
+    if store.cancel_attachment_writers()? {
+        return Ok(());
+    }
+    if restore_on_busy {
+        let mut state = store.state.write().map_err(|_| StoreError::Busy)?;
+        if *state == StoreState::Maintenance {
+            // A checkpoint failure can race the request without taking the
+            // lifecycle gate. Never revive Open after damage was observed.
+            *state = if previous == StoreState::Open && store.runtime_damage.load(Ordering::Acquire)
+            {
+                StoreState::Damaged {
+                    reason: DamageReason::Database,
+                }
+            } else {
+                previous
+            };
+        }
+    }
+    Err(StoreError::Busy)
 }
 
 fn disk_mode(paths: &StorePaths) -> LifecycleResult<StoreMode> {
@@ -1563,6 +1597,7 @@ fn recover_filesystem(paths: &StorePaths) -> LifecycleResult<Option<SetupJournal
             if path_present(&temporary)? {
                 discard_temporary(&temporary, &replacement)?;
             }
+            attachments::remove_generation(paths, &journal.new_store_id)?;
             // Keep this generation-qualified marker: a failed salvage does not
             // restore trust in the original database on the following restart.
             return Ok(Some(journal));
@@ -1618,6 +1653,7 @@ fn recover_filesystem(paths: &StorePaths) -> LifecycleResult<Option<SetupJournal
 
 fn preflight_setup(paths: &StorePaths, journal: &SetupJournal) -> LifecycleResult<()> {
     journal.validate()?;
+    attachments::verify_generation(paths, &journal.old_store_id)?;
     let replacement = journal.replacement();
     let current = read_generation(&paths.db())?;
     if journal.phase == SetupPhase::BuildReplacement
@@ -1728,6 +1764,7 @@ fn retire_old(paths: &StorePaths, journal: &mut SetupJournal) -> LifecycleResult
         // A confirmed reset discards its current source before asking for new
         // setup choices. A committed salvage keeps its temporary source until
         // the verified replacement has been installed.
+        attachments::remove_generation(paths, &journal.old_store_id)?;
         remove_retired_source(paths, &journal.old_store_id)?;
     }
     if journal.phase == SetupPhase::RetireOld {
@@ -1790,6 +1827,7 @@ fn finish_setup(paths: &StorePaths, journal: &mut SetupJournal) -> LifecycleResu
     journal.validate()?;
     // A crash may have installed the replacement before source cleanup. Its
     // journal stays authoritative until the exact old source is gone.
+    attachments::remove_generation(paths, &journal.old_store_id)?;
     remove_retired_source(paths, &journal.old_store_id)?;
     journal.phase = SetupPhase::Installed;
     write_json(&paths.setup(), journal)?;
@@ -2109,6 +2147,7 @@ fn decode_id(value: &str) -> Option<[u8; 16]> {
     Some(id)
 }
 
+mod attachments;
 #[cfg(test)]
 mod generated_tests;
 mod generation_repair;

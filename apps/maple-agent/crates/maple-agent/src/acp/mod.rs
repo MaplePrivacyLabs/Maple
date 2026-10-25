@@ -162,9 +162,14 @@ where
 pub(super) struct PromptAdmission {
     pub(super) session_id: String,
     prompt: String,
-    images: Vec<AgentImageUpload>,
+    images: PromptAttachments,
     cancellation: CancellationToken,
     operation: Arc<AcpSessionOperation>,
+}
+
+enum PromptAttachments {
+    Images(Vec<AgentImageUpload>),
+    Committed(Vec<String>),
 }
 
 /// What ended a turn's stream of events early.
@@ -1084,7 +1089,7 @@ impl AcpConnectionContext {
         Ok(PromptAdmission {
             session_id,
             prompt,
-            images,
+            images: PromptAttachments::Images(images),
             cancellation,
             operation,
         })
@@ -1442,7 +1447,7 @@ impl AcpConnectionContext {
         cx: &ConnectionTo<Client>,
         session_id: &str,
         prompt: String,
-        images: Vec<AgentImageUpload>,
+        images: PromptAttachments,
         cancellation: &CancellationToken,
     ) -> Result<PromptResponse, agent_client_protocol::Error> {
         let protocol_session_id = SessionId::new(session_id.to_string());
@@ -1523,6 +1528,17 @@ impl AcpConnectionContext {
                 prompt = expanded;
             }
         }
+        let attachments = match images {
+            PromptAttachments::Images(images) => self
+                .agent
+                .import_image_attachments(session_id.to_string(), images)
+                .await
+                .map_err(internal_acp_error)?
+                .into_iter()
+                .map(|attachment| attachment.id)
+                .collect(),
+            PromptAttachments::Committed(ids) => ids,
+        };
         let run = match self
             .agent
             .send_surface_message(
@@ -1537,7 +1553,7 @@ impl AcpConnectionContext {
                     vision_capable: catalog.vision == Some(true),
                     steer: false,
                     queue_id: None,
-                    attachments: images,
+                    attachments,
                 },
                 cancellation.clone(),
             )

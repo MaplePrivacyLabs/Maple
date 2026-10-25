@@ -572,6 +572,19 @@ fn confirmed_reset_discards_only_current_source_and_survives_cold_reopen() {
                     .unwrap();
             }
             let old = store.store_id().unwrap();
+            let attachment_root = store.paths.root().join("attachments");
+            private_directory(&attachment_root).unwrap();
+            let old_attachments = attachment_root.join(encode_id(&old));
+            private_directory(&old_attachments).unwrap();
+            let mut original = private_new_file(&old_attachments.join("current-file")).unwrap();
+            original.write_all(b"current session attachment").unwrap();
+            drop(original);
+            let historical_attachments = attachment_root.join(encode_id(&[89; 16]));
+            private_directory(&historical_attachments).unwrap();
+            let mut previous =
+                private_new_file(&historical_attachments.join("historical-file")).unwrap();
+            previous.write_all(b"keep unrelated generation").unwrap();
+            drop(previous);
             store
                 .upsert_account("current-history-to-discard", 1)
                 .unwrap();
@@ -604,6 +617,11 @@ fn confirmed_reset_discards_only_current_source_and_survives_cold_reopen() {
             }
             let replacement = store.store_id().unwrap();
             assert_ne!(replacement, old);
+            assert!(!old_attachments.exists());
+            assert_eq!(
+                fs::read(historical_attachments.join("historical-file")).unwrap(),
+                b"keep unrelated generation"
+            );
             assert!(
                 store
                     .account_id("current-history-to-discard")
@@ -1407,4 +1425,61 @@ fn status_read_failure_does_not_reclassify_an_open_generation() {
     store
         .upsert_account("status-retry-remains-usable", 1)
         .unwrap();
+}
+
+#[test]
+fn reset_busy_on_an_upload_keeps_the_store_usable_until_retry() {
+    use crate::store::{AttachmentUploadMetadata, AttachmentUploadStart, NewTask, TaskKind};
+    use sha2::{Digest, Sha256};
+    let directory = tempfile::tempdir().unwrap();
+    let store = opened(directory.path());
+    let account = store.upsert_account("reset-upload", 1).unwrap();
+    let task = store
+        .create_task(
+            account,
+            &NewTask {
+                uuid: "00000000-0000-7000-8000-000000000001".into(),
+                project_root: if cfg!(windows) {
+                    "C:/reset-upload"
+                } else {
+                    "/reset-upload"
+                }
+                .into(),
+                kind: TaskKind::Desktop,
+                title: "Upload".into(),
+                provisional: true,
+                model: None,
+                created_ms: 1,
+            },
+        )
+        .unwrap();
+    let AttachmentUploadStart::Writing(mut upload) = store
+        .begin_attachment_upload(
+            account,
+            &task.uuid,
+            "reset-active-upload",
+            &AttachmentUploadMetadata {
+                name: "file.txt".into(),
+                mime_type: "text/plain".into(),
+                size: 3,
+                sha256: format!("{:x}", Sha256::digest(b"abc")),
+            },
+        )
+        .unwrap()
+    else {
+        panic!("fresh upload unexpectedly complete");
+    };
+    upload.write_chunk(b"a").unwrap();
+    assert_eq!(
+        store.erase_local_data(ERASE_CONFIRMATION),
+        Err(LifecycleError::Store(StoreError::Busy))
+    );
+    assert_eq!(store.state(), StoreState::Open);
+    assert_eq!(store.account_id("reset-upload").unwrap(), Some(account));
+    assert!(!store.paths.setup().exists());
+    assert_eq!(upload.write_chunk(b"bc"), Err(StoreError::Conflict));
+    drop(upload);
+    store.erase_local_data(ERASE_CONFIRMATION).unwrap();
+    assert_eq!(store.state(), StoreState::Open);
+    assert_eq!(store.account_id("reset-upload").unwrap(), None);
 }

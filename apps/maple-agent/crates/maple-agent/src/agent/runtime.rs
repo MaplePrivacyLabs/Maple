@@ -682,15 +682,21 @@ impl AgentRuntime {
             .map_err(|error| format!("Failed to read the Agent task: {error}"))??;
         // A model that cannot see images gets them described.
         let describe = !model.supports_images();
-        let mut options =
-            AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
-        options.model = Some(model);
-        options.settings = self.settings();
-        options.resources = resources.unwrap_or_default();
         let attachments = Arc::new(super::attachments::AgentAttachmentStore::new(
             Arc::clone(self.store.store()),
             self.store.account(),
         ));
+        let task_models = super::provider::attachment_model_registry(
+            &self.models,
+            (*attachments).clone(),
+            row.id.clone(),
+        );
+        let mut options =
+            AgentSessionOptions::new(&row.project_root, APP_NAME, manager, task_models);
+        options.model = Some(model);
+        options.settings = self.settings();
+        options.resources = resources.unwrap_or_default();
+
         let output_dir = crate::store::spill::SpillRoot::new(self.store.store().paths())
             .and_then(|spills| spills.output_dir(&row.id))
             .map_err(|error| error.to_string())?;

@@ -1087,11 +1087,25 @@ async fn steering_joins_the_running_turn() {
 const PNG_1X1: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
-fn with_image(mut request: AgentSendMessageRequest, name: &str) -> AgentSendMessageRequest {
-    request.attachments = vec![AgentImageUpload {
-        name: name.to_string(),
-        data_url: format!("data:image/png;base64,{PNG_1X1}"),
-    }];
+async fn with_image(
+    harness: &Harness,
+    mut request: AgentSendMessageRequest,
+    name: &str,
+) -> AgentSendMessageRequest {
+    request.attachments = harness
+        .handle
+        .import_image_attachments(
+            request.session_id.clone(),
+            vec![AgentImageUpload {
+                name: name.to_string(),
+                data_url: format!("data:image/png;base64,{PNG_1X1}"),
+            }],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|attachment| attachment.id)
+        .collect();
     request
 }
 
@@ -1120,10 +1134,15 @@ async fn attached_images_reach_the_model_and_show_with_their_message() {
         .push_text("A dialog, streamed slowly enough to queue behind.");
     harness.faux.push_text("Also a dialog.");
     let task = harness.create_task().await;
-    let first = with_image(harness.request(&task, "What is this?"), "dialog.png");
+    let first = with_image(
+        &harness,
+        harness.request(&task, "What is this?"),
+        "dialog.png",
+    )
+    .await;
     let mut run = harness.handle.send_message(first).await.unwrap();
     // A message sent during the run waits as a chip with its image.
-    let mut second = with_image(harness.request(&task, "And this?"), "second.png");
+    let mut second = with_image(&harness, harness.request(&task, "And this?"), "second.png").await;
     second.vision_capable = true;
     let staged = harness.handle.send_message(second).await.unwrap();
     assert_eq!(staged.queued.unwrap().attachments[0].name, "second.png");
@@ -1136,11 +1155,11 @@ async fn attached_images_reach_the_model_and_show_with_their_message() {
     let text = pi_ai::content_text(&first.content);
     assert!(
         text.starts_with(
-            "What is this?\n\nThe user attached the following image:\n- \"dialog.png\": maple-attachment://"
+            "What is this?\n\nThe user attached these files on the execution computer:\n- "
         ),
         "{text}"
     );
-    assert!(text.ends_with("when you need visual details from that image."));
+    assert!(text.ends_with("when you need visual details from an image."));
     assert_eq!(first.content.len(), 1);
     let second = last_user(&requests[1]);
     assert!(!pi_ai::content_text(&second.content).contains("read_image"));
@@ -1158,7 +1177,7 @@ async fn attached_images_reach_the_model_and_show_with_their_message() {
                 let images = row
                     .input
                     .as_ref()
-                    .and_then(|input| input["imageAttachments"].as_array().cloned())
+                    .and_then(|input| input["attachments"].as_array().cloned())
                     .unwrap_or_default()
                     .iter()
                     .map(|image| {
@@ -1194,6 +1213,264 @@ async fn attached_images_reach_the_model_and_show_with_their_message() {
             .decode(PNG_1X1)
             .unwrap()
     );
+}
+
+async fn committed_file(
+    harness: &Harness,
+    task: &str,
+    name: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> AgentAttachment {
+    use sha2::{Digest, Sha256};
+    let runtime = harness.runtime().await;
+    let store = runtime.store.store();
+    let metadata = crate::store::AttachmentUploadMetadata {
+        name: name.into(),
+        mime_type: mime.into(),
+        size: bytes.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    };
+    let started = store
+        .begin_attachment_upload(
+            runtime.store.account(),
+            task,
+            &format!("{:032x}", rand::random::<u128>()),
+            &metadata,
+        )
+        .unwrap();
+    let crate::store::AttachmentUploadStart::Writing(mut writer) = started else {
+        panic!("new upload")
+    };
+    writer.write_chunk(bytes).unwrap();
+    writer.finish(store).unwrap().into()
+}
+
+#[tokio::test]
+async fn mixed_files_and_images_use_committed_paths_and_preserve_refs_in_queue_edits_and_steering()
+{
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let zip = committed_file(
+        &harness,
+        &task,
+        "report.zip",
+        "application/zip",
+        b"PK archive bytes",
+    )
+    .await;
+    let image = harness
+        .handle
+        .import_image_attachments(
+            task.clone(),
+            vec![AgentImageUpload {
+                name: "screen.png".into(),
+                data_url: format!("data:image/png;base64,{PNG_1X1}"),
+            }],
+        )
+        .await
+        .unwrap()
+        .remove(0);
+    harness.faux.push_message(vec![faux_tool_call(
+        "request_user_input",
+        json!({"question":"Wait?","options":[{"label":"Continue"}]}),
+    )]);
+    harness.faux.push_text("Reviewed.");
+    let mut first = harness.request(&task, "Wait before reviewing");
+    first.vision_capable = true;
+    let mut run = harness.handle.send_message(first).await.unwrap();
+    let question = || {
+        harness
+            .recorder
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                AgentServiceEvent::Question {
+                    session_id,
+                    request_id,
+                    ..
+                } if session_id == &task => Some(request_id.clone()),
+                _ => None,
+            })
+    };
+    eventually(|| question().is_some()).await;
+    let mut upload = harness.request(&task, "Review both");
+    upload.vision_capable = true;
+    upload.attachments = vec![zip.id.clone(), image.id.clone()];
+    let chip = harness
+        .handle
+        .send_message(upload)
+        .await
+        .unwrap()
+        .queued
+        .unwrap();
+    assert_eq!(chip.attachments, [zip.clone(), image.clone()]);
+    let control = AgentQueueControlRequest {
+        session_id: task.clone(),
+        queue_id: chip.queue_id.clone(),
+    };
+    harness
+        .handle
+        .begin_queued_message_edit(control)
+        .await
+        .unwrap();
+    let session = harness.runtime().await.loaded_session(&task).await.unwrap();
+    let steered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let listener = session.subscribe({
+        let steered = steered.clone();
+        move |event| {
+            if matches!(event, pi_coding_agent::AgentSessionEvent::QueueUpdate { steering, .. }
+                if steering.iter().any(|text| text.starts_with("Review the archive and screenshot")))
+            {
+                steered.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+    });
+    // Editing the queued message only changes its text; the original committed
+    // file identities and image references survive the steering boundary.
+    let mut edit = harness.request(&task, "Review the archive and screenshot");
+    edit.queue_id = Some(chip.queue_id);
+    edit.steer = true;
+    harness.handle.send_message(edit).await.unwrap();
+    eventually(|| steered.load(std::sync::atomic::Ordering::Acquire)).await;
+    session.unsubscribe(listener);
+    assert!(
+        harness
+            .service
+            .answer_question(
+                &question().unwrap(),
+                r#"{"answers":{"question_0":{"answers":["Continue"]}}}"#.into()
+            )
+            .await
+    );
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let request = harness.faux.requests().pop().unwrap();
+    let user = last_user(&request);
+    let text = pi_ai::content_text(&user.content);
+    let (typed, shown) = attachments::split_attachment_prompt(&text).unwrap();
+    assert_eq!(typed, "Review the archive and screenshot");
+    assert_eq!(shown, [zip.clone(), image]);
+    assert!(matches!(&user.content[1], pi_ai::Content::Image(image) if image.data == PNG_1X1));
+    assert_eq!(
+        std::fs::read(&zip.execution_path).unwrap(),
+        b"PK archive bytes"
+    );
+    assert!(!harness.project.path().join("report.zip").exists());
+    let detail = harness.handle.load_session(task).await.unwrap();
+    let input = detail
+        .timeline
+        .iter()
+        .rev()
+        .find(|row| row.role.as_deref() == Some("user"))
+        .unwrap()
+        .input
+        .as_ref()
+        .unwrap();
+    assert_eq!(input["attachments"][0]["executionPath"], zip.execution_path);
+}
+
+#[tokio::test]
+async fn an_invalid_or_foreign_attachment_rejects_the_whole_send_before_inference() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let other = harness.create_task().await;
+    let valid = committed_file(&harness, &task, "notes.txt", "text/plain", b"notes").await;
+    let foreign = committed_file(&harness, &other, "foreign.zip", "application/zip", b"PK").await;
+    for bad in ["not-an-id".to_string(), foreign.id] {
+        let mut request = harness.request(&task, "Do not partially accept this");
+        request.attachments = vec![valid.id.clone(), bad];
+        assert!(harness.handle.send_message(request).await.is_err());
+    }
+    assert!(harness.faux.requests().is_empty());
+    let detail = harness.handle.load_session(task).await.unwrap();
+    assert!(
+        !detail
+            .timeline
+            .iter()
+            .any(|row| row.role.as_deref() == Some("user"))
+    );
+}
+
+#[tokio::test]
+async fn cold_native_image_history_materializes_only_for_inference_and_missing_files_are_nonfatal()
+{
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let image = harness
+        .handle
+        .import_image_attachments(
+            task.clone(),
+            vec![AgentImageUpload {
+                name: "screen.png".into(),
+                data_url: format!("data:image/png;base64,{PNG_1X1}"),
+            }],
+        )
+        .await
+        .unwrap()
+        .remove(0);
+    harness.faux.push_text("Seen.");
+    let mut first = harness.request(&task, "Inspect");
+    first.vision_capable = true;
+    first.attachments = vec![image.id];
+    let mut run = harness.handle.send_message(first).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let runtime = harness.runtime().await;
+    runtime.unload_task(&task).await.unwrap();
+    let source = || {
+        runtime
+            .store
+            .store()
+            .load_session(
+                runtime.store.account(),
+                &task,
+                crate::store::SessionLoad::Full,
+            )
+            .unwrap()
+            .entries
+    };
+    let saved = source();
+    let saved_image_ids = saved
+        .iter()
+        .flat_map(|entry| match &entry.kind {
+            pi_coding_agent::session::EntryKind::Message {
+                message: pi_coding_agent::SessionMessage::Llm(pi_ai::Message::User(user)),
+            } => user
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    pi_ai::Content::Image(image) => {
+                        attachments::attachment_id_from_source(&image.data).map(str::to_string)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    assert!(!saved_image_ids.is_empty());
+    // Pi may normalize the incoming image into a separate persisted copy.
+    // Remove the pixels actually referenced by cold source history.
+    for id in saved_image_ids {
+        let image = runtime
+            .store
+            .store()
+            .attachment_metadata(runtime.store.account(), &task, &id)
+            .unwrap();
+        std::fs::remove_file(image.execution_path).unwrap();
+    }
+    harness
+        .faux
+        .push_text("I can continue without the missing image.");
+    let mut next = harness.request(&task, "Continue");
+    next.vision_capable = true;
+    let mut run = harness.handle.send_message(next).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let request = harness.faux.requests().pop().unwrap();
+    assert!(request.context.messages.iter().any(|message| matches!(message,
+        pi_ai::Message::User(user) if user.content.iter().any(|block|
+            matches!(block, pi_ai::Content::Text(text) if text.text == "Image no longer available.")))));
+    let after = source();
+    assert_eq!(&after[..saved.len()], saved);
 }
 
 /// The first tool result the model got in `request`.

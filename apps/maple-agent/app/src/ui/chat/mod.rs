@@ -10,7 +10,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentImageUpload, AgentIntegration, AgentIntegrationAvailability,
+    AgentCreateSessionRequest, AgentIntegration, AgentIntegrationAvailability,
     AgentIntegrationBackend, AgentMcpServer, AgentMcpTransport, AgentProjectTrustStatus,
     AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent, AgentSessionIntegrationKind,
     AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentSubagent, AgentTaskState,
@@ -34,8 +34,8 @@ mod commands;
 mod composer;
 pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
+mod attachments;
 mod dialogs;
-mod images;
 mod navigation;
 mod paging;
 mod project_folder;
@@ -43,11 +43,13 @@ mod queue;
 mod sending;
 mod sidebar;
 mod speech;
+mod staging;
 mod summaries;
 #[cfg(test)]
 mod tests;
 mod thinking;
 mod transcript;
+mod uploads;
 
 use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind};
 use self::commands::ChatCommand;
@@ -168,32 +170,14 @@ const PROMPT_HISTORY_LIMIT: usize = 50;
 /// elapsed time. It runs only while a subagent works.
 const SUBAGENT_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// An image staged in the composer: the data URL the runtime stores with
-/// the message and a square thumbnail, both built off the UI thread.
-#[derive(Clone)]
-struct DraftImage {
-    /// Unique per staged draft, so a late thumbnail finds its owner even
-    /// after other drafts were removed.
-    id: u64,
-    name: String,
-    /// `None` while the base64 encode is still running; the send waits
-    /// for it. Shared so the send does not copy up to 13 MB per image.
-    data_url: Option<Arc<str>>,
-    /// `None` until the crop finishes (or if the image did not decode).
-    thumbnail: Option<Arc<gpui::Image>>,
-}
-
-impl DraftImage {
-    fn ready(&self) -> bool {
-        self.data_url.is_some()
-    }
-}
+use self::attachments::DraftAttachment;
 
 /// Shared read-only state the transcript rows render from.
 struct TranscriptCtx<'a> {
     markdown_cache: &'a MarkdownCache,
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
+    attachment_failures: &'a HashSet<String>,
     chat: &'a gpui::WeakEntity<ChatScreen>,
     tool_summaries: &'a HashMap<String, SharedString>,
     render: &'a RenderCtx,
@@ -237,7 +221,7 @@ pub(super) enum ChatPopup {
 /// showing the text meanwhile; it clears when the send goes out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FirstSend {
-    /// Plain text (with the staged images) for the new task.
+    /// Plain text (with the staged attachments) for the new task.
     Message { text: String, steer: bool },
     /// A `/command` that needs a task, as typed.
     Command(String),
@@ -387,11 +371,18 @@ fn draft_mcp_rows(
     rows
 }
 
+struct SendReceiptQuery {
+    id: String,
+    outcome: Option<crate::host::receipts::Outcome>,
+    backend: Arc<AgentBackend>,
+}
+
 struct UnresolvedSend {
+    backend: Arc<AgentBackend>,
     outcome: Option<crate::host::receipts::Outcome>,
     session: String,
     text: String,
-    images: Vec<DraftImage>,
+    attachments: Vec<DraftAttachment>,
     from_composer: bool,
 }
 
@@ -576,14 +567,17 @@ pub struct ChatScreen {
     watched_git_dir: Option<std::path::PathBuf>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
-    /// Images staged for the next message.
-    draft_images: Vec<DraftImage>,
+    /// Files staged for the next message.
+    draft_attachments: Vec<DraftAttachment>,
     unresolved_sends: HashMap<String, UnresolvedSend>,
+    attachment_uploads: HashMap<String, uploads::PendingUpload>,
+    accept_send_results: bool,
+    discarded_sends: HashSet<String>,
     checking_sends: bool,
-    /// Source of `DraftImage::id`.
+    /// Source of `DraftAttachment::id`.
     draft_counter: u64,
     /// True while the native file dialog is open.
-    image_picking: bool,
+    attachment_picking: bool,
     /// The catalog's vision and context window per model id, looked up
     /// when a model is chosen.
     model_catalog: HashMap<String, CatalogEntry>,
@@ -652,6 +646,7 @@ pub struct ChatScreen {
     /// Attachment ids with a read in flight or already failed; never asked
     /// for twice.
     attachment_requests: HashSet<String>,
+    attachment_failures: HashSet<String>,
     attachment_queue: std::collections::VecDeque<String>,
     pending_attachments: usize,
     attachment_viewport: std::ops::Range<usize>,
@@ -1283,11 +1278,14 @@ impl ChatScreen {
             dialog_focus_pending: false,
             trust_prompts: true,
             sidebar_collapsed: false,
-            draft_images: Vec::new(),
+            draft_attachments: Vec::new(),
             unresolved_sends: HashMap::new(),
+            attachment_uploads: HashMap::new(),
+            accept_send_results: true,
+            discarded_sends: HashSet::new(),
             checking_sends: false,
             draft_counter: 0,
-            image_picking: false,
+            attachment_picking: false,
             model_catalog: HashMap::new(),
             model_labels: HashMap::new(),
             session_mcp: Vec::new(),
@@ -1313,6 +1311,7 @@ impl ChatScreen {
             reload_generation: 0,
             attachment_images: HashMap::new(),
             attachment_requests: HashSet::new(),
+            attachment_failures: HashSet::new(),
             attachment_queue: std::collections::VecDeque::new(),
             pending_attachments: 0,
             attachment_viewport: 0..0,
@@ -2200,7 +2199,7 @@ impl ChatScreen {
             return;
         };
         self.first_send_preview = matches!(action, FirstSend::Message { .. }).then(|| {
-            sending::SendPreview::new(None, &action.text(), &self.draft_images).status_only()
+            sending::SendPreview::new(None, &action.text(), &self.draft_attachments).status_only()
         });
         self.pending_first_send = Some(action);
         cx.notify();
@@ -3143,6 +3142,7 @@ impl ChatScreen {
         self.tool_summaries.clear();
         self.attachment_images.clear();
         self.attachment_requests.clear();
+        self.attachment_failures.clear();
         self.attachment_queue.clear();
         self.attachment_viewport = 0..0;
         self.toggled_tools.clear();
@@ -4378,12 +4378,12 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        if text.trim().is_empty() && self.draft_images.is_empty() {
+        if text.trim().is_empty() && self.draft_attachments.is_empty() {
             return;
         }
-        if !self.draft_images.iter().all(DraftImage::ready) {
-            // The encode is still on its way; keep the text for the retry.
-            self.notice = Some("Images are still being prepared; try again in a moment".into());
+        if !self.draft_attachments.iter().all(DraftAttachment::ready) {
+            // The stable copy is still being prepared; keep the text for the retry.
+            self.notice = Some("Files are still being prepared; try again in a moment".into());
             if let Some(composer) = self.composer.clone() {
                 composer.update(cx, |input, cx| input.set_text(&text, cx));
             }
@@ -4702,17 +4702,20 @@ impl ChatScreen {
         let vision_capable = self.selected_model_supports_vision();
         let context_limit = self.selected_model_context_window();
         let run_active = self.active_runs.contains_key(&session_id);
-        // A queued chip keeps its own attachments; new images stay staged.
-        let drafts = if queue_id.is_some() {
+        // A queued chip keeps its own attachments; new files stay staged.
+        let mut drafts = if queue_id.is_some() {
             Vec::new()
         } else {
-            std::mem::take(&mut self.draft_images)
+            std::mem::take(&mut self.draft_attachments)
         };
+        for draft in &mut drafts {
+            draft.prepare_upload_for(&session_id);
+        }
         let editing = self
             .queue_edit
             .as_ref()
             .is_some_and(|edit| Some(&edit.queue_id) == queue_id.as_ref());
-        let request = AgentSendMessageRequest {
+        let mut request = AgentSendMessageRequest {
             session_id: session_id.clone(),
             // A steer identifies the queued item atomically. A fetched preview
             // must never overwrite another client's intervening queue edit.
@@ -4726,16 +4729,7 @@ impl ChatScreen {
             vision_capable,
             steer: steer && (run_active || queue_id.is_some()),
             queue_id,
-            attachments: drafts
-                .iter()
-                .filter_map(|image| {
-                    let data_url = image.data_url.as_deref()?;
-                    Some(AgentImageUpload {
-                        name: image.name.clone(),
-                        data_url: data_url.to_string(),
-                    })
-                })
-                .collect(),
+            attachments: Vec::new(),
         };
         self.notice = None;
 
@@ -4769,29 +4763,68 @@ impl ChatScreen {
             },
         );
         cx.notify();
+        let retained_send = UnresolvedSend {
+            backend: backend.clone(),
+            outcome: None,
+            session: session_id.clone(),
+            text: text.clone(),
+            attachments: drafts.clone(),
+            from_composer,
+        };
+        let (upload_fence, progress) = self.begin_uploads(&send_id, &session_id, &drafts, cx);
         self.call(
             async move {
-                backend
-                    .send_message_identified(&user_id, request, outgoing_id)
-                    .await
-            },
-            cx,
-            move |this, result, cx| {
-                this.finish_send(
-                    send_id,
+                let result = match uploads::commit_attachments(
+                    &backend,
+                    &user_id,
+                    &session_id,
+                    &mut drafts,
+                    &upload_fence,
+                    progress,
+                )
+                .await
+                {
+                    Ok(ids) if upload_fence.hand_off() => {
+                        request.attachments = ids;
+                        backend
+                            .send_message_identified(&user_id, request, outgoing_id)
+                            .await
+                    }
+                    Ok(_) => Err("Upload cancelled. No message was sent.".into()),
+                    Err(error) => Err(error),
+                };
+                Ok((
                     UnresolvedSend {
+                        backend: backend.clone(),
                         outcome: None,
                         session: session_id,
                         text,
-                        images: drafts,
+                        attachments: drafts,
                         from_composer,
                     },
                     result,
-                    cx,
-                );
+                ))
+            },
+            cx,
+            move |this, result, cx| {
+                this.finish_attachment_send(send_id, retained_send, result, cx);
             },
         );
         true
+    }
+
+    fn pending_receipt_queries(&self) -> Vec<SendReceiptQuery> {
+        self.unresolved_sends
+            .iter()
+            .map(|(id, send)| SendReceiptQuery {
+                id: id.clone(),
+                outcome: send
+                    .outcome
+                    .clone()
+                    .filter(|o| !matches!(o, crate::host::receipts::Outcome::Pending)),
+                backend: send.backend.clone(),
+            })
+            .collect()
     }
 
     fn check_unresolved_sends(&mut self, cx: &mut Context<Self>) {
@@ -4800,22 +4833,16 @@ impl ChatScreen {
             return;
         }
         self.checking_sends = true;
-        let ids: Vec<_> = self
-            .unresolved_sends
-            .iter()
-            .map(|(id, send)| {
-                let settled = send
-                    .outcome
-                    .clone()
-                    .filter(|o| !matches!(o, crate::host::receipts::Outcome::Pending));
-                (id.clone(), settled)
-            })
-            .collect();
-        let backend = self.backend.clone();
+        let queries = self.pending_receipt_queries();
         self.call(
             async move {
                 let mut results = Vec::new();
-                for (id, settled) in ids {
+                for SendReceiptQuery {
+                    id,
+                    outcome: settled,
+                    backend,
+                } in queries
+                {
                     if settled.is_some() {
                         results.push((id, settled));
                         continue;
@@ -4875,13 +4902,13 @@ impl ChatScreen {
                     .composer
                     .as_ref()
                     .is_some_and(|c| c.read(cx).text_ref().trim().is_empty())
-                    && self.draft_images.is_empty();
+                    && self.draft_attachments.is_empty();
                 if self.selected_session.as_deref() == Some(&send.session) && empty {
                     let send = self.unresolved_sends.remove(id).unwrap();
                     if let Some(composer) = self.composer.clone() {
                         composer.update(cx, |input, cx| input.set_text(&send.text, cx));
                     }
-                    self.draft_images = send.images;
+                    self.draft_attachments = send.attachments;
                     self.notice = Some(if matches!(outcome, Some(Outcome::Interrupted)) {
                         "The host restarted before recording this send’s result. It may have taken effect. Your draft is restored; check the task before sending again."
                     } else {
@@ -4896,7 +4923,7 @@ impl ChatScreen {
                 }
             }
             _ => {
-                self.notice = Some("Send outcome is still unknown. Your message and images are retained; Maple will check again after reconnecting.".into());
+                self.notice = Some("Send outcome is still unknown. Your message and files are retained; Maple will check again after reconnecting.".into());
             }
         }
     }
@@ -5215,6 +5242,17 @@ impl ChatScreen {
     }
 
     pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
+        // A logout during upload must win before prompt admission, even while
+        // the host is still shutting down an earlier run.
+        let uploads: Vec<_> = self.attachment_uploads.keys().cloned().collect();
+        for id in uploads {
+            self.cancel_attachment_send(&id, cx);
+        }
+        self.accept_send_results = false;
+        self.attachment_uploads.clear();
+        self.draft_attachments.clear();
+        self.unresolved_sends.clear();
+        self.sending_previews.clear();
         self.stop_speech(cx);
         if self.recording {
             self.recording = false;
