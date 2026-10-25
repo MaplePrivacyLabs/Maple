@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 6;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 pub const MAX_MANAGEMENT_REPLY: usize = 16 * 1024;
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn optional_management_keeps_the_shipped_control_ack_and_alpn() {
         assert_eq!(ALPN, b"maple-agent/remote/1");
-        assert_eq!(VERSION, 7);
+        assert_eq!(VERSION, 6);
         assert_eq!(
             serde_json::to_string(&Ok::<(), Refusal>(())).unwrap(),
             r#"{"Ok":null}"#
@@ -546,23 +546,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn folder_wire_upgrade_refuses_version_six_before_dispatch() {
-        // Version 6 cannot decode the new folder methods. Refuse the old
-        // handshake explicitly before either side can issue one.
+    async fn optional_folder_commands_preserve_the_shipped_wire_six_handshake() {
+        // Folder commands require optional capability discovery. They do not
+        // change the legacy handshake or prevent ordinary version-6 access.
         let previous: serde_json::Value =
             serde_json::from_str(include_str!("wire_v6.json")).unwrap();
         for kind in ["hello", "pair"] {
             let (mut tx, mut rx) = tokio::io::duplex(4096);
             write(&mut tx, &previous[kind], MAX_PREFACE).await.unwrap();
-            let refusal = match read_hello(&mut rx).await {
-                Err(refusal) => refusal,
-                Ok(_) => panic!("version 6 must update before folder commands are sent"),
-            };
-            assert!(refusal.terminal);
-            assert!(refusal.message.contains("Update both computers"));
-            let response = serde_json::to_value(Err::<(), _>(refusal)).unwrap();
-            let decoded: Result<(), Refusal> = serde_json::from_value(response).unwrap();
-            assert!(decoded.unwrap_err().terminal);
+            let hello = read_hello(&mut rx).await.unwrap();
+            assert_eq!(hello.version, 6);
+            assert_eq!(hello.minimum_version, 6);
+            assert_eq!(serde_json::to_value(hello).unwrap(), previous[kind]);
         }
     }
 
@@ -620,7 +615,7 @@ mod tests {
     #[test]
     fn shipped_wire_examples_are_stable() {
         let examples: serde_json::Value =
-            serde_json::from_str(include_str!("wire_v7.json")).unwrap();
+            serde_json::from_str(include_str!("wire_v6.json")).unwrap();
         fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
             let decoded: T = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
@@ -651,9 +646,6 @@ mod tests {
         for value in examples["paged_commands"].as_array().unwrap() {
             check::<Command>(value);
         }
-        for value in examples["folder_commands"].as_array().unwrap() {
-            check::<Command>(value);
-        }
         check::<crate::host::receipts::Outcome>(&examples["receipt"]["Response"]["result"]["Ok"]);
         for value in examples["events"].as_array().unwrap() {
             check::<crate::host::protocol::Message>(value);
@@ -668,5 +660,26 @@ mod tests {
             );
         }
         assert_eq!(examples["hello"]["version"], VERSION);
+    }
+
+    #[test]
+    fn optional_folder_command_examples_match_typed_requests() {
+        let examples: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("wire_v6_folders.json")).unwrap();
+        for value in examples {
+            let command: Command = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&command).unwrap(), value);
+            match command.method {
+                Method::BrowseProjectFolders => {
+                    let _: (String, crate::backend::ProjectFolderRequest) =
+                        serde_json::from_value(command.params).unwrap();
+                }
+                Method::CreateProjectFolder => {
+                    let _: (String, String, String) =
+                        serde_json::from_value(command.params).unwrap();
+                }
+                _ => panic!("expected an optional folder command"),
+            }
+        }
     }
 }

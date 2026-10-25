@@ -166,25 +166,35 @@ Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
 protocol keeps the `maple-agent/remote/1` ALPN family and currently advertises
-wire version 7 with minimum version 7, independent of application builds. Version
-7 adds bounded folder browsing and single-folder creation to version 6's shared
-project names, bounded navigation/history pages, stable row identities,
-attachment ranges, and per-connection task subscriptions.
+wire version 6 with minimum version 6, independent of application builds. Its
+shared project names, bounded navigation/history pages, stable row identities,
+attachment ranges, and per-connection task subscriptions remain unchanged.
 Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
-Update both computers to use it; version 6 and earlier peers receive an explicit
-version refusal. Bounded frames and an explicit task-operation allowlist apply.
+Version 5 and earlier peers receive an explicit version refusal. Bounded frames
+and an explicit task-operation allowlist apply.
 Account operations and arbitrary whole-host administration cannot be forwarded.
 The narrow experimental update capability uses the host's own signed updater;
 it does not expose the ordinary host-stop command.
 
-Optional management reports protocol version `7.0.0` and explicit capabilities
-over separate request streams. Its major tracks the admitted control-wire
-version; the acknowledgement shape and ALPN remain unchanged. Within a compatible
-connection, a bounded capability probe can fail without ending ordinary task
-requests. Responses tolerate future optional fields; management operations
-require an advertised capability. A wire-6 host must update locally before a
-wire-7 controller can connect, including through the remote-update channel.
+Optional discovery reports protocol version `6.2.0` and explicit capabilities
+over separate request streams; the wire-6 handshake, acknowledgement shape and
+ALPN remain unchanged. Bounded folder browsing and single-folder creation require
+the `project_folders_v1` capability. The controller checks support before sending
+either folder command. An older host without that capability keeps ordinary
+project/task access and its existing remote-update support; only the folder
+browser reports that support is unavailable or an update is needed. Older
+controllers can still use newer hosts through their existing commands.
+
+A bounded capability probe can fail without ending ordinary task requests.
+Responses tolerate future optional fields and capability names. Experimental
+remote installation continues to require its separate `remote_update_install_v1`
+capability and the same signed-candidate, account, grant and updater checks.
+Only validated folder support is cached, for the lifetime of that connection;
+reconnecting checks it again. Failed discovery remains retryable rather than
+being remembered as an unsupported host. Folder dispatch rechecks account and
+grant authority after discovery, including when support was cached. Update
+offers and installation readiness are always read afresh.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps

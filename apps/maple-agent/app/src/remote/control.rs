@@ -541,6 +541,17 @@ pub async fn bridge(
     connection: crate::host::ipc::Connection,
     mut link: Link,
 ) -> Result<bool, String> {
+    let folder_grant = link
+        .node
+        .store
+        .lock()
+        .map_err(|_| "Remote grant unavailable")?
+        .peers()
+        .get(&link.peer.to_string())
+        .filter(|peer| peer.can_connect)
+        .map(|peer| peer.grant)
+        .ok_or("Remote access ended: pair this computer before connecting")?;
+    let client = Arc::new(streams::Client::new(link.connection.clone()));
     let (mut local_rx, mut local_tx) = tokio::io::split(connection);
     let (frames, mut frame_rx) = mpsc::channel(16);
     let mut revoked = link.node.revoked.subscribe();
@@ -621,12 +632,23 @@ pub async fn bridge(
                             continue;
                         }
                     };
-                    let connection = link.connection.clone();
+                    let client = client.clone();
+                    let node = link.node.clone();
+                    let peer = link.peer;
                     calls.spawn(async move {
                         let _slot = slot;
                         let id = request.id;
                         let send_id = request.send_id.clone();
-                        match streams::call(&connection, wire::Command { id, method, send_id: request.send_id, params: request.params }).await {
+                        let authorize_folders = async {
+                            node.ensure_valid().await?;
+                            if !node.store.lock().map_err(|_| "Remote grant unavailable")?.peers()
+                                .get(&peer.to_string())
+                                .is_some_and(|current| current.can_connect && current.grant == folder_grant) {
+                                return Err("Remote access changed. Reopen this computer.".into());
+                            }
+                            Ok(())
+                        };
+                        match client.call(wire::Command { id, method, send_id: request.send_id, params: request.params }, authorize_folders).await {
                             Ok(frame) => streams::decode_result(method, frame),
                             Err(error) => Message::Response { id, result: Err(match send_id {
                                 Some(id) => format!("Send outcome unknown ({id}). {error}. Checking the host receipt is safe; resending is not."),

@@ -6,9 +6,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::{Arc, Weak};
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "7.0.0";
+pub const PROTOCOL_VERSION: &str = "6.2.0";
 pub const PEER_INFO_CAPABILITY: &str = "peer_info_v1";
 pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
+pub const PROJECT_FOLDERS_CAPABILITY: &str = "project_folders_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolInfo {
@@ -21,7 +22,11 @@ impl ProtocolInfo {
     pub fn current() -> Self {
         Self {
             version: PROTOCOL_VERSION.into(),
-            capabilities: vec![PEER_INFO_CAPABILITY.into(), INSTALL_CAPABILITY.into()],
+            capabilities: vec![
+                PEER_INFO_CAPABILITY.into(),
+                INSTALL_CAPABILITY.into(),
+                PROJECT_FOLDERS_CAPABILITY.into(),
+            ],
         }
     }
 
@@ -227,6 +232,10 @@ pub struct PeerInfo {
 impl PeerInfo {
     pub fn supports_remote_updates(&self) -> bool {
         self.protocol.supports(INSTALL_CAPABILITY)
+    }
+
+    pub fn supports_project_folders(&self) -> bool {
+        self.protocol.supports(PROJECT_FOLDERS_CAPABILITY)
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
@@ -490,12 +499,13 @@ mod tests {
             u64::from(super::super::wire::VERSION)
         );
         assert!(current.supports(INSTALL_CAPABILITY));
+        assert!(current.supports(PROJECT_FOLDERS_CAPABILITY));
     }
 
     #[test]
     fn responses_accept_future_fields_and_unknown_status_without_enabling_mutation() {
         let value = json!({
-            "protocol":{"version":"7.1.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
+            "protocol":{"version":"6.3.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
             "running":{"version":"0.0.6","source_sha":"a".repeat(40),"platform":"linux-x86_64","future":true},
             "update":{"state":"future_state","future":true},
             "future":true
@@ -505,14 +515,318 @@ mod tests {
         assert_eq!(info.update.state, UpdateState::Unknown);
         assert!(info.supports_remote_updates());
         let mut next_major = info.clone();
-        next_major.protocol.version = "8.0.0".into();
+        next_major.protocol.version = "7.0.0".into();
         assert!(!next_major.supports_remote_updates());
         let mut previous_major = info.clone();
-        previous_major.protocol.version = "6.1.0".into();
+        previous_major.protocol.version = "5.1.0".into();
         assert!(!previous_major.supports_remote_updates());
         let mut no_capability = info;
         no_capability.protocol.capabilities.clear();
         assert!(!no_capability.supports_remote_updates());
+    }
+
+    // Frozen response decoder and validation rules from the 0.0.7 source at
+    // 87c05bbdf3d6897a6428fc3022458bab4c5acb94, remote/update.rs (6.1.0).
+    // Keep these types independent of the production DTOs and capability
+    // constants: changing both ends together would hide compatibility breaks.
+    mod released_v6_1 {
+        use semver::Version;
+        use serde::{Deserialize, Serialize};
+        use uuid::Uuid;
+
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct ProtocolInfo {
+            pub version: String,
+            #[serde(default)]
+            pub capabilities: Vec<String>,
+        }
+
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct RunningApplication {
+            pub version: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub build: Option<String>,
+            pub source_sha: String,
+            pub platform: String,
+        }
+
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct ReleaseIdentity {
+            pub version: String,
+            pub build: String,
+            pub source_sha: String,
+            pub manifest_sha256: String,
+        }
+
+        impl ReleaseIdentity {
+            fn valid(&self) -> bool {
+                if self.version.len() > 64 {
+                    return false;
+                }
+                let Ok(version) = Version::parse(&self.version) else {
+                    return false;
+                };
+                version.pre.is_empty()
+                    && version.build.is_empty()
+                    && version.to_string() == self.version
+                    && self
+                        .build
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|build| *build > 0)
+                        .is_some_and(|build| build.to_string() == self.build)
+                    && lower_hex(&self.source_sha, 40)
+                    && lower_hex(&self.manifest_sha256, 64)
+            }
+        }
+
+        #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum UpdateState {
+            Disabled,
+            Idle,
+            Checking,
+            Current,
+            Available,
+            Downloading,
+            Ready,
+            Installing,
+            RestartRequired,
+            Error,
+            #[default]
+            #[serde(other)]
+            Unknown,
+        }
+
+        #[derive(Debug, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum BlockedReason {
+            PasswordProtected,
+            UnsupportedInstallation,
+            UpdatesDisabled,
+            UpdateNotReady,
+            Busy,
+            DesktopUnavailable,
+            CoordinatorUnavailable,
+            #[serde(other)]
+            Unknown,
+        }
+
+        #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum OperationState {
+            PendingAck,
+            Queued,
+            Installing,
+            Succeeded,
+            Failed,
+            #[serde(other)]
+            Unknown,
+        }
+
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct RemoteUpdateOperation {
+            pub operation_id: String,
+            pub target: ReleaseIdentity,
+            pub state: OperationState,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub message: Option<String>,
+        }
+
+        #[derive(Debug, Default, Serialize, Deserialize)]
+        pub struct RemoteUpdateStatus {
+            #[serde(default)]
+            pub state: UpdateState,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub offered: Option<ReleaseIdentity>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub blocked: Option<BlockedReason>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub operation: Option<RemoteUpdateOperation>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct PeerInfo {
+            pub protocol: ProtocolInfo,
+            pub running: RunningApplication,
+            #[serde(default)]
+            pub update: RemoteUpdateStatus,
+        }
+
+        impl PeerInfo {
+            pub fn supports_remote_updates(&self) -> bool {
+                Version::parse(&self.protocol.version).is_ok_and(|version| version.major == 6)
+                    && self
+                        .protocol
+                        .capabilities
+                        .iter()
+                        .any(|value| value == "remote_update_install_v1")
+            }
+
+            pub fn valid(&self) -> bool {
+                text(&self.protocol.version, 64)
+                    && Version::parse(&self.protocol.version).is_ok()
+                    && self.protocol.capabilities.len() <= 32
+                    && self
+                        .protocol
+                        .capabilities
+                        .iter()
+                        .all(|value| text(value, 64))
+                    && text(&self.running.version, 64)
+                    && text(&self.running.source_sha, 64)
+                    && text(&self.running.platform, 64)
+                    && self
+                        .running
+                        .build
+                        .as_ref()
+                        .is_none_or(|value| text(value, 64))
+                    && self
+                        .update
+                        .offered
+                        .as_ref()
+                        .is_none_or(ReleaseIdentity::valid)
+                    && self.update.operation.as_ref().is_none_or(|operation| {
+                        Uuid::parse_str(&operation.operation_id).is_ok_and(|id| {
+                            operation.operation_id.len() == 36
+                                && id.hyphenated().to_string() == operation.operation_id
+                                && id.get_version_num() == 4
+                                && id.get_variant() == uuid::Variant::RFC4122
+                        }) && operation.target.valid()
+                            && operation
+                                .message
+                                .as_ref()
+                                .is_none_or(|value| text(value, 512))
+                    })
+            }
+        }
+
+        fn lower_hex(value: &str, length: usize) -> bool {
+            value.len() == length
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }
+
+        fn text(value: &str, maximum: usize) -> bool {
+            !value.is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
+        }
+    }
+
+    fn current_peer_for_compatibility() -> PeerInfo {
+        let installed = target();
+        let offered = ReleaseIdentity {
+            version: "0.0.8".into(),
+            build: "552".into(),
+            source_sha: "c".repeat(40),
+            manifest_sha256: "d".repeat(64),
+        };
+        PeerInfo {
+            protocol: ProtocolInfo::current(),
+            running: RunningApplication {
+                version: installed.version.clone(),
+                build: Some(installed.build.clone()),
+                source_sha: installed.source_sha.clone(),
+                platform: "linux-x86_64".into(),
+            },
+            update: RemoteUpdateStatus {
+                state: UpdateState::Ready,
+                offered: Some(offered),
+                blocked: None,
+                operation: Some(RemoteUpdateOperation {
+                    operation_id: "11111111-1111-4111-8111-111111111111".into(),
+                    target: installed,
+                    state: OperationState::Succeeded,
+                    message: Some("Requested release was running after this update".into()),
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn released_v6_1_decoder_preserves_v6_2_updates_and_durable_receipts() {
+        let mut current = current_peer_for_compatibility();
+        for state in [UpdateState::Ready, UpdateState::RestartRequired] {
+            current.update.state = state;
+            current.validate().unwrap();
+            let bytes = serde_json::to_vec(&current).unwrap();
+            assert!(
+                bytes.len() < 16 * 1024,
+                "the released management reply limit"
+            );
+            let legacy: released_v6_1::PeerInfo = serde_json::from_slice(&bytes).unwrap();
+            assert!(legacy.valid());
+            assert_eq!(legacy.protocol.version, "6.2.0");
+            assert!(legacy.supports_remote_updates());
+            assert!(
+                legacy
+                    .protocol
+                    .capabilities
+                    .iter()
+                    .any(|value| value == "project_folders_v1")
+            );
+            assert_eq!(
+                serde_json::to_value(&legacy.running).unwrap(),
+                serde_json::to_value(&current.running).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&legacy.update).unwrap(),
+                serde_json::to_value(&current.update).unwrap(),
+                "status and the exact durable operation, including its signed manifest identity, survive the old decoder"
+            );
+            let receipt = legacy.update.operation.as_ref().unwrap();
+            assert_eq!(receipt.operation_id, "11111111-1111-4111-8111-111111111111");
+            assert_eq!(receipt.state, released_v6_1::OperationState::Succeeded);
+            let mut wrong_operation = legacy;
+            wrong_operation
+                .update
+                .operation
+                .as_mut()
+                .unwrap()
+                .operation_id = "invalid".into();
+            assert!(
+                !wrong_operation.valid(),
+                "the old receipt validator still runs"
+            );
+        }
+
+        // An unknown folder capability cannot substitute for install authority.
+        current.protocol.capabilities = vec![PROJECT_FOLDERS_CAPABILITY.into()];
+        let legacy: released_v6_1::PeerInfo =
+            serde_json::from_value(serde_json::to_value(&current).unwrap()).unwrap();
+        assert!(legacy.valid());
+        assert!(!legacy.supports_remote_updates());
+    }
+
+    #[test]
+    fn project_folder_support_requires_its_capability_and_wire_six() {
+        let mut info = current_peer_for_compatibility();
+        assert!(info.supports_project_folders());
+        for version in ["6.1.0", "6.2.0", "6.3.0"] {
+            info.protocol.version = version.into();
+            assert!(
+                info.supports_project_folders(),
+                "explicit capability in {version}"
+            );
+        }
+        for version in ["5.2.0", "7.0.0", "invalid"] {
+            info.protocol.version = version.into();
+            assert!(!info.supports_project_folders());
+        }
+        info.protocol.version = "6.1.0".into();
+        info.protocol.capabilities = vec!["peer_info_v1".into(), "remote_update_install_v1".into()];
+        assert!(
+            info.supports_remote_updates(),
+            "released 6.1 update support remains"
+        );
+        assert!(
+            !info.supports_project_folders(),
+            "6.1 does not advertise folder support"
+        );
+        info.protocol.version = "6.2.0".into();
+        assert!(
+            !info.supports_project_folders(),
+            "a minor version alone is not a capability"
+        );
     }
 
     #[test]
