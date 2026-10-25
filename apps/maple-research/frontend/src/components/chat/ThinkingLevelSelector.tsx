@@ -54,7 +54,10 @@ export function ThinkingLevelSelector({
             <BrainCog
               className={`h-4 w-4 ${isDefault ? "" : "text-[hsl(var(--maple-primary))]"}`}
             />
-            {!isDefault && <span className="text-xs font-medium">{currentLabel}</span>}
+            {/* Phones keep the tinted icon only so the model name has room. */}
+            {!isDefault && (
+              <span className="hidden text-xs font-medium sm:inline">{currentLabel}</span>
+            )}
           </Button>
         </DropdownMenuTrigger>
       </ComposerHoverTooltip>

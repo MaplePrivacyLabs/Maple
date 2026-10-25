@@ -58,7 +58,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <X className="w-4 h-4 text-maple-error" />
       },
       {
-        text: "Paid AI models including Gemma 4 31B, GLM 5.3, and Kimi K2.6",
+        text: "Paid AI models including Gemma 4 31B, GLM 5.3, and Kimi K3",
         included: false,
         icon: <X className="w-4 h-4 text-maple-error" />
       },
@@ -97,7 +97,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
-        text: "All AI models including GLM 5.3 and Kimi K2.6",
+        text: "All AI models including GLM 5.3 and Kimi K3",
         included: true,
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
@@ -151,7 +151,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
-        text: "All AI models including GLM 5.3 and Kimi K2.6",
+        text: "All AI models including GLM 5.3 and Kimi K3",
         included: true,
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
@@ -214,7 +214,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
-        text: "All AI models including GLM 5.3 and Kimi K2.6",
+        text: "All AI models including GLM 5.3 and Kimi K3",
         included: true,
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
