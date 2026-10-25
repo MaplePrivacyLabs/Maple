@@ -329,6 +329,11 @@
               # nixpkgs' generic clang wrapper cannot infer that SDK boundary.
               export CC="$(/usr/bin/xcrun --find clang)"
               export CXX="$(/usr/bin/xcrun --find clang++)"
+              # Rust links through `cc`, which is nixpkgs' clang wrapper and its
+              # older ld64. That ld64 cannot read the macOS 27 SDK's .tbd stubs
+              # (they list the arm64e.x1 architecture), so link with Xcode too.
+              export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$CC"
+              export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$CC"
               export PATH="${xcrun}/bin:$PATH"
 
               unset maple_nix_developer_dir maple_nix_selected_developer_dir

@@ -3,5 +3,7 @@ self-hosted-runner:
   labels:
     - blacksmith-8vcpu-ubuntu-2404-arm
     - blacksmith-8vcpu-windows-2025
-    - blacksmith-6vcpu-macos-26
+    - blacksmith-6vcpu-macos-27
+    # GitHub-hosted Xcode 27 image; newer than the pinned actionlint label list.
+    - xcode-27
     - blacksmith-8vcpu-ubuntu-2404
