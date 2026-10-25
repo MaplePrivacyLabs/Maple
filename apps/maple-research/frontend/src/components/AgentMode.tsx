@@ -90,6 +90,7 @@ import { ModelSelector } from "@/components/ModelSelector";
 import { ToolActivityCard } from "@/components/ToolActivityCard";
 import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
 import { AgentSidebarInfoCard } from "@/components/agent/AgentSidebarInfoCard";
+import { AgentWorkAnnouncement } from "@/components/agent/AgentWorkAnnouncement";
 import { latestAgentSidebarUpdatedMs } from "@/components/agent/agentSidebarInfoCardDate";
 import {
   isDeliberateAgentComposerFocusTarget,
@@ -3655,6 +3656,15 @@ export function AgentMode({ userId }: { userId: string }) {
             onNewChat={handleCreateSession}
             newItemLabel="New Task"
           />
+        ) : null}
+
+        {timelineItems.length === 0 &&
+        !hasStartedAgentSession &&
+        !isInitializing &&
+        !isTaskTransitionPending &&
+        !isSubmitting &&
+        !activeRunId ? (
+          <AgentWorkAnnouncement key={userId} userId={userId} />
         ) : null}
 
         {error && (
