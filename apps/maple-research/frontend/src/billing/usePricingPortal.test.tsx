@@ -89,10 +89,15 @@ describe("pricing portal requests", () => {
     };
   }
 
-  async function settle() {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+  async function settle(ready: () => boolean = () => true) {
+    const deadline = Date.now() + 1000;
+    do {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      if (ready()) return;
+    } while (Date.now() < deadline);
+    throw new Error("Pricing portal query did not settle");
   }
 
   test("loading billing status and a confirmed Free account never request a portal", async () => {
@@ -148,7 +153,7 @@ describe("pricing portal requests", () => {
       status: { ...stripe, stripe_customer_id: null, subscriptions: [stripeSubscription] },
       statusConfirmed: true
     });
-    await settle();
+    await settle(() => f.view.portalUrl !== undefined);
     expect(f.requestPortal).toHaveBeenCalledWith("account");
     expect(f.view.portalUrl).toBe(portalUrl);
   });
@@ -162,7 +167,7 @@ describe("pricing portal requests", () => {
     expect(request).toHaveBeenCalledTimes(1);
     expect(f.view.isAwaitingPortal).toBe(true);
     await act(async () => pending.resolve(portalUrl));
-    await settle();
+    await settle(() => f.view.portalUrl !== undefined);
     expect(f.view.portalUrl).toBe(portalUrl);
     expect(f.view.isAwaitingPortal).toBe(false);
   });
@@ -176,7 +181,8 @@ describe("pricing portal requests", () => {
     );
     expect(f.view.isAwaitingPortal).toBe(true);
     await act(async () => pending.resolve(portalUrl));
-    await settle();
+    await settle(() => f.view.portalUrl !== null);
+    expect(f.view.portalUrl).toBe(portalUrl);
     expect(f.view.isAwaitingPortal).toBe(false);
   });
 
@@ -188,7 +194,7 @@ describe("pricing portal requests", () => {
         throw new Error("fixture failure");
       })
     );
-    await settle();
+    await settle(() => f.view.portalUrl !== undefined);
     expect(f.view.portalUrl).toBeNull();
     expect(f.view.isAwaitingPortal).toBe(false);
     expect(f.requestPortal).toHaveBeenCalledTimes(1);
@@ -207,7 +213,7 @@ describe("pricing portal requests", () => {
     expect(f.view.portalUrl).toBeUndefined();
     expect(f.view.isAwaitingPortal).toBe(true);
     await act(async () => current.resolve(portalUrl));
-    await settle();
+    await settle(() => f.view.portalUrl !== undefined);
     expect(f.view.portalUrl).toBe(portalUrl);
     expect(request.mock.calls.map(([owner]) => owner)).toEqual(["old", "current"]);
   });
