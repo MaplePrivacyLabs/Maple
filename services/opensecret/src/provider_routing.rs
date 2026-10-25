@@ -550,7 +550,7 @@ mod tests {
             uuid_for_bucket(0),
             requested_model,
             public_model,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         )
@@ -727,7 +727,7 @@ mod tests {
             Case {
                 name: "free auto quick",
                 selector: AUTO_QUICK_MODEL_ID,
-                plan: ModelPlan::Free,
+                plan: ModelPlan::FREE,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: true,
@@ -739,7 +739,7 @@ mod tests {
             Case {
                 name: "free auto powerful remains unavailable",
                 selector: AUTO_POWERFUL_MODEL_ID,
-                plan: ModelPlan::Free,
+                plan: ModelPlan::FREE,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: false,
@@ -751,7 +751,7 @@ mod tests {
             Case {
                 name: "paid auto quick Continuum bucket",
                 selector: AUTO_QUICK_MODEL_ID,
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: true,
@@ -763,7 +763,7 @@ mod tests {
             Case {
                 name: "paid auto quick former Tinfoil bucket",
                 selector: AUTO_QUICK_MODEL_ID,
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 bucket: 75,
                 continuum_available: true,
                 expected_access: true,
@@ -775,7 +775,7 @@ mod tests {
             Case {
                 name: "paid auto powerful uses GLM weighted route",
                 selector: AUTO_POWERFUL_MODEL_ID,
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: true,
@@ -787,7 +787,7 @@ mod tests {
             Case {
                 name: "explicit K3 is independent of the auto target",
                 selector: KIMI_K3_MODEL_ID,
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: true,
@@ -799,7 +799,7 @@ mod tests {
             Case {
                 name: "explicit GLM 5.3 Tinfoil bucket",
                 selector: GLM_5_3_MODEL_ID,
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 bucket: 75,
                 continuum_available: true,
                 expected_access: true,
@@ -811,7 +811,7 @@ mod tests {
             Case {
                 name: "explicit GLM 5.3 Continuum bucket",
                 selector: GLM_5_3_MODEL_ID,
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: true,
@@ -823,7 +823,7 @@ mod tests {
             Case {
                 name: "explicit GLM 5.3 Tinfoil bucket without a Continuum proxy",
                 selector: GLM_5_3_MODEL_ID,
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 bucket: 75,
                 continuum_available: false,
                 expected_access: true,
@@ -951,7 +951,7 @@ mod tests {
                 account_uuid,
                 model,
                 model,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 InferenceSurface::ChatCompletions,
                 WorkloadClass::Interactive,
             );
@@ -1193,7 +1193,7 @@ mod tests {
                 uuid_for_bucket(0),
                 model,
                 model,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 InferenceSurface::Responses,
                 WorkloadClass::Interactive,
             )
@@ -1271,7 +1271,7 @@ mod tests {
                     uuid_for_bucket(75),
                     GLM_5_3_FLASH_MODEL_ID,
                     GLM_5_3_FLASH_MODEL_ID,
-                    ModelPlan::Paid,
+                    ModelPlan::PAID,
                     InferenceSurface::Responses,
                     WorkloadClass::Interactive,
                 ),
@@ -1310,7 +1310,7 @@ mod tests {
                             uuid_for_bucket(bucket),
                             selector,
                             GLM_5_3_MODEL_ID,
-                            ModelPlan::Paid,
+                            ModelPlan::PAID,
                             surface,
                             WorkloadClass::Interactive,
                         );
@@ -1464,7 +1464,7 @@ mod tests {
     fn glm_flash_continuum_only_preserves_provider_mapping_and_public_identity() {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_both_providers();
-        let targets = ModelAliasTargets::for_plan(ModelPlan::Paid);
+        let targets = ModelAliasTargets::for_plan(ModelPlan::PAID);
         for surface in [
             InferenceSurface::ChatCompletions,
             InferenceSurface::Responses,
@@ -1623,12 +1623,12 @@ mod tests {
             "http://tinfoil.example.com".to_string(),
         );
 
-        let targets = ModelAliasTargets::for_plan(ModelPlan::Free);
+        let targets = ModelAliasTargets::for_plan(ModelPlan::FREE);
         let request = InferenceIntent::new(
             uuid_for_bucket(50),
             AUTO_QUICK_MODEL_ID,
             targets.resolve(AUTO_QUICK_MODEL_ID),
-            ModelPlan::Free,
+            ModelPlan::FREE,
             InferenceSurface::ChatCompletions,
             WorkloadClass::Interactive,
         );
@@ -1916,7 +1916,7 @@ mod tests {
                     );
                     select_auto_model(AutoModelSelectionInput {
                         mode: ModelSelectionMode::AutoQuick,
-                        plan: ModelPlan::Paid,
+                        plan: ModelPlan::PAID,
                         sticky_model_id,
                         excluded: None,
                         requirements: AutoModelRequirements {

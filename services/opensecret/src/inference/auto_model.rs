@@ -41,10 +41,10 @@ pub(crate) fn auto_model_candidates(
 ) -> Option<Vec<&'static str>> {
     let selector = mode.alias()?;
     let preferred = ModelAliasTargets::for_plan(plan).resolve(selector);
-    let alternates = match (mode, plan) {
-        (ModelSelectionMode::AutoQuick, ModelPlan::Paid) => PAID_QUICK_ALTERNATES,
-        (ModelSelectionMode::AutoPowerful, ModelPlan::Paid) => PAID_POWERFUL_ALTERNATES,
-        (_, ModelPlan::Free) => FREE_ALTERNATES,
+    let alternates = match (mode, plan.is_paid()) {
+        (ModelSelectionMode::AutoQuick, true) => PAID_QUICK_ALTERNATES,
+        (ModelSelectionMode::AutoPowerful, true) => PAID_POWERFUL_ALTERNATES,
+        (_, false) => FREE_ALTERNATES,
         (ModelSelectionMode::Explicit, _) => return None,
     };
     let mut candidates = Vec::with_capacity(1 + alternates.len());
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn candidate_tables_start_with_the_alias_target_and_stay_in_plan() {
-        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+        for plan in [ModelPlan::FREE, ModelPlan::PAID] {
             let targets = ModelAliasTargets::for_plan(plan);
             for (mode, selector) in [
                 (ModelSelectionMode::AutoQuick, AUTO_QUICK_MODEL_ID),
@@ -469,19 +469,19 @@ mod tests {
             );
         }
         assert_eq!(
-            auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::Paid),
+            auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::PAID),
             Some(vec![GLM_5_3_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID])
         );
         assert_eq!(
-            auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Paid),
+            auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::PAID),
             Some(vec![GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID])
         );
         assert_eq!(
-            auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::Free),
+            auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::FREE),
             Some(vec![QUICK_MODEL_ID])
         );
         assert_eq!(
-            auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Free),
+            auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::FREE),
             Some(vec![GLM_5_3_MODEL_ID])
         );
         assert_eq!(AUTO_MODEL_POLICY_VERSION, "auto-model-v2");
@@ -495,7 +495,7 @@ mod tests {
         ]);
         let decision = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             requirements(),
             &table,
@@ -519,7 +519,7 @@ mod tests {
         ]);
         let decision = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             requirements(),
             &table,
@@ -545,7 +545,7 @@ mod tests {
         ]);
         let decision = select(
             ModelSelectionMode::AutoPowerful,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             requirements(),
             &powerful,
@@ -563,7 +563,7 @@ mod tests {
         ]);
         let decision = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             requirements(),
             &both_available,
@@ -579,7 +579,7 @@ mod tests {
         ]);
         let decision = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             requirements(),
             &alternate_open,
@@ -598,7 +598,7 @@ mod tests {
         ] {
             let decision = select(
                 ModelSelectionMode::AutoQuick,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 sticky,
                 requirements(),
                 &both_available,
@@ -624,7 +624,7 @@ mod tests {
 
         let fits = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             AutoModelRequirements {
                 vision: true,
@@ -720,7 +720,7 @@ mod tests {
         let lookup_available = |_: &str| available();
         select_auto_model(AutoModelSelectionInput {
             mode: ModelSelectionMode::AutoPowerful,
-            plan: ModelPlan::Paid,
+            plan: ModelPlan::PAID,
             sticky_model_id: Some(KIMI_K3_MODEL_ID),
             excluded: None,
             requirements: AutoModelRequirements {
@@ -740,7 +740,7 @@ mod tests {
         ]);
         select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             AutoModelRequirements {
                 vision: false,
@@ -764,7 +764,7 @@ mod tests {
         ]);
         let error = select(
             ModelSelectionMode::AutoPowerful,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             AutoModelRequirements {
                 kimi_tool_history_compatible: false,
@@ -783,7 +783,7 @@ mod tests {
         // alternate less capable than the preferred model.
         let decision = select(
             ModelSelectionMode::AutoPowerful,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             AutoModelRequirements {
                 vision: true,
@@ -809,7 +809,7 @@ mod tests {
         ]);
         let error = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Free,
+            ModelPlan::FREE,
             Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             requirements(),
             &table,
@@ -824,7 +824,7 @@ mod tests {
         assert_eq!(
             select(
                 ModelSelectionMode::AutoPowerful,
-                ModelPlan::Free,
+                ModelPlan::FREE,
                 None,
                 requirements(),
                 &table,
@@ -841,7 +841,7 @@ mod tests {
         ]);
         let error = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             requirements(),
             &table,
@@ -859,7 +859,7 @@ mod tests {
         assert_eq!(
             select(
                 ModelSelectionMode::AutoQuick,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 None,
                 requirements(),
                 &unconfigured,
@@ -869,7 +869,7 @@ mod tests {
         let alternate_missing = availability(&[(GLM_5_3_FLASH_MODEL_ID, unavailable(30))]);
         let error = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             requirements(),
             &alternate_missing,
@@ -891,7 +891,7 @@ mod tests {
         // The remembered alternate wins the first decision...
         let first = select(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             requirements(),
             &both_available,
@@ -904,7 +904,7 @@ mod tests {
         let overflowed = ExcludedAutoCandidate::context_overflow(DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let second = select_excluding(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             Some(&overflowed),
             requirements(),
@@ -929,7 +929,7 @@ mod tests {
         ]);
         let error = select_excluding(
             ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             Some(&overflowed),
             requirements(),
@@ -957,7 +957,7 @@ mod tests {
         assert_eq!(
             select_excluding(
                 ModelSelectionMode::AutoQuick,
-                ModelPlan::Free,
+                ModelPlan::FREE,
                 None,
                 Some(&lost),
                 requirements(),
@@ -981,7 +981,7 @@ mod tests {
         assert!(matches!(
             select_excluding(
                 ModelSelectionMode::AutoQuick,
-                ModelPlan::Free,
+                ModelPlan::FREE,
                 None,
                 Some(&lost_without_hint),
                 requirements(),
@@ -1002,7 +1002,7 @@ mod tests {
         assert_eq!(
             select_excluding(
                 ModelSelectionMode::AutoPowerful,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 None,
                 Some(&lost),
                 AutoModelRequirements {
@@ -1033,7 +1033,7 @@ mod tests {
         // With a compatible alternate the second decision simply moves on.
         let moved = select_excluding(
             ModelSelectionMode::AutoPowerful,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             None,
             Some(&lost),
             requirements(),
@@ -1059,7 +1059,7 @@ mod tests {
         assert_eq!(
             select_auto_model(AutoModelSelectionInput {
                 mode: ModelSelectionMode::Explicit,
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 sticky_model_id: None,
                 excluded: None,
                 requirements: requirements(),

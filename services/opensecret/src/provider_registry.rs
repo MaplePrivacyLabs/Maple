@@ -635,15 +635,15 @@ mod tests {
         use crate::inference::auto_model::auto_model_candidates;
         use crate::inference::ModelSelectionMode;
         use crate::model_config::{ModelAliasTargets, ModelPlan};
-        let paid = ModelAliasTargets::for_plan(ModelPlan::Paid);
+        let paid = ModelAliasTargets::for_plan(ModelPlan::PAID);
         assert_eq!(paid.resolve("auto:quick"), GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(paid.resolve("auto:powerful"), GLM_5_3_MODEL_ID);
         assert_eq!(
-            auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::Paid).unwrap(),
+            auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::PAID).unwrap(),
             [GLM_5_3_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID]
         );
         assert_eq!(
-            auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Paid).unwrap(),
+            auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::PAID).unwrap(),
             [GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID]
         );
     }

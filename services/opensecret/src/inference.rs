@@ -373,7 +373,7 @@ mod tests {
             Uuid::nil(),
             AUTO_POWERFUL_MODEL_ID,
             "glm-5-3",
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -390,7 +390,7 @@ mod tests {
             Uuid::nil(),
             "kimi-k3",
             "kimi-k3",
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::ChatCompletions,
             WorkloadClass::Interactive,
         );
@@ -405,7 +405,7 @@ mod tests {
             Uuid::nil(),
             "glm-5-3",
             "glm-5-3",
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );

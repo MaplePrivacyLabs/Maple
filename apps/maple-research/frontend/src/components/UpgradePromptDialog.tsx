@@ -25,11 +25,14 @@ import { useBillingState } from "@/state/useLocalState";
 import { hasApiAccess } from "@/billing/billingAccess";
 import { isAndroid } from "@/utils/platform";
 
+import { planLabel, type ModelPlanId } from "@/services/modelAccess";
+
 interface UpgradePromptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   feature: "image" | "voice" | "tts" | "model" | "document" | "usage" | "tokens" | "agent";
   modelName?: string;
+  eligiblePlans?: readonly ModelPlanId[];
   onStartNewChat?: () => void;
 }
 
@@ -38,6 +41,7 @@ export function UpgradePromptDialog({
   onOpenChange,
   feature,
   modelName,
+  eligiblePlans,
   onStartNewChat
 }: UpgradePromptDialogProps) {
   const navigate = useNavigate();
@@ -73,6 +77,17 @@ export function UpgradePromptDialog({
   const isPro = currentPlan.includes("pro") && !currentPlan.includes("max");
   const isMax = currentPlan.includes("max");
   const userHasApiAccess = hasApiAccess(billingStatus);
+  const modelPlans = eligiblePlans ?? ["pro", "max", "teams"];
+  const modelRequirement = planLabel(modelPlans);
+  const modelUpgradeLabel = modelPlans.includes("pro")
+    ? "Upgrade to Pro"
+    : modelPlans.includes("max")
+      ? "Upgrade to Max"
+      : "View Plans";
+  const currentPlanEligible =
+    (isPro && modelPlans.includes("pro")) ||
+    (isMax && modelPlans.includes("max")) ||
+    (currentPlan.includes("team") && modelPlans.includes("teams"));
 
   const getNextPlan = () => {
     if (isFreeTier) return "Pro";
@@ -203,12 +218,12 @@ export function UpgradePromptDialog({
       return {
         icon: <Cpu className="h-8 w-8" />,
         title: modelName ? `Access ${modelName}` : "Powerful AI Models",
-        description: "Get access to our most advanced AI models for superior performance",
-        requiredPlan: "Pro",
+        description: `This model requires ${modelRequirement}.`,
+        requiredPlan: modelRequirement,
         benefits: [
           "All models run in secure, encrypted environments",
-          "Access to GLM 5.3, Kimi K2.6, and the full model lineup",
-          "OpenAI GPT-OSS, Gemma, and other advanced models",
+          `Access to this model with ${modelRequirement}`,
+          "Keep your existing conversations when you change plans",
           "Higher token limits for longer conversations",
           "Priority access to new models as they launch"
         ]
@@ -229,7 +244,9 @@ export function UpgradePromptDialog({
                 ? "You've reached your plan's usage limit. Usage becomes available again when your allowance resets."
                 : feature === "tokens"
                   ? "This conversation has reached your plan's limit. You can start a new chat."
-                  : `This feature requires a ${info.requiredPlan} plan or above.`}
+                  : feature === "model"
+                    ? info.description
+                    : `This feature requires a ${info.requiredPlan} plan or above.`}
             </DialogDescription>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
@@ -263,11 +280,13 @@ export function UpgradePromptDialog({
         <div className="space-y-4 py-4">
           <div className="space-y-2">
             <p className="text-sm font-medium text-muted-foreground">
-              {feature === "tts"
-                ? "Available on paid Maple plans"
-                : info.requiredPlan === "Max" && isMax
-                  ? "You're on the Max plan"
-                  : `Available with ${info.requiredPlan} plan${info.requiredPlan !== "Max" ? " and above" : ""}`}
+              {feature === "model"
+                ? `Available with ${modelRequirement}`
+                : feature === "tts"
+                  ? "Available on paid Maple plans"
+                  : info.requiredPlan === "Max" && isMax
+                    ? "You're on the Max plan"
+                    : `Available with ${info.requiredPlan} plan${info.requiredPlan !== "Max" ? " and above" : ""}`}
             </p>
             <ul className="space-y-2">
               {info.benefits.map((benefit, i) => (
@@ -282,11 +301,13 @@ export function UpgradePromptDialog({
           {info.requiredPlan !== "Max" || !isMax ? (
             <div className="pt-2 border-t">
               <p className="text-sm text-muted-foreground">
-                {isFreeTier
-                  ? "Plus access to powerful models, image & document processing, and more"
-                  : isPro
-                    ? "Plus access to GLM 5.3, Kimi K2.6, 10x more usage, API access, and priority support"
-                    : "Explore our pricing options for the best plan for your needs"}
+                {feature === "model"
+                  ? "Plan changes keep your account and conversations together."
+                  : isFreeTier
+                    ? "Plus access to powerful models, image & document processing, and more"
+                    : isPro
+                      ? "Plus access to GLM 5.3, Kimi K2.6, 10x more usage, API access, and priority support"
+                      : "Explore our pricing options for the best plan for your needs"}
               </p>
             </div>
           ) : null}
@@ -296,7 +317,15 @@ export function UpgradePromptDialog({
           {(info.requiredPlan !== "Max" || !isMax) && (
             <Button variant="primary" onClick={handleUpgrade} className="w-full gap-2">
               <Sparkles className="h-4 w-4" />
-              {isFreeTier ? "Upgrade to Pro" : isPro ? "Upgrade to Max" : "View Plans"}
+              {feature === "model"
+                ? currentPlanEligible
+                  ? "Manage Plan"
+                  : modelUpgradeLabel
+                : isFreeTier
+                  ? "Upgrade to Pro"
+                  : isPro
+                    ? "Upgrade to Max"
+                    : "View Plans"}
             </Button>
           )}
           {/* Show Buy Credits button for paid users hitting usage limits */}

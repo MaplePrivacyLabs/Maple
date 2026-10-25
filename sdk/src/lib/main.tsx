@@ -458,6 +458,7 @@ export type OpenSecretContextType = {
    * Fetches OpenSecret's model catalog with display metadata and stable aliases.
    */
   fetchModelCatalog: () => Promise<api.ModelCatalogResponse>;
+  fetchModelCatalogV2: () => Promise<api.ModelCatalogV2Response>;
 
   /**
    * Uploads a document for text extraction and processing
@@ -917,6 +918,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   decryptData: api.decryptData,
   fetchModels: api.fetchModels,
   fetchModelCatalog: api.fetchModelCatalog,
+  fetchModelCatalogV2: api.fetchModelCatalogV2,
   uploadDocument: api.uploadDocument,
   checkDocumentStatus: api.checkDocumentStatus,
   uploadDocumentWithPolling: api.uploadDocumentWithPolling,
@@ -1345,6 +1347,7 @@ export function OpenSecretProvider({
     decryptData: api.decryptData,
     fetchModels: () => api.fetchModels(apiKey),
     fetchModelCatalog: () => api.fetchModelCatalog(apiKey),
+    fetchModelCatalogV2: () => api.fetchModelCatalogV2(apiKey),
     uploadDocument: api.uploadDocument,
     checkDocumentStatus: api.checkDocumentStatus,
     uploadDocumentWithPolling: api.uploadDocumentWithPolling,

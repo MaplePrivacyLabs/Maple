@@ -1,3 +1,5 @@
+import type { ModelUpgradeRequirement, ModelPlanId } from "./modelAccess";
+
 const ERROR_CONTRACT_HEADER = "x-opensecret-error-contract";
 const ERROR_CODE_HEADER = "x-opensecret-error-code";
 const ERROR_CONTRACT_VERSION = "1";
@@ -109,7 +111,12 @@ function errorCauseChain(error: unknown): readonly ErrorResponseMetadata[] {
 }
 
 type ResolvedChatResponseError =
-  | { status: unknown; code: unknown; legacy?: never }
+  | {
+      status: unknown;
+      code: unknown;
+      details?: { model?: unknown; eligible_plans?: unknown };
+      legacy?: never;
+    }
   | { status: 403 | 413; legacy: LegacyStatusFailure; code?: never };
 
 function resolveChatResponseError(error: unknown): ResolvedChatResponseError | null {
@@ -119,7 +126,7 @@ function resolveChatResponseError(error: unknown): ResolvedChatResponseError | n
     const headerCode = headers?.get(ERROR_CODE_HEADER);
     const body =
       typeof metadata.error === "object" && metadata.error !== null
-        ? (metadata.error as { code?: unknown })
+        ? (metadata.error as { code?: unknown; model?: unknown; eligible_plans?: unknown })
         : null;
     const codes = [headerCode, metadata.code, body?.code].filter(
       (code) => code !== undefined && code !== null
@@ -136,7 +143,7 @@ function resolveChatResponseError(error: unknown): ResolvedChatResponseError | n
         return null;
       }
       if (codes.some((code) => typeof code !== "string" || code !== codes[0])) return null;
-      return { status: metadata.status, code: codes[0] };
+      return { status: metadata.status, code: codes[0], details: body ?? undefined };
     }
 
     const legacy = legacyStatusFailure(metadata);
@@ -161,6 +168,25 @@ export function classifyChatLimitFailure(error: unknown): ChatLimitFailure | nul
 export function isChatPlanAccessDeniedError(error: unknown): boolean {
   const resolved = resolveChatResponseError(error);
   return resolved?.status === 403 && resolved.code === "model_not_available_on_plan";
+}
+
+/** Only an authoritative plan denial with valid model requirements opens an upsell. */
+export function chatModelUpgradeRequirement(error: unknown): ModelUpgradeRequirement | null {
+  const resolved = resolveChatResponseError(error);
+  if (resolved?.status !== 403 || resolved.code !== "model_not_available_on_plan") return null;
+  const details = resolved.details;
+  if (
+    typeof details?.model !== "string" ||
+    !details.model ||
+    details.model.length > 128 ||
+    !Array.isArray(details.eligible_plans) ||
+    details.eligible_plans.length === 0 ||
+    details.eligible_plans.some(
+      (plan: unknown) => typeof plan !== "string" || !["pro", "max", "teams"].includes(plan)
+    )
+  )
+    return null;
+  return { model: details.model, eligiblePlans: details.eligible_plans as ModelPlanId[] };
 }
 
 export function isChatRequestDefinitelyNotDispatchedError(error: unknown): boolean {

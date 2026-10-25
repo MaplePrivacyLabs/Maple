@@ -1,4 +1,9 @@
-import { classifyChatLimitFailure, isChatPlanAccessDeniedError } from "./chatResponseErrors";
+import { planLabel, type ModelUpgradeRequirement } from "./modelAccess";
+import {
+  classifyChatLimitFailure,
+  isChatPlanAccessDeniedError,
+  chatModelUpgradeRequirement
+} from "./chatResponseErrors";
 
 type ChatAccessErrorOptions = {
   error: unknown;
@@ -8,6 +13,7 @@ type ChatAccessErrorOptions = {
   isRuntimeSelected: () => boolean;
   showUpgradeDialog: (feature: "usage" | "tokens") => void;
   showContextLimitDialog: () => void;
+  showModelUpgradeDialog?: (requirement: ModelUpgradeRequirement) => void;
 };
 
 /** Restore a rejected turn before publishing a dialog owned by its selected run. */
@@ -18,12 +24,21 @@ export function handleChatAccessError({
   isRunCurrent,
   isRuntimeSelected,
   showUpgradeDialog,
-  showContextLimitDialog
+  showContextLimitDialog,
+  showModelUpgradeDialog
 }: ChatAccessErrorOptions): boolean {
   const failure = classifyChatLimitFailure(error);
   if (!failure) {
     if (!isChatPlanAccessDeniedError(error)) return false;
-    restoreTurn("This model or feature is not available on your current plan.");
+    const requirement = chatModelUpgradeRequirement(error);
+    const restored = restoreTurn(
+      requirement
+        ? `This model requires ${planLabel(requirement.eligiblePlans)}.`
+        : "This model or feature is not available on your current plan."
+    );
+    if (requirement && restored && isRunCurrent() && isRuntimeSelected()) {
+      showModelUpgradeDialog?.(requirement);
+    }
     return true;
   }
 

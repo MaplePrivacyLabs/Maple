@@ -1,3 +1,4 @@
+import type { ModelUpgradeRequirement } from "@/services/modelAccess";
 import {
   useState,
   useRef,
@@ -1798,8 +1799,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   );
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<
-    "image" | "document" | "voice" | "tts" | "usage" | "tokens"
+    "image" | "document" | "voice" | "tts" | "usage" | "tokens" | "model"
   >("image");
+  const [modelUpgrade, setModelUpgrade] = useState<ModelUpgradeRequirement | null>(null);
   const [documentPlatformDialogOpen, setDocumentPlatformDialogOpen] = useState(false);
   const [contextLimitDialogOpen, setContextLimitDialogOpen] = useState(false);
   const ttsAccessDeniedFeature =
@@ -5507,6 +5509,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                 setUpgradeFeature(feature);
                 setUpgradeDialogOpen(true);
               },
+              showModelUpgradeDialog: (requirement) => {
+                setModelUpgrade(requirement);
+                setUpgradeFeature("model");
+                setUpgradeDialogOpen(true);
+              },
               showContextLimitDialog: () => setContextLimitDialogOpen(true)
             })
           ) {
@@ -6394,6 +6401,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           onOpenChange={setUpgradeDialogOpen}
           onStartNewChat={handleNewChatFromUpgrade}
           feature={upgradeFeature}
+          modelName={upgradeFeature === "model" ? modelUpgrade?.model : undefined}
+          eligiblePlans={upgradeFeature === "model" ? modelUpgrade?.eligiblePlans : undefined}
         />
 
         {/* Document platform dialog for web users */}

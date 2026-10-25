@@ -1464,6 +1464,53 @@ export async function fetchModelCatalog(apiKey?: string): Promise<ModelCatalogRe
   }
 }
 
+/** Model entitlement, independent of quota. An explicit experimental grant can
+ * allow a model even when the current plan is not in eligible_plans. */
+export type ModelAccess = {
+  allowed: boolean;
+  eligible_plans: ("free" | "pro" | "max" | "teams")[];
+  reason: "plan_upgrade_required" | null;
+};
+
+export type ModelCatalogV2Response = Omit<ModelCatalogResponse, "data" | "aliases"> & {
+  data: (Omit<ModelCatalogItem, "access"> & { access: ModelAccess })[];
+  aliases: (Omit<ModelAlias, "access"> & { access: ModelAccess })[];
+};
+
+/** Fetches the inclusive catalog and caller-specific model entitlements. */
+export async function fetchModelCatalogV2(apiKey?: string): Promise<ModelCatalogV2Response> {
+  const response = await openAiAuthenticatedApiCall<void, ModelCatalogV2Response>(
+    `${apiUrl}/v2/models/catalog`,
+    "GET",
+    undefined,
+    "Failed to fetch model catalog",
+    apiKey
+  );
+  if (
+    response?.object !== "list" ||
+    !Array.isArray(response.data) ||
+    !Array.isArray(response.aliases) ||
+    !isModelAliasId(response.defaults?.quick) ||
+    !isModelAliasId(response.defaults?.powerful)
+  ) {
+    throw new Error("Invalid v2 model catalog response");
+  }
+  const knownPlans = new Set(["free", "pro", "max", "teams"]);
+  for (const model of [...response.data, ...response.aliases]) {
+    const access = model.access;
+    if (
+      typeof access?.allowed !== "boolean" ||
+      !Array.isArray(access.eligible_plans) ||
+      access.eligible_plans.length === 0 ||
+      access.eligible_plans.some((plan) => !knownPlans.has(plan)) ||
+      access.reason !== (access.allowed ? null : "plan_upgrade_required")
+    ) {
+      throw new Error("Invalid v2 model access policy");
+    }
+  }
+  return response;
+}
+
 export type DocumentUploadRequest = {
   filename: string;
   content_base64: string;

@@ -21,6 +21,8 @@ export type {
   ModelAliasId,
   ModelId,
   ModelAccessTier,
+  ModelAccess,
+  ModelCatalogV2Response,
   ModelCapabilities,
   ReasoningEffort,
   ModelReasoning,
@@ -91,7 +93,7 @@ export {
   type NativeUserAuthState
 } from "./transportV2/nativeAuth";
 
-export { fetchModels, fetchModelCatalog } from "./api";
+export { fetchModels, fetchModelCatalog, fetchModelCatalogV2 } from "./api";
 
 // Export conversation and conversation-project API functions
 export {

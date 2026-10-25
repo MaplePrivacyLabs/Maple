@@ -6,7 +6,11 @@ import { createConversationChatKey } from "./chatRuntimeStore";
 import { handleChatAccessError } from "./chatAccessError";
 import { classifyChatLimitFailure, isChatPlanAccessDeniedError } from "./chatResponseErrors";
 
-async function serverFailure(status: number, code?: string): Promise<unknown> {
+async function serverFailure(
+  status: number,
+  code?: string,
+  details: Record<string, unknown> = {}
+): Promise<unknown> {
   const message = "Server display text is independent of dialog routing";
   const headers = code
     ? new Headers({
@@ -20,7 +24,7 @@ async function serverFailure(status: number, code?: string): Promise<unknown> {
     maxRetries: 0,
     fetch: async () =>
       Response.json(
-        { status, message, error: { message, ...(code ? { code } : {}) } },
+        { status, message, error: { message, ...(code ? { code } : {}), ...details } },
         {
           status,
           headers
@@ -281,4 +285,64 @@ describe("chat access error presentation", () => {
     expect(fixture.events).toEqual(["restore"]);
     expect(fixture.store.get(fixture.key)).toBeUndefined();
   });
+});
+
+test("model entitlement denials restore the draft and show the required plans", async () => {
+  const fixture = runtimeFixture();
+  const error = await serverFailure(403, "model_not_available_on_plan", {
+    model: "uncensored",
+    eligible_plans: ["max", "teams"]
+  });
+  let shown: unknown;
+  expect(
+    handleChatAccessError({
+      ...fixture.options,
+      error,
+      productName: "Pro",
+      showModelUpgradeDialog: (requirement) => {
+        shown = requirement;
+      }
+    })
+  ).toBe(true);
+  expect(shown).toEqual({ model: "uncensored", eligiblePlans: ["max", "teams"] });
+  expect(fixture.events).toContain("restore");
+});
+
+test("unknown model requirement plans remain a neutral denial", async () => {
+  const fixture = runtimeFixture();
+  const error = await serverFailure(403, "model_not_available_on_plan", {
+    model: "uncensored",
+    eligible_plans: ["unknown"]
+  });
+  let shown = false;
+  expect(
+    handleChatAccessError({
+      ...fixture.options,
+      error,
+      showModelUpgradeDialog: () => {
+        shown = true;
+      }
+    })
+  ).toBe(true);
+  expect(shown).toBe(false);
+});
+
+test("a model upgrade dialog remains owned by the current visible restored run", async () => {
+  const error = await serverFailure(403, "model_not_available_on_plan", {
+    model: "uncensored",
+    eligible_plans: ["max", "teams"]
+  });
+  for (const guard of ["restoreTurn", "isRunCurrent", "isRuntimeSelected"] as const) {
+    const fixture = runtimeFixture();
+    let shown = false;
+    handleChatAccessError({
+      ...fixture.options,
+      error,
+      [guard]: () => false,
+      showModelUpgradeDialog: () => {
+        shown = true;
+      }
+    });
+    expect(shown).toBe(false);
+  }
 });

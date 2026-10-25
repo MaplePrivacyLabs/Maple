@@ -296,7 +296,7 @@ mod tests {
             Uuid::from_u128(73),
             requested_model,
             public_model,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             crate::inference::InferenceSurface::Responses,
             crate::inference::WorkloadClass::Interactive,
         )
@@ -455,7 +455,7 @@ mod tests {
                         Uuid::from_u128(u128::from(bucket)),
                         model,
                         model,
-                        ModelPlan::Paid,
+                        ModelPlan::PAID,
                         surface,
                         workload,
                     );
@@ -635,7 +635,7 @@ mod tests {
                 Uuid::from_u128(73),
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 surface,
                 workload,
             );

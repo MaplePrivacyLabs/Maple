@@ -811,6 +811,37 @@ pub struct ModelCatalogResponse {
     pub defaults: CatalogDefaults,
 }
 
+/// Model entitlement from the inclusive V2 catalog, independent of usage quota.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelAccess {
+    pub allowed: bool,
+    pub eligible_plans: Vec<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogModelV2 {
+    #[serde(flatten)]
+    pub model: CatalogModel,
+    pub access: ModelAccess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogAliasV2 {
+    #[serde(flatten)]
+    pub alias: CatalogAlias,
+    pub access: ModelAccess,
+}
+
+/// Inclusive catalog; V1 models and aliases retain their original wire types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelCatalogV2Response {
+    pub object: String,
+    pub data: Vec<CatalogModelV2>,
+    pub aliases: Vec<CatalogAliasV2>,
+    pub defaults: CatalogDefaults,
+}
+
 fn default_model_object() -> String {
     "model".to_string()
 }
@@ -1594,5 +1625,23 @@ mod tests {
         }));
 
         assert!(response.is_err());
+    }
+}
+
+#[cfg(test)]
+mod model_catalog_v2_tests {
+    use super::*;
+
+    #[test]
+    fn inclusive_catalog_retains_access_while_v1_keeps_legacy_shape() {
+        let base = serde_json::json!({"id":"uncensored","object":"model","access":"pro"});
+        let legacy: CatalogModel = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(legacy.id, "uncensored");
+        let mut modern = base;
+        modern["access"] = serde_json::json!({"allowed":false,"eligible_plans":["max","teams"],"reason":"plan_upgrade_required"});
+        let model: CatalogModelV2 = serde_json::from_value(modern).unwrap();
+        assert!(!model.access.allowed);
+        assert_eq!(model.access.eligible_plans, ["max", "teams"]);
+        assert_eq!(model.model.id, "uncensored");
     }
 }

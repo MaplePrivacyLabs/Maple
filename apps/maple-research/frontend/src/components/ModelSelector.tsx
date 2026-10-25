@@ -8,7 +8,14 @@ import {
   DropdownMenuSeparator
 } from "@/components/ui/dropdown-menu";
 import { useBillingState, useModelState } from "@/state/useLocalState";
-import { useOpenSecret } from "@mapleai/sdk";
+import { useOpenSecret, type ModelCatalogV2Response } from "@mapleai/sdk";
+import {
+  canUseModel,
+  normalizeModelCatalogV2,
+  isCatalogEndpointAbsent,
+  planLabel,
+  type ModelPlanId
+} from "@/services/modelAccess";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { POWERFUL_MODEL_ALIAS, QUICK_MODEL_ALIAS } from "@/utils/utils";
@@ -39,6 +46,7 @@ const PRIMARY_MODELS = [
 ] as const;
 
 type ModelCatalogClient = {
+  fetchModelCatalogV2?: () => Promise<ModelCatalogV2Response>;
   fetchModelCatalog?: () => Promise<OpenSecretModelCatalog>;
   fetchModels?: () => Promise<OpenSecretModel[]>;
 };
@@ -96,14 +104,17 @@ export function ModelSelector({
   } = useModelState();
   const { billingStatus } = useBillingState();
   const os = useOpenSecret();
+  const catalogClientRef = useRef(os);
+  catalogClientRef.current = os;
+  const catalogOwnerId = os.auth.user?.user.id;
   const isManagedSelection = onModelChange != null;
   const model = isManagedSelection ? (controlledModel ?? "") : unmanagedModel;
-  const isFetching = useRef(false);
-  const hasFetched = useRef(false);
   const currentModelRef = useRef(model);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [selectedModelName, setSelectedModelName] = useState<string>("");
+  const [eligiblePlans, setEligiblePlans] = useState<ModelPlanId[] | undefined>();
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [catalogRefresh, setCatalogRefresh] = useState(0);
 
   const setModel = useCallback(
     (modelId: string, metadata?: OpenSecretModel) => {
@@ -143,64 +154,75 @@ export function ModelSelector({
     [setModel]
   );
 
-  const fetchCatalog = useCallback(async () => {
-    if (hasFetched.current || isFetching.current) return;
-
-    isFetching.current = true;
-
-    try {
-      const modelClient = os as unknown as ModelCatalogClient;
-
-      if (modelClient.fetchModelCatalog) {
-        try {
-          const catalog = await modelClient.fetchModelCatalog();
-          const selectableModels = catalog.data.filter(isSelectableChatModel);
-          const hasCatalogWhisperModel = catalog.data.some(
-            (catalogModel) => catalogModel.id === "whisper-large-v3"
-          );
-          hasFetched.current = true;
-          setAvailableModels(selectableModels);
-          setModelAliases(catalog.aliases);
-          setHasWhisperModel(catalog.audio?.transcription?.available ?? hasCatalogWhisperModel);
-          reconcileSelectedConcreteModel(selectableModels);
-
-          return;
-        } catch (error) {
-          if (import.meta.env.DEV) {
-            console.warn("Failed to fetch model catalog, falling back to fetchModels:", error);
-          }
-        }
-      }
-
-      if (modelClient.fetchModels) {
-        const models = await modelClient.fetchModels();
-        const availableGenerateModels = models.filter((availableModel) => {
-          const tasks = availableModel.tasks || [];
-          if (tasks.length > 0) return tasks.includes("generate");
-          const id = availableModel.id.toLowerCase();
-          return !id.includes("whisper") && !id.includes("embed");
-        });
-        hasFetched.current = true;
-        setHasWhisperModel(
-          models.some((availableModel) => availableModel.id === "whisper-large-v3")
-        );
-        setAvailableModels(availableGenerateModels);
-        setModelAliases(buildFallbackModelAliases(availableGenerateModels));
-        reconcileSelectedConcreteModel(availableGenerateModels);
-      }
-    } catch (error) {
-      if (import.meta.env.DEV) {
-        console.warn("Failed to fetch model metadata:", error);
-      }
-    } finally {
-      isFetching.current = false;
-    }
-  }, [os, reconcileSelectedConcreteModel, setAvailableModels, setHasWhisperModel, setModelAliases]);
-
   useEffect(() => {
     if (isManagedSelection) return;
-    void fetchCatalog();
-  }, [fetchCatalog, isManagedSelection]);
+    let current = true;
+    setAvailableModels([]);
+    setModelAliases([]);
+    setUpgradeDialogOpen(false);
+    const publish = (catalog: OpenSecretModelCatalog) => {
+      if (!current) return;
+      const models = catalog.data.filter(isSelectableChatModel);
+      setAvailableModels(models);
+      setModelAliases(catalog.aliases);
+      setHasWhisperModel(
+        catalog.audio?.transcription?.available ??
+          catalog.data.some((model) => model.id === "whisper-large-v3")
+      );
+      reconcileSelectedConcreteModel(models);
+    };
+    const fetchCatalog = async () => {
+      const client = catalogClientRef.current as unknown as ModelCatalogClient;
+      if (client.fetchModelCatalogV2) {
+        try {
+          publish(normalizeModelCatalogV2(await client.fetchModelCatalogV2()));
+          return;
+        } catch (error) {
+          if (!isCatalogEndpointAbsent(error)) throw error;
+        }
+      }
+      if (client.fetchModelCatalog) {
+        try {
+          publish(await client.fetchModelCatalog());
+          return;
+        } catch (error) {
+          if (!isCatalogEndpointAbsent(error)) throw error;
+        }
+      }
+      if (client.fetchModels) {
+        const models = await client.fetchModels();
+        const generate = models.filter((model) =>
+          model.tasks?.length ? model.tasks.includes("generate") : !/whisper|embed/i.test(model.id)
+        );
+        publish({
+          object: "list",
+          data: generate,
+          aliases: buildFallbackModelAliases(generate),
+          audio: {
+            transcription: {
+              available: models.some((model) => model.id === "whisper-large-v3"),
+              model: "whisper-large-v3"
+            }
+          }
+        });
+      }
+    };
+    void fetchCatalog().catch((error: unknown) => {
+      if (current && import.meta.env.DEV) console.warn("Failed to fetch model catalog:", error);
+    });
+    return () => {
+      current = false;
+    };
+  }, [
+    catalogOwnerId,
+    billingStatus?.product_name,
+    isManagedSelection,
+    catalogRefresh,
+    setAvailableModels,
+    setModelAliases,
+    setHasWhisperModel,
+    reconcileSelectedConcreteModel
+  ]);
 
   const getAlias = useCallback(
     (modelId: string): OpenSecretModelAlias | undefined => {
@@ -231,27 +253,24 @@ export function ModelSelector({
     [modelById]
   );
 
-  const getAccess = useCallback(
-    (modelId: string): ModelAccessTier => {
+  const getModelAccess = useCallback(
+    (modelId: string) => {
       const alias = getAlias(modelId);
-      if (alias) {
-        return getTargetModel(alias)?.access || alias.access || "free";
-      }
-      return modelById.get(modelId)?.access || "free";
+      return alias ? (getTargetModel(alias) ?? alias) : modelById.get(modelId);
     },
     [getAlias, getTargetModel, modelById]
   );
 
   const hasAccessToModel = useCallback(
-    (modelId: string) => {
-      const access = getAccess(modelId);
-      if (access === "free") return true;
-
-      const planName = billingStatus?.product_name?.toLowerCase() || "";
-      return planName.includes("pro") || planName.includes("max") || planName.includes("team");
-    },
-    [billingStatus?.product_name, getAccess]
+    (modelId: string) => canUseModel(getModelAccess(modelId), billingStatus?.product_name),
+    [getModelAccess, billingStatus?.product_name]
   );
+
+  const openModelUpgrade = (modelId: string, name: string) => {
+    setSelectedModelName(name);
+    setEligiblePlans(getModelAccess(modelId)?.accessPolicy?.eligible_plans);
+    setUpgradeDialogOpen(true);
+  };
 
   const getDisplayLabel = (modelId: string): string => {
     const alias = getAlias(modelId);
@@ -272,8 +291,7 @@ export function ModelSelector({
   // Handle primary option selection
   const handlePrimarySelect = (targetModel: string) => {
     if (!hasAccessToModel(targetModel)) {
-      setSelectedModelName(getDisplayNameText(targetModel));
-      setUpgradeDialogOpen(true);
+      openModelUpgrade(targetModel, getDisplayNameText(targetModel));
       return;
     }
 
@@ -347,7 +365,12 @@ export function ModelSelector({
 
   return (
     <>
-      <DropdownMenu modal={false}>
+      <DropdownMenu
+        modal={false}
+        onOpenChange={(open) => {
+          if (open && !isManagedSelection) setCatalogRefresh((value) => value + 1);
+        }}
+      >
         <DropdownMenuTrigger asChild>
           <Button
             disabled={disabled}
@@ -406,7 +429,6 @@ export function ModelSelector({
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
-                  if (!isManagedSelection) void fetchCatalog();
                   setShowAdvanced(true);
                 }}
                 className="flex items-center gap-2 px-3 py-1.5 cursor-pointer"
@@ -479,10 +501,10 @@ export function ModelSelector({
                           onClick={() => {
                             if (effectivelyDisabled) return;
                             if (isRestricted) {
-                              setSelectedModelName(
+                              openModelUpgrade(
+                                availableModel.id,
                                 availableModel.display_name || availableModel.id
                               );
-                              setUpgradeDialogOpen(true);
                             } else {
                               setModel(availableModel.id, availableModel);
                               setShowAdvanced(false);
@@ -498,7 +520,16 @@ export function ModelSelector({
                           disabled={effectivelyDisabled}
                         >
                           <div className="flex items-center gap-2 flex-1">
-                            <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
+                            <div>
+                              <div className="text-sm">
+                                {getDisplayName(availableModel.id, true)}
+                              </div>
+                              {isRestricted && availableModel.accessPolicy && (
+                                <div className="text-xs text-muted-foreground">
+                                  Requires {planLabel(availableModel.accessPolicy.eligible_plans)}
+                                </div>
+                              )}
+                            </div>
                           </div>
                           {isActive && <Check className="h-4 w-4" />}
                         </DropdownMenuItem>
@@ -516,6 +547,7 @@ export function ModelSelector({
         onOpenChange={setUpgradeDialogOpen}
         feature="model"
         modelName={selectedModelName}
+        eligiblePlans={eligiblePlans}
       />
     </>
   );

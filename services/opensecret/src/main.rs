@@ -452,6 +452,12 @@ pub enum ApiError {
     #[error("Model not available on current plan")]
     ModelNotAvailableOnPlan,
 
+    #[error("Model not available on current plan")]
+    ModelUpgradeRequired {
+        model: &'static str,
+        eligible_plans: &'static [&'static str],
+    },
+
     #[error("Model not found or not available to this account")]
     ModelNotAvailable,
 
@@ -513,7 +519,9 @@ impl IntoResponse for ApiError {
             ApiError::EmailAlreadyExists => StatusCode::CONFLICT,
             ApiError::UsageLimitReached => StatusCode::FORBIDDEN,
             ApiError::FreeTokenLimitExceeded => StatusCode::FORBIDDEN,
-            ApiError::ModelNotAvailableOnPlan => StatusCode::FORBIDDEN,
+            ApiError::ModelNotAvailableOnPlan | ApiError::ModelUpgradeRequired { .. } => {
+                StatusCode::FORBIDDEN
+            }
             ApiError::ModelNotAvailable => StatusCode::NOT_FOUND,
             ApiError::MessageExceedsContextLimit => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::NotFound => StatusCode::NOT_FOUND,
@@ -527,7 +535,9 @@ impl IntoResponse for ApiError {
             ApiError::InferenceRateLimited { .. } => Some("rate_limit_exceeded"),
             ApiError::UsageLimitReached => Some("usage_limit_reached"),
             ApiError::FreeTokenLimitExceeded => Some("free_tier_token_limit_exceeded"),
-            ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
+            ApiError::ModelNotAvailableOnPlan | ApiError::ModelUpgradeRequired { .. } => {
+                Some("model_not_available_on_plan")
+            }
             ApiError::ModelNotAvailable => Some("model_not_found"),
             ApiError::MessageExceedsContextLimit => Some("message_exceeds_context_limit"),
             ApiError::SystemOneRequest(error) => Some(error.code()),
@@ -561,6 +571,14 @@ impl IntoResponse for ApiError {
             code,
             error_type,
             param: error_param,
+            model: match &self {
+                ApiError::ModelUpgradeRequired { model, .. } => Some(*model),
+                _ => None,
+            },
+            eligible_plans: match &self {
+                ApiError::ModelUpgradeRequired { eligible_plans, .. } => Some(*eligible_plans),
+                _ => None,
+            },
         });
         let mut response = (
             status,
@@ -654,6 +672,10 @@ pub struct ErrorResponse {
 
 #[derive(Debug, Serialize)]
 struct OpenAIErrorResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eligible_plans: Option<&'static [&'static str]>,
     message: String,
     code: &'static str,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
@@ -665,6 +687,30 @@ struct OpenAIErrorResponse {
 #[cfg(test)]
 mod api_error_contract_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn model_upgrade_denial_keeps_the_existing_code_and_adds_requirements() {
+        let response = ApiError::ModelUpgradeRequired {
+            model: "deepseek-v4-1-flash-1017-uncensored",
+            eligible_plans: &["max", "teams"],
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.headers()[ERROR_CODE_HEADER],
+            "model_not_available_on_plan"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["status"], 403);
+        assert_eq!(body["message"], "Model not available on current plan");
+        assert_eq!(
+            body["error"]["eligible_plans"],
+            serde_json::json!(["max", "teams"])
+        );
+    }
 
     async fn assert_error_response(
         error: ApiError,

@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { encodeURLSafe } from "@stablelib/base64";
 import type { PcrConfig } from "../pcr";
-import { fetchModelCatalog, fetchModels, getApiPcrConfig, getApiUrl, setApiUrl } from "../api";
+import {
+  fetchModelCatalogV2,
+  fetchModelCatalog,
+  fetchModels,
+  getApiPcrConfig,
+  getApiUrl,
+  setApiUrl
+} from "../api";
 import { clearTransportV2Credentials, installTransportV2Credentials } from "../transportV2/auth";
 import {
   transportV2Runtime,
@@ -138,4 +145,49 @@ test("fetchModelCatalog remains authentication-required", async () => {
 
   await expect(fetchModelCatalog()).rejects.toThrow("No access token available");
   expect(request).toHaveBeenCalledTimes(0);
+});
+
+const v2Catalog = {
+  object: "list" as const,
+  data: [
+    {
+      ...modelsResponse.data[0],
+      access: { allowed: false, eligible_plans: ["max", "teams"], reason: "plan_upgrade_required" }
+    }
+  ],
+  aliases: [],
+  defaults: { quick: "auto:quick", powerful: "auto:powerful" }
+};
+
+test("inclusive model catalog uses the authenticated encrypted v2 target", async () => {
+  installUserCredentials();
+  let seen: TransportV2RuntimeRequest | undefined;
+  transportV2Runtime.request = mock(async (input) => {
+    seen = input;
+    return exchange(Response.json(v2Catalog));
+  });
+  await expect(fetchModelCatalogV2()).resolves.toEqual(v2Catalog);
+  expect(seen?.request.target).toBe("/v2/models/catalog");
+  expect(seen?.request.credential?.kind).toBe("bearer");
+});
+
+test("v2 catalog rejects missing, unknown and inconsistent access policies", async () => {
+  installUserCredentials();
+  for (const access of [
+    undefined,
+    { allowed: "true", eligible_plans: ["max"], reason: null },
+    { allowed: true, eligible_plans: ["unknown"], reason: null },
+    { allowed: true, eligible_plans: ["max"], reason: "plan_upgrade_required" },
+    { allowed: false, eligible_plans: [], reason: "plan_upgrade_required" }
+  ]) {
+    transportV2Runtime.request = mock(async () =>
+      exchange(
+        Response.json({
+          ...v2Catalog,
+          data: [{ ...v2Catalog.data[0], access }]
+        })
+      )
+    );
+    await expect(fetchModelCatalogV2()).rejects.toThrow("Invalid v2 model access policy");
+  }
 });

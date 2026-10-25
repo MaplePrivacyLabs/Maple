@@ -3,29 +3,28 @@ use super::*;
 use crate::provider_registry::{MapleInstanceId, DUAL_INSTANCE_TEST_REGISTRY};
 
 #[tokio::test]
-async fn uncensored_flag_denies_or_allows_only_its_exact_model() {
+async fn uncensored_flag_grants_only_its_exact_model_even_on_free() {
     let model = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
-    assert!(matches!(
-        ensure_model_feature_access_with(model, std::future::ready(false)).await,
-        Err(ApiError::ModelNotAvailable)
-    ));
-    assert!(
-        ensure_model_feature_access_with(model, std::future::ready(true))
-            .await
-            .is_ok()
-    );
-    for ordinary_model in [
+    for plan in [ModelPlan::FREE, ModelPlan::PAID] {
+        let off = model_plan_for_request_with(model, plan, std::future::ready(false)).await;
+        assert!(!off.allows_model(model));
+        let on = model_plan_for_request_with(model, plan, std::future::ready(true)).await;
+        assert!(on.allows_model(model));
+        assert_eq!(on.is_paid(), plan.is_paid());
+        assert_eq!(on.allows_model("kimi-k3"), plan.is_paid());
+    }
+    for model in [
         "deepseek-v4-1-flash",
         "glm-5-3",
         "kimi-k3",
         "auto:quick",
         "auto:powerful",
     ] {
-        assert!(ensure_model_feature_access_with(ordinary_model, async {
-            panic!("unrelated completion must never poll the feature-flag request");
+        let plan = model_plan_for_request_with(model, ModelPlan::PAID, async {
+            panic!("unrelated completion must not poll flags");
         })
-        .await
-        .is_ok());
+        .await;
+        assert_eq!(plan, ModelPlan::PAID);
     }
 }
 
@@ -74,16 +73,12 @@ async fn uncensored_flag_uses_account_identity_and_fails_closed_on_missing_or_se
                 .await
                 .unwrap_or(false)
         };
-        let result = ensure_model_feature_access_with(model, checked).await;
-        if account == 4 {
-            assert!(result.is_ok());
-        } else {
-            assert!(matches!(result, Err(ApiError::ModelNotAvailable)));
-        }
+        let plan = model_plan_for_request_with(model, ModelPlan::FREE, checked).await;
+        assert_eq!(plan.allows_model(model), account == 4);
     }
     assert_eq!(calls.load(Ordering::SeqCst), 4);
     assert!(
-        ensure_model_feature_access_with("deepseek-v4-1-flash", async {
+        model_plan_for_request_with("deepseek-v4-1-flash", ModelPlan::PAID, async {
             flags
                 .is_enabled(
                     Uuid::from_u128(5),
@@ -93,7 +88,7 @@ async fn uncensored_flag_uses_account_identity_and_fails_closed_on_missing_or_se
                 .unwrap_or(false)
         })
         .await
-        .is_ok()
+        .allows_model("deepseek-v4-1-flash")
     );
     assert_eq!(calls.load(Ordering::SeqCst), 4);
     server.abort();
@@ -102,10 +97,10 @@ async fn uncensored_flag_uses_account_identity_and_fails_closed_on_missing_or_se
 #[test]
 fn nested_and_pinned_completion_contexts_preserve_plan_without_provider_flag() {
     let cache = CompletionCachePolicy::LegacyV1;
-    let caller = InferenceRoutingContext::new(ModelPlan::Paid);
-    let child = caller.with_model_plan(ModelPlan::Free);
-    assert_eq!(child.model_plan(), ModelPlan::Free);
-    assert_eq!(caller.model_plan(), ModelPlan::Paid);
+    let caller = InferenceRoutingContext::new(ModelPlan::PAID);
+    let child = caller.with_model_plan(ModelPlan::FREE);
+    assert_eq!(child.model_plan(), ModelPlan::FREE);
+    assert_eq!(caller.model_plan(), ModelPlan::PAID);
 
     for provider in [
         ProviderId::Maple(MapleInstanceId::I01),
@@ -118,7 +113,7 @@ fn nested_and_pinned_completion_contexts_preserve_plan_without_provider_flag() {
                 Uuid::from_u128(1),
                 public_model,
                 public_model,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 InferenceSurface::Responses,
                 WorkloadClass::Interactive,
             ),
@@ -141,7 +136,7 @@ fn nested_and_pinned_completion_contexts_preserve_plan_without_provider_flag() {
             &pinned,
             &cache,
         );
-        assert_eq!(context.routing.model_plan(), ModelPlan::Paid);
+        assert_eq!(context.routing.model_plan(), ModelPlan::PAID);
     }
 }
 
@@ -157,7 +152,7 @@ fn maple_instance_routes_keep_shared_cache_namespace_and_billing_identity() {
         user,
         model,
         model,
-        ModelPlan::Paid,
+        ModelPlan::PAID,
         InferenceSurface::ChatCompletions,
         WorkloadClass::Interactive,
     );

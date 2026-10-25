@@ -160,6 +160,13 @@ function getCachedSelectedModelMetadata(
 
     return {
       ...parsedMetadata,
+      accessPolicy: parsedMetadata.accessPolicy
+        ? {
+            ...parsedMetadata.accessPolicy,
+            allowed: false,
+            reason: "plan_upgrade_required"
+          }
+        : undefined,
       object: "model",
       created: parsedMetadata.created || Date.now(),
       owned_by: parsedMetadata.owned_by || "opensecret"
@@ -185,6 +192,13 @@ function cacheSelectedModelMetadata(
 
     const cacheableMetadata: OpenSecretModel = {
       ...modelMetadata,
+      accessPolicy: modelMetadata.accessPolicy
+        ? {
+            ...modelMetadata.accessPolicy,
+            allowed: false,
+            reason: "plan_upgrade_required"
+          }
+        : undefined,
       id: modelId,
       object: "model",
       created: modelMetadata.created || Date.now(),

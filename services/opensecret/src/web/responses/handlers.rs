@@ -812,7 +812,7 @@ mod tests {
                 surface: InferenceSurface::Responses,
                 requested_model_id: AUTO_QUICK_MODEL_ID,
                 alias_target: QUICK_MODEL_ID,
-                model_plan: ModelPlan::Free,
+                model_plan: ModelPlan::FREE,
                 excluded: Some(&lost),
             },
             || crate::inference::auto_model::AutoModelRequirements {
@@ -840,7 +840,7 @@ mod tests {
                     surface: InferenceSurface::Responses,
                     requested_model_id: AUTO_QUICK_MODEL_ID,
                     alias_target: QUICK_MODEL_ID,
-                    model_plan: ModelPlan::Free,
+                    model_plan: ModelPlan::FREE,
                     excluded: Some(&lost),
                 },
                 || crate::inference::auto_model::AutoModelRequirements {
@@ -918,7 +918,7 @@ mod tests {
             .single()
             .expect("valid UTC timestamp");
 
-        let prompt = build_internal_system_prompt_for_now(now, false, ModelPlan::Paid);
+        let prompt = build_internal_system_prompt_for_now(now, false, ModelPlan::PAID);
 
         assert!(prompt.contains("Automatic read_image tool results"));
         assert!(prompt.contains("untrusted user content"));
@@ -1624,13 +1624,13 @@ mod tests {
 
     #[test]
     fn response_execution_policy_preserves_tool_and_model_turn_bounds() {
-        let free = ResponseExecutionPolicy::new(ModelPlan::Free, true);
+        let free = ResponseExecutionPolicy::new(ModelPlan::FREE, true);
         assert_eq!(free.max_tool_executions, MAX_WEB_SEARCH_TOOL_TURNS_FREE);
         assert_eq!(free.max_model_turns, MAX_WEB_SEARCH_TOOL_TURNS_FREE + 2);
-        let paid = ResponseExecutionPolicy::new(ModelPlan::Paid, true);
+        let paid = ResponseExecutionPolicy::new(ModelPlan::PAID, true);
         assert_eq!(paid.max_tool_executions, MAX_WEB_SEARCH_TOOL_TURNS_PAID);
         assert_eq!(paid.max_model_turns, MAX_WEB_SEARCH_TOOL_TURNS_PAID + 2);
-        let no_tools = ResponseExecutionPolicy::new(ModelPlan::Paid, false);
+        let no_tools = ResponseExecutionPolicy::new(ModelPlan::PAID, false);
         assert_eq!(no_tools.max_tool_executions, 0);
         assert_eq!(no_tools.max_model_turns, 1);
     }
@@ -1640,7 +1640,7 @@ mod tests {
             Uuid::new_v4(),
             "llama3-3-70b",
             "llama3-3-70b",
-            ModelPlan::Free,
+            ModelPlan::FREE,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -2386,51 +2386,79 @@ mod tests {
     fn test_resolve_responses_models_enforces_plan_gates() {
         let uncensored = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
         assert_eq!(
-            resolve_responses_model(uncensored, "tinfoil", ModelPlan::Paid).unwrap(),
+            resolve_responses_model(
+                uncensored,
+                "tinfoil",
+                ModelPlan::FREE.with_uncensored_override(true)
+            )
+            .unwrap(),
+            uncensored
+        );
+        let max = crate::billing::ChatBillingAccess::for_tests_with_plan(true, false, "max");
+        assert_eq!(
+            resolve_responses_model(
+                uncensored,
+                "tinfoil",
+                ModelPlan::from_billing_access(Some(max))
+            )
+            .unwrap(),
             uncensored
         );
         assert!(matches!(
-            resolve_responses_model(uncensored, "tinfoil", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
+            resolve_responses_model(uncensored, "tinfoil", ModelPlan::PAID),
+            Err(ApiError::ModelUpgradeRequired { .. })
         ));
         assert_eq!(
-            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Paid).unwrap(),
+            resolve_responses_model(
+                uncensored,
+                "tinfoil",
+                ModelPlan::PAID.with_uncensored_override(true)
+            )
+            .unwrap(),
+            uncensored
+        );
+        assert!(matches!(
+            resolve_responses_model(uncensored, "tinfoil", ModelPlan::FREE),
+            Err(ApiError::ModelUpgradeRequired { .. })
+        ));
+        assert_eq!(
+            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::PAID).unwrap(),
             "kimi-k3"
         );
         assert!(matches!(
-            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Free),
+            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert!(matches!(
-            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::Free),
+            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::Paid).unwrap(),
+            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::PAID).unwrap(),
             "glm-5-3"
         );
         assert!(matches!(
-            resolve_responses_model("glm-5-3", "continuum", ModelPlan::Free),
+            resolve_responses_model("glm-5-3", "continuum", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("glm-5-3", "continuum", ModelPlan::Paid).unwrap(),
+            resolve_responses_model("glm-5-3", "continuum", ModelPlan::PAID).unwrap(),
             "glm-5-3"
         );
         assert!(matches!(
-            resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::Free),
+            resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::Paid).unwrap(),
+            resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::PAID).unwrap(),
             "glm-5-3-flash"
         );
         assert!(matches!(
-            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free),
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Paid).unwrap(),
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::PAID).unwrap(),
             "deepseek-v4-1-flash"
         );
     }
@@ -2439,15 +2467,15 @@ mod tests {
     fn canonical_deepseek_responses_resolution_has_no_versioned_alias() {
         let model = crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID;
         assert_eq!(
-            resolve_responses_model(model, "tinfoil", ModelPlan::Paid).unwrap(),
+            resolve_responses_model(model, "tinfoil", ModelPlan::PAID).unwrap(),
             model
         );
         assert!(matches!(
-            resolve_responses_model(model, "tinfoil", ModelPlan::Free),
+            resolve_responses_model(model, "tinfoil", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert!(matches!(
-            resolve_responses_model("deepseek-v4-1-flash-1017", "tinfoil", ModelPlan::Paid),
+            resolve_responses_model("deepseek-v4-1-flash-1017", "tinfoil", ModelPlan::PAID),
             Err(ApiError::BadRequest)
         ));
     }
@@ -2455,7 +2483,7 @@ mod tests {
     #[test]
     fn test_resolve_responses_model_allows_free_model() {
         assert_eq!(
-            resolve_responses_model("llama3-3-70b", "tinfoil", ModelPlan::Free).unwrap(),
+            resolve_responses_model("llama3-3-70b", "tinfoil", ModelPlan::FREE).unwrap(),
             "llama3-3-70b"
         );
     }
@@ -2475,7 +2503,7 @@ mod tests {
 
     #[test]
     fn test_build_model_turn_request_uses_resolved_alias_target() {
-        let targets = ModelAliasTargets::for_plan(ModelPlan::Free);
+        let targets = ModelAliasTargets::for_plan(ModelPlan::FREE);
         let body =
             responses_request_for_model(targets.resolve(crate::model_config::AUTO_QUICK_MODEL_ID));
         let chat_request =
@@ -2498,28 +2526,28 @@ mod tests {
         let cases = [
             Case {
                 name: "free auto quick",
-                plan: ModelPlan::Free,
+                plan: ModelPlan::FREE,
                 selector: crate::model_config::AUTO_QUICK_MODEL_ID,
                 expected_model: crate::model_config::QUICK_MODEL_ID,
                 expected_access: true,
             },
             Case {
                 name: "free auto powerful",
-                plan: ModelPlan::Free,
+                plan: ModelPlan::FREE,
                 selector: crate::model_config::AUTO_POWERFUL_MODEL_ID,
                 expected_model: crate::model_config::GLM_5_3_MODEL_ID,
                 expected_access: false,
             },
             Case {
                 name: "paid auto quick",
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 selector: crate::model_config::AUTO_QUICK_MODEL_ID,
                 expected_model: crate::model_config::GLM_5_3_FLASH_MODEL_ID,
                 expected_access: true,
             },
             Case {
                 name: "paid auto powerful",
-                plan: ModelPlan::Paid,
+                plan: ModelPlan::PAID,
                 selector: crate::model_config::AUTO_POWERFUL_MODEL_ID,
                 expected_model: crate::model_config::GLM_5_3_MODEL_ID,
                 expected_access: true,
@@ -2573,7 +2601,7 @@ mod tests {
             true
         );
 
-        let targets = ModelAliasTargets::for_plan(ModelPlan::Paid);
+        let targets = ModelAliasTargets::for_plan(ModelPlan::PAID);
         let auto_powerful = responses_request_for_model(
             targets.resolve(crate::model_config::AUTO_POWERFUL_MODEL_ID),
         );
@@ -2732,39 +2760,39 @@ mod tests {
     #[test]
     fn test_web_search_tool_turn_limit_allows_max_then_errors() {
         assert_eq!(
-            web_search_tool_turn_limit(ModelPlan::Free),
+            web_search_tool_turn_limit(ModelPlan::FREE),
             MAX_WEB_SEARCH_TOOL_TURNS_FREE
         );
         assert_eq!(
-            web_search_tool_turn_limit(ModelPlan::Paid),
+            web_search_tool_turn_limit(ModelPlan::PAID),
             MAX_WEB_SEARCH_TOOL_TURNS_PAID
         );
         assert!(!web_search_tool_turn_limit_reached(
             MAX_WEB_SEARCH_TOOL_TURNS_FREE,
-            ModelPlan::Free
+            ModelPlan::FREE
         ));
         assert!(web_search_tool_turn_limit_reached(
             MAX_WEB_SEARCH_TOOL_TURNS_FREE + 1,
-            ModelPlan::Free
+            ModelPlan::FREE
         ));
         assert!(!web_search_tool_turn_limit_reached(
             MAX_WEB_SEARCH_TOOL_TURNS_PAID,
-            ModelPlan::Paid
+            ModelPlan::PAID
         ));
         assert!(web_search_tool_turn_limit_reached(
             MAX_WEB_SEARCH_TOOL_TURNS_PAID + 1,
-            ModelPlan::Paid
+            ModelPlan::PAID
         ));
         assert!(!web_search_tool_turn_limit_reached(
             MAX_WEB_SEARCH_TOOL_TURNS_FREE + 1,
-            ModelPlan::Paid
+            ModelPlan::PAID
         ));
     }
 
     #[test]
     fn test_web_search_tool_turn_limit_error_is_scoped_to_this_response() {
-        let free_error = web_search_tool_turn_limit_error(ModelPlan::Free);
-        let paid_error = web_search_tool_turn_limit_error(ModelPlan::Paid);
+        let free_error = web_search_tool_turn_limit_error(ModelPlan::FREE);
+        let paid_error = web_search_tool_turn_limit_error(ModelPlan::PAID);
         let formatted = crate::web::responses::tools::format_tool_result(Err(free_error.clone()));
 
         assert!(free_error.contains(&MAX_WEB_SEARCH_TOOL_TURNS_FREE.to_string()));
@@ -2836,7 +2864,7 @@ mod tests {
             .single()
             .expect("valid UTC timestamp");
 
-        let prompt = build_internal_system_prompt_for_now(now, true, ModelPlan::Paid);
+        let prompt = build_internal_system_prompt_for_now(now, true, ModelPlan::PAID);
 
         assert!(prompt.contains("Current UTC date: Wednesday, 2026-04-15."));
         assert!(prompt.contains(&maple_kagi_web_search_prompt(
@@ -2862,7 +2890,7 @@ mod tests {
             .single()
             .expect("valid UTC timestamp");
 
-        let prompt = build_internal_system_prompt_for_now(now, true, ModelPlan::Free);
+        let prompt = build_internal_system_prompt_for_now(now, true, ModelPlan::FREE);
 
         assert!(prompt.contains(&maple_kagi_web_search_prompt(
             MAX_WEB_SEARCH_TOOL_TURNS_FREE
@@ -2884,7 +2912,7 @@ mod tests {
             .single()
             .expect("valid UTC timestamp");
 
-        let prompt = build_internal_system_prompt_for_now(now, false, ModelPlan::Paid);
+        let prompt = build_internal_system_prompt_for_now(now, false, ModelPlan::PAID);
 
         assert!(prompt.contains("Current UTC date: Wednesday, 2026-04-15."));
         assert!(!prompt.contains(&maple_kagi_web_search_prompt(
@@ -2900,7 +2928,7 @@ mod tests {
             .single()
             .expect("valid UTC timestamp");
 
-        let prompt = build_internal_system_prompt_for_now(now, true, ModelPlan::Paid);
+        let prompt = build_internal_system_prompt_for_now(now, true, ModelPlan::PAID);
 
         assert!(prompt.contains(&maple_kagi_web_search_prompt(
             MAX_WEB_SEARCH_TOOL_TURNS_PAID
@@ -4108,7 +4136,8 @@ fn image_description_api_error(error: ApiError) -> ImageDescriptionAttemptError 
         ApiError::BadRequest
         | ApiError::Unauthorized
         | ApiError::ModelNotAvailable
-        | ApiError::ModelNotAvailableOnPlan => ImageDescriptionFailureClass::Terminal,
+        | ApiError::ModelNotAvailableOnPlan
+        | ApiError::ModelUpgradeRequired { .. } => ImageDescriptionFailureClass::Terminal,
         ApiError::ServiceUnavailable | ApiError::InferenceCapacity { .. } => {
             ImageDescriptionFailureClass::PreAcceptance
         }
@@ -4407,7 +4436,7 @@ fn spawn_title_generation_task(
             user.uuid,
             "llama3-3-70b",
             "llama3-3-70b",
-            ModelPlan::Free,
+            ModelPlan::FREE,
             InferenceSurface::Internal,
             WorkloadClass::Background,
         );
@@ -5897,8 +5926,13 @@ async fn create_response_stream(
     )?;
     let requested_model = body.model.clone();
     let billing_access = state.chat_billing_access(user.uuid, false).await;
-    let model_plan =
-        ModelPlan::from_is_paid(billing_access.is_some_and(ChatBillingAccess::is_paid));
+    let model_plan = crate::web::openai::model_plan_for_request(
+        &state,
+        user.uuid,
+        ModelPlan::from_billing_access(billing_access),
+        &requested_model,
+    )
+    .await;
     if user.is_guest() && !model_plan.is_paid() {
         error!(
             "Guest user without a paid plan attempted to use Responses API: {}",
@@ -5922,7 +5956,6 @@ async fn create_response_stream(
         );
     }
     body.model = resolved_model;
-    crate::web::openai::ensure_model_feature_access(&state, user.uuid, &body.model).await?;
     // Validate the caller's effort against the tier's own model before any
     // write. An explicit model rejects an unsupported level; an alias is moved
     // to the nearest level its resolved model accepts when the turn is built.
@@ -6076,7 +6109,7 @@ async fn create_response_stream(
                 &state,
                 &user,
                 &cache_policy,
-                routing.with_model_plan(ModelPlan::Paid),
+                routing.with_model_plan(ModelPlan::PAID),
                 access,
                 &prepared.image_attachments,
             )
@@ -6276,7 +6309,7 @@ async fn create_response_stream(
             context.conversation.uuid,
             prepared.user_key,
             MessageContentConverter::extract_text_for_token_counting(&prepared.message_content),
-            routing.with_model_plan(ModelPlan::Free),
+            routing.with_model_plan(ModelPlan::FREE),
         )
     });
     let assistant_message_id = prepared.assistant_message_id;

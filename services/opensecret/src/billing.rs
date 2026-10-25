@@ -11,15 +11,29 @@ pub struct UsageResponse {
     pub is_free: bool,
 }
 
-/// V2 reports API admission and frontend plan identity together. All fields are
-/// required: an incomplete response must not become a permissive decision or
-/// trigger a second, potentially different authorization evaluation.
-#[derive(Debug, Deserialize)]
+/// V2 reports API/frontend admission and plan identity together. Admission
+/// fields are required; older responses without a tier keep legacy Free/Paid
+/// behavior and never grant premium models. Malformed admission does not fall
+/// back to another authorization evaluation.
+#[derive(Debug, Deserialize, Clone, Copy)]
 struct UsageResponseV2 {
     api_can_use: bool,
-    #[serde(rename = "frontend_can_use")]
-    _frontend_can_use: bool,
+    frontend_can_use: bool,
     is_free: bool,
+    #[serde(default)]
+    plan: BillingPlan,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum BillingPlan {
+    Free,
+    Pro,
+    Max,
+    Teams,
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 const fn default_is_free() -> bool {
@@ -28,6 +42,7 @@ const fn default_is_free() -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ChatBillingAccess {
+    plan: BillingPlan,
     can_use: bool,
     is_free: bool,
 }
@@ -35,6 +50,7 @@ pub(crate) struct ChatBillingAccess {
 impl ChatBillingAccess {
     fn from_frontend_usage(usage: UsageResponse) -> Self {
         Self {
+            plan: BillingPlan::Unknown,
             can_use: usage.can_use,
             is_free: usage.is_free,
         }
@@ -42,6 +58,7 @@ impl ChatBillingAccess {
 
     fn from_api_and_plan_usage(api_usage: UsageResponse, plan_usage: UsageResponse) -> Self {
         Self {
+            plan: BillingPlan::Unknown,
             can_use: api_usage.can_use,
             is_free: plan_usage.is_free,
         }
@@ -49,7 +66,24 @@ impl ChatBillingAccess {
 
     #[cfg(test)]
     pub(crate) const fn for_tests(can_use: bool, is_free: bool) -> Self {
-        Self { can_use, is_free }
+        Self {
+            plan: BillingPlan::Unknown,
+            can_use,
+            is_free,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_with_plan(can_use: bool, is_free: bool, plan: &str) -> Self {
+        Self {
+            can_use,
+            is_free,
+            plan: serde_json::from_value(serde_json::json!(plan)).unwrap(),
+        }
+    }
+
+    pub(crate) fn has_premium_models(self) -> bool {
+        self.is_paid() && matches!(self.plan, BillingPlan::Max | BillingPlan::Teams)
     }
 
     pub(crate) const fn can_use(self) -> bool {
@@ -266,23 +300,24 @@ impl BillingClient {
         user_id: Uuid,
         is_api: bool,
     ) -> Result<ChatBillingAccess, BillingError> {
-        if !is_api {
-            return self
-                .check_usage(user_id, false)
-                .await
-                .map(ChatBillingAccess::from_frontend_usage);
-        }
-
         if let Some(usage) = self.check_usage_v2(user_id).await? {
             return Ok(ChatBillingAccess {
-                can_use: usage.api_can_use,
-                // Preserve the existing API-denial behavior: quota denial must
-                // never grant paid-model access, regardless of plan metadata.
-                is_free: usage.is_free || !usage.api_can_use,
+                can_use: if is_api {
+                    usage.api_can_use
+                } else {
+                    usage.frontend_can_use
+                },
+                is_free: usage.is_free || (is_api && !usage.api_can_use),
+                plan: usage.plan,
             });
         }
-
-        self.api_chat_access_v1(user_id).await
+        if is_api {
+            self.api_chat_access_v1(user_id).await
+        } else {
+            self.check_usage(user_id, false)
+                .await
+                .map(ChatBillingAccess::from_frontend_usage)
+        }
     }
 
     async fn api_chat_access_v1(&self, user_id: Uuid) -> Result<ChatBillingAccess, BillingError> {
@@ -301,6 +336,7 @@ impl BillingClient {
                 let api_usage = api_usage?;
                 if !api_usage.can_use {
                     return Ok(ChatBillingAccess {
+                        plan: BillingPlan::Unknown,
                         can_use: false,
                         is_free: true,
                     });
@@ -313,6 +349,7 @@ impl BillingClient {
         };
         if !api_usage.can_use {
             return Ok(ChatBillingAccess {
+                plan: BillingPlan::Unknown,
                 can_use: false,
                 is_free: true,
             });
@@ -688,41 +725,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frontend_chat_access_keeps_the_single_v1_request() {
-        use axum::http::StatusCode;
-        use std::sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        };
-        let v2_calls = Arc::new(AtomicUsize::new(0));
-        let observed_v2 = v2_calls.clone();
-        let v1_calls = Arc::new(AtomicUsize::new(0));
-        let observed_v1 = v1_calls.clone();
-        let (url, server) = deletion_server(
-            Router::new()
-                .route(
-                    "/v2/admin/check-usage",
-                    get(move || {
-                        observed_v2.fetch_add(1, Ordering::SeqCst);
-                        async { StatusCode::OK }
-                    }),
-                )
-                .route(
-                    "/v1/admin/check-usage",
-                    get(move |Query(query): Query<HashMap<String, String>>| {
-                        observed_v1.fetch_add(1, Ordering::SeqCst);
-                        assert!(!query.contains_key("api"));
-                        async { Json(serde_json::json!({"can_use":true,"is_free":false})) }
-                    }),
-                ),
-        )
-        .await;
+    async fn frontend_chat_access_uses_its_v2_admission_and_selected_plan() {
+        let (url, server) = deletion_server(Router::new().route("/v2/admin/check-usage", get(|| async {
+            Json(serde_json::json!({"api_can_use":true,"frontend_can_use":false,"is_free":false,"plan":"max"}))
+        }))).await;
         let client = BillingClient::new("synthetic-admin-key".into(), url);
         let access = client.chat_access(Uuid::new_v4(), false).await.unwrap();
-        assert!(access.can_use());
+        assert!(!access.can_use());
         assert!(access.is_paid());
-        assert_eq!(v1_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(v2_calls.load(Ordering::SeqCst), 0);
+        assert!(access.has_premium_models());
         server.abort();
     }
 

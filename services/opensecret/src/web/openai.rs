@@ -11,7 +11,8 @@ use crate::inference::{
 };
 use crate::inference_planning::{RoutePlan, RoutePlanningError};
 use crate::model_config::{
-    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan, ReasoningEffort,
+    model_catalog_response, model_catalog_v2_response, openai_models_response, ModelAliasTargets,
+    ModelPlan, ReasoningEffort,
 };
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
@@ -134,9 +135,7 @@ pub(crate) fn completion_entitlement(
     billing_access: Option<crate::billing::ChatBillingAccess>,
     surface: &str,
 ) -> Result<ModelPlan, ApiError> {
-    let model_plan = ModelPlan::from_is_paid(
-        billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
-    );
+    let model_plan = ModelPlan::from_billing_access(billing_access);
     if is_guest && !model_plan.is_paid() {
         error!(
             "Guest user without a paid plan attempted to use {}: {}",
@@ -1562,6 +1561,13 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
             )),
         )
         .route(
+            "/v2/models/catalog",
+            get(proxy_model_catalog_v2).layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                decrypt_request::<()>,
+            )),
+        )
+        .route(
             "/v1/audio/speech",
             post(proxy_tts).layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
@@ -1967,6 +1973,9 @@ async fn proxy_openai(
         })?
         .to_string();
 
+    let model_plan =
+        model_plan_for_request(&state, user.uuid, model_plan, &requested_model_name).await;
+
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
     let routing = InferenceRoutingContext::new(model_plan);
@@ -2299,7 +2308,6 @@ pub(crate) async fn prepare_completion_request(
     }
 
     ensure_completion_model_access(&intent.public_model_id, intent.model_plan)?;
-    ensure_model_feature_access(state, user.uuid, &intent.public_model_id).await?;
     // Helpers and re-plans retain the authenticated account and plan. Model
     // access is checked above; configured providers are selected by Router v2.
     let shadow = state
@@ -3169,21 +3177,30 @@ pub(crate) fn ensure_completion_model_access(
             "Paid completion model requested without entitlement: {}",
             model_name
         );
+        if model_name == crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID {
+            return Err(ApiError::ModelUpgradeRequired {
+                model: crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+                eligible_plans: &["max", "teams"],
+            });
+        }
         return Err(ApiError::ModelNotAvailableOnPlan);
     }
 
     Ok(())
 }
 
-/// Only the experimental model depends on flags. A denied or unavailable flag
-/// never permits provider work, and unrelated completions avoid that service.
-pub(crate) async fn ensure_model_feature_access(
+/// Resolve the experimental grant once at the authenticated entrypoint. A true
+/// flag overrides subscription requirements; false (including unavailable)
+/// falls through to the normal tier check, never revoking Max/Teams access.
+pub(crate) async fn model_plan_for_request(
     state: &AppState,
     account_uuid: Uuid,
+    plan: ModelPlan,
     model: &str,
-) -> Result<(), ApiError> {
-    ensure_model_feature_access_with(
+) -> ModelPlan {
+    model_plan_for_request_with(
         model,
+        plan,
         state.is_feature_enabled(
             account_uuid,
             crate::os_flags::UNCENSORED_DEEPSEEK_FEATURE_FLAG_KEY,
@@ -3192,17 +3209,15 @@ pub(crate) async fn ensure_model_feature_access(
     .await
 }
 
-async fn ensure_model_feature_access_with(
+async fn model_plan_for_request_with(
     model: &str,
+    plan: ModelPlan,
     enabled: impl std::future::Future<Output = bool>,
-) -> Result<(), ApiError> {
+) -> ModelPlan {
     if model != crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID {
-        return Ok(());
+        return plan;
     }
-    if !enabled.await {
-        return Err(ApiError::ModelNotAvailable);
-    }
-    Ok(())
+    plan.with_uncensored_override(enabled.await)
 }
 
 // ============================================================================
@@ -3698,9 +3713,7 @@ async fn proxy_model_catalog(
     axum::Extension(_body): axum::Extension<()>,
 ) -> Result<Response, ApiError> {
     let billing_access = state.chat_billing_access(user.uuid, false).await;
-    let model_plan = ModelPlan::from_is_paid(
-        billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
-    );
+    let model_plan = ModelPlan::from_billing_access(billing_access);
     let uncensored_enabled = state
         .is_feature_enabled(
             user.uuid,
@@ -3709,6 +3722,24 @@ async fn proxy_model_catalog(
         .await;
     let catalog_response = model_catalog_response(model_plan, uncensored_enabled);
     encrypt_response(&state, &session_id, &catalog_response).await
+}
+
+async fn proxy_model_catalog_v2(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(session_id): axum::Extension<TransportSession>,
+    axum::Extension(user): axum::Extension<User>,
+    axum::Extension(_auth_method): axum::Extension<AuthMethod>,
+    axum::Extension(_body): axum::Extension<()>,
+) -> Result<Response, ApiError> {
+    let access = state.chat_billing_access(user.uuid, false).await;
+    let plan = model_plan_for_request(
+        &state,
+        user.uuid,
+        ModelPlan::from_billing_access(access),
+        crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+    )
+    .await;
+    encrypt_response(&state, &session_id, &model_catalog_v2_response(plan)).await
 }
 
 const TRANSCRIPTION_BILLING_TIMEOUT: Duration = Duration::from_secs(5);
@@ -4599,7 +4630,7 @@ mod tests {
                 Uuid::nil(),
                 crate::model_config::AUTO_POWERFUL_MODEL_ID,
                 "glm-5-3",
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 InferenceSurface::Responses,
                 WorkloadClass::Interactive,
             ),
@@ -4635,7 +4666,7 @@ mod tests {
             Uuid::nil(),
             crate::model_config::GLM_5_3_MODEL_ID,
             crate::model_config::GLM_5_3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -4679,7 +4710,7 @@ mod tests {
             Uuid::nil(),
             crate::model_config::AUTO_POWERFUL_MODEL_ID,
             crate::model_config::GLM_5_3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::ChatCompletions,
             WorkloadClass::Interactive,
         );
@@ -4712,7 +4743,7 @@ mod tests {
             Uuid::nil(),
             crate::model_config::KIMI_K3_MODEL_ID,
             crate::model_config::KIMI_K3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::ChatCompletions,
             WorkloadClass::Interactive,
         );
@@ -4741,7 +4772,7 @@ mod tests {
                 Uuid::from_u128(bucket),
                 model,
                 model,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 InferenceSurface::Internal,
                 WorkloadClass::Interactive,
             );
@@ -4768,7 +4799,7 @@ mod tests {
             Uuid::nil(),
             crate::model_config::KIMI_K3_MODEL_ID,
             crate::model_config::KIMI_K3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -5150,7 +5181,7 @@ mod tests {
             Uuid::nil(),
             crate::model_config::GLM_5_3_MODEL_ID,
             crate::model_config::GLM_5_3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -5197,7 +5228,7 @@ mod tests {
             Uuid::nil(),
             crate::model_config::GLM_5_3_MODEL_ID,
             crate::model_config::GLM_5_3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -5311,7 +5342,7 @@ mod tests {
             Uuid::nil(),
             crate::model_config::GLM_5_3_MODEL_ID,
             crate::model_config::GLM_5_3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -5371,7 +5402,7 @@ mod tests {
             Uuid::from_u128(1),
             crate::model_config::GLM_5_3_MODEL_ID,
             crate::model_config::GLM_5_3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -5396,7 +5427,7 @@ mod tests {
             Uuid::nil(),
             crate::model_config::GLM_5_3_MODEL_ID,
             crate::model_config::GLM_5_3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -5873,7 +5904,7 @@ mod tests {
                 Uuid::nil(),
                 crate::model_config::GLM_5_3_MODEL_ID,
                 crate::model_config::GLM_5_3_MODEL_ID,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 InferenceSurface::Responses,
                 WorkloadClass::Interactive,
             )
@@ -6789,36 +6820,36 @@ mod tests {
     #[test]
     fn completion_model_access_enforces_plan_gates() {
         assert!(matches!(
-            ensure_completion_model_access("kimi-k3", ModelPlan::Free),
+            ensure_completion_model_access("kimi-k3", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
-        assert!(ensure_completion_model_access("kimi-k3", ModelPlan::Paid).is_ok());
+        assert!(ensure_completion_model_access("kimi-k3", ModelPlan::PAID).is_ok());
         assert!(matches!(
-            ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::Free),
+            ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
-        assert!(ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::Paid).is_ok());
+        assert!(ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::PAID).is_ok());
         assert!(matches!(
-            ensure_completion_model_access("glm-5-3", ModelPlan::Free),
+            ensure_completion_model_access("glm-5-3", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
-        assert!(ensure_completion_model_access("glm-5-3", ModelPlan::Paid).is_ok());
+        assert!(ensure_completion_model_access("glm-5-3", ModelPlan::PAID).is_ok());
         assert!(matches!(
-            ensure_completion_model_access("glm-5-3-flash", ModelPlan::Free),
+            ensure_completion_model_access("glm-5-3-flash", ModelPlan::FREE),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
-        assert!(ensure_completion_model_access("glm-5-3-flash", ModelPlan::Paid).is_ok());
+        assert!(ensure_completion_model_access("glm-5-3-flash", ModelPlan::PAID).is_ok());
         assert!(matches!(
             ensure_completion_model_access(
                 crate::model_config::AUTO_POWERFUL_MODEL_ID,
-                ModelPlan::Free
+                ModelPlan::FREE
             ),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         // Plan access does not replace normal model validation. Unknown IDs
         // continue to the existing provider-routing validation path.
-        assert!(ensure_completion_model_access("gpt-oss-120b", ModelPlan::Free).is_ok());
-        assert!(ensure_completion_model_access("not-a-real-model", ModelPlan::Free).is_ok());
+        assert!(ensure_completion_model_access("gpt-oss-120b", ModelPlan::FREE).is_ok());
+        assert!(ensure_completion_model_access("not-a-real-model", ModelPlan::FREE).is_ok());
     }
 
     fn tts_request(payload: Value) -> TTSRequest {
@@ -7919,7 +7950,7 @@ mod tests {
         // A fresh account in bucket zero starts on Continuum under the unchanged weights.
         let account = Uuid::from_u128(0);
         let surface = InferenceSurface::ChatCompletions;
-        let plan = ModelPlan::Paid;
+        let plan = ModelPlan::PAID;
 
         // Each row is a distinct logical request. Its actual 503 is surfaced;
         // only the following request can use another provider or public model.
@@ -8136,7 +8167,7 @@ mod tests {
                 account,
                 surface,
                 AUTO_POWERFUL_MODEL_ID,
-                ModelPlan::Free
+                ModelPlan::FREE
             ),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
@@ -8146,7 +8177,7 @@ mod tests {
             account,
             surface,
             AUTO_QUICK_MODEL_ID,
-            ModelPlan::Free,
+            ModelPlan::FREE,
         )
         .expect("free quick");
         assert_eq!(free_quick.public_model_id(), QUICK_MODEL_ID);
@@ -8190,7 +8221,7 @@ mod tests {
                 account,
                 surface,
                 AUTO_QUICK_MODEL_ID,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
             )
             .expect("retained DeepSeek");
             assert_eq!(retained.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -8214,7 +8245,7 @@ mod tests {
                 account,
                 surface,
                 AUTO_QUICK_MODEL_ID,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
             )
             .expect("GLM primary after idle");
             assert_eq!(primary.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
@@ -8225,7 +8256,7 @@ mod tests {
             let intent = primary.intent(
                 account,
                 AUTO_QUICK_MODEL_ID,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 surface,
                 WorkloadClass::Interactive,
             );
@@ -8257,7 +8288,7 @@ mod tests {
                     account,
                     public_model,
                     public_model,
-                    ModelPlan::Paid,
+                    ModelPlan::PAID,
                     InferenceSurface::ChatCompletions,
                     WorkloadClass::Interactive,
                 );
@@ -8297,7 +8328,7 @@ mod tests {
                 account,
                 InferenceSurface::ChatCompletions,
                 AUTO_QUICK_MODEL_ID,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
             )
         };
         match resolve().expect_err("no eligible Quick candidate") {
@@ -8357,7 +8388,7 @@ mod tests {
             account,
             surface,
             AUTO_QUICK_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
         )
         .expect("retained alternate");
         assert_eq!(first.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -8376,7 +8407,7 @@ mod tests {
             account,
             surface,
             AUTO_QUICK_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             Some(&overflowed),
         )
         .expect("preferred model after overflow");
@@ -8425,7 +8456,7 @@ mod tests {
                 account,
                 surface,
                 AUTO_QUICK_MODEL_ID,
-                ModelPlan::Free,
+                ModelPlan::FREE,
                 Some(&lost),
             )
             .expect_err("no alternate for free quick");
@@ -8447,7 +8478,7 @@ mod tests {
                 account,
                 surface,
                 AUTO_QUICK_MODEL_ID,
-                ModelPlan::Free,
+                ModelPlan::FREE,
                 Some(&lost),
             )
             .expect_err("no alternate for free quick")
@@ -8472,7 +8503,7 @@ mod tests {
                     surface,
                     requested_model_id: AUTO_POWERFUL_MODEL_ID,
                     alias_target: GLM_5_3_MODEL_ID,
-                    model_plan: ModelPlan::Paid,
+                    model_plan: ModelPlan::PAID,
                     excluded: Some(&lost),
                 },
                 || AutoModelRequirements {
@@ -8498,7 +8529,7 @@ mod tests {
                 account,
                 surface,
                 AUTO_POWERFUL_MODEL_ID,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 Some(&lost),
             )
             .expect("alternate takes the request");
@@ -8516,7 +8547,7 @@ mod tests {
             Uuid::from_u128(11),
             crate::model_config::AUTO_POWERFUL_MODEL_ID,
             crate::model_config::GLM_5_3_MODEL_ID,
-            ModelPlan::Paid,
+            ModelPlan::PAID,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
@@ -8644,7 +8675,7 @@ mod tests {
                 surface: InferenceSurface::ChatCompletions,
                 requested_model_id: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 alias_target: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                model_plan: ModelPlan::Paid,
+                model_plan: ModelPlan::PAID,
                 excluded: None,
             },
             || {

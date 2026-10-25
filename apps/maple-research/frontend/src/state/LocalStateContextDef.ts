@@ -1,5 +1,6 @@
 import { createContext } from "react";
 import { BillingStatus } from "@/billing/billingApi";
+import type { ModelAccess } from "@mapleai/sdk";
 import type { Model } from "openai/resources/models.js";
 
 // Extended Model type for OpenSecret API which includes additional properties
@@ -38,6 +39,7 @@ export interface OpenSecretModel extends Model {
   max_context_tokens?: number;
   max_completion_tokens?: number;
   access?: ModelAccessTier;
+  accessPolicy?: ModelAccess;
   capabilities?: ModelCapabilities;
   reasoning?: ModelReasoning | null;
   badges?: string[];
@@ -53,6 +55,7 @@ export type OpenSecretModelAlias = {
   description: string;
   target_model: string;
   access?: ModelAccessTier;
+  accessPolicy?: ModelAccess;
   capabilities?: ModelCapabilities;
   context_window?: number;
   max_completion_tokens?: number;
@@ -64,8 +67,8 @@ export type OpenSecretModelCatalog = {
   data: OpenSecretModel[];
   aliases: OpenSecretModelAlias[];
   defaults?: {
-    quick: "auto:quick";
-    powerful: "auto:powerful";
+    quick: "auto:quick" | "auto:powerful";
+    powerful: "auto:quick" | "auto:powerful";
   };
   audio?: {
     transcription?: {

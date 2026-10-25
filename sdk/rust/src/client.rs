@@ -484,6 +484,7 @@ fn is_allowed_inference_endpoint(method: &http::Method, path: &str) -> bool {
         (method.as_str(), path),
         ("GET", "/v1/models")
             | ("GET", "/v1/models/catalog")
+            | ("GET", "/v2/models/catalog")
             | ("POST", "/v1/chat/completions")
             | ("POST", "/v1/embeddings")
             | ("POST", "/v1/systemone")
@@ -2454,6 +2455,12 @@ impl OpenSecretClient {
     /// Fetches the full model catalog with context windows and capabilities.
     pub async fn get_model_catalog(&self) -> Result<ModelCatalogResponse> {
         self.encrypted_openai_call("/v1/models/catalog", "GET", None::<()>)
+            .await
+    }
+
+    /// Fetches every listed model with the caller's current entitlement decision.
+    pub async fn get_model_catalog_v2(&self) -> Result<crate::types::ModelCatalogV2Response> {
+        self.encrypted_openai_call("/v2/models/catalog", "GET", None::<()>)
             .await
     }
 

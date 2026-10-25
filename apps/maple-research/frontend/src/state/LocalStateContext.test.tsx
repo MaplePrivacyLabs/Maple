@@ -416,4 +416,41 @@ describe("LocalStateProvider", () => {
     expect(snapshots.sidebarSearch?.searchQuery).toBe("persist across routes");
     expect(snapshots.selectedProject?.selectedProjectId).toBe("project-2");
   });
+  test("cached model metadata cannot restore an affirmative account grant", () => {
+    const storage = new CountingMemoryStorage();
+    const snapshots: DomainSnapshots = {};
+    storage.setItem("selectedModel", "uncensored");
+    storage.setItem(SELECTED_MODEL_RESET_AT_KEY, new Date().toISOString());
+    storage.setItem(
+      "selectedModelMetadata",
+      JSON.stringify({
+        id: "uncensored",
+        object: "model",
+        created: 0,
+        owned_by: "maple",
+        access: "pro",
+        accessPolicy: { allowed: true, eligible_plans: ["max", "teams"], reason: null }
+      })
+    );
+    act(() => {
+      renderer = create(
+        <LocalStateProvider storage={storage}>
+          <DomainProbes snapshots={snapshots} counts={createCounts()} />
+        </LocalStateProvider>
+      );
+    });
+    expect(snapshots.model?.availableModels[0].accessPolicy?.allowed).toBe(false);
+    act(() =>
+      snapshots.model?.setModel("uncensored", {
+        id: "uncensored",
+        object: "model",
+        created: 0,
+        owned_by: "maple",
+        access: "pro",
+        accessPolicy: { allowed: true, eligible_plans: ["max", "teams"], reason: null }
+      })
+    );
+    expect(snapshots.model?.availableModels[0].accessPolicy?.allowed).toBe(true);
+    expect(JSON.parse(storage.getItem("selectedModelMetadata")!).accessPolicy.allowed).toBe(false);
+  });
 });

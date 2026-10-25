@@ -532,7 +532,7 @@ mod tests {
                 uuid::Uuid::from_u128(bucket),
                 candidate.public_model_id,
                 candidate.public_model_id,
-                ModelPlan::Paid,
+                ModelPlan::PAID,
                 InferenceSurface::Internal,
                 WorkloadClass::Interactive,
             );
