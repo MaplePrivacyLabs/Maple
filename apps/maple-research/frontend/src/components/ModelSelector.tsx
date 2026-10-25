@@ -296,12 +296,17 @@ export function ModelSelector({
     const elements: React.ReactNode[] = [];
 
     if (selectedModel) {
-      elements.push(selectedModel.display_name || selectedModel.short_name || modelId);
+      elements.push(
+        <span key="name" className="truncate">
+          {selectedModel.display_name || selectedModel.short_name || modelId}
+        </span>
+      );
 
       const badges = getModelBadges(modelId);
       if (badges && badges.length > 0) {
         badges.forEach((badge, index) => {
-          let badgeClass = "rounded-md px-1.5 py-0.5 text-[10px] font-medium";
+          let badgeClass =
+            "shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-4";
 
           if (badge === "Coming Soon") {
             badgeClass += " bg-muted text-muted-foreground";
@@ -327,20 +332,18 @@ export function ModelSelector({
       }
 
       if (showLock && !hasAccessToModel(modelId)) {
-        elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
+        elements.push(<Lock key="lock" className="h-3 w-3 shrink-0 opacity-50" />);
       }
     } else {
       elements.push(getDisplayNameText(modelId));
     }
 
-    return <span className="flex items-center gap-1">{elements}</span>;
+    return <span className="flex min-w-0 items-center gap-1">{elements}</span>;
   };
 
   // Show current category or model name in the collapsed view
   const modelDisplay = (
-    <div className="flex items-center gap-1">
-      <div className="text-xs font-medium">{getDisplayLabel(model)}</div>
-    </div>
+    <span className="truncate text-xs font-medium">{getDisplayLabel(model)}</span>
   );
 
   // Always show dropdown even with single model (it may be loading more)
@@ -348,20 +351,23 @@ export function ModelSelector({
   return (
     <>
       <DropdownMenu modal={false}>
+        {/* The chip counts as 5rem when the composer row wraps, grows up to the
+            full name when there is room, and truncates instead of pushing the
+            other controls onto a new row. */}
         <DropdownMenuTrigger asChild>
           <Button
             disabled={disabled}
             variant="ghost"
             size="sm"
-            className="h-8 gap-1 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+            className="h-8 min-w-0 max-w-max grow basis-20 gap-1 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
             data-testid="model-selector-button"
             aria-label={`Current model: ${getDisplayNameText(model)}. Click to change model.`}
           >
             {modelDisplay}
-            <ChevronDown className="h-3 w-3" />
+            <ChevronDown className="h-3 w-3 shrink-0" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-64 p-0">
+        <DropdownMenuContent align="start" className="w-80 p-0">
           {!showAdvanced ? (
             <div className="p-1 flex flex-col">
               {/* Primary options */}
@@ -497,10 +503,12 @@ export function ModelSelector({
                           }`}
                           disabled={effectivelyDisabled}
                         >
-                          <div className="flex items-center gap-2 flex-1">
-                            <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
+                            <div className="min-w-0 text-sm">
+                              {getDisplayName(availableModel.id, true)}
+                            </div>
                           </div>
-                          {isActive && <Check className="h-4 w-4" />}
+                          {isActive && <Check className="ml-2 h-4 w-4 shrink-0" />}
                         </DropdownMenuItem>
                       );
                     })
