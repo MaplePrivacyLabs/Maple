@@ -252,7 +252,10 @@ and tasks by stable IDs rather than virtual-list indices. Direct clicks update
 the same selection state.
 
 The preview includes `j/k`, `gg/G`, counts, `Enter`, `h/l`, `y`, `/`, `ga`,
-`[a`/`]a`, `gi`, and `Ctrl-W h/j/k/l`. `Space s n` starts a task and `Space ,`
+`[a`/`]a`, `gi`, and `Ctrl-W h/j/k/l`. `Ctrl-W j` from the composer reaches its
+button row, where `h/l` (or `j/k`) and `gg/G` move between the model, thinking,
+integrations, web, image, and dictation controls and `Enter` presses one; a menu
+opens on its current choice. `Space s n` starts a task and `Space ,`
 opens Settings. The Settings page itself is navigable, including its shortcut
 search and editable binding rows. Annotation motions are registered and report
 that no annotation source is available in the current app. A root action
