@@ -138,15 +138,28 @@ fn default_tts_speed() -> f32 {
     DEFAULT_TTS_SPEED
 }
 
-/// Persisted window geometry. Position is left to the window manager:
-/// Wayland does not expose it, and a stale position can open the window
-/// off-screen after a monitor change.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Persisted window geometry.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WindowState {
     pub width: f32,
     pub height: f32,
     #[serde(default)]
     pub maximized: bool,
+    /// Where the window was, when the platform reports it. Wayland does
+    /// not, so the window manager places the window there.
+    #[serde(default)]
+    pub position: Option<WindowPosition>,
+}
+
+/// A window origin relative to one display. Restoring it is skipped when
+/// that display is gone, so a monitor change cannot open the window
+/// off-screen.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WindowPosition {
+    pub x: f32,
+    pub y: f32,
+    /// The display's persistent UUID.
+    pub display: String,
 }
 
 impl WindowState {
@@ -156,7 +169,7 @@ impl WindowState {
         Self {
             width: self.width.clamp(640., 8192.),
             height: self.height.clamp(480., 8192.),
-            maximized: self.maximized,
+            ..self
         }
     }
 }
