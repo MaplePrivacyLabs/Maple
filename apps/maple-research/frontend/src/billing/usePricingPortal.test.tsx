@@ -110,6 +110,16 @@ describe("pricing portal requests", () => {
     expect(f.view.isAwaitingPortal).toBe(false);
   });
 
+  test("a confirmed Free account with an older Stripe customer still skips prefetch", async () => {
+    const f = mount({
+      userId: "account",
+      status: { ...free, stripe_customer_id: "cus_old" },
+      statusConfirmed: true
+    });
+    await settle();
+    expect(f.requestPortal).not.toHaveBeenCalled();
+  });
+
   test.each(["zaprite", "subscription_pass", "apple"] as const)(
     "%s does not prefetch even with an old Stripe customer and management row",
     async (provider) => {
@@ -170,6 +180,17 @@ describe("pricing portal requests", () => {
     await settle(() => f.view.portalUrl !== undefined);
     expect(f.view.portalUrl).toBe(portalUrl);
     expect(f.view.isAwaitingPortal).toBe(false);
+  });
+
+  test("legacy Stripe management is preserved for a retired plan name", async () => {
+    const f = mount({
+      userId: "account",
+      status: { ...stripe, product_id: "starter", product_name: "Starter" },
+      statusConfirmed: true
+    });
+    await settle(() => f.view.portalUrl !== undefined);
+    expect(f.requestPortal).toHaveBeenCalledWith("account");
+    expect(f.view.portalUrl).toBe(portalUrl);
   });
 
   test("a cached null URL still holds management during a replacement request", async () => {

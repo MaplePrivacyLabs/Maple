@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { BillingStatus } from "./billingApi";
 import { getBillingService } from "./billingService";
 import { hasAppleSubscriptionToManage } from "./applePricingPolicy";
-import { subscriptionManagementAction, subscriptionsForManagement } from "./subscriptionManagement";
+import { isKnownFreePlan } from "./billingAccess";
+import { subscriptionManagementAction } from "./subscriptionManagement";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 
 export type PricingPortalInput = {
@@ -22,17 +23,22 @@ export function usePricingPortal(
   { userId, status, statusConfirmed }: PricingPortalInput,
   requestPortal: (userId: string) => Promise<string> = requestPortalForAccount
 ) {
-  // Match pricing's existing provider routing. Older servers can omit the list;
-  // subscriptionsForManagement preserves their Stripe customer/paid-plan fallback.
+  // Respect explicit management hints. Older servers can omit the list; keep
+  // their existing Stripe customer path without restricting legacy plan names.
+  const hasStripeManagement =
+    status?.subscriptions !== undefined
+      ? status.subscriptions.some(
+          (subscription) => subscriptionManagementAction(subscription) === "stripe"
+        )
+      : !!status?.stripe_customer_id && !isKnownFreePlan(status);
+
   const enabled =
     !!userId &&
     statusConfirmed &&
     status?.payment_provider !== "zaprite" &&
     status?.payment_provider !== "subscription_pass" &&
     !hasAppleSubscriptionToManage(status) &&
-    subscriptionsForManagement(status).some(
-      (subscription) => subscriptionManagementAction(subscription) === "stripe"
-    );
+    hasStripeManagement;
 
   const query = useQuery({
     queryKey: ["portalUrl", userId],
