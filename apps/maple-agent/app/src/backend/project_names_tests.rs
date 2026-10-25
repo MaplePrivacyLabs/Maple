@@ -278,6 +278,173 @@ async fn remote_call(
 }
 
 #[tokio::test]
+async fn project_folder_ipc_and_iroh_use_owner_paths_and_preserve_account_guards() {
+    let storage = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let backend = owner(storage.path());
+    let path = folder.path().to_str().unwrap();
+    std::fs::create_dir(folder.path().join("existing")).unwrap();
+    std::fs::write(
+        folder.path().join("private-file"),
+        b"not directory metadata",
+    )
+    .unwrap();
+    let query = json!({"path": path, "after": null, "limit": 50, "showHidden": false});
+
+    // Serialize the exact local command/reply through the production framing.
+    let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+    let send = async {
+        protocol::write(
+            &mut client,
+            &request("browse_project_folders", json!([USER, query])),
+        )
+        .await
+        .unwrap();
+        protocol::read::<protocol::Message>(&mut client)
+            .await
+            .unwrap()
+    };
+    let serve = async {
+        let command: protocol::Request = protocol::read(&mut server).await.unwrap();
+        let id = command.id;
+        let result = crate::backend::dispatch(&backend, command).await;
+        protocol::write(&mut server, &protocol::Message::Response { id, result })
+            .await
+            .unwrap();
+    };
+    let (response, ()) = tokio::join!(send, serve);
+    let protocol::Message::Response {
+        result: Ok(value), ..
+    } = response
+    else {
+        panic!("folder browse failed");
+    };
+    let page: ProjectFolderPage = serde_json::from_value(value).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].name, "existing");
+    assert_eq!(
+        page.path,
+        folder.path().canonicalize().unwrap().to_str().unwrap()
+    );
+
+    let controller = endpoint().await;
+    let execution = endpoint().await;
+    let (client, server) = tokio::join!(controller.connect(execution.addr(), wire::ALPN), async {
+        execution.accept().await.unwrap().await.unwrap()
+    });
+    let client = client.unwrap();
+    let created = remote_call(
+        &backend,
+        &client,
+        &server,
+        wire::Method::CreateProjectFolder,
+        json!([USER, page.path, "new folder"]),
+    )
+    .await
+    .unwrap();
+    let created: String = serde_json::from_value(created).unwrap();
+    assert!(std::path::Path::new(&created).is_dir());
+    let listing = remote_call(
+        &backend,
+        &client,
+        &server,
+        wire::Method::BrowseProjectFolders,
+        json!([USER, query]),
+    )
+    .await
+    .unwrap();
+    let listing: ProjectFolderPage = serde_json::from_value(listing).unwrap();
+    assert_eq!(
+        listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["existing", "new folder"]
+    );
+    let selected = remote_call(
+        &backend,
+        &client,
+        &server,
+        wire::Method::SelectProjectRoot,
+        json!([USER, created]),
+    )
+    .await
+    .unwrap();
+    let selected: SelectedProject = serde_json::from_value(selected).unwrap();
+    assert_eq!(selected.project_root, created);
+
+    for (method, params) in [
+        (
+            wire::Method::BrowseProjectFolders,
+            json!(["another-account", query]),
+        ),
+        (
+            wire::Method::CreateProjectFolder,
+            json!(["another-account", page.path, "unauthorized"]),
+        ),
+    ] {
+        assert!(
+            crate::backend::dispatch(&backend, request(&method.name(), params.clone()))
+                .await
+                .is_err()
+        );
+        assert!(
+            remote_call(&backend, &client, &server, method, params)
+                .await
+                .is_err()
+        );
+    }
+    assert!(!folder.path().join("unauthorized").exists());
+    assert!(
+        remote_call(
+            &backend,
+            &client,
+            &server,
+            wire::Method::CreateProjectFolder,
+            json!([USER, page.path, "existing"])
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        std::fs::read(folder.path().join("private-file")).unwrap(),
+        b"not directory metadata"
+    );
+    controller.close().await;
+    execution.close().await;
+}
+
+#[tokio::test]
+async fn project_folder_operations_require_an_open_store() {
+    let storage = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let mut backend = owner(storage.path());
+    let locked = maple_agent::store::Store::unavailable(
+        maple_agent::store::StorePaths::new(storage.path().join("locked")),
+        maple_agent::store::StoreState::Locked,
+    )
+    .unwrap();
+    backend.store = Some(Arc::new(locked));
+    let path = folder.path().to_str().unwrap();
+    for (method, params) in [
+        (
+            "browse_project_folders",
+            json!([USER, {"path":path,"after":null,"limit":10}]),
+        ),
+        ("create_project_folder", json!([USER, path, "locked-child"])),
+    ] {
+        assert!(
+            crate::backend::dispatch(&backend, request(method, params))
+                .await
+                .unwrap_err()
+                .contains("not open")
+        );
+    }
+    assert!(!folder.path().join("locked-child").exists());
+}
+
+#[tokio::test]
 async fn project_names_cross_iroh_in_both_directions_and_recover_from_snapshot() {
     let storage = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();

@@ -129,6 +129,8 @@ pub enum Method {
     ListMcpDefinitions,
     SaveMcpDefinitionEdits,
     TaskBootstrap,
+    BrowseProjectFolders,
+    CreateProjectFolder,
     SelectProjectRoot,
     RenameProjectRoot,
     CreateSession,
@@ -187,6 +189,8 @@ impl Method {
     pub fn reply_limit(self) -> usize {
         if matches!(self, Self::PeerInfo | Self::RemoteUpdateInstall) {
             MAX_MANAGEMENT_REPLY
+        } else if matches!(self, Self::BrowseProjectFolders | Self::CreateProjectFolder) {
+            256 * 1024
         } else if matches!(
             self,
             Self::NavigationBootstrap
@@ -455,8 +459,19 @@ mod tests {
             "answer_question",
             "set_thinking_level",
             "rename_project_root",
+            "browse_project_folders",
+            "create_project_folder",
         ] {
             assert_eq!(Method::parse(name).unwrap().name(), name);
+        }
+    }
+
+    #[test]
+    fn project_folder_commands_have_bounded_replies() {
+        for method in [Method::BrowseProjectFolders, Method::CreateProjectFolder] {
+            assert_eq!(Method::parse(&method.name()).unwrap(), method);
+            assert_eq!(method.reply_limit(), 256 * 1024);
+            assert!(!method.urgent());
         }
     }
 
@@ -530,6 +545,22 @@ mod tests {
         let response = serde_json::to_value(Err::<(), _>(refusal)).unwrap();
         let decoded: Result<(), Refusal> = serde_json::from_value(response).unwrap();
         assert!(decoded.unwrap_err().terminal);
+    }
+
+    #[tokio::test]
+    async fn optional_folder_commands_preserve_the_shipped_wire_six_handshake() {
+        // Folder commands require optional capability discovery. They do not
+        // change the legacy handshake or prevent ordinary version-6 access.
+        let previous: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v6.json")).unwrap();
+        for kind in ["hello", "pair"] {
+            let (mut tx, mut rx) = tokio::io::duplex(4096);
+            write(&mut tx, &previous[kind], MAX_PREFACE).await.unwrap();
+            let hello = read_hello(&mut rx).await.unwrap();
+            assert_eq!(hello.version, 6);
+            assert_eq!(hello.minimum_version, 6);
+            assert_eq!(serde_json::to_value(hello).unwrap(), previous[kind]);
+        }
     }
 
     #[tokio::test]
@@ -631,5 +662,26 @@ mod tests {
             );
         }
         assert_eq!(examples["hello"]["version"], VERSION);
+    }
+
+    #[test]
+    fn optional_folder_command_examples_match_typed_requests() {
+        let examples: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("wire_v6_folders.json")).unwrap();
+        for value in examples {
+            let command: Command = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&command).unwrap(), value);
+            match command.method {
+                Method::BrowseProjectFolders => {
+                    let _: (String, crate::backend::ProjectFolderRequest) =
+                        serde_json::from_value(command.params).unwrap();
+                }
+                Method::CreateProjectFolder => {
+                    let _: (String, String, String) =
+                        serde_json::from_value(command.params).unwrap();
+                }
+                _ => panic!("expected an optional folder command"),
+            }
+        }
     }
 }

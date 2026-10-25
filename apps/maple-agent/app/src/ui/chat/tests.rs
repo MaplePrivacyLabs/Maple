@@ -177,6 +177,7 @@ mod state_tests {
                 key: Some("paired-device".into()),
                 label: "Office Mac".into(),
                 backend: None,
+                host_epoch: 0,
                 project_names: HashMap::new(),
                 projects: vec![Project {
                     path: "/tmp/proj".into(),
@@ -4624,20 +4625,186 @@ mod state_tests {
         });
     }
 
+    fn remote_folder_screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
+        let _guard = SETTINGS_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend = Arc::new(AgentBackend::for_remote_test("peer").unwrap());
+        cx.new(|cx| {
+            let mut screen = ChatScreen::new_inner(backend, "user".into(), cx);
+            screen.selected_session = Some("s1".into());
+            screen
+        })
+    }
+
+    fn remote_folder_window(
+        cx: &mut TestAppContext,
+        setup: impl FnOnce(&mut ChatScreen, &mut Context<ChatScreen>),
+    ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
+        let backend = {
+            let _guard = SETTINGS_LOCK.lock();
+            Arc::new(AgentBackend::for_remote_test("peer").unwrap())
+        };
+        chat_window_in(cx, backend, setup)
+    }
+
+    #[gpui::test]
+    fn local_folder_picker_uses_native_dialog_and_cancel_preserves_context(
+        cx: &mut TestAppContext,
+    ) {
+        let (screen, cx) = chat_window(cx, |_, _| {});
+        let generation = screen.update(cx, |this, cx| {
+            assert!(this.fill_empty_composer("Keep this draft", cx));
+            this.choose_root_dialog_with_intent(true, cx);
+            this.choose_root_dialog(cx);
+            assert!(this.root_picker_open);
+            assert!(this.project_folder_dialog.is_none());
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            this.selection_generation
+        });
+        assert!(cx.did_prompt_for_paths());
+        cx.simulate_path_prompt_response(|options| {
+            assert!(options.directories);
+            assert!(!options.files && !options.multiple);
+            None
+        });
+        cx.run_until_parked();
+        assert!(
+            !cx.did_prompt_for_paths(),
+            "duplicate clicks must not queue another picker"
+        );
+        screen.update(cx, |this, cx| {
+            assert!(!this.root_picker_open);
+            assert!(this.project_folder_dialog.is_none());
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("Keep this draft"));
+        });
+    }
+
+    #[gpui::test]
+    fn native_folder_picker_ignores_selection_after_navigation(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.choose_root_dialog(cx);
+            this.begin_navigation();
+            this.selected_session = Some("newer".into());
+        });
+        cx.simulate_path_prompt_response(|_| Some(vec![absolute_fixture_root("stale").into()]));
+        cx.run_until_parked();
+        screen.update(cx, |this, _| {
+            assert!(!this.root_picker_open && !this.root_selecting);
+            assert_eq!(this.selected_session.as_deref(), Some("newer"));
+        });
+    }
+
+    #[gpui::test]
+    fn native_folder_picker_blocks_initial_task_auto_selection(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.draft = false;
+            this.project_root = Some("/tmp/proj".into());
+            this.choose_root_dialog(cx);
+            this.apply_session_list(
+                vec![summary("latest", "Latest task")],
+                this.selection_generation,
+                cx,
+            );
+            assert!(this.selected_session.is_none());
+            assert!(this.loading_session.is_none());
+        });
+        cx.simulate_path_prompt_response(|_| None);
+        cx.run_until_parked();
+        assert!(!screen.update(cx, |this, _| this.root_picker_open));
+    }
+
     #[gpui::test]
     fn test_second_picker_click_is_ignored(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
-        let screen = screen(cx);
+        let screen = remote_folder_screen(cx);
         screen.update(cx, |this, cx| {
             this.popup.open(ChatPopup::Project, cx);
-            assert!(this.begin_root_picker(cx));
-            assert!(this.root_picker_open);
+            this.choose_root_dialog(cx);
+            let first = this.project_folder_dialog.clone().expect("folder dialog");
             assert!(!this.popup.is_open(&ChatPopup::Project));
-            // A second click while the picker is open must not start another.
-            this.popup.open(ChatPopup::Project, cx);
-            assert!(!this.begin_root_picker(cx));
-            assert!(this.popup.is_open(&ChatPopup::Project));
+            this.choose_root_dialog(cx);
+            assert_eq!(this.project_folder_dialog.as_ref(), Some(&first));
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            this.set_visible(false, cx);
+            assert!(this.project_folder_dialog.is_none());
         });
+    }
+
+    #[gpui::test]
+    fn catalog_folder_picker_does_not_activate_runtime_or_replace_a_task_before_confirmation(
+        cx: &mut TestAppContext,
+    ) {
+        let screen = remote_folder_screen(cx);
+        screen.update(cx, |this, cx| {
+            this.navigation_only = true;
+            this.navigation_ready = true;
+            this.draft = false;
+            let generation = this.selection_generation;
+            this.navigate(Destination::DraftNewProject, cx);
+            assert!(this.navigation_only);
+            assert!(!this.draft);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(this.selection_generation, generation);
+            assert!(this.project_folder_dialog.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn stale_folder_selection_cannot_change_a_newer_navigation(cx: &mut TestAppContext) {
+        let screen = remote_folder_screen(cx);
+        let dialog = screen.update(cx, |this, cx| {
+            this.choose_root_dialog(cx);
+            this.project_folder_dialog.clone().unwrap()
+        });
+        screen.update(cx, |this, _| {
+            this.begin_navigation();
+            this.selected_session = Some("newer".into());
+        });
+        dialog.update(cx, |_, cx| {
+            cx.emit(project_folder::FolderDialogEvent::Selected(
+                crate::backend::SelectedProject {
+                    project_root: "/stale".into(),
+                    project: recent_root("/stale"),
+                },
+            ))
+        });
+        cx.run_until_parked();
+        screen.update(cx, |this, _| {
+            assert_eq!(this.selected_session.as_deref(), Some("newer"));
+            assert!(!this.recent_roots.iter().any(|root| root.path == "/stale"));
+        });
+    }
+
+    #[gpui::test]
+    fn folder_picker_blocks_initial_auto_selection_and_stale_cancel_still_dismisses(
+        cx: &mut TestAppContext,
+    ) {
+        let screen = remote_folder_screen(cx);
+        let dialog = screen.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.draft = false;
+            this.project_root = Some("/tmp/proj".into());
+            this.choose_root_dialog(cx);
+            this.apply_session_list(
+                vec![summary("latest", "Latest task")],
+                this.selection_generation,
+                cx,
+            );
+            assert!(this.selected_session.is_none());
+            assert!(this.loading_session.is_none());
+            this.selection_generation += 1;
+            this.project_folder_dialog.clone().unwrap()
+        });
+        dialog.update(cx, |_, cx| {
+            cx.emit(project_folder::FolderDialogEvent::Cancelled)
+        });
+        cx.run_until_parked();
+        assert!(screen.update(cx, |this, _| this.project_folder_dialog.is_none()));
     }
 
     #[test]
@@ -5806,91 +5973,193 @@ mod state_tests {
         assert_eq!(open_menu(&chat, cx), "");
     }
 
-    /// Typing into the project menu's path field stays in the field, and
-    /// Enter applies the path. Typing used to jump to the composer.
+    /// Folder browsing is a separate modal; typing and Enter stay out of
+    /// the composer and never select a project until Use folder succeeds.
     #[gpui::test]
     fn test_the_project_path_field_keeps_its_typing(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |_, _| {});
-        chat.update(cx, |this, cx| this.show_root_input(cx));
+        let (chat, cx) = remote_folder_window(cx, |_, _| {});
+        chat.update(cx, |this, cx| this.choose_root_dialog(cx));
         cx.run_until_parked();
-        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
+        let dialog = chat.update(cx, |this, _| this.project_folder_dialog.clone().unwrap());
+        let input = dialog.update(cx, |this, _| this.path_input.clone());
         let handle = cx.update(|_, app| input.read(app).focus_handle(app));
-        assert_eq!(
-            cx.update(|window, app| window.focused(app)),
-            Some(handle),
-            "the path field takes the focus when it is offered"
-        );
+        assert_eq!(cx.update(|window, app| window.focused(app)), Some(handle));
+        input.update(cx, |input, cx| input.clear(cx));
         cx.simulate_input("relative");
         assert_eq!(input.update(cx, |input, _| input.text()), "relative");
         let composer = chat.update(cx, |this, _| this.composer.clone().expect("composer"));
         assert_eq!(composer.update(cx, |composer, _| composer.text()), "");
-        assert_eq!(open_menu(&chat, cx), "Project", "the menu stays open");
+        assert_eq!(open_menu(&chat, cx), "");
         cx.simulate_keystrokes("enter");
-        assert_eq!(
-            chat.update(cx, |this, _| this.notice.clone()),
-            Some("Enter an absolute directory path".into()),
-            "Enter applies what was typed"
-        );
+        chat.update(cx, |this, _| {
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert!(this.project_folder_dialog.is_some());
+        });
     }
 
-    /// Escape in the path field closes the project menu and hands the
-    /// keyboard back to where it was.
     #[gpui::test]
-    fn test_escape_in_the_path_field_closes_the_project_menu(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |_, _| {});
+    fn test_escape_in_the_path_field_closes_the_folder_dialog(cx: &mut TestAppContext) {
+        let (chat, cx) = remote_folder_window(cx, |_, _| {});
         let composer = chat.update(cx, |this, cx| {
-            this.composer
-                .clone()
-                .expect("composer")
-                .read(cx)
-                .focus_handle(cx)
+            this.composer.clone().unwrap().read(cx).focus_handle(cx)
         });
         cx.update(|window, app| window.focus(&composer, app));
-        chat.update(cx, |this, cx| this.show_root_input(cx));
+        chat.update(cx, |this, cx| this.choose_root_dialog(cx));
         cx.run_until_parked();
         cx.simulate_keystrokes("escape");
-        assert_eq!(open_menu(&chat, cx), "");
+        assert!(chat.update(cx, |this, _| this.project_folder_dialog.is_none()));
         assert_eq!(cx.update(|window, app| window.focused(app)), Some(composer));
     }
 
-    /// Under Application Vim, `g g` belongs to the menu itself, not to a
-    /// field inside it: "logging" typed into the path field keeps every
-    /// letter.
     #[gpui::test]
-    fn test_application_vim_leaves_a_field_in_a_menu_its_letters(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |this, cx| this.set_application_vim_enabled(true, cx));
-        chat.update(cx, |this, cx| this.show_root_input(cx));
+    fn test_application_vim_leaves_folder_path_typing_alone(cx: &mut TestAppContext) {
+        let (chat, cx) =
+            remote_folder_window(cx, |this, cx| this.set_application_vim_enabled(true, cx));
+        chat.update(cx, |this, cx| this.choose_root_dialog(cx));
         cx.run_until_parked();
+        let dialog = chat.update(cx, |this, _| this.project_folder_dialog.clone().unwrap());
+        let input = dialog.update(cx, |this, _| this.path_input.clone());
+        input.update(cx, |input, cx| input.clear(cx));
         cx.simulate_keystrokes("l o g g i n g");
-        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
         assert_eq!(input.update(cx, |input, _| input.text()), "logging");
     }
 
-    /// The path field's own right-click menu opens inside the project menu
-    /// and reaches past its edge. Its rows take their presses, and the
-    /// project menu stays open.
     #[gpui::test]
-    fn test_a_fields_menu_inside_a_menu_takes_its_presses(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |_, _| {});
-        chat.update(cx, |this, cx| this.show_root_input(cx));
+    fn folder_dialog_blocks_chat_navigation_shortcuts(cx: &mut TestAppContext) {
+        let (chat, cx) = remote_folder_window(cx, |_, _| {});
+        chat.update(cx, |this, cx| this.choose_root_dialog(cx));
         cx.run_until_parked();
-        cx.simulate_input("/tmp/somewhere");
-        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
-        let field = cx.debug_bounds("root-path-field").expect("path field");
-        let project_menu = cx.debug_bounds("project-menu").expect("project menu");
-        for item in ["text-input-select-all", "text-input-cut"] {
-            let at = field.center();
-            cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
-            cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::default());
-            let row = cx.debug_bounds(item).expect("the field's menu row");
-            if item == "text-input-select-all" {
-                assert!(
-                    !project_menu.contains(&row.center()),
-                    "the fixture puts Select all past the project menu's edge"
-                );
+        let shortcut = if cfg!(target_os = "macos") {
+            "cmd-n cmd-p cmd-k"
+        } else {
+            "ctrl-n ctrl-p ctrl-k"
+        };
+        cx.simulate_keystrokes(shortcut);
+        chat.update(cx, |this, _| {
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert!(this.project_folder_dialog.is_some());
+            assert!(this.popup.open_key().is_none());
+        });
+    }
+
+    /// The native accessibility builder rejects two focused nodes in one
+    /// frame. A cached modal must acquire focus before the background starts
+    /// prepainting, not later when its cached subtree first renders.
+    #[gpui::test]
+    fn folder_dialog_takes_focus_before_background_prepaint(cx: &mut TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        struct FocusProbeHost {
+            chat: Entity<ChatScreen>,
+            observed: Rc<RefCell<Vec<Option<gpui::FocusHandle>>>>,
+        }
+        impl Render for FocusProbeHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let observed = self.observed.clone();
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        gpui::canvas(
+                            move |_, window, cx| {
+                                observed.borrow_mut().push(window.focused(cx));
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .h(px(1.))
+                        .w_full(),
+                    )
+                    .child(self.chat.clone())
             }
+        }
+
+        cx.executor().allow_parking();
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            crate::desktop::register_key_bindings(cx);
+            let backend = Arc::new(AgentBackend::for_remote_test("peer").unwrap());
+            let mut chat = ChatScreen::new_without_start(backend, "user".into(), cx);
+            chat.booting = false;
+            chat.trust_prompts = false;
+            chat.draft = true;
+            chat.fill_empty_composer("Keep this draft", cx);
+            chat
+        });
+        let composer = chat.update(cx, |this, cx| {
+            this.composer.as_ref().unwrap().read(cx).focus_handle(cx)
+        });
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let probe = observed.clone();
+        let (_host, cx) = cx.add_window_view(|window, cx| {
+            window.focus(&composer, cx);
+            FocusProbeHost {
+                chat: chat.clone(),
+                observed: probe,
+            }
+        });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        for _ in 0..2 {
+            observed.borrow_mut().clear();
+            let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+            sidebar.update(cx, |_, cx| cx.emit(SidebarEvent::ChooseProject));
+            cx.run_until_parked();
+            let path = chat.update(cx, |this, cx| {
+                this.project_folder_dialog
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .path_input
+                    .read(cx)
+                    .focus_handle(cx)
+            });
+            assert!(!observed.borrow().is_empty());
+            assert!(
+                observed
+                    .borrow()
+                    .iter()
+                    .all(|focus| focus.as_ref() == Some(&path)),
+                "the background must see the modal focus from its first prepaint"
+            );
+            cx.simulate_keystrokes("escape");
+            assert_eq!(
+                cx.update(|window, cx| window.focused(cx)),
+                Some(composer.clone())
+            );
+            chat.update(cx, |this, cx| {
+                assert!(this.project_folder_dialog.is_none());
+                assert!(this.draft);
+                assert_eq!(this.composer_text(cx).as_deref(), Some("Keep this draft"));
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn test_the_folder_path_context_menu_takes_its_presses(cx: &mut TestAppContext) {
+        let (chat, cx) = remote_folder_window(cx, |_, _| {});
+        chat.update(cx, |this, cx| this.choose_root_dialog(cx));
+        cx.run_until_parked();
+        let dialog = chat.update(cx, |this, _| this.project_folder_dialog.clone().unwrap());
+        let input = dialog.update(cx, |this, _| this.path_input.clone());
+        input.update(cx, |input, cx| input.clear(cx));
+        cx.simulate_input("/tmp/somewhere");
+        let field = cx.debug_bounds("project-folder-path").expect("path field");
+        for item in ["text-input-select-all", "text-input-cut"] {
+            cx.simulate_mouse_down(
+                field.center(),
+                gpui::MouseButton::Right,
+                gpui::Modifiers::default(),
+            );
+            cx.simulate_mouse_up(
+                field.center(),
+                gpui::MouseButton::Right,
+                gpui::Modifiers::default(),
+            );
+            let row = cx.debug_bounds(item).expect("the field's menu row");
             cx.simulate_click(row.center(), gpui::Modifiers::default());
-            assert_eq!(open_menu(&chat, cx), "Project", "after {item}");
+            assert!(chat.update(cx, |this, _| this.project_folder_dialog.is_some()));
         }
         assert_eq!(input.update(cx, |input, _| input.text()), "");
     }
@@ -5907,6 +6176,7 @@ mod state_tests {
                 key: computer.map(str::to_string),
                 label: label.into(),
                 backend: None,
+                host_epoch: 0,
                 project_names: HashMap::new(),
                 projects: vec![computers::Project {
                     path: "/shared".into(),
@@ -8869,6 +9139,7 @@ mod state_tests {
                         key: key.map(str::to_owned),
                         label: key.unwrap_or("Local").into(),
                         backend: None,
+                        host_epoch: 0,
                         project_names: HashMap::new(),
                         projects: vec![Project {
                             path: absolute_fixture_root("project"),

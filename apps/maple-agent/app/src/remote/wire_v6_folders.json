@@ -1,0 +1,26 @@
+[
+  {
+    "id": 25,
+    "method": "browse_project_folders",
+    "send_id": null,
+    "params": [
+      "account",
+      {
+        "path": null,
+        "after": null,
+        "limit": 50,
+        "showHidden": false
+      }
+    ]
+  },
+  {
+    "id": 26,
+    "method": "create_project_folder",
+    "send_id": null,
+    "params": [
+      "account",
+      "/project",
+      "New folder"
+    ]
+  }
+]

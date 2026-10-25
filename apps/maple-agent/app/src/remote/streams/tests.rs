@@ -3,7 +3,7 @@ use iroh::{Endpoint, RelayMode, endpoint::presets};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-async fn endpoints() -> (Endpoint, Endpoint, Connection, Connection) {
+pub(super) async fn endpoints() -> (Endpoint, Endpoint, Connection, Connection) {
     async fn endpoint() -> Endpoint {
         Endpoint::builder(presets::Minimal)
             .alpns(vec![wire::ALPN.to_vec()])
@@ -26,7 +26,7 @@ async fn endpoints() -> (Endpoint, Endpoint, Connection, Connection) {
     (a, b, client, server)
 }
 
-fn command(id: u64, method: Method) -> Command {
+pub(super) fn command(id: u64, method: Method) -> Command {
     Command {
         id,
         method,
@@ -84,8 +84,9 @@ async fn legacy_wire_six_rejects_optional_probe_without_losing_ordinary_requests
         .unwrap();
     });
     tokio::time::timeout(Duration::from_secs(3), async {
-        assert!(peer_info(&client).await.is_none());
-        let response = call(&client, command(2, Method::ListTasks)).await.unwrap();
+        let client = Client::new(client);
+        assert_eq!(client.call(command(1, Method::BrowseProjectFolders), async { Ok(()) }).await.err().expect("legacy peer must not receive folder requests"), FOLDERS_UNCONFIRMED);
+        let response = client.call(command(2, Method::ListTasks), async { Ok(()) }).await.unwrap();
         assert!(matches!(response, Message::Response { result: Ok(value), .. } if value == json!("ordinary task request still works")));
         legacy.await.unwrap();
     }).await.unwrap();

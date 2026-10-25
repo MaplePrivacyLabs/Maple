@@ -5,11 +5,15 @@ use crate::host::protocol::Message;
 use iroh::endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
 
 pub const MAX_REQUESTS: usize = 40;
 pub const IO_TIMEOUT: Duration = Duration::from_secs(10);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const FOLDERS_UNCONFIRMED: &str =
+    "Could not confirm folder browsing support. Try again, or update Maple on the remote computer.";
+const FOLDERS_UNSUPPORTED: &str = "Update Maple on the remote computer to browse or create folders. Existing projects and chats remain available.";
 // Attachments may take longer than control traffic on a slow link, but cannot
 // retain an admitted stream indefinitely.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -52,6 +56,58 @@ impl Capacity {
         pool.clone()
             .try_acquire_owned()
             .map_err(|_| "Remote computer is busy; try again".into())
+    }
+}
+
+/// One authenticated bridge connection. Only immutable feature support is
+/// cached here, never an account/grant, update offer or installation status.
+/// Reconnecting constructs a new client and discovers support again.
+pub struct Client {
+    connection: Connection,
+    project_folders: OnceCell<bool>,
+    discovery_timeout: Duration,
+}
+
+impl Client {
+    pub fn new(connection: Connection) -> Self {
+        Self {
+            connection,
+            project_folders: OnceCell::new(),
+            discovery_timeout: DISCOVERY_TIMEOUT,
+        }
+    }
+
+    pub async fn call(
+        &self,
+        command: Command,
+        authorize_folders: impl std::future::Future<Output = Result<(), String>>,
+    ) -> Result<Message, String> {
+        if matches!(
+            command.method,
+            Method::BrowseProjectFolders | Method::CreateProjectFolder
+        ) {
+            // Bound waiting for another caller's discovery as well as this
+            // caller's probe. Failed probes leave the cell uninitialized, so
+            // a temporary failure cannot permanently disable the picker.
+            let supported = tokio::time::timeout(
+                self.discovery_timeout,
+                self.project_folders.get_or_try_init(|| async {
+                    peer_info(&self.connection)
+                        .await
+                        .map(|info| info.supports_project_folders())
+                        .ok_or_else(|| FOLDERS_UNCONFIRMED.to_owned())
+                }),
+            )
+            .await
+            .map_err(|_| FOLDERS_UNCONFIRMED.to_owned())??;
+            if !supported {
+                return Err(FOLDERS_UNSUPPORTED.into());
+            }
+            // Discovery may have waited on the network. Cached support is
+            // never authority: recheck account and grant before dispatch.
+            authorize_folders.await?;
+        }
+        call(&self.connection, command).await
     }
 }
 
@@ -267,3 +323,6 @@ async fn finish_reply(rx: &mut RecvStream, deadline: Duration) -> Result<(), Str
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod folder_tests;

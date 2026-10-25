@@ -46,6 +46,8 @@ pub(crate) struct Computer {
     /// Summary queries go to the owning host; a disconnected computer has no
     /// handle until its catalog has reconnected.
     pub backend: Option<Arc<AgentBackend>>,
+    /// Recovery fences cached navigation even when the backend handle survives.
+    pub host_epoch: u64,
     pub project_names: HashMap<String, String>,
     pub projects: Vec<Project>,
     pub sessions: Vec<AgentSessionSummary>,
@@ -61,6 +63,7 @@ impl Computer {
             key: Some(key),
             label: label.into(),
             backend: None,
+            host_epoch: 0,
             project_names: HashMap::new(),
             projects: Vec::new(),
             sessions: Vec::new(),
@@ -165,6 +168,9 @@ impl ChatScreen {
     pub(crate) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         let changed = self.visible != visible;
         self.visible = visible;
+        if !visible {
+            self.project_folder_dialog = None;
+        }
         if changed && visible {
             // Only the mounted sidebar projects every computer. Background
             // views keep their own summaries and the shared catalog handle;
@@ -197,6 +203,7 @@ impl ChatScreen {
             key: self.backend.remote_host().map(str::to_owned),
             label,
             backend: Some(self.backend.clone()),
+            host_epoch: self.host_recovery.epoch,
             project_names: self.sidebar.read(cx).project_names(),
             projects: roots
                 .into_iter()
@@ -266,14 +273,24 @@ impl ChatScreen {
             self.pending_navigation = Some((self.selection_generation, destination));
             return;
         }
+        if matches!(
+            destination,
+            Destination::NewProject | Destination::DraftNewProject
+        ) {
+            // A chooser is not navigation until Use folder succeeds. In
+            // particular, do not activate a catalog and let its runtime
+            // refresh open a task behind the pending modal.
+            self.choose_root_dialog_with_intent(
+                self.navigation_only || matches!(destination, Destination::DraftNewProject),
+                cx,
+            );
+            return;
+        }
         // Opening a remote computer's projects is not a request to open its
         // newest task. Establish the draft before runtime refreshes can
         // auto-select a session. Explicit task clicks still win.
-        let needs_draft = matches!(
-            destination,
-            Destination::DraftProject(_) | Destination::DraftNewProject
-        ) || (self.navigation_only
-            && !matches!(destination, Destination::Task(_)));
+        let needs_draft = matches!(destination, Destination::DraftProject(_))
+            || (self.navigation_only && !matches!(destination, Destination::Task(_)));
         if needs_draft && !self.prepare_draft_navigation(cx) {
             return;
         }

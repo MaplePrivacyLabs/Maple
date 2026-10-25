@@ -44,6 +44,18 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(dialog) = self.project_folder_dialog.clone() {
+            if matches!(
+                command,
+                ChatCommand::Escape | ChatCommand::ApplicationVim(ApplicationVimCommand::Escape)
+            ) {
+                window.defer(cx, move |window, cx| {
+                    dialog.update(cx, |dialog, cx| dialog.escape(window, cx));
+                });
+            }
+            cx.stop_propagation();
+            return;
+        }
         if !matches!(command, ChatCommand::ApplicationVim(_)) {
             self.application_vim.count.clear();
         }

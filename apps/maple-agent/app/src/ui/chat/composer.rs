@@ -189,13 +189,12 @@ impl ChatScreen {
         }
     }
 
-    /// The header chip's menu: recent projects, then "New project…", then
-    /// manual entry when the native folder picker is unavailable.
+    /// The header chip's menu: recent projects, then the shared folder chooser.
     fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
         let mut menu = Menu::new("project-menu", px(480.))
             .label("Projects")
             .application_vim(self.application_vim_enabled);
-        if self.computers.len() > 1 && self.root_input.is_none() {
+        if self.computers.len() > 1 {
             return self.computers_project_menu();
         }
         let projects = header_project_paths(&self.recent_roots)
@@ -231,53 +230,7 @@ impl ChatScreen {
             )
             .icon("folder-plus"),
         );
-        let Some(input) = self.root_input.clone() else {
-            return menu;
-        };
-        menu.child(
-            div()
-                .px_3()
-                .pt_1()
-                .pb_1()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child("Or type an absolute path:"),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .pb_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .debug_selector(|| "root-path-field".to_string())
-                        .child(input),
-                )
-                .child(
-                    div()
-                        .id("root-apply")
-                        .px_3()
-                        .py_1()
-                        .rounded(theme::RADIUS_SM)
-                        .bg(gpui::rgb(theme::accent()))
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(gpui::rgb(theme::on_accent()))
-                        .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
-                        .active(|style| style.bg(gpui::rgb(theme::send_bottom())))
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            if let Some(path) =
-                                this.root_input.as_ref().map(|input| input.read(cx).text())
-                            {
-                                this.select_project_root(path, cx);
-                            }
-                        }))
-                        .child("Go"),
-                ),
-        )
+        menu
     }
 
     fn model_menu(&self) -> Menu<Self> {
