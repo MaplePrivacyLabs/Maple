@@ -77,7 +77,7 @@ use std::io::Write;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::spawn;
 use tokio::sync::RwLock;
@@ -172,6 +172,7 @@ const ACCESS_TOKEN_EXPIRED_ERROR_CODE: &str = "access_token_expired";
 const IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE: &str = "image_description_unavailable";
 pub(crate) const INFERENCE_CAPACITY_ERROR_CODE: &str = "inference_capacity";
 const CLIENT_REPLAY_SAFE: &str = "safe";
+const ATTESTATION_RATE_LIMITED_ERROR_CODE: &str = "attestation_rate_limited";
 
 type PendingAttestationKey = [u8; 32];
 pub(crate) type SessionLease = CacheLease<SessionState>;
@@ -187,9 +188,40 @@ fn attestation_nonce_key(nonce: &str) -> PendingAttestationKey {
     Sha256::digest(nonce.as_bytes()).into()
 }
 
+fn admit_ephemeral_key_at(
+    cache: &mut BoundedTtlCache<PendingAttestationKey, EphemeralSecret>,
+    nonce: &str,
+    ephemeral_secret: EphemeralSecret,
+    now: Instant,
+) -> Result<PublicKey, ApiError> {
+    let key = attestation_nonce_key(nonce);
+    // A retried nonce must keep the same attested public key until consumed or
+    // expired. Replacing it would invalidate an already delivered document.
+    if let Some(existing) = cache.get_live_at(&key, now) {
+        return Ok(PublicKey::from(existing));
+    }
+
+    let public_key = PublicKey::from(&ephemeral_secret);
+    cache
+        .try_insert_preserving_live_at(key, ephemeral_secret, now)
+        .map_err(|retry_after| ApiError::AttestationRateLimited { retry_after })?;
+    Ok(public_key)
+}
+
 #[cfg(test)]
 mod pending_attestation_key_tests {
     use super::*;
+
+    fn pending_cache(capacity: usize) -> BoundedTtlCache<PendingAttestationKey, EphemeralSecret> {
+        BoundedTtlCache::new(
+            NonZeroUsize::new(capacity).unwrap(),
+            PENDING_ATTESTATION_TTL,
+        )
+    }
+
+    fn ephemeral_secret() -> EphemeralSecret {
+        EphemeralSecret::random_from_rng(rand_core::OsRng)
+    }
 
     #[test]
     fn nonce_limit_is_measured_in_bytes() {
@@ -218,6 +250,58 @@ mod pending_attestation_key_tests {
 
         let expected: PendingAttestationKey = Sha256::digest(first_nonce.as_bytes()).into();
         assert_eq!(first, expected);
+    }
+
+    #[test]
+    fn duplicate_nonce_reuses_the_attested_key_and_keeps_it_one_use() {
+        let start = Instant::now();
+        let mut cache = pending_cache(1);
+        let first = admit_ephemeral_key_at(&mut cache, "retry", ephemeral_secret(), start).unwrap();
+        let second = admit_ephemeral_key_at(
+            &mut cache,
+            "retry",
+            ephemeral_secret(),
+            start + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(first.as_bytes(), second.as_bytes());
+        let key = attestation_nonce_key("retry");
+        let consumed = cache.take_live(&key).unwrap();
+        assert_eq!(PublicKey::from(&consumed).as_bytes(), first.as_bytes());
+        assert!(cache.take_live(&key).is_none());
+    }
+
+    #[test]
+    fn full_pending_cache_preserves_an_armed_nonce() {
+        let start = Instant::now();
+        let mut cache = pending_cache(1);
+        let armed = admit_ephemeral_key_at(&mut cache, "armed", ephemeral_secret(), start).unwrap();
+        assert!(matches!(
+            admit_ephemeral_key_at(
+                &mut cache,
+                "another",
+                ephemeral_secret(),
+                start + Duration::from_secs(1),
+            ),
+            Err(ApiError::AttestationRateLimited { retry_after })
+                if retry_after == PENDING_ATTESTATION_TTL - Duration::from_secs(1)
+        ));
+        let consumed = cache.take_live(&attestation_nonce_key("armed")).unwrap();
+        assert_eq!(PublicKey::from(&consumed).as_bytes(), armed.as_bytes());
+    }
+
+    #[test]
+    fn attestation_limit_returns_a_retryable_429() {
+        let response = ApiError::AttestationRateLimited {
+            retry_after: Duration::from_millis(1201),
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "2");
+        assert_eq!(
+            response.headers()[ERROR_CODE_HEADER],
+            ATTESTATION_RATE_LIMITED_ERROR_CODE
+        );
     }
 }
 
@@ -394,6 +478,9 @@ pub enum ApiError {
     #[error("Account inference rate limit exceeded. Retry after the cooldown.")]
     InferenceRateLimited { retry_after: Duration },
 
+    #[error("Attestation temporarily rate limited. Retry later.")]
+    AttestationRateLimited { retry_after: Duration },
+
     #[error("{0}")]
     InferenceProvider(web::provider_error::PublicProviderError),
     #[error("{0}")]
@@ -496,6 +583,7 @@ impl IntoResponse for ApiError {
             ApiError::ImageDescriptionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::InferenceCapacity { status, .. } => *status,
             ApiError::InferenceRateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::AttestationRateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             ApiError::InferenceProvider(error) => error.status(),
             ApiError::Transcription(error) => error.status(),
             ApiError::SystemOneRequest(error) => error.status(),
@@ -525,6 +613,7 @@ impl IntoResponse for ApiError {
         // rejections readable by independently versioned OpenAI clients.
         let openai_error_code = match &self {
             ApiError::InferenceRateLimited { .. } => Some("rate_limit_exceeded"),
+            ApiError::AttestationRateLimited { .. } => Some(ATTESTATION_RATE_LIMITED_ERROR_CODE),
             ApiError::UsageLimitReached => Some("usage_limit_reached"),
             ApiError::FreeTokenLimitExceeded => Some("free_tier_token_limit_exceeded"),
             ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
@@ -582,6 +671,12 @@ impl IntoResponse for ApiError {
         }
         if let ApiError::InferenceRateLimited { retry_after } = &self {
             if let Ok(value) = HeaderValue::from_str(&retry_after.as_secs().to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+        }
+        if let ApiError::AttestationRateLimited { retry_after } = &self {
+            let seconds = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() != 0);
+            if let Ok(value) = HeaderValue::from_str(&seconds.max(1).to_string()) {
                 response.headers_mut().insert(header::RETRY_AFTER, value);
             }
         }
@@ -1035,6 +1130,7 @@ pub struct AppState {
     proxy_router: Arc<ProxyRouter>,
     provider_router: Arc<ProviderRouter>,
     inference_rate_limiter: Arc<web::inference_rate_limit::InferenceRateLimiter>,
+    v1_attestation_limiter: Arc<web::attestation_routes::V1AttestationLimiter>,
     resend_api_key: Option<String>,
     ephemeral_keys: Arc<RwLock<BoundedTtlCache<PendingAttestationKey, EphemeralSecret>>>,
     session_states: Arc<tokio::sync::Mutex<LeaseAwareTtlCache<Uuid, SessionState>>>,
@@ -1155,6 +1251,7 @@ struct AuthenticatedUser {
 #[derive(Default)]
 pub struct AppStateBuilder {
     inference_rate_limiter: Arc<web::inference_rate_limit::InferenceRateLimiter>,
+    v1_attestation_limiter: Arc<web::attestation_routes::V1AttestationLimiter>,
     app_mode: Option<AppMode>,
     db: Option<Arc<dyn DBConnection + Send + Sync>>,
     enclave_key: Option<Vec<u8>>,
@@ -1501,6 +1598,7 @@ impl AppStateBuilder {
             proxy_router,
             provider_router,
             inference_rate_limiter: self.inference_rate_limiter,
+            v1_attestation_limiter: self.v1_attestation_limiter,
             resend_api_key: self.resend_api_key,
             ephemeral_keys: Arc::new(RwLock::new(BoundedTtlCache::new(
                 NonZeroUsize::new(MAX_PENDING_ATTESTATIONS)
@@ -2165,14 +2263,10 @@ impl AppState {
 
         // Create the EphemeralSecret using the RngCore implementation
         let ephemeral_secret = EphemeralSecret::random_from_rng(&mut rng_wrapper);
-        let public_key = PublicKey::from(&ephemeral_secret);
-
-        self.ephemeral_keys
-            .write()
-            .await
-            .insert_evicting(attestation_nonce_key(nonce), ephemeral_secret);
-
-        Ok(public_key)
+        let mut cache = self.ephemeral_keys.write().await;
+        // Sample time while holding the lock so concurrent admissions cannot
+        // overfill the cache or accidentally displace an unconsumed key.
+        admit_ephemeral_key_at(&mut cache, nonce, ephemeral_secret, Instant::now())
     }
 
     pub async fn get_and_remove_ephemeral_secret(

@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use serde_cbor::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration as StdDuration, Instant};
 use tokio::{sync::Semaphore, task};
 use tracing::error;
 use uuid::Uuid;
@@ -73,10 +74,82 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
         .with_state(app_state)
 }
 
+// A process-wide v1 admission budget runs before key allocation and NSM work.
+// At this limit, no more than 10,000 fresh keys can be admitted during a
+// five-minute lifetime, below the pending cache capacity. This is not a
+// client identity or abuse verdict.
+const V1_ATTESTATION_WINDOW: StdDuration = StdDuration::from_secs(60);
+const MAX_V1_ATTESTATIONS_PER_MINUTE: usize = 2_000;
+
+#[derive(Default)]
+struct AttestationWindow {
+    admitted: VecDeque<Instant>,
+    rejected_total: u64,
+}
+
+pub(crate) struct V1AttestationLimiter {
+    limit: usize,
+    state: Mutex<AttestationWindow>,
+}
+
+impl Default for V1AttestationLimiter {
+    fn default() -> Self {
+        Self {
+            limit: MAX_V1_ATTESTATIONS_PER_MINUTE,
+            state: Mutex::new(AttestationWindow::default()),
+        }
+    }
+}
+
+impl V1AttestationLimiter {
+    fn check(&self) -> Result<(), ApiError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ApiError::InternalServerError)?;
+        // Take time under the lock so concurrent admissions remain ordered.
+        self.admit(&mut state, Instant::now())
+    }
+
+    fn admit(&self, state: &mut AttestationWindow, now: Instant) -> Result<(), ApiError> {
+        while state
+            .admitted
+            .front()
+            .is_some_and(|time| now.duration_since(*time) >= V1_ATTESTATION_WINDOW)
+        {
+            state.admitted.pop_front();
+        }
+        if state.admitted.len() >= self.limit {
+            state.rejected_total = state.rejected_total.saturating_add(1);
+            // Log aggregate counts logarithmically during a sustained burst;
+            // never log nonces, client addresses, or other request data.
+            if state.rejected_total.is_power_of_two() {
+                tracing::warn!(
+                    admitted_in_window = state.admitted.len(),
+                    rejected_total = state.rejected_total,
+                    "v1 attestation admission limit reached"
+                );
+            }
+            let retry_after = state
+                .admitted
+                .front()
+                .expect("a full admission window must have an oldest entry")
+                .checked_add(V1_ATTESTATION_WINDOW)
+                .expect("attestation window must fit in Instant")
+                .duration_since(now);
+            return Err(ApiError::AttestationRateLimited { retry_after });
+        }
+        state.admitted.push_back(now);
+        Ok(())
+    }
+}
+
 async fn get_attestation(
     State(data): State<Arc<AppState>>,
     axum::extract::Path(nonce): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<AttestationResponse>), ApiError> {
+    crate::validate_attestation_nonce(&nonce)?;
+    data.v1_attestation_limiter.check()?;
     // Create an ephemeral key pair for this request
     let enclave_public_key = data.create_ephemeral_key(&nonce).await?;
 
@@ -461,6 +534,56 @@ fn derive_contributory_shared_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_limiter(limit: usize) -> V1AttestationLimiter {
+        V1AttestationLimiter {
+            limit,
+            state: Mutex::new(AttestationWindow::default()),
+        }
+    }
+
+    fn admit_at(limiter: &V1AttestationLimiter, now: Instant) -> Result<(), ApiError> {
+        limiter.admit(&mut limiter.state.lock().unwrap(), now)
+    }
+
+    #[test]
+    fn v1_admission_is_a_rolling_window_with_retry_after() {
+        let limiter = test_limiter(2);
+        let start = Instant::now();
+        admit_at(&limiter, start).unwrap();
+        admit_at(&limiter, start + StdDuration::from_secs(1)).unwrap();
+        assert!(matches!(
+            admit_at(&limiter, start + StdDuration::from_secs(2)),
+            Err(ApiError::AttestationRateLimited { retry_after })
+                if retry_after == StdDuration::from_secs(58)
+        ));
+        assert_eq!(limiter.state.lock().unwrap().admitted.len(), 2);
+        admit_at(&limiter, start + V1_ATTESTATION_WINDOW).unwrap();
+        assert_eq!(limiter.state.lock().unwrap().admitted.len(), 2);
+    }
+
+    #[test]
+    fn concurrent_v1_admissions_cannot_exceed_the_budget() {
+        let limiter = Arc::new(test_limiter(10));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let limiter = Arc::clone(&limiter);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..4).filter(|_| limiter.check().is_ok()).count()
+                })
+            })
+            .collect();
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .sum::<usize>(),
+            10
+        );
+    }
 
     #[test]
     fn session_state_zeroizes_key_material() {

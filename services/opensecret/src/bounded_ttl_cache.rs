@@ -31,7 +31,7 @@ impl<V> RetiredValues<V> {
     }
 }
 
-/// A private, fixed-capacity TTL cache with oldest-first admission.
+/// A private, fixed-capacity TTL cache with explicit admission policies.
 ///
 /// The wrapped cache uses `RandomState`, preallocates for its immutable capacity,
 /// and deliberately exposes neither mutable iteration nor resizing. In
@@ -55,13 +55,15 @@ where
         }
     }
 
-    /// Inserts a new value, always admitting it. At capacity, an expired oldest
-    /// entry is reclaimed first; otherwise the oldest live entry is evicted.
-    /// Duplicate keys retain the historical latest-request-wins behavior.
+    /// Convenience wrapper for the shared eviction policy's tests. Production
+    /// sticky routes call the explicit-time form below.
+    #[cfg(test)]
     pub(crate) fn insert_evicting(&mut self, key: K, value: V) -> InsertOutcome {
         self.insert_evicting_at(key, value, Instant::now())
     }
 
+    /// Always admit, evicting the oldest live entry at capacity. Sticky routes
+    /// retain this policy; pending attestations use live-preserving admission.
     pub(crate) fn insert_evicting_at(&mut self, key: K, value: V, now: Instant) -> InsertOutcome {
         let expires_at = now
             .checked_add(self.ttl)
@@ -94,6 +96,47 @@ where
         debug_assert!(previous.is_none());
         debug_assert!(self.entries.len() <= self.entries.capacity());
         outcome
+    }
+
+    /// Admit a vacant key without displacing a live value. The caller can
+    /// retry after the oldest live entry expires if the cache is full. A live
+    /// duplicate is also left untouched; callers that want idempotent retries
+    /// should read that entry before attempting this insertion.
+    pub(crate) fn try_insert_preserving_live_at(
+        &mut self,
+        key: K,
+        value: V,
+        now: Instant,
+    ) -> Result<InsertOutcome, Duration> {
+        if let Some(existing) = self.entries.peek(&key) {
+            if existing.expires_at > now {
+                return Err(existing.expires_at.duration_since(now));
+            }
+            drop(self.entries.pop(&key));
+        }
+
+        let outcome = if self.entries.is_full() {
+            let oldest = self
+                .entries
+                .back()
+                .expect("a full bounded cache must contain an oldest entry")
+                .1;
+            if oldest.expires_at > now {
+                return Err(oldest.expires_at.duration_since(now));
+            }
+            drop(self.entries.pop_back());
+            InsertOutcome::ReclaimedExpired
+        } else {
+            InsertOutcome::Inserted
+        };
+
+        let expires_at = now
+            .checked_add(self.ttl)
+            .expect("bounded cache TTL must fit in Instant");
+        let previous = self.entries.put(key, TimedEntry { value, expires_at });
+        debug_assert!(previous.is_none());
+        debug_assert!(self.entries.len() <= self.entries.capacity());
+        Ok(outcome)
     }
 
     /// Returns a live value without consuming it. Reads do not change the
@@ -213,7 +256,57 @@ mod tests {
     }
 
     #[test]
-    fn configured_pending_capacity_admits_the_next_entry_by_evicting_oldest() {
+    fn preserving_live_insertion_rejects_full_without_losing_an_armed_key() {
+        let start = Instant::now();
+        let mut cache = cache(2, Duration::from_secs(5));
+        assert_eq!(
+            cache.try_insert_preserving_live_at(1, "victim", start),
+            Ok(InsertOutcome::Inserted)
+        );
+        assert_eq!(
+            cache.try_insert_preserving_live_at(2, "other", start),
+            Ok(InsertOutcome::Inserted)
+        );
+        assert_eq!(
+            cache.try_insert_preserving_live_at(3, "flood", start + Duration::from_secs(1)),
+            Err(Duration::from_secs(4))
+        );
+        assert_eq!(cache.len(), 2);
+        assert_eq!(
+            cache.take_live_at(&1, start + Duration::from_secs(2)),
+            Some("victim")
+        );
+        assert_eq!(cache.take_live_at(&1, start + Duration::from_secs(2)), None);
+    }
+
+    #[test]
+    fn preserving_live_insertion_reclaims_expiry_and_keeps_duplicates() {
+        let start = Instant::now();
+        let mut cache = cache(1, Duration::from_secs(5));
+        cache
+            .try_insert_preserving_live_at(1, "original", start)
+            .unwrap();
+        assert_eq!(
+            cache.try_insert_preserving_live_at(1, "replacement", start + Duration::from_secs(1)),
+            Err(Duration::from_secs(4))
+        );
+        assert_eq!(
+            cache.get_live_at(&1, start + Duration::from_secs(2)),
+            Some(&"original")
+        );
+        assert_eq!(
+            cache.try_insert_preserving_live_at(2, "new", start + Duration::from_secs(5)),
+            Ok(InsertOutcome::ReclaimedExpired)
+        );
+        assert_eq!(cache.take_live_at(&1, start + Duration::from_secs(5)), None);
+        assert_eq!(
+            cache.take_live_at(&2, start + Duration::from_secs(5)),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn configured_pending_capacity_preserves_the_oldest_live_entry() {
         let start = Instant::now();
         assert_eq!(crate::MAX_PENDING_ATTESTATIONS, 65_536);
         assert_eq!(crate::PENDING_ATTESTATION_TTL, Duration::from_secs(5 * 60));
@@ -222,18 +315,18 @@ mod tests {
 
         for key in 0..capacity {
             assert_eq!(
-                cache.insert_evicting_at(key, (), start),
-                InsertOutcome::Inserted
+                cache.try_insert_preserving_live_at(key, (), start),
+                Ok(InsertOutcome::Inserted)
             );
         }
         assert_eq!(cache.len(), capacity);
         assert_eq!(
-            cache.insert_evicting_at(capacity, (), start),
-            InsertOutcome::EvictedOldest
+            cache.try_insert_preserving_live_at(capacity, (), start),
+            Err(crate::PENDING_ATTESTATION_TTL)
         );
         assert_eq!(cache.len(), capacity);
-        assert_eq!(cache.take_live_at(&0, start), None);
-        assert_eq!(cache.take_live_at(&capacity, start), Some(()));
+        assert_eq!(cache.take_live_at(&0, start), Some(()));
+        assert_eq!(cache.take_live_at(&capacity, start), None);
     }
 
     #[test]
