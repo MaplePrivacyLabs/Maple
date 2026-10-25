@@ -78,14 +78,6 @@ pub struct ReleaseIdentity {
 }
 
 impl ReleaseIdentity {
-    /// The same published release can have different platform documents.
-    #[cfg(any(feature = "desktop", test))]
-    pub fn same_release(&self, other: &Self) -> bool {
-        self.version == other.version
-            && self.build == other.build
-            && self.source_sha == other.source_sha
-    }
-
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.version.len() > 64 {
             return Err(invalid_install());
@@ -502,12 +494,8 @@ mod tests {
     }
 
     #[test]
-    fn matching_release_ignores_platform_document_but_honors_known_running_build() {
+    fn running_release_matching_honors_source_and_known_build() {
         let release = target();
-        let mut other_platform = release.clone();
-        other_platform.manifest_sha256 = "c".repeat(64);
-        assert_ne!(release, other_platform);
-        assert!(release.same_release(&other_platform));
         let mut running = RunningApplication {
             version: release.version.clone(),
             source_sha: release.source_sha.clone(),
