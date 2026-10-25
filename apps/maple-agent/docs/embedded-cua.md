@@ -2,11 +2,11 @@
 
 Maple can give a desktop task the Cua Driver tool catalog without launching a
 Cua Driver daemon or an MCP child process. The macOS and
-Linux builds pin Cua's `cua-driver-sdk` source at the trycua/cua commit that
-landed Xcode 26.5 linker compatibility, self-process window restoration on the
-AppKit main queue, and the ashpd `async-io` backend (`trycua/cua#3687`) and
-create the native runtime inside the Maple process. Self-process restoration
-avoids an `invoke_menu` crash that only exists when CUA is embedded inside the
+Linux builds pin Cua's `cua-driver-sdk` source at a trycua/cua main commit
+(cua-driver 0.38.0 or later), which includes Xcode 26.5 linker compatibility,
+self-process window restoration on the AppKit main queue, and the ashpd
+`async-io` backend (`trycua/cua#3687`), and create the native runtime inside
+the Maple process. Self-process restoration avoids an `invoke_menu` crash that only exists when CUA is embedded inside the
 application whose window it restores. The Linux backend selection matches
 GPUI's `async-io` stack so the two compile together.
 
