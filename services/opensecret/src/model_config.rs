@@ -388,7 +388,6 @@ struct ModelConfigEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelAccessTier {
     Free,
-    Starter,
     Pro,
 }
 
@@ -729,7 +728,6 @@ impl ModelAccessTier {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Free => "free",
-            Self::Starter => "starter",
             Self::Pro => "pro",
         }
     }
@@ -983,8 +981,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "gemma4-31b",
         "Gemma 4 31B",
         "Gemma 4",
-        "Starter-friendly reasoning and vision model.",
-        ModelAccessTier::Starter,
+        "Efficient reasoning and vision model.",
+        ModelAccessTier::Pro,
         ModelCapabilities::chat(true, true),
         &[],
         true,

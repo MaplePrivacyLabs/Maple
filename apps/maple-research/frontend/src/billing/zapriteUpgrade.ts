@@ -108,24 +108,14 @@ export function zapriteUpgradeTarget(
     return false;
   }
   const source = billingStatus.product_name?.trim().toLowerCase() ?? "";
-  const target = product.name.trim().toLowerCase();
-  if (target.includes("team") || target.includes("starter") || target.includes("free")) {
-    return false;
-  }
-  if (source === "starter") {
-    return target === "pro" || target === "max";
-  }
-  if (source === "pro") {
-    return target === "max";
-  }
-  return false;
+  return source === "pro" && product.name.trim().toLowerCase() === "max";
 }
 
 export function zapritePaidPlanButtonText(
   billingStatus: BillingStatus | null | undefined,
   product: Pick<BillingProduct, "id" | "name">,
   isCurrentPlan: boolean
-): "Upgrade to Max" | "Upgrade to Pro" | "Contact Us" | "Start Chatting" | null {
+): "Upgrade to Max" | "Contact Us" | "Start Chatting" | null {
   if (billingStatus?.payment_provider !== "zaprite") {
     return null;
   }
@@ -133,7 +123,7 @@ export function zapritePaidPlanButtonText(
     return "Start Chatting";
   }
   if (zapriteUpgradeTarget(billingStatus, product)) {
-    return product.name.trim().toLowerCase() === "max" ? "Upgrade to Max" : "Upgrade to Pro";
+    return "Upgrade to Max";
   }
   return "Contact Us";
 }

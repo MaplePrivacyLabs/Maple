@@ -1266,7 +1266,7 @@ type ModelsListResponse = {
 
 export type ModelAliasId = "auto:quick" | "auto:powerful";
 export type ModelId = ModelAliasId | (string & {});
-export type ModelAccessTier = "free" | "starter" | "pro";
+export type ModelAccessTier = "free" | "pro";
 
 function isModelAliasId(value: unknown): value is ModelAliasId {
   return value === "auto:quick" || value === "auto:powerful";

@@ -87,7 +87,7 @@ test("posts only the signed transaction and retains a different selected provide
     pending_plan_change: {
       id: "change-1",
       type: "downgrade",
-      target_plan_name: "Starter",
+      target_plan_name: "Pro",
       status: "pending",
       expires_at: "2026-10-01T00:00:00Z"
     },
