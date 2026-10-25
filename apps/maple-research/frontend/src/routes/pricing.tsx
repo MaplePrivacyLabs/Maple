@@ -37,6 +37,7 @@ import {
 } from "@/billing/applePricingPolicy";
 import { openAppleSubscriptionManagement } from "@/billing/appleSubscriptionManagement";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
+import { usePricingPortal } from "@/billing/usePricingPortal";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
@@ -307,23 +308,10 @@ function LegacyPricingPage() {
     }
   }, [freshBillingStatus?.payment_provider, isMobilePlatform, isGuestUser]);
 
-  // Always try to fetch portal URL if logged in
-  const { data: portalUrl } = useQuery({
-    queryKey: ["portalUrl", billingUserId],
-    queryFn: async () => {
-      if (!isLoggedIn) return null;
-      const billingService = getBillingService();
-      try {
-        assertChatAccountCredential(billingUserId);
-        const url = await billingService.getPortalUrl();
-        assertChatAccountCredential(billingUserId);
-        return url;
-      } catch (error) {
-        console.error("Error fetching portal URL:", error);
-        return null;
-      }
-    },
-    enabled: isLoggedIn
+  const { portalUrl, isAwaitingPortal } = usePricingPortal({
+    userId: billingUserId,
+    status: freshBillingStatus,
+    statusConfirmed: billingStatusConfirmed
   });
 
   // Fetch active discount/promotion
@@ -398,6 +386,15 @@ function LegacyPricingPage() {
     }
 
     if (!billingStatusConfirmed) return isFreeplan ? "Start Chatting" : "Reload current plan";
+
+    if (isAwaitingPortal) {
+      return (
+        <>
+          <Loader2 className="w-5 h-5 animate-spin" />
+          Loading...
+        </>
+      );
+    }
 
     if (hasAppleSubscriptionToManage(freshBillingStatus)) return "Manage with Apple";
 
@@ -610,6 +607,8 @@ function LegacyPricingPage() {
         return;
       }
 
+      if (isAwaitingPortal) return;
+
       if (hasAppleSubscriptionToManage(freshBillingStatus)) {
         void openAppleSubscriptionManagement().catch(() => {
           setPortalError("Unable to open Apple subscription management. Please try again.");
@@ -754,6 +753,7 @@ function LegacyPricingPage() {
       freshBillingStatus,
       navigate,
       portalUrl,
+      isAwaitingPortal,
       newHandleSubscribe,
       isIOSPlatform,
       isMobilePlatform,
@@ -1184,6 +1184,7 @@ function LegacyPricingPage() {
                           )
                         }
                         disabled={
+                          isAwaitingPortal ||
                           loadingProductId === (product?.id || plan.name.toLowerCase()) ||
                           (useBitcoin && isTeamPlan) ||
                           (isIOSPlatform && !isFreeplan && product?.is_available === false)
