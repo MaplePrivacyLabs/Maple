@@ -822,7 +822,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bf601cccedfffec598ec2db1f9d6745885458bccc0e8916d7023f017c94b3d0"
 dependencies = [
  "atspi-common 0.14.0",
- "atspi-connection",
  "atspi-proxies 0.14.0",
  "zbus",
 ]
@@ -2322,9 +2321,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cua-cursor-motion"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cua-driver-contract"
-version = "0.28.0"
-source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -2334,8 +2341,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-core"
-version = "0.28.0"
-source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2354,10 +2361,12 @@ dependencies = [
  "libc",
  "regex",
  "regorus",
+ "rquickjs",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 1.0.69",
  "time",
  "tokio",
@@ -2372,11 +2381,12 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-sdk"
-version = "0.28.0"
-source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
 dependencies = [
  "async-trait",
  "core-foundation 0.10.0",
+ "cua-cursor-motion",
  "cua-driver-contract",
  "cua-driver-core",
  "cursor-overlay",
@@ -2394,13 +2404,16 @@ dependencies = [
 
 [[package]]
 name = "cursor-overlay"
-version = "0.28.0"
-source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
 dependencies = [
  "anyhow",
+ "cua-cursor-motion",
  "cua-driver-contract",
+ "cua-driver-core",
  "fontdue",
  "image",
+ "indexmap 2.14.0",
  "postcard",
  "serde",
  "serde_json",
@@ -7753,12 +7766,10 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pip-preview"
-version = "0.28.0"
-source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
 dependencies = [
- "anyhow",
  "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -7806,13 +7817,14 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform-linux"
-version = "0.28.0"
-source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
 dependencies = [
  "anyhow",
  "ashpd",
  "async-trait",
  "atspi 0.30.0",
+ "atspi-connection",
  "base64 0.22.1",
  "bitflags 2.13.1",
  "calloop",
@@ -7856,8 +7868,8 @@ dependencies = [
 
 [[package]]
 name = "platform-macos"
-version = "0.28.0"
-source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7873,7 +7885,6 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "image",
- "indexmap 2.14.0",
  "libc",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
@@ -7896,8 +7907,8 @@ dependencies = [
 
 [[package]]
 name = "platform-windows"
-version = "0.28.0"
-source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua.git?rev=2a3975570a885f45ef83f7e81bba54a01804ebd0#2a3975570a885f45ef83f7e81bba54a01804ebd0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7908,7 +7919,6 @@ dependencies = [
  "cursor-overlay",
  "getrandom 0.4.3",
  "image",
- "indexmap 2.14.0",
  "keyring",
  "pip-preview",
  "serde",
@@ -8829,6 +8839,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "relative-path"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38540a682c6e9bca04a8bca9e5ec5a6ba168dfbb04c9998fe517a9befb92eb68"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9022,6 +9041,35 @@ dependencies = [
  "libc",
  "rtoolbox",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0a22bf72f515cc4189dd7c63d016f6de92a11eee98ddf7dd64794198f6eb34e"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
+dependencies = [
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
