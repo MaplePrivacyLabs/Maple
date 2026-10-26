@@ -31,6 +31,7 @@ pub(super) enum ChatRegion {
 pub(super) enum SidebarTarget {
     Computer(super::computers::Navigate),
     NewTask,
+    Search,
     Projects,
     Task(String),
     Archived,
@@ -560,6 +561,7 @@ impl ChatScreen {
         match self.application_vim.region {
             ChatRegion::Sidebar => match self.sidebar.read(cx).vim_selected().cloned() {
                 Some(SidebarTarget::NewTask) => self.new_session(cx),
+                Some(SidebarTarget::Search) => self.focus_sidebar_search(window, cx),
                 Some(SidebarTarget::Projects) => self.sidebar.update(cx, |sidebar, cx| {
                     let open = sidebar.switcher_menu_open();
                     sidebar.set_switcher_menu_open(!open, cx);

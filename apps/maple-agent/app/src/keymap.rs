@@ -379,7 +379,7 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             "Focus task search",
             ShortcutCategory::Chat,
             Some("Chat"),
-            "secondary-k",
+            "secondary-f",
             SlotAction::FocusSearch,
         ),
         slot(

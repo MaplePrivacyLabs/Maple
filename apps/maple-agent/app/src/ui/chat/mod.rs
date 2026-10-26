@@ -19,7 +19,7 @@ use maple_agent::agent::{
 };
 
 use crate::backend::{AgentBackend, PendingQuestion};
-use crate::ui::icons::{icon, spinner, wordmark};
+use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
@@ -27,6 +27,7 @@ use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::titlebar;
 use crate::ui::widgets;
 
 mod cache;
@@ -106,9 +107,36 @@ struct QueueEdit {
 
 /// Width of the task sidebar.
 const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
-/// Left inset that keeps the header and its menus clear of the floating
-/// sidebar toggle while the sidebar is collapsed.
-const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = px(220.);
+/// Width of the rail that stands in for the sidebar while it is collapsed.
+const SIDEBAR_RAIL_WIDTH: gpui::Pixels = px(48.);
+const SIDEBAR_TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// One reversible transition. Sampling the current position when retargeting
+/// avoids jumping back to an endpoint on a second press.
+struct SidebarTransition {
+    from: f32,
+    to: f32,
+    started: std::time::Instant,
+    duration: std::time::Duration,
+}
+
+impl SidebarTransition {
+    fn value(&self, now: std::time::Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
+        let t = (elapsed / self.duration.as_secs_f32()).clamp(0., 1.);
+        let eased = 1. - (1. - t).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+}
+/// Height of the task header and the clear strip above the collapsed rail.
+const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
+/// Left inset for the header beside the rail: the traffic lights reach
+/// 30 px past it when the bar is transparent.
+const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = if titlebar::TRANSPARENT_TITLEBAR {
+    px(30.)
+} else {
+    px(16.)
+};
 /// Reading width shared by the transcript and the composer; they must
 /// stay in one column.
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
@@ -570,6 +598,7 @@ pub struct ChatScreen {
     watched_git_dir: Option<std::path::PathBuf>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
+    sidebar_transition: Option<SidebarTransition>,
     /// Files staged for the next message.
     draft_attachments: Vec<DraftAttachment>,
     unresolved_sends: HashMap<String, UnresolvedSend>,
@@ -925,8 +954,43 @@ impl ChatScreen {
         if self.sidebar_collapsed == collapsed {
             return;
         }
+        let now = std::time::Instant::now();
+        let from = self
+            .sidebar_transition
+            .as_ref()
+            .map(|transition| transition.value(now))
+            .unwrap_or(if self.sidebar_collapsed { 0. } else { 1. });
+        let to = if collapsed { 0. } else { 1. };
         self.sidebar_collapsed = collapsed;
+        let distance = (to - from).abs();
+        self.sidebar_transition =
+            (!cx.reduce_motion() && distance > f32::EPSILON).then(|| SidebarTransition {
+                from,
+                to,
+                started: now,
+                duration: SIDEBAR_TRANSITION_DURATION.mul_f32(distance),
+            });
+        if collapsed {
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.close_popups(cx);
+            });
+        }
         cx.notify();
+    }
+
+    fn sidebar_expansion(&mut self, window: &mut Window, cx: &Context<Self>) -> f32 {
+        if cx.reduce_motion() {
+            self.sidebar_transition = None;
+        }
+        let now = std::time::Instant::now();
+        if let Some(transition) = &self.sidebar_transition {
+            if now.saturating_duration_since(transition.started) < transition.duration {
+                window.request_animation_frame();
+                return transition.value(now);
+            }
+            self.sidebar_transition = None;
+        }
+        if self.sidebar_collapsed { 0. } else { 1. }
     }
 
     pub(super) fn toggle_sidebar_visibility(&mut self, cx: &mut Context<Self>) {
@@ -1281,6 +1345,7 @@ impl ChatScreen {
             dialog_focus_pending: false,
             trust_prompts: true,
             sidebar_collapsed: false,
+            sidebar_transition: None,
             draft_attachments: Vec::new(),
             unresolved_sends: HashMap::new(),
             attachment_uploads: HashMap::new(),
@@ -6502,7 +6567,7 @@ impl Render for ChatScreen {
             .clone()
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
-        let collapsed = self.sidebar_collapsed;
+        let sidebar_expansion = self.sidebar_expansion(window, cx);
         let loading_overlay = self.render_loading_overlay();
         let main = if empty {
             self.render_empty_state(window, cx)
@@ -6516,12 +6581,6 @@ impl Render for ChatScreen {
                 // Whatever the pointer is over, a wheel that nothing there
                 // takes scrolls the transcript.
                 .on_scroll_wheel(cx.listener(Self::scroll_transcript_from_pane))
-                .child(
-                    // The header is the window's title bar; a wheel over it
-                    // scrolls nothing.
-                    self.render_header(window, cx)
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
-                )
                 .child(self.render_transcript(window, cx))
                 .children(self.render_send_preview())
                 .when(
@@ -6638,18 +6697,7 @@ impl Render for ChatScreen {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .when(!collapsed, |row| {
-                        // Cached: the sidebar's subtree is reused until the
-                        // sidebar entity is notified, whatever this screen does.
-                        row.child(
-                            self.sidebar.clone().cached(
-                                gpui::StyleRefinement::default()
-                                    .w(SIDEBAR_WIDTH)
-                                    .h_full()
-                                    .flex_none(),
-                            ),
-                        )
-                    })
+                    .child(self.render_sidebar(sidebar_expansion, cx))
                     .child(
                         div()
                             .relative()
@@ -6658,20 +6706,23 @@ impl Render for ChatScreen {
                             .flex_1()
                             .h_full()
                             .min_w_0()
-                            .when(collapsed, |pane| {
-                                pane.child(
-                                    div()
-                                        .absolute()
-                                        .top_2()
-                                        .left(crate::ui::titlebar::top_row_inset(px(12.)))
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(self.render_sidebar_toggle(cx))
-                                        .child(wordmark(px(14.), theme::text_primary())),
-                                )
-                            })
-                            .child(main),
+                            .bg(gpui::rgb(theme::bg_sidebar()))
+                            .child(
+                                // The header is the window's title bar; a wheel
+                                // over it scrolls nothing.
+                                self.render_header(sidebar_expansion, window, cx)
+                                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .rounded_tl(theme::RADIUS_LG)
+                                    .bg(gpui::rgb(theme::bg_app()))
+                                    .child(main),
+                            ),
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
@@ -6735,6 +6786,79 @@ impl Render for ChatScreen {
 }
 
 impl ChatScreen {
+    fn render_sidebar(&self, expansion: f32, cx: &mut Context<Self>) -> Div {
+        let width = SIDEBAR_RAIL_WIDTH + (SIDEBAR_WIDTH - SIDEBAR_RAIL_WIDTH) * expansion;
+        div()
+            .relative()
+            .flex_none()
+            .w(width)
+            .h_full()
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            // Clip only during motion: settled sidebar menus may extend
+            // into the content pane as before.
+            .when(expansion < 1., |column| column.overflow_hidden())
+            .when(expansion < 1., |column| {
+                column.child(self.render_sidebar_rail(cx))
+            })
+            .when(expansion > 0., |column| {
+                column.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(SIDEBAR_WIDTH)
+                        .h_full()
+                        .opacity(expansion)
+                        // Fixed bounds keep labels from wrapping as the
+                        // outer column narrows; settled frames stay cached.
+                        .child(
+                            self.sidebar.clone().cached(
+                                gpui::StyleRefinement::default()
+                                    .w(SIDEBAR_WIDTH)
+                                    .h_full()
+                                    .flex_none(),
+                            ),
+                        ),
+                )
+            })
+            // Keep one opaque Settings control outside the fading sidebar.
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .w(SIDEBAR_RAIL_WIDTH)
+                    .h_12()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgb(theme::bg_sidebar()))
+                    .child(
+                        widgets::icon_button_for_action(
+                            "open-settings",
+                            "settings",
+                            "Settings",
+                            px(16.),
+                            theme::text_secondary(),
+                            &OpenAppSettings,
+                        )
+                        .debug_selector(|| "open-settings".to_string())
+                        .size(px(32.))
+                        .rounded_full()
+                        .tab_index(6)
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(Self::sidebar_button_key_down)
+                        .on_click(cx.listener(
+                            |this, _event, window, cx| {
+                                this.execute_command(ChatCommand::OpenSettings, window, cx);
+                            },
+                        )),
+                    ),
+            )
+    }
+
     /// Keep unsaved-work feedback beside the composer that produced it.
     /// The desktop owns retries so the local store's lifecycle guards still apply.
     fn render_persistence_failure(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -6769,34 +6893,102 @@ impl ChatScreen {
         )
     }
 
-    /// Panel icon that hides or shows the sidebar.
-    fn render_sidebar_toggle(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    /// Tab moves among the rail and header buttons. Space presses the
+    /// focused button on release, rather than typing into the composer.
+    fn sidebar_button_key_down(
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        if event.keystroke.key == "space" {
+            cx.stop_propagation();
+        } else if event.keystroke.key == "tab"
+            && event
+                .keystroke
+                .modifiers
+                .is_subset_of(&gpui::Modifiers::shift())
+        {
+            if event.keystroke.modifiers.shift {
+                window.focus_prev(cx);
+            } else {
+                window.focus_next(cx);
+            }
+            cx.stop_propagation();
+        }
+    }
+
+    /// The collapsed sidebar: a slim rail in the sidebar's color whose
+    /// Maple mark shows the sidebar again.
+    fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let mark_padding = (sidebar::TOP_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
+        let rail = titlebar::drag_region(
+            div()
+                .id("sidebar-rail")
+                .debug_selector(|| "sidebar-rail".to_string())
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .bg(gpui::rgb(theme::bg_sidebar())),
+        )
+        .child(
+            div()
+                .id("show-sidebar")
+                .debug_selector(|| "show-sidebar".to_string())
+                .absolute()
+                .left(sidebar::WORDMARK_LEFT - mark_padding)
+                .top(sidebar::wordmark_row_top() - CHAT_HEADER_HEIGHT)
+                .role(gpui::Role::Button)
+                .aria_label("Show sidebar")
+                // The search field's place in the tab order, which the rail
+                // holds while the sidebar is collapsed.
+                .tab_index(2)
+                .flex_none()
+                .size(sidebar::TOP_ROW_HEIGHT)
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .pl(mark_padding)
+                .rounded(theme::RADIUS_SM)
+                .focus_visible(widgets::focus_ring)
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+                .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                // Inside a drag region: a press here is a click, not a drag.
+                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .on_key_down(Self::sidebar_button_key_down)
+                .tooltip_show_delay(widgets::ICON_TOOLTIP_DELAY)
+                .tooltip(widgets::tooltip_for_action("Show sidebar", &ToggleSidebar))
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.execute_command(ChatCommand::ToggleSidebar, window, cx);
+                }))
+                .child(
+                    crate::ui::icons::wordmark(sidebar::WORDMARK_HEIGHT, theme::text_primary())
+                        .path("icons/maple-mark.svg")
+                        .debug_selector(|| "sidebar-rail-mark".to_string()),
+                ),
+        );
         div()
-            .id("sidebar-toggle")
+            .id("sidebar-rail-column")
             .flex_none()
-            .size_7()
+            .w(SIDEBAR_RAIL_WIDTH)
+            .h_full()
             .flex()
-            .items_center()
-            .justify_center()
-            .rounded(theme::RADIUS_SM)
-            .hover(|style| {
-                style
-                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    .cursor_pointer()
-            })
-            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            // Inside a drag region: a press here is a click, not a drag.
-            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
-            .tooltip(widgets::tooltip_for_action(
-                "Toggle sidebar",
-                &ToggleSidebar,
+            .flex_col()
+            .child(titlebar::drag_region(
+                div()
+                    .id("sidebar-rail-titlebar")
+                    .h(CHAT_HEADER_HEIGHT)
+                    .flex_none()
+                    .bg(gpui::rgb(theme::bg_sidebar())),
             ))
-            .on_click(cx.listener(|this, _event, window, cx| {
-                this.execute_command(ChatCommand::ToggleSidebar, window, cx);
-            }))
-            .child(icon("panel-left", px(16.), theme::text_secondary()))
+            .child(rail)
     }
 
     /// Hero layout for a task with no messages: display heading, composer,
@@ -6871,7 +7063,6 @@ impl ChatScreen {
             .flex_1()
             .h_full()
             .min_w_0()
-            .child(self.render_header(window, cx))
             .child(body)
     }
 
