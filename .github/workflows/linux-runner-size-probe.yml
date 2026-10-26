@@ -1,0 +1,61 @@
+# Experiment only, never merge. Does blacksmith-16vcpu-ubuntu-2404 (and 32)
+# provision without a pre-created scale set, and how much faster is a cold Agent
+# clippy + test build on 16/32 vCPU than on 8?
+name: Linux runner size probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/linux-runner-size-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-runner-size-probe-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Agent cold build on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [blacksmith-8vcpu-ubuntu-2404, blacksmith-16vcpu-ubuntu-2404, blacksmith-32vcpu-ubuntu-2404]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Machine
+        run: |
+          echo "::notice::$(nproc) CPUs, $(free -g | awk '/Mem:/{print $2}') GB RAM on ${{ matrix.runner }}"
+
+      - name: Install pinned Nix environment
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        with:
+          source-tag: v3.23.3
+          github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
+
+      - name: Cold Agent clippy and test build
+        working-directory: apps/maple-agent
+        env:
+          RUSTFLAGS: -D warnings
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          nix develop --no-update-lock-file . -c true
+          shell=$((SECONDS - start))
+          start=$SECONDS
+          nix develop --no-update-lock-file . -c cargo clippy --workspace --all-targets --locked -- -D warnings
+          clippy=$((SECONDS - start))
+          start=$SECONDS
+          nix develop --no-update-lock-file . -c cargo test --workspace --locked --no-run
+          tests=$((SECONDS - start))
+          echo "::notice::${{ matrix.runner }}: shell ${shell}s, cold clippy ${clippy}s, cold test build ${tests}s"

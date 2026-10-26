@@ -7,3 +7,5 @@ self-hosted-runner:
     # GitHub-hosted Xcode 27 image; newer than the pinned actionlint label list.
     - xcode-27
     - blacksmith-8vcpu-ubuntu-2404
+    - blacksmith-16vcpu-ubuntu-2404
+    - blacksmith-32vcpu-ubuntu-2404
