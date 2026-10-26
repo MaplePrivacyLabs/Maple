@@ -257,7 +257,9 @@ struct ServiceState {
     runtime: tokio::sync::Mutex<Option<Arc<AgentRuntime>>>,
     /// A stopped runtime retains its sessions until their final writes succeed.
     /// It is never returned to callers as a runnable runtime.
-    shutdown_pending: tokio::sync::Mutex<Option<PendingRuntimeShutdown>>,
+    /// Observers share access so a maintenance read of `None` cannot look like
+    /// pending history to synchronous admission checks. Transitions are exclusive.
+    shutdown_pending: tokio::sync::RwLock<Option<PendingRuntimeShutdown>>,
     /// Orders start, stop and restart.
     lifecycle: tokio::sync::Mutex<()>,
     /// Held while the account's settings are read and saved, so a save cannot
@@ -324,7 +326,7 @@ impl MapleAgentService {
             host,
             state: Arc::new(ServiceState {
                 runtime: tokio::sync::Mutex::new(None),
-                shutdown_pending: tokio::sync::Mutex::new(None),
+                shutdown_pending: tokio::sync::RwLock::new(None),
                 lifecycle: tokio::sync::Mutex::new(()),
                 settings: tokio::sync::Mutex::new(()),
                 stores: std::sync::Mutex::new(HashMap::new()),
@@ -500,7 +502,7 @@ impl MapleAgentService {
         if let Some(runtime) = runtime {
             runtime.flush_loaded_sessions().await?;
         }
-        let pending = self.state.shutdown_pending.lock().await.clone();
+        let pending = self.state.shutdown_pending.read().await.clone();
         let replacement = if let Some(pending) = &pending {
             // The inner error is the first flush failure; the completed drain
             // has already stopped tools and notified extensions exactly once.
@@ -528,7 +530,7 @@ impl MapleAgentService {
         // Acquire both publication slots before clearing the failure latch.
         // Cancellation at either await leaves the old non-runnable owner and
         // notice intact; no await separates the successful publication below.
-        let mut pending_slot = self.state.shutdown_pending.lock().await;
+        let mut pending_slot = self.state.shutdown_pending.write().await;
         let mut runtime_slot = self.state.runtime.lock().await;
         match failure {
             Some(failure) if !store.clear_persistence_failure(failure.revision) => {
@@ -561,7 +563,7 @@ impl MapleAgentService {
     /// Called with the service lifecycle lock. Publish retained ownership before
     /// the first await that can leave a drain running without its caller.
     async fn begin_runtime_shutdown_locked(&self) -> Option<(PendingRuntimeShutdown, bool)> {
-        let mut pending_slot = self.state.shutdown_pending.lock().await;
+        let mut pending_slot = self.state.shutdown_pending.write().await;
         if let Some(pending) = pending_slot.as_ref() {
             return Some((pending.clone(), true));
         }
@@ -587,7 +589,7 @@ impl MapleAgentService {
             first_flush?;
         }
         pending.runtime.finish_shutdown().await?;
-        self.state.shutdown_pending.lock().await.take();
+        self.state.shutdown_pending.write().await.take();
         Ok(())
     }
 
@@ -625,11 +627,11 @@ impl MapleAgentService {
         if self.state.runtime.lock().await.is_some() {
             return Err("Stop Agent work before finishing the local store reset".into());
         }
-        let pending = self.state.shutdown_pending.lock().await.clone();
+        let pending = self.state.shutdown_pending.read().await.clone();
         if let Some(pending) = pending {
             let _save_result = pending.wait().await?;
             pending.runtime.discard_drained_sessions().await;
-            self.state.shutdown_pending.lock().await.take();
+            self.state.shutdown_pending.write().await.take();
         }
         Ok(())
     }
@@ -691,7 +693,9 @@ impl MapleAgentService {
         // A stopped runtime can still own unsaved source entries. Mutations
         // such as task deletion must not remove their destination before Retry
         // saves them. Status and committed-history reads remain available.
-        match self.state.shutdown_pending.try_lock() {
+        // A writer is publishing or removing retained ownership. Keep that
+        // transition closed, while concurrent status/maintenance reads coexist.
+        match self.state.shutdown_pending.try_read() {
             Ok(pending) if pending.is_none() => Ok(()),
             _ => Err(RUNTIME_SAVE_PENDING_ERROR.to_string()),
         }
@@ -832,7 +836,7 @@ impl AgentRuntimeHandle {
 
     /// The account's running runtime, or an error when it is not running.
     async fn runtime(&self) -> Result<Arc<AgentRuntime>, String> {
-        if self.service.state.shutdown_pending.lock().await.is_some() {
+        if self.service.state.shutdown_pending.read().await.is_some() {
             return Err(RUNTIME_SAVE_PENDING_ERROR.to_string());
         }
         self.current_runtime()
@@ -870,7 +874,7 @@ impl AgentRuntimeHandle {
         maple_api_session: Arc<MapleApiSession>,
         request: Option<AgentStartRequest>,
     ) -> Result<AgentRuntimeStatus, String> {
-        if self.service.state.shutdown_pending.lock().await.is_some() {
+        if self.service.state.shutdown_pending.read().await.is_some() {
             return Err(RUNTIME_SAVE_PENDING_ERROR.to_string());
         }
         if let Some(current) = self.service.state.runtime.lock().await.as_ref() {
@@ -941,7 +945,7 @@ impl AgentRuntimeHandle {
         if let Some(current) = self.service.state.runtime.lock().await.as_ref() {
             current.ensure_account(&self.account_scope)?;
         }
-        if let Some(pending) = self.service.state.shutdown_pending.lock().await.as_ref() {
+        if let Some(pending) = self.service.state.shutdown_pending.read().await.as_ref() {
             pending.runtime.ensure_account(&self.account_scope)?;
         }
         self.service.shutdown_runtime_locked().await

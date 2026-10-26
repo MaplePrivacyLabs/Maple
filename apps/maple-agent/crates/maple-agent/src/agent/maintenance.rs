@@ -139,7 +139,7 @@ fn admitted(state: &ServiceState) -> bool {
         // effects yield until Retry or another completed shutdown saves them.
         && state
             .shutdown_pending
-            .try_lock()
+            .try_read()
             .is_ok_and(|pending| pending.is_none())
 }
 

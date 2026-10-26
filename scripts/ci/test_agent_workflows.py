@@ -10,10 +10,17 @@ import subprocess
 import tempfile
 import unittest
 
+import agent_master_selection
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RUST_CACHE_COMMAND = 'python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}'
-MASTER_CACHE_SAVE = "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}"
+TRUSTED_DEPENDENCY_WRITE = "${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}"
+TRUSTED_DEPENDENCY_UPLOAD = "${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.dependency-seed.outputs.needs-upload == 'true' }}"
+DEPENDENCY_BUILDERS = (
+    ("agent-ci.yml", "desktop"), ("agent-ci.yml", "provider"), ("agent-ci.yml", "linux-release"),
+    ("agent-desktop-build.yml", "macos-build"), ("agent-desktop-build.yml", "linux"),
+)
 
 
 @functools.cache
@@ -160,14 +167,30 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(config["on"]["push"]["branches"], ["master"])
         self.assertIsNone(config["on"]["pull_request"])
         self.assertEqual(config["permissions"], {"contents": "read"})
-        for value in strings(config):
+        for value in strings({key: value for key, value in config.items() if key != "jobs"}):
             self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
-        for job in config["jobs"].values():
+        for name, job in config["jobs"].items():
             self.assertNotIn("environment", job)
             self.assertNotIn("uses", job)
-            self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
+            if name in {"changes", "desktop", "provider", "linux-release"}:
+                self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
+            else:
+                self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
             for step in job["steps"]:
                 self.assertNotIn("${{", step.get("run", ""))
+                if name == "changes" and step.get("id") == "master":
+                    self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
+                    self.assertIn("agent_master_selection.py --lane ci", step["run"])
+                    self.assertEqual(step["if"], "${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && github.event_name == 'push' }}")
+                elif name in {"desktop", "provider", "linux-release"} and step.get("id") == "dependency-archive":
+                    expected = {"GH_TOKEN": "${{ github.token }}"}
+                    if name == "provider":
+                        expected["PROVIDER_DEPENDENCY_FINGERPRINT"] = "${{ steps.provider.outputs.dependency-fingerprint }}"
+                    self.assertEqual(step["env"], expected)
+                    self.assertIn("agent_dependency_archive.py restore", step["run"])
+                else:
+                    for value in strings(step):
+                        self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
                 action = step.get("uses", "")
                 if action:
                     self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?@[0-9a-f]{40}$")
@@ -183,15 +206,17 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
         for cache in caches:
             self.assertEqual(cache["workspaces"], "apps/maple-agent -> target")
             self.assertTrue(cache["key"].startswith("maple-agent-"))
-            expected_save = MASTER_CACHE_SAVE if cache["add-rust-environment-hash-key"] == "true" else "false"
-            self.assertEqual(cache["save-if"], expected_save)
+            self.assertEqual(cache["save-if"], "false")
         for step in steps:
             action = step.get("uses", "")
             self.assertNotIn("release", action.lower())
             self.assertNotIn("download-artifact", action)
             if "upload-artifact@" in action:
-                self.assertTrue(step["with"]["name"].startswith("maple-agent-"))
-                self.assertTrue(step["with"]["path"].startswith("apps/maple-agent/target/"))
+                if step.get("name") == "Upload durable dependency archive":
+                    self.assertEqual(step["with"]["name"], "${{ steps.dependency-seed.outputs.artifact-name }}")
+                else:
+                    self.assertTrue(step["with"]["name"].startswith("maple-agent-"))
+                    self.assertTrue(step["with"]["path"].startswith("apps/maple-agent/target/"))
         self.assertFalse(any((ROOT / "apps/maple-agent/.github/workflows").glob("*.yml")))
 
     def test_failed_or_missing_selection_cannot_skip_the_desktop_matrix(self):
@@ -230,91 +255,172 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
                         expected = result == ("skipped" if omitted else "success")
                         self.assertEqual(command.returncode == 0, expected, env)
 
+    def test_master_selection_ci_verifiers_match_actual_platform_job_names(self):
+        jobs = workflow("agent-ci.yml")["jobs"]
+        actual = {jobs["linux-release"]["name"]}
+        for name in ("desktop", "provider"):
+            job = jobs[name]
+            self.assertEqual(set(job["strategy"]["matrix"]), {"os"})
+            actual.update(job["name"].replace("${{ matrix.os }}", runner)
+                          for runner in job["strategy"]["matrix"]["os"])
+        self.assertEqual(agent_master_selection.CI_VERIFIERS, actual)
+
     def test_dependency_cache_restore_prefix_uses_actual_environment_without_lock_hash(self):
-        for filename, names in (("agent-ci.yml", ("desktop", "linux-release")),
-                                ("agent-desktop-build.yml", ("macos-build", "linux"))):
-            for name in names:
-                with self.subTest(workflow=filename, job=name):
-                    steps = workflow(filename)["jobs"][name]["steps"]
-                    fingerprint = next(i for i, step in enumerate(steps) if step.get("id") == "environment")
-                    cache_index = next(i for i, step in enumerate(steps) if "rust-cache@" in step.get("uses", ""))
-                    self.assertLess(fingerprint, cache_index)
-                    cache = steps[cache_index]["with"]
-                    self.assertEqual(cache["add-rust-environment-hash-key"], "true")
-                    self.assertIn("steps.environment.outputs.compatibility", cache["key"])
-                    self.assertNotIn("hashFiles", cache["key"])
-                    self.assertEqual(cache["cmd-format"], RUST_CACHE_COMMAND)
-                    self.assertEqual(cache["save-if"], "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
-                    self.assertIn("nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache.py", steps[fingerprint]["run"])
+        for filename, name in DEPENDENCY_BUILDERS:
+            if name == "provider":
+                continue
+            with self.subTest(workflow=filename, job=name):
+                steps = workflow(filename)["jobs"][name]["steps"]
+                fingerprint = next(i for i, step in enumerate(steps) if step.get("id") == "environment")
+                artifact = next(i for i, step in enumerate(steps) if step.get("id") == "dependency-archive")
+                cache_index = next(i for i, step in enumerate(steps) if "rust-cache@" in step.get("uses", ""))
+                self.assertLess(fingerprint, artifact)
+                self.assertLess(artifact, cache_index)
+                cache = steps[cache_index]["with"]
+                self.assertEqual(steps[cache_index]["if"], "${{ steps.dependency-archive.outputs.restored != 'true' }}")
+                self.assertEqual(cache["add-rust-environment-hash-key"], "true")
+                self.assertIn("steps.environment.outputs.compatibility", cache["key"])
+                self.assertNotIn("hashFiles", cache["key"])
+                self.assertEqual(cache["cmd-format"], RUST_CACHE_COMMAND)
+                self.assertEqual(cache["save-if"], "false")
+                self.assertIn("nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache_scope.py", steps[fingerprint]["run"])
 
     def test_legacy_cache_restore_preserves_abi_scope_and_never_writes(self):
-        for filename, names in (("agent-ci.yml", ("desktop", "linux-release")),
-                                ("agent-desktop-build.yml", ("macos-build", "linux"))):
-            for name in names:
-                with self.subTest(workflow=filename, job=name):
-                    steps = workflow(filename)["jobs"][name]["steps"]
-                    primary_index = next(i for i, step in enumerate(steps) if step.get("id") == "rust-cache")
-                    marker_index = next(i for i, step in enumerate(steps) if step.get("id") == "restored-target")
-                    caches = [(i, step) for i, step in enumerate(steps) if "rust-cache@" in step.get("uses", "")]
-                    self.assertEqual(len(caches), 2)
-                    fallback_index, fallback = caches[1]
-                    primary = steps[primary_index]
-                    self.assertLess(primary_index, marker_index)
-                    self.assertLess(marker_index, fallback_index)
-                    self.assertEqual(fallback["uses"], primary["uses"])
-                    self.assertEqual(fallback["if"],
-                                     "${{ steps.rust-cache.outputs.cache-hit != 'true' && steps.restored-target.outputs.present != 'true' }}")
-                    # Disabling the upstream hash is permitted only on this
-                    # read-only fallback, scoped to the very same actual ABI.
-                    self.assertEqual(fallback["with"], {**primary["with"],
-                                     "add-rust-environment-hash-key": "false", "save-if": "false"})
-                    self.assertEqual(primary["with"]["add-rust-environment-hash-key"], "true")
-                    self.assertEqual(primary["with"]["save-if"], MASTER_CACHE_SAVE)
-                    self.assertNotIn("continue-on-error", fallback)
+        for filename, name in DEPENDENCY_BUILDERS:
+            if name == "provider":
+                continue
+            with self.subTest(workflow=filename, job=name):
+                steps = workflow(filename)["jobs"][name]["steps"]
+                primary_index = next(i for i, step in enumerate(steps) if step.get("id") == "rust-cache")
+                marker_index = next(i for i, step in enumerate(steps) if step.get("id") == "restored-target")
+                caches = [(i, step) for i, step in enumerate(steps) if "rust-cache@" in step.get("uses", "")]
+                self.assertEqual(len(caches), 2)
+                fallback_index, fallback = caches[1]
+                primary = steps[primary_index]
+                self.assertLess(primary_index, marker_index)
+                self.assertLess(marker_index, fallback_index)
+                self.assertEqual(fallback["uses"], primary["uses"])
+                self.assertEqual(fallback["if"], "${{ steps.dependency-archive.outputs.restored != 'true' && steps.restored-target.outputs.present != 'true' }}")
+                self.assertEqual(fallback["with"], {**primary["with"],
+                    "add-rust-environment-hash-key": "false",
+                    "key": primary["with"]["key"].replace("outputs.compatibility", "outputs.legacy_compatibility")})
+                self.assertEqual(primary["with"]["add-rust-environment-hash-key"], "true")
+                self.assertEqual(primary["with"]["save-if"], "false")
+                self.assertNotIn("continue-on-error", fallback)
 
     def test_primary_prefix_restore_does_not_download_a_second_archive(self):
-        # cache-hit=false also means a successful upstream prefix restore.
-        # Exercise the actual workflow's marker script against an empty target
-        # and a restored Cargo target before evaluating that fallback guard.
-        for filename, name in (("agent-ci.yml", "desktop"), ("agent-ci.yml", "linux-release"),
-                               ("agent-desktop-build.yml", "macos-build"), ("agent-desktop-build.yml", "linux")):
-            steps = workflow(filename)["jobs"][name]["steps"]
-            marker = next(step for step in steps if step.get("id") == "restored-target")
-            with tempfile.TemporaryDirectory(prefix="cache restore ") as directory:
-                root = Path(directory)
-                target = root / "apps/maple-agent/target"
-                target.mkdir(parents=True)
-                for present in (False, True):
-                    with self.subTest(workflow=filename, job=name, restored=present):
-                        if present:
-                            (target / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
-                        output = root / f"outputs-{present}"
-                        subprocess.run(["bash", "-eu", "-c", marker["run"]], check=True,
-                                       env={**os.environ, "GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(output)},
-                                       capture_output=True)
-                        self.assertEqual(output.read_text(), f"present={str(present).lower()}\n")
+        # Metadata and a restored CACHEDIR.TAG do not prove useful dependencies.
+        # Require real target fingerprints and a Rust library/metadata output.
+        for filename, name in DEPENDENCY_BUILDERS:
+            if name == "provider":
+                continue
+            marker = next(step for step in workflow(filename)["jobs"][name]["steps"]
+                          if step.get("id") == "restored-target")
+            for case, expected in (("empty", False), ("tag_only", False),
+                                   ("fingerprint_only", False), ("library_only", False), ("empty_library", False),
+                                   ("rlib", True), ("rmeta", True), ("nested", True)):
+                with self.subTest(workflow=filename, job=name, case=case), tempfile.TemporaryDirectory(prefix="cache restore ") as directory:
+                    root = Path(directory)
+                    target = root / "apps/maple-agent/target"
+                    profile = target / ("aarch64-apple-darwin/release" if case == "nested" else "debug")
+                    profile.mkdir(parents=True)
+                    if case != "empty":
+                        (target / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+                    if case in {"fingerprint_only", "empty_library", "rlib", "rmeta", "nested"}:
+                        unit = profile / ".fingerprint/public-123"
+                        unit.mkdir(parents=True)
+                        (unit / "lib-public").write_text("fingerprint")
+                    if case in {"library_only", "empty_library", "rlib", "rmeta", "nested"}:
+                        deps = profile / "deps"
+                        deps.mkdir()
+                        extension = "rmeta" if case == "rmeta" else "rlib"
+                        (deps / f"libpublic-123.{extension}").write_bytes(b"" if case == "empty_library" else b"actual dependency")
+                    output = root / "outputs"
+                    subprocess.run(["bash", "-eu", "-c", marker["run"]], check=True,
+                                   env={**os.environ, "GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(output)},
+                                   capture_output=True)
+                    self.assertEqual(output.read_text(), f"present={str(expected).lower()}\n")
 
     def test_provider_restores_only_after_verified_graph_with_no_compatible_fallback(self):
         steps = workflow("agent-ci.yml")["jobs"]["provider"]["steps"]
-        prepare = next(i for i, step in enumerate(steps) if step.get("id") == "provider")
-        restore = next(i for i, step in enumerate(steps) if step.get("id") == "provider-cache")
+        indices = {step.get("id"): i for i, step in enumerate(steps) if step.get("id")}
         test = next(i for i, step in enumerate(steps) if step.get("name") == "Test released rusqlite against the static provider")
-        save = next(i for i, step in enumerate(steps) if "actions/cache/save@" in step.get("uses", ""))
-        environment = next(i for i, step in enumerate(steps) if step.get("id") == "environment")
-        self.assertLess(prepare, environment)
-        self.assertLess(environment, restore)
-        self.assertIn('--cargo-config-dir "$PROVIDER_WORK"', steps[environment]["run"])
-        self.assertLess(restore, test)
-        self.assertLess(test, save)
-        cache = steps[restore]["with"]
-        self.assertNotIn("restore-keys", cache)
-        self.assertEqual(cache["path"], "${{ env.PROVIDER_TARGET }}")
-        self.assertIn("steps.environment.outputs.compatibility", cache["key"])
-        self.assertIn("steps.provider.outputs.dependency-fingerprint", cache["key"])
-        self.assertIn("--phase prepare", steps[prepare]["run"])
+        self.assertLess(indices["provider"], indices["environment"])
+        self.assertLess(indices["environment"], indices["dependency-archive"])
+        self.assertLess(indices["dependency-archive"], indices["provider-cache"])
+        self.assertLess(indices["provider-cache"], test)
+        self.assertLess(test, indices["dependency-seed"])
+        self.assertIn('--cargo-config-dir "$PROVIDER_WORK"', steps[indices["environment"]]["run"])
+        native = steps[indices["provider-cache"]]
+        self.assertEqual(native["if"], "${{ steps.dependency-archive.outputs.restored != 'true' }}")
+        self.assertNotIn("restore-keys", native["with"])
+        self.assertEqual(native["with"]["path"], "${{ env.PROVIDER_TARGET }}")
+        self.assertIn("steps.environment.outputs.legacy_compatibility", native["with"]["key"])
+        self.assertIn("steps.provider.outputs.dependency-fingerprint", native["with"]["key"])
+        self.assertIn("--phase prepare", steps[indices["provider"]]["run"])
         self.assertIn("--phase run", steps[test]["run"])
-        self.assertIn("success() && github.event_name == 'push' && github.ref == 'refs/heads/master'", steps[save]["if"])
-        self.assertEqual(steps[save]["with"]["key"], "${{ steps.provider-cache.outputs.cache-primary-key }}")
+        for ident in ("dependency-archive", "dependency-seed"):
+            self.assertIn('--dependency-fingerprint "$PROVIDER_DEPENDENCY_FINGERPRINT"', steps[indices[ident]]["run"])
+            self.assertEqual(steps[indices[ident]]["env"]["PROVIDER_DEPENDENCY_FINGERPRINT"], "${{ steps.provider.outputs.dependency-fingerprint }}")
+        self.assertIn('--metadata "$PROVIDER_WORK/maple-provider-metadata.json"', steps[indices["dependency-seed"]]["run"])
+        self.assertFalse(any("actions/cache/save@" in step.get("uses", "") for step in steps))
+
+    def test_durable_archive_restore_identity_and_trusted_fail_closed_upload(self):
+        for filename, name in DEPENDENCY_BUILDERS:
+            with self.subTest(workflow=filename, job=name):
+                job = workflow(filename)["jobs"][name]
+                self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
+                self.assertEqual(job["env"]["DEPENDENCY_CACHE_JOB"], job["name"])
+                steps = job["steps"]
+                restore = next(step for step in steps if step.get("id") == "dependency-archive")
+                pack = next(step for step in steps if step.get("id") == "dependency-seed")
+                upload = next(step for step in steps if step.get("name") == "Upload durable dependency archive")
+                self.assertIn("agent_dependency_archive.py restore", restore["run"])
+                self.assertIn("agent_dependency_archive.py pack", pack["run"])
+                for step in (restore, pack):
+                    self.assertIn(f"--workflow {filename}", step["run"])
+                    self.assertIn('--job-name "$DEPENDENCY_CACHE_JOB"', step["run"])
+                    self.assertIn('--receipt "$RUNNER_TEMP/agent-dependency-receipt.json"', step["run"])
+                    self.assertNotIn("continue-on-error", step)
+                self.assertEqual(restore["env"]["GH_TOKEN"], "${{ github.token }}")
+                self.assertNotIn("GH_TOKEN", pack.get("env", {}))
+                self.assertEqual(pack["if"], TRUSTED_DEPENDENCY_WRITE)
+                # A verified <24h receipt can suppress compression/upload. Only
+                # the helper's positive needs-upload result permits a write.
+                self.assertEqual(upload["if"], TRUSTED_DEPENDENCY_UPLOAD)
+                self.assertEqual(upload["uses"], "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02")
+                self.assertEqual(upload["with"], {
+                    "name": "${{ steps.dependency-seed.outputs.artifact-name }}",
+                    "path": "${{ runner.temp }}/agent-dependency-seed/manifest.json\n${{ runner.temp }}/agent-dependency-seed/dependencies.tar.gz\n",
+                    "if-no-files-found": "error", "compression-level": 0,
+                    "overwrite": True, "retention-days": 3,
+                })
+                self.assertNotIn("continue-on-error", upload)
+                self.assertLess(steps.index(restore), steps.index(pack))
+                self.assertLess(steps.index(pack), steps.index(upload))
+                if name != "provider":
+                    graph = next(step for step in steps if step.get("name") == "Verify the canonical SDK and proxy dependency graph")
+                    self.assertIn('metadata="$RUNNER_TEMP/agent-workspace-metadata.json"', graph["run"])
+                    self.assertNotIn("rm -f", graph["run"])
+                    self.assertIn('--metadata "$RUNNER_TEMP/agent-workspace-metadata.json"', pack["run"])
+                # Every earlier validation must succeed before pack/upload;
+                # diagnostics remain the only explicitly always-run steps.
+                for step in steps[:steps.index(pack)]:
+                    self.assertNotIn("continue-on-error", step)
+                for step in steps[steps.index(pack) + 1:]:
+                    if "run" in step:
+                        self.assertEqual(step.get("if"), "always()")
+                        self.assertIn("agent_measure.py --summarize", step["run"])
+                self.assertNotIn("always()", pack["if"])
+                self.assertNotIn("always()", upload["if"])
+
+    def test_dependency_archives_are_absent_from_protected_and_consumer_jobs(self):
+        for name, job in workflow("agent-desktop-build.yml")["jobs"].items():
+            if name in {"macos-build", "linux"}:
+                continue
+            for step in job["steps"]:
+                self.assertNotIn("agent_dependency_archive.py", step.get("run", ""))
+                self.assertNotIn(step.get("id"), {"dependency-archive", "dependency-seed"})
 
     def test_workspace_checks_and_plain_release_keep_original_coverage(self):
         jobs = workflow("agent-ci.yml")["jobs"]
@@ -430,7 +536,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                     self.assertEqual(job["permissions"], {
                         "contents": "read", "attestations": "read",
                     })
-                elif name == "changes":
+                elif name in ("changes", "macos-build", "linux"):
                     self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
                 else:
                     self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
@@ -442,6 +548,9 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                             self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
                             if name == "verify-linux":
                                 self.assertIn(self.MASTER_GUARD, " ".join(step["if"].split()))
+                        elif name in ("macos-build", "linux") and step.get("id") == "dependency-archive":
+                            self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
+                            self.assertIn("agent_dependency_archive.py restore", step["run"])
                         elif name == "changes" and step.get("id") == "master":
                             self.assertEqual(step["if"],
                                              "${{ github.repository == 'MaplePrivacyLabs/Maple' && "
@@ -473,8 +582,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                     self.assertEqual(cache["workspaces"], "apps/maple-agent -> target")
                     self.assertTrue(cache["key"].startswith("maple-agent-release-"))
                     self.assertIn("${{ matrix.variant }}", cache["key"])
-                    expected_save = MASTER_CACHE_SAVE if cache["add-rust-environment-hash-key"] == "true" else "false"
-                    self.assertEqual(cache["save-if"], expected_save)
+                    self.assertEqual(cache["save-if"], "false")
 
     def test_unsigned_pr_jobs_are_fail_safe_and_never_use_signed_macos_artifact_names(self):
         jobs = workflow(self.WORKFLOW)["jobs"]
@@ -551,7 +659,8 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 self.assertIn('"$MAPLE_RELEASE_PROFILE"', profile_step["run"])
                 uploads = [step for step in job["steps"]
                            if step.get("uses", "").startswith("actions/upload-artifact@")
-                           and step.get("with", {}).get("path") != "apps/maple-agent/target/ci-metrics/"]
+                           and step.get("with", {}).get("path") != "apps/maple-agent/target/ci-metrics/"
+                           and step.get("name") != "Upload durable dependency archive"]
                 self.assertEqual(len(uploads), 1)
                 upload = uploads[0]
                 self.assertNotIn("if", upload)
@@ -940,12 +1049,13 @@ class AgentDiffSelectionTests(unittest.TestCase):
         self.git("commit", "-qm", "fixture change")
         return self.git("rev-parse", "HEAD")
 
-    def select(self, event, base, head):
+    def select(self, event, base, head, *, repository="fork/Maple", ref="refs/heads/topic", master=""):
         step = next(step for step in workflow("agent-ci.yml")["jobs"]["changes"]["steps"]
                     if step.get("id") == "classify")
         output = self.root / "output"
         output.unlink(missing_ok=True)
         env = {**os.environ, "GITHUB_EVENT_NAME": event, "BASE_SHA": base, "HEAD_SHA": head,
+               "GITHUB_REPOSITORY": repository, "GITHUB_REF": ref, "MASTER_AGENT": master,
                "GITHUB_OUTPUT": str(output)}
         result = subprocess.run(["bash", "-c", step["run"]], cwd=self.root, env=env,
                                 capture_output=True, text=True)
@@ -957,6 +1067,16 @@ class AgentDiffSelectionTests(unittest.TestCase):
         self.assertEqual(self.select("push", self.base, docs), "agent=false\n")
         runtime = self.commit_file("apps/maple-agent/app/src/main.rs", "fn main() {}\n")
         self.assertEqual(self.select("push", docs, runtime), "agent=true\n")
+
+    def test_canonical_master_preserves_unvalidated_work_and_omits_only_proven_history(self):
+        docs = self.commit_file("apps/maple-agent/docs/design.md", "design\n")
+        for selected, expected in (("", "true"), ("true", "true"),
+                                   ("unknown", "true"), ("false", "false")):
+            with self.subTest(selected=selected):
+                self.assertEqual(self.select("push", self.base, docs,
+                                             repository="MaplePrivacyLabs/Maple",
+                                             ref="refs/heads/master", master=selected),
+                                 f"agent={expected}\n")
 
     def test_pull_request_uses_merge_base_instead_of_unrelated_base_changes(self):
         master = self.commit_file("apps/maple-agent/app/src/main.rs", "fn main() {}\n")

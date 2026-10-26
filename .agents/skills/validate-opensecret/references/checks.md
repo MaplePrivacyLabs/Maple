@@ -28,14 +28,14 @@ side-effect-disabled component Nix environment:
 git -C ../.. submodule update --init --recursive -- services/opensecret/privatemode-public
 
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file '.?submodules=1' -c cargo fmt --all -- --check
+  nix develop --no-write-lock-file '.?submodules=1#ci' -c cargo fmt --all -- --check
 
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file '.?submodules=1' -c env RUSTFLAGS='-D warnings' \
+  nix develop --no-write-lock-file '.?submodules=1#ci' -c env RUSTFLAGS='-D warnings' \
   cargo clippy --locked --all-targets --all-features -- -D warnings
 
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file '.?submodules=1' -c env RUSTFLAGS='-D warnings' \
+  nix develop --no-write-lock-file '.?submodules=1#ci' -c env RUSTFLAGS='-D warnings' \
   cargo test --locked --all-features
 ```
 
