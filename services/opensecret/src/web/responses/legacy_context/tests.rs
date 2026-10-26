@@ -1,7 +1,7 @@
 use super::*;
 use crate::encrypt::encrypt_with_key;
 use chrono::{TimeZone, Utc};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 fn key() -> SecretKey {
     SecretKey::from_slice(&[7; 32]).unwrap()
@@ -56,6 +56,21 @@ fn fetch_rows(rows: &[RawThreadMessage], keys: &[MessageKey]) -> Vec<RawThreadMe
                 .cloned()
         })
         .collect()
+}
+
+async fn rows_with_tool_pair_across_batch_boundary() -> Vec<RawThreadMessage> {
+    let mut rows = Vec::new();
+    for id in 1..=126 {
+        rows.push(user(id, "Synthetic", 1).await);
+    }
+    rows.push(row("reasoning", 127, "Current reasoning", 1).await);
+    let mut call = row("tool_call", 128, "{}", 1).await;
+    call.tool_call_id = Some(call.uuid);
+    call.tool_name = Some("web_search".into());
+    let mut output = row("tool_output", 129, "Result", 1).await;
+    output.tool_call_id = call.tool_call_id;
+    rows.extend([call, output]);
+    rows
 }
 
 fn prepare_rows(
@@ -208,17 +223,7 @@ async fn current_reasoning_and_tool_pairs_match_existing_model_formatting() {
 
 #[tokio::test]
 async fn tool_pair_and_reasoning_survive_a_payload_batch_boundary() {
-    let mut rows = Vec::new();
-    for id in 1..=126 {
-        rows.push(user(id, "Synthetic", 1).await);
-    }
-    rows.push(row("reasoning", 127, "Current reasoning", 1).await);
-    let mut call = row("tool_call", 128, "{}", 1).await;
-    call.tool_call_id = Some(call.uuid);
-    call.tool_name = Some("web_search".into());
-    let mut output = row("tool_output", 129, "Result", 1).await;
-    output.tool_call_id = call.tool_call_id;
-    rows.extend([call, output]);
+    let rows = rows_with_tool_pair_across_batch_boundary().await;
     let sizes = RefCell::new(Vec::new());
     let result = prepare_with_fetch(
         &metadata(&rows),
@@ -244,6 +249,254 @@ async fn tool_pair_and_reasoning_survive_a_payload_batch_boundary() {
         prompt[127]["tool_call_id"]
     );
     assert_eq!(result.stats.fetch_batches, 2);
+}
+
+#[tokio::test]
+async fn disappearing_tool_output_discards_partial_projection_and_refreshes_metadata_once() {
+    let rows = rows_with_tool_pair_across_batch_boundary().await;
+    let ciphertext_bytes = |rows: &[RawThreadMessage]| {
+        rows.iter()
+            .filter_map(|row| row.content_enc.as_ref())
+            .map(Vec::len)
+            .sum::<usize>()
+    };
+    let first_batch_bytes = ciphertext_bytes(&rows[..128]);
+    let retained_bytes = ciphertext_bytes(&rows[..126]);
+    let retained_ciphertext: Vec<_> = rows[..126]
+        .iter()
+        .map(|row| row.content_enc.clone())
+        .collect();
+    let stored = RefCell::new(rows);
+    let attempts = Cell::new(0);
+    let fetches = Cell::new(0);
+    let incoming = vec![json!({"role":"user","content":"Current input"})];
+    let result = prepare_with_source_retry(|| {
+        attempts.set(attempts.get() + 1);
+        let fresh_metadata = metadata(&stored.borrow());
+        let attempt = prepare_with_fetch(
+            &fresh_metadata,
+            vec![],
+            0,
+            &key(),
+            "kimi-k3",
+            ReasoningReplay::All,
+            &incoming,
+            2,
+            4096,
+            |keys| {
+                fetches.set(fetches.get() + 1);
+                if fetches.get() == 2 {
+                    // A source writer deletes the earlier reasoning/tool step
+                    // after its call was loaded, but before its output is read.
+                    stored.borrow_mut().retain(|row| row.id <= 126);
+                }
+                Ok(fetch_rows(&stored.borrow(), keys))
+            },
+        );
+        if attempts.get() == 1 {
+            assert!(matches!(
+                &attempt,
+                Err(LegacyPreparationError::SourceChanged(_))
+            ));
+        }
+        attempt
+    })
+    .unwrap();
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(fetches.get(), 3);
+    assert_eq!(result.prompt.messages.len(), 127);
+    assert_eq!(result.prompt.messages.last(), incoming.last());
+    assert!(result.prompt.messages.iter().all(|message| {
+        message["role"] == "user"
+            && message.get("tool_calls").is_none()
+            && message.get("tool_call_id").is_none()
+    }));
+    assert_eq!(result.stats.metadata_rows, 126);
+    assert_eq!(result.stats.selected_rows, 126);
+    assert_eq!(result.stats.fetched_rows, 128 + 126);
+    assert_eq!(result.stats.fetch_batches, 3);
+    assert_eq!(
+        result.stats.fetched_bytes,
+        first_batch_bytes + retained_bytes
+    );
+    assert_eq!(
+        result.stats.max_batch_bytes,
+        first_batch_bytes.max(retained_bytes)
+    );
+    assert_eq!(
+        retained_ciphertext,
+        stored
+            .borrow()
+            .iter()
+            .map(|row| row.content_enc.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn repeatedly_disappearing_selected_source_returns_retryable_error_after_two_attempts() {
+    let rows = vec![user(1, "A selected source row", 4).await];
+    let attempts = Cell::new(0);
+    let result = prepare_with_source_retry(|| {
+        attempts.set(attempts.get() + 1);
+        prepare_with_fetch(
+            &metadata(&rows),
+            vec![],
+            0,
+            &key(),
+            "deepseek-v4-1-flash",
+            ReasoningReplay::None,
+            &[],
+            0,
+            0,
+            |_| Ok(vec![]),
+        )
+    });
+    assert!(matches!(result, Err(ApiError::ServiceUnavailable)));
+    assert_eq!(attempts.get(), 2);
+}
+
+#[tokio::test]
+async fn identity_and_ciphertext_failures_do_not_trigger_source_retry() {
+    let rows = vec![user(1, "A selected source row", 4).await];
+    for corrupt_ciphertext in [false, true] {
+        let attempts = Cell::new(0);
+        let result = prepare_with_source_retry(|| {
+            attempts.set(attempts.get() + 1);
+            prepare_with_fetch(
+                &metadata(&rows),
+                vec![],
+                0,
+                &key(),
+                "deepseek-v4-1-flash",
+                ReasoningReplay::None,
+                &[],
+                0,
+                0,
+                |keys| {
+                    let mut raw = fetch_rows(&rows, keys);
+                    if corrupt_ciphertext {
+                        raw[0].content_enc.as_mut().unwrap()[0] ^= 1;
+                    } else {
+                        raw[0].uuid = Uuid::new_v4();
+                    }
+                    Ok(raw)
+                },
+            )
+        });
+        assert!(matches!(result, Err(ApiError::InternalServerError)));
+        assert_eq!(attempts.get(), 1);
+    }
+}
+
+#[tokio::test]
+async fn legacy_window_keeps_only_recent_user_when_head_and_marker_cannot_fit() {
+    let model = "gpt-oss-120b";
+    let window = prompt_token_budget(model) as i32;
+    let rows = vec![
+        user(1, "First", window / 3).await,
+        row("assistant", 2, "First reply", window / 3).await,
+        user(3, "Middle", window / 3).await,
+        row("assistant", 4, "Middle reply", window / 3).await,
+        user(5, "Most recent", window - 1000).await,
+    ];
+    let result = prepare_rows(&rows, model, ReasoningReplay::None);
+    assert_eq!(
+        result.prompt.messages,
+        vec![json!({"role":"user","content":"Most recent"})]
+    );
+    assert_eq!(result.prompt.estimated_tokens, (window - 1000) as usize);
+    assert!(result.stats.truncated);
+}
+
+#[tokio::test]
+async fn legacy_window_keeps_system_and_recent_user_when_first_user_cannot_fit() {
+    let model = "gpt-oss-120b";
+    let window = prompt_token_budget(model) as i32;
+    let rows = vec![
+        user(1, "First", window / 3).await,
+        row("assistant", 2, "First reply", window / 3).await,
+        user(3, "Middle", window / 3).await,
+        row("assistant", 4, "Middle reply", window / 3).await,
+        user(5, "Most recent", window - 1000).await,
+    ];
+    let result = prepare_with_fetch(
+        &metadata(&rows),
+        vec![json!({"role":"system","content":"Required system"})],
+        50,
+        &key(),
+        model,
+        ReasoningReplay::None,
+        &[],
+        0,
+        0,
+        |keys| Ok(fetch_rows(&rows, keys)),
+    )
+    .unwrap();
+    assert_eq!(
+        result.prompt.messages,
+        vec![
+            json!({"role":"system","content":"Required system"}),
+            json!({"role":"user","content":"Most recent"})
+        ]
+    );
+    assert_eq!(
+        result.prompt.estimated_tokens,
+        50 + (window - 1000) as usize
+    );
+    assert!(result.stats.truncated);
+}
+
+#[tokio::test]
+async fn legacy_truncation_keeps_or_drops_the_complete_recent_tool_exchange() {
+    let model = "gpt-oss-120b";
+    let window = prompt_token_budget(model) as i32;
+    let mut call = row("tool_call", 4, "{}", window / 8).await;
+    call.tool_call_id = Some(call.uuid);
+    call.tool_name = Some("web_search".into());
+    let mut output = row("tool_output", 5, "Result", window / 8).await;
+    output.tool_call_id = call.tool_call_id;
+    let rows = vec![
+        user(1, "First", window / 32).await,
+        row("assistant", 2, "Large middle answer", window * 3 / 4).await,
+        user(3, "Recent", window / 8).await,
+        call,
+        output,
+    ];
+    for (requested_output, keeps_exchange) in [(0, true), (window as usize * 3 / 4, false)] {
+        let result = prepare_with_fetch(
+            &metadata(&rows),
+            vec![],
+            0,
+            &key(),
+            model,
+            ReasoningReplay::None,
+            &[],
+            0,
+            requested_output,
+            |keys| Ok(fetch_rows(&rows, keys)),
+        )
+        .unwrap();
+        let calls: Vec<_> = result
+            .prompt
+            .messages
+            .iter()
+            .filter_map(|message| message.get("tool_calls"))
+            .collect();
+        let outputs: Vec<_> = result
+            .prompt
+            .messages
+            .iter()
+            .filter_map(|message| message.get("tool_call_id"))
+            .collect();
+        assert_eq!(calls.len(), usize::from(keeps_exchange));
+        assert_eq!(outputs.len(), calls.len());
+        if keeps_exchange {
+            assert_eq!(calls[0][0]["id"], *outputs[0]);
+        }
+        assert!(result.stats.truncated);
+        assert!(result.prompt.estimated_tokens <= window as usize - requested_output);
+    }
 }
 
 #[tokio::test]
@@ -360,7 +613,12 @@ fn caller_output_and_current_input_room_are_reserved_before_any_fetch() {
             Ok(vec![])
         },
     );
-    assert!(matches!(result, Err(ApiError::MessageExceedsContextLimit)));
+    assert!(matches!(
+        result,
+        Err(LegacyPreparationError::Api(
+            ApiError::MessageExceedsContextLimit
+        ))
+    ));
     assert!(!fetched.get());
 }
 
@@ -407,7 +665,10 @@ async fn incorrect_fetched_identity_and_tampered_ciphertext_fail_closed() {
             Ok(raw)
         },
     );
-    assert!(matches!(result, Err(ApiError::InternalServerError)));
+    assert!(matches!(
+        result,
+        Err(LegacyPreparationError::Api(ApiError::InternalServerError))
+    ));
     let result = prepare_with_fetch(
         &meta,
         vec![],
@@ -424,7 +685,10 @@ async fn incorrect_fetched_identity_and_tampered_ciphertext_fail_closed() {
             Ok(raw)
         },
     );
-    assert!(matches!(result, Err(ApiError::InternalServerError)));
+    assert!(matches!(
+        result,
+        Err(LegacyPreparationError::Api(ApiError::InternalServerError))
+    ));
 }
 
 #[tokio::test]

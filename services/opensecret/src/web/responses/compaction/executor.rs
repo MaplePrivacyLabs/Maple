@@ -77,6 +77,7 @@ fn log_summary_provider_failure(
 pub(super) enum SummaryExecutionError {
     Cancelled,
     Deadline,
+    PreacceptBudget,
     Capacity,
     InputLimit,
     InvalidSummary,
@@ -89,6 +90,7 @@ impl SummaryExecutionError {
         match self {
             Self::Cancelled => "cancelled",
             Self::Deadline => "deadline",
+            Self::PreacceptBudget => "preaccept_budget",
             Self::Capacity => "helper_call_limit",
             Self::InputLimit => "helper_input_limit",
             Self::InvalidSummary => "invalid_summary",
@@ -99,7 +101,9 @@ impl SummaryExecutionError {
 
     pub(super) fn can_fallback_to_uncompacted(&self) -> bool {
         match self {
-            Self::Capacity | Self::InputLimit | Self::InvalidSummary => true,
+            Self::PreacceptBudget | Self::Capacity | Self::InputLimit | Self::InvalidSummary => {
+                true
+            }
             Self::Provider(error) => match error.as_ref() {
                 CompletionExecutionError::Request(ApiError::ServiceUnavailable)
                 | CompletionExecutionError::Request(ApiError::InferenceCapacity { .. }) => true,
@@ -148,10 +152,54 @@ impl SummaryExecutionError {
             Self::Provider(error) => (*error).into_api_error(),
             Self::Unsafe(error) => error,
             Self::InputLimit => ApiError::MessageExceedsContextLimit,
-            Self::Cancelled | Self::Deadline | Self::Capacity | Self::InvalidSummary => {
-                ApiError::ServiceUnavailable
-            }
+            Self::Cancelled
+            | Self::Deadline
+            | Self::PreacceptBudget
+            | Self::Capacity
+            | Self::InvalidSummary => ApiError::ServiceUnavailable,
         }
+    }
+}
+
+fn check_summary_lifetime(
+    execution: &ResponseExecution,
+    deadline: Instant,
+    preaccept_deadline: Option<Instant>,
+) -> Result<(), SummaryExecutionError> {
+    if execution.is_cancelled() {
+        return Err(SummaryExecutionError::Cancelled);
+    }
+    let now = Instant::now();
+    // The absolute execution deadline always wins over the optional phase
+    // budget: an expired or cancelled Response may never take a fallback.
+    if now >= deadline {
+        return Err(SummaryExecutionError::Deadline);
+    }
+    if preaccept_deadline.is_some_and(|deadline| now >= deadline) {
+        return Err(SummaryExecutionError::PreacceptBudget);
+    }
+    Ok(())
+}
+
+async fn await_summary_step<T>(
+    execution: &ResponseExecution,
+    deadline: Instant,
+    preaccept_deadline: Option<Instant>,
+    step: impl std::future::Future<Output = Result<T, SummaryExecutionError>>,
+) -> Result<T, SummaryExecutionError> {
+    check_summary_lifetime(execution, deadline, preaccept_deadline)?;
+    let step_deadline = preaccept_deadline.map_or(deadline, |phase| phase.min(deadline));
+    tokio::select! {
+        biased;
+        _ = execution.cancelled() => Err(SummaryExecutionError::Cancelled),
+        _ = tokio::time::sleep_until(step_deadline) => {
+            if Instant::now() >= deadline {
+                Err(SummaryExecutionError::Deadline)
+            } else {
+                Err(SummaryExecutionError::PreacceptBudget)
+            }
+        },
+        result = step => result,
     }
 }
 
@@ -257,25 +305,38 @@ impl SummaryExecutor<'_> {
                 .map_err(|error| SummaryExecutionError::Provider(Box::new(error)))?;
                 collect_summary_stream(&mut completion.stream, self.budget.metrics.as_ref()).await
             };
-            let response = tokio::select! {
-                biased;
-                _ = self.execution.cancelled() => {
+            // Dropping this helper future is local cancellation, not an
+            // invented provider failure. Ordinary provider observation/usage
+            // guards retain their established terminal semantics.
+            let response = await_summary_step(
+                self.execution,
+                self.deadline,
+                self.budget.preaccept_deadline(),
+                response,
+            )
+            .await;
+            match response {
+                Err(SummaryExecutionError::Cancelled) => {
                     tracing::info!(event = "responses.compaction.helper_cancelled", user_id = %self.user.uuid,
                         response_id = %self.execution.response_id(), stage = "awaiting_provider",
                         elapsed_ms = call_started.elapsed().as_millis() as u64,
                         "Compaction summary provider call cancelled");
                     return Err(SummaryExecutionError::Cancelled);
-                },
-                _ = tokio::time::sleep_until(self.deadline) => {
+                }
+                Err(SummaryExecutionError::Deadline) => {
                     tracing::warn!(event = "responses.compaction.helper_deadline", user_id = %self.user.uuid,
                         response_id = %self.execution.response_id(), stage = "awaiting_provider",
                         elapsed_ms = call_started.elapsed().as_millis() as u64,
                         "Compaction summary provider call reached its deadline");
                     return Err(SummaryExecutionError::Deadline);
-                },
-                response = response => response,
-            };
-            match response {
+                }
+                Err(SummaryExecutionError::PreacceptBudget) => {
+                    tracing::warn!(event = "responses.compaction.helper_preaccept_budget", user_id = %self.user.uuid,
+                        response_id = %self.execution.response_id(), stage = "awaiting_provider",
+                        elapsed_ms = call_started.elapsed().as_millis() as u64,
+                        "Compaction summary preaccept budget exhausted");
+                    return Err(SummaryExecutionError::PreacceptBudget);
+                }
                 Ok(response) => {
                     let next = summary::parse_summary_response(&response).map_err(|error| {
                         log_summary_rejection(
@@ -339,17 +400,15 @@ impl SummaryExecutor<'_> {
     }
 
     fn check_execution(&self) -> Result<(), SummaryExecutionError> {
-        if self.execution.is_cancelled() {
-            tracing::info!(event = "responses.compaction.helper_cancelled", user_id = %self.user.uuid,
+        if let Err(error) = check_summary_lifetime(
+            self.execution,
+            self.deadline,
+            self.budget.preaccept_deadline(),
+        ) {
+            tracing::warn!(event = "responses.compaction.helper_stopped", user_id = %self.user.uuid,
                 response_id = %self.execution.response_id(), stage = "before_fragment",
-                "Compaction summary execution cancelled");
-            return Err(SummaryExecutionError::Cancelled);
-        }
-        if Instant::now() >= self.deadline {
-            tracing::warn!(event = "responses.compaction.helper_deadline", user_id = %self.user.uuid,
-                response_id = %self.execution.response_id(), stage = "before_fragment",
-                "Compaction summary execution reached its deadline");
-            return Err(SummaryExecutionError::Deadline);
+                reason = error.category(), "Compaction summary execution cannot start another fragment");
+            return Err(error);
         }
         Ok(())
     }
@@ -516,6 +575,100 @@ mod tests {
     };
     use serde_json::json;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn preaccept_budget_drops_pending_helper_without_cancelling_the_response() {
+        use crate::web::responses::ResponseExecutionRegistry;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::time::{timeout, Duration};
+
+        struct DropMarker<'a>(&'a AtomicBool);
+        impl Drop for DropMarker<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let registry = ResponseExecutionRegistry::default();
+        let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
+        let execution = registration.execution();
+        let polled = AtomicBool::new(false);
+        let dropped = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let phase_deadline = Instant::now() + Duration::from_millis(20);
+        let result = timeout(
+            Duration::from_secs(1),
+            await_summary_step(&execution, deadline, Some(phase_deadline), async {
+                let _marker = DropMarker(&dropped);
+                polled.store(true, Ordering::Release);
+                std::future::pending::<Result<(), SummaryExecutionError>>().await
+            }),
+        )
+        .await
+        .expect("the earlier preaccept budget must bound a slow helper");
+        assert!(matches!(
+            result,
+            Err(SummaryExecutionError::PreacceptBudget)
+        ));
+        assert!(polled.load(Ordering::Acquire));
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(!execution.is_cancelled());
+        assert!(Instant::now() < deadline);
+    }
+
+    #[tokio::test]
+    async fn expired_preaccept_budget_never_polls_work_and_absolute_deadline_stays_strict() {
+        use crate::web::responses::ResponseExecutionRegistry;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::time::Duration;
+
+        let registry = ResponseExecutionRegistry::default();
+        let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
+        let execution = registration.execution();
+        let expired = Instant::now() - Duration::from_millis(1);
+        let future = Instant::now() + Duration::from_secs(1);
+        let polled = AtomicBool::new(false);
+        let result = await_summary_step(&execution, future, Some(expired), async {
+            polled.store(true, Ordering::Release);
+            Ok(())
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(SummaryExecutionError::PreacceptBudget)
+        ));
+        assert!(!polled.load(Ordering::Acquire));
+        assert!(matches!(
+            check_summary_lifetime(&execution, expired, Some(expired)),
+            Err(SummaryExecutionError::Deadline)
+        ));
+        execution.cancel();
+        assert!(matches!(
+            check_summary_lifetime(&execution, expired, Some(expired)),
+            Err(SummaryExecutionError::Cancelled)
+        ));
+    }
+
+    #[tokio::test]
+    async fn clearing_preaccept_budget_restores_later_helper_execution_allowance() {
+        use crate::web::responses::ResponseExecutionRegistry;
+        use tokio::time::Duration;
+
+        let registry = ResponseExecutionRegistry::default();
+        let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
+        let execution = registration.execution();
+        let budget = CompactionBudget::default();
+        budget.set_preaccept_deadline(Instant::now() - Duration::from_millis(1));
+        budget.clear_preaccept_deadline();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let result = await_summary_step(&execution, deadline, budget.preaccept_deadline(), async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok(42)
+        })
+        .await;
+        assert!(matches!(result, Ok(42)));
+        assert!(!execution.is_cancelled());
+    }
 
     fn summary_stream_chunk(content: &str, finish: serde_json::Value) -> CompletionChunk {
         CompletionChunk::StreamChunk(json!({"choices": [{"index": 0, "delta": {
@@ -870,6 +1023,7 @@ mod tests {
             assert!(!error.can_fallback_to_uncompacted());
         }
         for error in [
+            SummaryExecutionError::PreacceptBudget,
             SummaryExecutionError::Capacity,
             SummaryExecutionError::InputLimit,
             SummaryExecutionError::InvalidSummary,

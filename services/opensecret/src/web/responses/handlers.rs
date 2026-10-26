@@ -99,6 +99,9 @@ const RESPONSE_CANCEL_ACK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_WEB_SEARCH_TOOL_TURNS_FREE: usize = 5;
 const MAX_WEB_SEARCH_TOOL_TURNS_PAID: usize = 30;
 const RESPONSE_EXECUTION_DEADLINE: Duration = Duration::from_secs(10 * 60);
+// Summary work before HTTP acceptance has a separate, shorter allowance.
+// Accepted tool turns retain the logical Response's full execution deadline.
+const PREACCEPT_COMPACTION_BUDGET: Duration = Duration::from_secs(60);
 
 /// vLLM's per-request loop guard: generation stops with finish reason
 /// `repetition` once a 4 to 64 token pattern repeats 16 times in a row. Both
@@ -7016,7 +7019,7 @@ async fn create_response_stream(
     cache_namespace_root: Option<Extension<CacheNamespaceRoot>>,
     body: Decrypted<ResponsesCreateRequest>,
 ) -> Result<Response, ApiError> {
-    let mut observation = None;
+    let mut observation = super::context_observability::ResponseAdmissionObservation::default();
     let result = create_response_stream_inner(
         state,
         headers,
@@ -7025,12 +7028,10 @@ async fn create_response_stream(
         auth_context,
         cache_namespace_root,
         body,
-        &mut observation,
+        observation.slot(),
     )
     .await;
-    if let (Err(error), Some(observation)) = (&result, observation.as_ref()) {
-        observation.preaccept_failed(error);
-    }
+    observation.finish(result.as_ref().err());
     result
 }
 
@@ -7183,6 +7184,9 @@ async fn create_response_stream_inner(
     let compaction_budget = Arc::new(CompactionBudget::default());
     let flag_started = Instant::now();
     let context_policy = context_policy::resolve(&state, user.uuid).await;
+    if context_policy.strategy == ContextStrategy::Compaction {
+        compaction_budget.set_preaccept_deadline(TokioInstant::now() + PREACCEPT_COMPACTION_BUDGET);
+    }
     compaction_budget
         .metrics()
         .record_flag_evaluation(flag_started.elapsed());
@@ -7538,6 +7542,11 @@ async fn create_response_stream_inner(
     )
     .await?;
 
+    // Acceptance metadata follows the durable transaction, not later client
+    // channel setup. Subsequent tool work uses the full execution deadline.
+    compaction_budget.clear_preaccept_deadline();
+    context_observation.accepted();
+
     // Capture stream and title data before moving execution state into the
     // supervisor task.
     let (user_count, assistant_count) =
@@ -7609,7 +7618,6 @@ async fn create_response_stream_inner(
         }
     }
 
-    context_observation.accepted();
     let storage_db = state.db.clone();
     tokio::spawn(async move {
         let _storage_execution_guard = storage_execution_guard;

@@ -51,6 +51,54 @@ pub(super) struct LegacyPreparedPrompt {
     pub stats: LegacyContextStats,
 }
 
+#[derive(Debug)]
+enum LegacyPreparationError {
+    SourceChanged(LegacyContextStats),
+    Api(ApiError),
+}
+
+impl From<ApiError> for LegacyPreparationError {
+    fn from(error: ApiError) -> Self {
+        Self::Api(error)
+    }
+}
+
+/// A disappearing selected row invalidates the complete projection, not just
+/// its batch. Refresh metadata and rebuild once; never emit a partial tool pair.
+fn prepare_with_source_retry(
+    mut attempt: impl FnMut() -> Result<LegacyPreparedPrompt, LegacyPreparationError>,
+) -> Result<LegacyPreparedPrompt, ApiError> {
+    let previous_stats = match attempt() {
+        Ok(prepared) => return Ok(prepared),
+        Err(LegacyPreparationError::Api(error)) => return Err(error),
+        Err(LegacyPreparationError::SourceChanged(stats)) => stats,
+    };
+    let mut prepared = match attempt() {
+        Ok(prepared) => prepared,
+        Err(LegacyPreparationError::Api(error)) => return Err(error),
+        Err(LegacyPreparationError::SourceChanged(_)) => return Err(ApiError::ServiceUnavailable),
+    };
+    // Successful retry accounting includes payloads already read by the
+    // discarded attempt. Selection and projected size describe the final view.
+    prepared.stats.fetched_rows = prepared
+        .stats
+        .fetched_rows
+        .saturating_add(previous_stats.fetched_rows);
+    prepared.stats.fetch_batches = prepared
+        .stats
+        .fetch_batches
+        .saturating_add(previous_stats.fetch_batches);
+    prepared.stats.fetched_bytes = prepared
+        .stats
+        .fetched_bytes
+        .saturating_add(previous_stats.fetched_bytes);
+    prepared.stats.max_batch_bytes = prepared
+        .stats
+        .max_batch_bytes
+        .max(previous_stats.max_batch_bytes);
+    Ok(prepared)
+}
+
 #[derive(Clone)]
 struct ContextEntry {
     message_type: String,
@@ -165,24 +213,26 @@ fn prepare<D: DBConnection + ?Sized>(
         override_instructions,
         Some(internal_instructions),
     )?;
-    let metadata = db
-        .get_conversation_context_metadata(conversation_id)
-        .map_err(|_| ApiError::InternalServerError)?;
-    let result = prepare_with_fetch(
-        &metadata,
-        instructions,
-        instruction_tokens,
-        user_key,
-        model,
-        reasoning_replay,
-        incoming_messages,
-        incoming_tokens,
-        requested_output_tokens,
-        |keys| {
-            db.get_messages_by_ids(conversation_id, keys)
-                .map_err(|_| ApiError::InternalServerError)
-        },
-    )?;
+    let result = prepare_with_source_retry(|| {
+        let metadata = db
+            .get_conversation_context_metadata(conversation_id)
+            .map_err(|_| ApiError::InternalServerError)?;
+        prepare_with_fetch(
+            &metadata,
+            instructions.clone(),
+            instruction_tokens,
+            user_key,
+            model,
+            reasoning_replay,
+            incoming_messages,
+            incoming_tokens,
+            requested_output_tokens,
+            |keys| {
+                db.get_messages_by_ids(conversation_id, keys)
+                    .map_err(|_| ApiError::InternalServerError)
+            },
+        )
+    })?;
     tracing::info!(
         event = "responses.context.legacy_prepared",
         user_uuid = %user_id,
@@ -214,12 +264,12 @@ fn prepare_with_fetch(
     incoming_tokens: usize,
     requested_output_tokens: usize,
     mut fetch: impl FnMut(&[MessageKey]) -> Result<Vec<RawThreadMessage>, ApiError>,
-) -> Result<LegacyPreparedPrompt, ApiError> {
+) -> Result<LegacyPreparedPrompt, LegacyPreparationError> {
     let input_budget = prompt_token_budget(model)
         .checked_sub(requested_output_tokens)
         .ok_or(ApiError::MessageExceedsContextLimit)?;
     if instruction_tokens.saturating_add(incoming_tokens) > input_budget {
-        return Err(ApiError::MessageExceedsContextLimit);
+        return Err(ApiError::MessageExceedsContextLimit.into());
     }
     let reserve = incoming_tokens.saturating_add(requested_output_tokens);
     let (mut selected, did_truncate) = determine_needed_message_ids(
@@ -247,7 +297,7 @@ fn prepare_with_fetch(
     if !instructions.is_empty() {
         // The shared instruction loader emits one combined system message.
         if instructions.len() != 1 {
-            return Err(ApiError::InternalServerError);
+            return Err(ApiError::InternalServerError.into());
         }
         messages.push(ProjectedMessage {
             role: ROLE_SYSTEM,
@@ -294,21 +344,21 @@ fn prepare_with_fetch(
         for row in raw {
             let key = (row.message_type.clone(), row.id);
             if expected.get(&key) != Some(&row.uuid) || ordered.insert(key, row).is_some() {
-                return Err(ApiError::InternalServerError);
+                return Err(ApiError::InternalServerError.into());
             }
         }
-        // A concurrent source deletion can leave a selected row absent, as in
-        // the old ordered targeted loader. Never substitute an unrelated row.
+        if ordered.len() != keys.len() {
+            return Err(LegacyPreparationError::SourceChanged(stats));
+        }
         for key in keys {
-            if let Some(row) = ordered.remove(key) {
-                project_row(
-                    row,
-                    user_key,
-                    reasoning_replay,
-                    &mut pending_reasoning,
-                    &mut messages,
-                )?;
-            }
+            let row = ordered.remove(key).ok_or(ApiError::InternalServerError)?;
+            project_row(
+                row,
+                user_key,
+                reasoning_replay,
+                &mut pending_reasoning,
+                &mut messages,
+            )?;
         }
         // Only this batch's raw rows ever coexist. The next fetch starts after
         // all ciphertext and serialized inline images from this one are gone.
@@ -331,7 +381,7 @@ fn prepare_with_fetch(
     normalize_tool_call_ids_for_model(&mut prompt, model);
     let estimated_tokens = projected_tokens.saturating_add(incoming_tokens);
     if estimated_tokens > input_budget {
-        return Err(ApiError::MessageExceedsContextLimit);
+        return Err(ApiError::MessageExceedsContextLimit.into());
     }
     stats.projected_bytes = serialized_size(&prompt)?;
     let allowed_urls = collect_kagi_allowed_urls_from_prompt(&prompt);

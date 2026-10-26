@@ -65,11 +65,37 @@ pub(super) struct CompactionBudget {
     sources: Mutex<source::SourceLoader>,
     non_reducing: Mutex<HashSet<AttemptKey>>,
     advisory_failed: AtomicBool,
+    preaccept_deadline: Mutex<Option<tokio::time::Instant>>,
 }
 
 impl CompactionBudget {
     pub(super) fn metrics(&self) -> Arc<ContextMetrics> {
         self.metrics.clone()
+    }
+
+    /// Limit helper work before durable acceptance without shortening the
+    /// logical Response's execution deadline or its later tool turns.
+    pub(super) fn set_preaccept_deadline(&self, deadline: tokio::time::Instant) {
+        let mut current = self
+            .preaccept_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A repeated preparation must never renew this phase's allowance.
+        *current = Some(current.map_or(deadline, |previous| previous.min(deadline)));
+    }
+
+    pub(super) fn clear_preaccept_deadline(&self) {
+        *self
+            .preaccept_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    fn preaccept_deadline(&self) -> Option<tokio::time::Instant> {
+        *self
+            .preaccept_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn begin_call(&self) -> Result<(), ApiError> {
@@ -1509,6 +1535,28 @@ mod tests {
     }
 
     #[test]
+    fn preaccept_budget_fallback_requires_a_fitting_nonforced_live_prompt() {
+        let error = SummaryExecutionError::PreacceptBudget;
+        assert!(may_use_original_prompt(
+            &error, false, 100, 100, false, false
+        ));
+        for (forced, tokens, cancelled, expired) in [
+            (true, 100, false, false),
+            (false, 101, false, false),
+            (false, 100, true, false),
+            (false, 100, false, true),
+        ] {
+            assert!(!may_use_original_prompt(
+                &error, forced, tokens, 100, cancelled, expired
+            ));
+        }
+        assert!(matches!(
+            error.into_api_error(),
+            ApiError::ServiceUnavailable
+        ));
+    }
+
+    #[test]
     fn rejected_helper_preserves_history_and_a_later_request_can_compact_and_reload() {
         use serde_json::json;
 
@@ -2100,6 +2148,23 @@ mod tests {
             MAX_SUMMARY_CALLS_PER_RESPONSE as u64
         );
         assert_eq!(budget.metrics().snapshot().helper_usage_records, 0);
+    }
+
+    #[test]
+    fn preaccept_deadline_cannot_be_renewed_and_acceptance_only_clears_the_phase_limit() {
+        use tokio::time::{Duration, Instant};
+
+        let budget = CompactionBudget::default();
+        assert_eq!(budget.preaccept_deadline(), None);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        budget.set_preaccept_deadline(deadline);
+        budget.set_preaccept_deadline(deadline + Duration::from_secs(10));
+        assert_eq!(budget.preaccept_deadline(), Some(deadline));
+        budget.begin_call().unwrap();
+        budget.clear_preaccept_deadline();
+        assert_eq!(budget.preaccept_deadline(), None);
+        assert_eq!(budget.calls.load(Ordering::Acquire), 1);
+        assert!(budget.has_paid_work());
     }
 
     #[test]

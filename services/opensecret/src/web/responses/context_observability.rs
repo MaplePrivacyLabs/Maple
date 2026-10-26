@@ -245,6 +245,40 @@ struct ObservationInner {
 #[derive(Clone)]
 pub(super) struct ResponseContextObservation(Arc<ObservationInner>);
 
+/// Observe a dropped admission future without changing execution ownership.
+/// Accepted streams retain their authoritative terminal observation instead.
+#[derive(Default)]
+pub(super) struct ResponseAdmissionObservation {
+    observation: Option<ResponseContextObservation>,
+    returned: bool,
+}
+
+impl ResponseAdmissionObservation {
+    pub(super) fn slot(&mut self) -> &mut Option<ResponseContextObservation> {
+        &mut self.observation
+    }
+
+    pub(super) fn finish(mut self, error: Option<&ApiError>) {
+        if let (Some(error), Some(observation)) = (error, self.observation.as_ref()) {
+            observation.preaccept_failed(error);
+        }
+        self.returned = true;
+    }
+}
+
+impl Drop for ResponseAdmissionObservation {
+    fn drop(&mut self) {
+        if self.returned {
+            return;
+        }
+        if let Some(observation) = &self.observation {
+            if !observation.0.accepted.load(Ordering::Acquire) {
+                observation.record("preaccept_dropped", Some("handler_dropped"), None);
+            }
+        }
+    }
+}
+
 impl ResponseContextObservation {
     pub(super) fn new(
         user_uuid: Uuid,
@@ -529,6 +563,96 @@ mod tests {
         assert!(logs.contains("initial_model=\"gpt-oss-120b\""));
         assert!(logs.contains("model_id=\"glm-5-3\""));
         assert!(logs.contains("public_error_code=\"repetition_detected\""));
+    }
+
+    #[test]
+    fn dropped_admission_future_records_one_metadata_only_outcome() {
+        use std::future::Future;
+
+        let metrics = Arc::new(ContextMetrics::default());
+        let logs = telemetry::capture_logs(|| {
+            let observation = ResponseContextObservation::new(
+                Uuid::from_u128(1),
+                Uuid::from_u128(2),
+                Uuid::from_u128(3),
+                "PRIVATE_MODEL_OUTPUT",
+                ContextPolicy::compaction(),
+                metrics.clone(),
+            );
+            let mut request = Box::pin(async {
+                let mut admission = ResponseAdmissionObservation::default();
+                *admission.slot() = Some(observation.clone());
+                let _preparation = metrics.start_preparation(false);
+                metrics.helper_call_started();
+                std::future::pending::<()>().await;
+                admission.finish(None);
+            });
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(request.as_mut().poll(&mut context).is_pending());
+            assert!(!observation.has_recorded_outcome());
+            drop(request);
+            assert!(observation.has_recorded_outcome());
+            observation.preaccept_failed(&ApiError::InternalServerError);
+        });
+        assert_eq!(
+            logs.matches("event=\"responses.context.outcome\"").count(),
+            1
+        );
+        assert!(logs.contains("outcome=\"preaccept_dropped\""));
+        assert!(logs.contains("error_category=\"handler_dropped\""));
+        assert!(logs.contains("accepted=false"));
+        assert!(logs.contains("preparation_failures=1"));
+        assert!(logs.contains("helper_calls=1"));
+        // A started helper with no received usage remains distinguishable from
+        // zero observed work; the observation cannot infer its upstream cost.
+        assert!(logs.contains("helper_usage_records=0"));
+        assert!(!logs.contains("PRIVATE_"));
+    }
+
+    #[test]
+    fn returned_admission_error_keeps_its_failure_outcome() {
+        let logs = telemetry::capture_logs(|| {
+            let observation = observation(ContextPolicy::legacy(), Arc::default());
+            let mut admission = ResponseAdmissionObservation::default();
+            *admission.slot() = Some(observation.clone());
+            admission.finish(Some(&ApiError::InternalServerError));
+            observation.terminal(ContextOutcome::Failed, None, None);
+        });
+        assert_eq!(
+            logs.matches("event=\"responses.context.outcome\"").count(),
+            1
+        );
+        assert!(logs.contains("outcome=\"preaccept_failed\""));
+        assert!(!logs.contains("preaccept_dropped"));
+        assert!(logs.contains("accepted=false"));
+    }
+
+    #[test]
+    fn admitted_stream_retains_terminal_ownership_on_return_or_drop() {
+        for returns in [true, false] {
+            let logs = telemetry::capture_logs(|| {
+                let observation = observation(ContextPolicy::compaction(), Arc::default());
+                let mut admission = ResponseAdmissionObservation::default();
+                *admission.slot() = Some(observation.clone());
+                observation.accepted();
+                if returns {
+                    admission.finish(None);
+                } else {
+                    drop(admission);
+                }
+                assert!(!observation.has_recorded_outcome());
+                observation.terminal(ContextOutcome::Completed, None, None);
+            });
+            assert_eq!(
+                logs.matches("event=\"responses.context.outcome\"").count(),
+                1
+            );
+            assert!(logs.contains("outcome=\"completed\""));
+            assert!(logs.contains("accepted=true"));
+            assert!(!logs.contains("preaccept_dropped"));
+        }
+        let logs = telemetry::capture_logs(|| drop(ResponseAdmissionObservation::default()));
+        assert!(logs.is_empty());
     }
 
     #[test]
