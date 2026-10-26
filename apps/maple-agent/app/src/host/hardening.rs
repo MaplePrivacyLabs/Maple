@@ -12,16 +12,7 @@ pub(crate) fn apply() -> Result<(), String> {
         return Ok(());
     }
     #[cfg(unix)]
-    {
-        let limit = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: a valid, initialized rlimit pointer; process-local policy.
-        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
-            return Err("Could not disable Maple crash dumps.".into());
-        }
-    }
+    disable_core_dumps()?;
     #[cfg(target_os = "linux")]
     {
         // SAFETY: PR_SET_DUMPABLE takes the integer zero, no pointer arguments.
@@ -60,6 +51,19 @@ pub(crate) fn apply() -> Result<(), String> {
         {
             return Err("Could not disable Maple crash snapshots.".into());
         }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn disable_core_dumps() -> Result<(), String> {
+    let limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: a valid, initialized rlimit pointer; process-local policy.
+    if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
+        return Err("Could not disable Maple crash dumps.".into());
     }
     Ok(())
 }

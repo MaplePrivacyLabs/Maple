@@ -133,6 +133,12 @@ Goose, with an independent dependency graph.
   (detected built-ins and custom MCP servers), Usage (the plan meter from
   the billing API), and About.
 - Dark and light themes; the default follows the system.
+  On Linux, the protected GUI starts a portal-only child of the same executable
+  (`--internal-theme-watch`). The child receives only desktop-bus environment,
+  never opens Maple state, disables core dumps, and exits when its parent pipe
+  closes. Only the child remains debugger-accessible for portal identification.
+  Setup has a two-second background deadline; unavailable portals do not block
+  launch. Explicit Dark/Light settings override system updates.
 - Billing status from the Maple billing API.
 - Desktop notifications when a task finishes or asks a question while the
   window is not focused.
@@ -592,6 +598,18 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+On a Linux desktop with a live Settings portal, run the opt-in helper lifecycle
+regression from the same component shell:
+
+```sh
+cargo test --locked -p maple-agent-app --test system_theme_helper -- --ignored
+```
+
+It launches the real executable in helper mode and verifies theme output,
+parent-pipe shutdown, and absence of application-state writes. It does not
+change the desktop theme. Parser, environment-scrubbing and palette precedence
+tests run in the ordinary app test suite.
 
 Root `.github/workflows/agent-ci.yml` selects this component when Agent or
 its shared Rust dependencies change. It builds and tests Linux, macOS, and

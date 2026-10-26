@@ -51,6 +51,29 @@ impl Preference {
 
 static PREFERENCE: AtomicU8 = AtomicU8::new(0);
 static LIGHT_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+static SYSTEM_APPEARANCE: AtomicU8 = AtomicU8::new(0);
+
+/// Linux's protected GUI cannot query the portal itself. The credential-free
+/// helper supplies this value; native appearance remains the fallback.
+#[cfg(target_os = "linux")]
+pub fn set_system_appearance(appearance: gpui::WindowAppearance) {
+    SYSTEM_APPEARANCE.store(
+        if appearance_is_light(appearance) {
+            2
+        } else {
+            1
+        },
+        Ordering::Relaxed,
+    );
+}
+
+fn appearance_is_light(appearance: gpui::WindowAppearance) -> bool {
+    matches!(
+        appearance,
+        gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight
+    )
+}
 
 pub fn set_preference(preference: Preference) {
     PREFERENCE.store(
@@ -88,15 +111,48 @@ pub fn preference() -> Preference {
 /// whether the active palette changed, in which case every view must
 /// render again.
 pub fn resolve(appearance: gpui::WindowAppearance) -> bool {
-    let light = match preference() {
+    #[cfg(target_os = "linux")]
+    let system = match SYSTEM_APPEARANCE.load(Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let system = None;
+    let light = resolved_light(preference(), appearance, system);
+    LIGHT_ACTIVE.swap(light, Ordering::Relaxed) != light
+}
+
+fn resolved_light(
+    preference: Preference,
+    appearance: gpui::WindowAppearance,
+    system: Option<bool>,
+) -> bool {
+    match preference {
         Preference::Dark => false,
         Preference::Light => true,
-        Preference::System => matches!(
-            appearance,
-            gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight
-        ),
-    };
-    LIGHT_ACTIVE.swap(light, Ordering::Relaxed) != light
+        Preference::System => system.unwrap_or_else(|| appearance_is_light(appearance)),
+    }
+}
+
+#[cfg(test)]
+mod system_appearance_tests {
+    use super::*;
+    use gpui::WindowAppearance::{Dark, Light};
+
+    #[test]
+    fn helper_overrides_stale_native_appearance_only_in_system_mode() {
+        assert!(!resolved_light(Preference::System, Light, Some(false)));
+        assert!(resolved_light(Preference::System, Dark, Some(true)));
+        assert!(!resolved_light(Preference::Dark, Light, Some(true)));
+        assert!(resolved_light(Preference::Light, Dark, Some(false)));
+    }
+
+    #[test]
+    fn missing_helper_preserves_native_fallback() {
+        assert!(resolved_light(Preference::System, Light, None));
+        assert!(!resolved_light(Preference::System, Dark, None));
+    }
 }
 
 pub fn is_light() -> bool {
