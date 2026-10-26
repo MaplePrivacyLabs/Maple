@@ -16,6 +16,8 @@ mod send_receipt_tests;
 pub(crate) mod subscription;
 #[cfg(test)]
 mod subscription_tests;
+#[cfg(windows)]
+mod windows_spawn;
 
 use crate::backend::{self, LocalBackend};
 use maple_agent::agent::AgentServiceEvent;
@@ -600,13 +602,10 @@ fn spawn_host() -> Result<(), String> {
         }
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x00000008 | 0x00000200 | 0x01000000); // detached, new group, break away from client job
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Cannot start Maple host: {e}"))?;
+    let child = windows_spawn::spawn(&mut command);
+    #[cfg(not(windows))]
+    let child = command.spawn();
+    let mut child = child.map_err(|e| format!("Cannot start Maple host: {e}"))?;
     // Reap on Unix while the parent remains alive; the host is not kill-on-drop.
     std::thread::spawn(move || {
         let _ = child.wait();

@@ -532,6 +532,9 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         graph = next(i for i, step in enumerate(steps)
                      if step.get("name") == "Verify the canonical SDK and proxy dependency graph")
         self.assertLess(shell_probe, graph)
+        host_probe = next(i for i, step in enumerate(steps)
+                          if step.get("run") == "python3 scripts/test_windows_host_spawn.py")
+        self.assertLess(host_probe, graph)
         upload = next(step["with"] for step in steps
                       if step.get("uses", "").startswith("actions/upload-artifact@"))
         self.assertEqual(upload["path"].splitlines(), [

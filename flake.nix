@@ -832,6 +832,7 @@
             python3 apps/maple-agent/scripts/test_macos_release_dylibs.py
             python3 apps/maple-agent/scripts/test_macos_build_info.py
             python3 apps/maple-agent/scripts/test_windows_build_info.py
+            python3 apps/maple-agent/scripts/test_windows_host_spawn.py
             python3 apps/maple-agent/scripts/test_windows_release.py
             python3 apps/maple-agent/scripts/test_smoke_macos_release.py
             python3 apps/maple-agent/scripts/test_smoke_linux_bundle_host.py
