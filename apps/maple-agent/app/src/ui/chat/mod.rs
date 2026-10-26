@@ -7023,7 +7023,7 @@ impl ChatScreen {
                     this.execute_command(ChatCommand::ToggleSidebar, window, cx);
                 }))
                 .child(
-                    crate::ui::icons::wordmark(sidebar::WORDMARK_HEIGHT, theme::text_primary())
+                    crate::ui::icons::wordmark(sidebar::WORDMARK_HEIGHT, theme::text_sidebar())
                         .path("icons/maple-mark.svg")
                         .debug_selector(|| "sidebar-rail-mark".to_string()),
                 ),
