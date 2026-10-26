@@ -225,6 +225,65 @@ fn legacy_invalid_names_do_not_prevent_cancel_expiry_or_task_collection() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn widened_owned_roots_do_not_strand_session_or_confirmed_account_deletion() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for mode in [0o755, 0o711] {
+        for delete_account in [false, true] {
+            let (_directory, store, alice, bob) = fixture();
+            let owned = write_upload(&store, alice, ALICE_TASK, "widened-root", b"owned archive");
+            store
+                .pin_attachments(alice, ALICE_TASK, std::slice::from_ref(&owned.id))
+                .unwrap();
+            let other = write_upload(
+                &store,
+                bob,
+                BOB_TASK,
+                "other-account",
+                b"keep other account",
+            );
+            let root = Path::new(&owned.execution_path).parent().unwrap();
+            fs::set_permissions(root, fs::Permissions::from_mode(mode)).unwrap();
+            if delete_account {
+                store
+                    .begin_account_deletion(alice, "widened-root-deletion", 2)
+                    .unwrap();
+                store
+                    .confirm_account_deletion(alice, "widened-root-deletion")
+                    .unwrap();
+            } else {
+                store.mark_task_deleted(alice, ALICE_TASK, 2).unwrap();
+            }
+            let mut task_done = false;
+            for _ in 0..8 {
+                if store.collect_task_step(alice, ALICE_TASK).unwrap().done {
+                    task_done = true;
+                    break;
+                }
+            }
+            assert!(task_done, "mode {mode:o} stranded session cleanup");
+            assert!(!root.exists());
+            assert_eq!(stored_task_count(&store, ALICE_TASK), 0);
+            if delete_account {
+                let mut account_done = false;
+                for _ in 0..16 {
+                    if store.collect_account_step(alice).unwrap().done {
+                        account_done = true;
+                        break;
+                    }
+                }
+                assert!(account_done, "mode {mode:o} stranded account cleanup");
+            }
+            assert_eq!(
+                fs::read(&other.execution_path).unwrap(),
+                b"keep other account"
+            );
+        }
+    }
+}
+
 #[test]
 fn pending_file_count_is_per_account_even_during_pending_account_deletion() {
     let (_directory, store, alice, bob) = fixture();

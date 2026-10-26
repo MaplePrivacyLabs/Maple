@@ -362,13 +362,17 @@ mod tests {
         })
     }
 
+    fn project_root() -> &'static str {
+        if cfg!(windows) { "C:/work" } else { "/work" }
+    }
+
     fn fixture(connection: &mut Connection, version: i64) -> Vec<SessionEntry> {
         schema::migrate_to_version(connection, 1, version).unwrap();
         connection.execute("INSERT INTO accounts(id,user_key,user_id,created_ms,last_seen_ms) VALUES (1,'a','A',1,1)", []).unwrap();
         connection
             .execute(
-                "INSERT INTO projects(id,account_id,root,last_used_ms) VALUES (1,1,'/work',1)",
-                [],
+                "INSERT INTO projects(id,account_id,root,last_used_ms) VALUES (1,1,?1,1)",
+                [project_root()],
             )
             .unwrap();
         connection.execute("INSERT INTO tasks(id,uuid,account_id,project_id,kind,state,title,title_fold,created_ms,updated_ms,last_seq,timeline_format,rows_epoch,last_row_seq,pi_header,message_count) VALUES (1,?1,1,1,'desktop','settled','Keep title','keep title',1,1,130,1,3,1,?2,1)", params![TASK, header(TASK)]).unwrap();
@@ -479,7 +483,7 @@ mod tests {
             version: SESSION_VERSION,
             id: task.to_owned(),
             timestamp: 1,
-            cwd: "/work".into(),
+            cwd: project_root().into(),
             parent_session: None,
         })
         .unwrap()

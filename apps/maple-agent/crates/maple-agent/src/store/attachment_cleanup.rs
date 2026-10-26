@@ -123,13 +123,17 @@ mod implementation {
         Ok(unsafe { metadata.assume_init() })
     }
 
-    fn same_directory(parent: RawFd, name: &CStr, file: &File) -> StoreResult<libc::stat> {
-        let named = metadata_at(parent, name)?;
+    fn descriptor_metadata(file: &File) -> StoreResult<libc::stat> {
         let mut opened = std::mem::MaybeUninit::<libc::stat>::uninit();
         if unsafe { libc::fstat(file.as_raw_fd(), opened.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
         }
-        let opened = unsafe { opened.assume_init() };
+        Ok(unsafe { opened.assume_init() })
+    }
+
+    fn same_directory(parent: RawFd, name: &CStr, file: &File) -> StoreResult<libc::stat> {
+        let named = metadata_at(parent, name)?;
+        let opened = descriptor_metadata(file)?;
         if named.st_dev != opened.st_dev
             || named.st_ino != opened.st_ino
             || named.st_mode & libc::S_IFMT != libc::S_IFDIR
@@ -225,10 +229,18 @@ mod implementation {
             Err(error) => return Err(error),
         };
         let meta = same_directory(parent.as_raw_fd(), &name, &root)?;
-        if meta.st_uid != unsafe { libc::geteuid() } || meta.st_mode & 0o077 != 0 {
+        if meta.st_uid != unsafe { libc::geteuid() }
+            || meta.st_dev != descriptor_metadata(&parent)?.st_dev
+        {
             return Err(StoreError::UnsafePath);
         }
-        prepare_owned_directory(parent.as_raw_fd(), &name, &root, meta.st_dev)?;
+        // This exact owned tree was authorized for deletion. Archive extraction
+        // may widen its root mode; tighten only that verified no-follow
+        // descriptor. Namespace ancestors retain their private-path checks.
+        if meta.st_mode & 0o7777 != 0o700 && unsafe { libc::fchmod(root.as_raw_fd(), 0o700) } != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        same_directory(parent.as_raw_fd(), &name, &root)?;
         let mut progress = AttachmentCleanupProgress::default();
         let names = entries(&root)?;
         while progress.entries < ENTRY_CAP {
@@ -628,8 +640,8 @@ mod tests {
         }
         let outside = directory_path.join("outside");
         fs::create_dir(&outside).unwrap();
-        fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(outside.join("sentinel"), b"retain external content").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o500)).unwrap();
         symlink(&outside, nested.join("outside-link")).unwrap();
         fs::set_permissions(&deeper, fs::Permissions::from_mode(0o500)).unwrap();
         fs::set_permissions(&nested, fs::Permissions::from_mode(0o555)).unwrap();
@@ -651,31 +663,35 @@ mod tests {
             fs::read(outside.join("sentinel")).unwrap(),
             b"retain external content"
         );
-        assert_eq!(
-            fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
+        let outside_mode = fs::metadata(&outside).unwrap().permissions().mode() & 0o777;
+        // Restore the test-owned target only after observing cleanup's result.
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(outside_mode, 0o500);
     }
 
     #[cfg(unix)]
     #[test]
-    fn rejects_nonprivate_root_before_repairing_permissions() {
+    fn widened_owned_roots_are_tightened_before_bounded_cleanup() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().canonicalize().unwrap().join("owned");
-        private_directory(&root).unwrap();
-        fs::write(root.join("sentinel"), b"unverified root content").unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
-        let result = collect_owned_attachment_tree_step(&root);
-        let mode = fs::metadata(&root).unwrap().permissions().mode() & 0o777;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(matches!(result, Err(StoreError::UnsafePath)));
-        assert_eq!(mode, 0o555);
-        assert_eq!(
-            fs::read(root.join("sentinel")).unwrap(),
-            b"unverified root content"
-        );
+        for mode in [0o755, 0o711, 0o555] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap().join("owned");
+            private_directory(&root).unwrap();
+            for index in 0..=ENTRY_CAP {
+                fs::write(root.join(format!("owned-{index}")), b"owned content").unwrap();
+            }
+            fs::set_permissions(&root, fs::Permissions::from_mode(mode)).unwrap();
+            let first = collect_owned_attachment_tree_step(&root).unwrap();
+            assert!(!first.done);
+            assert_eq!(first.entries, ENTRY_CAP);
+            assert_eq!(
+                fs::metadata(&root).unwrap().permissions().mode() & 0o7777,
+                0o700
+            );
+            assert!(collect_owned_attachment_tree_step(&root).unwrap().done);
+            assert!(!root.exists());
+        }
     }
 
     #[cfg(windows)]

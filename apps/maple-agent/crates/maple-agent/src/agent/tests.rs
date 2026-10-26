@@ -3345,3 +3345,166 @@ async fn sending_before_open_rebuilds_retired_history_before_run_admission() {
         ["Old question stays.", "New question appears."]
     );
 }
+
+async fn history_preparation_fixture() -> (
+    Harness,
+    String,
+    Arc<crate::store::Store>,
+    crate::store::AccountId,
+) {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    harness.faux.push_text("Saved history stays visible.");
+    let mut run = harness.send(&task, "Keep this history.").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let (store, account) = harness.handle.test_persistence().unwrap();
+    (harness, task, store, account)
+}
+
+#[tokio::test]
+async fn history_preparation_retries_brief_lifecycle_contention() {
+    let (harness, task, store, account) = history_preparation_fixture().await;
+    let admission = harness.service.state.lifecycle.lock().await;
+    store.retire_task_timeline_for_test(account, &task).unwrap();
+    let handle = harness.handle.clone();
+    let preparing_task = task.clone();
+    let (started, entered) = tokio::sync::oneshot::channel();
+    let preparation = tokio::task::spawn_blocking(move || {
+        started.send(()).unwrap();
+        handle.prepare_history_for_read(
+            &preparing_task,
+            std::time::Instant::now() + Duration::from_secs(5),
+        )
+    });
+    entered.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !preparation.is_finished(),
+        "brief contention must not fail the open"
+    );
+    drop(admission);
+    tokio::time::timeout(Duration::from_secs(6), preparation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!store.history_needs_rebuild(account, &task).unwrap());
+    let page = store
+        .open_task_page(
+            account,
+            &crate::store::OpenTaskPageRequest {
+                task,
+                limit_rows: None,
+                limit_bytes: None,
+            },
+            crate::store::PageTransport::Local,
+        )
+        .unwrap();
+    assert!(
+        serde_json::to_string(&page.rows)
+            .unwrap()
+            .contains("Saved history stays visible.")
+    );
+}
+
+#[tokio::test]
+async fn history_preparation_contention_stops_at_its_existing_deadline() {
+    let (harness, task, store, account) = history_preparation_fixture().await;
+    let _admission = harness.service.state.lifecycle.lock().await;
+    store.retire_task_timeline_for_test(account, &task).unwrap();
+    let stamp = store.task_history_stamp(account, &task).unwrap();
+    let handle = harness.handle.clone();
+    let preparing_task = task.clone();
+    let budget = Duration::from_millis(150);
+    let preparation = tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let result = handle.prepare_history_for_read(&preparing_task, started + budget);
+        (started.elapsed(), result)
+    });
+    let (elapsed, result) = tokio::time::timeout(Duration::from_secs(2), preparation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(elapsed >= budget);
+    assert_eq!(
+        result.unwrap_err(),
+        "Maple is preparing this task's saved history. Try opening it again shortly."
+    );
+    assert_eq!(store.task_history_stamp(account, &task).unwrap(), stamp);
+    assert!(store.history_needs_rebuild(account, &task).unwrap());
+}
+
+async fn history_preparation_idle_write<T>(
+    mut operation: impl FnMut() -> Result<T, crate::store::StoreError>,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match operation() {
+                Ok(value) => return value,
+                Err(crate::store::StoreError::Busy) => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(error) => panic!("history fixture idle write failed: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("fixture writer contention clears")
+}
+
+#[tokio::test]
+async fn history_preparation_rechecks_completion_before_starting_another_epoch() {
+    let (harness, task, store, account) = history_preparation_fixture().await;
+    let admission = harness.service.state.lifecycle.lock().await;
+    store.retire_task_timeline_for_test(account, &task).unwrap();
+    let handle = harness.handle.clone();
+    let preparing_task = task.clone();
+    let (started, entered) = tokio::sync::oneshot::channel();
+    let preparation = tokio::task::spawn_blocking(move || {
+        started.send(()).unwrap();
+        handle.prepare_history_for_read(
+            &preparing_task,
+            std::time::Instant::now() + Duration::from_secs(5),
+        )
+    });
+    entered.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!preparation.is_finished());
+
+    // Complete the same work while the foreground request waits for admission.
+    // This test owns the lifecycle gate that normal background commits take.
+    let ticket =
+        history_preparation_idle_write(|| store.begin_timeline_rebuild(account, &task, false))
+            .await;
+    let prepared = store.prepare_timeline_rebuild(&ticket).unwrap();
+    let completed_epoch = loop {
+        let chunk = store.prepare_timeline_chunk(&prepared).unwrap();
+        match history_preparation_idle_write(|| store.commit_timeline_chunk(&chunk, false)).await {
+            crate::store::RebuildProgress::Pending { .. } => {}
+            crate::store::RebuildProgress::Replaced { epoch } => break epoch,
+            crate::store::RebuildProgress::NeedsSnapshot => panic!("source did not change"),
+        }
+    };
+    drop(admission);
+    tokio::time::timeout(Duration::from_secs(6), preparation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.task_history_stamp(account, &task).unwrap().rows_epoch,
+        completed_epoch
+    );
+    assert!(
+        !harness
+            .recorder
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event, AgentServiceEvent::HistoryReplaced { session_id, .. } if session_id == &task
+            )),
+        "waiting foreground open must not schedule a redundant rebuild"
+    );
+}

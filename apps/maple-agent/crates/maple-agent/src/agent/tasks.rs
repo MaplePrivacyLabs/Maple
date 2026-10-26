@@ -201,7 +201,11 @@ impl AgentRuntimeHandle {
             .map_err(|_| "Task history preparation worker failed".to_string())?
     }
 
-    fn prepare_history_for_read(&self, task: &str, deadline: Instant) -> Result<(), String> {
+    pub(super) fn prepare_history_for_read(
+        &self,
+        task: &str,
+        deadline: Instant,
+    ) -> Result<(), String> {
         use crate::store::{RebuildProgress, StoreError};
 
         let tasks = self.store()?;
@@ -212,60 +216,106 @@ impl AgentRuntimeHandle {
             StoreError::Busy => HISTORY_PREPARING.to_string(),
             other => other.to_string(),
         };
-        loop {
+        'readiness: loop {
             self.verify_generation_now()?;
-            if !store
-                .history_needs_rebuild(account, task)
-                .map_err(preparing)?
-            {
-                return Ok(());
+            match store.history_needs_rebuild(account, task) {
+                Ok(false) => return Ok(()),
+                Ok(true) => {}
+                Err(StoreError::Busy) => {
+                    self.retry_history_preparation(deadline)?;
+                    continue;
+                }
+                Err(error) => return Err(preparing(error)),
             }
             if Instant::now() >= deadline {
                 return Err(HISTORY_PREPARING.to_string());
             }
-            let ticket = super::maintenance::while_task_idle(state, account, task, || {
-                self.verify_generation_now()
-                    .map_err(|_| StoreError::NotFound)?;
-                store.begin_timeline_rebuild(account, task, false)
-            })
-            .map_err(preparing)?;
-            let prepared = match store.prepare_timeline_rebuild_before(&ticket, Some(deadline)) {
-                Ok(prepared) => prepared,
-                // Another explicit open or the background worker completed the
-                // same epoch. Recheck before treating this as a failed load.
-                Err(StoreError::Conflict) => continue,
-                Err(error) => return Err(preparing(error)),
+            let ticket = loop {
+                let result = super::maintenance::while_task_idle(state, account, task, || {
+                    self.verify_generation_now()
+                        .map_err(|_| StoreError::NotFound)?;
+                    // Completion can race the initial read or a Busy retry.
+                    // Under admission, a finished task needs no new epoch.
+                    if !store.history_needs_rebuild(account, task)? {
+                        return Ok(None);
+                    }
+                    store.begin_timeline_rebuild(account, task, false).map(Some)
+                });
+                match result {
+                    Ok(Some(ticket)) => break ticket,
+                    Ok(None) => return Ok(()),
+                    Err(StoreError::Busy) => self.retry_history_preparation(deadline)?,
+                    Err(error) => return Err(preparing(error)),
+                }
+            };
+            let prepared = loop {
+                match store.prepare_timeline_rebuild_before(&ticket, Some(deadline)) {
+                    Ok(prepared) => break prepared,
+                    Err(StoreError::Busy) => self.retry_history_preparation(deadline)?,
+                    // Another explicit open or the background worker completed
+                    // this epoch. Recheck instead of reporting a failed load.
+                    Err(StoreError::Conflict) => continue 'readiness,
+                    Err(error) => return Err(preparing(error)),
+                }
             };
             loop {
                 self.verify_generation_now()?;
                 let chunk = match store.prepare_timeline_chunk_before(&prepared, Some(deadline)) {
                     Ok(chunk) => chunk,
-                    Err(StoreError::Conflict) => break,
+                    Err(StoreError::Busy) => {
+                        self.retry_history_preparation(deadline)?;
+                        continue;
+                    }
+                    Err(StoreError::Conflict) => continue 'readiness,
                     Err(error) => return Err(preparing(error)),
                 };
-                let progress = super::maintenance::while_task_idle(state, account, task, || {
-                    self.verify_generation_now()
-                        .map_err(|_| StoreError::NotFound)?;
-                    store.commit_timeline_chunk(&chunk, false)
-                });
-                match progress {
-                    Ok(RebuildProgress::Pending { .. }) => {}
-                    Ok(RebuildProgress::NeedsSnapshot) | Err(StoreError::Conflict) => break,
-                    Ok(RebuildProgress::Replaced { epoch }) => {
-                        emit_agent_event(
-                            &self.service.host.events,
-                            AgentServiceEvent::HistoryReplaced {
-                                user_id: self.user_id.to_string(),
-                                session_id: task.to_owned(),
-                                rows_epoch: epoch,
-                            },
-                        );
-                        return Ok(());
+                loop {
+                    let progress =
+                        super::maintenance::while_task_idle(state, account, task, || {
+                            self.verify_generation_now()
+                                .map_err(|_| StoreError::NotFound)?;
+                            store.commit_timeline_chunk(&chunk, false)
+                        });
+                    match progress {
+                        Ok(RebuildProgress::Pending { .. }) => break,
+                        Ok(RebuildProgress::NeedsSnapshot) | Err(StoreError::Conflict) => {
+                            continue 'readiness;
+                        }
+                        Ok(RebuildProgress::Replaced { epoch }) => {
+                            emit_agent_event(
+                                &self.service.host.events,
+                                AgentServiceEvent::HistoryReplaced {
+                                    user_id: self.user_id.to_string(),
+                                    session_id: task.to_owned(),
+                                    rows_epoch: epoch,
+                                },
+                            );
+                            return Ok(());
+                        }
+                        // Keep the encoded chunk while admission or the writer
+                        // is busy. Commit still checks its source and cursor.
+                        Err(StoreError::Busy) => self.retry_history_preparation(deadline)?,
+                        Err(error) => return Err(preparing(error)),
                     }
-                    Err(error) => return Err(preparing(error)),
                 }
             }
         }
+    }
+
+    fn retry_history_preparation(&self, deadline: Instant) -> Result<(), String> {
+        self.verify_generation_now()?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(HISTORY_PREPARING.to_string());
+        }
+        // This runs only in the blocking worker, after all admission, writer
+        // and read guards are released. Brief contention consumes the existing
+        // budget rather than surfacing as an immediate failed task open.
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+        if Instant::now() >= deadline {
+            return Err(HISTORY_PREPARING.to_string());
+        }
+        Ok(())
     }
 
     pub async fn history_forward_page(

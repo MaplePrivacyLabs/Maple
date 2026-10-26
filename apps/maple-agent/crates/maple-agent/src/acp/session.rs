@@ -120,16 +120,20 @@ pub(super) struct AcpSessionOperation {
     pub(super) replay_gate: Arc<Mutex<()>>,
     pub(super) observer: ObserverMailbox,
     pub(super) replaying: AtomicBool,
+    /// Replacement events can wait in the connection's broadcast receiver
+    /// before this operation is registered. Only a newer epoch invalidates it.
+    pub(super) history_epoch: i64,
     pub(super) cancellation: CancellationToken,
 }
 
 impl AcpSessionOperation {
-    pub(super) fn new(connection_lifetime: &CancellationToken) -> Arc<Self> {
+    pub(super) fn new(connection_lifetime: &CancellationToken, history_epoch: i64) -> Arc<Self> {
         Arc::new(Self {
             gate: Arc::new(Mutex::new(())),
             replay_gate: Arc::new(Mutex::new(())),
             observer: ObserverMailbox::new(),
             replaying: AtomicBool::new(true),
+            history_epoch,
             cancellation: connection_lifetime.child_token(),
         })
     }

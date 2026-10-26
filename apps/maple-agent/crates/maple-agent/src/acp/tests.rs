@@ -304,6 +304,64 @@ async fn session_load_replays_more_than_two_pages_with_distinct_duplicate_key_me
 }
 
 #[tokio::test]
+async fn session_load_prepares_retired_history_before_registering_and_can_prompt() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let texts = vec![
+        "Saved question one".to_owned(),
+        "Saved question two".to_owned(),
+    ];
+    append_test_messages(&harness.handle, &task, harness.project.path(), &texts);
+    let (store, account) = harness.handle.test_persistence().unwrap();
+    let (mut client, serving, context) = connect_with_context(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let old_epoch = store.task_history_stamp(account, &task).unwrap().rows_epoch;
+    store.retire_task_timeline_for_test(account, &task).unwrap();
+    assert!(store.history_needs_rebuild(account, &task).unwrap());
+
+    // Block registration at its normal publication fence. Preparation must
+    // finish before reaching that fence, without a registered observer for
+    // its own replacement event to invalidate.
+    let registration = context.finalization.lock().await;
+    let request = client
+        .request(
+            "session/load",
+            json!({"sessionId":task,"cwd":harness.project.path(),"mcpServers":[]}),
+        )
+        .await;
+    eventually(|| !store.history_needs_rebuild(account, &task).unwrap()).await;
+    let prepared_epoch = store.task_history_stamp(account, &task).unwrap().rows_epoch;
+    assert!(prepared_epoch > old_epoch);
+    assert!(!context.session_operations.lock().await.contains_key(&task));
+    drop(registration);
+
+    let response = client.response(request).await;
+    assert!(
+        response.get("error").is_none(),
+        "session/load failed: {response}"
+    );
+    let replayed = client.texts("user_message_chunk");
+    assert_eq!(
+        replayed.iter().map(|(_, text)| text).collect::<Vec<_>>(),
+        texts.iter().collect::<Vec<_>>()
+    );
+    let operation = context.session_operations.lock().await[&task].clone();
+    assert_eq!(operation.history_epoch, prepared_epoch);
+    assert!(!operation.cancellation.is_cancelled());
+    harness.faux.push_text("The loaded session can answer.");
+    assert_eq!(
+        client.prompt(&task, "Continue after loading.").await["stopReason"],
+        "end_turn"
+    );
+    assert_eq!(
+        client.texts("agent_message_chunk")[0].1,
+        "The loaded session can answer."
+    );
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+#[tokio::test]
 async fn oversized_replay_text_is_complete_and_every_encoded_frame_is_bounded() {
     let harness = Harness::new().await;
     let task = harness.create_task().await;
@@ -1121,7 +1179,7 @@ fn session_load_preflight_rejects_missing_tasks() {
 #[tokio::test]
 async fn session_operation_cancellation_keeps_close_behind_the_active_fence() {
     let connection_lifetime = CancellationToken::new();
-    let operation = AcpSessionOperation::new(&connection_lifetime);
+    let operation = AcpSessionOperation::new(&connection_lifetime, 1);
     let active = Arc::clone(&operation.gate).lock_owned().await;
     let waiting_gate = Arc::clone(&operation.gate);
     let waiting = tokio::spawn(async move { waiting_gate.lock_owned().await });

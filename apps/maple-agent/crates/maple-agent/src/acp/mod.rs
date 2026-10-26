@@ -385,7 +385,8 @@ impl AcpConnectionContext {
                 agent_client_protocol::Error::invalid_request()
                     .data("This ACP connection has reached its session limit")
             })?;
-        let operation = AcpSessionOperation::new(&self.lifetime);
+        let history_epoch = self.session_history_epoch(session_id).await?;
+        let operation = AcpSessionOperation::new(&self.lifetime, history_epoch);
         let operation_guard = Arc::clone(&operation.gate).lock_owned().await;
         let replay_guard = Arc::clone(&operation.replay_gate).lock_owned().await;
         let _finalization = self.finalization.lock().await;
@@ -402,6 +403,27 @@ impl AcpConnectionContext {
         operations.insert(session_id.to_owned(), operation.clone());
         drop(operations);
         drop(sessions);
+        // A replacement may have been dispatched after the first stamp read
+        // but before insertion. Recheck with the operation now registered so
+        // either this read or the observer catches every newer epoch.
+        let validation = self
+            .session_history_epoch(session_id)
+            .await
+            .and_then(|epoch| {
+                if epoch == history_epoch {
+                    Ok(())
+                } else {
+                    Err(paged::replay_error(
+                        "This task changed while its session was loading; reload the session.",
+                    ))
+                }
+            });
+        if let Err(error) = validation {
+            drop(_finalization);
+            self.remove_session_operation_if_same(session_id, &operation)
+                .await;
+            return Err(error);
+        }
         let mut tasks = self.background_tasks.lock().await;
         while tasks.try_join_next().is_some() {}
         self.spawn_session_observer(
@@ -412,6 +434,30 @@ impl AcpConnectionContext {
             slot,
         );
         Ok((operation, operation_guard, replay_guard))
+    }
+
+    async fn session_history_epoch(
+        &self,
+        session_id: &str,
+    ) -> Result<i64, agent_client_protocol::Error> {
+        let (account, store) = self
+            .agent
+            .history_replay_source()
+            .map_err(internal_acp_error)?;
+        let task = session_id.to_owned();
+        let epoch = tokio::task::spawn_blocking(move || {
+            store
+                .task_history_stamp(account, &task)
+                .map(|stamp| stamp.rows_epoch)
+        })
+        .await
+        .map_err(|_| internal_acp_error("ACP history stamp worker failed".to_string()))?
+        .map_err(|error| internal_acp_error(error.to_string()))?;
+        self.agent
+            .verify_generation()
+            .await
+            .map_err(internal_acp_error)?;
+        Ok(epoch)
     }
 
     /// Block until the lazy runtime start finished. The handshake answers
@@ -556,6 +602,12 @@ impl AcpConnectionContext {
         }
         let session_servers = prepare_session_mcp(&request.mcp_servers)?;
         let protocol_session_id = SessionId::new(session_id.clone());
+        // Rebuilding announces HistoryReplaced. Finish before registering this
+        // load; its epoch baseline also filters delayed replacement events.
+        self.agent
+            .ensure_task_history_ready(&session_id)
+            .await
+            .map_err(internal_acp_error)?;
         let (operation, operation_guard, replay_guard) =
             self.start_session_operation(cx, &session_id).await?;
         let attached = match self
@@ -690,10 +742,6 @@ impl AcpConnectionContext {
         task: &str,
         cancellation: &CancellationToken,
     ) -> Result<AcpProjection, agent_client_protocol::Error> {
-        self.agent
-            .ensure_task_history_ready(task)
-            .await
-            .map_err(internal_acp_error)?;
         let mut captured = None;
         for _ in 0..4 {
             let initial = tokio::select! {
