@@ -4623,7 +4623,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "maple"
-version = "3.4.5"
+version = "3.4.6"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -4686,7 +4686,7 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4707,7 +4707,7 @@ dependencies = [
 
 [[package]]
 name = "maple-sdk"
-version = "4.1.2"
+version = "4.1.3"
 dependencies = [
  "aes-gcm",
  "anyhow",

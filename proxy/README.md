@@ -54,7 +54,7 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
-This checkout prepares proxy `0.4.4`, including `POST /v1/systemone` introduced
+This checkout prepares proxy `0.4.5`, including `POST /v1/systemone` introduced
 in `0.4.2`, with a compatible registry requirement for `maple-sdk`
 starting at `4.0.1`. The published proxy crate in the example above
 predates this Transport V2 update. The standalone binary's lockfile selects its
