@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -559,6 +560,28 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         for name in ("windows-build", "windows-unsigned", "verify-windows"):
             self.assertNotIn("environment", jobs[name])
             self.assertFalse(any("secrets." in value for value in strings(jobs[name])))
+
+    def test_windows_verifier_clears_runner_paths_without_hiding_signing_configuration(self):
+        steps = workflow(self.WORKFLOW)["jobs"]["verify-windows"]["steps"]
+        smoke = next(step["run"] for step in steps if "windows-release.py verify" in step.get("run", ""))
+        paths = {"AZURE_CONFIG_DIR", "AZURE_DEVOPS_CACHE_DIR", "AZURE_EXTENSION_DIR"}
+        credentials = {"AZURE_CLIENT_ID", "AZURE_FUTURE_TOKEN", "MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME"}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "environment-names.json"
+            # Execute the real workflow script with a harmless Python probe in
+            # place of the installer verifier. Record names, never values.
+            probe = '''python3() {
+              "$PROBE_PYTHON" -c 'import json, os; print(json.dumps(sorted(os.environ)))' > "$PROBE_OUTPUT"
+            }
+            '''
+            subprocess.run(["bash", "-euo", "pipefail", "-c", probe + smoke], check=True,
+                           env={**os.environ, **dict.fromkeys(paths | credentials, "fixture"),
+                                "GITHUB_EVENT_NAME": "pull_request", "MAPLE_RELEASE_PROFILE": "dev",
+                                "PROBE_PYTHON": sys.executable, "PROBE_OUTPUT": str(output)},
+                           capture_output=True)
+            remaining = set(json.loads(output.read_text()))
+            self.assertFalse(paths & remaining)
+            self.assertTrue(credentials <= remaining)
 
     def test_only_pr_updates_can_replace_an_in_progress_or_pending_build(self):
         concurrency = workflow(self.WORKFLOW)["concurrency"]

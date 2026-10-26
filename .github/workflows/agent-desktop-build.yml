@@ -661,6 +661,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Verify downloaded Windows package and install lifecycle
         run: |
+          # The stock image exports these Azure CLI tooling/cache paths.
+          # Keep other Azure/signing variables visible to the fail-closed guard.
+          unset AZURE_CONFIG_DIR AZURE_DEVOPS_CACHE_DIR AZURE_EXTENSION_DIR
           args=()
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
           python3 scripts/windows-release.py verify "$MAPLE_RELEASE_PROFILE" ../../artifacts "${args[@]}" --smoke
