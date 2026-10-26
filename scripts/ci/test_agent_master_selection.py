@@ -114,6 +114,15 @@ class MasterSelectionTests(unittest.TestCase):
                 self.assertTrue(selected)
                 self.assertIn("master run 1", reason)
 
+    def test_previous_macos_linux_only_runs_cannot_consume_windows_changes(self):
+        changed = self.commit("apps/maple-agent/app/src/main.rs", "Windows packaging change\n")
+        head = self.commit("README.md", "unrelated later push\n")
+        jobs = verified_jobs()
+        jobs["jobs"] = [job for job in jobs["jobs"] if "Windows" not in job["name"]]
+        jobs["total_count"] = len(jobs["jobs"])
+        (selected, _), _ = self.select(head, [run_record(2, changed)], {2: jobs})
+        self.assertTrue(selected)
+
     def test_partial_latest_attempt_cannot_borrow_older_green_jobs(self):
         changed = self.commit("apps/maple-agent/app/src/main.rs", "partial retry\n")
         head = self.commit("README.md", "unrelated\n")

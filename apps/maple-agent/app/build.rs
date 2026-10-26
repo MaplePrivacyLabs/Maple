@@ -13,9 +13,9 @@ fn main() {
         source_sha,
     } = git_metadata::emit();
 
-    // The CLI and macOS signing preflight read the same immutable public
-    // metadata. Signing must inspect the Mach-O section without running a
-    // downloaded executable while its keychain or Apple credentials exist.
+    // The CLI and native signing preflights read the same immutable public
+    // metadata. Signing must inspect the artifact without running a downloaded
+    // executable while signing credentials exist.
     let channel = std::env::var("MAPLE_RELEASE_PROFILE").ok();
     let pcr = std::env::var("VITE_OPEN_SECRET_PCR_ENVIRONMENT").ok();
     let (channel, profile) = release_profile::select_profile(channel.as_deref(), pcr.as_deref())
@@ -68,5 +68,13 @@ fn main() {
         // not load duplicate copies on current macOS releases.
         println!("cargo:rustc-link-arg-bin=maple-agent=-Wl,-rpath,/usr/lib/swift");
         println!("cargo:rustc-link-arg-bin=maple-agent=-Wl,-rpath,@executable_path/../Frameworks");
+    }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64")
+    {
+        // #[used] retains the object symbol; /INCLUDE additionally roots it
+        // through MSVC release /OPT:REF and LTO. x64 C symbols are undecorated.
+        println!("cargo:rustc-link-arg-bin=maple-agent=/INCLUDE:MAPLE_AGENT_BUILD_INFO");
     }
 }

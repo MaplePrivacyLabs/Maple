@@ -23,7 +23,7 @@ BUILD_FIELDS = set(PUBLIC_FIELDS) | {"profile", "version", "git_revision", "sour
 
 
 def read_info(profile, path, source_sha=None, platform=None):
-    return validate_info(profile, json.loads(Path(path).read_text()), source_sha, platform)
+    return validate_info(profile, json.loads(Path(path).read_text(encoding="utf-8")), source_sha, platform)
 
 
 def validate_update_keys(keys):
@@ -51,16 +51,19 @@ def validate_info(profile, info, source_sha=None, platform=None):
     profiles = json.loads((COMPONENT / "release-profiles.json").read_text())
     if profile not in ("dev", "prod"):
         raise ValueError("release profile must be dev or prod")
-    if platform not in (None, "macos-aarch64", "linux-x86_64"):
+    if platform not in (None, "macos-aarch64", "linux-x86_64", "windows-x86_64"):
         raise ValueError("unsupported artifact platform")
     if not isinstance(info, dict) or set(info) != BUILD_FIELDS:
         raise ValueError("build-info must contain only the documented public release fields")
     if info["profile"] != profile:
         raise ValueError("binary release profile does not match the requested package")
     for field in PUBLIC_FIELDS:
-        expected = profiles[profile]["linux_update_feed_url"] if (
-            field == "update_feed_url" and platform == "linux-x86_64"
-        ) else profiles[profile][field]
+        if field == "update_feed_url" and platform == "windows-x86_64":
+            expected = None  # Windows distribution has no installed updater yet.
+        elif field == "update_feed_url" and platform == "linux-x86_64":
+            expected = profiles[profile]["linux_update_feed_url"]
+        else:
+            expected = profiles[profile][field]
         if info[field] != expected:
             raise ValueError(f"binary {field} does not match the checked-in release profile")
     if not isinstance(info["prerelease"], bool):
@@ -125,6 +128,10 @@ def linux_package_name(info):
     return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-linux-x86_64.tar.gz"
 
 
+def windows_package_name(info):
+    return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-windows-x86_64-setup.exe"
+
+
 def public_files(directory):
     files = list(directory.iterdir())
     if any(path.is_symlink() or not path.is_file() for path in files):
@@ -134,10 +141,10 @@ def public_files(directory):
 
 def write_manifest(info, directory, platform, unsigned):
     directory = Path(directory)
-    if platform not in ("macos-aarch64", "linux-x86_64"):
+    if platform not in ("macos-aarch64", "linux-x86_64", "windows-x86_64"):
         raise ValueError("unsupported artifact platform")
     files = public_files(directory)
-    suffix = ".dmg" if platform == "macos-aarch64" else ".tar.gz"
+    suffix = {"macos-aarch64": ".dmg", "linux-x86_64": ".tar.gz", "windows-x86_64": "-setup.exe"}[platform]
     packages = sorted(name for name in files if name.endswith(suffix))
     if len(packages) != 1:
         raise ValueError("artifact directory must contain exactly one platform package")
@@ -162,11 +169,17 @@ def write_manifest(info, directory, platform, unsigned):
         # do not describe a SHA-256 file as a detached cryptographic signature.
         manifest["macos_signing"] = None
         manifest["linux_integrity"] = "sha256"
-    (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    if platform == "windows-x86_64":
+        expected = {"build-info.json", windows_package_name(info)}
+        if packages[0] != windows_package_name(info) or not expected <= files or files - expected - {"manifest.json", "SHA256SUMS"}:
+            raise ValueError("Windows artifact directory must contain only the expected installer and public metadata")
+        manifest["macos_signing"] = None
+        manifest["windows_signing"] = "unsigned" if unsigned else "authenticode"
+    (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     files = sorted(p for p in directory.iterdir() if p.is_file() and p.name != "SHA256SUMS")
     (directory / "SHA256SUMS").write_text("".join(
         f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in files
-    ))
+    ), encoding="utf-8", newline="\n")
     for path in directory.iterdir():
         if path.is_file():
             path.chmod(0o644)
@@ -178,7 +191,7 @@ def verify_artifacts(profile, directory, unsigned, source_sha=None, platform=Non
     files = public_files(directory)
     manifest = json.loads((directory / "manifest.json").read_text())
     manifest_platform = manifest.get("platform")
-    if manifest_platform not in ("macos-aarch64", "linux-x86_64"):
+    if manifest_platform not in ("macos-aarch64", "linux-x86_64", "windows-x86_64"):
         raise ValueError("unsupported artifact platform")
     if platform is not None and manifest_platform != platform:
         raise ValueError("manifest platform does not match the requested platform")
@@ -201,6 +214,13 @@ def verify_artifacts(profile, directory, unsigned, source_sha=None, platform=Non
             "build-info.json", "manifest.json", "SHA256SUMS", linux_package_name(info),
         }:
             raise ValueError("Linux artifact directory must contain exactly the expected bundle and public metadata")
+    if platform == "windows-x86_64":
+        if manifest.get("macos_signing", "missing") is not None or manifest.get("windows_signing") != ("unsigned" if unsigned else "authenticode"):
+            raise ValueError("unexpected Windows signing policy")
+        if manifest.get("package") != windows_package_name(info) or files != {
+            "build-info.json", "manifest.json", "SHA256SUMS", windows_package_name(info),
+        }:
+            raise ValueError("Windows artifact directory must contain exactly the expected installer and public metadata")
     lines = (directory / "SHA256SUMS").read_text().splitlines()
     checked = set()
     for line in lines:
@@ -217,7 +237,7 @@ def verify_artifacts(profile, directory, unsigned, source_sha=None, platform=Non
     if checked != files - {"SHA256SUMS"}:
         raise ValueError("artifact directory contains unchecked files or directories")
     package = manifest.get("package", "")
-    suffix = ".dmg" if platform == "macos-aarch64" else ".tar.gz"
+    suffix = {"macos-aarch64": ".dmg", "linux-x86_64": ".tar.gz", "windows-x86_64": "-setup.exe"}[platform]
     if package not in checked or not package.endswith(suffix):
         raise ValueError("manifest package is missing or has the wrong format")
     return manifest
@@ -304,7 +324,7 @@ def main():
     parser.add_argument("--field")
     parser.add_argument("--build-number", default="1")
     parser.add_argument("--output")
-    parser.add_argument("--platform", choices=("macos-aarch64", "linux-x86_64"))
+    parser.add_argument("--platform", choices=("macos-aarch64", "linux-x86_64", "windows-x86_64"))
     parser.add_argument("--unsigned", action="store_true")
     args = parser.parse_args()
     if args.operation == "verify":

@@ -19,7 +19,7 @@ REPOSITORY = "MaplePrivacyLabs/Maple"
 WORKFLOW = ".github/workflows/agent-desktop-build.yml"
 VERIFIERS = frozenset(
     f"Verify downloaded {platform} ({profile})"
-    for platform in ("macOS", "Linux") for profile in ("dev", "prod")
+    for platform in ("macOS", "Linux", "Windows") for profile in ("dev", "prod")
 )
 
 

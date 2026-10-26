@@ -9,7 +9,7 @@ Branch protection on `master` alone does not protect repository-level secrets.
 | `desktop-signing` | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`, `KEYCHAIN_PASSWORD` | Research macOS/Linux master and release builds; Agent macOS Dev/Prod packages from trusted master |
 | `apple-signing` | `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_PRIVATE_KEY`, `APPLE_TEAM_ID` | Shared production iOS and Maple Dev builds and TestFlight submission |
 | `android-signing` | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | Android master and release builds |
-| `windows-signing` | `AZURE_*` signing configuration and both `TAURI_SIGNING_PRIVATE_KEY*` secrets | Windows master and release builds |
+| `windows-signing` | `AZURE_*` signing configuration and both `TAURI_SIGNING_PRIVATE_KEY*` secrets | Research Windows master/release builds; Agent Windows Dev/Prod packages from trusted master |
 | `zapstore-publishing` | `ZAPSTORE_SIGN_WITH` | Existing best-effort publisher after a successful release |
 
 Configure each environment with **selected branches and tags**: branch `master`
@@ -45,6 +45,17 @@ compile the application. The trusted updater-only archive scanner compiles befor
 the step receiving Apple credentials. App launches and Swift runtime checks run
 only on verifiers without Apple
 or updater signing secrets. Agent builds upload separately named Actions artifacts.
+
+Agent Windows Dev/Prod packaging likewise reuses `windows-signing`, its existing
+Azure login identity, Artifact Signing account/profile and generic signing
+helpers. Preserve the environment name and current Azure configuration. The
+signer reads the downloaded executable's bounded PE metadata section and validates
+its profile/source before Azure login; it never runs downloaded app code or
+restores compilation caches. It signs the app, embedded NSIS uninstaller and
+finished installer, then attests the final files. Native installation and CLI
+smoke checks run on a fresh verifier without signing credentials. Agent Windows
+does not consume Research's Tauri updater private key. Windows update publication
+is outside this package workflow.
 
 The macOS signing job has `contents: read`, `id-token: write`, and
 `attestations: write` to mint GitHub build provenance after packaging. Linux

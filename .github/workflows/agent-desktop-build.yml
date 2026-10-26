@@ -286,6 +286,273 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  windows-build:
+    name: Build Windows binary (${{ matrix.variant }})
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      # Ship the CRT with the executable rather than requiring a machine-wide
+      # redistributable. Native verification rejects non-system DLL imports.
+      RUSTFLAGS: -D warnings -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Windows Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.98.0
+      - name: Select Windows MSVC and SDK
+        uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c
+        with:
+          arch: x64
+      - name: Select native Windows Perl for the static crypto build
+        run: |
+          native_perl=/c/Strawberry/perl/bin/perl.exe
+          if [ ! -x "$native_perl" ]; then
+            echo 'Native Windows Perl is missing from the runner' >&2
+            exit 1
+          fi
+          "$native_perl" -MLocale::Maketext::Simple -MIPC::Cmd -e 'die "OpenSSL requires native Windows Perl\n" unless $^O eq "MSWin32"; print "$^V\n"'
+          native_perl_windows="$(cygpath -m "$native_perl")"
+          printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
+      - name: Pin and smoke-test the selected Windows linker
+        run: python3 ../../scripts/ci/agent_windows.py
+      - name: Select the SDK shader compiler for release GPUI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:WindowsSdkVerBinPath) { throw 'Selected Windows SDK binary path is missing' }
+          $fxc = Join-Path $env:WindowsSdkVerBinPath 'x64/fxc.exe'
+          if (-not (Test-Path -LiteralPath $fxc -PathType Leaf)) { throw "Windows SDK shader compiler is missing: $fxc" }
+          Write-Host "Selected HLSL compiler: $fxc"
+          "GPUI_FXC_PATH=$fxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Exercise Windows metadata parser and native linker retention
+        run: python3 scripts/test_windows_build_info.py
+      - name: Fingerprint the actual release environment
+        id: environment
+        run: python3 ../../scripts/ci/agent_cache.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
+      - name: Cache Agent release dependencies
+        id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: apps/maple-agent -> target
+          add-rust-environment-hash-key: "true"
+          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
+          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+      - name: Check whether Cargo targets were restored
+        id: restored-target
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/apps/maple-agent/target/CACHEDIR.TAG" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore compatible legacy Cargo targets on a cache miss
+        if: ${{ steps.rust-cache.outputs.cache-hit != 'true' && steps.restored-target.outputs.present != 'true' }}
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: apps/maple-agent -> target
+          add-rust-environment-hash-key: "false"
+          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
+          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
+          save-if: "false"
+      - name: Record the current build environment after restore
+        run: |
+          mkdir -p target/ci-metrics
+          cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
+      - name: Verify the canonical SDK and proxy dependency graph
+        run: |
+          metadata="$(mktemp)"
+          trap 'rm -f "$metadata"' EXIT
+          cargo metadata --locked --format-version 1 > "$metadata"
+          python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
+          python3 scripts/verify-sqlcipher-build.py "$metadata"
+      - name: Install pinned Windows notice generator
+        run: |
+          set -euo pipefail
+          (
+            cd "$RUNNER_TEMP"
+            curl --fail --location --show-error --silent \
+              https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.0/cargo-about-0.9.0-x86_64-pc-windows-msvc.tar.gz \
+              --output cargo-about-0.9.0.tar.gz
+            printf '%s  %s\n' 87daca52ad79980b42b2de6acdec84e143be41e2d4bbebedba0d0c90c49b055a cargo-about-0.9.0.tar.gz | sha256sum --check -
+            tar -xzf cargo-about-0.9.0.tar.gz
+          )
+          printf '%s\n' "$RUNNER_TEMP/cargo-about-0.9.0-x86_64-pc-windows-msvc" >> "$GITHUB_PATH"
+      - name: Build Windows release binary and notices without signing credentials
+        run: python3 ../../scripts/ci/agent_measure.py --phase windows-release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Inspect immutable Windows profile and source
+        run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE"
+      - name: Upload prebuilt Windows binary and notices
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-windows-x86_64-prebuilt-${{ github.run_id }}
+          overwrite: true
+          path: |
+            apps/maple-agent/target/release/maple-agent.exe
+            apps/maple-agent/target/third-party-notices
+          if-no-files-found: error
+          retention-days: 7
+      - name: Summarize phase timings and target size
+        if: always()
+        run: python3 ../../scripts/ci/agent_measure.py --summarize target
+      - name: Upload bounded release measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-release-metrics-${{ matrix.variant }}-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/maple-agent/target/ci-metrics/
+          if-no-files-found: warn
+          retention-days: 7
+
+  windows:
+    name: Signed Windows (${{ matrix.variant }})
+    needs: windows-build
+    if: ${{ always() && !cancelled() && needs.windows-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download exact prebuilt Windows binary and notices
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-windows-x86_64-prebuilt-${{ github.run_id }}
+          path: apps/maple-agent/target
+      - name: Inspect immutable Windows profile and source before signing
+        run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE"
+      - name: Azure login for Artifact Signing
+        uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Install pinned Artifact Signing module
+        shell: pwsh
+        run: ../../scripts/ci/install-windows-artifact-signing.ps1
+      - name: Sign and package Windows Agent
+        run: python3 scripts/windows-release.py package "$MAPLE_RELEASE_PROFILE"
+        env:
+          MAPLE_WINDOWS_ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          MAPLE_WINDOWS_ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+      - name: Attest final Windows packages
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb
+        with:
+          subject-path: apps/maple-agent/dist/${{ matrix.variant }}/*
+      - name: Upload Agent packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-windows-x86_64-${{ github.run_id }}
+          overwrite: true
+          path: apps/maple-agent/dist/${{ matrix.variant }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-unsigned:
+    name: Unsigned Windows packaging (${{ matrix.variant }})
+    needs: windows-build
+    if: ${{ always() && !cancelled() && needs.windows-build.result == 'success' && github.event_name == 'pull_request' }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download exact prebuilt Windows binary and notices
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-windows-x86_64-prebuilt-${{ github.run_id }}
+          path: apps/maple-agent/target
+      - name: Package unsigned Windows Agent preview
+        run: python3 scripts/windows-release.py package "$MAPLE_RELEASE_PROFILE" --unsigned
+      - name: Upload Agent packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-windows-x86_64-unsigned-${{ github.run_id }}
+          overwrite: true
+          path: apps/maple-agent/dist/${{ matrix.variant }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-windows:
+    name: Verify downloaded Windows (${{ matrix.variant }})
+    needs: [windows, windows-unsigned]
+    if: ${{ always() && !cancelled() && ((github.event_name == 'pull_request' && needs.windows-unsigned.result == 'success') || (needs.windows.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    permissions:
+      contents: read
+      attestations: read
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download exact Windows packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-windows-x86_64${{ github.event_name == 'pull_request' && '-unsigned' || '' }}-${{ github.run_id }}
+          path: artifacts
+      - name: Verify downloaded package provenance
+        if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(artifacts/*)
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do
+            test -f "$file" && test ! -L "$file"
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/agent-desktop-build.yml" \
+              --source-ref refs/heads/master --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify downloaded Windows package and install lifecycle
+        run: |
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
+          python3 scripts/windows-release.py verify "$MAPLE_RELEASE_PROFILE" ../../artifacts "${args[@]}" --smoke
+
   linux:
     name: Linux bundle (${{ matrix.variant }})
     needs: changes

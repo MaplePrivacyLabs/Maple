@@ -21,6 +21,7 @@ fn value_for(profile: &str, baked: &str, configured: Option<String>) -> String {
 #[used]
 #[unsafe(no_mangle)]
 #[cfg_attr(target_os = "macos", unsafe(link_section = "__TEXT,__maple_info"))]
+#[cfg_attr(target_os = "windows", unsafe(link_section = ".maple"))]
 static MAPLE_AGENT_BUILD_INFO: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/build-info.json"))
     .len()] = *include_bytes!(concat!(env!("OUT_DIR"), "/build-info.json"));
 
