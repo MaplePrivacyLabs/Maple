@@ -69,7 +69,7 @@ pub(super) enum ComposerControl {
     Thinking,
     Integrations,
     Web,
-    Images,
+    Attachments,
     Dictate,
 }
 
@@ -79,7 +79,7 @@ impl ComposerControl {
         Self::Thinking,
         Self::Integrations,
         Self::Web,
-        Self::Images,
+        Self::Attachments,
         Self::Dictate,
     ];
 }
@@ -254,7 +254,7 @@ impl ChatScreen {
                 let next = !self.web_enabled;
                 self.set_web_enabled(next, cx);
             }
-            ComposerControl::Images => self.pick_attachments(cx),
+            ComposerControl::Attachments => self.pick_attachments(cx),
             ComposerControl::Dictate => self.toggle_recording(cx),
         }
     }
@@ -343,7 +343,7 @@ impl ChatScreen {
                     this.activate_composer_control(ComposerControl::Web, cx);
                 })),
             ),
-            ComposerControl::Images => div().child(
+            ComposerControl::Attachments => div().child(
                 div()
                     .id("add-attachments")
                     .size_8()
@@ -360,7 +360,7 @@ impl ChatScreen {
                     .when(self.attachment_picking, |el| el.opacity(0.5))
                     .tooltip(widgets::tooltip("Attach files or images", None))
                     .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.activate_composer_control(ComposerControl::Images, cx);
+                        this.activate_composer_control(ComposerControl::Attachments, cx);
                     }))
                     .child(icon("paperclip", px(16.), theme::text_secondary())),
             ),

@@ -8579,7 +8579,7 @@ mod state_tests {
         cx.simulate_keystrokes("G ctrl-w k");
         assert_eq!(row(cx).2, Some(composer_focus.clone()));
         cx.simulate_keystrokes("ctrl-w j");
-        assert_eq!(row(cx).1, Some(ComposerControl::Images));
+        assert_eq!(row(cx).1, Some(ComposerControl::Attachments));
         cx.simulate_keystrokes("ctrl-w h");
         assert_eq!(row(cx).0, ChatRegion::Sidebar);
         cx.simulate_keystrokes("ctrl-w l");
@@ -8587,7 +8587,7 @@ mod state_tests {
             row(cx),
             (
                 ChatRegion::Controls,
-                Some(ComposerControl::Images),
+                Some(ComposerControl::Attachments),
                 Some(application_focus)
             )
         );
