@@ -8469,6 +8469,110 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_application_vim_walks_and_presses_the_composer_controls(cx: &mut TestAppContext) {
+        use super::super::composer::ComposerControl;
+        use crate::ui::chat::navigation::ChatRegion;
+        // No task is selected, so the web toggle stays local rather than
+        // waiting on the test backend.
+        let (chat, cx) = chat_window(cx, |chat, cx| {
+            chat.selected_session = None;
+            chat.composer_vim_enabled = true;
+            if let Some(composer) = chat.composer.clone() {
+                composer.update(cx, |input, cx| input.set_vim_enabled(true, cx));
+            }
+            chat.models = vec!["model-a".to_string(), "model-b".to_string()];
+            chat.selected_model = Some("model-b".to_string());
+            chat.set_application_vim_enabled(true, cx);
+        });
+        let (composer_focus, application_focus) = cx.update(|_window, app| {
+            let chat = chat.read(app);
+            (
+                chat.composer.clone().unwrap().focus_handle(app),
+                chat.application_focus.clone().unwrap(),
+            )
+        });
+        let row = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, app| {
+                let chat = chat.read(app);
+                (
+                    chat.application_vim.region,
+                    chat.application_vim_selected_control(window),
+                    window.focused(app),
+                )
+            })
+        };
+
+        // Ctrl-W j leaves the composer for its button row, on the first
+        // control, with the keyboard on application Vim's focus proxy.
+        cx.update(|window, app| window.focus(&composer_focus, app));
+        cx.simulate_keystrokes("ctrl-w j");
+        assert_eq!(
+            row(cx),
+            (
+                ChatRegion::Controls,
+                Some(ComposerControl::Model),
+                Some(application_focus.clone())
+            )
+        );
+
+        // A counted `l` walks right; Enter presses the web toggle.
+        let web = cx.update(|_window, app| chat.read(app).web_enabled);
+        cx.simulate_keystrokes("3 l");
+        assert_eq!(row(cx).1, Some(ComposerControl::Web));
+        cx.simulate_keystrokes("enter");
+        assert_eq!(cx.update(|_window, app| chat.read(app).web_enabled), !web);
+        cx.simulate_keystrokes("h");
+        assert_eq!(row(cx).1, Some(ComposerControl::Integrations));
+
+        // Enter opens a menu on the current choice; closing it returns to
+        // the row on the same control.
+        cx.simulate_keystrokes("g g enter");
+        cx.update(|_window, app| {
+            let chat = chat.read(app);
+            assert_eq!(chat.popup.open_key(), Some(&ChatPopup::Model));
+            assert_eq!(
+                chat.popup.highlighted(),
+                Some(&gpui::ElementId::Name("model-model-b".into()))
+            );
+        });
+        cx.simulate_keystrokes("escape");
+        assert_eq!(
+            row(cx),
+            (
+                ChatRegion::Controls,
+                Some(ComposerControl::Model),
+                Some(application_focus.clone())
+            )
+        );
+
+        // The row remembers its control across a trip to the composer, and
+        // the sidebar sends `Ctrl-W l` back to it.
+        cx.simulate_keystrokes("G ctrl-w k");
+        assert_eq!(row(cx).2, Some(composer_focus.clone()));
+        cx.simulate_keystrokes("ctrl-w j");
+        assert_eq!(row(cx).1, Some(ComposerControl::Images));
+        cx.simulate_keystrokes("ctrl-w h");
+        assert_eq!(row(cx).0, ChatRegion::Sidebar);
+        cx.simulate_keystrokes("ctrl-w l");
+        assert_eq!(
+            row(cx),
+            (
+                ChatRegion::Controls,
+                Some(ComposerControl::Images),
+                Some(application_focus)
+            )
+        );
+
+        // Dictation joins the row only when transcription is available.
+        chat.update(cx, |chat, cx| {
+            chat.audio_caps.transcription = true;
+            cx.notify();
+        });
+        cx.simulate_keystrokes("G");
+        assert_eq!(row(cx).1, Some(ComposerControl::Dictate));
+    }
+
+    #[gpui::test]
     fn test_application_vim_reconciles_stable_timeline_ids_per_task(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let chat = screen(cx);

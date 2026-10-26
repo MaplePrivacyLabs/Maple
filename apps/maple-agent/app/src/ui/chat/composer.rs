@@ -60,6 +60,30 @@ pub(super) fn catalog_model_labels(
         .collect()
 }
 
+/// The composer's button row, left to right. The row renders from this
+/// list and application Vim walks it, so a new control is reachable from
+/// the keyboard once it has an entry here, a rendering, and an action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ComposerControl {
+    Model,
+    Thinking,
+    Integrations,
+    Web,
+    Images,
+    Dictate,
+}
+
+impl ComposerControl {
+    const ALL: [Self; 6] = [
+        Self::Model,
+        Self::Thinking,
+        Self::Integrations,
+        Self::Web,
+        Self::Images,
+        Self::Dictate,
+    ];
+}
+
 /// Recent projects for the header menu. The default Maple workspace stays
 /// listed even when it sits past the recent cap.
 fn header_project_paths(recent_roots: &[RecentProjectRoot]) -> Vec<String> {
@@ -187,6 +211,216 @@ impl ChatScreen {
             ChatPopup::Project => self.execute_command(ChatCommand::ChooseProject, window, cx),
             popup => self.toggle_popup(popup, cx),
         }
+    }
+
+    /// The controls the row shows now, in order.
+    pub(super) fn composer_controls(&self) -> impl Iterator<Item = ComposerControl> + '_ {
+        ComposerControl::ALL
+            .into_iter()
+            .filter(|control| match control {
+                ComposerControl::Dictate => self.audio_caps.transcription,
+                _ => true,
+            })
+    }
+
+    /// Press `control` from the keyboard, as a click would. A menu opens on
+    /// its current choice, the way a native popup button does.
+    pub(super) fn activate_composer_control(
+        &mut self,
+        control: ComposerControl,
+        cx: &mut Context<Self>,
+    ) {
+        match control {
+            ComposerControl::Model => match self.selected_model.clone() {
+                Some(model) => {
+                    self.popup
+                        .open_highlighted(ChatPopup::Model, format!("model-{model}"), cx)
+                }
+                None => self.popup.open(ChatPopup::Model, cx),
+            },
+            ComposerControl::Thinking => match self.thinking.as_ref().map(|state| state.current) {
+                Some(level) => self.popup.open_highlighted(
+                    ChatPopup::Thinking,
+                    format!("thinking-{}", level.as_str()),
+                    cx,
+                ),
+                None => self.popup.open(ChatPopup::Thinking, cx),
+            },
+            ComposerControl::Integrations => {
+                self.popup.open(ChatPopup::Integrations, cx);
+                self.refresh_session_mcp(cx);
+            }
+            ComposerControl::Web => {
+                let next = !self.web_enabled;
+                self.set_web_enabled(next, cx);
+            }
+            ComposerControl::Images => self.pick_images(cx),
+            ComposerControl::Dictate => self.toggle_recording(cx),
+        }
+    }
+
+    /// One control of the button row, underlined while application Vim has
+    /// it selected.
+    fn render_composer_control(
+        &self,
+        control: ComposerControl,
+        selected: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let element = match control {
+            ComposerControl::Model => {
+                let label = self
+                    .selected_model
+                    .as_deref()
+                    .map(|model| self.model_label(model))
+                    .unwrap_or("Model")
+                    .to_string();
+                self.with_menu(
+                    ChatPopup::Model,
+                    chip(
+                        "model-picker",
+                        self.model_locked.then_some("lock"),
+                        label,
+                        true,
+                        self.popup.is_open(&ChatPopup::Model),
+                        false,
+                    ),
+                    Placement::AboveStart,
+                    window,
+                    cx,
+                    |this, _| this.model_menu(),
+                )
+            }
+            ComposerControl::Thinking => self.with_menu(
+                ChatPopup::Thinking,
+                widgets::icon_button(
+                    "thinking-picker",
+                    "brain",
+                    "Thinking",
+                    px(16.),
+                    theme::text_secondary(),
+                )
+                .size_8()
+                .debug_selector(|| "thinking-picker".to_string())
+                .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
+                    button.bg(gpui::rgb(theme::bg_sidebar_pill()))
+                }),
+                Placement::AboveStart,
+                window,
+                cx,
+                |this, _| this.thinking_menu(),
+            ),
+            ComposerControl::Integrations => self.with_menu(
+                ChatPopup::Integrations,
+                chip(
+                    "mcp-menu",
+                    Some("puzzle"),
+                    match self.mcp_enabled_count {
+                        0 => "Integrations".to_string(),
+                        1 => "1 integration".to_string(),
+                        count => format!("{count} integrations"),
+                    },
+                    false,
+                    self.popup.is_open(&ChatPopup::Integrations),
+                    false,
+                ),
+                Placement::AboveStart,
+                window,
+                cx,
+                |this, _| this.integrations_menu(),
+            ),
+            ComposerControl::Web => div().child(
+                chip(
+                    "web-toggle",
+                    Some("globe"),
+                    if self.web_enabled { "Web" } else { "Web off" }.to_string(),
+                    false,
+                    false,
+                    self.web_enabled,
+                )
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.activate_composer_control(ComposerControl::Web, cx);
+                })),
+            ),
+            ComposerControl::Images => div().child(
+                div()
+                    .id("add-images")
+                    .size_8()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::RADIUS_SM)
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::accent_container()))
+                            .cursor_pointer()
+                    })
+                    .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
+                    .when(self.image_picking, |el| el.opacity(0.5))
+                    .tooltip(widgets::tooltip("Attach images", None))
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.activate_composer_control(ComposerControl::Images, cx);
+                    }))
+                    .child(icon("image", px(16.), theme::text_secondary())),
+            ),
+            ComposerControl::Dictate => {
+                let recording = self.recording;
+                let transcribing = self.transcribing;
+                div().child(
+                    div()
+                        .id("record-voice")
+                        .size_8()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(theme::RADIUS_SM)
+                        .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
+                        .hover(|style| {
+                            style
+                                .bg(gpui::rgb(theme::accent_container()))
+                                .cursor_pointer()
+                        })
+                        .when(transcribing, |el| el.opacity(0.5))
+                        .tooltip(widgets::tooltip(
+                            if recording {
+                                "Stop recording"
+                            } else {
+                                "Dictate"
+                            },
+                            None,
+                        ))
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.activate_composer_control(ComposerControl::Dictate, cx);
+                        }))
+                        .child(if transcribing {
+                            spinner("transcribing", px(16.), theme::text_secondary())
+                        } else if recording {
+                            icon("square", px(14.), theme::on_accent()).into_any_element()
+                        } else {
+                            icon("mic", px(16.), theme::text_secondary()).into_any_element()
+                        }),
+                )
+            }
+        };
+        // The accent bar is the application Vim selection mark, as on
+        // sidebar and transcript rows; under a chip it sits along the
+        // bottom without changing the row's layout.
+        element
+            .relative()
+            .when(selected, |element| {
+                element.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_1()
+                        .right_1()
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(gpui::rgb(theme::accent())),
+                )
+            })
+            .into_any_element()
     }
 
     /// The header chip's menu: recent projects, then the shared folder chooser.
@@ -800,14 +1034,14 @@ impl ChatScreen {
                         )
                     })
             });
-        let mcp_enabled = self.mcp_enabled_count;
+        let selected_control = self.application_vim_selected_control(window);
+        let controls = self
+            .composer_controls()
+            .map(|control| {
+                self.render_composer_control(control, selected_control == Some(control), window, cx)
+            })
+            .collect::<Vec<_>>();
         let drafts = &self.draft_images;
-        let model_label = self
-            .selected_model
-            .as_deref()
-            .map(|model| self.model_label(model))
-            .unwrap_or("Model")
-            .to_string();
         div()
             .w_full()
             .flex()
@@ -947,136 +1181,7 @@ impl ChatScreen {
                     .pb_2()
                     .pt_1()
                     .debug_selector(|| "composer-chips".to_string())
-                    .child(self.with_menu(
-                        ChatPopup::Model,
-                        chip(
-                            "model-picker",
-                            self.model_locked.then_some("lock"),
-                            model_label,
-                            true,
-                            self.popup.is_open(&ChatPopup::Model),
-                            false,
-                        ),
-                        Placement::AboveStart,
-                        window,
-                        cx,
-                        |this, _| this.model_menu(),
-                    ))
-                    .child(
-                        self.with_menu(
-                            ChatPopup::Thinking,
-                            widgets::icon_button(
-                                "thinking-picker",
-                                "brain",
-                                "Thinking",
-                                px(16.),
-                                theme::text_secondary(),
-                            )
-                            .size_8()
-                            .debug_selector(|| "thinking-picker".to_string())
-                            .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
-                                button.bg(gpui::rgb(theme::bg_sidebar_pill()))
-                            }),
-                            Placement::AboveStart,
-                            window,
-                            cx,
-                            |this, _| this.thinking_menu(),
-                        ),
-                    )
-                    .child(self.with_menu(
-                        ChatPopup::Integrations,
-                        chip(
-                            "mcp-menu",
-                            Some("puzzle"),
-                            match mcp_enabled {
-                                0 => "Integrations".to_string(),
-                                1 => "1 integration".to_string(),
-                                count => format!("{count} integrations"),
-                            },
-                            false,
-                            self.popup.is_open(&ChatPopup::Integrations),
-                            false,
-                        ),
-                        Placement::AboveStart,
-                        window,
-                        cx,
-                        |this, _| this.integrations_menu(),
-                    ))
-                    .child(
-                        chip(
-                            "web-toggle",
-                            Some("globe"),
-                            if self.web_enabled { "Web" } else { "Web off" }.to_string(),
-                            false,
-                            false,
-                            self.web_enabled,
-                        )
-                        .on_click(cx.listener(
-                            |this, _event, _window, cx| {
-                                let next = !this.web_enabled;
-                                this.set_web_enabled(next, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        div()
-                            .id("add-images")
-                            .size_8()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(theme::RADIUS_SM)
-                            .hover(|style| {
-                                style
-                                    .bg(gpui::rgb(theme::accent_container()))
-                                    .cursor_pointer()
-                            })
-                            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
-                            .when(self.image_picking, |el| el.opacity(0.5))
-                            .tooltip(widgets::tooltip("Attach images", None))
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.pick_images(cx);
-                            }))
-                            .child(icon("image", px(16.), theme::text_secondary())),
-                    )
-                    .when(self.audio_caps.transcription, |row| {
-                        let recording = self.recording;
-                        let transcribing = self.transcribing;
-                        row.child(
-                            div()
-                                .id("record-voice")
-                                .size_8()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(theme::RADIUS_SM)
-                                .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
-                                .hover(|style| {
-                                    style
-                                        .bg(gpui::rgb(theme::accent_container()))
-                                        .cursor_pointer()
-                                })
-                                .when(transcribing, |el| el.opacity(0.5))
-                                .tooltip(widgets::tooltip(
-                                    if recording {
-                                        "Stop recording"
-                                    } else {
-                                        "Dictate"
-                                    },
-                                    None,
-                                ))
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_recording(cx);
-                                }))
-                                .child(if transcribing {
-                                    spinner("transcribing", px(16.), theme::text_secondary())
-                                } else if recording {
-                                    icon("square", px(14.), theme::on_accent()).into_any_element()
-                                } else {
-                                    icon("mic", px(16.), theme::text_secondary()).into_any_element()
-                                }),
-                        )
-                    })
+                    .children(controls)
                     .children(vim_badge)
                     .when(disabled, |row| {
                         row.child(
