@@ -1000,6 +1000,7 @@ impl ChatScreen {
                 let label = match status.mode {
                     VimMode::Normal => "NORMAL",
                     VimMode::Insert => "INSERT",
+                    VimMode::Visual if status.visual_linewise => "VISUAL LINE",
                     VimMode::Visual => "VISUAL",
                     VimMode::Disabled => return None,
                 };

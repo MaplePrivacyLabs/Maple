@@ -110,9 +110,10 @@ Goose, with an independent dependency graph.
 - Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
 - Optional composer-only Vim editing provides Normal, Insert, and characterwise
-  Visual modes, Unicode-aware motions and text objects, operators and counts,
-  an unnamed register, undo/redo transactions, and structured dot repeat.
-  Enable it under General settings; every other text field stays standard.
+  and linewise Visual modes, Unicode-aware motions and text objects, operators
+  and counts, an unnamed register, undo/redo transactions, and structured dot
+  repeat. Enable it under General settings; every other text field stays
+  standard.
 - Optional application Vim navigation moves a stable semantic selection through
   Chat sidebar and transcript rows, modal choices, and Settings controls. It is
   independent of composer Vim and leaves ordinary text fields unchanged.
@@ -229,15 +230,31 @@ wrote. Codex needs version 0.143 or newer. See
 ### Composer Vim preview
 
 Turn on **Vim mode in composer** in General settings. The composer opens in
-Normal mode and shows a small `NORMAL`, `INSERT`, or `VISUAL` badge; login,
-search, rename, settings, prompt, question, and MCP fields keep their ordinary
-editing behavior.
+Normal mode and shows a small `NORMAL`, `INSERT`, `VISUAL`, or `VISUAL LINE`
+badge; login, search, rename, settings, prompt, question, and MCP fields keep
+their ordinary editing behavior.
 
-The preview includes `h/j/k/l`, `w/b/e`, `0/$`, `gg/G`, `i/a/I/A/o/O`,
-`d/c/y` with motions or `iw`/`aw`, `dd/cc/yy`, counts, `v`, `x`, `p/P`,
-`u`, `Ctrl-R`, and structured `.` repeat. Arrow keys also move in Normal and
-Visual modes. Escape leaves Insert or Visual for Normal; Enter sends in Insert
-or Normal, while Shift-Enter inserts a newline only in Insert.
+- Motions: `h/j/k/l`, `w/b/e`, `W/B/E`, `ge/gE`, `0/^/$`, `gg/G`, `{`/`}`,
+  `%`, and `f/F/t/T` with `;` and `,`.
+- Operators: `d`, `c`, `y`, `g~`, `gu`, and `gU` with any motion or text
+  object, doubled for lines (`dd`, `cc`, `yy`, `g~~`, `guu`, `gUU`).
+- Text objects after `i` or `a`: `w`, `W`, `p`, quotes (`"`, `'`, `` ` ``),
+  and brackets (`(`/`b`, `[`, `{`/`B`, `<`).
+- Edits: `i/a/I/A/o/O`, `x/X`, `s/S`, `C/D/Y`, `r`, `~`, `J`, `p/P`, `u`,
+  `Ctrl-R`, and structured `.` repeat, all with counts.
+- Visual: `v` and `V`, `o` to swap ends, and the operators above plus `r`,
+  `~`, `u`, `U`, and `J`. The capital `S/C/D/X/Y` act on whole lines.
+- Insert: `Ctrl-W` deletes a word, `Ctrl-U` deletes to the indentation, and
+  `Ctrl-H` deletes a character.
+
+Arrow keys also move in Normal and Visual modes. Escape leaves Insert or
+Visual for Normal and cancels a pending `f`, `r`, or text object; Enter sends
+in Insert or Normal, while Shift-Enter inserts a newline only in Insert.
+
+Behavior follows Neovim. `app/src/ui/text_input/vim_neovim_cases.json` holds
+key sequences with the result Neovim produced for each, and a test replays
+them through the composer's real keymap. Add a case and run `just vim-cases`
+to record it with the Neovim version pinned by this component's flake.
 
 Composer Vim uses the same customizable shortcut catalog as the rest of the
 app. It can be enabled with or without application Vim.

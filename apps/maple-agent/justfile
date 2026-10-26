@@ -55,6 +55,11 @@ test:
     RUSTFLAGS="-D warnings" cargo test --workspace --locked
     RUSTFLAGS="-D warnings" cargo test -p maple-agent-app --locked {{headless}}
 
+# Record what Neovim does for each composer Vim case, using the Neovim this
+# flake pins. Run after adding a case to the file.
+vim-cases:
+    nix shell --inputs-from . nixpkgs#neovim -c nvim --clean --headless -l scripts/record-vim-cases.lua app/src/ui/text_input/vim_neovim_cases.json
+
 # Build the debug binary.
 build:
     cargo build -p maple-agent-app

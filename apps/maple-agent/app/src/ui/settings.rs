@@ -3183,6 +3183,7 @@ fn shortcut_context_label(context: Option<&str>) -> &str {
         Some(crate::ui::text_input::vim_actions::NORMAL_CONTEXT) => "Composer — Normal",
         Some(crate::ui::text_input::vim_actions::VISUAL_CONTEXT) => "Composer — Visual",
         Some(crate::ui::text_input::vim_actions::INSERT_CONTEXT) => "Composer — Insert",
+        Some(crate::ui::text_input::vim_actions::WAITING_CONTEXT) => "Composer — Pending key",
         Some(context) => context,
     }
 }

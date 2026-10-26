@@ -31,8 +31,10 @@ use self::vim::{
     VimMode, VimOutcome, VimSignal, VimState, VimStatus,
 };
 use self::vim_actions::{
-    VimBeginOperator, VimCancel, VimContextual, VimCountDigit, VimDeleteChars, VimEnterInsert,
-    VimMotion, VimOpenLine, VimPaste, VimRedo, VimRepeat, VimToggleVisual, VimUndo,
+    VimBeginFind, VimBeginOperator, VimBeginReplace, VimCancel, VimChangeCase, VimContextual,
+    VimCountDigit, VimDeleteChars, VimEnterInsert, VimInsertDeleteLine, VimInsertDeleteWord,
+    VimJoinLines, VimMotion, VimOpenLine, VimPaste, VimRedo, VimRepeat, VimShortcut,
+    VimSwapVisualEnds, VimToggleVisual, VimToggleVisualLine, VimUndo,
 };
 
 actions!(
@@ -613,7 +615,17 @@ impl TextInput {
                     let Some(previous) = self.undo_stack.pop_back() else {
                         break;
                     };
-                    self.redo_stack.push(self.snapshot());
+                    // Like Vim, redo puts the cursor back where the change
+                    // began, not where it left the cursor.
+                    let mut redone = self.snapshot();
+                    let cursor = redo_cursor(
+                        &previous.content,
+                        previous.selected_range.start,
+                        &self.content,
+                    );
+                    redone.selected_range = cursor..cursor;
+                    redone.selection_reversed = false;
+                    self.redo_stack.push(redone);
                     self.restore(previous, cx);
                     let cursor = self.cursor_offset();
                     if let Some(vim) = &mut self.vim {
@@ -1550,8 +1562,22 @@ impl TextInput {
         self.apply_vim_outcome(outcome, cx);
     }
 
+    /// Whether the engine waits for a character after `f`, `t`, `r`, `i` or
+    /// `a`. The field then reports `editor_vim_mode = waiting`, which turns
+    /// the Normal and Visual bindings off so the key arrives as text.
+    fn vim_awaiting_literal(&self) -> bool {
+        self.vim.as_ref().is_some_and(VimState::awaiting_literal)
+    }
+
     fn key_context(&self) -> &'static str {
+        let waiting = self.vim_awaiting_literal();
         match (self.application_vim, self.is_composer, self.vim_mode()) {
+            (true, true, Some(VimMode::Normal | VimMode::Visual)) if waiting => {
+                "TextInput ApplicationVim input_role = composer editor_vim_mode = waiting"
+            }
+            (false, true, Some(VimMode::Normal | VimMode::Visual)) if waiting => {
+                "TextInput input_role = composer editor_vim_mode = waiting"
+            }
             (true, true, Some(VimMode::Normal)) => {
                 "TextInput ApplicationVim input_role = composer editor_vim_mode = normal"
             }
@@ -1619,6 +1645,79 @@ impl TextInput {
 
     fn vim_toggle_visual(&mut self, _: &VimToggleVisual, _: &mut Window, cx: &mut Context<Self>) {
         self.dispatch_vim_action(VimCommand::ToggleVisual, cx);
+    }
+
+    fn vim_toggle_visual_line(
+        &mut self,
+        _: &VimToggleVisualLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch_vim_action(VimCommand::ToggleVisualLine, cx);
+    }
+
+    fn vim_swap_visual_ends(
+        &mut self,
+        _: &VimSwapVisualEnds,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch_vim_action(VimCommand::SwapVisualEnds, cx);
+    }
+
+    fn vim_begin_find(&mut self, action: &VimBeginFind, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::BeginFind(action.kind), cx);
+    }
+
+    fn vim_begin_replace(&mut self, _: &VimBeginReplace, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::BeginReplace, cx);
+    }
+
+    fn vim_shortcut(&mut self, action: &VimShortcut, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::Shortcut(action.shortcut), cx);
+    }
+
+    fn vim_change_case(&mut self, action: &VimChangeCase, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::ChangeCase(action.change), cx);
+    }
+
+    fn vim_join_lines(&mut self, _: &VimJoinLines, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::JoinLines, cx);
+    }
+
+    fn vim_insert_delete_word(
+        &mut self,
+        _: &VimInsertDeleteWord,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_back_in_insert(vim::insert_word_start, cx);
+    }
+
+    fn vim_insert_delete_line(
+        &mut self,
+        _: &VimInsertDeleteLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_back_in_insert(vim::insert_line_start, cx);
+    }
+
+    /// Insert-mode `Ctrl-W` and `Ctrl-U`: delete back to where Vim stops,
+    /// or the selection when there is one, as one recorded backspace.
+    fn delete_back_in_insert(&mut self, stop: fn(&str, usize) -> usize, cx: &mut Context<Self>) {
+        if self.vim_mode() != Some(VimMode::Insert) || self.marked_range.is_some() {
+            return;
+        }
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            stop(&self.content, cursor)..cursor
+        } else {
+            self.selected_range.clone()
+        };
+        if !range.is_empty() {
+            self.replace_range_with_kind(range, "", InsertEditKind::Backspace, cx);
+        }
     }
 
     fn vim_delete_chars(&mut self, _: &VimDeleteChars, _: &mut Window, cx: &mut Context<Self>) {
@@ -2353,6 +2452,41 @@ impl EntityInputHandler for TextInput {
 /// `offset` clamped to `text` and moved back to the nearest char boundary,
 /// so a cursor from a stale layout or a mouse hit can never split a
 /// multi-byte character.
+/// Where Vim's redo leaves the cursor: on the first line the change
+/// touched, at the column the change started from when it started on that
+/// line, otherwise at the line's first non-blank.
+fn redo_cursor(before: &str, before_cursor: usize, after: &str) -> usize {
+    let common = before
+        .bytes()
+        .zip(after.bytes())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let common = snap_to_char_boundary(after, common);
+    let line_of = |text: &str, offset: usize| text[..offset].matches('\n').count();
+    let line_start = |text: &str, line: usize| {
+        if line == 0 {
+            0
+        } else {
+            text.match_indices('\n')
+                .nth(line - 1)
+                .map_or(text.len(), |(newline, _)| newline + 1)
+        }
+    };
+    let changed_line = line_of(after, common);
+    let start = line_start(after, changed_line);
+    let end = after[start..]
+        .find('\n')
+        .map_or(after.len(), |end| start + end);
+    let before_cursor = snap_to_char_boundary(before, before_cursor);
+    if line_of(before, before_cursor) == changed_line {
+        let column = before_cursor - line_start(before, changed_line);
+        snap_to_char_boundary(after, (start + column).min(end))
+    } else {
+        let line = &after[start..end];
+        start + line.len() - line.trim_start_matches([' ', '\t']).len()
+    }
+}
+
 fn snap_to_char_boundary(text: &str, offset: usize) -> usize {
     let mut offset = offset.min(text.len());
     while !text.is_char_boundary(offset) {
@@ -3132,6 +3266,31 @@ impl Render for TextInput {
                 let no_modifiers = !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt
                     && !event.keystroke.modifiers.platform;
+                if modal && this.vim_awaiting_literal() {
+                    // Bindings are off while the engine waits, so the key
+                    // lands here. One typed character answers `f`, `t`, `r`,
+                    // `i` or `a` (Option characters included); anything else,
+                    // Enter included, cancels instead of sending or moving.
+                    let command = event
+                        .keystroke
+                        .key_char
+                        .as_deref()
+                        .filter(|_| {
+                            !event.keystroke.modifiers.control
+                                && !event.keystroke.modifiers.platform
+                        })
+                        .and_then(|typed| {
+                            let mut characters = typed.chars();
+                            characters
+                                .next()
+                                .filter(|character| !character.is_control())
+                                .filter(|_| characters.next().is_none())
+                        })
+                        .map_or(VimCommand::Invalid, VimCommand::Literal);
+                    this.execute_vim_command(command, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if modal {
                     let visual_enter =
                         this.vim_mode() == Some(VimMode::Visual) && event.keystroke.key == "enter";
@@ -3649,10 +3808,11 @@ mod tests {
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
         cx.update(|window, app| window.focus(&focus, app));
 
-        // Direct text input is a no-op in Normal. The following edits arrive
-        // through real, context-resolved GPUI bindings and the normal input
-        // handler rather than by calling the engine in the test.
-        cx.simulate_input("X");
+        // Direct text input is a no-op in Normal (`Q` has no binding). The
+        // following edits arrive through real, context-resolved GPUI
+        // bindings and the normal input handler rather than by calling the
+        // engine in the test.
+        cx.simulate_input("Q");
         cx.simulate_keystrokes("0 d w");
         assert_eq!(cx.update(|_window, app| input.read(app).text()), "two");
 
@@ -4166,5 +4326,248 @@ mod tests {
             cx.simulate_keystrokes(key);
             cx.update(|_, app| assert_eq!(input.read(app).selected_range, range, "{key}"));
         }
+    }
+
+    #[gpui::test]
+    fn a_pending_find_or_replace_reads_the_next_key_as_a_character(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let submitted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let leaves = Rc::new(Cell::new(0));
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let submitted = submitted.clone();
+            let leaves = leaves.clone();
+            let mut input = TextInput::new("", cx)
+                .composer_vim(true)
+                .multiline(8)
+                .on_enter(move |text, _window, _cx| submitted.borrow_mut().push(text))
+                .on_vim_leave(move |_window, _cx| leaves.set(leaves.get() + 1));
+            input.set_text("ab xyz", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(240.)));
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+        let state = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| {
+                let input = input.read(app);
+                (
+                    input.text(),
+                    input.selected_range.start,
+                    input.key_context(),
+                    input.vim_mode(),
+                )
+            })
+        };
+
+        // While a key is awaited the Normal bindings are off, so `x` is the
+        // target rather than a delete.
+        cx.simulate_keystrokes("0 f");
+        assert!(state(cx).2.ends_with("editor_vim_mode = waiting"));
+        cx.simulate_keystrokes("x");
+        let (text, cursor, context, _) = state(cx);
+        assert_eq!((text.as_str(), cursor), ("ab xyz", 3));
+        assert!(context.ends_with("editor_vim_mode = normal"));
+
+        // `r` takes any typed character, Space and Option characters too.
+        cx.simulate_keystrokes("r space");
+        assert_eq!(state(cx).0, "ab  yz");
+        cx.simulate_keystrokes("r é");
+        assert_eq!(state(cx).0, "ab éyz");
+
+        // Enter or a motion key cancels the pending command; Enter does not
+        // send while a key is awaited.
+        cx.simulate_keystrokes("t enter");
+        let (text, cursor, context, _) = state(cx);
+        assert_eq!((text.as_str(), cursor), ("ab éyz", 3));
+        assert!(context.ends_with("editor_vim_mode = normal"));
+        assert!(submitted.borrow().is_empty());
+        cx.simulate_keystrokes("f left");
+        assert_eq!(state(cx).1, 3);
+
+        // Escape drops only the pending key: Visual survives and the
+        // composer does not ask to be left.
+        cx.simulate_keystrokes("v f escape");
+        assert_eq!(state(cx).3, Some(VimMode::Visual));
+        assert_eq!(leaves.get(), 0);
+        cx.simulate_keystrokes("escape escape");
+        assert_eq!(state(cx).3, Some(VimMode::Normal));
+        assert_eq!(leaves.get(), 1);
+    }
+
+    /// A case recorded from Neovim by `scripts/record-vim-cases.lua`; `ˇ`
+    /// in `text` marks the cursor.
+    #[derive(serde::Deserialize)]
+    struct NeovimCase {
+        text: String,
+        keys: String,
+        expect: NeovimState,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct NeovimState {
+        mode: String,
+        text: String,
+        cursor: usize,
+        anchor: Option<usize>,
+        register: String,
+        register_linewise: bool,
+    }
+
+    /// Vim key notation as the keystrokes GPUI types for it.
+    fn keystrokes_for_vim_keys(keys: &str) -> String {
+        let mut strokes = Vec::new();
+        let mut rest = keys;
+        while let Some(character) = rest.chars().next() {
+            if let Some(name) = rest
+                .strip_prefix('<')
+                .and_then(|after| after.split_once('>'))
+                .map(|(name, _)| name)
+            {
+                strokes.push(match name {
+                    "Esc" => "escape".to_owned(),
+                    "CR" => "enter".to_owned(),
+                    "BS" => "backspace".to_owned(),
+                    "Tab" => "tab".to_owned(),
+                    control => format!(
+                        "ctrl-{}",
+                        control
+                            .strip_prefix("C-")
+                            .unwrap_or_else(|| panic!("unknown key <{name}>"))
+                    ),
+                });
+                rest = &rest[name.len() + 2..];
+                continue;
+            }
+            strokes.push(match character {
+                ' ' => "space".to_owned(),
+                character => character.to_string(),
+            });
+            rest = &rest[character.len_utf8()..];
+        }
+        strokes.join(" ")
+    }
+
+    fn with_cursor(text: &str, cursor: usize) -> String {
+        format!("{}ˇ{}", &text[..cursor], &text[cursor..])
+    }
+
+    /// Every recorded case through the real composer keymap, compared with
+    /// what Neovim did: mode, text, cursor or selection, and the unnamed
+    /// register. Re-record with `just vim-cases` after adding a case.
+    #[gpui::test]
+    fn composer_vim_matches_recorded_neovim_behavior(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let cases: Vec<NeovimCase> =
+            serde_json::from_str(include_str!("text_input/vim_neovim_cases.json"))
+                .expect("recorded Neovim cases");
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            TextInput::new("", cx).composer_vim(true).multiline(8)
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(240.)));
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+
+        let mut failures = Vec::new();
+        for case in &cases {
+            let cursor = case.text.find('ˇ').expect("cursor marker");
+            let text = case.text.replacen('ˇ', "", 1);
+            input.update(cx, |input, cx| {
+                input.set_text(&text, cx);
+                input.vim = Some(VimState::at(&input.content, cursor));
+                input.apply_vim_selection();
+            });
+            cx.simulate_keystrokes(&keystrokes_for_vim_keys(&case.keys));
+
+            let expect = &case.expect;
+            let (mode, actual_text, selection, reversed, register) = cx.update(|_window, app| {
+                let input = input.read(app);
+                let vim = input.vim.as_ref().expect("composer Vim");
+                let mode = match (vim.mode(), vim.status().visual_linewise) {
+                    (VimMode::Normal, _) => "normal",
+                    (VimMode::Insert, _) => "insert",
+                    (VimMode::Visual, false) => "visual",
+                    (VimMode::Visual, true) => "visual_line",
+                    (VimMode::Disabled, _) => "disabled",
+                };
+                (
+                    mode,
+                    input.content.to_string(),
+                    input.selected_range.clone(),
+                    input.selection_reversed,
+                    vim.unnamed_register().cloned(),
+                )
+            });
+            let expected_selection = match (expect.mode.as_str(), expect.anchor) {
+                ("visual", Some(anchor)) => {
+                    let far = anchor.max(expect.cursor);
+                    let end = expect.text[far..]
+                        .graphemes(true)
+                        .next()
+                        .map_or(far, |grapheme| far + grapheme.len());
+                    anchor.min(expect.cursor)..end
+                }
+                ("visual_line", Some(anchor)) => {
+                    let first = expect.text[..anchor.min(expect.cursor)]
+                        .rfind('\n')
+                        .map_or(0, |newline| newline + 1);
+                    let far = anchor.max(expect.cursor);
+                    let last = expect.text[far..]
+                        .find('\n')
+                        .map_or(expect.text.len(), |newline| far + newline + 1);
+                    first..last
+                }
+                _ => expect.cursor..expect.cursor,
+            };
+            let expected_register = (!expect.register.is_empty()).then_some((
+                expect.register.as_str(),
+                if expect.register_linewise {
+                    vim::RegisterKind::Linewise
+                } else {
+                    vim::RegisterKind::Characterwise
+                },
+            ));
+            let actual_register = register
+                .as_ref()
+                .filter(|register| !register.text.is_empty())
+                .map(|register| (register.text.as_str(), register.kind));
+            let visual = expect.mode.starts_with("visual");
+            if mode != expect.mode
+                || actual_text != expect.text
+                || selection != expected_selection
+                || (visual && reversed != (expect.cursor < expect.anchor.unwrap_or_default()))
+                || actual_register != expected_register
+            {
+                failures.push(format!(
+                    "{:?} on {:?}\n    Neovim: {} {:?} {:?} register {:?}\n    Maple:  {} {:?} {:?} register {:?}",
+                    case.keys,
+                    case.text,
+                    expect.mode,
+                    with_cursor(&expect.text, expect.cursor),
+                    expected_selection,
+                    expected_register,
+                    mode,
+                    with_cursor(&actual_text, selection.start.min(actual_text.len())),
+                    selection,
+                    actual_register,
+                ));
+            }
+            // Leave Insert or Visual so the next case starts from Normal.
+            cx.simulate_keystrokes("escape escape");
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} cases differ from Neovim:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
     }
 }
