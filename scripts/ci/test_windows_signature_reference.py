@@ -114,11 +114,12 @@ class WindowsSignatureReferenceTests(unittest.TestCase):
             "yq", "-o=json", ".", str(root / ".github/workflows/agent-windows-signature-probe.yml")
         ], text=True))
         self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
-        self.assertEqual(workflow["permissions"], {"contents": "read", "actions": "read"})
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
         inputs = workflow["on"]["workflow_dispatch"]["inputs"]
         self.assertEqual(len(inputs), 8)
         self.assertTrue(all(value["required"] and "default" not in value for value in inputs.values()))
         job = workflow["jobs"]["signature-probe"]
+        self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
         self.assertEqual(job["runs-on"], "windows-2025")
         self.assertNotIn("environment", job)
         self.assertNotIn("secrets", json.dumps(workflow))

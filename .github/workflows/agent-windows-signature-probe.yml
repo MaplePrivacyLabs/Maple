@@ -2,7 +2,6 @@ name: Agent Windows Historical Signature Probe
 
 permissions:
   contents: read
-  actions: read
 
 on:
   workflow_dispatch:
@@ -44,6 +43,9 @@ jobs:
   signature-probe:
     runs-on: windows-2025
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
     env:
       CARGO_TERM_COLOR: never
       CARGO_INCREMENTAL: 0

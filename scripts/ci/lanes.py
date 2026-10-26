@@ -26,6 +26,7 @@ LINUX = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_RUNNER")
 LINUX_HEAVY = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
 MACOS = Runner("blacksmith-6vcpu-macos-26", "CI_MACOS_RUNNER")
 WINDOWS = Runner("blacksmith-8vcpu-windows-2025", "CI_WINDOWS_RUNNER")  # read by ci.yml itself
+GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile nothing heavy
 # ci.yml pins this toolchain for agent-windows; agent-lint checks that the Agent
 # flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"
@@ -92,7 +93,6 @@ class Lane:
     workspaces: str = ""
     cache_files: Tuple[str, ...] = ()           # hashed into the cache key
     timeout: int = 15
-    budget: float = 5.0                         # p50 minutes, shown in the plan summary
     gate: bool = True                           # selected by CI_INFRA edits
     legacy: Optional[str] = None                # the workflow that still runs this lane
 
@@ -106,16 +106,24 @@ AGENT_FLAKE = dict(
 LANES: Tuple[Lane, ...] = (
     Lane("agent-lint", AGENT, also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",),
          run="just ci-lint && python3 ../../scripts/ci/plan.py check-rust",
-         cache="agent-lint", timeout=15, budget=4, **AGENT_FLAKE),
+         cache="agent-lint", timeout=15, **AGENT_FLAKE),
     Lane("agent-test", AGENT, also=RUST_SDK + PROXY_RUNTIME, runner=LINUX_HEAVY,
-         run="just ci-test", cache="agent-test", timeout=20, budget=6.5, **AGENT_FLAKE),
+         run="just ci-test", cache="agent-test", timeout=20, **AGENT_FLAKE),
     Lane("agent-macos", AGENT,
          also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/select-xcode.py", "scripts/ci/apple-toolchain.json"),
          runner=MACOS, run="cargo clippy --workspace --all-targets --locked -- -D warnings",
-         cache="agent-macos", timeout=25, budget=5, **AGENT_FLAKE),
+         cache="agent-macos", timeout=25, **AGENT_FLAKE),
     # PRs get Windows clippy only for Windows-specific paths or the ci:windows label.
     Lane("agent-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=AGENT_WINDOWS,
-         labels=("ci:windows", "ci:full"), job="agent-windows", runner=WINDOWS, timeout=45, budget=8),
+         labels=("ci:windows", "ci:full"), job="agent-windows", runner=WINDOWS, timeout=45),
+    # Every root flake check: actionlint, workflow policy and contracts, CI script
+    # tests, the release gates, and release metadata (read from the version files).
+    Lane("repo", (
+        ".github/**", "scripts/ci/**", ".githooks/**", "flake.nix", "flake.lock", "justfile", "setup-hooks.sh",
+        ".agents/skills/release-maple/scripts/**", "services/agent-updates/publisher/**",
+        "scripts/update-version.py", "apps/maple-research/zapstore.yaml", "proxy/Cargo.toml", "proxy/justfile",
+        RESEARCH + "package.json", TAURI + "Cargo.toml", TAURI + "tauri.conf.json",
+    ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15),
 
     # Legacy lanes. Lanes that differ only by OS (agent-package, research-desktop)
     # are split when they move, and OpenSecret will route through
@@ -134,11 +142,6 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-updates", ("services/agent-updates/**", "services/download-tracking/**", "scripts/ci/agent-updates.sh",
                            "apps/maple-agent/release-profiles.json", "apps/maple-agent/scripts/release-info.py"),
          legacy="agent-updates-tests.yml"),
-    Lane("repo", (
-        ".github/**", "scripts/ci/**", ".githooks/**", "flake.nix", "flake.lock", "justfile", "setup-hooks.sh",
-        ".agents/skills/release-maple/scripts/**", "scripts/update-version.py", "apps/maple-research/zapstore.yaml",
-        RESEARCH + "package.json", TAURI + "Cargo.toml", TAURI + "tauri.conf.json",
-    ), legacy="repository-checks.yml, release-gates-tests.yml, pages-tests.yml"),
     Lane("sdk-ts", SDK_TS + ("sdk/.prettierrc.json", "sdk/eslint.config.js", "sdk/justfile", "sdk/.env.example",
                              "sdk/LICENSE.md", "scripts/ci/build-sdk-publish.sh",
                              "scripts/ci/check-sdk-package-consumers.py"),

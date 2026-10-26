@@ -58,8 +58,9 @@ class PortedAgentSelectorTests(unittest.TestCase):
         for path in ("proxy/Cargo.toml", "proxy/src/proxy.rs", "proxy/build.rs", "sdk/rust/Cargo.toml",
                      "sdk/rust/src/client.rs", "sdk/rust/build.rs", "sdk/rust/assets/aws_nitro_root.der"):
             with self.subTest(path=path):
-                self.assertEqual(selected([path]), AGENT_PR)
-                self.assertEqual(selected([path], PUSH), ACTIVE)
+                self.assertEqual(selected([path]) - {"repo"}, AGENT_PR)  # proxy/Cargo.toml feeds the release gates
+                self.assertEqual({lane for lane in selected([path], PUSH) if lane.startswith("agent-")},
+                                 {lane for lane in ACTIVE if lane.startswith("agent-")})
 
     def test_research_typescript_and_independent_services_skip_agent(self):
         for path in (
@@ -87,13 +88,13 @@ class PortedAgentSelectorTests(unittest.TestCase):
                 self.assertFalse(agent([path], PUSH))
 
     def test_shared_ci_tooling_selects_the_agent_lanes_that_use_it(self):
-        self.assertEqual(selected(["scripts/ci/verify-agent-rust-deps.py"]), {"agent-lint"})
+        self.assertEqual(selected(["scripts/ci/verify-agent-rust-deps.py"]), {"agent-lint", "repo"})
         for path in ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"):
             with self.subTest(path=path):
-                self.assertEqual(selected([path]), {"agent-macos"})
-        self.assertEqual(selected(["scripts/ci/agent_windows.py"]), {"agent-windows"})
+                self.assertEqual(selected([path]), {"agent-macos", "repo"})
+        self.assertEqual(selected(["scripts/ci/agent_windows.py"]), {"agent-windows", "repo"})
 
-    def test_intentional_differences_select_only_the_legacy_repo_lane(self):
+    def test_intentional_differences_select_only_the_repo_lane(self):
         for path in (
             # The Agent flake has no root inputs.
             "flake.nix", "flake.lock",
@@ -106,9 +107,8 @@ class PortedAgentSelectorTests(unittest.TestCase):
             "scripts/ci/windows-artifact-sign.ps1", "scripts/ci/install-windows-artifact-signing.ps1",
         ):
             with self.subTest(path=path):
-                self.assertIn("repo", owners(path))
-                self.assertEqual(selected([path]), set())
-                self.assertEqual(selected([path], PUSH), set())
+                self.assertEqual(selected([path]), {"repo"})
+                self.assertEqual(selected([path], PUSH), {"repo"})
 
     def test_unknown_roots_and_malformed_paths_select_every_lane(self):
         for path in ("new-build-config.toml", "newroot/x", "", "/tmp/file", "../file", "docs/../flake.nix",
@@ -136,6 +136,13 @@ class LaneTableTests(unittest.TestCase):
         self.assertEqual(selected(["sdk/src/index.ts"], PUSH), set())
         self.assertFalse({o for o in owners("sdk/src/index.ts") if o.startswith(("agent-", "research-"))})
 
+    def test_release_metadata_and_publisher_inputs_select_the_repo_lane(self):
+        for path in ("apps/maple-research/frontend/package.json", "apps/maple-research/frontend/src-tauri/Cargo.toml",
+                     "apps/maple-research/frontend/src-tauri/tauri.conf.json", "proxy/justfile", ".github/CODEOWNERS",
+                     ".github/actionlint.yaml", "services/agent-updates/publisher/publisher.py"):
+            with self.subTest(path=path):
+                self.assertIn("repo", selected([path]))
+
     def test_rust_sdk_tests_and_proxy_container_select_no_agent_lane(self):
         self.assertEqual(selected(["sdk/rust/tests/x.rs"], PUSH), set())
         self.assertEqual(selected(["proxy/src/main.rs"]), AGENT_PR)
@@ -159,8 +166,7 @@ class LaneTableTests(unittest.TestCase):
                 self.assertEqual(selected([path], PUSH), set())
         evidence = ".agents/skills/release-maple/scripts/ci_evidence.py"
         self.assertFalse(plan.inert(evidence))
-        self.assertEqual(owners(evidence), {"repo"})
-        self.assertEqual(selected([evidence]), set())
+        self.assertEqual(selected([evidence]), {"repo"})
 
     def test_ci_infrastructure_selects_every_active_gate_lane(self):
         for path in (".github/workflows/ci.yml", ".github/actions/setup-nix/action.yml",
@@ -227,8 +233,8 @@ class PlannerTests(unittest.TestCase):
         runners = {entry["id"]: entry["runner"] for entry in entries}
         self.assertEqual(runners, {"agent-lint": "blacksmith-8vcpu-ubuntu-2404",
                                    "agent-test": "blacksmith-16vcpu-ubuntu-2404",
-                                   "agent-macos": "blacksmith-6vcpu-macos-26"})
-        self.assertTrue(all(len(entry["cache_key"]) == 16 for entry in entries))
+                                   "agent-macos": "blacksmith-6vcpu-macos-26", "repo": "ubuntu-latest"})
+        self.assertEqual({len(entry["cache_key"]) for entry in entries if entry["cache"]}, {16})
 
     def test_run_executes_the_lane_command_in_its_flake(self):
         with mock.patch.object(plan.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()), \

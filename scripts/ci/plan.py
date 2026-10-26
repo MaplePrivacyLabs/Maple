@@ -173,12 +173,12 @@ def summary(event: str, selected: Selection) -> str:
     lines = [f"### Lanes for this {event}", ""]
     if not selected:
         return "\n".join(lines + ["No lane selected."]) + "\n"
-    lines += ["| Lane | Why | Budget (p50) |", "|---|---|---|"]
+    lines += ["| Lane | Why |", "|---|---|"]
     for lane in LANES:
         reasons = selected.get(lane.id)
         if reasons:
             more = f" (+{len(reasons) - 1} more)" if len(reasons) > 1 else ""
-            lines.append(f"| `{lane.id}` | `{reasons[0]}`{more} | {lane.budget:g} min |")
+            lines.append(f"| `{lane.id}` | `{reasons[0]}`{more} |")
     return "\n".join(lines) + "\n"
 
 

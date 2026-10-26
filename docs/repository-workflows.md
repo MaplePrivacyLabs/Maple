@@ -78,12 +78,21 @@ artifacts to TestFlight. Creating a GitHub Release starts release builds and
 downstream publication. Use `$release-maple` only for explicitly requested
 release work, and report the tag and commit before publishing.
 
+## Workflow checks
+
+The `repo` lane of `ci.yml` runs `nix flake check` when workflows, `scripts/ci/`,
+hooks, the root flake, the release-preflight scripts, the Agent update publisher,
+or the Research version files change. Besides actionlint and the release gates,
+it runs `scripts/ci/test_workflow_policy.py` (invariants every workflow keeps)
+and `scripts/ci/test_contracts.py` (what the release, the publishers, signing and
+OpenSecret rely on). A contract failure means fix the workflow, not the contract.
+
 ## Nix runtime
 
 GitHub Actions jobs use Determinate Nix 3.23.3 through an immutable
 `DeterminateSystems/determinate-nix-action` commit and an explicit
 `source-tag: v3.23.3`. Keep the action revision and source tag synchronized when
-upgrading. `scripts/ci/test_nix_workflows.py` rejects the floating installer,
+upgrading. `scripts/ci/test_workflow_policy.py` rejects the floating installer,
 an unexpected action revision or tag, installation before checkout, or a missing
 runtime verification step. Each job checks the installed Determinate and
 upstream Nix versions before doing build work. The workflows pass no GitHub

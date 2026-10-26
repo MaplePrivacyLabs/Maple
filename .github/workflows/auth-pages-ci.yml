@@ -9,7 +9,6 @@ on:
     # Include stacked PRs and forks; this job has no publishing authority.
     paths:
       - ".github/workflows/auth-pages-*.yml"
-      - ".github/workflows/pages-tests.yml"
       - "apps/maple-auth/**"
       - "scripts/ci/auth-*.sh"
       - "scripts/ci/pages_*.py"
@@ -20,7 +19,6 @@ on:
     branches: [master]
     paths:
       - ".github/workflows/auth-pages-*.yml"
-      - ".github/workflows/pages-tests.yml"
       - "apps/maple-auth/**"
       - "scripts/ci/auth-*.sh"
       - "scripts/ci/pages_*.py"

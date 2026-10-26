@@ -10,10 +10,6 @@ CI = "auth-pages-ci.yml"
 BUILD = "auth-pages-build.yml"
 PUBLISH = "auth-pages-publish.yml"
 DEV_PUBLISH = "auth-pages-dev-publish.yml"
-CHECK_PAGES = (
-    "nix build --no-update-lock-file --no-link --print-build-logs "
-    ".#checks.x86_64-linux.pages"
-)
 BUILD_AUTH = "nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-web.sh"
 CHECK_AUTH = "nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-ci.sh"
 ARTIFACT_DIRECTORY = "apps/maple-auth/target/reproducibility"
@@ -66,19 +62,6 @@ class AuthPagesWorkflowTests(unittest.TestCase):
         self.assertIn('--sha "$SOURCE_SHA"', describe["run"])
         self.assertNotIn('--sha "$GITHUB_SHA"', describe["run"])
 
-    def test_ci_covers_only_auth_and_shared_build_tooling(self):
-        events = workflow(CI)["on"]
-        self.assertEqual(events["pull_request"]["paths"], events["push"]["paths"])
-        self.assertEqual(set(events["pull_request"]["paths"]), {
-            ".github/workflows/auth-pages-*.yml", ".github/workflows/pages-tests.yml",
-            "apps/maple-auth/**", "scripts/ci/auth-*.sh",
-            "scripts/ci/pages_*.py", "scripts/ci/test_pages_*.py", "flake.nix", "flake.lock",
-        })
-        for event in ("pull_request", "push"):
-            paths = workflow("pages-tests.yml")["on"][event]["paths"]
-            self.assertIn(".github/workflows/auth-pages-*.yml", paths)
-            self.assertIn("scripts/ci/auth-*.sh", paths)
-
     def test_builds_are_unprivileged_and_test_before_building_fixed_profiles(self):
         for name, job_name, profile in ((CI, "auth", "dev"), (BUILD, "build", "release")):
             with self.subTest(workflow=name):
@@ -96,11 +79,10 @@ class AuthPagesWorkflowTests(unittest.TestCase):
                 self.assertEqual(len(builds), 1)
                 self.assertEqual(builds[0]["env"], {"MAPLE_AUTH_ENVIRONMENT": profile})
                 self.assertNotIn("if", builds[0])
-                for command in (CHECK_PAGES, CHECK_AUTH):
-                    checks = [step for step in steps if step.get("run") == command]
-                    self.assertEqual(len(checks), 1)
-                    self.assertNotIn("if", checks[0])
-                    self.assertLess(steps.index(checks[0]), steps.index(builds[0]))
+                checks = [step for step in steps if step.get("run") == CHECK_AUTH]
+                self.assertEqual(len(checks), 1)
+                self.assertNotIn("if", checks[0])
+                self.assertLess(steps.index(checks[0]), steps.index(builds[0]))
                 for step in steps:
                     self.assertNotIn("GH_TOKEN", step.get("env", {}))
                     self.assertNotIn("github.token", " ".join(strings(step.get("env", {}))))

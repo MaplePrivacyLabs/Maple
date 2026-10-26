@@ -739,67 +739,34 @@
           '';
 
           workflows = pkgs.runCommand "maple-github-workflows-check" {
-            nativeBuildInputs = with pkgs; [ actionlint python3 yq-go ];
-            src = ./.github/workflows;
-            actions = ./.github/actions;
-            tests = ./scripts/ci/test_codeql_workflow.py;
-            nixTests = ./scripts/ci/test_nix_workflows.py;
-            signingTests = ./scripts/ci/test_signing_workflows.py;
+            nativeBuildInputs = [ pkgs.actionlint ];
+            src = ./.;
           } ''
-            # Lint inside a repository-shaped tree so local actions resolve.
-            mkdir -p "$TMPDIR/repo/.github/workflows" "$TMPDIR/repo/scripts/ci"
-            cp -R "$src/." "$TMPDIR/repo/.github/workflows/"
-            cp -R "$actions" "$TMPDIR/repo/.github/actions"
-            cd "$TMPDIR/repo"
+            # The whole tree, so local actions resolve.
+            cd "$src"
             # actionlint 1.7.10 predates GitHub's supported concurrency.queue key.
             # Release-gate tests assert that the only intended value is queue: max.
             for workflow in .github/workflows/*.yml; do
               if [ "$workflow" = .github/workflows/pages-publish.yml ] || [ "$workflow" = .github/workflows/auth-pages-publish.yml ] || [ "$workflow" = .github/workflows/auth-pages-dev-publish.yml ]; then
                 # It also predates environment.deployment. Pages tests require
                 # false on the publisher jobs; keep this exception file-scoped.
-                actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
+                actionlint -config-file .github/actionlint.yaml -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
               else
-                actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"
+                actionlint -config-file .github/actionlint.yaml -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"
               fi
             done
-            cp "$tests" "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
-            python3 "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
-            cp "$nixTests" "$TMPDIR/repo/scripts/ci/test_nix_workflows.py"
-            python3 "$TMPDIR/repo/scripts/ci/test_nix_workflows.py"
-            cp "$signingTests" "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
-            python3 "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
             touch "$out"
           '';
 
-          apple-toolchain = pkgs.runCommand "maple-apple-toolchain-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash python3 yq-go ];
+          # Every scripts/ci test (workflow policy, contracts, the planner, the
+          # release and publication scripts) and the Agent update publisher.
+          ci-scripts = pkgs.runCommand "maple-ci-scripts-check" {
+            nativeBuildInputs = with pkgs; [ mapleBash git jq minisign python3 unzip yq-go ];
             src = ./.;
           } ''
             cd "$src"
-            python3 scripts/ci/test_select_xcode.py
-            python3 scripts/ci/test_research_dev_profile.py
-            touch "$out"
-          '';
-
-          change-detection = pkgs.runCommand "maple-ci-change-detection-check" {
-            nativeBuildInputs = with pkgs; [ bash git python3 ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_change_detection.py
-            python3 scripts/ci/test_agent_change_detection.py
-            python3 scripts/ci/test_opensecret_change_detection.py
-            python3 scripts/ci/test_hook_change_detection.py
-            python3 scripts/ci/test_plan.py
-            touch "$out"
-          '';
-
-          opensecret-workflows = pkgs.runCommand "maple-opensecret-workflow-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash git jq python3 yq-go ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_opensecret_workflows.py
+            python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'
+            python3 -I -m unittest discover -s services/agent-updates/publisher -p 'test_*.py'
             touch "$out"
           '';
 
@@ -813,56 +780,6 @@
             touch "$out"
           '';
 
-          agent-workflows = pkgs.runCommand "maple-agent-workflow-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash git python3 yq-go ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_agent_workflows.py
-            python3 scripts/ci/test_agent_cache.py
-            python3 scripts/ci/test_agent_cache_scope.py
-            python3 scripts/ci/test_agent_dependency_archive.py
-            python3 scripts/ci/test_agent_windows.py
-            python3 scripts/ci/test_agent_measure.py
-            python3 apps/maple-agent/scripts/test_rusqlite_provider.py
-            python3 scripts/ci/test_agent_master_selection.py
-            python3 scripts/ci/test_agent_rust_deps.py
-            python3 scripts/ci/test_agent_debug_plist.py
-            python3 apps/maple-agent/scripts/test_third_party_notices.py
-            python3 apps/maple-agent/scripts/test_release_packaging.py
-            python3 apps/maple-agent/scripts/test_linux_release_appimage.py
-            python3 apps/maple-agent/scripts/test_linux_release_bundle.py
-            python3 apps/maple-agent/scripts/test_linux_install.py
-            python3 apps/maple-agent/scripts/test_macos_release_dylibs.py
-            python3 apps/maple-agent/scripts/test_macos_build_info.py
-            python3 apps/maple-agent/scripts/test_windows_build_info.py
-            python3 apps/maple-agent/scripts/test_windows_host_spawn.py
-            python3 apps/maple-agent/scripts/test_windows_release.py
-            python3 apps/maple-agent/scripts/test_smoke_macos_release.py
-            python3 apps/maple-agent/scripts/test_smoke_linux_bundle_host.py
-            touch "$out"
-          '';
-
-          agent-updates = pkgs.runCommand "maple-agent-updates-check" {
-            nativeBuildInputs = with pkgs; [ git minisign python3 yq-go ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_agent_updates_workflows.py
-            python3 -I -m unittest discover -s services/agent-updates/publisher -p 'test_*.py'
-            touch "$out"
-          '';
-
-          ios-build-profile = pkgs.runCommand "maple-ios-build-profile-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash python3 unzip ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_ios_build_profile.py
-            python3 scripts/ci/test_ios_release_signing.py
-            touch "$out"
-          '';
-
           pages = pkgs.runCommand "maple-pages-deployment-check" {
             nativeBuildInputs = with pkgs; [ mapleBash python3 yq-go ];
             src = ./.;
@@ -872,6 +789,7 @@
             touch "$out"
           '';
 
+          # Built by sdk-publish-tests.yml; ci-scripts runs the same tests.
           sdk-publishing = pkgs.runCommand "maple-sdk-publishing-check" {
             nativeBuildInputs = with pkgs; [ mapleBash git python3 yq-go ];
             src = ./.;

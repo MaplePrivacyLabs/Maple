@@ -1,7 +1,7 @@
 #!/bin/sh
 # Repository-level pre-commit checks: workflow lint and CI script unit tests.
 # Runs from the repository root inside the root flake's ci shell.
-# CI equivalent: repository-checks.yml (nix flake check), minus the slow
+# CI equivalent: the ci.yml repo lane (nix flake check), minus the slow
 # release-gates and toolchain checks.
 
 set -u
