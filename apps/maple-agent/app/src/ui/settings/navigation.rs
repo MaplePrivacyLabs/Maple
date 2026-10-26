@@ -690,7 +690,7 @@ mod tests {
             this.integrations = Some(vec![
                 maple_agent::agent::AgentIntegration {
                     id: "cua-driver".to_string(),
-                    name: "Cua".to_string(),
+                    name: "Computer use".to_string(),
                     description: String::new(),
                     availability: maple_agent::agent::AgentIntegrationAvailability::Available,
                     version: None,

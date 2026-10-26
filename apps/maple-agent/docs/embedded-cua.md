@@ -35,7 +35,7 @@ instructions below join its system prompt, while the task is bound. Every CUA
 call runs without asking for approval, like every other tool call in a Maple
 task; CUA's published schemas and descriptions reach the model unaltered. A
 binding that fails is named in the run's notice beside the MCP servers', as
-`Computer use (CUA): <reason>`, and the run goes on without the tools.
+`Computer use: <reason>`, and the run goes on without the tools.
 
 CUA's action schemas and screenshot defaults remain canonical. Maple adapts the
 general-purpose catalog only at the bound-session boundary: it hides CUA's six

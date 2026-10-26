@@ -2638,6 +2638,31 @@ impl SettingsScreen {
                 )
             });
         if cua_driver {
+            details = details.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(CUA_CREDIT)
+                    .child(
+                        div()
+                            .flex()
+                            .child(
+                                div()
+                                    .id("cua-project-link")
+                                    .text_color(gpui::rgb(theme::link()))
+                                    .hover(|style| style.underline().cursor_pointer())
+                                    .on_click(|_, _, _| {
+                                        crate::ui::rich_text::open_link(CUA_PROJECT_URL)
+                                    })
+                                    .child("Cua team"),
+                            )
+                            .child("."),
+                    ),
+            );
             let mut metadata = div().flex().flex_wrap().items_center().gap_2();
             metadata = metadata.child(integration_metadata_badge(cua_backend_label(integration)));
             for permission in integration
@@ -3053,6 +3078,11 @@ fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option
     Some(format!("{}: {guidance}", missing.label()))
 }
 
+/// Credit for the open-source project behind computer use, whose mark is
+/// the card's icon. The card follows it with "Cua team", linked.
+const CUA_CREDIT: &str = "Powered by Cua, an open-source project from the";
+const CUA_PROJECT_URL: &str = "https://cua.ai";
+
 fn cua_backend_label(_integration: &AgentIntegration) -> &'static str {
     "Built into Maple"
 }
@@ -3384,7 +3414,7 @@ mod tests {
 
         AgentIntegration {
             id: "cua-driver".to_string(),
-            name: "Computer use (CUA)".to_string(),
+            name: "Computer use".to_string(),
             description: "Computer use".to_string(),
             availability,
             version: Some("1.0.0".to_string()),

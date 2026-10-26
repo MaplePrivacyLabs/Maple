@@ -2607,7 +2607,7 @@ impl LocalBackend {
             return Ok([
                 ("codex", "Codex"),
                 ("claude", "Claude Code"),
-                ("cua-driver", "Cua"),
+                ("cua-driver", "Computer use"),
             ]
             .into_iter()
             .map(|(id, name)| AgentIntegration {
