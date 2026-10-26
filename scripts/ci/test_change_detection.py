@@ -147,16 +147,14 @@ class ChangeDetectionTests(unittest.TestCase):
             "android",
         )
 
-    def test_ios_variants_only_select_ios_and_dev_workflow_keeps_its_own_trigger(self) -> None:
+    def test_ios_variants_and_dev_workflow_select_ios(self) -> None:
         for path in (
             "scripts/ci/ios-build-profile.py", "scripts/ci/ios-variant.sh",
             "apps/maple-research/frontend/src-tauri/tauri.ios-dev.conf.json",
+            ".github/workflows/ios-dev-testflight.yml",
         ):
             with self.subTest(path=path):
                 self.assert_routes([path], "ios")
-        # The new workflow always builds master; editing it alone does not
-        # select an unrelated production app package.
-        self.assert_routes([".github/workflows/ios-dev-testflight.yml"])
 
     def test_apple_toolchain_inputs_select_apple_builds(self) -> None:
         for path in (

@@ -47,6 +47,13 @@ PRs keep their merge-base selection and signing stays confined to trusted master
 Research desktop, Android and iOS PR workflows group runs by workflow and PR.
 A new run cancels earlier runs for that same unsigned preview; unrelated PRs
 and signed, master and manual queues keep their existing behavior.
+SDK Rust/TypeScript, proxy Rust/container, Research frontend/Rust and repository
+checks likewise cancel superseded runs only for the same workflow and PR.
+Their master and other non-PR runs each retain an independent concurrency group.
+Dev TestFlight uses the shared Research app selector: frontend or iOS changes
+select a build, while unrelated Agent/backend-only pushes skip it. Unknown
+selection results still build, and manual master dispatch forces a build.
+Selected Dev builds retain their separate serialized export-through-upload queue.
 The separate `opensecret-eif.yml` builds dev/prod EIF candidates on
 same-repository PRs changing measured inputs without editing PCR approvals.
 Each diagnostic build explicitly realizes the user ramdisk selected by its EIF

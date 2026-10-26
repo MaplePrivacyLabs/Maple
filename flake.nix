@@ -744,6 +744,7 @@
             tests = ./scripts/ci/test_codeql_workflow.py;
             nixTests = ./scripts/ci/test_nix_workflows.py;
             signingTests = ./scripts/ci/test_signing_workflows.py;
+            concurrencyTests = ./scripts/ci/test_pr_concurrency.py;
           } ''
             cd "$src"
             # actionlint 1.7.10 predates GitHub's supported concurrency.queue key.
@@ -765,6 +766,8 @@
             python3 "$TMPDIR/repo/scripts/ci/test_nix_workflows.py"
             cp "$signingTests" "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
             python3 "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
+            cp "$concurrencyTests" "$TMPDIR/repo/scripts/ci/test_pr_concurrency.py"
+            python3 "$TMPDIR/repo/scripts/ci/test_pr_concurrency.py"
             touch "$out"
           '';
 

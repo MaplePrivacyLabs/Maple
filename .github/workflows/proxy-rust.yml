@@ -42,6 +42,11 @@ on:
       - "proxy/examples/**"
       - "scripts/ci/proxy-release.sh"
 
+concurrency:
+  # Replace superseded PR validation; keep master/manual runs independent.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"

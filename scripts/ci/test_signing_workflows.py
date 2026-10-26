@@ -170,7 +170,7 @@ class SigningWorkflowTests(unittest.TestCase):
         for name in ("TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"):
             self.assertEqual(build["env"][name], "${{ secrets." + name + " }}")
 
-    def test_dev_testflight_runs_for_every_master_push_and_only_trusted_manual_runs(self):
+    def test_dev_testflight_selects_app_changes_and_only_trusted_manual_runs(self):
         config = workflows()["ios-dev-testflight.yml"]
         self.assertEqual(config["on"], {"push": {"branches": ["master"]}, "workflow_dispatch": None})
         self.assertEqual(config["permissions"], {"contents": "read"})
@@ -182,8 +182,18 @@ class SigningWorkflowTests(unittest.TestCase):
             "github.ref == 'refs/heads/master' && "
             "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
         )
-        for job in config["jobs"].values():
-            self.assertEqual(" ".join(job["if"].split()), expected_guard)
+        jobs = config["jobs"]
+        self.assertEqual(jobs["changes"]["uses"], "./.github/workflows/app-change-detection.yml")
+        self.assertEqual(" ".join(jobs["changes"]["if"].split()), expected_guard)
+        self.assertNotIn("environment", jobs["changes"])
+        self.assertEqual(jobs["build-ios-dev"]["needs"], "changes")
+        build_guard = " ".join(jobs["build-ios-dev"]["if"].split())
+        self.assertIn("always() && !cancelled()", build_guard)
+        self.assertIn(expected_guard, build_guard)
+        self.assertIn("(needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.ios != 'false')", build_guard)
+        self.assertEqual(" ".join(jobs["submit-ios-dev-testflight"]["if"].split()), expected_guard)
+        for name in ("build-ios-dev", "submit-ios-dev-testflight"):
+            job = jobs[name]
             self.assertNotIn("strategy", job)
             checkout = job["steps"][0]
             self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
@@ -270,7 +280,7 @@ class SigningWorkflowTests(unittest.TestCase):
     def test_dev_testflight_has_no_release_or_external_tester_distribution_action(self):
         config = workflows()["ios-dev-testflight.yml"]
         for job in config["jobs"].values():
-            for step in job["steps"]:
+            for step in job.get("steps", []):
                 self.assertNotRegex(step.get("run", ""), r"gh release|betaGroups|betaTesters|appStoreVersions")
                 if "uses" in step:
                     self.assertRegex(step["uses"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")

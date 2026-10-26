@@ -66,6 +66,7 @@ WORKFLOW_ROUTES = {
     ".github/workflows/desktop-pr-build.yml": DESKTOP_PLATFORMS,
     ".github/workflows/mobile-build.yml": frozenset({"ios"}),
     ".github/workflows/mobile-pr-build.yml": frozenset({"ios"}),
+    ".github/workflows/ios-dev-testflight.yml": frozenset({"ios"}),
 }
 
 CI_SCRIPT_ROUTES = {
