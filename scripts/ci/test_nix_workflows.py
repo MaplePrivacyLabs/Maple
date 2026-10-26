@@ -78,6 +78,13 @@ class NixWorkflowPinTests(unittest.TestCase):
 
         self.assertEqual(len(installs), EXPECTED_INSTALLS)
 
+    def test_setup_nix_action_installs_the_pinned_runtime_then_verifies_it(self):
+        steps = workflow(ROOT / ".github/actions/setup-nix/action.yml")["runs"]["steps"]
+        self.assertEqual(steps[0]["uses"], PINNED_ACTION)
+        self.assertEqual(steps[0]["with"], PINNED_INPUTS)
+        self.assertEqual({key: steps[1].get(key) for key in VERIFY_STEP}, VERIFY_STEP)
+        self.assertEqual(len(steps), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

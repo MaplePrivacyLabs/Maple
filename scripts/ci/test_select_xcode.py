@@ -160,6 +160,7 @@ resolve_xcode_developer_dir
             ("agent-desktop-build.yml", "macos"),
             ("agent-desktop-build.yml", "macos-unsigned"),
             ("agent-desktop-build.yml", "verify-macos"),
+            ("ci.yml", "nix"),
             ("desktop-build.yml", "build-macos"),
             ("desktop-pr-build.yml", "build-macos"),
             ("desktop-pr-build.yml", "build-research-dev-macos"),

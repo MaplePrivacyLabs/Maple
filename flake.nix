@@ -741,15 +741,20 @@
           workflows = pkgs.runCommand "maple-github-workflows-check" {
             nativeBuildInputs = with pkgs; [ actionlint python3 yq-go ];
             src = ./.github/workflows;
+            actions = ./.github/actions;
             tests = ./scripts/ci/test_codeql_workflow.py;
             nixTests = ./scripts/ci/test_nix_workflows.py;
             signingTests = ./scripts/ci/test_signing_workflows.py;
           } ''
-            cd "$src"
+            # Lint inside a repository-shaped tree so local actions resolve.
+            mkdir -p "$TMPDIR/repo/.github/workflows" "$TMPDIR/repo/scripts/ci"
+            cp -R "$src/." "$TMPDIR/repo/.github/workflows/"
+            cp -R "$actions" "$TMPDIR/repo/.github/actions"
+            cd "$TMPDIR/repo"
             # actionlint 1.7.10 predates GitHub's supported concurrency.queue key.
             # Release-gate tests assert that the only intended value is queue: max.
-            for workflow in ./*.yml; do
-              if [ "$workflow" = ./pages-publish.yml ] || [ "$workflow" = ./auth-pages-publish.yml ] || [ "$workflow" = ./auth-pages-dev-publish.yml ]; then
+            for workflow in .github/workflows/*.yml; do
+              if [ "$workflow" = .github/workflows/pages-publish.yml ] || [ "$workflow" = .github/workflows/auth-pages-publish.yml ] || [ "$workflow" = .github/workflows/auth-pages-dev-publish.yml ]; then
                 # It also predates environment.deployment. Pages tests require
                 # false on the publisher jobs; keep this exception file-scoped.
                 actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
@@ -757,8 +762,6 @@
                 actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"
               fi
             done
-            mkdir -p "$TMPDIR/repo/.github/workflows" "$TMPDIR/repo/scripts/ci"
-            cp -R . "$TMPDIR/repo/.github/workflows/"
             cp "$tests" "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
             python3 "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
             cp "$nixTests" "$TMPDIR/repo/scripts/ci/test_nix_workflows.py"
@@ -787,6 +790,7 @@
             python3 scripts/ci/test_agent_change_detection.py
             python3 scripts/ci/test_opensecret_change_detection.py
             python3 scripts/ci/test_hook_change_detection.py
+            python3 scripts/ci/test_plan.py
             touch "$out"
           '';
 

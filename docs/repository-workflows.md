@@ -126,11 +126,15 @@ remain separate measurements.
 
 ## Agent compilation and cache measurements
 
-Agent CI runs the three-platform workspace matrix, three-platform upstream
-SQLCipher provider suite, and plain Linux optimized binary as independent jobs.
-The final `Agent CI required jobs` check rejects failed or unexpectedly skipped
-selected jobs. All retain fail-closed change selection. The plain Linux binary
-and Desktop Dev/Prod packages have separate profiles and caches.
+Agent PR checks run in `ci.yml` (`agent-lint`, `agent-test`, `agent-macos`;
+`agent-windows` on Windows paths or the `ci:windows` label), selected by
+`scripts/ci/lanes.py` and reported by its `ci-ok` job. Full macOS and Windows
+builds run on master: Agent CI (`agent-ci.yml`) runs on master pushes and
+dispatch only, one never-cancelled run per commit, with the three-platform
+workspace matrix, three-platform upstream SQLCipher provider suite, and plain
+Linux optimized binary as independent jobs. The final `Agent CI required jobs`
+check rejects failed or unexpectedly skipped selected jobs. The plain Linux
+binary and Desktop Dev/Prod packages have separate profiles and caches.
 
 Before restoring targets, `scripts/ci/agent_cache_scope.py` wraps the existing
 `agent_cache.py` identity without changing its legacy digest. It fingerprints
@@ -223,10 +227,7 @@ Agent CI also compares master cumulatively against the last successful
 ancestor whose three workspace jobs, three provider jobs and plain Linux
 release job actually passed. Desktop packaging retains its independent
 all-six-downloaded-verifier baseline. Selector-only, failed or cancelled runs
-cannot consume outstanding changes. The existing master cancellation policy
-can still replace a run, but a subsequent unrelated push reselects the
-unverified component changes; lookup/history uncertainty selects a build.
-PRs retain their merge-base selection and superseded-preview cancellation.
+cannot consume outstanding changes; lookup/history uncertainty selects a build.
 
 Unsigned builders upload seven-day `maple-agent-*-metrics-*` artifacts with
 actual environment identity, phase durations, logical target sizes, and bounded

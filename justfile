@@ -211,6 +211,10 @@ release version:
     git tag -a "v{{version}}" -m "Release v{{version}}"
     echo "Release v{{version}} created! Don't forget to push tags: git push && git push --tags"
 
+# Run one ci.yml lane exactly as CI does (lane ids are in scripts/ci/lanes.py).
+lane NAME:
+    python3 scripts/ci/plan.py run {{NAME}}
+
 # GPUI Agent uses its own pinned toolchain and component working directory.
 agent-check:
     cd apps/maple-agent && nix develop --no-update-lock-file -c just ci

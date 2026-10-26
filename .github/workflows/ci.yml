@@ -1,0 +1,184 @@
+# CI: the single required check (ci-ok) for every pull request, on any base.
+# Lane selection lives in scripts/ci/lanes.py and scripts/ci/plan.py. Generic
+# Nix lanes run in the `nix` matrix; a special job exists only where a step list
+# cannot be expressed generically (Windows toolchain, services, OIDC, artifacts).
+# Never add `paths:` here: ci-ok must always report.
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      lanes:
+        description: "Lane ids (comma-separated) or 'all'"
+        type: string
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  # PRs replace superseded runs. Master, queue and dispatch runs are grouped per
+  # SHA and never cancelled, so every master commit gets a full verdict.
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read          # live PR labels: add a label, then re-run
+      pull-requests: read
+    outputs:
+      lanes: ${{ steps.plan.outputs.lanes }}
+      nix: ${{ steps.plan.outputs.nix }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Select lanes
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANES_INPUT: ${{ inputs.lanes }}
+          CI_LINUX_RUNNER: ${{ vars.CI_LINUX_RUNNER }}
+          CI_LINUX_HEAVY_RUNNER: ${{ vars.CI_LINUX_HEAVY_RUNNER }}
+          CI_MACOS_RUNNER: ${{ vars.CI_MACOS_RUNNER }}
+        run: python3 scripts/ci/plan.py github
+
+  nix:
+    name: ${{ matrix.id }}
+    needs: plan
+    if: needs.plan.outputs.nix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.nix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Select pinned Xcode
+        if: runner.os == 'macOS'
+        run: python3 scripts/ci/select-xcode.py
+      - name: Rust cache (restore everywhere, save only on master)
+        if: matrix.cache != ''
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: ci-v1
+          # rust-cache ignores `key` when `shared-key` is set, so the lockfile
+          # hash (which also pins the flake's toolchain) goes into the shared key.
+          shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
+          workspaces: ${{ matrix.workspaces }}
+          add-rust-environment-hash-key: "false"
+          # The action runs cargo from the workspace directory: use an absolute flake path.
+          cmd-format: nix develop --no-update-lock-file ${{ github.workspace }}/${{ matrix.flake }} -c {0}
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') }}
+      - name: Run lane
+        env:
+          LANE: ${{ matrix.id }}
+        run: python3 scripts/ci/plan.py run "$LANE"
+
+  agent-windows:
+    name: agent-windows
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-windows']
+    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/maple-agent
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Windows Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable action, exact toolchain below
+        with:
+          # Equal to AGENT_WINDOWS_RUST in scripts/ci/lanes.py; agent-lint checks
+          # that the Agent flake's rustc still reports this version.
+          toolchain: 1.98.0
+          components: clippy
+
+      - name: Select Windows MSVC and SDK
+        uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
+        with:
+          arch: x64
+
+      - name: Select native Windows Perl for the static crypto build
+        run: |
+          native_perl=/c/Strawberry/perl/bin/perl.exe
+          if [ ! -x "$native_perl" ]; then
+            echo 'Native Windows Perl is missing from the runner' >&2
+            exit 1
+          fi
+          "$native_perl" -MLocale::Maketext::Simple -MIPC::Cmd -e 'die "OpenSSL requires native Windows Perl\n" unless $^O eq "MSWin32"; print "$^V\n"'
+          # Pin the native executable across later Git Bash steps and Rust's
+          # process resolver instead of depending on their PATH ordering.
+          native_perl_windows="$(cygpath -m "$native_perl")"
+          printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
+          # openssl-src uses NASM if available and otherwise selects no-asm.
+
+      - name: Pin and smoke-test the selected Windows linker
+        run: python3 ../../scripts/ci/agent_windows.py
+
+      - name: Rust cache (restore everywhere, save only on master)
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: ci-v1
+          shared-key: agent-windows
+          workspaces: apps/maple-agent -> target
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') }}
+
+      - name: Clippy (Windows)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [plan, nix, agent-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every selected lane succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          LANES: ${{ needs.plan.outputs.lanes }}
+          NIX: ${{ needs.plan.outputs.nix }}
+        run: |
+          set -euo pipefail
+          if [ "$(jq -r '.plan.result' <<<"$NEEDS")" != success ]; then
+            echo "::error::plan did not succeed"; exit 1
+          fi
+          # Selected => success; an unselected job may only be skipped (or succeed).
+          jq -n -e --argjson needs "$NEEDS" --argjson lanes "$LANES" --argjson nix "$NIX" '
+            def ok($job; $selected):
+              if $selected then $needs[$job].result == "success"
+              else ($needs[$job].result | IN("skipped", "success")) end;
+            ok("nix"; ($nix | length) > 0)
+            and ([$needs | keys[] | select(. != "plan" and . != "nix")]
+                 | all(. as $job | ok($job; $lanes[$job] // false)))
+          ' >/dev/null || { echo "::error::a selected lane did not succeed"; exit 1; }
+          echo "ci-ok: every selected lane succeeded"

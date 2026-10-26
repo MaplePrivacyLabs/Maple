@@ -30,6 +30,19 @@ store-bench-ci:
 # Run all the checks that CI runs.
 ci: fmt-check git-metadata-test clippy test
 
+# The ci.yml agent-lint lane: format, packaging tests, clippy and the dependency graph.
+ci-lint: fmt-check git-metadata-test packaging-test
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo clippy -p maple-agent-app --all-targets --locked {{headless}} -- -D warnings
+    metadata="$(mktemp)"; trap 'rm -f "$metadata"' EXIT; \
+      cargo metadata --locked --format-version 1 > "$metadata"; \
+      python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"; \
+      python3 scripts/verify-sqlcipher-build.py "$metadata"
+
+# The ci.yml agent-test lane; `cargo test` builds the examples, ci-lint's clippy checks the benches.
+ci-test:
+    RUSTFLAGS="-D warnings" cargo test --workspace --locked
+
 # Exercise the production Git metadata helper without compiling the app graph.
 git-metadata-test:
     python3 scripts/test_git_metadata.py

@@ -1,10 +1,9 @@
 name: Maple Agent CI
 
+# Pull requests run the Agent lanes in ci.yml; this workflow verifies master.
 on:
   push:
     branches: [master]
-  pull_request:
-    # Run unprivileged validation for stacked PRs as well as master targets.
   workflow_dispatch:
 
 # PR code, including forks, executes only on fresh managed runners with a
@@ -13,9 +12,10 @@ on:
 permissions:
   contents: read
 
+# One group per commit, never cancelled: every master push gets a full verdict.
 concurrency:
-  group: maple-agent-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: maple-agent-ci-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always

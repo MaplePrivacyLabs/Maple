@@ -165,9 +165,9 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
 
     def test_contributor_build_has_no_credentials_or_privileged_events(self):
         config = workflow("agent-ci.yml")
-        self.assertEqual(set(config["on"]), {"push", "pull_request", "workflow_dispatch"})
+        # Pull requests run the Agent lanes in ci.yml.
+        self.assertEqual(set(config["on"]), {"push", "workflow_dispatch"})
         self.assertEqual(config["on"]["push"]["branches"], ["master"])
-        self.assertIsNone(config["on"]["pull_request"])
         self.assertEqual(config["permissions"], {"contents": "read"})
         for value in strings({key: value for key, value in config.items() if key != "jobs"}):
             self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
