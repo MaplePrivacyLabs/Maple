@@ -1820,7 +1820,7 @@ impl SettingsScreen {
                         toggle_row(
                             "Summarize tool calls",
                             "Completed tool calls with long output get a one-line \
-                             summary from the title model on their cards.",
+                             summary on their cards.",
                             self.settings.tool_summaries,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_tool_summaries(cx);
