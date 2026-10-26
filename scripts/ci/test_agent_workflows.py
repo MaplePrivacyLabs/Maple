@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -20,6 +21,7 @@ TRUSTED_DEPENDENCY_UPLOAD = "${{ success() && github.repository == 'MaplePrivacy
 DEPENDENCY_BUILDERS = (
     ("agent-ci.yml", "desktop"), ("agent-ci.yml", "provider"), ("agent-ci.yml", "linux-release"),
     ("agent-desktop-build.yml", "macos-build"), ("agent-desktop-build.yml", "linux"),
+    ("agent-desktop-build.yml", "windows-build"),
 )
 
 
@@ -283,7 +285,9 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
                 self.assertNotIn("hashFiles", cache["key"])
                 self.assertEqual(cache["cmd-format"], RUST_CACHE_COMMAND)
                 self.assertEqual(cache["save-if"], "false")
-                self.assertIn("nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache_scope.py", steps[fingerprint]["run"])
+                self.assertIn("python3 ../../scripts/ci/agent_cache_scope.py", steps[fingerprint]["run"])
+                if name != "windows-build":
+                    self.assertIn("nix develop --no-update-lock-file . -c", steps[fingerprint]["run"])
 
     def test_legacy_cache_restore_preserves_abi_scope_and_never_writes(self):
         for filename, name in DEPENDENCY_BUILDERS:
@@ -416,7 +420,7 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
 
     def test_dependency_archives_are_absent_from_protected_and_consumer_jobs(self):
         for name, job in workflow("agent-desktop-build.yml")["jobs"].items():
-            if name in {"macos-build", "linux"}:
+            if name in {"macos-build", "linux", "windows-build"}:
                 continue
             for step in job["steps"]:
                 self.assertNotIn("agent_dependency_archive.py", step.get("run", ""))
@@ -478,6 +482,110 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
     }
     ATTEST_ACTION = "actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb"
 
+    def test_windows_reuses_existing_environment_only_for_trusted_master_signing(self):
+        jobs = workflow(self.WORKFLOW)["jobs"]
+        signer = jobs["windows"]
+        self.assertEqual(signer["environment"], "windows-signing")
+        self.assertEqual(signer["runs-on"], "windows-2025")
+        self.assertEqual(signer["needs"], "windows-build")
+        self.assertIn(self.MASTER_GUARD, signer["if"])
+        self.assertIn("needs.windows-build.result == 'success'", signer["if"])
+        steps = signer["steps"]
+        preflight = next(i for i, step in enumerate(steps) if "windows-release.py prepare" in step.get("run", ""))
+        login = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith("azure/login@"))
+        package = next(i for i, step in enumerate(steps) if "windows-release.py package" in step.get("run", ""))
+        self.assertLess(preflight, login)
+        self.assertLess(login, package)
+        self.assertEqual(steps[login]["with"], {
+            "client-id": "${{ secrets.AZURE_CLIENT_ID }}",
+            "tenant-id": "${{ secrets.AZURE_TENANT_ID }}",
+            "subscription-id": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+        })
+        self.assertEqual(steps[package]["env"], {
+            "MAPLE_WINDOWS_ARTIFACT_SIGNING_" + name: "${{ secrets.AZURE_ARTIFACT_SIGNING_" + name + " }}"
+            for name in ("ENDPOINT", "ACCOUNT_NAME", "CERTIFICATE_PROFILE_NAME")
+        })
+        self.assertNotIn("--unsigned", steps[package]["run"])
+        for step in steps:
+            self.assertNotRegex(step.get("run", ""), r"cargo\b|--smoke|maple-agent\.exe\s+--")
+            self.assertNotIn("rust-cache@", step.get("uses", ""))
+            self.assertNotIn("rust-toolchain@", step.get("uses", ""))
+        self.assertFalse(any("TAURI_SIGNING" in value for value in strings(signer)))
+
+    def test_windows_preview_and_native_verifier_have_no_signing_credentials(self):
+        jobs = workflow(self.WORKFLOW)["jobs"]
+        build = jobs["windows-build"]
+        self.assertIn("target-feature=+crt-static", build["env"]["RUSTFLAGS"])
+        steps = build["steps"]
+        linker = next(i for i, step in enumerate(steps) if "agent_windows.py" in step.get("run", ""))
+        fingerprint = next(i for i, step in enumerate(steps) if step.get("id") == "environment")
+        self.assertLess(linker, fingerprint)
+        self.assertTrue(any("test_windows_build_info.py" in step.get("run", "") for step in steps))
+        release = next(step["run"] for step in steps
+                       if step.get("name") == "Build Windows release binary and notices without signing credentials")
+        # Native Windows CreateProcess cannot launch a Unix shebang script.
+        self.assertIn('git_bash="$(cygpath -w "$BASH")"', release)
+        self.assertIn('--target target -- "$git_bash" ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"', release)
+        self.assertNotIn('-- bash ', release)
+        shell_probe = next(i for i, step in enumerate(steps)
+                           if step.get("name") == "Smoke native Git Bash process launch")
+        graph = next(i for i, step in enumerate(steps)
+                     if step.get("name") == "Verify the canonical SDK and proxy dependency graph")
+        self.assertLess(shell_probe, graph)
+        host_probe = next(i for i, step in enumerate(steps)
+                          if step.get("run") == "python3 scripts/test_windows_host_spawn.py")
+        self.assertLess(host_probe, graph)
+        upload = next(step["with"] for step in steps
+                      if step.get("uses", "").startswith("actions/upload-artifact@"))
+        self.assertEqual(upload["path"].splitlines(), [
+            "apps/maple-agent/target/release/maple-agent.exe",
+            "apps/maple-agent/target/third-party-notices",
+        ])
+        for name in ("windows-unsigned", "windows"):
+            download = next(step["with"] for step in jobs[name]["steps"]
+                            if step.get("uses", "").startswith("actions/download-artifact@"))
+            self.assertEqual(download, {"name": upload["name"], "path": "apps/maple-agent/target"})
+        preview = jobs["windows-unsigned"]
+        self.assertEqual(preview["strategy"]["matrix"], {"variant": ["dev"]})
+        self.assertIn("github.event_name == 'pull_request'", preview["if"])
+        self.assertNotIn("github.event_name == 'push'", preview["if"])
+        self.assertTrue(any('package "$MAPLE_RELEASE_PROFILE" --unsigned' in step.get("run", "")
+                            for step in preview["steps"]))
+        verify = jobs["verify-windows"]
+        self.assertEqual(verify["needs"], ["windows", "windows-unsigned"])
+        self.assertIn("always() && !cancelled()", verify["if"])
+        self.assertIn("needs.windows-unsigned.result == 'success'", verify["if"])
+        self.assertIn("needs.windows.result == 'success'", verify["if"])
+        smoke = next(step["run"] for step in verify["steps"] if "windows-release.py verify" in step.get("run", ""))
+        self.assertIn("--smoke", smoke)
+        self.assertIn("--unsigned", smoke)
+        self.assertIn('"$GITHUB_EVENT_NAME" = pull_request', smoke)
+        for name in ("windows-build", "windows-unsigned", "verify-windows"):
+            self.assertNotIn("environment", jobs[name])
+            self.assertFalse(any("secrets." in value for value in strings(jobs[name])))
+
+    def test_windows_verifier_clears_runner_paths_without_hiding_signing_configuration(self):
+        steps = workflow(self.WORKFLOW)["jobs"]["verify-windows"]["steps"]
+        smoke = next(step["run"] for step in steps if "windows-release.py verify" in step.get("run", ""))
+        paths = {"AZURE_CONFIG_DIR", "AZURE_DEVOPS_CACHE_DIR", "AZURE_EXTENSION_DIR"}
+        credentials = {"AZURE_CLIENT_ID", "AZURE_FUTURE_TOKEN", "MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME"}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "environment-names.json"
+            # Execute the real workflow script with a harmless Python probe in
+            # place of the installer verifier. Record names, never values.
+            probe = '''python3() {
+              "$PROBE_PYTHON" -c 'import json, os; print(json.dumps(sorted(os.environ)))' > "$PROBE_OUTPUT"
+            }
+            '''
+            subprocess.run(["bash", "-euo", "pipefail", "-c", probe + smoke], check=True,
+                           env={**os.environ, **dict.fromkeys(paths | credentials, "fixture"),
+                                "GITHUB_EVENT_NAME": "pull_request", "MAPLE_RELEASE_PROFILE": "dev",
+                                "PROBE_PYTHON": sys.executable, "PROBE_OUTPUT": str(output)},
+                           capture_output=True)
+            remaining = set(json.loads(output.read_text()))
+            self.assertFalse(paths & remaining)
+            self.assertTrue(credentials <= remaining)
+
     def test_only_pr_updates_can_replace_an_in_progress_or_pending_build(self):
         concurrency = workflow(self.WORKFLOW)["concurrency"]
         self.assertEqual(concurrency, {
@@ -527,28 +635,28 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         for name, job in jobs.items():
             with self.subTest(job=name):
                 self.assertNotIn("uses", job)
-                if name in ("macos", "attest-linux"):
+                if name in ("macos", "attest-linux", "windows"):
                     self.assertEqual(job["permissions"], {
                         "contents": "read", "id-token": "write", "attestations": "write",
                     })
                     self.assertIn(self.MASTER_GUARD, " ".join(job["if"].split()))
-                elif name in ("verify-macos", "verify-linux"):
+                elif name in ("verify-macos", "verify-linux", "verify-windows"):
                     self.assertEqual(job["permissions"], {
                         "contents": "read", "attestations": "read",
                     })
-                elif name in ("changes", "macos-build", "linux"):
+                elif name in ("changes", "macos-build", "linux", "windows-build"):
                     self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
                 else:
                     self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
-                if name != "macos":
+                if name not in ("macos", "windows"):
                     self.assertNotIn("environment", job)
                     for step in job["steps"]:
                         if "gh attestation verify" in step.get("run", ""):
-                            self.assertIn(name, ("verify-macos", "verify-linux"))
+                            self.assertIn(name, ("verify-macos", "verify-linux", "verify-windows"))
                             self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
-                            if name == "verify-linux":
+                            if name in ("verify-linux", "verify-windows"):
                                 self.assertIn(self.MASTER_GUARD, " ".join(step["if"].split()))
-                        elif name in ("macos-build", "linux") and step.get("id") == "dependency-archive":
+                        elif name in ("macos-build", "linux", "windows-build") and step.get("id") == "dependency-archive":
                             self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
                             self.assertIn("agent_dependency_archive.py restore", step["run"])
                         elif name == "changes" and step.get("id") == "master":
@@ -623,22 +731,22 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
 
     def test_pr_profiles_match_producers_and_consumers_while_master_keeps_both(self):
         jobs = workflow(self.WORKFLOW)["jobs"]
-        for name in ("macos-build", "linux", "verify-linux"):
+        for name in ("macos-build", "linux", "verify-linux", "windows-build", "verify-windows"):
             self.assertEqual(set(jobs[name]["strategy"]["matrix"]), {"variant"})
         for event, expected in (("pull_request", ["dev"]),
                                 ("push", ["dev", "prod"]),
                                 ("workflow_dispatch", ["dev", "prod"])):
             with self.subTest(event=event):
-                for name in ("macos-build", "linux", "verify-linux"):
+                for name in ("macos-build", "linux", "verify-linux", "windows-build", "verify-windows"):
                     self.assertEqual(variants_for(jobs[name], event), expected, name)
                 macos_consumer = "macos-unsigned" if event == "pull_request" else "macos"
                 self.assertEqual(variants_for(jobs[macos_consumer], event), expected)
                 for producer, consumer in (("macos-build", macos_consumer),
-                                           ("linux", "verify-linux")):
+                                           ("linux", "verify-linux"), ("windows-build", "verify-windows")):
                     self.assertEqual(variants_for(jobs[producer], event),
                                      variants_for(jobs[consumer], event))
         self.assertEqual(jobs["macos-unsigned"]["strategy"]["matrix"], {"variant": ["dev"]})
-        for name in ("macos", "attest-linux", "verify-macos"):
+        for name in ("macos", "attest-linux", "verify-macos", "windows"):
             self.assertEqual(jobs[name]["strategy"]["matrix"], {"variant": ["dev", "prod"]})
 
     def test_profiles_and_artifacts_keep_platform_variant_and_run_identity(self):
@@ -681,7 +789,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
             attests = [i for i, step in enumerate(job["steps"])
                        if step.get("uses") == self.ATTEST_ACTION]
             with self.subTest(job=name):
-                if name not in ("macos", "attest-linux"):
+                if name not in ("macos", "attest-linux", "windows"):
                     self.assertEqual(attests, [])
                     self.assertNotIn("id-token", job.get("permissions", {}))
                     self.assertIn(job.get("permissions", {}).get("attestations"), (None, "read"))
@@ -691,9 +799,9 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 attest = job["steps"][attests[0]]
                 self.assertNotIn("if", attest)
                 self.assertNotIn("continue-on-error", attest)
-                if name == "macos":
+                if name in ("macos", "windows"):
                     package = next(i for i, step in enumerate(job["steps"])
-                                   if "./scripts/package-release.sh" in step.get("run", ""))
+                                   if ("./scripts/package-release.sh" if name == "macos" else "windows-release.py package") in step.get("run", ""))
                     upload = next(i for i, step in enumerate(job["steps"])
                                   if step.get("uses", "").startswith("actions/upload-artifact@"))
                     self.assertGreater(attests[0], package)
@@ -937,7 +1045,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         self.assertNotIn("--appimage-extract", smoke)
 
     def test_downloaded_provenance_enforces_workflow_ref_commit_and_every_file(self):
-        for name in ("verify-macos", "verify-linux"):
+        for name in ("verify-macos", "verify-linux", "verify-windows"):
             step = next(step for step in workflow(self.WORKFLOW)["jobs"][name]["steps"]
                         if "gh attestation verify" in step.get("run", ""))
             with self.subTest(job=name), tempfile.TemporaryDirectory() as directory:

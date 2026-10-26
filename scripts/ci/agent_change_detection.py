@@ -39,6 +39,8 @@ SHARED_INPUTS = frozenset(
         "scripts/ci/verify-agent-rust-deps.py",
         "scripts/ci/apple-toolchain.json",
         "scripts/ci/select-xcode.py",
+        "scripts/ci/install-windows-artifact-signing.ps1",
+        "scripts/ci/windows-artifact-sign.ps1",
     }
 )
 KNOWN_INDEPENDENT_PREFIXES = (

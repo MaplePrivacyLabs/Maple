@@ -91,6 +91,8 @@ class AgentChangeDetectionTests(unittest.TestCase):
             "scripts/ci/agent_cache_scope.py", "scripts/ci/agent_dependency_archive.py",
             "scripts/ci/agent_cache_command.py",
             "scripts/ci/agent_windows.py",
+            "scripts/ci/windows-artifact-sign.ps1",
+            "scripts/ci/install-windows-artifact-signing.ps1",
             "scripts/ci/verify-agent-rust-deps.py",
             "scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py",
         ):

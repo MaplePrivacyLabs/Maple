@@ -104,6 +104,10 @@ feed; publication is a separate protected operation. Invitations require the
 platform-specific signed installed-update rehearsal. Linux uses user-owned tar
 bundles and a separate v2 wire schema, preserving the shipped macOS v1 feed;
 one release may update both platforms to the same version.
+Windows x64 Dev/Prod installers are built by the same desktop workflow, with
+master Authenticode signing through the existing `windows-signing` environment.
+Windows uses manual installer downloads; automatic updates and built-in CUA
+remain unsupported. Preserve that boundary when changing package metadata.
 Dev and unpackaged builds have no production updater. Empty-key profiles still
 disable update traffic. Do not substitute a test key or inherit feed/key overrides
 from the launch environment. Embedded profiles, bundle IDs and state namespaces

@@ -38,11 +38,11 @@ The backend has its own root `opensecret-ci.yml` workflow and change selector;
 `sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
 same checkout. Backend changes do not imply Research or Agent packaging.
 Agent desktop packages compare master against the last successful ancestor run
-with all four Dev/Prod macOS/Linux download verifiers completed; selector-only
+with all six Dev/Prod macOS/Linux/Windows download verifiers completed; selector-only
 and failed runs do not consume outstanding changes. Unrelated master pushes skip
 Agent packages. Manual master dispatch always builds both profiles. PR previews
-build and package only Dev on macOS and Linux, including the matching Linux
-downloaded-package verifier; Prod packages remain covered by master builds.
+build and package only Dev on macOS, Linux and Windows, including the matching
+Linux and Windows downloaded-package verifiers; Prod packages remain covered by master builds.
 PRs keep their merge-base selection and signing stays confined to trusted master.
 Research desktop, Android and iOS PR workflows group runs by workflow and PR.
 A new run cancels earlier runs for that same unsigned preview; unrelated PRs
@@ -194,7 +194,7 @@ publication artifacts are separate outputs.
 Agent CI also compares master cumulatively against the last successful
 ancestor whose three workspace jobs, three provider jobs and plain Linux
 release job actually passed. Desktop packaging retains its independent
-all-four-downloaded-verifier baseline. Selector-only, failed or cancelled runs
+all-six-downloaded-verifier baseline. Selector-only, failed or cancelled runs
 cannot consume outstanding changes. The existing master cancellation policy
 can still replace a run, but a subsequent unrelated push reselects the
 unverified component changes; lookup/history uncertainty selects a build.
@@ -241,6 +241,17 @@ hashes before use. Dev and Prod app build caches, signing and publication remain
 independent; there is no separate ONNX cache warmer.
 
 ## Windows runner pilot
+
+Agent Windows x64 release binaries use standard GitHub `windows-2025`, pinned
+Rust/MSVC selection, static CRT linkage and the selected SDK's shader compiler.
+Credential-free builders upload the executable and third-party notices. A fresh
+master job inspects embedded PE profile/source metadata without executing the
+artifact, then reuses `windows-signing` and the existing Azure Artifact Signing
+helpers for the app, NSIS uninstaller and installer. Separate native verifiers
+check downloaded provenance, payload identity, signatures and isolated
+install/uninstall. PRs build unsigned Dev installers without signing credentials.
+These packages are Actions downloads; Windows automatic updates and built-in
+computer-use remain unsupported.
 
 The Research unsigned Windows PR package uses
 `blacksmith-8vcpu-windows-2025` (Windows Server 2025, public beta). The job

@@ -3,7 +3,7 @@
 `Maple Agent Desktop Builds` builds both hosted profiles when Agent inputs change
 on protected `master`, and always on a manual dispatch from `master`. It compares
 the current source with the last successful ancestor run that actually completed
-all four Dev/Prod macOS/Linux downloaded-package verifiers. Failed, in-flight and
+all six Dev/Prod macOS/Linux/Windows downloaded-package verifiers. Failed, in-flight and
 selector-only runs do not advance that baseline, so a later unrelated push still
 builds outstanding Agent changes. Missing history, API failures or no verified
 baseline in the last 100 successful master runs select a full build. PRs continue
@@ -18,12 +18,17 @@ with a bundled runtime and a normal application directory. CI checks each
 downloaded bundle's command-line startup and detached host lifecycle in an
 Ubuntu 24.04 container with no Nix installation and no network
 access. Each master run completes independently; newer PR updates cancel older
-previews.
+previews. Windows x64 packages are per-user NSIS installers requiring Windows 10
+version 1703 (build 15063) or later. This baseline supplies the OS `icuuc.dll`
+imported by GPUI; see Microsoft's [Windows ICU version history](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
+Trusted master
+packages use the existing Azure publisher to Authenticode-sign the application,
+embedded uninstaller and final installer. PRs produce unsigned Dev previews.
 
 | Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |
 | Dev | Maple Work Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Disabled; master Actions artifacts |
-| Prod | Maple Work | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Signed Agent feed with primary/backup pins; publication separately gated |
+| Prod | Maple Work | `cloud.opensecret.maple.agent` | `maple-agent-prod` | macOS/Linux signed Agent feed; Windows manual installer; publication separately gated |
 
 The binary embeds its profile, hosted API/client/billing settings, and PCR
 environment. `--build-info` prints the public build identity as JSON without
@@ -51,6 +56,20 @@ credentials. Runtime metadata, duplicate
 Swift runtime, and real GPUI window/first-render checks run only in credential-free
 verification. GUI startup uses empty temporary state and does not sign in.
 
+Windows also compiles without signing credentials, linking the CRT statically.
+A fresh packaging runner reads the executable's dedicated read-only `.maple`
+PE metadata section and checks profile/source without executing artifact code.
+Master packaging reuses `windows-signing` and the existing Azure signing helpers;
+it does not need another Azure app registration or certificate profile. Native
+verifiers check installed payload identity, system-only DLL imports, Authenticode
+signatures for master packages, CLI startup and isolated install/uninstall. These
+checks do not establish interactive rendering, browser sign-in or tray behavior.
+The host detaches from the client's console and process group. If an enclosing
+Windows job forbids breakaway, the host retains that job's limits and lifetime;
+terminating the enclosing job also terminates its host.
+Built-in Windows computer-use remains tracked separately in
+[issue #1295](https://github.com/MaplePrivacyLabs/Maple/issues/1295).
+
 ## Download and install
 
 Open the latest successful `Maple Agent Desktop Builds` run with completed
@@ -61,17 +80,26 @@ Its artifacts include the profile, platform, and run ID in their names:
 - `maple-agent-prod-macos-aarch64-RUN`
 - `maple-agent-dev-linux-x86_64-RUN`
 - `maple-agent-prod-linux-x86_64-RUN`
+- `maple-agent-dev-windows-x86_64-RUN`
+- `maple-agent-prod-windows-x86_64-RUN`
 
 Artifact names stay stable when failed jobs are retried, so verification can
 reuse a successful profile's package from an earlier attempt. A rerun producer
 replaces only its own profile/platform artifact after packaging verification;
 the replacement has a new artifact ID and download link. Every package must
 still match the run's source commit and pass the same native verification.
-Internal macOS binary artifacts use `macos-aarch64-prebuilt` in their names.
+Internal binary artifacts use `macos-aarch64-prebuilt` or
+`windows-x86_64-prebuilt` in their names.
 They retain the same run/profile identity across retries, so a packaging-only
 retry can reuse a successful compilation while that internal artifact is retained.
 
 Final packages are retained for 30 days; internal prebuilt binaries for 7 days.
+Windows packages contain an `-windows-x86_64-setup.exe` installer, public
+build-info, package manifest and checksums. Run the installer as your desktop
+user. Dev and Prod use distinct per-user installation directories, shortcuts and
+uninstall entries, separate from Research. Uninstall removes installed program
+files and integration while preserving account, settings and task data. Windows
+upgrades currently use a new installer download; automatic updates are disabled.
 macOS packages contain a DMG and application
 archive; drag the chosen Agent app into Applications. Both Agent profiles can
 coexist with Maple Research. Linux packages contain
@@ -172,6 +200,24 @@ continues to use the macOS feed. Dev has no update feed on either platform.
 Both platforms retain one release version and source commit; separate feed
 paths preserve compatibility with existing macOS clients.
 
+Windows builds run on the pinned Windows Rust/MSVC environment in CI, with
+`RUSTFLAGS='-D warnings -C target-feature=+crt-static'` set before fingerprinting
+and compilation. `build-release.sh` selects the explicit x64 MSVC target so host
+build tools keep their normal linkage, then stages the exact resulting executable.
+From the component directory in Git Bash on Windows:
+
+```sh
+./scripts/build-release.sh dev
+python3 scripts/windows-release.py package dev --unsigned
+python3 scripts/windows-release.py verify dev dist/dev --unsigned --smoke
+```
+
+The package script verifies its pinned NSIS compiler download. Signed packaging
+uses the same command without `--unsigned`, only in the trusted master job after
+Azure login and the existing pinned Artifact Signing module setup. The signing
+runner never executes downloaded app code. Install/uninstall smoke runs only on
+a separate credential-free verifier.
+
 For a produced Prod updater archive, compile the trusted data-only scanner and
 validate the exact package directory (add `--unsigned` for PR packages):
 
@@ -198,13 +244,14 @@ The independent Agent publisher promotes only verified Prod artifacts into the
 Agent R2 bucket. It creates no GitHub Release/tag and does not redeploy Research.
 The client accepts only its signed Agent product/channel/target manifest, with
 the primary and backup keys embedded in the Prod profile. Packaged Prod builds
-check their platform's feed. Publication remains separately gated, and
+on macOS/Linux check their platform's feed. Windows has no updater feed or
+automatic update backend. Publication remains separately gated, and
 invitations require a signed native update rehearsal on every required launch
 platform. An empty-key profile
 still disables updater traffic. See
 [updater activation](updates.md).
 
-No new app-signing environment or Apple credential migration is needed. Keep the
-existing `desktop-signing` credentials and policies, Research updater key,
+No new app-signing environment or credential migration is needed. Keep the
+existing `desktop-signing` and `windows-signing` credentials and policies, Research updater key,
 publication workflow and compatibility URLs intact. No Research install is
 replaced, overwritten or migrated by Agent packaging or publication.
