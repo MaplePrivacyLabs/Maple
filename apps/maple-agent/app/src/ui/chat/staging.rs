@@ -354,21 +354,56 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("staging");
         let staged = copy_bytes(&root, b"live draft").unwrap();
-        sweep(
-            &root,
-            SystemTime::now() + STALE_AFTER + Duration::from_secs(1),
-        );
+        let stale_at = fs::metadata(staged.path.parent().unwrap())
+            .unwrap()
+            .modified()
+            .unwrap()
+            + STALE_AFTER
+            + Duration::from_secs(1);
+        sweep(&root, stale_at);
         assert_eq!(fs::read(&staged.path).unwrap(), b"live draft");
-        // Simulate a crash: release the OS lease without running our drop.
+        // Model an abandoned copy without running StagedFile::drop. Closing
+        // one File alone does not release a lease held by duplicated or
+        // inherited descriptors; establish the unlocked precondition explicitly.
         let path = staged.path.clone();
         let mut staged = Arc::try_unwrap(staged).ok().unwrap();
-        staged.owner.take();
-        sweep(
-            &root,
-            SystemTime::now() + STALE_AFTER + Duration::from_secs(1),
-        );
+        let owner = staged.owner.take().unwrap();
+        owner.unlock().unwrap();
+        drop(owner);
+        sweep(&root, stale_at);
         assert!(!path.exists());
         drop(staged);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_sweep_preserves_a_lease_held_by_a_duplicate() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("staging");
+        let staged = copy_bytes(&root, b"live duplicate").unwrap();
+        let mut staged = Arc::try_unwrap(staged).ok().unwrap();
+        let duplicate = staged.owner.as_ref().unwrap().try_clone().unwrap();
+        let stale_at = fs::metadata(staged.path.parent().unwrap())
+            .unwrap()
+            .modified()
+            .unwrap()
+            + STALE_AFTER
+            + Duration::from_secs(1);
+        drop(staged.owner.take());
+
+        let contender = file_options(false)
+            .open(staged.path.parent().unwrap().join("owner"))
+            .unwrap();
+        assert!(matches!(
+            contender.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        sweep(&root, stale_at);
+        assert_eq!(fs::read(&staged.path).unwrap(), b"live duplicate");
+
+        duplicate.unlock().unwrap();
+        sweep(&root, stale_at);
+        assert!(!staged.path.exists());
     }
 
     #[cfg(unix)]
