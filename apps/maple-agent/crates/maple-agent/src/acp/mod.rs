@@ -690,6 +690,10 @@ impl AcpConnectionContext {
         task: &str,
         cancellation: &CancellationToken,
     ) -> Result<AcpProjection, agent_client_protocol::Error> {
+        self.agent
+            .ensure_task_history_ready(task)
+            .await
+            .map_err(internal_acp_error)?;
         let mut captured = None;
         for _ in 0..4 {
             let initial = tokio::select! {

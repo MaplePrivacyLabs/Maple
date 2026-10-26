@@ -202,12 +202,15 @@ composer images retain their 10 MiB limit. See [local storage](local-store.md).
 
 Both computers must use wire 7 for remote access, including remote update
 management. Upgrade the execution computer first while the old pair is still
-compatible, then update the controller locally. During the gap, an explicit
-version refusal stops automatic reconnection; a new controller shows **Update
-required** without treating ordinary offline errors as version mismatches.
+compatible, then update the controller locally. A wire-7 controller stops
+automatic reconnection after an explicit version refusal and shows **Update
+required**, without treating ordinary offline errors as version mismatches.
+Released wire-6 controllers keep their shipped behavior during the gap: cold
+computer discovery can retry, and Settings can report the peer as unreachable.
 Existing pairing records are retained. A disconnect alone does not confirm an
 installation; check the running identity and retained receipt after reconnecting.
-If the controller was updated first, update the execution computer directly.
+If the controller was updated first, update the execution computer directly,
+then select that computer again to reconnect.
 
 A bounded capability probe can fail without ending ordinary task requests.
 Responses tolerate future optional fields and capability names. Experimental

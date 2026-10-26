@@ -580,7 +580,7 @@ async fn ten_mib_image_ranges_and_oversized_page_do_not_break_other_requests() {
 #[test]
 fn ranges_have_four_slots_and_do_not_consume_urgent_capacity() {
     let capacity = Capacity::new();
-    let _ranges: Vec<_> = (0..4)
+    let _ranges: Vec<_> = (0..MAX_RANGE_REQUESTS)
         .map(|_| capacity.acquire(Method::ReadAttachment).unwrap())
         .collect();
     assert!(capacity.acquire(Method::ReadAttachment).is_err());
@@ -602,11 +602,14 @@ async fn header_admission_queues_a_full_legitimate_burst_without_rejecting_urgen
     for id in 0..MAX_REQUESTS as u64 {
         let client = client.clone();
         callers.spawn(async move {
-            let method = match id {
-                0..32 => Method::ListTasks,
-                32..36 => Method::ReadAttachment,
-                36..38 => Method::UploadAttachment,
-                _ => Method::CancelRun,
+            let method = if id < MAX_ORDINARY_REQUESTS as u64 {
+                Method::ListTasks
+            } else if id < (MAX_ORDINARY_REQUESTS + MAX_RANGE_REQUESTS) as u64 {
+                Method::ReadAttachment
+            } else if id < (MAX_ORDINARY_REQUESTS + MAX_RANGE_REQUESTS + MAX_BULK_REQUESTS) as u64 {
+                Method::UploadAttachment
+            } else {
+                Method::CancelRun
             };
             call(&client, command(id, method)).await.unwrap()
         });
@@ -711,4 +714,241 @@ async fn incomplete_headers_expire_and_queued_urgent_header_recovers_without_res
     drop(withheld);
     a.close().await;
     b.close().await;
+}
+
+#[test]
+fn request_budgets_reserve_header_tasks_and_the_event_stream() {
+    let capacity = Capacity::new();
+    let mut slots = Vec::new();
+    for (method, limit) in [
+        (Method::ListTasks, MAX_ORDINARY_REQUESTS),
+        (Method::CancelRun, MAX_URGENT_REQUESTS),
+        (Method::ReadAttachment, MAX_RANGE_REQUESTS),
+        (Method::UploadAttachment, MAX_BULK_REQUESTS),
+    ] {
+        slots.extend((0..limit).map(|_| capacity.acquire(method).unwrap()));
+        assert!(capacity.acquire(method).is_err());
+    }
+    assert_eq!(slots.len(), MAX_REQUESTS);
+    assert_eq!(MAX_REQUEST_TASKS, slots.len() + MAX_PENDING_HEADERS);
+    assert_eq!(MAX_BIDI_STREAMS as usize, MAX_REQUEST_TASKS + 1);
+    assert_eq!(capacity.headers.available_permits(), MAX_PENDING_HEADERS);
+}
+
+#[tokio::test]
+async fn saturated_accept_loop_expires_incomplete_headers_and_serves_both_urgent_calls() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::{Barrier, mpsc};
+
+    // Exercise both occupied header readers and a completely full task gate.
+    // The fixture handler holds classified work; this does not exercise Node
+    // authorization or attachment payload decoding.
+    for incomplete in [
+        MAX_PENDING_HEADERS,
+        MAX_PENDING_HEADERS + MAX_URGENT_REQUESTS,
+    ] {
+        let (a, b, client, server) = endpoints().await;
+        let stage = std::cell::Cell::new("handshake");
+        let exercise = async {
+            // Control's authenticated handshake/event stream consumes the extra
+            // transport slot before the production request accept loop starts.
+            let (mut event_tx, event_rx) = client.open_bi().await.unwrap();
+            event_tx.write_all(b"e").await.unwrap();
+            let (event_reply, mut event_request) = server.accept_bi().await.unwrap();
+            assert_eq!(event_request.read_u8().await.unwrap(), b'e');
+            let _event_stream = (event_tx, event_rx, event_reply, event_request);
+
+            let capacity = Arc::new(Capacity::new());
+            let release = Arc::new(Semaphore::new(0));
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let completed = Arc::new(AtomicUsize::new(0));
+            let held = MAX_ORDINARY_REQUESTS + MAX_RANGE_REQUESTS + MAX_BULK_REQUESTS;
+            let header_deadline = Duration::from_secs(3);
+            let urgent_methods = [Method::CancelRun, Method::AnswerQuestion];
+            assert_eq!(urgent_methods.len(), MAX_URGENT_REQUESTS);
+            let start_headers = Arc::new(Barrier::new(incomplete + 1));
+            let (admitted_tx, mut admitted_rx) = mpsc::unbounded_channel();
+            let (pending_tx, mut pending_rx) = mpsc::unbounded_channel();
+            let (expired_tx, mut expired_rx) = mpsc::unbounded_channel();
+            let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
+            let mut receiver = tokio::task::JoinSet::new();
+            receiver.spawn(serve_requests(server, {
+                let capacity = capacity.clone();
+                let release = release.clone();
+                let accepted = accepted.clone();
+                let completed = completed.clone();
+                let start_headers = start_headers.clone();
+                move |mut tx, mut rx| {
+                    let index = accepted.fetch_add(1, Ordering::SeqCst);
+                    let withheld = (held..held + incomplete).contains(&index);
+                    let capacity = capacity.clone();
+                    let release = release.clone();
+                    let completed = completed.clone();
+                    let start_headers = start_headers.clone();
+                    let admitted = admitted_tx.clone();
+                    let pending = pending_tx.clone();
+                    let expired = expired_tx.clone();
+                    let finished = finished_tx.clone();
+                    async move {
+                        let header = {
+                            if withheld {
+                                start_headers.wait().await;
+                            }
+                            let mut read = Box::pin(
+                                capacity.read_header_with_timeout(&mut rx, header_deadline),
+                            );
+                            // Report readiness only after polling the real read:
+                            // its header permit is held or queued, not merely
+                            // waiting for this task to be scheduled.
+                            if withheld {
+                                let first = std::future::poll_fn(|cx| {
+                                    std::task::Poll::Ready(std::future::Future::poll(
+                                        read.as_mut(),
+                                        cx,
+                                    ))
+                                })
+                                .await;
+                                assert!(first.is_pending());
+                                pending.send(()).unwrap();
+                            }
+                            read.await
+                        };
+                        let header = match header {
+                            Ok(header) => header,
+                            Err(reason) => {
+                                assert!(withheld);
+                                assert_eq!(reason, "Remote request header timed out");
+                                expired.send(()).unwrap();
+                                completed.fetch_add(1, Ordering::SeqCst);
+                                finished.send(()).unwrap();
+                                return;
+                            }
+                        };
+                        let _slot = capacity.acquire(header.method).unwrap();
+                        let method = header.method;
+                        let id = header.id;
+                        header.body(&mut rx).await.unwrap();
+                        admitted.send(method).unwrap();
+                        if !method.urgent() {
+                            release.acquire().await.unwrap().forget();
+                        }
+                        reply(
+                            &mut tx,
+                            &Message::Response {
+                                id,
+                                result: Ok(json!(null)),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        completed.fetch_add(1, Ordering::SeqCst);
+                        finished.send(()).unwrap();
+                    }
+                }
+            }));
+
+            let mut callers = tokio::task::JoinSet::new();
+            let mut next_id = 0;
+            stage.set("class admission");
+            for (method, limit) in [
+                (Method::ListTasks, MAX_ORDINARY_REQUESTS),
+                (Method::ReadAttachment, MAX_RANGE_REQUESTS),
+                (Method::UploadAttachment, MAX_BULK_REQUESTS),
+            ] {
+                for _ in 0..limit {
+                    let client = client.clone();
+                    let id = next_id;
+                    next_id += 1;
+                    callers.spawn(async move { call(&client, command(id, method)).await.unwrap() });
+                    assert_eq!(admitted_rx.recv().await.unwrap(), method);
+                }
+                assert!(capacity.acquire(method).is_err());
+            }
+            let mut withheld_streams = Vec::new();
+            stage.set("incomplete-header admission");
+            for _ in 0..incomplete {
+                let (mut tx, rx) = client.open_bi().await.unwrap();
+                tx.write_u32(100).await.unwrap();
+                tx.write_all(b"{").await.unwrap();
+                withheld_streams.push((tx, rx));
+            }
+            start_headers.wait().await;
+            for _ in 0..incomplete {
+                pending_rx.recv().await.unwrap();
+            }
+            // Every request uses the same queue-and-read deadline. Issue urgent
+            // demand on a later timer tick so its absolute deadline follows the
+            // already pending incomplete headers, even with coarse timers.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(capacity.headers.available_permits(), 0);
+            assert_eq!(accepted.load(Ordering::SeqCst), held + incomplete);
+            assert_eq!(capacity.urgent.available_permits(), MAX_URGENT_REQUESTS);
+
+            let mut urgent = tokio::task::JoinSet::new();
+            stage.set("header expiry");
+            for method in urgent_methods {
+                let client = client.clone();
+                let id = next_id;
+                next_id += 1;
+                urgent.spawn(async move { call(&client, command(id, method)).await.unwrap() });
+            }
+            for _ in 0..incomplete {
+                expired_rx.recv().await.unwrap();
+            }
+            // The full-cap case also exhausts QUIC stream credit. A rejected
+            // client's unfinished send half must close before that credit can
+            // be reused: STOP_SENDING alone does not supply its final offset.
+            // Honor the server's expired operations while urgent calls wait,
+            // rather than retaining these handles until urgent completion.
+            drop(withheld_streams);
+            stage.set("urgent replies after stream retirement");
+            while let Some(response) = urgent.join_next().await {
+                assert!(matches!(
+                    response.unwrap(),
+                    Message::Response { result: Ok(_), .. }
+                ));
+            }
+            assert!(client.close_reason().is_none());
+            stage.set("classified request drain");
+            release.add_permits(held);
+            while let Some(response) = callers.join_next().await {
+                assert!(matches!(
+                    response.unwrap(),
+                    Message::Response { result: Ok(_), .. }
+                ));
+            }
+            assert!(matches!(
+                call(&client, command(next_id, Method::CancelRun))
+                    .await
+                    .unwrap(),
+                Message::Response { result: Ok(_), .. }
+            ));
+            let expected = held + incomplete + urgent_methods.len() + 1;
+            for _ in 0..expected {
+                finished_rx.recv().await.unwrap();
+            }
+            client.close(0u32.into(), b"test complete");
+            stage.set("accept-loop shutdown");
+            receiver.join_next().await.unwrap().unwrap();
+            assert!(receiver.is_empty());
+            assert_eq!(accepted.load(Ordering::SeqCst), expected);
+            assert_eq!(
+                completed.load(Ordering::SeqCst),
+                accepted.load(Ordering::SeqCst)
+            );
+            assert_eq!(capacity.ordinary.available_permits(), MAX_ORDINARY_REQUESTS);
+            assert_eq!(capacity.ranges.available_permits(), MAX_RANGE_REQUESTS);
+            assert_eq!(capacity.bulk.available_permits(), MAX_BULK_REQUESTS);
+            assert_eq!(capacity.urgent.available_permits(), MAX_URGENT_REQUESTS);
+            assert_eq!(capacity.headers.available_permits(), MAX_PENDING_HEADERS);
+        };
+        let result = tokio::time::timeout(Duration::from_secs(10), exercise).await;
+        tokio::join!(a.close(), b.close());
+        result.unwrap_or_else(|error| {
+            panic!(
+                "{incomplete} incomplete headers at {}: {error}",
+                stage.get()
+            )
+        });
+    }
 }

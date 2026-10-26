@@ -166,13 +166,16 @@ pub(crate) async fn dispatch(
         backend.authorize_account(&user)?;
         let prepared = prepare(&request).await?;
         let (store, start) = {
-            let _account = backend.account_gate.read().await;
+            let account_guard = backend.account_gate.clone().read_owned().await;
             let (store, account) = context(backend, &user).await?;
             let target = store.clone();
             let session = request.session_id;
             let operation = request.operation_id;
             let metadata = prepared.metadata;
             let start = blocking(move || {
+                // A cancelled request must not release account ownership while
+                // its blocking begin/crash-reconciliation still runs.
+                let _account = account_guard;
                 target.begin_attachment_upload(account, &session, &operation, &metadata)
             })
             .await?;
@@ -200,9 +203,15 @@ pub(crate) async fn dispatch(
                 })
                 .await
                 .map_err(|_| "Attachment worker did not complete")??;
-                let _account = backend.account_gate.read().await;
+                let prepare_store = store.clone();
+                let prepared = blocking(move || writer.prepare(&prepare_store)).await?;
+                let account_guard = backend.account_gate.clone().read_owned().await;
                 backend.authorize_account(&user)?;
-                blocking(move || writer.finish(&store)).await?
+                blocking(move || {
+                    let _account = account_guard;
+                    prepared.publish(&store)
+                })
+                .await?
             }
         };
         return serde_json::to_value(attachment).map_err(|_| "Could not encode attachment".into());

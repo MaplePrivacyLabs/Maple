@@ -75,6 +75,12 @@ pub(super) struct PendingUpload {
     operations: Vec<String>,
 }
 
+pub(super) struct PreparedSend {
+    pub request: AgentSendMessageRequest,
+    pub send: UnresolvedSend,
+    pub fence: UploadFence,
+}
+
 impl Drop for PendingUpload {
     fn drop(&mut self) {
         // Sign-out, account replacement and erase-success tear down the view.
@@ -131,6 +137,100 @@ async fn cancel_operations(
 }
 
 impl ChatScreen {
+    /// Upload completion is not prompt admission. A newer text send can be
+    /// settling (including an unknown receipt) while these bytes finish.
+    pub(super) fn dispatch_prepared_uploads(&mut self, cx: &mut Context<Self>) {
+        if !self.accept_send_results {
+            return;
+        }
+        let ready: Vec<_> = self
+            .sending_previews
+            .iter()
+            .filter(|&(id, preview)| {
+                !self.discarded_sends.contains(id) && preview.prepared().is_some()
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ready {
+            let Some(prepared) = self
+                .sending_previews
+                .get(&id)
+                .and_then(|preview| preview.prepared())
+            else {
+                continue;
+            };
+            let session = &prepared.send.session;
+            let recovering = self.host_recovery.unavailable
+                || self.host_recovery.ended
+                || self.booting
+                || self.runtime_error.is_some();
+            if !prepared.fence.cancelled()
+                && (recovering
+                    || self.sending_previews.values().any(|preview| {
+                        preview.session.as_ref() == Some(session) && preview.admitting()
+                    })
+                    || self
+                        .unresolved_sends
+                        .values()
+                        .any(|send| &send.session == session && send.awaiting_receipt()))
+            {
+                if let Some(upload) = self.attachment_uploads.get_mut(&id) {
+                    upload.label = if recovering {
+                        "Files ready · waiting for the host to recover"
+                    } else {
+                        "Files ready · waiting for the previous send"
+                    }
+                    .into();
+                }
+                continue;
+            }
+            let prepared = self
+                .sending_previews
+                .get_mut(&id)
+                .and_then(|preview| preview.take_prepared())
+                .unwrap();
+            self.admit_prepared_send(id, prepared, cx);
+        }
+    }
+
+    pub(super) fn admit_prepared_send(
+        &mut self,
+        id: String,
+        prepared: PreparedSend,
+        cx: &mut Context<Self>,
+    ) {
+        let PreparedSend {
+            request,
+            send,
+            fence,
+        } = prepared;
+        if !fence.hand_off() {
+            self.finish_attachment_send(
+                id,
+                send.clone(),
+                Ok((send, Err("Upload cancelled. No message was sent.".into()))),
+                cx,
+            );
+            return;
+        }
+        let backend = send.backend.clone();
+        let user = self.user_id.clone();
+        let send_id = id.clone();
+        let retained = send.clone();
+        self.call(
+            async move {
+                let result = backend
+                    .send_message_identified(&user, request, send_id)
+                    .await;
+                Ok((send, result))
+            },
+            cx,
+            move |this, result, cx| {
+                this.finish_attachment_send(id, retained, result, cx);
+            },
+        );
+    }
+
     pub(super) fn finish_attachment_send(
         &mut self,
         send_id: String,
@@ -243,6 +343,7 @@ impl ChatScreen {
             cx,
             |_, _, _| {},
         );
+        self.dispatch_prepared_uploads(cx);
         cx.notify();
     }
 
@@ -271,12 +372,42 @@ pub(super) async fn commit_attachments(
         if fence.cancelled() {
             return Err("Upload cancelled. No message was sent.".into());
         }
-        if let Some((committed_session, id)) = &draft.committed
+        if let Some((committed_session, _)) = &draft.committed
             && committed_session == session
         {
-            ids.push(id.clone());
-            let _ = progress.send(index + 1);
-            continue;
+            // Unbound committed files can expire while a failed draft stays
+            // open. Only an authoritative Missing permits another import;
+            // a lost status reply must retain the cached identity and bytes.
+            let query = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                backend.attachment_upload_status(
+                    user,
+                    AttachmentUploadRequest {
+                        session_id: session.to_owned(),
+                        operation_id: draft.operation_id.clone(),
+                    },
+                ),
+            );
+            let status = tokio::select! {
+                result = query => result.map_err(|_| "Could not confirm the retained file upload. Your draft is retained; try again when the connection recovers.".to_string())??,
+                () = fence.wait_cancelled() => return Err("Upload cancelled. No message was sent.".into()),
+            };
+            match status {
+                AttachmentUploadStatus::Complete(attachment) => {
+                    draft.committed = Some((session.to_owned(), attachment.id.clone()));
+                    ids.push(attachment.id);
+                    let _ = progress.send(index + 1);
+                    continue;
+                }
+                AttachmentUploadStatus::Missing => {
+                    // Reuse the immutable operation as well as the staged
+                    // bytes, keeping cancellation and duplicate-ACK handling
+                    // attached to the same operation throughout the retry.
+                    draft.committed = None;
+                }
+                AttachmentUploadStatus::Cancelled => return Err("The file upload was cancelled. Your draft is retained.".into()),
+                AttachmentUploadStatus::Uploading => return Err("The retained file upload is still in progress. Your draft is retained; try again when it completes.".into()),
+            }
         }
         let staged = draft
             .staged
@@ -350,6 +481,195 @@ fn resolve_upload_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct UploadHost {
+        complete: HashMap<String, StoredAttachment>,
+        imports: Vec<(String, String, Vec<u8>)>,
+        fail_second: bool,
+        fail_status: bool,
+    }
+
+    // Exercise the production client and upload orchestration. The fixture's
+    // missing receipt represents an unbound file removed by store maintenance;
+    // store tests separately exercise the 24-hour collection policy.
+    fn upload_host(
+        root: &std::path::Path,
+    ) -> (
+        AgentBackend,
+        Arc<std::sync::Mutex<UploadHost>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use crate::host::{RemoteClient, ipc, protocol};
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let state = Arc::new(std::sync::Mutex::new(UploadHost::default()));
+        let shared = state.clone();
+        let task = tokio::spawn(async move {
+            while let Ok(request) = protocol::read::<protocol::Request>(&mut server).await {
+                let result = {
+                    let mut state = shared.lock().unwrap();
+                    match request.method.as_str() {
+                        "import_attachment" => {
+                            let request: ImportAttachmentRequest =
+                                serde_json::from_value(request.params[1].clone()).unwrap();
+                            if state.fail_second && request.name == "second.txt" {
+                                Err("Synthetic second-file failure".into())
+                            } else {
+                                let bytes = std::fs::read(&request.path).unwrap();
+                                state.imports.push((
+                                    request.operation_id.clone(),
+                                    request.name.clone(),
+                                    bytes.clone(),
+                                ));
+                                let descriptor = StoredAttachment {
+                                    id: format!("file-{}", state.imports.len()),
+                                    name: request.name,
+                                    mime_type: request.mime_type,
+                                    source: "maple-attachment://fixture".into(),
+                                    size: bytes.len() as u64,
+                                    execution_path: request.path,
+                                };
+                                state
+                                    .complete
+                                    .insert(request.operation_id, descriptor.clone());
+                                Ok(serde_json::to_value(descriptor).unwrap())
+                            }
+                        }
+                        "attachment_upload_status" => {
+                            let request: AttachmentUploadRequest =
+                                serde_json::from_value(request.params[1].clone()).unwrap();
+                            if state.fail_status {
+                                Err("Synthetic unavailable receipt".into())
+                            } else {
+                                Ok(serde_json::to_value(
+                                    state
+                                        .complete
+                                        .get(&request.operation_id)
+                                        .cloned()
+                                        .map(AttachmentUploadStatus::Complete)
+                                        .unwrap_or(AttachmentUploadStatus::Missing),
+                                )
+                                .unwrap())
+                            }
+                        }
+                        _ => Err("Unexpected fixture request".into()),
+                    }
+                };
+                if protocol::write(
+                    &mut server,
+                    &protocol::Message::Response {
+                        id: request.id,
+                        result,
+                    },
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let client = RemoteClient::attach_for_test(
+            ipc::Endpoint::for_test(root.to_owned()),
+            Box::new(client),
+            protocol::Welcome {
+                version: protocol::VERSION,
+                pid: std::process::id(),
+                build: protocol::BUILD.into(),
+                user_id: Some("user".into()),
+                store: maple_agent::store::StoreState::Open,
+            },
+        );
+        (AgentBackend::from_host_client_for_test(client), state, task)
+    }
+
+    #[tokio::test]
+    async fn expired_partial_upload_reimports_staged_bytes_only_after_authoritative_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original.txt");
+        std::fs::write(&original, b"original bytes").unwrap();
+        let (staged, size) = staging::copy_file(&root.path().join("drafts"), &original).unwrap();
+        let mut first = DraftAttachment::preparing(1, "first.txt".into());
+        first.staged = Some(staged);
+        first.size = size;
+        first.mime_type = "text/plain".into();
+        let mut second = DraftAttachment::preparing(2, "second.txt".into());
+        second.staged =
+            Some(staging::copy_bytes(&root.path().join("drafts"), b"second bytes").unwrap());
+        second.mime_type = "text/plain".into();
+        let mut drafts = vec![first, second];
+        let (backend, host, task) = upload_host(root.path());
+        host.lock().unwrap().fail_second = true;
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let failure = commit_attachments(
+            &backend,
+            "user",
+            "task",
+            &mut drafts,
+            &UploadFence::default(),
+            progress,
+        )
+        .await
+        .unwrap_err();
+        assert!(failure.contains("second-file failure"));
+        let committed = drafts[0].committed.clone().unwrap();
+        let operation = drafts[0].operation_id.clone();
+        assert!(drafts[1].committed.is_none());
+
+        // The execution copy expires while the retained desktop draft stays
+        // alive. Changing the source must not change the retry's bytes.
+        std::fs::write(&original, b"changed original").unwrap();
+        {
+            let mut host = host.lock().unwrap();
+            host.complete.remove(&operation);
+            host.fail_status = true;
+            host.fail_second = false;
+        }
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        assert!(
+            commit_attachments(
+                &backend,
+                "user",
+                "task",
+                &mut drafts,
+                &UploadFence::default(),
+                progress
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(drafts[0].committed.as_ref(), Some(&committed));
+        assert_eq!(drafts[0].operation_id, operation);
+        assert_eq!(
+            host.lock().unwrap().imports.len(),
+            1,
+            "an unavailable receipt must never trigger reimport"
+        );
+
+        host.lock().unwrap().fail_status = false;
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let ids = commit_attachments(
+            &backend,
+            "user",
+            "task",
+            &mut drafts,
+            &UploadFence::default(),
+            progress,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], committed.1);
+        assert_eq!(
+            drafts[0].operation_id, operation,
+            "retry keeps the cancellation identity"
+        );
+        let imports = &host.lock().unwrap().imports;
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[1].2, b"original bytes");
+        assert_eq!(imports[2].2, b"second bytes");
+        task.abort();
+    }
     #[test]
     fn lost_upload_ack_resolves_only_a_committed_receipt() {
         let descriptor = StoredAttachment {

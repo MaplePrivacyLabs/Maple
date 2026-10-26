@@ -225,6 +225,22 @@ struct TaskSnapshot {
 }
 
 impl Store {
+    /// A format migration can intentionally remove the old derived rows. The
+    /// host must reconstruct that task before presenting it as an empty chat.
+    /// Ordinary background rebuilds retain usable rows and need no foreground
+    /// wait. This read never instantiates a Pi session or loads source payloads.
+    pub(crate) fn history_needs_rebuild(
+        &self,
+        account: AccountId,
+        task: &str,
+    ) -> StoreResult<bool> {
+        validate_task(task)?;
+        self.read(|tx| {
+            let snapshot = task_snapshot(tx, account, task)?;
+            history_needs_rebuild(tx, &snapshot)
+        })
+    }
+
     pub fn task_history_stamp(
         &self,
         account: AccountId,
@@ -280,6 +296,9 @@ impl Store {
         validate_page_limits(rows, bytes, 500, caps.max_reply_bytes)?;
         self.read(|tx| {
             let task = task_snapshot(tx, account, &request.task)?;
+            if history_needs_rebuild(tx, &task)? {
+                return Err(StoreError::Busy);
+            }
             let mut summary = navigation::task_summary_tx(tx, account, &request.task)?
                 .ok_or(StoreError::NotFound)?;
             let inline = caps.inline_row_bytes.min((bytes / 3).max(256));
@@ -464,6 +483,17 @@ impl Store {
             })
         })
     }
+}
+
+fn history_needs_rebuild(tx: &Transaction<'_>, task: &TaskSnapshot) -> StoreResult<bool> {
+    if task.format == projector::TIMELINE_FORMAT {
+        return Ok(false);
+    }
+    Ok(tx.query_row(
+        "SELECT last_seq>0 AND NOT EXISTS(SELECT 1 FROM timeline_rows WHERE task_id=?1 AND epoch=?2) FROM tasks WHERE id=?1",
+        params![task.key.0, task.epoch],
+        |row| row.get(0),
+    )?)
 }
 
 fn task_snapshot(

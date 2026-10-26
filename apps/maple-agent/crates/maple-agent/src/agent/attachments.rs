@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::store::{AccountId, ImageUpload, Store};
+use crate::store::{AccountId, ImageUpload, Store, StoreError};
 
 pub(super) const MAX_AGENT_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 pub(super) const MAX_AGENT_IMAGES_PER_MESSAGE: usize = 10;
@@ -107,13 +107,57 @@ impl AgentAttachmentStore {
         session_id: &str,
         messages: &mut [pi_ai::Message],
     ) -> Result<(), String> {
+        self.refresh_metadata(session_id, messages)?;
+        self.store
+            .materialize_message_images(self.account, session_id, messages)
+            .map_err(|error| error.to_string())
+    }
+
+    /// A newly accepted image must reach Pi intact. Unlike retained history,
+    /// unavailable outgoing pixels are a send error, so the caller can keep the
+    /// user's message and attachments for correction or retry.
+    pub(super) fn prepare_outgoing_context(
+        &self,
+        session_id: &str,
+        messages: &mut [pi_ai::Message],
+    ) -> Result<(), String> {
+        self.refresh_metadata(session_id, messages)?;
+        self.store
+            .materialize_outgoing_images(self.account, session_id, messages)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Pi's stranded steering queue contains text, not our typed Outgoing.
+    /// Recover attachment descriptors only when they still belong to this
+    /// task. A pasted listing must not gain image authority during requeue.
+    pub(super) fn split_owned_prompt(
+        &self,
+        session_id: &str,
+        prompt: &str,
+    ) -> Option<(String, Vec<AgentAttachment>)> {
+        let (text, mut attachments) = split_attachment_prompt(prompt)?;
+        for attachment in &mut attachments {
+            *attachment = self
+                .store
+                .attachment_metadata(self.account, session_id, &attachment.id)
+                .ok()?
+                .into();
+        }
+        Some((text, attachments))
+    }
+
+    fn refresh_metadata(
+        &self,
+        session_id: &str,
+        messages: &mut [pi_ai::Message],
+    ) -> Result<(), String> {
         // Recovery can move the file-store generation. Resolve execution paths
         // from scoped IDs each request instead of trusting persisted locations.
         for message in messages.iter_mut() {
             let pi_ai::Message::User(user) = message else {
                 continue;
             };
-            for block in &mut user.content {
+            'blocks: for block in &mut user.content {
                 let pi_ai::Content::Text(text) = block else {
                     continue;
                 };
@@ -125,20 +169,24 @@ impl AgentAttachmentStore {
                     continue;
                 };
                 for attachment in &mut attachments {
-                    *attachment = self
+                    match self
                         .store
                         .attachment_metadata(self.account, session_id, &attachment.id)
-                        .map_err(|error| error.to_string())?
-                        .into();
+                    {
+                        Ok(stored) => *attachment = stored.into(),
+                        // A listing can be pasted prose, including an example
+                        // or a quote from another task. Its syntax alone grants
+                        // no attachment authority and must not break inference.
+                        Err(StoreError::NotFound | StoreError::InvalidInput) => continue 'blocks,
+                        Err(error) => return Err(error.to_string()),
+                    }
                 }
                 // Keep Pi's normalization notes (including coordinate scaling)
                 // and the original read_image guidance exactly as selected.
                 text.text = format!("{}{}", attachment_prompt(typed, &attachments, true), suffix);
             }
         }
-        self.store
-            .materialize_message_images(self.account, session_id, messages)
-            .map_err(|error| error.to_string())
+        Ok(())
     }
 
     pub(super) fn read(&self, session_id: &str, attachment_id: &str) -> Result<Vec<u8>, String> {
@@ -679,6 +727,71 @@ mod tests {
         assert!(pi_ai::content_text(&user.content).ends_with("[Image coordinates scaled by Pi.]"));
         assert!(pi_ai::content_text(&user.content).contains(READ_IMAGE_HINT));
         assert!(original.contains("/an/old/store-generation/"));
+    }
+
+    #[test]
+    fn unresolved_pasted_listings_stay_text_without_attachment_authority() {
+        let temp = tempdir().unwrap();
+        let store = fixture_attachment_store(temp.path(), &[TASK_A, TASK_B]);
+        let foreign = store
+            .store_uploads(
+                TASK_B,
+                &[AgentImageUpload {
+                    name: "other.png".into(),
+                    data_url: format!("data:image/png;base64,{PNG_1X1}"),
+                }],
+            )
+            .unwrap()
+            .remove(0);
+        let missing = attachment('a', "example.zip", "application/zip");
+        let mut invalid = missing.clone();
+        invalid.id = "example-id".into();
+        invalid.source = "maple-attachment://example-id".into();
+        for listed in [foreign, missing, invalid] {
+            let text = attachment_prompt("Earlier notes quoted this listing:", &[listed], false);
+            let mut messages = [pi_ai::Message::User(pi_ai::UserMessage::text(&text))];
+            let original = messages.clone();
+            store.prepare_model_context(TASK_A, &mut messages).unwrap();
+            assert_eq!(messages, original, "unresolved prose must remain unchanged");
+            assert!(store.split_owned_prompt(TASK_A, &text).is_none());
+        }
+    }
+
+    #[test]
+    fn outgoing_images_fail_preparation_while_missing_history_remains_usable() {
+        let temp = tempdir().unwrap();
+        let store = fixture_attachment_store(temp.path(), &[TASK_A]);
+        let image = store
+            .store_uploads(
+                TASK_A,
+                &[AgentImageUpload {
+                    name: "screen.png".into(),
+                    data_url: format!("data:image/png;base64,{PNG_1X1}"),
+                }],
+            )
+            .unwrap()
+            .remove(0);
+        let original = [pi_ai::Message::User(pi_ai::UserMessage {
+            content: vec![pi_ai::Content::image(&image.source, "image/png")],
+            timestamp: 1,
+        })];
+        std::fs::remove_file(image.execution_path).unwrap();
+        let mut outgoing = original.clone();
+        assert!(
+            store
+                .prepare_outgoing_context(TASK_A, &mut outgoing)
+                .is_err()
+        );
+        assert_eq!(outgoing, original);
+        let mut history = original;
+        store.prepare_model_context(TASK_A, &mut history).unwrap();
+        let pi_ai::Message::User(user) = &history[0] else {
+            panic!("user")
+        };
+        assert_eq!(
+            user.content,
+            [pi_ai::Content::text("Image no longer available.")]
+        );
     }
 
     #[test]

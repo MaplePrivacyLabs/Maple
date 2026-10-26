@@ -71,7 +71,7 @@ pub(super) fn listen(node: Arc<Node>) {
                                 }
                                 wire::Mode::ConfirmGrant { window } => {
                                     let answer = {
-                                        let store = node.store.lock().unwrap();
+                                        let store = node.store.read().unwrap();
                                         if store.peers().get(&peer.to_string()).is_some_and(|p| p.controls_this_computer) && store.peers().get(&peer.to_string()).is_some_and(|p| p.grant == window) {
                                             Ok(window)
                                         } else { Err(wire::Refusal::terminal("No current grant matches this pairing")) }
@@ -82,7 +82,7 @@ pub(super) fn listen(node: Arc<Node>) {
                                     Ok(None)
                                 }
                                 wire::Mode::Control => {
-                                    if !node.store.lock().unwrap().permits(peer) { return Err(wire::Refusal::terminal("Remote control grant is missing or revoked")); }
+                                    if !node.store.read().unwrap().permits(peer) { return Err(wire::Refusal::terminal("Remote control grant is missing or revoked")); }
                                     let slot = node.controllers.clone().try_acquire_owned().map_err(|_| "Remote connection limit reached")?;
                                     wire::write(&mut tx, &Ok::<(), wire::Refusal>(()), wire::MAX_PREFACE).await.map_err(|e| e.to_string())?;
                                     Ok(Some(slot))
@@ -125,10 +125,26 @@ async fn serve(
     let mut revoked = node.revoked.subscribe();
     let capacity = Arc::new(streams::Capacity::new());
     let subscription = Arc::new(RwLock::new(Subscription::default()));
-    let mut calls = tokio::task::JoinSet::new();
+    let event_filter = subscription.clone();
+    let mut requests = tokio::task::JoinSet::new();
+    let request_node = node.clone();
+    let request_connection = connection.clone();
+    requests.spawn(async move {
+        streams::serve_requests(request_connection, move |tx, rx| {
+            let node = request_node.clone();
+            let capacity = capacity.clone();
+            let subscription = subscription.clone();
+            async move {
+                if let Err(error) = serve_request(node, peer, tx, rx, capacity, subscription).await
+                {
+                    log::debug!("Remote request stream ended: {error}");
+                }
+            }
+        })
+        .await;
+    });
     // A slow event consumer cannot hold the request accept/dispatch loop.
     let event_node = node.clone();
-    let event_filter = subscription.clone();
     let _ = tx.set_priority(1);
     let mut event_writer = tokio::task::JoinSet::new();
     event_writer.spawn(async move {
@@ -143,7 +159,7 @@ async fn serve(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             };
             event_node.ensure_valid().await?;
-            if !event_node.store.lock().unwrap().permits(peer)
+            if !event_node.store.read().unwrap().permits(peer)
                 || matches!(&*event, AgentServiceEvent::AccountChanged(_))
             {
                 return Ok::<(), String>(());
@@ -167,32 +183,19 @@ async fn serve(
             _ = connection.closed() => break,
             _ = event_writer.join_next() => break,
             _ = tick.tick() => {
-                if !node.valid().await || !node.store.lock().unwrap().permits(peer) { break; }
+                if !node.valid().await || !node.store.read().unwrap().permits(peer) { break; }
             }
             event = revoked.recv() => {
                 if event.is_err() || event.ok().is_some_and(|key| key == peer || key == node.endpoint.id()) { break; }
             }
-            _ = calls.join_next(), if !calls.is_empty() => {},
-            // Stop accepting while the bounded task budget is occupied. QUIC
-            // applies backpressure; already admitted requests/events still drain.
-            incoming = connection.accept_bi(), if calls.len() < streams::MAX_REQUESTS + streams::MAX_PENDING_HEADERS => {
-                let Ok((tx, rx)) = incoming else { break; };
-                let node = node.clone();
-                let capacity = capacity.clone();
-                let subscription = subscription.clone();
-                calls.spawn(async move {
-                    if let Err(error) = serve_request(node, peer, tx, rx, capacity, subscription).await {
-                        log::debug!("Remote request stream ended: {error}");
-                    }
-                });
-            }
+            _ = requests.join_next() => break,
         }
     }
     event_writer.abort_all();
     connection.close(0u32.into(), b"remote stream closed");
     // Closing streams stops incomplete transfers. An already admitted mutation
     // still finishes on B, as with local IPC; A never resends it.
-    while calls.join_next().await.is_some() {}
+    while requests.join_next().await.is_some() {}
 }
 
 async fn serve_request(
@@ -252,7 +255,7 @@ async fn serve_request(
     };
     // Recheck after the potentially slow upload, before any backend effect.
     node.ensure_valid().await?;
-    if !node.store.lock().unwrap().permits(peer) {
+    if !node.store.read().unwrap().permits(peer) {
         return Err("Remote access revoked".into());
     }
     if request.method == wire::Method::RemoteUpdateInstall {
@@ -299,7 +302,7 @@ async fn serve_request(
         )
         .await
     };
-    if node.valid().await && node.store.lock().unwrap().permits(peer) {
+    if node.valid().await && node.store.read().unwrap().permits(peer) {
         let result = streams::encode_result(method, result);
         streams::reply_with_limit(
             &mut tx,
@@ -509,7 +512,7 @@ impl Manager {
         let node = self.active().await?;
         if !node
             .store
-            .lock()
+            .read()
             .unwrap()
             .peers()
             .get(&peer.to_string())
@@ -554,7 +557,7 @@ pub async fn bridge(
     let folder_grant = link
         .node
         .store
-        .lock()
+        .read()
         .map_err(|_| "Remote grant unavailable")?
         .peers()
         .get(&link.peer.to_string())
@@ -658,7 +661,7 @@ pub async fn bridge(
                         let send_id = request.send_id.clone();
                         let authorize_folders = async {
                             node.ensure_valid().await?;
-                            if !node.store.lock().map_err(|_| "Remote grant unavailable")?.peers()
+                            if !node.store.read().map_err(|_| "Remote grant unavailable")?.peers()
                                 .get(&peer.to_string())
                                 .is_some_and(|current| current.can_connect && current.grant == folder_grant) {
                                 return Err("Remote access changed. Reopen this computer.".into());

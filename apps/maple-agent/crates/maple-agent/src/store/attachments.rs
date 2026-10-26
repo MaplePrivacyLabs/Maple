@@ -149,6 +149,17 @@ pub struct AttachmentUploadWriter {
     lease: UploadLease,
 }
 
+/// A verified, synced partial file. Publication still requires current account,
+/// task and (for remote uploads) grant authority; preparation does not publish.
+pub struct PreparedAttachmentUpload {
+    account: AccountId,
+    task_uuid: String,
+    row: AttachmentRow,
+    partial: PathBuf,
+    published: PathBuf,
+    lease: UploadLease,
+}
+
 impl AttachmentUploadWriter {
     pub fn is_cancelled(&self) -> bool {
         self.lease.cancelled.load(Ordering::Acquire)
@@ -170,6 +181,10 @@ impl AttachmentUploadWriter {
     }
 
     pub fn finish(self, store: &Store) -> StoreResult<StoredAttachment> {
+        self.prepare(store)?.publish(store)
+    }
+
+    pub fn prepare(self, store: &Store) -> StoreResult<PreparedAttachmentUpload> {
         self.lease.check()?;
         if self.written != self.row.metadata.size
             || hex(&self.hash.clone().finalize()) != self.row.metadata.sha256
@@ -188,7 +203,24 @@ impl AttachmentUploadWriter {
         super::keys::sync_key_file(&self.file)?;
         // Windows cannot rename while our writable handle remains open.
         drop(self.file);
+        Ok(PreparedAttachmentUpload {
+            account: self.account,
+            task_uuid: self.task_uuid,
+            row: self.row,
+            partial: self.partial,
+            published: self.published,
+            lease: self.lease,
+        })
+    }
+}
+
+impl PreparedAttachmentUpload {
+    pub fn publish(self, store: &Store) -> StoreResult<StoredAttachment> {
         self.lease.check()?;
+        store.read(|tx| {
+            let task = active_task(tx, self.account, &self.task_uuid)?;
+            verify_upload_row(tx, task, &self.row, "uploading")
+        })?;
         publish_file(&self.partial, &self.published)?;
         store.finish_attachment_metadata(self.account, &self.task_uuid, &self.row)?;
         Ok(self.row.descriptor(&self.published))
@@ -216,6 +248,25 @@ struct AttachmentRow {
     operation: String,
     metadata: AttachmentUploadMetadata,
     state: String,
+}
+
+/// Deletion needs ownership and an operation lease, not readable display or
+/// content metadata. In particular, an old invalid filename must be reclaimable.
+struct AttachmentCleanupRow {
+    id: String,
+    operation: String,
+    size: u64,
+}
+
+fn attachment_cleanup_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentCleanupRow> {
+    Ok(AttachmentCleanupRow {
+        id: row.get(0)?,
+        operation: row.get(1)?,
+        size: {
+            let size = row.get::<_, i64>(2)?;
+            u64::try_from(size).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(2, size))?
+        },
+    })
 }
 impl AttachmentRow {
     fn descriptor(&self, path: &Path) -> StoredAttachment {
@@ -284,6 +335,10 @@ impl Store {
     ) -> StoreResult<AttachmentUploadStart> {
         validate_operation(operation_id)?;
         let metadata = normalized_metadata(metadata)?;
+        // Never durably insert metadata that our own readers would reject.
+        if normalized_name(&metadata.name) != metadata.name {
+            return Err(StoreError::InvalidInput);
+        }
         if !source_image
             && metadata.mime_type.starts_with("image/")
             && metadata.size > MAX_UPLOAD_IMAGE_BYTES as u64
@@ -300,7 +355,7 @@ impl Store {
                 if stored_task != task || row.metadata != metadata || row.state == "cancelled" { return Err(StoreError::Conflict); }
                 return Ok(row);
             }
-            let (count,bytes,task_count):(i64,i64,i64) = tx.query_row("SELECT coalesce(sum(state!='cancelled'),0),coalesce(sum(size),0),coalesce(sum(task_id=?1 AND state!='cancelled'),0) FROM file_attachments WHERE bound=0", [task], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            let (count,bytes,task_count):(i64,i64,i64) = tx.query_row("SELECT coalesce(sum(state!='cancelled'),0),coalesce(sum(size),0),coalesce(sum(task_id=?1 AND state!='cancelled'),0) FROM file_attachments WHERE bound=0 AND account_id=?2", params![task,account.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
             if !source_image && (count >= MAX_PENDING_FILES as i64 || task_count >= MAX_ATTACHMENTS as i64 || bytes as u64 + metadata.size > MAX_PENDING_BYTES) { return Err(StoreError::Busy); }
             let tombstones:i64=tx.query_row("SELECT count(*) FROM file_attachments WHERE account_id=?1 AND state='cancelled'",[account.0],|row|row.get(0))?;
             if !source_image && tombstones>=MAX_CANCELLATION_TOMBSTONES {return Err(StoreError::Busy);}
@@ -408,8 +463,8 @@ impl Store {
         let candidate = self.read(|tx| {
             let task = active_task(tx, account, task_uuid)?;
             Ok(tx.query_row(
-                "SELECT public_id,operation_id,name,mime,size,sha256,state FROM file_attachments WHERE task_id=?1 AND operation_id=?2 AND state='cancelled' AND size>0",
-                params![task, operation_id], attachment_row,
+                "SELECT public_id,operation_id,size FROM file_attachments WHERE task_id=?1 AND operation_id=?2 AND state='cancelled' AND size>0",
+                params![task, operation_id], attachment_cleanup_row,
             ).optional()?)
         })?;
         if let Some(row) = candidate {
@@ -578,12 +633,33 @@ impl Store {
     }
 
     /// Call only on the effective context after compaction and image filtering.
-    /// A missing file is unavailable media; malformed metadata/source stays an error.
+    /// Changed, inaccessible or unsafe historical files are unavailable media;
+    /// malformed persisted metadata/source stays an error.
     pub fn materialize_message_images(
         &self,
         account: AccountId,
         task_uuid: &str,
         messages: &mut [Message],
+    ) -> StoreResult<()> {
+        self.materialize_images(account, task_uuid, messages, true)
+    }
+
+    /// A new send must not silently discard an attachment the sender selected.
+    pub fn materialize_outgoing_images(
+        &self,
+        account: AccountId,
+        task_uuid: &str,
+        messages: &mut [Message],
+    ) -> StoreResult<()> {
+        self.materialize_images(account, task_uuid, messages, false)
+    }
+
+    fn materialize_images(
+        &self,
+        account: AccountId,
+        task_uuid: &str,
+        messages: &mut [Message],
+        historical: bool,
     ) -> StoreResult<()> {
         let mut prepared = messages.to_vec();
         for message in &mut prepared {
@@ -597,6 +673,9 @@ impl Store {
                     continue;
                 };
                 if image.data == UNAVAILABLE_IMAGE_SOURCE {
+                    if !historical {
+                        return Err(StoreError::NotFound);
+                    }
                     *block = Content::text("Image no longer available.");
                     continue;
                 }
@@ -609,8 +688,11 @@ impl Store {
                 if image.mime_type != row.metadata.mime_type {
                     return Err(StoreError::InvalidData);
                 }
+                // Resolve database-owned identity outside the file-error path.
+                // Corrupt rows/store metadata must never become missing media.
+                let path = self.attachment_path_metadata(account, task_uuid, &row)?;
                 let bytes = (|| {
-                    let path = self.attachment_path(account, task_uuid, &row, false)?;
+                    self.prepare_attachment_path(&path, false)?;
                     let mut file = checked_file(&path, row.metadata.size)?;
                     let mut bytes = vec![0; row.metadata.size as usize];
                     file.read_exact(&mut bytes)?;
@@ -621,7 +703,16 @@ impl Store {
                 })();
                 match bytes {
                     Ok(bytes) => image.data = STANDARD.encode(bytes),
-                    Err(StoreError::NotFound) => {
+                    Err(error)
+                        if historical
+                            && matches!(
+                                error,
+                                StoreError::NotFound
+                                    | StoreError::UnsafePath
+                                    | StoreError::InvalidData
+                                    | StoreError::Io { .. }
+                            ) =>
+                    {
                         *block = Content::text("Image no longer available.")
                     }
                     Err(error) => return Err(error),
@@ -762,8 +853,22 @@ impl Store {
         task_uuid: &str,
         row: &AttachmentRow,
     ) -> StoreResult<PathBuf> {
-        validate_id(&row.id).map_err(|_| StoreError::InvalidData)?;
         if !safe_component(task_uuid) || normalized_name(&row.metadata.name) != row.metadata.name {
+            return Err(StoreError::InvalidData);
+        }
+        Ok(self
+            .attachment_directory_metadata(account, task_uuid, &row.id)?
+            .join(&row.metadata.name))
+    }
+
+    fn attachment_directory_metadata(
+        &self,
+        account: AccountId,
+        task_uuid: &str,
+        id: &str,
+    ) -> StoreResult<PathBuf> {
+        validate_id(id).map_err(|_| StoreError::InvalidData)?;
+        if account.0 <= 0 || !safe_component(task_uuid) {
             return Err(StoreError::InvalidData);
         }
         let store_id: Vec<u8> = self.read(|tx| {
@@ -782,8 +887,7 @@ impl Store {
             .join(hex(&store_id))
             .join(account.0.to_string())
             .join(task_uuid)
-            .join(&row.id)
-            .join(&row.metadata.name))
+            .join(id))
     }
 
     fn attachment_path(
@@ -794,6 +898,11 @@ impl Store {
         create: bool,
     ) -> StoreResult<PathBuf> {
         let path = self.attachment_path_metadata(account, task_uuid, row)?;
+        self.prepare_attachment_path(&path, create)?;
+        Ok(path)
+    }
+
+    fn prepare_attachment_path(&self, path: &Path, create: bool) -> StoreResult<()> {
         let relative = path
             .strip_prefix(self.paths.root())
             .map_err(|_| StoreError::UnsafePath)?;
@@ -808,16 +917,34 @@ impl Store {
                 verify_private_path(&checked, true).map_err(missing_file)?;
             }
         }
-        Ok(path)
+        Ok(())
     }
 
     pub(crate) fn collect_unbound_attachments_step(
         &self,
     ) -> StoreResult<AttachmentCollectionProgress> {
-        let candidate=self.read_bulk(|tx| {
-            Ok(tx.query_row("SELECT a.account_id,t.uuid,a.public_id,a.operation_id,a.name,a.mime,a.size,a.sha256,a.state FROM file_attachments a JOIN tasks t ON t.id=a.task_id JOIN accounts c ON c.id=a.account_id WHERE a.bound=0 AND ((a.state='cancelled' AND a.size>0) OR a.updated_ms<?1) AND c.deleting_ms IS NULL AND t.deleted_ms IS NULL ORDER BY a.updated_ms LIMIT 1",[pi_ai::now_ms().saturating_sub(STAGING_TTL_MS)],|row|Ok((AccountId(row.get(0)?),row.get::<_,String>(1)?,attachment_row_offset(row,2)?))).optional()?)
+        let after = self
+            .collection_cursors
+            .lock()
+            .map_err(|_| StoreError::Busy)?
+            .unbound
+            .clone();
+        let candidate = self.read_bulk(|tx| {
+            let query = |after: Option<&(i64, String)>| {
+                tx.query_row("SELECT a.public_id,a.operation_id,a.size,a.account_id,t.uuid,a.updated_ms FROM file_attachments a JOIN tasks t ON t.id=a.task_id JOIN accounts c ON c.id=a.account_id WHERE a.bound=0 AND ((a.state='cancelled' AND a.size>0) OR a.updated_ms<?1) AND c.deleting_ms IS NULL AND t.deleted_ms IS NULL AND (?2 IS NULL OR (a.updated_ms,a.public_id)>(?2,?3)) ORDER BY a.updated_ms,a.public_id LIMIT 1",params![pi_ai::now_ms().saturating_sub(STAGING_TTL_MS),after.map(|key|key.0),after.map(|key|key.1.as_str())],|row|Ok((AccountId(row.get(3)?),row.get::<_,String>(4)?,row.get::<_,i64>(5)?,attachment_cleanup_row(row)?))).optional()
+            };
+            let candidate = query(after.as_ref())?;
+            Ok(if candidate.is_none() && after.is_some() { query(None)? } else { candidate })
         })?;
-        let Some((account, task, row)) = candidate else {
+        // Advance before touching the owned tree: an unsafe or inaccessible
+        // candidate remains durable, but cannot monopolize every future tick.
+        self.collection_cursors
+            .lock()
+            .map_err(|_| StoreError::Busy)?
+            .unbound = candidate
+            .as_ref()
+            .map(|(_, _, updated, row)| (*updated, row.id.clone()));
+        let Some((account, task, _, row)) = candidate else {
             return Ok(AttachmentCollectionProgress {
                 done: true,
                 ..Default::default()
@@ -833,7 +960,7 @@ impl Store {
     ) -> StoreResult<AttachmentCollectionProgress> {
         let candidate=self.read_bulk(|tx| {
             let task=deleting_task(tx,account,task_uuid)?;
-            Ok(tx.query_row("SELECT public_id,operation_id,name,mime,size,sha256,state FROM file_attachments WHERE task_id=?1 LIMIT 1",[task],attachment_row).optional()?)
+            Ok(tx.query_row("SELECT public_id,operation_id,size FROM file_attachments WHERE task_id=?1 LIMIT 1",[task],attachment_cleanup_row).optional()?)
         })?;
         let Some(row) = candidate else {
             return Ok(AttachmentCollectionProgress {
@@ -848,7 +975,7 @@ impl Store {
         &self,
         account: AccountId,
         task_uuid: &str,
-        row: &AttachmentRow,
+        row: &AttachmentCleanupRow,
         deleting: bool,
     ) -> StoreResult<AttachmentCollectionProgress> {
         let _lease = match self
@@ -864,15 +991,35 @@ impl Store {
             let collectable:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM file_attachments WHERE task_id=?1 AND public_id=?2 AND (?3 OR (bound=0 AND ((state='cancelled' AND size>0) OR updated_ms<?4))))",params![task,row.id,deleting,pi_ai::now_ms().saturating_sub(STAGING_TTL_MS)],|row|row.get(0))?;
             if !collectable {return Err(StoreError::Conflict);} Ok(())
         })?;
-        let cleanup = match self.attachment_path(account, task_uuid, row, false) {
-            Ok(path) => super::attachment_cleanup::collect_owned_attachment_tree_step(
-                path.parent().ok_or(StoreError::UnsafePath)?,
-            )?,
-            Err(StoreError::NotFound) => super::attachment_cleanup::AttachmentCleanupProgress {
+        let directory = self.attachment_directory_metadata(account, task_uuid, &row.id)?;
+        // Validate the namespace ancestors, while the walker validates and
+        // repairs permissions only inside the exact authorized owned directory.
+        let parent = directory.parent().ok_or(StoreError::UnsafePath)?;
+        let mut checked = self.paths.root().to_owned();
+        let mut missing = false;
+        verify_private_path(&checked, true)?;
+        for component in parent
+            .strip_prefix(&checked)
+            .map_err(|_| StoreError::UnsafePath)?
+            .components()
+        {
+            checked.push(component);
+            match verify_private_path(&checked, true).map_err(missing_file) {
+                Ok(()) => {}
+                Err(StoreError::NotFound) => {
+                    missing = true;
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let cleanup = if missing {
+            super::attachment_cleanup::AttachmentCleanupProgress {
                 done: true,
                 entries: 0,
-            },
-            Err(error) => return Err(error),
+            }
+        } else {
+            super::attachment_cleanup::collect_owned_attachment_tree_step(&directory)?
         };
         if !cleanup.done {
             return Ok(AttachmentCollectionProgress {
@@ -915,7 +1062,7 @@ impl Store {
             Ok(AttachmentCollectionProgress {
                 links,
                 files: cleanup.entries,
-                bytes: row.metadata.size as usize,
+                bytes: row.size as usize,
                 ..Default::default()
             })
         })
@@ -964,16 +1111,18 @@ fn normalized_name(value: &str) -> String {
     let last = value.rsplit(['/', '\\']).next().unwrap_or_default();
     let mut name = String::new();
     for c in last
-        .trim()
         .chars()
         .filter(|c| !c.is_control() && !"<>:\"|?*".contains(*c))
+        .skip_while(|c| c.is_whitespace())
     {
         if name.len() + c.len_utf8() > 180 {
             break;
         }
         name.push(c);
     }
-    let name = name.trim_end_matches(['.', ' ']).to_owned();
+    let mut name = name
+        .trim_end_matches(|c: char| c == '.' || c.is_whitespace())
+        .to_owned();
     let stem = name
         .split('.')
         .next()
@@ -1007,10 +1156,15 @@ fn normalized_name(value: &str) -> String {
                 | "LPT9"
         )
     {
-        format!("attachment-{name}")
-    } else {
-        name
+        name = format!("attachment-{name}");
     }
+    // Prefixing reserved stems must share the same byte budget as normal names.
+    // Truncation can expose Unicode whitespace at the end, so trim once more.
+    while name.len() > 180 {
+        name.pop();
+    }
+    name.trim_end_matches(|c: char| c == '.' || c.is_whitespace())
+        .to_owned()
 }
 fn normalized_metadata(value: &AttachmentUploadMetadata) -> StoreResult<AttachmentUploadMetadata> {
     if value.size > MAX_ATTACHMENT_BYTES as u64

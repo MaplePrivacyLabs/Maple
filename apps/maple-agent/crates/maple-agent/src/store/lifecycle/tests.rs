@@ -1483,3 +1483,103 @@ fn reset_busy_on_an_upload_keeps_the_store_usable_until_retry() {
     assert_eq!(store.state(), StoreState::Open);
     assert_eq!(store.account_id("reset-upload").unwrap(), None);
 }
+
+#[cfg(unix)]
+fn readonly_attachment_generation(store: &Store) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let root = store.paths.attachments();
+    private_directory(&root).unwrap();
+    let generation = root.join(encode_id(&store.store_id().unwrap()));
+    let mut current = generation.clone();
+    private_directory(&current).unwrap();
+    for name in [
+        "1",
+        "00000000-0000-7000-8000-000000000001",
+        "0123456789abcdef0123456789abcdef",
+    ] {
+        current.push(name);
+        private_directory(&current).unwrap();
+    }
+    fs::write(current.join("archive.zip"), b"archive fixture").unwrap();
+    let nested = current.join("unpacked").join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(nested.join("plaintext.txt"), b"owned extracted plaintext").unwrap();
+    fs::set_permissions(&nested, fs::Permissions::from_mode(0o555)).unwrap();
+    fs::set_permissions(nested.parent().unwrap(), fs::Permissions::from_mode(0o500)).unwrap();
+    generation
+}
+
+#[cfg(unix)]
+#[test]
+fn reset_removes_readonly_attachment_trees_and_cold_reopens_cleanly() {
+    for after in [ResetAfter::Erase, ResetAfter::StartFresh] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = opened(directory.path());
+        store.upsert_account("old-readonly-reset", 1).unwrap();
+        let generation = readonly_attachment_generation(&store);
+        match after {
+            ResetAfter::Erase => {
+                store.erase_local_data(ERASE_CONFIRMATION).unwrap();
+            }
+            ResetAfter::StartFresh => {
+                set_state(
+                    &store,
+                    StoreState::Damaged {
+                        reason: DamageReason::Database,
+                    },
+                )
+                .unwrap();
+                store.start_fresh(START_FRESH_CONFIRMATION).unwrap();
+            }
+        }
+        assert_eq!(store.state(), StoreState::Open);
+        assert!(!generation.exists());
+        assert!(!store.paths.setup().exists());
+        drop(store);
+        let reopened = opened(directory.path());
+        assert_eq!(reopened.account_id("old-readonly-reset").unwrap(), None);
+        assert!(!generation.exists());
+        assert!(!reopened.paths.setup().exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_reset_reclaims_readonly_attachment_trees_on_cold_recovery() {
+    fn fail_sync(_: &Path) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Other))
+    }
+    for renamed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = opened(directory.path());
+        store.upsert_account("old-interrupted-reset", 1).unwrap();
+        let generation = readonly_attachment_generation(&store);
+        {
+            let _gate = store.lifecycle.lock().unwrap();
+            assert_eq!(
+                store.begin_reset_with_intent_sync_locked(ResetAfter::Erase, fail_sync),
+                Err(LifecycleError::RecoveryRequired {
+                    mode: StoreMode::Plain
+                }),
+            );
+        }
+        assert!(store.paths.setup().exists());
+        assert!(generation.exists());
+        if renamed {
+            durable_rename(
+                &store.paths.db(),
+                &store.paths.root().join("db.old"),
+                store.paths.root(),
+            )
+            .unwrap();
+        }
+        drop(store);
+        let reopened = opened(directory.path());
+        assert_eq!(reopened.account_id("old-interrupted-reset").unwrap(), None);
+        assert!(!generation.exists());
+        assert!(!reopened.paths.setup().exists());
+        assert!(!reopened.paths.root().join("db.old").exists());
+        drop(reopened);
+        assert_eq!(opened(directory.path()).state(), StoreState::Open);
+    }
+}

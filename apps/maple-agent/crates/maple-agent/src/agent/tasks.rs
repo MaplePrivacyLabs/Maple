@@ -6,6 +6,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
 
@@ -32,6 +33,9 @@ pub(super) const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 pub(super) const ACP_SESSION_FALLBACK_TITLE: &str = "Maple ACP";
 /// Why `/compact` did nothing: the history is all recent enough to keep.
 pub const NOTHING_TO_COMPACT_ERROR: &str = "There is nothing to compact yet";
+const HISTORY_PREPARATION_BUDGET: Duration = Duration::from_secs(5);
+const HISTORY_PREPARING: &str =
+    "Maple is preparing this task's saved history. Try opening it again shortly.";
 
 /// A title from a task's first prompt: its text on one line, shortened.
 pub(super) fn session_title_from_prompt(prompt: &str) -> String {
@@ -171,7 +175,7 @@ impl AgentRuntimeHandle {
         request: crate::store::OpenTaskPageRequest,
         transport: crate::store::PageTransport,
     ) -> Result<crate::store::OpenTaskPage, String> {
-        self.verify_generation().await?;
+        self.ensure_task_history_ready(&request.task).await?;
         let tasks = self.store()?;
         tokio::task::spawn_blocking(move || {
             tasks
@@ -181,6 +185,87 @@ impl AgentRuntimeHandle {
         })
         .await
         .map_err(|_| "Task page worker failed".to_string())?
+    }
+
+    /// Migration deliberately removes obsolete derived history. Opening a task
+    /// gives its existing bounded projector immediate work instead of showing a
+    /// false empty conversation while it waits in the background queue. ACP uses
+    /// this same boundary before capturing its immutable history replay.
+    pub async fn ensure_task_history_ready(&self, task: &str) -> Result<(), String> {
+        self.verify_generation().await?;
+        let handle = self.clone();
+        let task = task.to_owned();
+        let deadline = Instant::now() + HISTORY_PREPARATION_BUDGET;
+        tokio::task::spawn_blocking(move || handle.prepare_history_for_read(&task, deadline))
+            .await
+            .map_err(|_| "Task history preparation worker failed".to_string())?
+    }
+
+    fn prepare_history_for_read(&self, task: &str, deadline: Instant) -> Result<(), String> {
+        use crate::store::{RebuildProgress, StoreError};
+
+        let tasks = self.store()?;
+        let store = tasks.store();
+        let account = tasks.account();
+        let state = &self.service.state;
+        let preparing = |error: StoreError| match error {
+            StoreError::Busy => HISTORY_PREPARING.to_string(),
+            other => other.to_string(),
+        };
+        loop {
+            self.verify_generation_now()?;
+            if !store
+                .history_needs_rebuild(account, task)
+                .map_err(preparing)?
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(HISTORY_PREPARING.to_string());
+            }
+            let ticket = super::maintenance::while_task_idle(state, account, task, || {
+                self.verify_generation_now()
+                    .map_err(|_| StoreError::NotFound)?;
+                store.begin_timeline_rebuild(account, task, false)
+            })
+            .map_err(preparing)?;
+            let prepared = match store.prepare_timeline_rebuild_before(&ticket, Some(deadline)) {
+                Ok(prepared) => prepared,
+                // Another explicit open or the background worker completed the
+                // same epoch. Recheck before treating this as a failed load.
+                Err(StoreError::Conflict) => continue,
+                Err(error) => return Err(preparing(error)),
+            };
+            loop {
+                self.verify_generation_now()?;
+                let chunk = match store.prepare_timeline_chunk_before(&prepared, Some(deadline)) {
+                    Ok(chunk) => chunk,
+                    Err(StoreError::Conflict) => break,
+                    Err(error) => return Err(preparing(error)),
+                };
+                let progress = super::maintenance::while_task_idle(state, account, task, || {
+                    self.verify_generation_now()
+                        .map_err(|_| StoreError::NotFound)?;
+                    store.commit_timeline_chunk(&chunk, false)
+                });
+                match progress {
+                    Ok(RebuildProgress::Pending { .. }) => {}
+                    Ok(RebuildProgress::NeedsSnapshot) | Err(StoreError::Conflict) => break,
+                    Ok(RebuildProgress::Replaced { epoch }) => {
+                        emit_agent_event(
+                            &self.service.host.events,
+                            AgentServiceEvent::HistoryReplaced {
+                                user_id: self.user_id.to_string(),
+                                session_id: task.to_owned(),
+                                rows_epoch: epoch,
+                            },
+                        );
+                        return Ok(());
+                    }
+                    Err(error) => return Err(preparing(error)),
+                }
+            }
+        }
     }
 
     pub async fn history_forward_page(
@@ -370,6 +455,7 @@ impl AgentRuntimeHandle {
     }
 
     pub async fn load_session(&self, session_id: String) -> Result<AgentSessionDetail, String> {
+        self.ensure_task_history_ready(&session_id).await?;
         let runtime = self.current_runtime().await?;
         let store = self.store()?;
         let row = store

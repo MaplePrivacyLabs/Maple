@@ -466,6 +466,7 @@ impl ChatScreen {
             .filter(|(_, preview)| preview.session.as_deref() == Some(session_id))
             .map(|(id, _)| id.clone())
             .collect();
+        self.discarded_sends.extend(sends.iter().cloned());
         for id in sends {
             self.cancel_attachment_send(&id, cx);
             self.attachment_uploads.remove(&id);

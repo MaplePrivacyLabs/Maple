@@ -368,7 +368,7 @@ impl Worker {
     }
 
     fn collect_deleted_tasks(&mut self, state: &ServiceState, store: &Arc<Store>) {
-        let tasks = match store.deleted_tasks(TASK_GC_STEPS) {
+        let tasks = match store.deleted_tasks_for_collection(TASK_GC_STEPS) {
             Ok(tasks) => tasks,
             Err(error) => {
                 self.report("deleted-task discovery", error);

@@ -49,6 +49,8 @@ mod summaries;
 mod tests;
 mod thinking;
 mod transcript;
+#[cfg(test)]
+mod upload_tests;
 mod uploads;
 
 use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind};
@@ -377,6 +379,7 @@ struct SendReceiptQuery {
     backend: Arc<AgentBackend>,
 }
 
+#[derive(Clone)]
 struct UnresolvedSend {
     backend: Arc<AgentBackend>,
     outcome: Option<crate::host::receipts::Outcome>,
@@ -1510,6 +1513,7 @@ impl ChatScreen {
                     }
                 }
                 this.booting = false;
+                this.dispatch_prepared_uploads(cx);
                 cx.notify();
                 this.refresh_models(cx);
                 this.refresh_roots(cx);
@@ -4672,6 +4676,17 @@ impl ChatScreen {
         queue_id: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if queue_id.is_none()
+            && !self.draft_attachments.is_empty()
+            && self
+                .attachment_uploads
+                .values()
+                .any(|upload| upload.session == session_id && !upload.fence.handed_off())
+        {
+            self.notice = Some("Wait for the current file upload or cancel it before sending more files. Text can still be queued or sent to the running task.".into());
+            cx.notify();
+            return false;
+        }
         if self
             .sending_previews
             .values()
@@ -4694,7 +4709,6 @@ impl ChatScreen {
             return false;
         }
         let send_id = uuid::Uuid::new_v4().to_string();
-        let outgoing_id = send_id.clone();
         let session_id = session_id.to_string();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -4754,6 +4768,11 @@ impl ChatScreen {
         }
         let preview = sending::SendPreview::new(Some(session_id.clone()), &text, &drafts)
             .capture_timeline(&self.timeline);
+        let preview = if drafts.is_empty() {
+            preview
+        } else {
+            preview.uploading()
+        };
         self.sending_previews.insert(
             send_id.clone(),
             if run_active || request.queue_id.is_some() {
@@ -4772,6 +4791,18 @@ impl ChatScreen {
             from_composer,
         };
         let (upload_fence, progress) = self.begin_uploads(&send_id, &session_id, &drafts, cx);
+        if drafts.is_empty() {
+            self.admit_prepared_send(
+                send_id,
+                uploads::PreparedSend {
+                    request,
+                    send: retained_send,
+                    fence: upload_fence,
+                },
+                cx,
+            );
+            return true;
+        }
         self.call(
             async move {
                 let result = match uploads::commit_attachments(
@@ -4784,13 +4815,10 @@ impl ChatScreen {
                 )
                 .await
                 {
-                    Ok(ids) if upload_fence.hand_off() => {
+                    Ok(ids) => {
                         request.attachments = ids;
-                        backend
-                            .send_message_identified(&user_id, request, outgoing_id)
-                            .await
+                        Ok(())
                     }
-                    Ok(_) => Err("Upload cancelled. No message was sent.".into()),
                     Err(error) => Err(error),
                 };
                 Ok((
@@ -4803,11 +4831,37 @@ impl ChatScreen {
                         from_composer,
                     },
                     result,
+                    request,
+                    upload_fence,
                 ))
             },
             cx,
             move |this, result, cx| {
-                this.finish_attachment_send(send_id, retained_send, result, cx);
+                match result {
+                    Ok((send, Ok(()), request, fence))
+                        if this.accept_send_results && !this.discarded_sends.remove(&send_id) =>
+                    {
+                        if let Some(preview) = this.sending_previews.get_mut(&send_id) {
+                            preview.prepare(uploads::PreparedSend {
+                                request,
+                                send,
+                                fence,
+                            });
+                            this.dispatch_prepared_uploads(cx);
+                        }
+                    }
+                    Ok((send, Err(error), _, _)) => this.finish_attachment_send(
+                        send_id,
+                        retained_send,
+                        Ok((send, Err(error))),
+                        cx,
+                    ),
+                    Err(error) => {
+                        this.finish_attachment_send(send_id, retained_send, Err(error), cx)
+                    }
+                    Ok(_) => {}
+                }
+                cx.notify();
             },
         );
         true
@@ -4871,6 +4925,16 @@ impl ChatScreen {
     }
 
     fn apply_send_receipt(
+        &mut self,
+        id: &str,
+        outcome: Option<crate::host::receipts::Outcome>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_send_receipt_result(id, outcome, cx);
+        self.dispatch_prepared_uploads(cx);
+    }
+
+    fn apply_send_receipt_result(
         &mut self,
         id: &str,
         outcome: Option<crate::host::receipts::Outcome>,
@@ -5244,11 +5308,11 @@ impl ChatScreen {
     pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
         // A logout during upload must win before prompt admission, even while
         // the host is still shutting down an earlier run.
+        self.accept_send_results = false;
         let uploads: Vec<_> = self.attachment_uploads.keys().cloned().collect();
         for id in uploads {
             self.cancel_attachment_send(&id, cx);
         }
-        self.accept_send_results = false;
         self.attachment_uploads.clear();
         self.draft_attachments.clear();
         self.unresolved_sends.clear();
@@ -5768,6 +5832,7 @@ impl ChatScreen {
                         this.runtime_error = None;
                         this.booting = !running && !this.navigation_only;
                         this.check_unresolved_sends(cx);
+                        this.dispatch_prepared_uploads(cx);
                         cx.emit(NavigationChanged);
                         if !this.navigation_only {
                             this.refresh_models(cx);
@@ -5777,7 +5842,8 @@ impl ChatScreen {
                         if this.booting {
                             // A host another client restarted may not have a
                             // runtime yet. Restore catalog/tool availability;
-                            // this does not resume or submit any prompt.
+                            // this never replays an admitted prompt. Prepared
+                            // uploads still wait for this readiness result.
                             this.start_runtime(cx);
                         }
                         this.finish_navigation_bootstrap(cx);

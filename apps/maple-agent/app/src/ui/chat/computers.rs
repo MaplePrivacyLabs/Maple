@@ -235,7 +235,7 @@ impl ChatScreen {
                         .as_deref()
                         .is_some_and(crate::remote::wire::is_protocol_incompatibility_refusal)
                     {
-                        "Update required"
+                        "Update required — select to retry after updating"
                     } else {
                         "Offline — select to reconnect"
                     }
@@ -435,7 +435,7 @@ mod tests {
         let cases = [
             (
                 Refusal::terminal(Error::Incompatible.to_string()).into_error(),
-                "Update required",
+                "Update required — select to retry after updating",
             ),
             (
                 Refusal::terminal("This computer is no longer paired").into_error(),

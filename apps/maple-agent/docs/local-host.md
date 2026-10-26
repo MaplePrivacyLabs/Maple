@@ -132,8 +132,10 @@ database record admission and its result, so a lost reply can be queried without
 resending the prompt. A
 crash during admission produces an explicit unknown outcome: inspect the task
 before retrying. Receipts contain hashes and task/run IDs, not prompt text or
-images. They are not a token event log. IPC frames are bounded at 160 MiB to fit
-the existing attachment allowance; oversized requests fail explicitly.
+images. They are not a token event log. IPC frames retain a 160 MiB ceiling for
+bounded history and control replies; oversized messages fail explicitly.
+Attachment imports use staged paths and bounded byte streams, not inline IPC
+payloads.
 
 History pages can shorten an oversized display row without changing its saved
 source. Desktop **Show full output** reconstructs a row only within its 32 MiB

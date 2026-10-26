@@ -494,6 +494,7 @@ fn revocation_disable_and_repair_do_not_publish_an_upload_admitted_under_an_old_
             panic!()
         };
         writer.write_chunk(b"abcd").unwrap();
+        let prepared = writer.prepare(&store).unwrap();
         match mode {
             "revoke" => policy.revoke(peer).unwrap(),
             "disable" => policy.set_enabled(false).unwrap(),
@@ -507,7 +508,7 @@ fn revocation_disable_and_repair_do_not_publish_an_upload_admitted_under_an_old_
         }
         assert!(
             finish_authorized(
-                *writer,
+                prepared,
                 &store,
                 &policy,
                 peer,
@@ -524,5 +525,432 @@ fn revocation_disable_and_repair_do_not_publish_an_upload_admitted_under_an_old_
             ),
             "{mode}"
         );
+    }
+}
+
+struct PublicationPause {
+    entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+struct ReceiverFixture {
+    backend: Arc<LocalBackend>,
+    policy: RwLock<crate::remote::store::Store>,
+    stopped: std::sync::atomic::AtomicBool,
+    publication: Option<PublicationPause>,
+}
+
+impl UploadReceiver for ReceiverFixture {
+    fn backend(&self) -> &LocalBackend {
+        &self.backend
+    }
+    fn account(&self) -> &str {
+        "account"
+    }
+    fn policy(&self) -> &RwLock<crate::remote::store::Store> {
+        &self.policy
+    }
+    fn stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::Acquire)
+    }
+    async fn ensure_valid(&self) -> Result<(), String> {
+        if self.stopped() {
+            Err("The remote account is no longer active".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn before_publish(&self) {
+        if let Some(pause) = &self.publication {
+            pause
+                .entered
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .send(())
+                .unwrap();
+            // A dropped release sender also unblocks the worker after a failed
+            // assertion; no test may strand a blocking publication thread.
+            let _ = pause
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10));
+        }
+    }
+}
+
+fn receiver_fixture(
+    root: &std::path::Path,
+    peer: EndpointId,
+    publication: Option<PublicationPause>,
+) -> Arc<ReceiverFixture> {
+    let backend = Arc::new(attachments::tests::fixture(root));
+    let mut policy = crate::remote::store::Store::open(
+        backend.store().unwrap().clone(),
+        "local",
+        "project",
+        "unpackaged",
+        "account",
+    )
+    .unwrap();
+    policy.set_enabled(true).unwrap();
+    policy
+        .grant(
+            peer,
+            crate::remote::store::Peer {
+                name: "Controller".into(),
+                grant: [1; 16],
+                controls_this_computer: true,
+                can_connect: false,
+                pending_confirmation: None,
+            },
+        )
+        .unwrap();
+    Arc::new(ReceiverFixture {
+        backend,
+        policy: RwLock::new(policy),
+        stopped: std::sync::atomic::AtomicBool::new(false),
+        publication,
+    })
+}
+
+fn fixture_import(root: &std::path::Path) -> ImportAttachmentRequest {
+    let path = root.join("staged.bin");
+    std::fs::write(&path, b"abcd").unwrap();
+    ImportAttachmentRequest {
+        session_id: TASK.into(),
+        operation_id: OP.into(),
+        path: path.to_string_lossy().into_owned(),
+        name: "notes.bin".into(),
+        mime_type: "application/octet-stream".into(),
+    }
+}
+
+#[tokio::test]
+async fn production_receiver_publication_keeps_control_authorization_responsive() {
+    let root = tempfile::tempdir().unwrap();
+    let (a, b, client, server) = endpoints().await;
+    let peer = a.id();
+    let (entered, publishing) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let receiver = receiver_fixture(
+        root.path(),
+        peer,
+        Some(PublicationPause {
+            entered: std::sync::Mutex::new(Some(entered)),
+            release: std::sync::Mutex::new(held),
+        }),
+    );
+    let destination = receiver.clone();
+    let capacity = Arc::new(streams::Capacity::new());
+    let serving = tokio::spawn(streams::serve_requests(server, move |mut tx, mut rx| {
+        let receiver = destination.clone();
+        let capacity = capacity.clone();
+        async move {
+            let header = capacity.read_header(&mut rx).await.unwrap();
+            let _slot = capacity.acquire(header.method).unwrap();
+            if header.method == wire::Method::UploadAttachment {
+                serve_receiver(receiver, peer, header.id, &mut tx, &mut rx)
+                    .await
+                    .unwrap();
+            } else {
+                let request = header.body(&mut rx).await.unwrap();
+                assert!(matches!(
+                    request.method,
+                    wire::Method::CancelRun | wire::Method::AnswerQuestion
+                ));
+                // Exercise the same current account/grant check while the real
+                // upload receiver owns its publication guard. SDK session
+                // validation belongs to Node and the authenticated live probe.
+                check_receiver(receiver.as_ref(), peer, [1; 16])
+                    .await
+                    .unwrap();
+                let result = crate::backend::dispatch(
+                    &receiver.backend,
+                    crate::host::protocol::Request {
+                        id: request.id,
+                        method: request.method.name(),
+                        send_id: None,
+                        params: request.params,
+                    },
+                )
+                .await;
+                streams::reply(
+                    &mut tx,
+                    &Message::Response {
+                        id: request.id,
+                        result,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        }
+    }));
+    let request = fixture_import(root.path());
+    let upload_client = client.clone();
+    let upload = tokio::spawn(async move {
+        let prepared = attachments::prepare(&request).await.unwrap();
+        call(&upload_client, 1, "account".into(), request, prepared).await
+    });
+    tokio::time::timeout(Duration::from_secs(3), publishing)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        receiver.policy.try_write().is_err(),
+        "publication must exclude revoke"
+    );
+    for (id, method, params) in [
+        (
+            2,
+            wire::Method::CancelRun,
+            serde_json::json!(["account", "run"]),
+        ),
+        (
+            3,
+            wire::Method::AnswerQuestion,
+            serde_json::json!(["account", "question", "answer"]),
+        ),
+    ] {
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            streams::call(
+                &client,
+                wire::Command {
+                    id,
+                    method,
+                    send_id: None,
+                    params,
+                },
+            ),
+        )
+        .await
+        .expect("control authorization waited for disk publication")
+        .unwrap();
+        // The fixture has no running agent/question; a backend response still
+        // proves the control reached dispatch while publication was held.
+        assert!(matches!(response, Message::Response { id: received, .. } if received == id));
+        assert!(!upload.is_finished());
+    }
+    release.send(()).unwrap();
+    assert!(matches!(
+        upload.await.unwrap().unwrap(),
+        Message::Response { result: Ok(_), .. }
+    ));
+    client.close(0u32.into(), b"done");
+    serving.await.unwrap();
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn production_receiver_rechecks_revoke_disable_and_repair_after_payload() {
+    for mode in ["revoke", "disable", "re-pair", "stopped"] {
+        let root = tempfile::tempdir().unwrap();
+        let (a, b, client, server) = endpoints().await;
+        let peer = a.id();
+        let receiver = receiver_fixture(root.path(), peer, None);
+        let destination = receiver.clone();
+        let serving = tokio::spawn(async move {
+            let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+            let header = streams::Header::read(&mut rx).await.unwrap();
+            serve_receiver(destination, peer, header.id, &mut tx, &mut rx).await
+        });
+        let (mut tx, mut rx) = client.open_bi().await.unwrap();
+        wire::write(
+            &mut tx,
+            &streams::Header {
+                id: 1,
+                method: wire::Method::UploadAttachment,
+                send_id: None,
+            },
+            wire::MAX_PREFACE,
+        )
+        .await
+        .unwrap();
+        wire::write(
+            &mut tx,
+            &Upload {
+                user: "account".into(),
+                session_id: TASK.into(),
+                operation_id: OP.into(),
+                metadata: metadata(b"abcd"),
+            },
+            wire::MAX_PREFACE,
+        )
+        .await
+        .unwrap();
+        let admission: Result<Admission, String> = wire::read(&mut rx, wire::MAX_MANAGEMENT_REPLY)
+            .await
+            .unwrap();
+        assert!(matches!(admission, Ok(Admission::Ready)));
+        tx.write_all(b"abcd").await.unwrap();
+        {
+            let mut policy = receiver.policy.write().unwrap();
+            match mode {
+                "revoke" => policy.revoke(peer).unwrap(),
+                "disable" => policy.set_enabled(false).unwrap(),
+                "re-pair" => {
+                    let mut grant = policy.peers().get(&peer.to_string()).unwrap().clone();
+                    grant.grant = [2; 16];
+                    policy.revoke(peer).unwrap();
+                    policy.grant(peer, grant).unwrap();
+                }
+                _ => receiver
+                    .stopped
+                    .store(true, std::sync::atomic::Ordering::Release),
+            }
+        }
+        tx.finish().unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), serving)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err(),
+            "{mode}"
+        );
+        let store = receiver.backend.store().unwrap();
+        let account = store.account_id("account").unwrap().unwrap();
+        assert!(
+            !matches!(
+                store.attachment_upload_status(account, TASK, OP).unwrap(),
+                AttachmentUploadStatus::Complete(_)
+            ),
+            "{mode}"
+        );
+        a.close().await;
+        b.close().await;
+    }
+}
+
+#[tokio::test]
+async fn aborted_receiver_keeps_account_guard_until_publication_worker_exits() {
+    let root = tempfile::tempdir().unwrap();
+    let (a, b, client, server) = endpoints().await;
+    let peer = a.id();
+    let (entered, publishing) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let receiver = receiver_fixture(
+        root.path(),
+        peer,
+        Some(PublicationPause {
+            entered: std::sync::Mutex::new(Some(entered)),
+            release: std::sync::Mutex::new(held),
+        }),
+    );
+    let destination = receiver.clone();
+    let serving = tokio::spawn(async move {
+        let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+        let header = streams::Header::read(&mut rx).await.unwrap();
+        serve_receiver(destination, peer, header.id, &mut tx, &mut rx).await
+    });
+    let request = fixture_import(root.path());
+    let upload_client = client.clone();
+    let upload = tokio::spawn(async move {
+        let prepared = attachments::prepare(&request).await.unwrap();
+        call(&upload_client, 1, "account".into(), request, prepared).await
+    });
+    tokio::time::timeout(Duration::from_secs(3), publishing)
+        .await
+        .unwrap()
+        .unwrap();
+    serving.abort();
+    assert!(serving.await.unwrap_err().is_cancelled());
+    assert!(
+        receiver.backend.account_gate.try_write().is_err(),
+        "aborting the stream released account ownership before its disk worker"
+    );
+    receiver
+        .stopped
+        .store(true, std::sync::atomic::Ordering::Release);
+    release.send(()).unwrap();
+    let transition = tokio::time::timeout(
+        Duration::from_secs(3),
+        receiver.backend.account_gate.write(),
+    )
+    .await
+    .unwrap();
+    let store = receiver.backend.store().unwrap();
+    let account = store.account_id("account").unwrap().unwrap();
+    assert!(!matches!(
+        store.attachment_upload_status(account, TASK, OP).unwrap(),
+        AttachmentUploadStatus::Complete(_)
+    ));
+    drop(transition);
+    client.close(0u32.into(), b"done");
+    assert!(upload.await.unwrap().is_err());
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn production_receiver_requires_authority_for_begin_crash_reconciliation() {
+    fn partial_file(directory: &std::path::Path) -> Option<std::path::PathBuf> {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                if let Some(path) = partial_file(&entry.path()) {
+                    return Some(path);
+                }
+            } else if entry.file_name() == ".part" {
+                return Some(entry.path());
+            }
+        }
+        None
+    }
+    for permitted in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let (a, b, client, server) = endpoints().await;
+        let peer = a.id();
+        let receiver = receiver_fixture(root.path(), peer, None);
+        let store = receiver.backend.store().unwrap().clone();
+        let account = store.account_id("account").unwrap().unwrap();
+        let AttachmentUploadStart::Writing(mut writer) = store
+            .begin_attachment_upload(account, TASK, OP, &metadata(b"abcd"))
+            .unwrap()
+        else {
+            panic!()
+        };
+        writer.write_chunk(b"abcd").unwrap();
+        drop(writer);
+        // Simulate a crash after rename but before the ready-row commit, using
+        // only this disposable fixture's files. Begin must authorize recovery.
+        let partial = partial_file(root.path()).unwrap();
+        std::fs::rename(&partial, partial.with_file_name("notes.bin")).unwrap();
+        if !permitted {
+            receiver.policy.write().unwrap().revoke(peer).unwrap();
+        }
+        let destination = receiver.clone();
+        let serving = tokio::spawn(async move {
+            let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+            let header = streams::Header::read(&mut rx).await.unwrap();
+            serve_receiver(destination, peer, header.id, &mut tx, &mut rx).await
+        });
+        let request = fixture_import(root.path());
+        let prepared = attachments::prepare(&request).await.unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_secs(3),
+            call(&client, 1, "account".into(), request, prepared),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.is_ok(), permitted);
+        assert_eq!(
+            matches!(
+                store.attachment_upload_status(account, TASK, OP).unwrap(),
+                AttachmentUploadStatus::Complete(_)
+            ),
+            permitted
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(3), serving)
+            .await
+            .unwrap()
+            .unwrap();
+        a.close().await;
+        b.close().await;
     }
 }

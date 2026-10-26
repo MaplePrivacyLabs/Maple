@@ -577,8 +577,8 @@ impl SettingsScreen {
                 }),
         );
         pane=pane.child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child(if password {
-            "Maple's copy of your tasks, settings and sign-in on this computer is encrypted with your unlock password. Maple asks for it each time it starts."
-        } else {"Your tasks and settings are stored on this computer, readable only by your user account. Set an unlock password to encrypt them."}));
+            "Maple's copy of your conversation text, settings and sign-in on this computer is encrypted with your unlock password. Maple asks for it each time it starts. Attached files and images remain unencrypted."
+        } else {"Your conversation text, settings and sign-in are stored on this computer, readable only by your user account. Set an unlock password to encrypt them. Attached files and images remain unencrypted."}));
         if self.advanced.erase {
             pane = pane
                 .child(div().text_sm().child(ERASE_COPY))

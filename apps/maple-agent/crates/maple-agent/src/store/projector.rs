@@ -6,6 +6,7 @@
 //! prepared on the bulk reader and replayed in bounded idle transactions.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use pi_ai::{Message, content_text};
 use pi_coding_agent::{
@@ -891,6 +892,16 @@ impl Store {
         &self,
         ticket: &RebuildTicket,
     ) -> StoreResult<PreparedRebuild> {
+        self.prepare_timeline_rebuild_before(ticket, None)
+    }
+
+    /// Foreground opens use a cooperative deadline between bounded source reads;
+    /// unfinished work remains queued for normal background reconstruction.
+    pub(crate) fn prepare_timeline_rebuild_before(
+        &self,
+        ticket: &RebuildTicket,
+        deadline: Option<Instant>,
+    ) -> StoreResult<PreparedRebuild> {
         let last_seq = self.read_bulk(|tx| {
             authorize_ticket(tx, ticket)?;
             Ok(tx.query_row(
@@ -903,6 +914,7 @@ impl Store {
         let mut after = 0;
         let mut compact = true;
         while after < last_seq {
+            check_rebuild_deadline(deadline)?;
             let entries =
                 self.read_bulk(|tx| source_metadata_batch(tx, ticket.task, after, last_seq))?;
             if entries.is_empty() {
@@ -942,6 +954,15 @@ impl Store {
         &self,
         prepared: &PreparedRebuild,
     ) -> StoreResult<PreparedChunk> {
+        self.prepare_timeline_chunk_before(prepared, None)
+    }
+
+    pub(crate) fn prepare_timeline_chunk_before(
+        &self,
+        prepared: &PreparedRebuild,
+        deadline: Option<Instant>,
+    ) -> StoreResult<PreparedChunk> {
+        check_rebuild_deadline(deadline)?;
         let cursor = self.read_bulk(|tx| {
             authorize_ticket(tx, &prepared.ticket)?;
             rebuild_cursor(tx, &prepared.ticket)
@@ -952,7 +973,7 @@ impl Store {
                 let end = (start + CHUNK_ENTRIES).min(outline.len());
                 (outline[start..end].to_vec(), end == outline.len())
             }
-            Outline::Rescan => self.rescan_outline_chunk(prepared, cursor.0)?,
+            Outline::Rescan => self.rescan_outline_chunk(prepared, cursor.0, deadline)?,
         };
         self.read_bulk(|tx| {
             authorize_ticket(tx, &prepared.ticket)?;
@@ -979,10 +1000,12 @@ impl Store {
     fn walk_source_branch(
         &self,
         prepared: &PreparedRebuild,
+        deadline: Option<Instant>,
         mut visit: impl FnMut(i64, &SessionEntry) -> StoreResult<()>,
     ) -> StoreResult<()> {
         let mut seq = prepared.last_seq;
         while seq > 0 {
+            check_rebuild_deadline(deadline)?;
             let entry = self.read_bulk(|tx| session::read_entry(tx, prepared.ticket.task, seq))?;
             visit(seq, &entry)?;
             seq = match entry.parent_id {
@@ -1011,12 +1034,13 @@ impl Store {
         &self,
         prepared: &PreparedRebuild,
         through: i64,
+        deadline: Option<Instant>,
     ) -> StoreResult<(Vec<OutlineEntry>, bool)> {
         use std::collections::VecDeque;
         let mut selected = VecDeque::<(i64, String)>::new();
         let mut count = 0usize;
         let mut id_bytes = 0usize;
-        self.walk_source_branch(prepared, |seq, entry| {
+        self.walk_source_branch(prepared, deadline, |seq, entry| {
             if seq > through {
                 count = count.saturating_add(1);
                 id_bytes = id_bytes.saturating_add(entry.id.len());
@@ -1044,7 +1068,7 @@ impl Store {
                 omitted: false,
             })
             .collect();
-        self.walk_source_branch(prepared, |_, entry| {
+        self.walk_source_branch(prepared, deadline, |_, entry| {
             if let EntryKind::ContextEdit {
                 target_id,
                 replacement: None,
@@ -1057,6 +1081,13 @@ impl Store {
         })?;
         Ok((entries, at_end))
     }
+}
+
+fn check_rebuild_deadline(deadline: Option<Instant>) -> StoreResult<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(StoreError::Busy);
+    }
+    Ok(())
 }
 
 struct CompactMeta {

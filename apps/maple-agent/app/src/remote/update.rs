@@ -357,7 +357,7 @@ impl RemoteInstallAuthority {
         expected_grant: [u8; 16],
     ) -> Result<Self, String> {
         let peer = peer.to_string();
-        let store = node.store.lock().map_err(|_| "Remote grant unavailable")?;
+        let store = node.store.read().map_err(|_| "Remote grant unavailable")?;
         if !store.permits(peer.parse().map_err(|_| "Remote grant unavailable")?)
             || !store
                 .peers()
@@ -401,7 +401,7 @@ impl RemoteInstallAuthority {
     ) -> Result<T, String> {
         let node = self.node.upgrade().ok_or("Remote access ended")?;
         let peer = self.peer.parse().map_err(|_| "Remote access ended")?;
-        let store = node.store.lock().map_err(|_| "Remote grant unavailable")?;
+        let store = node.store.read().map_err(|_| "Remote grant unavailable")?;
         if node.stopped.is_cancelled()
             || node.backend.saved_user_id().as_deref() != Some(&self.account)
             || !store.permits(peer)

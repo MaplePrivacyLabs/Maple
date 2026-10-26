@@ -725,6 +725,27 @@ mod tests {
         check::<Command>(&examples["send"]);
         check::<super::super::streams::Header>(&examples["upload_header"]);
         check::<super::super::uploads::Upload>(&examples["upload"]);
+        for key in [
+            "upload_admission_ready",
+            "upload_admission_complete",
+            "upload_admission_error",
+        ] {
+            check::<Result<super::super::uploads::Admission, String>>(&examples[key]);
+        }
+        check::<crate::host::protocol::Message>(&examples["upload_ack"]);
+        check::<maple_agent::store::StoredAttachment>(
+            &examples["upload_ack"]["Response"]["result"]["Ok"],
+        );
+        for key in ["upload_status", "cancel_upload"] {
+            check::<Command>(&examples[key]);
+            check::<(String, crate::backend::AttachmentUploadRequest)>(&examples[key]["params"]);
+        }
+        for value in examples["upload_status_replies"].as_array().unwrap() {
+            check::<crate::host::protocol::Message>(value);
+            check::<maple_agent::store::AttachmentUploadStatus>(&value["Response"]["result"]["Ok"]);
+        }
+        check::<crate::host::protocol::Message>(&examples["cancel_upload_reply"]);
+        check::<()>(&examples["cancel_upload_reply"]["Response"]["result"]["Ok"]);
         assert!(
             Method::parse("import_attachment").is_err(),
             "local source paths never reach a remote filesystem importer"

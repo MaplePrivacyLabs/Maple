@@ -2,7 +2,10 @@
 //! separate low-priority QUIC stream and never an ordinary RPC/control frame.
 use super::{manager::Node, streams, wire};
 use crate::{
-    backend::attachments::{self, ImportAttachmentRequest, PreparedImport},
+    backend::{
+        LocalBackend,
+        attachments::{self, ImportAttachmentRequest, PreparedImport},
+    },
     host::protocol::Message,
 };
 use iroh::{
@@ -10,10 +13,14 @@ use iroh::{
     endpoint::{Connection, RecvStream, SendStream},
 };
 use maple_agent::store::{
-    AttachmentUploadMetadata, AttachmentUploadStart, AttachmentUploadWriter, StoredAttachment,
+    AttachmentUploadMetadata, AttachmentUploadStart, AttachmentUploadWriter,
+    PreparedAttachmentUpload, StoredAttachment,
 };
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 use tokio::io::AsyncReadExt;
 
 const CHUNK: usize = 64 * 1024;
@@ -33,7 +40,7 @@ pub(super) struct Upload {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", content = "attachment", rename_all = "camelCase")]
-enum Admission {
+pub(super) enum Admission {
     Ready,
     Complete(StoredAttachment),
 }
@@ -152,22 +159,68 @@ pub(super) async fn serve(
     tx: &mut SendStream,
     rx: &mut RecvStream,
 ) -> Result<(), String> {
+    serve_receiver(node, peer, id, tx, rx).await
+}
+
+// Keep account/grant admission and publication in one receiver implementation.
+// Tests supply only its host context, rather than rebuilding the wire receiver.
+trait UploadReceiver: Send + Sync + 'static {
+    fn backend(&self) -> &LocalBackend;
+    fn account(&self) -> &str;
+    fn policy(&self) -> &RwLock<super::store::Store>;
+    fn stopped(&self) -> bool;
+    fn ensure_valid(&self) -> impl std::future::Future<Output = Result<(), String>> + Send;
+    #[cfg(test)]
+    fn before_publish(&self) {}
+}
+
+impl UploadReceiver for Node {
+    fn backend(&self) -> &LocalBackend {
+        &self.backend
+    }
+    fn account(&self) -> &str {
+        &self.account
+    }
+    fn policy(&self) -> &RwLock<super::store::Store> {
+        &self.store
+    }
+    fn stopped(&self) -> bool {
+        self.stopped.is_cancelled()
+    }
+    async fn ensure_valid(&self) -> Result<(), String> {
+        Node::ensure_valid(self).await
+    }
+}
+
+async fn serve_receiver<R: UploadReceiver>(
+    node: Arc<R>,
+    peer: EndpointId,
+    id: u64,
+    tx: &mut SendStream,
+    rx: &mut RecvStream,
+) -> Result<(), String> {
     let begin = async {
         let upload = read_metadata(rx, streams::IO_TIMEOUT).await?;
-        if upload.user != node.account {
+        if upload.user != node.account() {
             return Err("Remote request account mismatch".to_string());
         }
-        let _account = node.backend.account_gate.read().await;
+        let account_guard = node.backend().account_gate.clone().read_owned().await;
         node.ensure_valid().await?;
-        let (store, account) = attachments::context(&node.backend, &upload.user).await?;
+        let (store, account) = attachments::context(node.backend(), &upload.user).await?;
         let begin_store = store.clone();
         let begin_node = node.clone();
         let start = tokio::task::spawn_blocking(move || {
+            // The worker retains account ownership even if its awaiting stream
+            // task is aborted while a durable begin/reconciliation is running.
+            let _account = account_guard;
             let grant = begin_node
-                .store
-                .lock()
+                .policy()
+                .read()
                 .map_err(|_| "Remote grant unavailable".to_string())?;
-            if !grant.permits(peer) {
+            begin_node
+                .backend()
+                .authorize_account(begin_node.account())?;
+            if begin_node.stopped() || !grant.permits(peer) {
                 return Err("Remote access revoked".into());
             }
             let grant_id = grant
@@ -197,7 +250,7 @@ pub(super) async fn serve(
             return send_admission(tx, Err(error), true).await;
         }
     };
-    check_receiver(&node, peer, grant_id).await?;
+    check_receiver(node.as_ref(), peer, grant_id).await?;
     let writer = match start {
         AttachmentUploadStart::Complete(attachment) => {
             return send_admission(tx, Ok(Admission::Complete(attachment)), true).await;
@@ -209,25 +262,27 @@ pub(super) async fn serve(
         let writer = tokio::time::timeout(TOTAL_TIMEOUT, receive_bytes(rx, writer))
             .await
             .map_err(|_| "Attachment upload timed out")??;
-        let _account = node.backend.account_gate.read().await;
+        // Slow file sync owns no policy guard. The sealed partial keeps its
+        // upload lease and still cannot be consumed as a committed attachment.
+        let prepare_store = store.clone();
+        let prepared = attachments::blocking(move || writer.prepare(&prepare_store)).await?;
+        let account_guard = node.backend().account_gate.clone().read_owned().await;
         node.ensure_valid().await?;
-        node.backend.authorize_account(&node.account)?;
+        node.backend().authorize_account(node.account())?;
         let node = node.clone();
         tokio::task::spawn_blocking(move || {
-            // Serialize publication with local revoke/disable. No remote policy
-            // or account lock was held while bytes crossed the network.
+            let _account = account_guard;
+            // A shared policy guard orders publication against revoke/disable
+            // without excluding Stop, question replies, or event permission
+            // checks while rename/directory sync/SQLite completion runs.
             let grant = node
-                .store
-                .lock()
+                .policy()
+                .read()
                 .map_err(|_| "Remote grant unavailable".to_string())?;
-            finish_authorized(
-                writer,
-                &store,
-                &grant,
-                peer,
-                grant_id,
-                node.stopped.is_cancelled(),
-            )
+            node.backend().authorize_account(node.account())?;
+            #[cfg(test)]
+            node.before_publish();
+            finish_authorized(prepared, &store, &grant, peer, grant_id, node.stopped())
         })
         .await
         .map_err(|_| "Attachment worker did not complete")?
@@ -238,7 +293,7 @@ pub(super) async fn serve(
     }
     // As with ordinary RPC replies, a completed effect does not authorize
     // exposing its receipt to a peer whose account/grant ended while it ran.
-    check_receiver(&node, peer, grant_id).await?;
+    check_receiver(node.as_ref(), peer, grant_id).await?;
     let result = result.and_then(|attachment| {
         serde_json::to_value(attachment).map_err(|_| "Could not encode attachment".into())
     });
@@ -250,13 +305,16 @@ pub(super) async fn serve(
     .await
 }
 
-async fn check_receiver(
-    node: &Node,
+async fn check_receiver<R: UploadReceiver>(
+    node: &R,
     peer: EndpointId,
     admitted_grant: [u8; 16],
 ) -> Result<(), String> {
     node.ensure_valid().await?;
-    let policy = node.store.lock().map_err(|_| "Remote grant unavailable")?;
+    let policy = node
+        .policy()
+        .read()
+        .map_err(|_| "Remote grant unavailable")?;
     if policy.permits(peer)
         && policy
             .peers()
@@ -270,7 +328,7 @@ async fn check_receiver(
 }
 
 fn finish_authorized(
-    writer: AttachmentUploadWriter,
+    prepared: PreparedAttachmentUpload,
     store: &maple_agent::store::Store,
     policy: &super::store::Store,
     peer: EndpointId,
@@ -286,7 +344,7 @@ fn finish_authorized(
     {
         return Err("Remote access revoked".into());
     }
-    writer.finish(store).map_err(|error| error.to_string())
+    prepared.publish(store).map_err(|error| error.to_string())
 }
 
 pub(super) async fn refuse(tx: &mut SendStream, error: String) -> Result<(), String> {

@@ -1127,11 +1127,12 @@ fn last_user(request: &pi_ai::faux::FauxRequest) -> pi_ai::UserMessage {
 async fn attached_images_reach_the_model_and_show_with_their_message() {
     use base64::Engine as _;
 
-    let harness =
-        Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(10))).await;
-    harness
-        .faux
-        .push_text("A dialog, streamed slowly enough to queue behind.");
+    let harness = Harness::new().await;
+    harness.faux.push_message(vec![faux_tool_call(
+        "request_user_input",
+        json!({"question":"Wait?","options":[{"label":"Continue"}]}),
+    )]);
+    harness.faux.push_text("A dialog.");
     harness.faux.push_text("Also a dialog.");
     let task = harness.create_task().await;
     let first = with_image(
@@ -1141,16 +1142,39 @@ async fn attached_images_reach_the_model_and_show_with_their_message() {
     )
     .await;
     let mut run = harness.handle.send_message(first).await.unwrap();
+    let question = || {
+        harness
+            .recorder
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                AgentServiceEvent::Question {
+                    session_id,
+                    request_id,
+                    ..
+                } if session_id == &task => Some(request_id.clone()),
+                _ => None,
+            })
+    };
+    eventually(|| question().is_some()).await;
     // A message sent during the run waits as a chip with its image.
+    // The question holds the first turn while the durable image import finishes.
     let mut second = with_image(&harness, harness.request(&task, "And this?"), "second.png").await;
     second.vision_capable = true;
     let staged = harness.handle.send_message(second).await.unwrap();
+    assert_eq!(staged.run_id, run.run_id);
     assert_eq!(staged.queued.unwrap().attachments[0].name, "second.png");
+    release_attachment_question(&harness, &question().unwrap()).await;
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
 
     // A model without vision gets the image by source, to look with
     // read_image; one with vision gets it beside the text.
     let requests = harness.faux.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "first question, its answer, then the queued image"
+    );
     let first = last_user(&requests[0]);
     let text = pi_ai::content_text(&first.content);
     assert!(
@@ -1161,7 +1185,7 @@ async fn attached_images_reach_the_model_and_show_with_their_message() {
     );
     assert!(text.ends_with("when you need visual details from an image."));
     assert_eq!(first.content.len(), 1);
-    let second = last_user(&requests[1]);
+    let second = last_user(&requests[2]);
     assert!(!pi_ai::content_text(&second.content).contains("read_image"));
     assert!(matches!(
         &second.content[1],
@@ -1471,6 +1495,311 @@ async fn cold_native_image_history_materializes_only_for_inference_and_missing_f
             matches!(block, pi_ai::Content::Text(text) if text.text == "Image no longer available.")))));
     let after = source();
     assert_eq!(&after[..saved.len()], saved);
+}
+
+#[tokio::test]
+async fn cold_side_questions_materialize_images_and_degrade_missing_history() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let mut first = with_image(&harness, harness.request(&task, "Inspect"), "screen.png").await;
+    first.vision_capable = true;
+    harness.faux.push_text("Seen.");
+    let mut run = harness.handle.send_message(first).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let runtime = harness.runtime().await;
+    runtime.unload_task(&task).await.unwrap();
+    let saved = runtime
+        .store
+        .store()
+        .load_session(
+            runtime.store.account(),
+            &task,
+            crate::store::SessionLoad::Full,
+        )
+        .unwrap()
+        .entries;
+    let image_ids: Vec<String> = saved
+        .iter()
+        .flat_map(|entry| match &entry.kind {
+            pi_coding_agent::session::EntryKind::Message {
+                message: pi_coding_agent::SessionMessage::Llm(pi_ai::Message::User(user)),
+            } => user
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    pi_ai::Content::Image(image) => {
+                        attachments::attachment_id_from_source(&image.data).map(str::to_string)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert!(!image_ids.is_empty());
+    for missing in [false, true] {
+        runtime.unload_task(&task).await.unwrap();
+        if missing {
+            for id in &image_ids {
+                let image = runtime
+                    .store
+                    .store()
+                    .attachment_metadata(runtime.store.account(), &task, id)
+                    .unwrap();
+                std::fs::remove_file(image.execution_path).unwrap();
+            }
+        }
+        let request_id = format!("side-image-{missing}");
+        harness.faux.push_text("Side answer.");
+        harness
+            .handle
+            .ask_side_question(
+                &task,
+                request_id.clone(),
+                Vec::new(),
+                "What was in the image?".into(),
+            )
+            .await
+            .unwrap();
+        eventually(|| harness.recorder.events().iter().any(|event| matches!(event,
+            AgentServiceEvent::SideQuestion { session_id, request_id: id, event }
+                if session_id == &task && id == &request_id && !matches!(event, SideQuestionEvent::Chunk(_))
+        ))).await;
+        assert!(harness.recorder.events().iter().any(|event| matches!(event,
+            AgentServiceEvent::SideQuestion { session_id, request_id: id, event: SideQuestionEvent::Finished }
+                if session_id == &task && id == &request_id
+        )));
+        let request = harness.faux.requests().pop().unwrap();
+        let content: Vec<_> = request
+            .context
+            .messages
+            .iter()
+            .flat_map(|message| match message {
+                pi_ai::Message::User(user) => user.content.iter().collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        if missing {
+            assert!(content.iter().any(|block| matches!(block,
+                pi_ai::Content::Text(text) if text.text == "Image no longer available.")));
+            assert!(
+                !content
+                    .iter()
+                    .any(|block| matches!(block, pi_ai::Content::Image(_)))
+            );
+        } else {
+            assert!(content.iter().any(|block| matches!(block,
+                pi_ai::Content::Image(image) if image.data == PNG_1X1)));
+        }
+        assert_eq!(
+            runtime
+                .store
+                .store()
+                .load_session(
+                    runtime.store.account(),
+                    &task,
+                    crate::store::SessionLoad::Full
+                )
+                .unwrap()
+                .entries,
+            saved
+        );
+    }
+}
+
+#[tokio::test]
+async fn pasted_foreign_file_listing_does_not_poison_later_requests() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let other = harness.create_task().await;
+    let foreign = committed_file(
+        &harness,
+        &other,
+        "notes.txt",
+        "text/plain",
+        b"private notes",
+    )
+    .await;
+    let pasted = attachments::attachment_prompt("Earlier notes said:", &[foreign], false);
+    for text in [pasted.as_str(), "hello", "are you there?"] {
+        harness.faux.push_text("Yes.");
+        let mut run = harness.send(&task, text).await;
+        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+        let request = harness.faux.requests().pop().unwrap();
+        assert_eq!(last_user_text(&request), text);
+        assert_eq!(user_texts(&request)[0], pasted);
+    }
+}
+
+async fn attachment_question_barrier(harness: &Harness, task: &str) -> (AgentRunHandle, String) {
+    harness.faux.push_message(vec![faux_tool_call(
+        "request_user_input",
+        json!({"question":"Wait?","options":[{"label":"Continue"}]}),
+    )]);
+    harness.faux.push_text("Released.");
+    let mut first = harness.request(task, "Wait before continuing");
+    first.vision_capable = true;
+    let run = harness.handle.send_message(first).await.unwrap();
+    let question = || {
+        harness
+            .recorder
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                AgentServiceEvent::Question {
+                    session_id,
+                    request_id,
+                    ..
+                } if session_id == task => Some(request_id.clone()),
+                _ => None,
+            })
+    };
+    eventually(|| question().is_some()).await;
+    (run, question().unwrap())
+}
+
+async fn release_attachment_question(harness: &Harness, question: &str) {
+    assert!(
+        harness
+            .service
+            .answer_question(
+                question,
+                r#"{"answers":{"question_0":{"answers":["Continue"]}}}"#.into(),
+            )
+            .await
+    );
+}
+
+fn change_attachment_bytes(path: &str) {
+    let mut bytes = std::fs::read(path).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[tokio::test]
+async fn failed_batch_image_preparation_preserves_unsent_messages_in_order() {
+    for failed_index in [0, 1] {
+        let harness = Harness::new().await;
+        let task = harness.create_task().await;
+        let (mut run, question) = attachment_question_barrier(&harness, &task).await;
+        let mut failed_image = None;
+        let texts = ["First queued", "Second queued", "Third queued"];
+        for (index, text) in texts.iter().enumerate() {
+            let mut request = harness.request(&task, text);
+            request.vision_capable = true;
+            if index == failed_index {
+                request = with_image(&harness, request, "queued.png").await;
+            }
+            let chip = harness
+                .handle
+                .send_message(request)
+                .await
+                .unwrap()
+                .queued
+                .unwrap();
+            if index == failed_index {
+                failed_image = Some(chip.attachments[0].clone());
+            }
+        }
+        let image = failed_image.unwrap();
+        change_attachment_bytes(&image.execution_path);
+        // The valid first message still runs when a later message cannot be prepared.
+        harness.faux.push_text("First queued completed.");
+        release_attachment_question(&harness, &question).await;
+        assert_eq!(finished(&mut run).await, AgentRunTerminal::Failed);
+        let detail = harness.handle.load_session(task.clone()).await.unwrap();
+        let queued: Vec<_> = detail
+            .queue
+            .items
+            .iter()
+            .map(|chip| chip.text.as_str())
+            .collect();
+        assert_eq!(queued, texts[failed_index..]);
+        assert_eq!(detail.queue.items[0].attachments, [image]);
+        let users: Vec<_> = detail
+            .timeline
+            .iter()
+            .filter(|row| row.role.as_deref() == Some("user"))
+            .filter_map(|row| row.text.as_deref())
+            .collect();
+        let expected = if failed_index == 0 {
+            vec!["Wait before continuing"]
+        } else {
+            vec!["Wait before continuing", "First queued"]
+        };
+        assert_eq!(users, expected);
+        assert!(harness.recorder.run_events(&run.run_id).iter().any(|event| matches!(event,
+            AgentRunEvent::Error(item) if item.text.as_deref().is_some_and(|text| text.contains("attachment"))
+        )));
+    }
+}
+
+#[tokio::test]
+async fn failed_steered_image_preserves_accepted_messages_and_reports_an_error() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let (mut run, question) = attachment_question_barrier(&harness, &task).await;
+    let mut request = with_image(
+        &harness,
+        harness.request(&task, "Inspect this image"),
+        "steered.png",
+    )
+    .await;
+    request.vision_capable = true;
+    request.steer = true;
+    let runtime = harness.runtime().await;
+    let image: AgentAttachment = runtime
+        .store
+        .store()
+        .attachment_metadata(runtime.store.account(), &task, &request.attachments[0])
+        .unwrap()
+        .into();
+    // A same-size rewrite passes admission's file checks; image preparation
+    // must detect it without losing the accepted steer.
+    change_attachment_bytes(&image.execution_path);
+    let joined = harness.handle.send_message(request).await.unwrap();
+    assert_eq!(joined.run_id, run.run_id);
+    let mut later = harness.request(&task, "Then use the result");
+    later.steer = true;
+    later.vision_capable = true;
+    harness.handle.send_message(later).await.unwrap();
+    eventually(|| {
+        harness
+            .recorder
+            .run_events(&run.run_id)
+            .iter()
+            .any(|event| matches!(event, AgentRunEvent::Error(_)))
+    })
+    .await;
+    release_attachment_question(&harness, &question).await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Failed);
+    let detail = harness.handle.load_session(task).await.unwrap();
+    assert_eq!(
+        detail
+            .queue
+            .items
+            .iter()
+            .map(|chip| chip.text.as_str())
+            .collect::<Vec<_>>(),
+        ["Inspect this image", "Then use the result"]
+    );
+    assert_eq!(detail.queue.items[0].attachments, [image]);
+    let users: Vec<_> = detail
+        .timeline
+        .iter()
+        .filter(|row| row.role.as_deref() == Some("user"))
+        .filter_map(|row| row.text.as_deref())
+        .collect();
+    assert_eq!(users, ["Wait before continuing"]);
+    assert_eq!(
+        harness
+            .recorder
+            .run_events(&run.run_id)
+            .iter()
+            .filter(|event| matches!(event, AgentRunEvent::Error(_)))
+            .count(),
+        1
+    );
 }
 
 /// The first tool result the model got in `request`.
@@ -2963,4 +3292,56 @@ async fn viewing_unloaded_task_thinking_and_history_does_not_load_context() {
         .unwrap();
     assert_eq!(before.last_seq, after.last_seq);
     assert_eq!(before.facts, after.facts);
+}
+
+#[tokio::test]
+async fn sending_before_open_rebuilds_retired_history_before_run_admission() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    harness.faux.push_text("Old reply stays.");
+    let mut first = harness.send(&task, "Old question stays.").await;
+    assert_eq!(finished(&mut first).await, AgentRunTerminal::Completed);
+    let (store, account) = harness.handle.test_persistence().unwrap();
+    store.retire_task_timeline_for_test(account, &task).unwrap();
+    assert!(store.history_needs_rebuild(account, &task).unwrap());
+
+    // Do not open/load this task after invalidation. Send must prepare its old
+    // history while idle, before registering an active run that defers rebuilds.
+    harness.faux.push_text("New reply appears.");
+    let mut second = harness.send(&task, "New question appears.").await;
+    assert_eq!(finished(&mut second).await, AgentRunTerminal::Completed);
+    assert!(!store.history_needs_rebuild(account, &task).unwrap());
+    let page = harness
+        .handle
+        .open_task_page(
+            crate::store::OpenTaskPageRequest {
+                task: task.clone(),
+                limit_rows: None,
+                limit_bytes: None,
+            },
+            crate::store::PageTransport::Remote,
+        )
+        .await
+        .unwrap();
+    let text = serde_json::to_string(&page.rows).unwrap();
+    for expected in [
+        "Old question stays.",
+        "Old reply stays.",
+        "New question appears.",
+        "New reply appears.",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    let entries = store
+        .load_session(account, &task, crate::store::SessionLoad::Full)
+        .unwrap()
+        .entries;
+    let source = serde_json::to_string(&entries).unwrap();
+    assert_eq!(source.matches("Old question stays.").count(), 1);
+    assert_eq!(source.matches("New question appears.").count(), 1);
+    let requests = harness.faux.requests();
+    assert_eq!(
+        user_texts(requests.last().unwrap()),
+        ["Old question stays.", "New question appears."]
+    );
 }

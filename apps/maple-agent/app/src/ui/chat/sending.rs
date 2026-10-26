@@ -12,6 +12,13 @@ pub(super) struct SendPreview {
     projected_runs: HashSet<String>,
     baseline_user_rows: HashSet<String>,
     snapshot_projected: bool,
+    phase: SendPhase,
+}
+
+enum SendPhase {
+    Uploading,
+    Prepared(Box<uploads::PreparedSend>),
+    Admitting,
 }
 
 impl SendPreview {
@@ -38,6 +45,7 @@ impl SendPreview {
             projected_runs: HashSet::new(),
             baseline_user_rows: HashSet::new(),
             snapshot_projected: false,
+            phase: SendPhase::Admitting,
         }
     }
 
@@ -56,7 +64,33 @@ impl SendPreview {
     }
 
     pub(super) fn admitting(&self) -> bool {
-        self.acknowledged_run.is_none()
+        matches!(self.phase, SendPhase::Admitting) && self.acknowledged_run.is_none()
+    }
+
+    pub(super) fn uploading(mut self) -> Self {
+        self.phase = SendPhase::Uploading;
+        self
+    }
+
+    pub(super) fn prepare(&mut self, send: uploads::PreparedSend) {
+        self.phase = SendPhase::Prepared(Box::new(send));
+    }
+
+    pub(super) fn prepared(&self) -> Option<&uploads::PreparedSend> {
+        match &self.phase {
+            SendPhase::Prepared(send) => Some(send),
+            _ => None,
+        }
+    }
+
+    pub(super) fn take_prepared(&mut self) -> Option<uploads::PreparedSend> {
+        if !matches!(self.phase, SendPhase::Prepared(_)) {
+            return None;
+        }
+        match std::mem::replace(&mut self.phase, SendPhase::Admitting) {
+            SendPhase::Prepared(send) => Some(*send),
+            _ => unreachable!(),
+        }
     }
 
     pub(super) fn body_visible(&self) -> bool {
@@ -216,6 +250,7 @@ impl ChatScreen {
                 }
             }
         }
+        self.dispatch_prepared_uploads(cx);
         cx.notify();
     }
 

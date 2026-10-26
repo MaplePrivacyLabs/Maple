@@ -123,7 +123,7 @@ mod implementation {
         Ok(unsafe { metadata.assume_init() })
     }
 
-    fn same_directory(parent: RawFd, name: &CStr, file: &File) -> StoreResult<()> {
+    fn same_directory(parent: RawFd, name: &CStr, file: &File) -> StoreResult<libc::stat> {
         let named = metadata_at(parent, name)?;
         let mut opened = std::mem::MaybeUninit::<libc::stat>::uninit();
         if unsafe { libc::fstat(file.as_raw_fd(), opened.as_mut_ptr()) } != 0 {
@@ -135,6 +135,27 @@ mod implementation {
             || named.st_mode & libc::S_IFMT != libc::S_IFDIR
         {
             return Err(StoreError::UnsafePath);
+        }
+        Ok(opened)
+    }
+
+    /// Extraction tools can restore read-only directory modes. Repair only a
+    /// verified, user-owned directory inside this tree, through its no-follow
+    /// handle; never chmod an ancestor or link target, and reject other devices.
+    fn prepare_owned_directory(
+        parent: RawFd,
+        name: &CStr,
+        file: &File,
+        device: libc::dev_t,
+    ) -> StoreResult<()> {
+        let metadata = same_directory(parent, name, file)?;
+        if metadata.st_uid != unsafe { libc::geteuid() } || metadata.st_dev != device {
+            return Err(StoreError::UnsafePath);
+        }
+        if metadata.st_mode & 0o700 != 0o700
+            && unsafe { libc::fchmod(file.as_raw_fd(), (metadata.st_mode & 0o7777) | 0o700) } != 0
+        {
+            return Err(io::Error::last_os_error().into());
         }
         Ok(())
     }
@@ -203,11 +224,11 @@ mod implementation {
             }
             Err(error) => return Err(error),
         };
-        same_directory(parent.as_raw_fd(), &name, &root)?;
-        let meta = metadata_at(parent.as_raw_fd(), &name)?;
+        let meta = same_directory(parent.as_raw_fd(), &name, &root)?;
         if meta.st_uid != unsafe { libc::geteuid() } || meta.st_mode & 0o077 != 0 {
             return Err(StoreError::UnsafePath);
         }
+        prepare_owned_directory(parent.as_raw_fd(), &name, &root, meta.st_dev)?;
         let mut progress = AttachmentCleanupProgress::default();
         let names = entries(&root)?;
         while progress.entries < ENTRY_CAP {
@@ -218,7 +239,7 @@ mod implementation {
             let child_meta = metadata_at(root.as_raw_fd(), &child_name)?;
             if child_meta.st_mode & libc::S_IFMT == libc::S_IFDIR {
                 let child = open_at(root.as_raw_fd(), &child_name)?;
-                same_directory(root.as_raw_fd(), &child_name, &child)?;
+                prepare_owned_directory(root.as_raw_fd(), &child_name, &child, meta.st_dev)?;
                 let children = entries(&child)?;
                 while progress.entries < ENTRY_CAP {
                     let Some(nested) = next(&children)? else {
@@ -228,6 +249,13 @@ mod implementation {
                     same_directory(root.as_raw_fd(), &child_name, &child)?;
                     let nested_meta = metadata_at(child.as_raw_fd(), &nested)?;
                     if nested_meta.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                        let nested_directory = open_at(child.as_raw_fd(), &nested)?;
+                        prepare_owned_directory(
+                            child.as_raw_fd(),
+                            &nested,
+                            &nested_directory,
+                            meta.st_dev,
+                        )?;
                         let generated =
                             CString::new(format!(".cleanup-{:032x}", rand::random::<u128>()))
                                 .map_err(|_| StoreError::InvalidData)?;
@@ -305,10 +333,12 @@ mod implementation {
     use windows_sys::Win32::{
         Foundation::INVALID_HANDLE_VALUE,
         Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
-            OPEN_EXISTING,
+            BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_FLAG_DELETE,
+            FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFO_EX,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx, GetFileInformationByHandle,
+            OPEN_EXISTING, SetFileInformationByHandle,
         },
     };
 
@@ -336,12 +366,16 @@ mod implementation {
         Ok(file)
     }
 
-    fn identity(file: &File) -> StoreResult<(u32, u64)> {
+    fn information(file: &File) -> StoreResult<BY_HANDLE_FILE_INFORMATION> {
         let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
             return Err(io::Error::last_os_error().into());
         }
-        let info = unsafe { info.assume_init() };
+        Ok(unsafe { info.assume_init() })
+    }
+
+    fn identity(file: &File) -> StoreResult<(u32, u64)> {
+        let info = information(file)?;
         if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
             || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
         {
@@ -358,6 +392,61 @@ mod implementation {
     // link itself. Attribute classification never follows the target.
     fn directory_attribute(attributes: u32) -> bool {
         attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+    }
+
+    /// Delete the opened entry without changing its attributes. Clearing
+    /// READONLY by path could follow a reparse point, and clearing it even by
+    /// handle would change the attributes of an external hard link too.
+    fn unlink_entry(path: &Path, directory: bool) -> StoreResult<()> {
+        // Keep the ordinary unlink behavior when it works; only a denied
+        // deletion needs the explicit READONLY override below.
+        let removed = if directory {
+            fs::remove_dir(path)
+        } else {
+            fs::remove_file(path)
+        };
+        match removed {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {}
+            Err(error) => return Err(error.into()),
+        }
+        let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                DELETE | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error().into());
+        }
+        let file = unsafe { File::from_raw_handle(handle) };
+        if directory_attribute(information(&file)?.dwFileAttributes) != directory {
+            return Err(StoreError::UnsafePath);
+        }
+        let disposition = FILE_DISPOSITION_INFO_EX {
+            Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        };
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileDispositionInfoEx,
+                (&disposition as *const FILE_DISPOSITION_INFO_EX).cast(),
+                std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        // The disposition takes effect when this no-DELETE-sharing handle is
+        // closed. The caller still syncs the surviving parent directory.
+        drop(file);
+        Ok(())
     }
 
     fn hold_ancestors(root: &Path) -> StoreResult<Vec<File>> {
@@ -426,9 +515,9 @@ mod implementation {
                         }
                         fs::rename(nested.path(), target)?;
                     } else if directory_attribute(info.file_attributes()) {
-                        fs::remove_dir(nested.path())?;
+                        unlink_entry(&nested.path(), true)?;
                     } else {
-                        fs::remove_file(nested.path())?;
+                        unlink_entry(&nested.path(), false)?;
                     }
                     progress.entries += 1;
                 }
@@ -440,17 +529,19 @@ mod implementation {
                         return Err(StoreError::UnsafePath);
                     }
                     drop(verified);
-                    match fs::remove_dir(child.path()) {
+                    match unlink_entry(&child.path(), true) {
                         Ok(()) => progress.entries += 1,
-                        Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
-                        Err(error) => return Err(error.into()),
+                        Err(StoreError::Io {
+                            kind: io::ErrorKind::DirectoryNotEmpty,
+                        }) => {}
+                        Err(error) => return Err(error),
                     }
                 }
             } else if directory_attribute(metadata.file_attributes()) {
-                fs::remove_dir(child.path())?;
+                unlink_entry(&child.path(), true)?;
                 progress.entries += 1;
             } else {
-                fs::remove_file(child.path())?;
+                unlink_entry(&child.path(), false)?;
                 progress.entries += 1;
             }
         }
@@ -464,13 +555,15 @@ mod implementation {
                 return Err(StoreError::UnsafePath);
             }
             drop(verified);
-            match fs::remove_dir(root) {
+            match unlink_entry(root, true) {
                 Ok(()) => {
                     progress.entries += 1;
                     progress.done = true;
                 }
-                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
-                Err(error) => return Err(error.into()),
+                Err(StoreError::Io {
+                    kind: io::ErrorKind::DirectoryNotEmpty,
+                }) => {}
+                Err(error) => return Err(error),
             }
         }
         if let Some(parent) = root.parent() {
@@ -500,6 +593,116 @@ mod tests {
     use super::*;
     use crate::store::paths::private_directory;
     use std::fs;
+
+    #[test]
+    fn removes_read_only_files_in_owned_extractions() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join("owned");
+        private_directory(&root).unwrap();
+        let nested = root.join("extracted");
+        fs::create_dir(&nested).unwrap();
+        for path in [root.join("original"), nested.join("generated")] {
+            fs::write(&path, b"read-only attachment content").unwrap();
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
+        while !collect_owned_attachment_tree_step(&root).unwrap().done {}
+        assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_owned_directories_are_repaired_without_following_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let directory = tempfile::tempdir().unwrap();
+        let directory_path = directory.path().canonicalize().unwrap();
+        let root = directory_path.join("owned");
+        private_directory(&root).unwrap();
+        let nested = root.join("extracted");
+        let deeper = nested.join("deeper");
+        fs::create_dir_all(&deeper).unwrap();
+        for index in 0..300 {
+            fs::write(deeper.join(format!("file-{index}")), b"extracted content").unwrap();
+        }
+        let outside = directory_path.join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(outside.join("sentinel"), b"retain external content").unwrap();
+        symlink(&outside, nested.join("outside-link")).unwrap();
+        fs::set_permissions(&deeper, fs::Permissions::from_mode(0o500)).unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o555)).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let mut completed = false;
+        for _ in 0..20 {
+            let progress = collect_owned_attachment_tree_step(&root).unwrap();
+            assert!(progress.entries <= ENTRY_CAP);
+            if progress.done {
+                completed = true;
+                break;
+            }
+            assert!(progress.entries > 0);
+        }
+        assert!(completed);
+        assert!(!root.exists());
+        assert_eq!(
+            fs::read(outside.join("sentinel")).unwrap(),
+            b"retain external content"
+        );
+        assert_eq!(
+            fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_nonprivate_root_before_repairing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join("owned");
+        private_directory(&root).unwrap();
+        fs::write(root.join("sentinel"), b"unverified root content").unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = collect_owned_attachment_tree_step(&root);
+        let mode = fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(result, Err(StoreError::UnsafePath)));
+        assert_eq!(mode, 0o555);
+        assert_eq!(
+            fs::read(root.join("sentinel")).unwrap(),
+            b"unverified root content"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_only_hard_link_cleanup_preserves_external_file_attributes() {
+        let directory = tempfile::tempdir().unwrap();
+        let directory_path = directory.path().canonicalize().unwrap();
+        let root = directory_path.join("owned");
+        private_directory(&root).unwrap();
+        let outside = directory_path.join("outside");
+        fs::write(&outside, b"retain external hard link").unwrap();
+        fs::hard_link(&outside, root.join("owned-link")).unwrap();
+        let mut permissions = fs::metadata(&outside).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&outside, permissions).unwrap();
+
+        let result = collect_owned_attachment_tree_step(&root);
+        let unchanged = fs::metadata(&outside).unwrap().permissions().readonly();
+        // Restore only the test-owned external fixture for TempDir cleanup.
+        let mut permissions = fs::metadata(&outside).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&outside, permissions).unwrap();
+        assert!(result.unwrap().done);
+        assert!(!root.exists());
+        assert!(unchanged);
+        assert_eq!(fs::read(&outside).unwrap(), b"retain external hard link");
+    }
 
     #[test]
     fn removes_adjacent_outputs_and_nested_extractions_in_bounded_steps() {

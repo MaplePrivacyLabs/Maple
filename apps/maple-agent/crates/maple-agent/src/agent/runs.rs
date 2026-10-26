@@ -25,7 +25,6 @@ use tokio_util::sync::CancellationToken;
 
 use super::attachments::{
     AgentAttachment, AgentAttachmentStore, attachment_prompt, prompt_has_inline_images,
-    split_attachment_prompt,
 };
 use super::config::unix_ms;
 use super::runtime::AgentRuntime;
@@ -50,6 +49,7 @@ const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
 const QUEUED_MESSAGE_ATTACHMENTS_ERROR: &str =
     "New attachments cannot be added while sending a queued message";
 const EMPTY_PROMPT_ERROR: &str = "Prompt cannot be empty";
+const IMAGE_ATTACHMENT_PREPARATION_ERROR: &str = "Maple could not prepare an image attachment. Your message was not sent and is being kept for retry. Remove or replace the attachment, then send it again.";
 /// How often Stop repeats its abort until the run's prompt returns.
 const STOP_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
 /// How long Stop and shutdown wait for a run to end before aborting it.
@@ -112,8 +112,8 @@ impl Outgoing {
 
     /// A message read back from the text Pi was given, as when steering
     /// goes back to the queue. Its images are then referred to by source.
-    fn from_prompt(prompt: String) -> Self {
-        match split_attachment_prompt(&prompt) {
+    fn from_prompt(prompt: String, store: &AgentAttachmentStore, session_id: &str) -> Self {
+        match store.split_owned_prompt(session_id, &prompt) {
             Some((text, attachments)) => Self {
                 text,
                 images: attachments
@@ -157,7 +157,7 @@ impl Outgoing {
                     .collect(),
                 timestamp: 0,
             })];
-            store.prepare_model_context(&session_id, &mut messages)?;
+            store.prepare_outgoing_context(&session_id, &mut messages)?;
             let Message::User(user) = &mut messages[0] else {
                 unreachable!()
             };
@@ -172,10 +172,8 @@ impl Outgoing {
             Ok::<_, String>((text.join("\n\n"), images))
         })
         .await
-        .map_err(|error| {
-            AgentSessionError::Failed(format!("Failed to prepare image attachments: {error}"))
-        })?
-        .map_err(AgentSessionError::Failed)
+        .map_err(|error| attachment_preparation_error(&error.to_string()))?
+        .map_err(|error| attachment_preparation_error(&error))
     }
 
     /// A hidden message as the custom message Pi gets; `None` for a
@@ -191,16 +189,50 @@ impl Outgoing {
 
     /// Steer a message the user sent into the session's turn. A hidden
     /// message never is: it goes to the model as a turn of its own.
-    async fn steer(&self, session: &AgentSession, store: &AgentAttachmentStore, session_id: &str) {
+    async fn steer(
+        &self,
+        session: &AgentSession,
+        store: &AgentAttachmentStore,
+        session_id: &str,
+    ) -> Result<PromptOutcome, AgentSessionError> {
         debug_assert!(self.hidden.is_none(), "a hidden message is not steered");
-        let prepared = self.prompt(store, session_id).await;
-        let result = match prepared {
-            Ok((text, images)) => session.steer(&text, images).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            log::warn!("Failed to steer the Agent task: {error}");
+        let (text, images) = self.prompt(store, session_id).await?;
+        session.steer(&text, images).await
+    }
+}
+
+fn attachment_preparation_error(error: &str) -> AgentSessionError {
+    log::warn!("Failed to prepare Agent image attachments: {error}");
+    AgentSessionError::Failed(IMAGE_ATTACHMENT_PREPARATION_ERROR.to_string())
+}
+
+/// After a steering failure, keep that message and every later one in order.
+/// The prompt already in flight can finish without losing its accepted input.
+#[derive(Default)]
+struct DeferredSteering {
+    messages: Vec<Outgoing>,
+    failure: Option<AgentTimelineItem>,
+}
+
+impl DeferredSteering {
+    async fn steer(
+        &mut self,
+        message: Outgoing,
+        session: &AgentSession,
+        store: &AgentAttachmentStore,
+        session_id: &str,
+        events: &RunEvents,
+    ) {
+        if self.failure.is_none()
+            && let Err(error) = message.steer(session, store, session_id).await
+        {
+            let item = error_item(error.to_string());
+            events.publish(AgentRunEvent::Error(item.clone()));
+            self.failure = Some(item);
+        } else if self.failure.is_none() {
+            return;
         }
+        self.messages.push(message);
     }
 }
 
@@ -848,6 +880,7 @@ impl AgentRuntimeHandle {
     ) -> Result<AgentRunHandle, String> {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
+        self.ensure_task_history_ready(&request.session_id).await?;
         let runtime = self.runtime().await?;
         runtime.send_desktop(request).await
     }
@@ -977,6 +1010,11 @@ impl AgentRuntimeHandle {
     ) -> Result<AgentRunHandle, String> {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err("The prompt was cancelled before admission".into()),
+            result = self.ensure_task_history_ready(&request.session_id) => result?,
+        }
         let runtime = self.runtime().await?;
         runtime.send_surface(access, request, cancellation).await
     }
@@ -1572,6 +1610,8 @@ impl AgentRuntime {
 
         let mut failure = None;
         let mut prompted = false;
+        let mut unsubmitted = Vec::new();
+        let mut deferred = DeferredSteering::default();
         while !stopped.is_cancelled() {
             // Messages the user sent go together, as one turn; a hidden
             // message goes on its own.
@@ -1585,13 +1625,41 @@ impl AgentRuntime {
             }
             let mut sending: Vec<Outgoing> = prompts.drain(..batch).collect();
             let first = sending.remove(0);
+            // Preparation can fail before Pi records the first message. Keep
+            // ownership of the entire batch until that preparation succeeds.
+            let prepared_first = if first.hidden.is_none() {
+                match first.prompt(&attachments, &session_id).await {
+                    Ok(prepared) => Some(prepared),
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        unsubmitted.push(first);
+                        unsubmitted.extend(sending);
+                        break;
+                    }
+                }
+            } else {
+                None
+            };
+            if stopped.is_cancelled() {
+                unsubmitted.push(first);
+                unsubmitted.extend(sending);
+                break;
+            }
             // Steering queued before the prompt joins its first turn, so
             // several messages make one turn.
             while let Ok(message) = steers.try_recv() {
-                message.steer(&session, &attachments, &session_id).await;
+                deferred
+                    .steer(message, &session, &attachments, &session_id, &events)
+                    .await;
             }
-            for message in &sending {
-                message.steer(&session, &attachments, &session_id).await;
+            for message in sending {
+                deferred
+                    .steer(message, &session, &attachments, &session_id, &events)
+                    .await;
+            }
+            if stopped.is_cancelled() {
+                unsubmitted.push(first);
+                break;
             }
             prompted = true;
             let result = match first.custom_draft() {
@@ -1604,32 +1672,33 @@ impl AgentRuntime {
                             &attachments,
                             &session_id,
                             &mut steers,
+                            &mut deferred,
+                            &events,
                             session.send_custom_message(draft),
                         ),
                     )
                     .await
                 }
                 None => {
-                    async {
-                        let (text, images) = first.prompt(&attachments, &session_id).await?;
-                        let options = PromptOptions {
-                            images,
-                            expand: false,
-                            ..PromptOptions::default()
-                        };
-                        until_stopped(
+                    let (text, images) = prepared_first.expect("a user message was prepared");
+                    let options = PromptOptions {
+                        images,
+                        expand: false,
+                        ..PromptOptions::default()
+                    };
+                    until_stopped(
+                        &session,
+                        &stopped,
+                        with_steering(
                             &session,
-                            &stopped,
-                            with_steering(
-                                &session,
-                                &attachments,
-                                &session_id,
-                                &mut steers,
-                                session.prompt(&text, options),
-                            ),
-                        )
-                        .await
-                    }
+                            &attachments,
+                            &session_id,
+                            &mut steers,
+                            &mut deferred,
+                            &events,
+                            session.prompt(&text, options),
+                        ),
+                    )
                     .await
                 }
             };
@@ -1638,7 +1707,7 @@ impl AgentRuntime {
                 failure = Some(error.to_string());
                 break;
             }
-            if stopped.is_cancelled() {
+            if stopped.is_cancelled() || deferred.failure.is_some() {
                 break;
             }
             // A message steered in after Pi's last look would wait for the
@@ -1648,11 +1717,23 @@ impl AgentRuntime {
             // everything accepted before that boundary before clearing Pi's queue.
             let chips = self.take_chips_or_close(&run_id, &session_id);
             while let Ok(message) = steers.try_recv() {
-                message.steer(&session, &attachments, &session_id).await;
+                deferred
+                    .steer(message, &session, &attachments, &session_id, &events)
+                    .await;
+            }
+            if deferred.failure.is_some() {
+                if let Some((chips, snapshot)) = chips {
+                    events.publish(AgentRunEvent::QueueChanged(snapshot));
+                    prompts.extend(chips.into_iter().map(Chip::outgoing));
+                }
+                break;
             }
             let (stranded, _) = session.clear_queue();
             let waiting = std::mem::take(&mut prompts);
-            prompts = stranded.into_iter().map(Outgoing::from_prompt).collect();
+            prompts = stranded
+                .into_iter()
+                .map(|prompt| Outgoing::from_prompt(prompt, &attachments, &session_id))
+                .collect();
             prompts.extend(waiting);
             match chips {
                 Some((chips, snapshot)) => {
@@ -1667,63 +1748,64 @@ impl AgentRuntime {
         if let Some(run) = self.runs.state().runs.get_mut(&run_id) {
             run.accepting = false;
         }
-        if failure.is_some() && !stopped.is_cancelled() {
-            let (stranded, _) = session.clear_queue();
-            let mut unsent: Vec<_> = stranded.into_iter().map(Outgoing::from_prompt).collect();
-            while let Ok(message) = steers.try_recv() {
-                unsent.push(message);
-            }
-            unsent.append(&mut prompts);
-            prompts = unsent;
-        }
         session.unsubscribe(listener);
 
         let cancelled = stopped.is_cancelled();
-        if cancelled {
-            // Steering the session never took, and messages the run did not
-            // send yet, go back to the queue.
+        if cancelled || failure.is_some() || deferred.failure.is_some() {
+            // Only messages Pi has not accepted go back to the queue. In
+            // particular, a prompt error after recording its input must not
+            // duplicate that input on retry.
             let (stranded, _) = session.clear_queue();
-            let mut unsent = if prompted {
-                Vec::new()
-            } else {
-                std::mem::take(&mut prompts)
-            };
-            unsent.extend(stranded.into_iter().map(Outgoing::from_prompt));
+            let mut unsent = unsubmitted;
+            if !prompted && unsent.is_empty() {
+                // No batch started. Otherwise its first message is already
+                // here, and its stranded steers precede the remaining batches.
+                unsent.append(&mut prompts);
+            }
+            unsent.extend(
+                stranded
+                    .into_iter()
+                    .map(|prompt| Outgoing::from_prompt(prompt, &attachments, &session_id)),
+            );
+            unsent.append(&mut deferred.messages);
             while let Ok(message) = steers.try_recv() {
                 unsent.push(message);
             }
             unsent.extend(std::mem::take(&mut prompts));
-            // Hidden messages still waiting go into the history with the
-            // rest; the user's chips wait for their next send.
-            let waiting = self.runs.state().take_hidden_chips(&session_id);
-            unsent.extend(waiting.into_iter().map(Chip::outgoing));
-            self.requeue(&session, &session_id, unsent, &events);
-            if prompted {
-                let id = format!("stopped-{}", pi_ai::now_ms());
-                session.extension_context().append_entry(
-                    MAPLE_NOTICE_ENTRY,
-                    Some(notice_entry_data(&id, STOPPED_NOTICE_TEXT)),
-                );
-                events.publish(AgentRunEvent::TimelineItem(notice_item(
-                    id,
-                    "Agent notice",
-                    STOPPED_NOTICE_TEXT,
-                    pi_ai::now_ms(),
-                )));
+            if cancelled {
+                // Hidden messages still waiting go into the history with the
+                // rest; the user's chips wait for their next send.
+                let waiting = self.runs.state().take_hidden_chips(&session_id);
+                unsent.extend(waiting.into_iter().map(Chip::outgoing));
             }
+            self.requeue(&session, &session_id, unsent, &events);
         }
-        if failure.is_some() && !prompts.is_empty() {
-            // A failed prompt leaves the messages after it for the next send.
-            self.requeue(&session, &session_id, std::mem::take(&mut prompts), &events);
+        if cancelled && prompted {
+            let id = format!("stopped-{}", pi_ai::now_ms());
+            session.extension_context().append_entry(
+                MAPLE_NOTICE_ENTRY,
+                Some(notice_entry_data(&id, STOPPED_NOTICE_TEXT)),
+            );
+            events.publish(AgentRunEvent::TimelineItem(notice_item(
+                id,
+                "Agent notice",
+                STOPPED_NOTICE_TEXT,
+                pi_ai::now_ms(),
+            )));
         }
-        let terminal_state = if cancelled {
-            AgentRunTerminal::Cancelled
+        let failed = failure.is_some() || deferred.failure.is_some();
+        if let Some(item) = deferred.failure {
+            // This error was already shown when steering failed, including
+            // when Stop raced with the failed attachment preparation.
+            self.remember_failure(&session_id, item);
         } else if let Some(error) = failure {
             let item = error_item(error);
             self.remember_failure(&session_id, item.clone());
             events.publish(AgentRunEvent::Error(item));
-            AgentRunTerminal::Failed
-        } else if last_reply_failed(&session) {
+        }
+        let terminal_state = if cancelled {
+            AgentRunTerminal::Cancelled
+        } else if failed || last_reply_failed(&session) {
             AgentRunTerminal::Failed
         } else {
             AgentRunTerminal::Completed
@@ -1803,13 +1885,17 @@ async fn with_steering(
     attachments: &AgentAttachmentStore,
     session_id: &str,
     steers: &mut mpsc::UnboundedReceiver<Outgoing>,
+    deferred: &mut DeferredSteering,
+    events: &RunEvents,
     prompt: impl std::future::Future<Output = Result<PromptOutcome, AgentSessionError>>,
 ) -> Result<PromptOutcome, AgentSessionError> {
     tokio::pin!(prompt);
     loop {
         tokio::select! {
             result = &mut prompt => return result,
-            Some(message) = steers.recv() => message.steer(session, attachments, session_id).await,
+            Some(message) = steers.recv() => {
+                deferred.steer(message, session, attachments, session_id, events).await;
+            }
         }
     }
 }
@@ -2018,6 +2104,7 @@ impl AgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::attachments::split_attachment_prompt;
     use crate::agent::tests::{Harness, eventually, finished};
 
     #[test]
@@ -2186,5 +2273,155 @@ mod tests {
                 assert_eq!(texts, ["First", "Second", "Third"]);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn failed_batch_image_preparation_preserves_order_and_retry_does_not_duplicate() {
+        const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        for failed_index in [0, 1] {
+            let harness = Harness::new().await;
+            let runtime = harness.runtime().await;
+            let task = harness.create_task().await;
+            let image = harness
+                .handle
+                .import_image_attachments(
+                    task.clone(),
+                    vec![super::super::attachments::AgentImageUpload {
+                        name: "screen.png".into(),
+                        data_url: format!("data:image/png;base64,{PNG}"),
+                    }],
+                )
+                .await
+                .unwrap()
+                .remove(0);
+            let request = AgentSendMessageRequest {
+                session_id: task.clone(),
+                text: String::new(),
+                model: None,
+                context_limit: Some(200_000),
+                vision_capable: true,
+                steer: false,
+                queue_id: None,
+                attachments: Vec::new(),
+            };
+            let texts = ["First", "Second", "Third"];
+            let mut prompts: Vec<_> = texts.iter().map(|text| Outgoing::text(*text)).collect();
+            prompts[failed_index] = runtime
+                .outgoing(&AgentSendMessageRequest {
+                    text: texts[failed_index].into(),
+                    attachments: vec![image.id.clone()],
+                    ..request.clone()
+                })
+                .await
+                .unwrap();
+            let original = std::fs::read(&image.execution_path).unwrap();
+            let mut changed = original.clone();
+            *changed.last_mut().unwrap() ^= 1;
+            std::fs::write(&image.execution_path, changed).unwrap();
+            let run = runtime.register_run(&mut runtime.runs.state(), &task, prompts, Vec::new());
+            if failed_index > 0 {
+                harness.faux.push_text("First accepted.");
+            }
+            let mut handle = runtime.start_run(&request, run).await.unwrap();
+            assert_eq!(finished(&mut handle).await, AgentRunTerminal::Failed);
+            let queue = runtime.runs.queue_snapshot(&task);
+            let queued: Vec<_> = queue.items.iter().map(|item| item.text.as_str()).collect();
+            assert_eq!(queued, texts[failed_index..]);
+            let session = runtime.loaded_session(&task).await.unwrap();
+            let user_texts = || {
+                pi_coding_agent::messages::convert_to_llm(&session.messages())
+                    .into_iter()
+                    .filter_map(|message| match message {
+                        Message::User(user) => {
+                            let text = pi_ai::content_text(&user.content);
+                            Some(match split_attachment_prompt(&text) {
+                                Some((typed, _)) => typed,
+                                None => text,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(user_texts(), texts[..failed_index]);
+            let errors = harness
+                .recorder
+                .events()
+                .into_iter()
+                .filter(|event| {
+                    matches!(event, AgentServiceEvent::Run {
+                        event: AgentRunEvent::Error(item), ..
+                    } if item.text.as_deref() == Some(IMAGE_ATTACHMENT_PREPARATION_ERROR))
+                })
+                .count();
+            assert_eq!(errors, 1);
+
+            std::fs::write(&image.execution_path, original).unwrap();
+            harness.faux.push_text("Retry accepted.");
+            let mut retry = runtime.send_desktop(request).await.unwrap();
+            assert_eq!(finished(&mut retry).await, AgentRunTerminal::Completed);
+            assert!(runtime.runs.queue_snapshot(&task).items.is_empty());
+            assert_eq!(user_texts(), texts);
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_after_batch_steering_preserves_order_before_later_batches() {
+        let harness = Harness::new().await;
+        let runtime = harness.runtime().await;
+        let task = harness.create_task().await;
+        let request = AgentSendMessageRequest {
+            session_id: task.clone(),
+            text: String::new(),
+            model: None,
+            context_limit: Some(200_000),
+            vision_capable: false,
+            steer: false,
+            queue_id: None,
+            attachments: Vec::new(),
+        };
+        let run = runtime.register_run(
+            &mut runtime.runs.state(),
+            &task,
+            vec![
+                Outgoing::text("First"),
+                Outgoing::text("Second"),
+                Outgoing::text("Third"),
+                Outgoing::hidden("maple.test", "Hidden".into()),
+                Outgoing::text("Later"),
+            ],
+            Vec::new(),
+        );
+        let session = runtime
+            .prepare_run_session(&request, &run.prompts, &run.events)
+            .await
+            .unwrap();
+        let cancelled_at_boundary = Arc::new(AtomicBool::new(false));
+        let listener = session.subscribe({
+            let stopped = run.stopped.clone();
+            let cancelled_at_boundary = cancelled_at_boundary.clone();
+            move |event| {
+                if matches!(event, AgentSessionEvent::QueueUpdate { steering, .. }
+                    if steering.iter().any(|text| text == "Third"))
+                {
+                    cancelled_at_boundary.store(true, Ordering::SeqCst);
+                    stopped.cancel();
+                }
+            }
+        });
+        let mut handle = runtime.launch_run(&task, run, session.clone()).unwrap();
+        assert_eq!(finished(&mut handle).await, AgentRunTerminal::Cancelled);
+        session.unsubscribe(listener);
+        assert!(cancelled_at_boundary.load(Ordering::SeqCst));
+        assert!(harness.faux.requests().is_empty());
+        let queue = runtime.runs.queue_snapshot(&task);
+        let texts: Vec<_> = queue.items.iter().map(|item| item.text.as_str()).collect();
+        assert_eq!(texts, ["First", "Second", "Third", "Later"]);
+        assert!(
+            session
+                .messages()
+                .iter()
+                .all(|message| !matches!(message, SessionMessage::Llm(Message::User(_))))
+        );
     }
 }

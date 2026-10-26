@@ -989,7 +989,7 @@ impl ChatScreen {
         // waiting to send. Text, or an file that is still being prepared,
         // turns it back into Send, which queues behind the run.
         let drafting = has_text || has_attachments;
-        let show_stop = running && !disabled && !drafting;
+        let show_stop = running && !self.booting && !pending_create && !drafting;
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
         let composer = self.composer.clone();

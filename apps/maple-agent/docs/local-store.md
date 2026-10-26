@@ -91,7 +91,10 @@ crash leftovers after seven days. Store reset does not manage this desktop-owned
 temporary directory, and database encryption does not protect these copies.
 
 Deleting a session schedules deletion of its owned files; interrupted cleanup
-retries. Compaction alone retains historical attachments. A stopped-store backup
+retries without starving other sessions. Ordinary read-only owned folders can be
+reclaimed, but inaccessible permissions or foreign ownership still require repair;
+Maple does not follow links or report incomplete erasure as success.
+Compaction alone retains historical attachments. A stopped-store backup
 must include both the database and the attachment tree. Unlock passwords do not
 encrypt these files, and no password change converts them to encrypted payloads.
 
@@ -102,6 +105,10 @@ when present; an image does not necessarily have a caption. This migration is
 restartable and does not reset the database. It cannot be undone by launching an
 older binary, and reclaimed SQLite pages may not immediately shrink the database
 file. Existing backups and filesystem snapshots are not erased.
+Opening or continuing an older task prioritizes rebuilding its derived history.
+If that bounded preparation is still pending, Maple reports it instead of showing
+an empty conversation. Missing historical image files become unavailable; new
+outgoing images still require successful preparation.
 
 General project/workspace Markdown, `AGENTS.md`/`CLAUDE.md`, `SYSTEM.md`, skills
 and prompt templates retain their resource-loading behavior. They remain files

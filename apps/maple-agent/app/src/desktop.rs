@@ -85,7 +85,7 @@ impl RemoteComputer {
         match &self.attempt {
             ConnectionAttempt::Failed { message, .. } => Some(
                 if crate::remote::wire::is_protocol_incompatibility_refusal(message) {
-                    "Update required".into()
+                    "Update required — select to retry after updating".into()
                 } else {
                     message.clone()
                 },
@@ -3505,7 +3505,7 @@ mod tests {
             assert_eq!(
                 computer.error().as_deref(),
                 Some(if mismatch {
-                    "Update required"
+                    "Update required — select to retry after updating"
                 } else {
                     &message
                 })

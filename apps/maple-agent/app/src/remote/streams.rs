@@ -8,11 +8,21 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
 
-pub const MAX_REQUESTS: usize = 40;
+pub const MAX_ORDINARY_REQUESTS: usize = 32;
+pub const MAX_URGENT_REQUESTS: usize = 2;
+pub const MAX_RANGE_REQUESTS: usize = 4;
+pub const MAX_BULK_REQUESTS: usize = 2;
+pub const MAX_REQUESTS: usize =
+    MAX_ORDINARY_REQUESTS + MAX_URGENT_REQUESTS + MAX_RANGE_REQUESTS + MAX_BULK_REQUESTS;
 // Limit concurrent header readers independently of admitted RPCs. Requests
 // queue briefly behind a burst, under one queue-and-parse deadline. A malicious
 // peer withholding headers can delay classification only until that deadline.
 pub const MAX_PENDING_HEADERS: usize = 8;
+pub const MAX_REQUEST_TASKS: usize = MAX_REQUESTS + MAX_PENDING_HEADERS;
+const MAX_BIDI_STREAMS: u32 = MAX_REQUEST_TASKS as u32 + 1;
+const STREAM_RECEIVE_WINDOW: u32 = 512 * 1024;
+const CONNECTION_RECEIVE_WINDOW: u32 = 32 * 1024 * 1024;
+const _: () = assert!(CONNECTION_RECEIVE_WINDOW > MAX_BIDI_STREAMS * STREAM_RECEIVE_WINDOW);
 pub const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const FOLDERS_UNCONFIRMED: &str =
@@ -28,11 +38,32 @@ pub fn transport_config() -> QuicTransportConfig {
         // One event/handshake stream plus bounded request streams. The aggregate
         // window exceeds all stream windows, so unread bulk streams cannot use
         // up the flow-control credit needed by another stream.
-        .max_concurrent_bidi_streams(49u32.into())
+        .max_concurrent_bidi_streams(MAX_BIDI_STREAMS.into())
         .max_concurrent_uni_streams(0u32.into())
-        .stream_receive_window((512u32 * 1024).into())
-        .receive_window((32u32 * 1024 * 1024).into())
+        .stream_receive_window(STREAM_RECEIVE_WINDOW.into())
+        .receive_window(CONNECTION_RECEIVE_WINDOW.into())
         .build()
+}
+
+/// Bound work before classification too: withheld headers occupy tasks until
+/// their queue/read deadline. Closing the connection stops admission, while
+/// already admitted effects drain exactly once.
+pub(super) async fn serve_requests<F, Fut>(connection: Connection, mut serve: F)
+where
+    F: FnMut(SendStream, RecvStream) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut calls = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            _ = calls.join_next(), if !calls.is_empty() => {},
+            incoming = connection.accept_bi(), if calls.len() < MAX_REQUEST_TASKS => {
+                let Ok((tx, rx)) = incoming else { break; };
+                calls.spawn(serve(tx, rx));
+            }
+        }
+    }
+    while calls.join_next().await.is_some() {}
 }
 
 pub struct Capacity {
@@ -46,10 +77,10 @@ pub struct Capacity {
 impl Capacity {
     pub fn new() -> Self {
         Self {
-            ordinary: Arc::new(Semaphore::new(32)),
-            urgent: Arc::new(Semaphore::new(2)),
-            ranges: Arc::new(Semaphore::new(4)),
-            bulk: Arc::new(Semaphore::new(2)),
+            ordinary: Arc::new(Semaphore::new(MAX_ORDINARY_REQUESTS)),
+            urgent: Arc::new(Semaphore::new(MAX_URGENT_REQUESTS)),
+            ranges: Arc::new(Semaphore::new(MAX_RANGE_REQUESTS)),
+            bulk: Arc::new(Semaphore::new(MAX_BULK_REQUESTS)),
             headers: Arc::new(Semaphore::new(MAX_PENDING_HEADERS)),
         }
     }

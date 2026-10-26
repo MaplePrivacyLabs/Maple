@@ -1,6 +1,9 @@
 use super::*;
 use crate::store::StorePaths;
 
+#[path = "attachment_regression_tests.rs"]
+mod regression_tests;
+
 fn fixture() -> (tempfile::TempDir, Arc<Store>, AccountId, AccountId) {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(StorePaths::new(directory.path())).unwrap());
@@ -79,6 +82,28 @@ fn expire(store: &Store, id: &str) {
         })
         .unwrap();
 }
+
+#[test]
+fn cleanup_metadata_rejects_negative_sizes_and_accepts_zero_and_file_cap() {
+    let (_directory, store, _, _) = fixture();
+    for size in [-1, 0, MAX_ATTACHMENT_BYTES as i64] {
+        let result = store.read(|tx| {
+            Ok(tx
+                .query_row(
+                    "SELECT '0123456789abcdef0123456789abcdef','cleanup-size',?1",
+                    [size],
+                    attachment_cleanup_row,
+                )?
+                .size)
+        });
+        if size < 0 {
+            assert_eq!(result, Err(StoreError::InvalidData));
+        } else {
+            assert_eq!(result, Ok(size as u64));
+        }
+    }
+}
+
 #[test]
 fn generic_upload_is_a_stable_file_with_only_metadata_in_sql() {
     let (_directory, store, alice, bob) = fixture();
@@ -476,6 +501,204 @@ fn missing_effective_image_becomes_unavailable_but_bad_source_stays_an_error() {
         store
             .materialize_message_images(alice, "00000000-0000-7000-8000-000000000001", &mut invalid)
             .is_err()
+    );
+}
+
+#[test]
+fn historical_file_changes_are_unavailable_but_outgoing_images_remain_strict() {
+    for change in 0..3 {
+        let (_directory, store, alice, _) = fixture();
+        let task = "00000000-0000-7000-8000-000000000001";
+        let bytes = png(100);
+        let attachment = store
+            .store_image_uploads(alice, task, &[upload(&bytes)])
+            .unwrap()
+            .remove(0);
+        let original = vec![Message::User(pi_ai::UserMessage {
+            content: vec![
+                Content::text("keep the caption"),
+                Content::image(&attachment.source, "image/png"),
+            ],
+            timestamp: 1,
+        })];
+        match change {
+            0 => {
+                let mut changed = bytes.clone();
+                changed[99] ^= 1;
+                fs::write(&attachment.execution_path, changed).unwrap();
+            }
+            1 => fs::write(&attachment.execution_path, b"resized").unwrap(),
+            2 => fs::remove_file(&attachment.execution_path).unwrap(),
+            _ => unreachable!(),
+        }
+        let mut outgoing = original.clone();
+        assert!(
+            store
+                .materialize_outgoing_images(alice, task, &mut outgoing)
+                .is_err()
+        );
+        let Message::User(outgoing) = &outgoing[0] else {
+            panic!()
+        };
+        assert_eq!(
+            outgoing.content[1],
+            Content::image(&attachment.source, "image/png")
+        );
+        let mut historical = original;
+        store
+            .materialize_message_images(alice, task, &mut historical)
+            .unwrap();
+        let Message::User(historical) = &historical[0] else {
+            panic!()
+        };
+        assert_eq!(
+            historical.content,
+            vec![
+                Content::text("keep the caption"),
+                Content::text("Image no longer available.")
+            ]
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unsafe_historical_images_are_not_read_or_allowed_in_new_sends() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    for change in 0..3 {
+        let (directory, store, alice, _) = fixture();
+        let task = "00000000-0000-7000-8000-000000000001";
+        let attachment = store
+            .store_image_uploads(alice, task, &[upload(&png(100))])
+            .unwrap()
+            .remove(0);
+        let outside = directory.path().join("outside-image");
+        match change {
+            0 => fs::set_permissions(
+                &attachment.execution_path,
+                fs::Permissions::from_mode(0o644),
+            )
+            .unwrap(),
+            1 => {
+                fs::remove_file(&attachment.execution_path).unwrap();
+                fs::write(&outside, b"unrelated image bytes").unwrap();
+                symlink(&outside, &attachment.execution_path).unwrap();
+            }
+            2 => fs::hard_link(&attachment.execution_path, &outside).unwrap(),
+            _ => unreachable!(),
+        }
+        let original = vec![Message::User(pi_ai::UserMessage {
+            content: vec![Content::image(&attachment.source, "image/png")],
+            timestamp: 1,
+        })];
+        assert!(
+            store
+                .materialize_outgoing_images(alice, task, &mut original.clone())
+                .is_err()
+        );
+        let mut historical = original;
+        store
+            .materialize_message_images(alice, task, &mut historical)
+            .unwrap();
+        let Message::User(message) = &historical[0] else {
+            panic!()
+        };
+        assert_eq!(
+            message.content,
+            vec![Content::text("Image no longer available.")]
+        );
+        if change == 1 {
+            assert_eq!(fs::read(&outside).unwrap(), b"unrelated image bytes");
+        }
+    }
+}
+
+#[test]
+fn historical_metadata_corruption_is_not_hidden_as_unavailable_media() {
+    let (_directory, store, alice, _) = fixture();
+    let task = "00000000-0000-7000-8000-000000000001";
+    let attachment = store
+        .store_image_uploads(alice, task, &[upload(&png(100))])
+        .unwrap()
+        .remove(0);
+    store
+        .write(Durability::Durable, |tx| {
+            tx.execute(
+                "UPDATE file_attachments SET name=' not-normalized.png' WHERE public_id=?1",
+                [&attachment.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut messages = vec![Message::User(pi_ai::UserMessage {
+        content: vec![Content::image(&attachment.source, "image/png")],
+        timestamp: 1,
+    })];
+    assert_eq!(
+        store.materialize_message_images(alice, task, &mut messages),
+        Err(StoreError::InvalidData)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn confirmed_account_deletion_reclaims_readonly_owned_trees_and_keeps_other_accounts() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_directory, store, alice, bob) = fixture();
+    let task = "00000000-0000-7000-8000-000000000001";
+    let owned = write_upload(&store, alice, task, "readonly-account", b"owned archive");
+    store
+        .pin_attachments(alice, task, std::slice::from_ref(&owned.id))
+        .unwrap();
+    let other = write_upload(
+        &store,
+        bob,
+        "00000000-0000-7000-8000-000000000002",
+        "other-account",
+        b"keep other account",
+    );
+    let root = Path::new(&owned.execution_path).parent().unwrap();
+    let extracted = root.join("extracted");
+    fs::create_dir(&extracted).unwrap();
+    fs::write(extracted.join("plaintext"), b"owned extraction").unwrap();
+    fs::set_permissions(&extracted, fs::Permissions::from_mode(0o555)).unwrap();
+    store
+        .begin_account_deletion(alice, "confirmed-readonly", 2)
+        .unwrap();
+    store
+        .confirm_account_deletion(alice, "confirmed-readonly")
+        .unwrap();
+    let mut done = false;
+    for _ in 0..32 {
+        for deleted in store.deleted_tasks_for_collection(4).unwrap() {
+            store
+                .collect_task_step(deleted.account, &deleted.uuid)
+                .unwrap();
+        }
+        match store.collect_account_step(alice) {
+            Ok(progress) if progress.done => {
+                done = true;
+                break;
+            }
+            Ok(_) | Err(StoreError::Busy) => {}
+            Err(error) => panic!("account cleanup failed: {error:?}"),
+        }
+    }
+    assert!(done);
+    assert!(!root.exists());
+    let retained: i64 = store
+        .read(|tx| {
+            Ok(tx.query_row(
+                "SELECT count(*) FROM accounts WHERE id=?1",
+                [alice.0],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(retained, 0);
+    assert_eq!(
+        fs::read(&other.execution_path).unwrap(),
+        b"keep other account"
     );
 }
 
