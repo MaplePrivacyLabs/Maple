@@ -1,0 +1,179 @@
+# Experiment only, never merge. Can Agent macOS work stay on Blacksmith's macOS 27
+# image with Xcode 27.1? Two arms:
+#   1. Export Xcode 27.1's Metal Toolchain on GitHub's xcode-27 image, import it on
+#      Blacksmith (whose own catalog download fails), and build the Agent with
+#      compiled Metal shaders.
+#   2. Without any Metal Toolchain, run the Agent clippy with gpui's
+#      runtime_shaders feature (shaders compile at run time, not build time).
+name: macOS 27 Blacksmith experiment
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/macos27-blacksmith-experiment.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos27-blacksmith-experiment-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  export-metal:
+    name: Export Metal Toolchain (GitHub xcode-27)
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+
+      - name: Download and export the Metal Toolchain
+        run: |
+          set -euxo pipefail
+          xcodebuild -version
+          xcodebuild -showComponent metalToolchain || true
+          export_dir="$RUNNER_TEMP/metal-export"
+          mkdir -p "$export_dir"
+          start=$SECONDS
+          xcodebuild -downloadComponent metalToolchain -exportPath "$export_dir"
+          echo "::notice::Metal Toolchain export took $((SECONDS - start))s"
+          find "$export_dir" -maxdepth 2 -print
+          du -sh "$export_dir"
+          find "$export_dir" -name ExportMetadata.plist -exec plutil -p {} \; || true
+          # Keep symlinks and modes intact; artifacts flatten them.
+          tar -C "$export_dir" -cf "$RUNNER_TEMP/metal-export.tar" .
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: metal-toolchain-xcode-27.1
+          path: ${{ runner.temp }}/metal-export.tar
+          retention-days: 1
+          compression-level: 0
+
+  blacksmith-imported-metal:
+    name: Blacksmith macos-27, imported Metal, Agent build
+    needs: export-metal
+    runs-on: blacksmith-6vcpu-macos-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+
+      - name: Metal before import
+        run: |
+          xcodebuild -version
+          xcodebuild -showComponent metalToolchain || true
+          if xcrun -sdk macosx metal --version; then
+            echo "::notice::Metal Toolchain is already present on this Blacksmith image"
+          else
+            echo "::notice::Metal Toolchain missing before import, as expected"
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: metal-toolchain-xcode-27.1
+          path: ${{ runner.temp }}/metal
+
+      - name: Import the Metal Toolchain
+        run: |
+          set -euxo pipefail
+          export_dir="$RUNNER_TEMP/metal-export"
+          mkdir -p "$export_dir"
+          tar -C "$export_dir" -xf "$RUNNER_TEMP/metal/metal-export.tar"
+          ls -la "$export_dir"
+          bundle="$(find "$export_dir" -maxdepth 1 \( -name '*.exportedBundle' -o -name '*.dmg' \) -print -quit)"
+          test -n "$bundle"
+          start=$SECONDS
+          if ! xcodebuild -importComponent metalToolchain -importPath "$bundle"; then
+            echo "::warning::unprivileged import failed; retrying with sudo"
+            sudo xcodebuild -importComponent metalToolchain -importPath "$bundle"
+          fi
+          echo "::notice::Metal Toolchain import took $((SECONDS - start))s"
+          xcodebuild -showComponent metalToolchain || true
+
+      - name: Compile a Metal shader
+        run: |
+          set -euxo pipefail
+          cat > "$RUNNER_TEMP/probe.metal" <<'EOF'
+          #include <metal_stdlib>
+          using namespace metal;
+          kernel void probe(device float *out [[buffer(0)]]) { out[0] = 1.0; }
+          EOF
+          xcrun -sdk macosx metal --version
+          xcrun -sdk macosx metal -c "$RUNNER_TEMP/probe.metal" -o "$RUNNER_TEMP/probe.air"
+          xcrun -sdk macosx metallib "$RUNNER_TEMP/probe.air" -o "$RUNNER_TEMP/probe.metallib"
+          echo "::notice::Metal shader compiled on Blacksmith macos-27"
+
+      - name: Install pinned Nix environment
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        with:
+          source-tag: v3.23.3
+          github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
+
+      - name: Build the Agent workspace (cold, compiled Metal shaders)
+        working-directory: apps/maple-agent
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          nix develop --no-update-lock-file . -c true
+          shell=$((SECONDS - start))
+          start=$SECONDS
+          nix develop --no-update-lock-file . -c cargo build --workspace --all-targets --locked
+          build=$((SECONDS - start))
+          echo "::notice::Agent dev shell ${shell}s, cold cargo build --workspace --all-targets ${build}s"
+          printf '| Step | Seconds |\n| --- | ---: |\n| Agent dev shell | %s |\n| Cold workspace build (compiled shaders) | %s |\n' "$shell" "$build" >> "$GITHUB_STEP_SUMMARY"
+
+  blacksmith-runtime-shaders:
+    name: Blacksmith macos-27, no Metal, runtime_shaders clippy
+    runs-on: blacksmith-6vcpu-macos-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+
+      - name: Confirm no Metal Toolchain
+        run: |
+          if xcrun -sdk macosx metal --version; then
+            echo "::warning::Metal Toolchain present; this arm no longer proves the no-Metal path"
+          else
+            echo "::notice::No Metal Toolchain on this runner"
+          fi
+
+      - name: Install pinned Nix environment
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        with:
+          source-tag: v3.23.3
+          github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
+
+      - name: Clippy the Agent app with runtime shaders (cold)
+        working-directory: apps/maple-agent
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          nix develop --no-update-lock-file . -c true
+          shell=$((SECONDS - start))
+          start=$SECONDS
+          nix develop --no-update-lock-file . -c cargo clippy -p maple-agent-app --all-targets --locked \
+            -F gpui-platform/runtime_shaders -- -D warnings
+          clippy=$((SECONDS - start))
+          echo "::notice::Agent dev shell ${shell}s, cold clippy (runtime_shaders) ${clippy}s"
+          printf '| Step | Seconds |\n| --- | ---: |\n| Agent dev shell | %s |\n| Cold app clippy, runtime_shaders | %s |\n' "$shell" "$clippy" >> "$GITHUB_STEP_SUMMARY"
