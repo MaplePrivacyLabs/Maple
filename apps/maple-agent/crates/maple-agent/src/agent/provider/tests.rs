@@ -687,6 +687,98 @@ fn only_the_newest_tool_result_images_stay_in_a_request() {
     assert_eq!(oldest.content[1], Content::text(SUPERSEDED_IMAGE_MARKER));
 }
 
+#[tokio::test]
+async fn selected_images_materialize_after_screenshot_filtering_and_keep_source_references() {
+    use crate::agent::attachments::{AgentImageUpload, fixture_attachment_store};
+    const TASK: &str = "018ddbcc-b80b-7c20-8123-000000000001";
+    const OTHER: &str = "018ddbcc-b80b-7c20-8123-000000000002";
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    let root = tempfile::tempdir().unwrap();
+    let attachments = fixture_attachment_store(root.path(), &[TASK, OTHER]);
+    let upload = AgentImageUpload {
+        name: "shot.png".into(),
+        data_url: format!("data:image/png;base64,{PNG}"),
+    };
+    let foreign = attachments
+        .store_uploads(OTHER, std::slice::from_ref(&upload))
+        .unwrap()
+        .remove(0);
+    let retained = attachments
+        .store_uploads(TASK, &[upload])
+        .unwrap()
+        .remove(0);
+    let faux = pi_ai::faux::FauxProvider::new();
+    faux.push_text("seen");
+    let stream = AttachmentStreamFn {
+        inner: Arc::new(faux.clone()),
+        attachments,
+        session_id: TASK.into(),
+    };
+    // Reading the oldest reference would fail task ownership. It must be
+    // removed before any materialization, while the retained image is real.
+    let original = vec![
+        screenshot_result("old", &foreign.source),
+        screenshot_result("one", &retained.source),
+        screenshot_result("two", &retained.source),
+        screenshot_result("three", &retained.source),
+    ];
+    let result = stream
+        .stream(
+            &model("glm-5-3"),
+            Context::from_messages(original.clone()),
+            StreamOptions::default(),
+        )
+        .result()
+        .await;
+    assert_eq!(result.stop_reason, StopReason::Stop);
+    let request = faux.requests().pop().unwrap();
+    let Message::ToolResult(old) = &request.context.messages[0] else {
+        panic!("tool result")
+    };
+    assert_eq!(old.content[1], Content::text(SUPERSEDED_IMAGE_MARKER));
+    assert!(!old.is_error);
+    for message in &request.context.messages[1..] {
+        let Message::ToolResult(tool) = message else {
+            panic!("tool result")
+        };
+        assert!(matches!(&tool.content[1], Content::Image(image) if image.data == PNG));
+    }
+    assert!(
+        matches!(&original[1], Message::ToolResult(tool) if matches!(&tool.content[1], Content::Image(image) if image.data == retained.source))
+    );
+
+    // Missing retained pixels are harmless text; tool identity and success
+    // survive. A wrong-task retained reference still fails before inference.
+    std::fs::remove_file(&retained.execution_path).unwrap();
+    faux.push_text("unavailable");
+    let result = stream
+        .stream(
+            &model("glm-5-3"),
+            Context::from_messages(vec![screenshot_result("missing", &retained.source)]),
+            StreamOptions::default(),
+        )
+        .result()
+        .await;
+    assert_eq!(result.stop_reason, StopReason::Stop);
+    let request = faux.requests().pop().unwrap();
+    let Message::ToolResult(tool) = &request.context.messages[0] else {
+        panic!("tool result")
+    };
+    assert_eq!(tool.tool_call_id, "missing");
+    assert!(!tool.is_error);
+    assert_eq!(tool.content[1], Content::text("Image no longer available."));
+    let result = stream
+        .stream(
+            &model("glm-5-3"),
+            Context::from_messages(vec![screenshot_result("foreign", &foreign.source)]),
+            StreamOptions::default(),
+        )
+        .result()
+        .await;
+    assert_eq!(result.stop_reason, StopReason::Error);
+    assert_eq!(faux.requests().len(), 2);
+}
+
 const KIMI_TOOL_STREAM: [&str; 4] = [
     "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"shell:0\",\"function\":{\"name\":\"shell\",\"arguments\":\"{}\"}}]}}]}\n\n",
     "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"chatcmpl-tool-abc\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}}]}\n\n",

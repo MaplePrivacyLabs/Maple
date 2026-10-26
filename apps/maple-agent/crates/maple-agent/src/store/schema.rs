@@ -6,7 +6,7 @@ use super::{StoreError, StoreResult};
 
 pub(super) const APPLICATION_ID: i64 = 1_296_126_028;
 pub(super) const SCHEMA_EPOCH: i64 = 1;
-pub(super) const VERSION: i64 = 2;
+pub(super) const VERSION: i64 = 4;
 
 /// Original migration schema, including partial indexes and constraints.
 /// Validation executes the complete append-only migration chain as its reference.
@@ -260,6 +260,40 @@ struct Migration {
 
 const PROJECT_NAME_REVISION_DDL: &str = "ALTER TABLE projects ADD COLUMN name_revision INTEGER NOT NULL DEFAULT 0 CHECK (name_revision >= 0);";
 
+// Version 3 is an intentional durable fence. Released readers stop here before
+// any image source is rewritten; a new reader can resume the bounded retirement
+// work with the original tables still present. Version 4 removes those tables
+// only after source retirement and byte collection have completed.
+const FILE_ATTACHMENTS_DDL: &str = r#"
+CREATE TABLE file_attachments (
+  public_id TEXT PRIMARY KEY CHECK (length(public_id) = 32),
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  operation_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL CHECK (size >= 0 AND size <= 31457280),
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+  state TEXT NOT NULL CHECK (state IN ('uploading', 'ready', 'cancelled')),
+  bound INTEGER NOT NULL DEFAULT 0 CHECK (bound IN (0, 1)),
+  created_ms INTEGER NOT NULL,
+  updated_ms INTEGER NOT NULL,
+  UNIQUE (account_id, operation_id)
+) STRICT;
+CREATE INDEX file_attachments_task ON file_attachments (task_id);
+CREATE INDEX file_attachments_unbound ON file_attachments (updated_ms) WHERE bound = 0;
+INSERT INTO store_meta(key,value) VALUES ('attachment_migration_phase',0);
+INSERT INTO store_meta(key,value) VALUES ('attachment_migration_cursor',0);
+"#;
+
+const RETIRE_BLOBS_DDL: &str = r#"
+DROP TABLE attachments;
+DROP TABLE task_blobs;
+DROP TABLE blob_chunks;
+DROP TABLE blobs;
+DELETE FROM store_meta WHERE key IN ('attachment_migration_phase','attachment_migration_cursor');
+"#;
+
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -268,6 +302,14 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
         sql: PROJECT_NAME_REVISION_DDL,
+    },
+    Migration {
+        version: 3,
+        sql: FILE_ATTACHMENTS_DDL,
+    },
+    Migration {
+        version: 4,
+        sql: RETIRE_BLOBS_DDL,
     },
 ];
 
@@ -327,6 +369,9 @@ pub(super) fn migrate(connection: &mut Connection, now_ms: i64) -> StoreResult<(
         .iter()
         .filter(|migration| migration.version > version)
     {
+        if migration.version == 4 {
+            super::attachment_migration::retire_legacy_images(connection)?;
+        }
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(migration.sql)?;
         if migration.version == 1 {
@@ -404,6 +449,42 @@ pub(super) fn mark_interrupted_receipts(connection: &mut Connection) -> StoreRes
 }
 
 #[cfg(test)]
+pub(super) fn migrate_to_version(
+    connection: &mut Connection,
+    now_ms: i64,
+    version: i64,
+) -> StoreResult<()> {
+    if !(1..=VERSION).contains(&version) {
+        return Err(StoreError::InvalidInput);
+    }
+    connection.pragma_update(None, "application_id", APPLICATION_ID)?;
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= version)
+    {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(migration.sql)?;
+        if migration.version == 1 {
+            transaction.execute(
+                "INSERT INTO store_meta(key,value) VALUES ('store_id',?1)",
+                [rand::random::<[u8; 16]>().as_slice()],
+            )?;
+            transaction.execute(
+                "INSERT INTO store_meta(key,value) VALUES ('created_ms',?1)",
+                [now_ms],
+            )?;
+            transaction.execute(
+                "INSERT INTO store_meta(key,value) VALUES ('schema_epoch',?1)",
+                [SCHEMA_EPOCH],
+            )?;
+        }
+        transaction.pragma_update(None, "user_version", migration.version)?;
+        transaction.commit()?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::params;
@@ -420,12 +501,12 @@ mod tests {
     }
 
     #[test]
-    fn migrations_validate_from_empty_and_keep_all_nineteen_tables() {
+    fn migrations_validate_from_empty_with_metadata_only_attachments() {
         let mut connection = empty();
         migrate(&mut connection, 42).unwrap();
         validate(&connection).unwrap();
         let tables: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get(0)).unwrap();
-        assert_eq!(tables, 19);
+        assert_eq!(tables, 16);
         assert_eq!(
             connection
                 .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))

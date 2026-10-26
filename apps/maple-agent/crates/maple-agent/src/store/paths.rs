@@ -82,6 +82,10 @@ impl StorePaths {
         Ok(file)
     }
 
+    pub fn attachments(&self) -> PathBuf {
+        self.root.join("attachments")
+    }
+
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }

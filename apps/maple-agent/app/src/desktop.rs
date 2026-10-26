@@ -75,12 +75,21 @@ impl RemoteComputer {
             && match &self.attempt {
                 ConnectionAttempt::Idle => true,
                 ConnectionAttempt::Connecting(_) => false,
-                ConnectionAttempt::Failed { retry_at, .. } => now >= *retry_at,
+                ConnectionAttempt::Failed { message, retry_at } => {
+                    !crate::remote::wire::is_protocol_incompatibility_refusal(message)
+                        && now >= *retry_at
+                }
             }
     }
     fn error(&self) -> Option<String> {
         match &self.attempt {
-            ConnectionAttempt::Failed { message, .. } => Some(message.clone()),
+            ConnectionAttempt::Failed { message, .. } => Some(
+                if crate::remote::wire::is_protocol_incompatibility_refusal(message) {
+                    "Update required — select to retry after updating".into()
+                } else {
+                    message.clone()
+                },
+            ),
             _ => None,
         }
     }
@@ -1503,6 +1512,8 @@ impl MapleApp {
         let Some(computer) = self.remote_computers.get_mut(&peer) else {
             return;
         };
+        // Explicit navigation may retry after either computer was upgraded.
+        // Only background discovery uses should_connect's incompatibility gate.
         if matches!(computer.attempt, ConnectionAttempt::Connecting(_)) {
             return;
         }
@@ -3454,6 +3465,88 @@ mod tests {
             attempt: super::ConnectionAttempt::Idle,
         };
         assert!(other.should_connect(now));
+    }
+
+    #[test]
+    fn cold_catalog_protocol_refusal_stops_only_automatic_mismatch_retries() {
+        use crate::remote::wire::{Error, Refusal};
+
+        let now = std::time::Instant::now();
+        for (message, mismatch) in [
+            (
+                Refusal::terminal(Error::Incompatible.to_string()).into_error(),
+                true,
+            ),
+            (Error::Disconnected.to_string(), false),
+            (
+                Refusal::terminal("Remote control grant is missing or revoked").into_error(),
+                false,
+            ),
+            (
+                Refusal::terminal(Error::InvalidFrame.to_string()).into_error(),
+                false,
+            ),
+        ] {
+            let computer = super::RemoteComputer {
+                name: "Office".into(),
+                grant: [7; 16],
+                chat: None,
+                attempt: super::ConnectionAttempt::Failed {
+                    message: message.clone(),
+                    retry_at: now + std::time::Duration::from_secs(30),
+                },
+            };
+            assert!(!computer.should_connect(now));
+            assert_eq!(
+                computer.should_connect(now + std::time::Duration::from_secs(3600)),
+                !mismatch,
+                "{message}"
+            );
+            assert_eq!(
+                computer.error().as_deref(),
+                Some(if mismatch {
+                    "Update required — select to retry after updating"
+                } else {
+                    &message
+                })
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn cold_catalog_protocol_refusal_allows_explicit_navigation_retry(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            let computer = app.remote_computers.get_mut("east").unwrap();
+            computer.chat = None;
+            computer.attempt = ConnectionAttempt::Failed {
+                message: crate::remote::wire::Refusal::terminal(
+                    crate::remote::wire::Error::Incompatible.to_string(),
+                )
+                .into_error(),
+                retry_at: std::time::Instant::now(),
+            };
+            assert!(!computer.should_connect(std::time::Instant::now()));
+            // Exercise dispatch, without allowing this fixture to connect to
+            // a developer's host: the backend rejects before any IPC or spawn.
+            app.backend.retire_after_update();
+            app.navigate(
+                Navigate {
+                    computer: Some("east".into()),
+                    destination: Destination::Overview,
+                },
+                cx,
+            );
+            assert_eq!(app.next_connection_attempt, 1);
+            assert!(matches!(
+                app.remote_computers["east"].attempt,
+                ConnectionAttempt::Connecting(1)
+            ));
+            assert!(app.requested_navigation.is_some());
+            assert_eq!(app.remote_computers["east"].grant, [1; 16]);
+        });
     }
 
     #[test]

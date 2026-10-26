@@ -6,6 +6,7 @@
 //! prepared on the bulk reader and replayed in bounded idle transactions.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use pi_ai::{Message, content_text};
 use pi_coding_agent::{
@@ -25,7 +26,7 @@ mod stored;
 use stored::StoredItem;
 
 /// Bump whenever the shared timeline builders or their merge rules change.
-pub(crate) const TIMELINE_FORMAT: i64 = 1;
+pub(crate) const TIMELINE_FORMAT: i64 = 2;
 const CHUNK_ENTRIES: usize = 1_000;
 const CHUNK_ROWS: usize = 1_000;
 const CHUNK_BYTES: usize = 1024 * 1024;
@@ -78,8 +79,29 @@ struct PreparedSourceOperation {
     result_call: Option<String>,
 }
 
-/// Complete source-sized formatting before entering the writer transaction.
+/// Raw-entry fixture formatting. Production projects the persisted image form.
+#[cfg(test)]
 pub(super) fn prepare_entry(entry: &SessionEntry, seq: i64) -> StoreResult<PreparedProjection> {
+    prepare_operations(entry, seq, operations(entry, |_| Ok(None))?)
+}
+
+/// Complete source-sized formatting before entering the writer transaction.
+/// Image lengths come from metadata collected separately, never file bytes.
+pub(super) fn prepare_stored_entry(
+    entry: &SessionEntry,
+    seq: i64,
+    image_sizes: &[usize],
+) -> StoreResult<PreparedProjection> {
+    let mut rows = operations(entry, |_| Ok(None))?;
+    apply_image_sizes(entry, &mut rows, image_sizes)?;
+    prepare_operations(entry, seq, rows)
+}
+
+fn prepare_operations(
+    entry: &SessionEntry,
+    seq: i64,
+    rows: Vec<RowOp>,
+) -> StoreResult<PreparedProjection> {
     if seq < 1 {
         return Err(StoreError::InvalidInput);
     }
@@ -89,7 +111,7 @@ pub(super) fn prepare_entry(entry: &SessionEntry, seq: i64) -> StoreResult<Prepa
         } => Some(result.tool_call_id.clone()),
         _ => None,
     };
-    let operations = operations(entry, |_| Ok(None))?
+    let operations = rows
         .into_iter()
         .enumerate()
         .map(|(index, operation)| {
@@ -221,7 +243,7 @@ fn operations(
 }
 
 // Image payloads in stored entries are references. Timeline rows expose only
-// their length, so rebuilds read blob metadata rather than loading image bytes.
+// their length, so append and rebuild use metadata without loading image bytes.
 fn operations_tx(
     tx: &Transaction<'_>,
     task: TaskKey,
@@ -235,9 +257,21 @@ fn operations_tx(
             message: SessionMessage::Llm(Message::ToolResult(_))
         }
     ) {
-        let sizes = super::blobs::entry_image_sizes_tx(tx, task, entry)?;
-        let mut sizes = sizes.into_iter();
-        for row in &mut rows {
+        let sizes = super::attachments::entry_image_sizes_tx(tx, task, entry)?;
+        apply_image_sizes(entry, &mut rows, &sizes)?;
+    }
+    Ok(rows)
+}
+
+fn apply_image_sizes(entry: &SessionEntry, rows: &mut [RowOp], sizes: &[usize]) -> StoreResult<()> {
+    if matches!(
+        &entry.kind,
+        EntryKind::Message {
+            message: SessionMessage::Llm(Message::ToolResult(_))
+        }
+    ) {
+        let mut sizes = sizes.iter();
+        for row in rows {
             if let Some(content) = row
                 .item
                 .output
@@ -257,7 +291,7 @@ fn operations_tx(
             return Err(StoreError::InvalidData);
         }
     }
-    Ok(rows)
+    Ok(())
 }
 
 /// The UI's todo predicate, shared with persisted plan-page selection.
@@ -858,6 +892,16 @@ impl Store {
         &self,
         ticket: &RebuildTicket,
     ) -> StoreResult<PreparedRebuild> {
+        self.prepare_timeline_rebuild_before(ticket, None)
+    }
+
+    /// Foreground opens use a cooperative deadline between bounded source reads;
+    /// unfinished work remains queued for normal background reconstruction.
+    pub(crate) fn prepare_timeline_rebuild_before(
+        &self,
+        ticket: &RebuildTicket,
+        deadline: Option<Instant>,
+    ) -> StoreResult<PreparedRebuild> {
         let last_seq = self.read_bulk(|tx| {
             authorize_ticket(tx, ticket)?;
             Ok(tx.query_row(
@@ -870,6 +914,7 @@ impl Store {
         let mut after = 0;
         let mut compact = true;
         while after < last_seq {
+            check_rebuild_deadline(deadline)?;
             let entries =
                 self.read_bulk(|tx| source_metadata_batch(tx, ticket.task, after, last_seq))?;
             if entries.is_empty() {
@@ -909,6 +954,15 @@ impl Store {
         &self,
         prepared: &PreparedRebuild,
     ) -> StoreResult<PreparedChunk> {
+        self.prepare_timeline_chunk_before(prepared, None)
+    }
+
+    pub(crate) fn prepare_timeline_chunk_before(
+        &self,
+        prepared: &PreparedRebuild,
+        deadline: Option<Instant>,
+    ) -> StoreResult<PreparedChunk> {
+        check_rebuild_deadline(deadline)?;
         let cursor = self.read_bulk(|tx| {
             authorize_ticket(tx, &prepared.ticket)?;
             rebuild_cursor(tx, &prepared.ticket)
@@ -919,7 +973,7 @@ impl Store {
                 let end = (start + CHUNK_ENTRIES).min(outline.len());
                 (outline[start..end].to_vec(), end == outline.len())
             }
-            Outline::Rescan => self.rescan_outline_chunk(prepared, cursor.0)?,
+            Outline::Rescan => self.rescan_outline_chunk(prepared, cursor.0, deadline)?,
         };
         self.read_bulk(|tx| {
             authorize_ticket(tx, &prepared.ticket)?;
@@ -946,10 +1000,12 @@ impl Store {
     fn walk_source_branch(
         &self,
         prepared: &PreparedRebuild,
+        deadline: Option<Instant>,
         mut visit: impl FnMut(i64, &SessionEntry) -> StoreResult<()>,
     ) -> StoreResult<()> {
         let mut seq = prepared.last_seq;
         while seq > 0 {
+            check_rebuild_deadline(deadline)?;
             let entry = self.read_bulk(|tx| session::read_entry(tx, prepared.ticket.task, seq))?;
             visit(seq, &entry)?;
             seq = match entry.parent_id {
@@ -978,12 +1034,13 @@ impl Store {
         &self,
         prepared: &PreparedRebuild,
         through: i64,
+        deadline: Option<Instant>,
     ) -> StoreResult<(Vec<OutlineEntry>, bool)> {
         use std::collections::VecDeque;
         let mut selected = VecDeque::<(i64, String)>::new();
         let mut count = 0usize;
         let mut id_bytes = 0usize;
-        self.walk_source_branch(prepared, |seq, entry| {
+        self.walk_source_branch(prepared, deadline, |seq, entry| {
             if seq > through {
                 count = count.saturating_add(1);
                 id_bytes = id_bytes.saturating_add(entry.id.len());
@@ -1011,7 +1068,7 @@ impl Store {
                 omitted: false,
             })
             .collect();
-        self.walk_source_branch(prepared, |_, entry| {
+        self.walk_source_branch(prepared, deadline, |_, entry| {
             if let EntryKind::ContextEdit {
                 target_id,
                 replacement: None,
@@ -1024,6 +1081,13 @@ impl Store {
         })?;
         Ok((entries, at_end))
     }
+}
+
+fn check_rebuild_deadline(deadline: Option<Instant>) -> StoreResult<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(StoreError::Busy);
+    }
+    Ok(())
 }
 
 struct CompactMeta {

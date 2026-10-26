@@ -6,8 +6,12 @@
 
 #[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
 pub use local::*;
+pub(crate) mod attachments;
 pub(crate) mod local;
 pub(crate) mod paging;
+#[cfg(any(feature = "desktop", test))]
+pub use attachments::AttachmentUploadRequest;
+pub use attachments::ImportAttachmentRequest;
 #[cfg(feature = "desktop")]
 pub use paging::*;
 mod mcp;
@@ -558,6 +562,9 @@ async fn dispatch_special(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    if attachments::handles(&request.method) {
+        return attachments::dispatch(backend, request).await;
+    }
     if paging::is_paging(&request.method) {
         return paging::dispatch(backend, request, maple_agent::store::PageTransport::Local).await;
     }
@@ -670,7 +677,10 @@ pub(crate) async fn dispatch(
     // validation must not prevent local history, configuration, or stop calls.
     // The restore mutex still serializes credential validation/publication.
     // Cancelling an OAuth wait must remain independent.
-    if request.method == "cancel_oauth" {
+    if matches!(
+        request.method.as_str(),
+        "cancel_oauth" | "import_attachment"
+    ) {
         return dispatch_inner(backend, request).await;
     }
     if matches!(

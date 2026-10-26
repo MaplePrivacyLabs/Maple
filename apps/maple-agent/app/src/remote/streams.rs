@@ -8,7 +8,21 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
 
-pub const MAX_REQUESTS: usize = 40;
+pub const MAX_ORDINARY_REQUESTS: usize = 32;
+pub const MAX_URGENT_REQUESTS: usize = 2;
+pub const MAX_RANGE_REQUESTS: usize = 4;
+pub const MAX_BULK_REQUESTS: usize = 2;
+pub const MAX_REQUESTS: usize =
+    MAX_ORDINARY_REQUESTS + MAX_URGENT_REQUESTS + MAX_RANGE_REQUESTS + MAX_BULK_REQUESTS;
+// Limit concurrent header readers independently of admitted RPCs. Requests
+// queue briefly behind a burst, under one queue-and-parse deadline. A malicious
+// peer withholding headers can delay classification only until that deadline.
+pub const MAX_PENDING_HEADERS: usize = 8;
+pub const MAX_REQUEST_TASKS: usize = MAX_REQUESTS + MAX_PENDING_HEADERS;
+const MAX_BIDI_STREAMS: u32 = MAX_REQUEST_TASKS as u32 + 1;
+const STREAM_RECEIVE_WINDOW: u32 = 512 * 1024;
+const CONNECTION_RECEIVE_WINDOW: u32 = 32 * 1024 * 1024;
+const _: () = assert!(CONNECTION_RECEIVE_WINDOW > MAX_BIDI_STREAMS * STREAM_RECEIVE_WINDOW);
 pub const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const FOLDERS_UNCONFIRMED: &str =
@@ -24,29 +38,77 @@ pub fn transport_config() -> QuicTransportConfig {
         // One event/handshake stream plus bounded request streams. The aggregate
         // window exceeds all stream windows, so unread bulk streams cannot use
         // up the flow-control credit needed by another stream.
-        .max_concurrent_bidi_streams(41u32.into())
+        .max_concurrent_bidi_streams(MAX_BIDI_STREAMS.into())
         .max_concurrent_uni_streams(0u32.into())
-        .stream_receive_window((512u32 * 1024).into())
-        .receive_window((32u32 * 1024 * 1024).into())
+        .stream_receive_window(STREAM_RECEIVE_WINDOW.into())
+        .receive_window(CONNECTION_RECEIVE_WINDOW.into())
         .build()
+}
+
+/// Bound work before classification too: withheld headers occupy tasks until
+/// their queue/read deadline. Closing the connection stops admission, while
+/// already admitted effects drain exactly once.
+pub(super) async fn serve_requests<F, Fut>(connection: Connection, mut serve: F)
+where
+    F: FnMut(SendStream, RecvStream) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut calls = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            _ = calls.join_next(), if !calls.is_empty() => {},
+            incoming = connection.accept_bi(), if calls.len() < MAX_REQUEST_TASKS => {
+                let Ok((tx, rx)) = incoming else { break; };
+                calls.spawn(serve(tx, rx));
+            }
+        }
+    }
+    while calls.join_next().await.is_some() {}
 }
 
 pub struct Capacity {
     ordinary: Arc<Semaphore>,
     urgent: Arc<Semaphore>,
     ranges: Arc<Semaphore>,
+    bulk: Arc<Semaphore>,
+    headers: Arc<Semaphore>,
 }
 
 impl Capacity {
     pub fn new() -> Self {
         Self {
-            ordinary: Arc::new(Semaphore::new(32)),
-            urgent: Arc::new(Semaphore::new(2)),
-            ranges: Arc::new(Semaphore::new(4)),
+            ordinary: Arc::new(Semaphore::new(MAX_ORDINARY_REQUESTS)),
+            urgent: Arc::new(Semaphore::new(MAX_URGENT_REQUESTS)),
+            ranges: Arc::new(Semaphore::new(MAX_RANGE_REQUESTS)),
+            bulk: Arc::new(Semaphore::new(MAX_BULK_REQUESTS)),
+            headers: Arc::new(Semaphore::new(MAX_PENDING_HEADERS)),
         }
     }
+    pub async fn read_header(&self, rx: &mut RecvStream) -> Result<Header, String> {
+        self.read_header_with_timeout(rx, IO_TIMEOUT).await
+    }
+    async fn read_header_with_timeout(
+        &self,
+        rx: &mut RecvStream,
+        deadline: Duration,
+    ) -> Result<Header, String> {
+        tokio::time::timeout(deadline, async {
+            let _slot = self
+                .headers
+                .acquire()
+                .await
+                .map_err(|_| "Remote header admission closed")?;
+            wire::read(rx, wire::MAX_PREFACE)
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "Remote request header timed out".to_string())?
+    }
     pub fn acquire(&self, method: Method) -> Result<OwnedSemaphorePermit, String> {
-        let pool = if matches!(method, Method::ReadAttachment | Method::ReadRow) {
+        let pool = if method == Method::UploadAttachment {
+            &self.bulk
+        } else if matches!(method, Method::ReadAttachment | Method::ReadRow) {
             &self.ranges
         } else if method.urgent() {
             &self.urgent
@@ -75,6 +137,16 @@ impl Client {
             project_folders: OnceCell::new(),
             discovery_timeout: DISCOVERY_TIMEOUT,
         }
+    }
+
+    pub(super) async fn upload(
+        &self,
+        id: u64,
+        user: String,
+        request: crate::backend::ImportAttachmentRequest,
+        prepared: crate::backend::attachments::PreparedImport,
+    ) -> Result<Message, String> {
+        super::uploads::call(&self.connection, id, user, request, prepared).await
     }
 
     pub async fn call(
@@ -120,6 +192,7 @@ pub struct Header {
 }
 
 impl Header {
+    #[cfg(test)]
     pub async fn read(rx: &mut RecvStream) -> Result<Self, String> {
         tokio::time::timeout(IO_TIMEOUT, wire::read(rx, wire::MAX_PREFACE))
             .await
@@ -145,7 +218,14 @@ impl Header {
 }
 
 fn body_limit(method: Method) -> usize {
-    if matches!(method, Method::PeerInfo | Method::RemoteUpdateInstall) {
+    if matches!(
+        method,
+        Method::PeerInfo
+            | Method::RemoteUpdateInstall
+            | Method::UploadAttachment
+            | Method::AttachmentUploadStatus
+            | Method::CancelAttachmentUpload
+    ) {
         wire::MAX_PREFACE
     } else if method.urgent() {
         MAX_CONTROL
@@ -253,7 +333,7 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
     let Ok(body) = wire::encode(&command.params, body_limit(command.method)) else {
         return Ok(Message::Response {
             id,
-            result: Err("Remote message is too large. Try fewer or smaller images.".into()),
+            result: Err("Remote request is too large. Try a smaller message.".into()),
         });
     };
     let body = Zeroizing::new(body);
@@ -309,7 +389,7 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
     Ok(message)
 }
 
-async fn finish_reply(rx: &mut RecvStream, deadline: Duration) -> Result<(), String> {
+pub(super) async fn finish_reply(rx: &mut RecvStream, deadline: Duration) -> Result<(), String> {
     let mut trailing = [0u8; 1];
     let count = tokio::time::timeout(deadline, tokio::io::AsyncReadExt::read(rx, &mut trailing))
         .await
@@ -322,7 +402,7 @@ async fn finish_reply(rx: &mut RecvStream, deadline: Duration) -> Result<(), Str
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 #[cfg(test)]
 mod folder_tests;

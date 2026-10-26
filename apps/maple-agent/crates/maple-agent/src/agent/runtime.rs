@@ -524,6 +524,19 @@ impl AgentRuntime {
         &self.models
     }
 
+    /// Every request containing task history, including side questions, uses
+    /// the same task-scoped attachment boundary.
+    pub(super) fn attachment_models(&self, session_id: &str) -> ModelRegistry {
+        super::provider::attachment_model_registry(
+            &self.models,
+            super::attachments::AgentAttachmentStore::new(
+                Arc::clone(self.store.store()),
+                self.store.account(),
+            ),
+            session_id.to_string(),
+        )
+    }
+
     /// A task's session for a side question: the loaded one as it is, or
     /// the task loaded on the model it last ran on.
     pub(super) async fn side_question_session(
@@ -682,15 +695,17 @@ impl AgentRuntime {
             .map_err(|error| format!("Failed to read the Agent task: {error}"))??;
         // A model that cannot see images gets them described.
         let describe = !model.supports_images();
-        let mut options =
-            AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
-        options.model = Some(model);
-        options.settings = self.settings();
-        options.resources = resources.unwrap_or_default();
         let attachments = Arc::new(super::attachments::AgentAttachmentStore::new(
             Arc::clone(self.store.store()),
             self.store.account(),
         ));
+        let task_models = self.attachment_models(&row.id);
+        let mut options =
+            AgentSessionOptions::new(&row.project_root, APP_NAME, manager, task_models);
+        options.model = Some(model);
+        options.settings = self.settings();
+        options.resources = resources.unwrap_or_default();
+
         let output_dir = crate::store::spill::SpillRoot::new(self.store.store().paths())
             .and_then(|spills| spills.output_dir(&row.id))
             .map_err(|error| error.to_string())?;

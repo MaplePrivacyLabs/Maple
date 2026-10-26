@@ -655,6 +655,7 @@ async fn open_task(
     if row_limit == 0 || row_limit > 500 {
         return Err("Invalid open-task row limit".into());
     }
+    handle.ensure_task_history_ready(&request.task).await?;
     // Start with the whole budget so immutable metadata (notably canonical
     // roots) need not fit an arbitrary fraction. If the merged wire response
     // exceeds the budget, reduce the next persisted page by the measured excess.

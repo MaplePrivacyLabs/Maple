@@ -77,9 +77,10 @@ when requested, and selecting a folder uses the existing project trust flow.
 The execution daemon resolves paths and performs filesystem operations. Folder
 lists are paged and bounded, and hidden folders can be shown explicitly. This is
 a folder picker, not a filesystem sandbox for an already paired controller.
-Images picked
-on the controller are explicit uploads. Remote frames are limited to 16 MiB,
-including JSON/base64 overhead; reduce attachments if a send exceeds that bound.
+Files picked on the controller are explicit uploads to the execution computer.
+Remote control frames remain limited to 16 MiB, including encoding overhead;
+file uploads use separate bounded raw-byte streams and do not count against a
+send's control frame.
 Microphone, playback, billing and account operations stay on the controller.
 The Integrations pane manages the selected execution computer and labels it;
 account and application preference panes still use this computer. Native
@@ -168,25 +169,48 @@ Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
 protocol keeps the `maple-agent/remote/1` ALPN family and currently advertises
-wire version 6 with minimum version 6, independent of application builds. Its
+wire version 7 with minimum version 7, independent of application builds. Its
 shared project names, bounded navigation/history pages, stable row identities,
 attachment ranges, and per-connection task subscriptions remain unchanged.
 Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
-Version 5 and earlier peers receive an explicit version refusal. Bounded frames
+Version 6 and earlier peers receive an explicit version refusal. Bounded frames
 and an explicit task-operation allowlist apply.
 Account operations and arbitrary whole-host administration cannot be forwarded.
 The narrow experimental update capability uses the host's own signed updater;
 it does not expose the ordinary host-stop command.
 
-Optional discovery reports protocol version `6.2.0` and explicit capabilities
-over separate request streams; the wire-6 handshake, acknowledgement shape and
-ALPN remain unchanged. Bounded folder browsing and single-folder creation require
+Optional discovery reports protocol version `7.0.0` and explicit capabilities
+over separate request streams. The acknowledgement shape and ALPN remain
+readable across the required version transition. Bounded folder browsing and single-folder creation require
 the `project_folders_v1` capability. The controller checks support before sending
-either folder command. An older host without that capability keeps ordinary
+either folder command. A compatible host without that capability keeps ordinary
 project/task access and its existing remote-update support; only the folder
-browser reports that support is unavailable or an update is needed. Older
-controllers can still use newer hosts through their existing commands.
+browser reports that support is unavailable or an update is needed.
+
+Wire 7 requires attachment-reference sends. Images, ordinary files and archives
+are copied into the execution daemon's session-owned plaintext file store;
+SQLite contains metadata. Local imports use a controller-local staged path.
+Remote imports send bounded metadata followed by raw bytes on a dedicated
+low-priority stream, with admission before the body and a durable upload receipt
+after finalization. The remote daemon never interprets a controller's local path.
+The existing identified `send_message` then carries attachment IDs. An upload
+retry cannot replay a prompt. Each authenticated connection has two bulk slots
+separate from ordinary requests, range reads and urgent replies; generic files
+are limited to 30 MiB each, while
+composer images retain their 10 MiB limit. See [local storage](local-store.md).
+
+Both computers must use wire 7 for remote access, including remote update
+management. Upgrade the execution computer first while the old pair is still
+compatible, then update the controller locally. A wire-7 controller stops
+automatic reconnection after an explicit version refusal and shows **Update
+required**, without treating ordinary offline errors as version mismatches.
+Released wire-6 controllers keep their shipped behavior during the gap: cold
+computer discovery can retry, and Settings can report the peer as unreachable.
+Existing pairing records are retained. A disconnect alone does not confirm an
+installation; check the running identity and retained receipt after reconnecting.
+If the controller was updated first, update the execution computer directly,
+then select that computer again to reconnect.
 
 A bounded capability probe can fail without ending ordinary task requests.
 Responses tolerate future optional fields and capability names. Experimental
@@ -203,11 +227,12 @@ separate from local IPC. Each control connection bounds ordinary calls and keeps
 separate capacity for cancellation/questions. Each request/reply uses an
 independent bidirectional QUIC stream; the authenticated initial stream carries
 ordered events. A bounded header admits each request before its attachment body
-is read. Stop and question answers have reserved capacity and higher native stream
+is read. Header parsing has an overall queue-and-read deadline. Stop and question
+answers have reserved capacity and higher native stream
 priority, so an incomplete upload or unread image reply cannot hold their dispatch
 loop. Streams still share the connection's bandwidth; this is not a latency
 guarantee on a saturated or unavailable network. Transfers use bounded frames and
-inactivity deadlines, allowing slow transfers that keep making progress. Image
+inactivity deadlines. Uploads also have a ten-minute total deadline. Image
 readback uses base64 on the remote wire.
 A request failure or oversized reply returns a request error, while authority loss
 or incompatible framing ends the connection. A failed connection recovers from an
@@ -216,7 +241,7 @@ the host or cause an automatic prompt replay; explicit host shutdown still stops
 its work. A stable send identity
 crosses both IPC and Iroh; only the execution daemon records its admission and
 result, account-bound in its application database. An uncertain send keeps its original
-identity, text and draft images in the desktop view and queries the execution
+identity, text and draft attachments in the desktop view and queries the execution
 host's receipt after reconnecting. It never replays the command or overwrites a
 newer draft. If the execution daemon restarts before recording a send's result,
 it marks that receipt interrupted, preserving the identity against replay. The

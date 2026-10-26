@@ -6,7 +6,7 @@
 
 use super::{unclassified_identity::DirectoryManifest, *};
 
-const FORMAT: &str = "maple-store-unclassified-reset/2";
+const FORMAT: &str = "maple-store-unclassified-reset/3";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +26,7 @@ pub(super) struct Journal {
     previous_mode: StoreMode,
     phase: Phase,
     source: DirectoryManifest,
+    attachments: Option<unclassified_identity::FileIdentity>,
 }
 
 impl Journal {
@@ -123,6 +124,7 @@ pub(super) fn recover(paths: &StorePaths) -> LifecycleResult<Option<Journal>> {
 fn preflight(paths: &StorePaths, journal: &Journal) -> LifecycleResult<()> {
     journal.validate()?;
     verify_private_path(paths.root(), true)?;
+    attachments::verify_root(paths, &journal.attachments)?;
     if path_present(&paths.setup())? {
         return Err(LifecycleError::Generation);
     }
@@ -209,6 +211,7 @@ fn retire_original(paths: &StorePaths, journal: &mut Journal) -> LifecycleResult
     // Both confirmed reset variants permanently discard their exact current
     // source. The manifest permits partial deletion after a crash, never a
     // replacement file or a directory belonging to another operation.
+    attachments::remove_root(paths, &journal.attachments)?;
     journal.source.delete_remaining(&archive)?;
     if journal.phase == Phase::RetireOriginal {
         journal.phase = Phase::AwaitChoice;
@@ -221,6 +224,7 @@ fn finish(paths: &StorePaths, journal: &Journal) -> LifecycleResult<()> {
     if read_generation(&paths.db())?.as_ref() != Some(&journal.replacement()) {
         return Err(LifecycleError::Generation);
     }
+    attachments::remove_root(paths, &journal.attachments)?;
     journal
         .source
         .delete_remaining(&journal.retired_source(paths))?;
@@ -233,6 +237,7 @@ fn finish(paths: &StorePaths, journal: &Journal) -> LifecycleResult<()> {
 fn finish_installed(paths: &StorePaths, journal: &Journal) -> LifecycleResult<()> {
     // The installed pair wins on retry. Cleanup can touch only this journal's
     // exact temporary source, not a later active generation or historical copy.
+    attachments::remove_root(paths, &journal.attachments)?;
     journal
         .source
         .delete_remaining(&journal.retired_source(paths))?;
@@ -252,7 +257,7 @@ impl Store {
         after: ResetAfter,
         intent_sync: fn(&Path) -> io::Result<()>,
     ) -> LifecycleResult<()> {
-        set_state(self, StoreState::Maintenance)?;
+        freeze_attachment_writers(self, true)?;
         self.close_connections_without_checkpoint()?;
         if let Some(mut journal) = pending(&self.paths)? {
             if matches!(read_generation(&self.paths.db()),Ok(Some(actual)) if actual==journal.replacement())
@@ -292,6 +297,7 @@ impl Store {
                 previous_mode: mode,
                 phase: Phase::RetireOriginal,
                 source: DirectoryManifest::capture(&self.paths.db())?,
+                attachments: attachments::root_identity(&self.paths)?,
             };
             preflight(&self.paths, &journal)?;
             if write_json_with_sync(&intent_path(&self.paths), &journal, intent_sync).is_err() {

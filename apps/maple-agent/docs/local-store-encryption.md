@@ -2,8 +2,12 @@
 
 Agent uses a fresh `store-v1` namespace. Previous Agent/Research data is neither
 read, adopted, migrated nor deleted by this implementation. Plain mode remains
-the default. Password mode encrypts the SQLite database, WAL, attachments and
-other authoritative records with a random local DEK wrapped by the password.
+the default. Password mode encrypts the SQLite database, WAL, attachment metadata
+and other database records with a random local DEK wrapped by the password.
+Attachment payloads, including images and tool screenshots, are ordinary
+session-owned files outside that encryption boundary. They remain plaintext
+even while the database is locked. See [local storage](local-store.md) for
+their lifecycle, migration and backup rules.
 
 ## Release exposure
 

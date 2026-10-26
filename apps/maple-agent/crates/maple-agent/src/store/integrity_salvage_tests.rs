@@ -94,7 +94,7 @@ fn upload(store: &Store, account: AccountId, task: &TaskRecord) -> String {
 }
 
 #[test]
-fn invalid_source_drops_whole_task_and_keeps_readable_history_blobs_and_settings() {
+fn invalid_source_drops_whole_task_and_keeps_readable_history_files_and_settings() {
     let (_directory, store, account) = fixture();
     let good = task(&store, account, 1);
     let bad = task(&store, account, 2);
@@ -206,56 +206,36 @@ fn invalid_source_drops_whole_task_and_keeps_readable_history_blobs_and_settings
 }
 
 #[test]
-fn corrupt_shared_blob_drops_each_linked_task_with_exact_chunk_locator() {
+fn missing_attachment_file_does_not_discard_readable_session_history() {
     let (_directory, store, account) = fixture();
     let first = task(&store, account, 1);
-    let second = task(&store, account, 2);
-    upload(&store, account, &first);
-    upload(&store, account, &second);
-    store
-        .write(Durability::Durable, |transaction| {
-            transaction.execute("UPDATE blob_chunks SET data=x'00'", [])?;
-            Ok(())
-        })
-        .unwrap();
+    let attachment = upload(&store, account, &first);
+    let path = store
+        .paths()
+        .root()
+        .join("attachments")
+        .join(hex(&store.store_id().unwrap()))
+        .join(account.0.to_string())
+        .join(&first.uuid)
+        .join(&attachment)
+        .join("image.png");
+    fs::remove_file(path).unwrap();
     damage(&store);
     let preview = store
         .preview_salvage(Duration::from_secs(5), &IntegrityCancellation::default())
         .unwrap();
-    assert_eq!(preview.report().dropped_tasks, 2);
-    assert!(
-        preview
-            .report()
-            .dropped_rows
-            .iter()
-            .any(|row| row.table == SalvageTable::BlobChunks
-                && matches!(row.key, SalvageRowKey::IntegerPair { second: 0, .. }))
-    );
+    assert_eq!(preview.report().retained_tasks, 1);
+    assert_eq!(preview.report().dropped_tasks, 0);
+    assert!(preview.report().dropped_rows.is_empty());
     store
         .save_readable_data(&preview, SALVAGE_CONFIRMATION)
         .unwrap();
-    store
-        .read(|transaction| {
-            for table in [
-                "tasks",
-                "entries",
-                "blobs",
-                "blob_chunks",
-                "task_blobs",
-                "attachments",
-            ] {
-                assert_eq!(
-                    transaction.query_row::<i64, _, _>(
-                        &format!("SELECT count(*) FROM {table}"),
-                        [],
-                        |row| row.get(0)
-                    )?,
-                    0
-                );
-            }
-            Ok(())
-        })
-        .unwrap();
+    assert!(store.task(account, &first.uuid).unwrap().is_some());
+    assert!(
+        store
+            .read_attachment(account, &first.uuid, &attachment, 0, 1024)
+            .is_err()
+    );
 }
 
 #[test]
@@ -500,15 +480,16 @@ fn authoritative_walk_and_image_lookup_open_only_the_primary_tree_plain_and_keye
                     assert_eq!(roots, [root], "{} authoritative root", table.name());
                 }
                 let root: i64 = source.query_row(
-                    "SELECT rootpage FROM sqlite_schema WHERE name='task_blobs'",
+                    "SELECT rootpage FROM sqlite_schema WHERE name='file_attachments'",
                     [],
                     |row| row.get(0),
                 )?;
-                let mut explain = source.prepare(&format!("EXPLAIN {TASK_HAS_BLOB_SQL}"))?;
+                let mut explain = source.prepare(&format!("EXPLAIN {TASK_HAS_ATTACHMENT_SQL}"))?;
                 let roots = explain
-                    .query_map(params![task.key.0, 1_i64], |row| {
-                        Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
-                    })?
+                    .query_map(
+                        params![task.key.0, "00000000000000000000000000000000"],
+                        |row| Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?)),
+                    )?
                     .collect::<rusqlite::Result<Vec<_>>>()?
                     .into_iter()
                     .filter_map(|(opcode, root)| (opcode == "OpenRead").then_some(root))
@@ -521,14 +502,14 @@ fn authoritative_walk_and_image_lookup_open_only_the_primary_tree_plain_and_keye
 }
 
 #[test]
-fn corrupt_covering_blob_index_does_not_lose_primary_links_or_image_markers() {
+fn corrupt_attachment_index_does_not_lose_primary_metadata_or_image_markers() {
     let (_directory, store, account) = fixture();
     let task = task(&store, account, 1);
     upload(&store, account, &task);
     store
         .write(Durability::Durable, |transaction| {
-            let blob: i64 = transaction.query_row(
-                "SELECT blob_id FROM task_blobs WHERE task_id=?1",
+            let attachment: String = transaction.query_row(
+                "SELECT public_id FROM file_attachments WHERE task_id=?1",
                 [task.key.0],
                 |row| row.get(0),
             )?;
@@ -538,7 +519,10 @@ fn corrupt_covering_blob_index_does_not_lose_primary_links_or_image_markers() {
                 timestamp: 2,
                 kind: EntryKind::Message {
                     message: SessionMessage::Llm(Message::User(pi_ai::UserMessage {
-                        content: vec![Content::image(format!("maple-blob:{blob}"), "image/png")],
+                        content: vec![Content::image(
+                            format!("maple-attachment://{attachment}"),
+                            "image/png",
+                        )],
                         timestamp: 2,
                     })),
                 },
@@ -551,12 +535,12 @@ fn corrupt_covering_blob_index_does_not_lose_primary_links_or_image_markers() {
             Ok(())
         })
         .unwrap();
-    let bytes = corrupt_fixture_root(&store, "task_blobs_blob");
+    let bytes = corrupt_fixture_root(&store, "file_attachments_task");
     let source = super::super::open_readonly(store.paths(), None).unwrap();
     assert!(
         source
             .query_row::<i64, _, _>(
-                "SELECT task_id FROM task_blobs INDEXED BY task_blobs_blob LIMIT 1",
+                "SELECT task_id FROM file_attachments INDEXED BY file_attachments_task LIMIT 1",
                 [],
                 |row| row.get(0),
             )
@@ -566,13 +550,7 @@ fn corrupt_covering_blob_index_does_not_lose_primary_links_or_image_markers() {
     assert_eq!(scanned.preview.report.retained_tasks, 1);
     assert_eq!(scanned.preview.report.tasks_to_rebuild, 1);
     assert!(scanned.preview.report.dropped_rows.is_empty());
-    for table in [
-        "task_blobs",
-        "attachments",
-        "blobs",
-        "blob_chunks",
-        "entries",
-    ] {
+    for table in ["file_attachments", "entries"] {
         assert_eq!(
             destination
                 .query_row::<i64, _, _>(&format!("SELECT count(*) FROM {table}"), [], |row| row
@@ -638,11 +616,9 @@ fn tombstoned_partial_collection_is_preserved_without_exhausting_the_loss_review
                  SELECT ?1,seq,printf('%08x',seq),'session_info',2,0,2,x'7b7d' FROM sequence",
                 [deleted.key.0],
             )?;
-            // A collector can also leave an incomplete, partially removed blob
-            // still linked to this tombstone. Account deletion is only pending:
+            // An unfinished upload remains owned by this tombstone. Account deletion is only pending:
             // salvage must preserve its phase, credentials and remaining source.
-            transaction.execute("UPDATE blobs SET complete=0", [])?;
-            transaction.execute("DELETE FROM blob_chunks", [])?;
+            transaction.execute("UPDATE file_attachments SET state='uploading'", [])?;
             transaction.execute("UPDATE accounts SET deleting_ms=3,deletion_phase='pending_server',deletion_generation='pending-fixture' WHERE id=?1", [account.0])?;
             transaction.execute("INSERT INTO credentials(slot,account_id,api_url,session_id,revision,access_token,refresh_token,updated_ms) VALUES (1,?1,'https://example.invalid','fixture',1,?2,?2,1)",params![account.0,PRIVATE_MARKER.as_bytes()])?;
             transaction.execute("INSERT INTO store_meta(key,value) VALUES ('integrity_incomplete_attempts',1),('integrity_retry_after_ms',5000)", [])?;
@@ -719,12 +695,12 @@ fn tombstoned_partial_collection_is_preserved_without_exhausting_the_loss_review
                     PRIVATE_MARKER.as_bytes()
                 );
                 assert_eq!(
-                    destination.query_row::<i64, _, _>(
-                        "SELECT complete FROM blobs",
+                    destination.query_row::<String, _, _>(
+                        "SELECT state FROM file_attachments",
                         [],
                         |row| row.get(0)
                     )?,
-                    0
+                    "uploading"
                 );
                 Ok(())
             })
@@ -733,66 +709,19 @@ fn tombstoned_partial_collection_is_preserved_without_exhausting_the_loss_review
 }
 
 #[test]
-fn shared_bad_blob_still_validates_live_ownership_without_reviving_confirmed_deletion() {
-    let (_directory, store, live_account) = fixture();
-    let deleted_account = store
-        .upsert_account("confirmed-deleted-fixture", 1)
-        .unwrap();
-    let live = task(&store, live_account, 1);
-    let deleted = task(&store, deleted_account, 2);
-    upload(&store, live_account, &live);
-    upload(&store, deleted_account, &deleted);
+fn attachment_account_mismatch_cannot_be_salvaged_into_a_different_owner() {
+    let (_directory, store, account) = fixture();
+    let other = store.upsert_account("other-file-owner", 1).unwrap();
+    let session = task(&store, account, 1);
+    upload(&store, account, &session);
     store
-        .begin_account_deletion(deleted_account, "deletion-fixture", 3)
-        .unwrap();
-    store
-        .confirm_account_deletion(deleted_account, "deletion-fixture")
-        .unwrap();
-    store
-        .write(Durability::Durable, |transaction| {
-            transaction.execute("UPDATE blob_chunks SET data=x'00'", [])?;
+        .write(Durability::Durable, |tx| {
+            tx.execute("UPDATE file_attachments SET account_id=?1", [other.0])?;
             Ok(())
         })
         .unwrap();
-    store
-        .with_authenticated_store_key(|key| {
-            let source = super::super::open_readonly(store.paths(), key)?;
-            let (scanned, destination) = candidate(&source);
-            assert_eq!(scanned.preview.report.retained_tasks, 0);
-            assert_eq!(scanned.preview.report.dropped_tasks, 1);
-            assert!(scanned.preview.report.dropped_rows.iter().all(|loss| {
-                loss.table != SalvageTable::Tasks
-                    || loss.key != SalvageRowKey::Integer { id: deleted.key.0 }
-            }));
-            assert_eq!(
-                destination.query_row::<i64, _, _>(
-                    "SELECT deleted_ms FROM tasks WHERE id=?1",
-                    [deleted.key.0],
-                    |row| row.get(0),
-                )?,
-                3
-            );
-            assert_eq!(
-                destination.query_row::<String, _, _>(
-                    "SELECT deletion_phase FROM accounts WHERE id=?1",
-                    [deleted_account.0],
-                    |row| row.get(0),
-                )?,
-                "confirmed"
-            );
-            for table in ["blobs", "blob_chunks", "task_blobs", "attachments"] {
-                assert_eq!(
-                    destination.query_row::<i64, _, _>(
-                        &format!("SELECT count(*) FROM {table}"),
-                        [],
-                        |row| row.get(0),
-                    )?,
-                    0
-                );
-            }
-            Ok(())
-        })
-        .unwrap();
+    let source = super::super::open_readonly(store.paths(), None).unwrap();
+    assert!(matches!(scan(&source), Err(StoreError::InvalidData)));
 }
 
 #[test]
@@ -814,7 +743,7 @@ fn tombstone_does_not_turn_broken_authoritative_ownership_into_completed_deletio
         } else {
             source
                 .execute(
-                    "UPDATE task_blobs SET blob_id=999 WHERE task_id=?1",
+                    "UPDATE file_attachments SET account_id=999 WHERE task_id=?1",
                     [deleted.key.0],
                 )
                 .unwrap();
@@ -824,4 +753,41 @@ fn tombstone_does_not_turn_broken_authoritative_ownership_into_completed_deletio
         assert!(matches!(scan(&source), Err(StoreError::InvalidData)));
         assert!(!store.paths().root().join("db.tmp").exists());
     }
+}
+
+#[test]
+fn keyed_salvage_copies_retained_files_to_the_replacement_generation() {
+    use crate::store::keys::{KdfParams, Password};
+    let (_directory, store, account) = fixture();
+    let session = task(&store, account, 1);
+    let attachment = upload(&store, account, &session);
+    let old = hex(&store.store_id().unwrap());
+    let password = Password::normalize("Z7jv!9qP#3nMx@8Ks^2dH").unwrap();
+    store
+        .set_store_password(&password, &[], KdfParams::floor())
+        .unwrap();
+    assert_eq!(
+        store
+            .read_attachment(account, &session.uuid, &attachment, 0, 1024)
+            .unwrap()
+            .data,
+        b"\x89PNG\r\n\x1a\nSALVAGE_IMAGE_BYTES"
+    );
+    damage(&store);
+    store.authenticate_repair_password(&password).unwrap();
+    let preview = store
+        .preview_salvage(Duration::from_secs(5), &IntegrityCancellation::default())
+        .unwrap();
+    store
+        .save_readable_data(&preview, SALVAGE_CONFIRMATION)
+        .unwrap();
+    assert_ne!(hex(&store.store_id().unwrap()), old);
+    assert_eq!(
+        store
+            .read_attachment(account, &session.uuid, &attachment, 0, 1024)
+            .unwrap()
+            .data,
+        b"\x89PNG\r\n\x1a\nSALVAGE_IMAGE_BYTES"
+    );
+    assert!(!store.paths().root().join("attachments").join(old).exists());
 }

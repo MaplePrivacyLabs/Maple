@@ -12,12 +12,20 @@ use super::{AccountId, Store, StoreError, StoreResult};
 const ROW_CAP: usize = 1_000;
 const BYTE_CAP: u64 = 1024 * 1024;
 
+/// Cursors affect scheduling only. Durable tombstones remain the authority, and
+/// restarting a host merely starts another bounded pass from the beginning.
+#[derive(Default)]
+pub(super) struct CollectionCursors {
+    pub(super) unbound: Option<(i64, String)>,
+    deleted_task: Option<(i64, i64)>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollectionStage {
     Timeline,
     Entries,
     Summaries,
-    Blobs,
+    Attachments,
     TaskMetadata,
     AccountMetadata,
     Done,
@@ -60,6 +68,43 @@ pub struct DeletedTask {
 }
 
 impl Store {
+    /// Rotate past failed or busy tasks so a few retained tombstones cannot
+    /// indefinitely starve later tasks. Keep `deleted_tasks` a stable snapshot.
+    pub(crate) fn deleted_tasks_for_collection(&self, limit: u16) -> StoreResult<Vec<DeletedTask>> {
+        if limit == 0 || limit > 200 {
+            return Err(StoreError::InvalidInput);
+        }
+        let after = self
+            .collection_cursors
+            .lock()
+            .map_err(|_| StoreError::Busy)?
+            .deleted_task;
+        let candidates = self.read(|tx| {
+            let query = |after: Option<(i64, i64)>| -> StoreResult<Vec<((i64, i64), DeletedTask)>> {
+                let mut statement = tx.prepare_cached(
+                    "SELECT t.deleted_ms,t.id,t.account_id,t.uuid FROM tasks t INDEXED BY tasks_deleting
+                    JOIN accounts a ON a.id=t.account_id WHERE t.deleted_ms IS NOT NULL
+                    AND (a.deletion_phase IS NULL OR a.deletion_phase='confirmed')
+                    AND (?1 IS NULL OR (t.deleted_ms,t.id)>(?1,?2))
+                    ORDER BY t.deleted_ms,t.id LIMIT ?3",
+                )?;
+                Ok(statement.query_map(params![after.map(|key| key.0), after.map(|key| key.1), limit], |row| {
+                    Ok(((row.get(0)?, row.get(1)?), DeletedTask {
+                        account: AccountId(row.get(2)?),
+                        uuid: row.get(3)?,
+                    }))
+                })?.collect::<rusqlite::Result<Vec<_>>>()?)
+            };
+            let candidates = query(after)?;
+            if candidates.is_empty() && after.is_some() { query(None) } else { Ok(candidates) }
+        })?;
+        self.collection_cursors
+            .lock()
+            .map_err(|_| StoreError::Busy)?
+            .deleted_task = candidates.last().map(|(key, _)| *key);
+        Ok(candidates.into_iter().map(|(_, task)| task).collect())
+    }
+
     /// Startup and idle collection use only authorized tombstones. Pending
     /// account attempts are excluded even if a task had an earlier tombstone.
     pub fn deleted_tasks(&self, limit: u16) -> StoreResult<Vec<DeletedTask>> {
@@ -84,8 +129,8 @@ impl Store {
         })
     }
 
-    /// Perform at most one byte-capped payload transaction, or one digest-locked
-    /// blob step. The caller yields to foreground work between calls.
+    /// Perform at most one byte-capped payload transaction, or one attachment
+    /// filesystem cleanup step. The caller yields to foreground work between calls.
     pub fn collect_task_step(
         &self,
         account: AccountId,
@@ -113,14 +158,14 @@ impl Store {
             return Ok(progress.measured(started));
         }
 
-        // Blob collection takes the per-digest lock before the writer. Never
-        // call it from inside a write closure, which would reverse lock order.
-        let blobs = self.collect_task_blobs_step(account, uuid)?;
-        if !blobs.done || blobs.chunks != 0 || blobs.links != 0 {
+        // Attachment cleanup removes the exact owned files before their metadata.
+        // Run outside the writer so filesystem I/O never holds a SQL transaction.
+        let attachments = self.collect_task_attachments_step(account, uuid)?;
+        if !attachments.done || attachments.files != 0 || attachments.links != 0 {
             return Ok(CollectionProgress::new(
-                CollectionStage::Blobs,
-                blobs.chunks + blobs.links,
-                blobs.bytes as u64,
+                CollectionStage::Attachments,
+                attachments.files + attachments.links,
+                attachments.bytes as u64,
             )
             .measured(started));
         }
@@ -132,8 +177,7 @@ impl Store {
                 EXISTS(SELECT 1 FROM entries WHERE task_id=?1) OR
                 EXISTS(SELECT 1 FROM timeline_rows WHERE task_id=?1) OR
                 EXISTS(SELECT 1 FROM tool_summaries WHERE task_id=?1) OR
-                EXISTS(SELECT 1 FROM attachments WHERE task_id=?1) OR
-                EXISTS(SELECT 1 FROM task_blobs WHERE task_id=?1)",
+                EXISTS(SELECT 1 FROM file_attachments WHERE task_id=?1)",
                 [task],
                 |row| row.get(0),
             )?;

@@ -12,8 +12,8 @@ pub use pi_ai::ThinkingLevel;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::attachments::AgentImageAttachment;
-pub use super::attachments::AgentImageUpload;
+use super::attachments::AgentAttachment;
+
 use super::{DEFAULT_AGENT_MODEL, DEFAULT_MCP_TIMEOUT_SECONDS};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -526,7 +526,7 @@ pub struct AgentSendMessageRequest {
     #[serde(default)]
     pub queue_id: Option<String>,
     #[serde(default)]
-    pub attachments: Vec<AgentImageUpload>,
+    pub attachments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -576,7 +576,7 @@ pub struct AgentQueuedMessage {
     pub message_id: String,
     pub session_id: String,
     pub text: String,
-    pub attachments: Vec<AgentImageAttachment>,
+    pub attachments: Vec<AgentAttachment>,
     pub created_ms: u128,
 }
 

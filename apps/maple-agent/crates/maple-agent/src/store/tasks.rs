@@ -511,7 +511,7 @@ impl Store {
                  AND deleted_ms IS NULL AND provisional=1 AND title_user_set=0
                  AND message_count=0 AND last_seq=0
                  AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.task_id=tasks.id)
-                 AND NOT EXISTS (SELECT 1 FROM task_blobs b WHERE b.task_id=tasks.id)",
+                 AND NOT EXISTS (SELECT 1 FROM file_attachments a WHERE a.task_id=tasks.id)",
                 params![account.0, uuid, now_ms],
             )? != 0;
             Ok((changed, changed.then(|| task_change(account, uuid))))
@@ -1295,7 +1295,7 @@ impl Store {
     }
 
     /// Remove only untouched provisional tasks. Such tasks contain no source
-    /// entries or blobs; deleting them does not become a payload-sized cascade.
+    /// entries or attachment uploads; deleting them does not orphan staged files.
     pub fn sweep_provisional_tasks(
         &self,
         account: AccountId,
@@ -1309,7 +1309,7 @@ impl Store {
                 WHERE t.account_id=?1 AND t.provisional=1 AND t.title_user_set=0 AND t.last_seq=0 AND t.message_count=0
                 AND t.updated_ms<?2 AND t.deleted_ms IS NULL
                 AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.task_id=t.id)
-                AND NOT EXISTS (SELECT 1 FROM task_blobs b WHERE b.task_id=t.id)
+                AND NOT EXISTS (SELECT 1 FROM file_attachments a WHERE a.task_id=t.id)
                 ORDER BY t.updated_ms,t.id LIMIT ?3)", params![account.0, before_ms, limit])?;
             tx.execute("DELETE FROM projects WHERE id IN (SELECT p.id FROM projects p WHERE p.account_id=?1
                 AND p.position IS NULL AND p.display_name IS NULL AND p.trusted IS NULL

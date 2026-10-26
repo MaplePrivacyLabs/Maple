@@ -569,7 +569,7 @@ impl AgentRuntimeHandle {
         }
         messages.extend(side_question_messages(&model, &prior, &question));
         tokio::spawn(stream_side_question(
-            runtime.models().stream_fn(),
+            runtime.attachment_models(session_id).stream_fn(),
             model,
             Context::from_messages(messages),
             session_id.to_string(),

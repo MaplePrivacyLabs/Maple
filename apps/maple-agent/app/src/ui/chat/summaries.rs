@@ -9,15 +9,16 @@ use gpui::{Context, SharedString};
 use maple_agent::agent::AgentTimelineItem;
 
 use super::ChatScreen;
-use super::transcript::{attachment_refs, has_tool_input, tool_output_markdown};
+use super::transcript::{has_tool_input, image_attachment_refs, tool_output_markdown};
 use crate::backend::{AgentBackend, ReadAttachmentRequest, StoreToolSummaryRequest};
-use crate::ui::chat::images::image_format_from_bytes;
+use crate::ui::chat::attachments::image_format_from_bytes;
 
 /// A thinking block shorter than this reads faster than its summary;
 /// skip the model call.
 const THINKING_SUMMARY_MIN_CHARS: usize = 200;
 const ATTACHMENT_CHUNK_BYTES: usize = 1024 * 1024;
-const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+// Generated/tool images can be 20 MiB; user image admission remains 10 MiB.
+const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CACHED_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CACHED_ATTACHMENTS: usize = 64;
 const MAX_ATTACHMENT_READS: usize = 4;
@@ -258,7 +259,7 @@ impl ChatScreen {
         self.attachment_viewport = start..end;
         let visible: HashSet<String> = self.timeline[start..end]
             .iter()
-            .flat_map(attachment_refs)
+            .flat_map(image_attachment_refs)
             .map(|(id, _)| id.to_string())
             .collect();
         // A fast scroll must not leave a backlog downloading distant pages.
@@ -298,7 +299,7 @@ impl ChatScreen {
                 return;
             }
         }
-        let wanted: Vec<String> = attachment_refs(item)
+        let wanted: Vec<String> = image_attachment_refs(item)
             .map(|(id, _)| id.to_string())
             .filter(|id| {
                 !self.attachment_images.contains_key(id) && !self.attachment_requests.contains(id)
@@ -344,7 +345,14 @@ impl ChatScreen {
                     if this.selection_generation == generation && this.is_selected(&target) {
                         match result {
                             Ok(image) => this.insert_attachment_image(&id, image, cx),
-                            Err(message) => log::debug!("attachment {id} not loaded: {message}"),
+                            Err(_) => {
+                                this.attachment_failures.insert(id.clone());
+                                let rows: Vec<_> = this.timeline.iter().enumerate().filter(|(_, item)|
+                                    image_attachment_refs(item).any(|(candidate, _)| candidate == id))
+                                    .map(|(index, _)| index).collect();
+                                for index in rows { this.remeasure_item(index); }
+                                cx.notify();
+                            },
                         }
                     }
                     // Stale reads still occupied a slot; their completion can
@@ -369,7 +377,7 @@ impl ChatScreen {
             .min(self.timeline.len());
         let visible: HashSet<String> = self.timeline[start..end]
             .iter()
-            .flat_map(attachment_refs)
+            .flat_map(image_attachment_refs)
             .map(|(id, _)| id.to_string())
             .collect();
         self.attachment_images.remove(id);
@@ -408,7 +416,7 @@ impl ChatScreen {
         // requested and measured when that row becomes visible again.
         let rows: Vec<usize> = (start..end)
             .filter(|&index| {
-                attachment_refs(&self.timeline[index])
+                image_attachment_refs(&self.timeline[index])
                     .any(|(candidate, _)| changed.contains(candidate))
             })
             .collect();

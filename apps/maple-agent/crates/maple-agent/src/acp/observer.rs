@@ -259,10 +259,11 @@ impl AcpConnectionContext {
             Event::HistoryReplaced {
                 user_id,
                 session_id,
-                ..
+                rows_epoch,
             } => {
                 if user_id == self.agent.user_id()
                     && let Some(operation) = self.session_operations.lock().await.get(&session_id)
+                    && rows_epoch > operation.history_epoch
                 {
                     operation.fail_observer(ObserverFailure::HistoryChanged);
                 }

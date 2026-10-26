@@ -49,6 +49,14 @@ impl AcpConnectionContext {
             .model_catalog_entry(&model)
             .await
             .map_err(internal_acp_error)?;
+        let attachments = self
+            .agent
+            .import_image_attachments(session_id.clone(), prompt_images(&request.prompt))
+            .await
+            .map_err(internal_acp_error)?
+            .into_iter()
+            .map(|attachment| attachment.id)
+            .collect::<Vec<_>>();
         let injected = self
             .agent
             .steer_surface_message(
@@ -56,7 +64,7 @@ impl AcpConnectionContext {
                 AgentSendMessageRequest {
                     session_id: session_id.clone(),
                     text: prompt_text(&request.prompt)?,
-                    attachments: prompt_images(&request.prompt),
+                    attachments: attachments.clone(),
                     model: Some(model),
                     context_limit: None,
                     vision_capable: catalog.and_then(|entry| entry.vision) == Some(true),
@@ -75,7 +83,8 @@ impl AcpConnectionContext {
         // Legacy adapters start a new turn when steering races with completion.
         // Clients opting into promptRequired retain ownership of that fallback.
         let prompt = PromptRequest::new(request.session_id, request.prompt);
-        let admission = self.begin_prompt(&prompt).await?;
+        let mut admission = self.begin_prompt(&prompt).await?;
+        admission.images = PromptAttachments::Committed(attachments);
         let context = Arc::clone(self);
         let cx = cx.clone();
         self.background_tasks.lock().await.spawn(async move {

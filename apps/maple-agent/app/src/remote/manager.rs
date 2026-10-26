@@ -15,7 +15,7 @@ use maple_sdk::remote::*;
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock, RwLockWriteGuard, TryLockError,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -59,7 +59,9 @@ pub struct Node {
     pub(super) backend: Arc<LocalBackend>,
     pub(super) events: broadcast::Sender<Arc<AgentServiceEvent>>,
     pub(super) receipts: Arc<Receipts>,
-    pub(super) store: Mutex<Store>,
+    // Shared permission/publication guards keep controls responsive during disk
+    // publication; exclusive settings edits still serialize revoke with commit.
+    pub(super) store: RwLock<Store>,
     pub(super) session: Arc<MapleApiSession>,
     pub(super) endpoint: Endpoint,
     addresses: Mutex<std::collections::HashMap<EndpointId, (EndpointAddr, RemoteDevice)>>,
@@ -293,7 +295,7 @@ impl Manager {
             backend: self.backend.clone(),
             events: self.events.clone(),
             receipts: self.receipts.clone(),
-            store: Mutex::new(store),
+            store: RwLock::new(store),
             session,
             endpoint,
             addresses: Mutex::new(std::collections::HashMap::new()),
@@ -316,7 +318,7 @@ impl Manager {
                 return Err("Remote access was stopped while connecting".into());
             }
             self.resident
-                .store(node.store.lock().unwrap().enabled(), Ordering::Release);
+                .store(node.store.read().unwrap().enabled(), Ordering::Release);
             *current = Some(node.clone());
         }
         super::control::listen(node.clone());
@@ -396,7 +398,7 @@ impl Manager {
                 let link = self.connect(&peer).await?;
                 self.backend.authorize_account(&account)?;
                 if link.node.account != account { return Err("The signed-in account changed".into()); }
-                let paired = link.node.store.lock().map_err(|_| "Remote grant unavailable")?.peers()
+                let paired = link.node.store.read().map_err(|_| "Remote grant unavailable")?.peers()
                     .get(&link.peer.to_string()).is_some_and(|value| value.can_connect && value.grant == expected_grant);
                 if !paired { return Err("Remote update authorization changed. Reopen this computer.".into()); }
                 let info = super::streams::peer_info(&link.connection).await
@@ -410,7 +412,7 @@ impl Manager {
                 }
                 self.backend.authorize_account(&account)?;
                 link.node.ensure_valid().await?;
-                if !link.node.store.lock().map_err(|_| "Remote grant unavailable")?.peers()
+                if !link.node.store.read().map_err(|_| "Remote grant unavailable")?.peers()
                     .get(&link.peer.to_string()).is_some_and(|value| value.can_connect && value.grant == expected_grant) {
                     return Err("Remote update authorization changed. Reopen this computer.".into());
                 }
@@ -487,7 +489,9 @@ impl Manager {
             self.generation.fetch_add(1, Ordering::SeqCst);
             let node = current.as_ref().filter(|n| n.account == account).cloned();
             if let Some(node) = &node {
-                node.store.lock().unwrap().set_name(&name)?;
+                let mut store = write_policy(&node.store).await?;
+                self.backend.authorize_account(&account)?;
+                store.set_name(&name)?;
             } else {
                 self.store(&account)?.set_name(&name)?;
             }
@@ -514,7 +518,7 @@ impl Manager {
             } else {
                 None
             };
-            // This short local lock orders settings writes against node install.
+            // This local lock orders settings writes against node install.
             // No credential validation or network operation holds it.
             let current = self.node.lock().await;
             self.generation.fetch_add(1, Ordering::SeqCst);
@@ -530,12 +534,13 @@ impl Manager {
                 let mut disk;
                 let mut memory;
                 let store = if let Some(node) = &node {
-                    memory = node.store.lock().unwrap();
+                    memory = write_policy(&node.store).await?;
                     &mut *memory
                 } else {
                     disk = self.store(&account)?;
                     &mut disk
                 };
+                self.backend.authorize_account(&account)?;
                 if let Some(enabled) = enable {
                     store.set_enabled(enabled)?;
                     self.resident.store(enabled, Ordering::Release);
@@ -574,7 +579,7 @@ impl Manager {
                 let list = node.session.list_remote_devices().await?;
                 validate_devices(&list.devices)?;
                 node.ensure_valid().await?;
-                node.remember_peer_names(&list.devices);
+                node.remember_peer_names(&list.devices).await;
                 serde_json::to_value(
                     list.devices
                         .into_iter()
@@ -608,6 +613,29 @@ impl Manager {
             _ => Err("Unknown local remote setting".into()),
         }
     }
+}
+
+/// Publication holds a shared policy guard while it makes the attachment
+/// durable. Wait for exclusive edits without blocking an async worker or
+/// detaching an edit from its caller's account/window/installation guards.
+/// The caller must finish its short local edit before awaiting again.
+async fn write_policy(store: &RwLock<Store>) -> Result<RwLockWriteGuard<'_, Store>, String> {
+    tokio::time::timeout(super::streams::IO_TIMEOUT, async {
+        loop {
+            {
+                match store.try_write() {
+                    Ok(store) => return Ok(store),
+                    Err(TryLockError::Poisoned(_)) => {
+                        return Err("Remote grant unavailable".into());
+                    }
+                    Err(TryLockError::WouldBlock) => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| "Remote device settings are busy; try again".to_string())?
 }
 
 impl Node {
@@ -655,9 +683,9 @@ impl Node {
         // Local cancel/disable never wait on this network serialization gate.
         let _registration = self.registration.lock().await;
         self.ensure_valid().await?;
-        let key = self.store.lock().unwrap().key();
-        let enabled = self.store.lock().unwrap().enabled();
-        let name = self.store.lock().unwrap().name().to_owned();
+        let key = self.store.read().unwrap().key();
+        let enabled = self.store.read().unwrap().enabled();
+        let name = self.store.read().unwrap().name().to_owned();
         let window = self
             .window
             .lock()
@@ -700,7 +728,7 @@ impl Node {
     }
     async fn begin_pairing(&self) -> Result<PairingWindow, String> {
         let _starting = self.registration.lock().await;
-        if !self.store.lock().unwrap().enabled() {
+        if !self.store.read().unwrap().enabled() {
             return Err("Enable remote access on this computer first".into());
         }
         if let Some(window) = self.current_pairing().await {
@@ -708,8 +736,8 @@ impl Node {
         }
         let generation = self.pairing_generation.load(Ordering::SeqCst);
         let next = pairing::Window::new();
-        let key = self.store.lock().unwrap().key();
-        let name = self.store.lock().unwrap().name().to_owned();
+        let key = self.store.read().unwrap().key();
+        let name = self.store.read().unwrap().name().to_owned();
         let address = self.endpoint.addr();
         let registration = register(
             &self.session,
@@ -730,7 +758,7 @@ impl Node {
         self.ensure_valid().await?;
         let mut window = self.window.lock().await;
         if self.pairing_generation.load(Ordering::SeqCst) != generation
-            || !self.store.lock().unwrap().enabled()
+            || !self.store.read().unwrap().enabled()
         {
             return Err("Pairing was cancelled locally".into());
         }
@@ -769,7 +797,7 @@ impl Node {
             }
         };
         validate_devices(&list.devices)?;
-        self.remember_peer_names(&list.devices);
+        self.remember_peer_names(&list.devices).await;
         let device = list
             .devices
             .into_iter()
@@ -793,18 +821,16 @@ impl Node {
         }
         Ok((address, device))
     }
-    fn remember_peer_names(&self, devices: &[RemoteDevice]) {
+    async fn remember_peer_names(&self, devices: &[RemoteDevice]) {
         let names = devices
             .iter()
             .filter(|d| d.channel == crate::profile::PROFILE)
             .map(|d| (d.endpoint.as_str(), d.name.as_str()));
-        if self
-            .store
-            .lock()
-            .unwrap()
-            .refresh_peer_names(names)
-            .is_err()
-        {
+        let result = match write_policy(&self.store).await {
+            Ok(mut store) => store.refresh_peer_names(names),
+            Err(error) => Err(error),
+        };
+        if result.is_err() {
             log::warn!("Could not save updated remote computer names");
         }
     }
@@ -817,7 +843,7 @@ impl Node {
             && validate_devices(&list.devices).is_ok()
             && self.valid().await
         {
-            self.remember_peer_names(&list.devices);
+            self.remember_peer_names(&list.devices).await;
         }
     }
     async fn pair(&self, peer: EndpointId, code: pairing::Code) -> Result<(), String> {
@@ -867,7 +893,7 @@ impl Node {
             // dial does not burn a window, but a partial proof can never retry.
             self.ensure_valid().await?;
             {
-                let mut store = self.store.lock().unwrap();
+                let mut store = write_policy(&self.store).await?;
                 if self.pairing_generation.load(Ordering::SeqCst) != generation {
                     return Err("Pairing was cancelled locally".into());
                 }
@@ -885,7 +911,7 @@ impl Node {
             {
                 let _account = self.backend.account_gate.read().await;
                 self.ensure_valid().await?;
-                let mut store = self.store.lock().unwrap();
+                let mut store = write_policy(&self.store).await?;
                 if self.pairing_generation.load(Ordering::SeqCst) != generation {
                     return Err("Pairing was cancelled locally".into());
                 }
@@ -904,7 +930,7 @@ impl Node {
             {
                 let _account = self.backend.account_gate.read().await;
                 self.ensure_valid().await?;
-                let mut store = self.store.lock().unwrap();
+                let mut store = write_policy(&self.store).await?;
                 if self.pairing_generation.load(Ordering::SeqCst) != generation {
                     return Err("Pairing was cancelled locally".into());
                 }
@@ -918,7 +944,7 @@ impl Node {
             result => {
                 if self
                     .store
-                    .lock()
+                    .read()
                     .unwrap()
                     .peers()
                     .get(&peer.to_string())
@@ -934,7 +960,7 @@ impl Node {
         let generation = self.pairing_generation.load(Ordering::SeqCst);
         let window = self
             .store
-            .lock()
+            .read()
             .unwrap()
             .peers()
             .get(&peer.to_string())
@@ -969,7 +995,7 @@ impl Node {
             }
             let _account = self.backend.account_gate.read().await;
             self.ensure_valid().await?;
-            let mut store = self.store.lock().unwrap();
+            let mut store = write_policy(&self.store).await?;
             if self.pairing_generation.load(Ordering::SeqCst) != generation {
                 return Err("Pairing was cancelled locally".into());
             }
@@ -987,7 +1013,7 @@ impl Node {
         tx: &mut iroh::endpoint::SendStream,
         rx: &mut iroh::endpoint::RecvStream,
     ) -> Result<(), String> {
-        if !self.store.lock().unwrap().enabled() {
+        if !self.store.read().unwrap().enabled() {
             return Err("Remote access is disabled".into());
         }
         if !self
@@ -1048,7 +1074,13 @@ impl Node {
             return Err("Pairing window was closed or expired".into());
         }
         {
-            let mut store = self.store.lock().unwrap();
+            let mut store = write_policy(&self.store).await?;
+            if !pending_window
+                .as_ref()
+                .is_some_and(|w| w.id == window && !w.remaining().is_zero())
+            {
+                return Err("Pairing window was closed or expired".into());
+            }
             if !store.enabled() {
                 return Err("Remote access is disabled".into());
             }
@@ -1246,6 +1278,70 @@ fn validate_devices(devices: &[RemoteDevice]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn policy_fixture() -> (tempfile::TempDir, Arc<RwLock<Store>>) {
+        let root = tempfile::tempdir().unwrap();
+        let database = Arc::new(
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap(),
+        );
+        database.upsert_account("account", 1).unwrap();
+        let mut policy =
+            Store::open(database, "local", "project", "unpackaged", "account").unwrap();
+        policy.set_enabled(true).unwrap();
+        (root, Arc::new(RwLock::new(policy)))
+    }
+
+    fn hold_publication_policy(
+        policy: Arc<RwLock<Store>>,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _publication = policy.read().unwrap();
+            entered.send(()).unwrap();
+            resume.recv().unwrap();
+        });
+        waiting.recv().unwrap();
+        (release, worker)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_a_waiting_policy_edit_cannot_disable_access_later() {
+        let (_root, policy) = policy_fixture();
+        let (release, publication) = hold_publication_policy(policy.clone());
+        let editing = policy.clone();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let edit = tokio::spawn(async move {
+            started.send(()).unwrap();
+            write_policy(&editing).await?.set_enabled(false)
+        });
+        waiting.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(!edit.is_finished());
+        assert!(policy.read().unwrap().enabled());
+        edit.abort();
+        assert!(edit.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        publication.join().unwrap();
+        tokio::time::advance(super::super::streams::IO_TIMEOUT).await;
+        assert!(policy.read().unwrap().enabled());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn publication_cannot_make_a_policy_edit_wait_indefinitely() {
+        let (_root, policy) = policy_fixture();
+        let (release, publication) = hold_publication_policy(policy.clone());
+        let started = tokio::time::Instant::now();
+        let result = write_policy(&policy).await;
+        assert!(
+            matches!(result, Err(error) if error == "Remote device settings are busy; try again")
+        );
+        assert_eq!(started.elapsed(), super::super::streams::IO_TIMEOUT);
+        release.send(()).unwrap();
+        publication.join().unwrap();
+        assert!(policy.read().unwrap().enabled());
+    }
 
     #[tokio::test]
     async fn peer_info_connection_timeout_is_unreachable_not_legacy() {

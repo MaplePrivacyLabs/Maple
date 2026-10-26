@@ -112,7 +112,7 @@ pub struct LocalBackend {
     row_reader: Option<Arc<maple_agent::store::RowReader>>,
     #[cfg(test)]
     pub(super) ui_fixture: bool,
-    pub(crate) account_gate: tokio::sync::RwLock<()>,
+    pub(crate) account_gate: Arc<tokio::sync::RwLock<()>>,
     restore_lock: tokio::sync::Mutex<()>,
     ui_settings_gate: tokio::sync::Mutex<()>,
     service: MapleAgentService,
@@ -1145,7 +1145,7 @@ impl LocalBackend {
             ui_fixture: false,
             restore_lock: tokio::sync::Mutex::new(()),
             ui_settings_gate: tokio::sync::Mutex::new(()),
-            account_gate: tokio::sync::RwLock::new(()),
+            account_gate: Arc::new(tokio::sync::RwLock::new(())),
             service,
             auth: MapleApiAuthState::new(),
             api_url,

@@ -665,7 +665,7 @@ fn provisional_sweep_preserves_committed_listed_referenced_and_recent_tasks() {
             },
         )
         .unwrap();
-    // Model the source and attachment references the session/blob APIs write;
+    // Model the source and attachment references the session/attachment APIs write;
     // even a stale zero cache must not make those tasks safe to sweep.
     store
         .write(Durability::Durable, |tx| {
@@ -675,14 +675,9 @@ fn provisional_sweep_preserves_committed_listed_referenced_and_recent_tasks() {
                 [tasks[3].key.0],
             )?;
             tx.execute(
-                "INSERT INTO blobs(sha256,mime,size,complete,created_ms)
-            VALUES (zeroblob(32),'image/png',0,1,1)",
-                [],
-            )?;
-            let blob = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO task_blobs(task_id,blob_id) VALUES (?1,?2)",
-                params![tasks[4].key.0, blob],
+                "INSERT INTO file_attachments(public_id,account_id,task_id,operation_id,name,mime,size,sha256,state,bound,created_ms,updated_ms)
+                VALUES ('00000000000000000000000000000001',?1,?2,'pending-test','file.txt','text/plain',0,?3,'uploading',0,1,1)",
+                params![alice.0, tasks[4].key.0, "0".repeat(64)],
             )?;
             Ok(())
         })

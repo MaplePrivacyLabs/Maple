@@ -227,6 +227,7 @@ impl ChatScreen {
         if changed {
             self.attachment_images.clear();
             self.attachment_requests.clear();
+            self.attachment_failures.clear();
             self.attachment_queue.clear();
         }
     }
