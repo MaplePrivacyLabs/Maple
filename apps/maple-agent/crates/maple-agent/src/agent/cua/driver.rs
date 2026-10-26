@@ -391,7 +391,7 @@ impl Binding {
         let (catalog, session) = tokio::time::timeout(RUNTIME_STARTUP_TIMEOUT, prepare)
             .await
             .map_err(|_| {
-                "Built-in CUA did not finish starting. Check that Maple still holds its screen and input permissions."
+                "Computer use did not finish starting. Check that Maple still holds its screen and input permissions."
                     .to_string()
             })??;
 

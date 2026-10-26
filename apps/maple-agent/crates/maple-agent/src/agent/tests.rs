@@ -2860,7 +2860,7 @@ async fn a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on
         .await
         .unwrap_err();
     assert!(
-        error.starts_with("Set up built-in CUA in Settings"),
+        error.starts_with("Set up computer use in Settings"),
         "{error}"
     );
 }
@@ -2988,7 +2988,7 @@ async fn built_in_cua_follows_the_device_and_the_tasks_switch() {
         .await
         .unwrap_err();
     assert!(
-        error.starts_with("Set up built-in CUA in Settings"),
+        error.starts_with("Set up computer use in Settings"),
         "{error}"
     );
 
@@ -3095,7 +3095,7 @@ async fn built_in_cua_follows_the_device_and_the_tasks_switch() {
     assert_eq!(
         last_tool_result(&requests[requests.len() - 1]),
         (
-            "Computer use (CUA) is not connected to this task.".to_string(),
+            "Computer use is not connected to this task.".to_string(),
             true
         )
     );

@@ -121,7 +121,7 @@ fn only_a_new_server_cannot_take_the_computer_use_name() {
     let error =
         validate_new_mcp_integration_collisions(&[], &[stdio("Cua Driver", "x")]).unwrap_err();
     assert!(
-        error.contains("conflicts with the Computer use (CUA) integration"),
+        error.contains("conflicts with the Computer use integration"),
         "{error}"
     );
 }

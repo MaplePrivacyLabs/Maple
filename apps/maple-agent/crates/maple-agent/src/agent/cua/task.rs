@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use super::{INSTRUCTIONS, INSTRUCTIONS_SECTION, missing_permission_message};
 use crate::agent::integrations::{
-    CUA_CARD_DESCRIPTION, CUA_CARD_NAME, CUA_INTEGRATION_ID, cua_default, is_cua_identity,
+    CUA_DESCRIPTION, CUA_INTEGRATION_ID, CUA_NAME, cua_default, is_cua_identity,
 };
 #[cfg(test)]
 use crate::agent::store::TaskKind;
@@ -70,8 +70,8 @@ pub(in crate::agent) fn session_row(
     Some(AgentSessionMcpServer {
         name: CUA_INTEGRATION_ID.to_string(),
         kind: AgentSessionIntegrationKind::Mcp,
-        display_name: CUA_CARD_NAME.to_string(),
-        description: CUA_CARD_DESCRIPTION.to_string(),
+        display_name: CUA_NAME.to_string(),
+        description: CUA_DESCRIPTION.to_string(),
         transport: if set_up { "embedded" } else { "unconfigured" }.to_string(),
         enabled: set_up && choice == Some(true),
         available: set_up && ready,
@@ -250,7 +250,7 @@ impl AgentRuntimeHandle {
         }
         if task_choice(&row).is_none() && cua_default(self.paths(), &self.user_id).is_none() {
             return Err(
-                "Set up built-in CUA in Settings > Integrations before enabling it for a task"
+                "Set up computer use in Settings > Integrations before enabling it for a task"
                     .to_string(),
             );
         }
@@ -269,7 +269,7 @@ impl AgentRuntimeHandle {
         if let Some(cua) = &loaded {
             cua.bind(false)
                 .await
-                .map_err(|error| format!("Failed to start built-in CUA: {error}"))?;
+                .map_err(|error| format!("Failed to start computer use: {error}"))?;
         }
         match store.update(session_id, |row| set_task_choice(row, true)) {
             Ok(Some(row)) => Ok(row),
@@ -326,7 +326,7 @@ mod tests {
     fn the_row_follows_the_tasks_choice_the_device_and_readiness() {
         let unset = session_row(&row(TaskKind::Desktop, None), None, true).unwrap();
         assert_eq!(unset.name, "cua-driver");
-        assert_eq!(unset.display_name, "Cua");
+        assert_eq!(unset.display_name, "Computer use");
         assert_eq!(unset.kind, AgentSessionIntegrationKind::Mcp);
         assert_eq!(unset.transport, "unconfigured");
         assert!(!unset.enabled && !unset.available);
