@@ -337,6 +337,10 @@ jobs:
           "GPUI_FXC_PATH=$fxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Exercise Windows metadata parser and native linker retention
         run: python3 scripts/test_windows_build_info.py
+      - name: Smoke native Git Bash process launch
+        run: |
+          git_bash="$(cygpath -w "$BASH")"
+          python3 -c 'import subprocess, sys; host = subprocess.check_output([sys.argv[1], "-c", "uname -s"], text=True).strip(); assert host.startswith(("MINGW", "MSYS")), host; print("Verified native Git Bash: " + host)' "$git_bash"
       - name: Fingerprint the actual release environment
         id: environment
         run: python3 ../../scripts/ci/agent_cache.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
@@ -390,7 +394,10 @@ jobs:
           )
           printf '%s\n' "$RUNNER_TEMP/cargo-about-0.9.0-x86_64-pc-windows-msvc" >> "$GITHUB_PATH"
       - name: Build Windows release binary and notices without signing credentials
-        run: python3 ../../scripts/ci/agent_measure.py --phase windows-release-build --target target -- bash ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+        run: |
+          # Native Python otherwise finds System32's WSL bash launcher first.
+          git_bash="$(cygpath -w "$BASH")"
+          python3 ../../scripts/ci/agent_measure.py --phase windows-release-build --target target -- "$git_bash" ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Inspect immutable Windows profile and source
         run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE"
       - name: Upload prebuilt Windows binary and notices

@@ -417,7 +417,14 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         release = next(step["run"] for step in steps
                        if step.get("name") == "Build Windows release binary and notices without signing credentials")
         # Native Windows CreateProcess cannot launch a Unix shebang script.
-        self.assertIn('--target target -- bash ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"', release)
+        self.assertIn('git_bash="$(cygpath -w "$BASH")"', release)
+        self.assertIn('--target target -- "$git_bash" ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"', release)
+        self.assertNotIn('-- bash ', release)
+        shell_probe = next(i for i, step in enumerate(steps)
+                           if step.get("name") == "Smoke native Git Bash process launch")
+        graph = next(i for i, step in enumerate(steps)
+                     if step.get("name") == "Verify the canonical SDK and proxy dependency graph")
+        self.assertLess(shell_probe, graph)
         upload = next(step["with"] for step in steps
                       if step.get("uses", "").startswith("actions/upload-artifact@"))
         self.assertEqual(upload["path"].splitlines(), [
