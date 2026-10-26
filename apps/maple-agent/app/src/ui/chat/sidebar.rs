@@ -436,6 +436,31 @@ pub(super) struct SwitcherRoot {
     new_task_id: SharedString,
     new_task_label: SharedString,
     empty_id: SharedString,
+    folder_position: usize,
+}
+
+#[derive(Clone)]
+struct DraggedFolder {
+    sidebar: gpui::EntityId,
+    target: ProjectTarget,
+    name: SharedString,
+}
+
+impl Render for DraggedFolder {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .rounded(ROW_RADIUS)
+            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+            .text_sm()
+            .text_color(gpui::rgb(theme::text_sidebar()))
+            .child(icon("folder", FOLDER_ICON_SIZE, theme::text_secondary()))
+            .child(self.name.clone())
+    }
 }
 
 pub(super) struct Sidebar {
@@ -481,6 +506,10 @@ pub(super) struct Sidebar {
     projects_expanded: bool,
     archived_expanded: bool,
     view: SidebarView,
+    folder_order: Vec<String>,
+    folder_order_loaded: bool,
+    folder_order_loading: bool,
+    folder_order_reset_pending: bool,
     switcher_roots: Vec<SwitcherRoot>,
     computer_switcher_roots: Vec<Vec<SwitcherRoot>>,
     scope_label: SharedString,
@@ -550,6 +579,7 @@ impl SwitcherRoot {
             new_task_id: target.element_id("new-task-in"),
             new_task_label: format!("New task in {name}").into(),
             empty_id: target.element_id("folder-empty"),
+            folder_position: usize::MAX,
             target,
             name,
         }
@@ -741,7 +771,7 @@ impl Sidebar {
                     .ok();
             });
         });
-        Self {
+        let mut sidebar = Self {
             pages: SidebarPages::default(),
             group_pages: ComputerPages::default(),
             computers: Arc::new(Vec::new()),
@@ -774,6 +804,10 @@ impl Sidebar {
             projects_expanded: true,
             archived_expanded: false,
             view: settings.sidebar_view,
+            folder_order: Vec::new(),
+            folder_order_loaded: false,
+            folder_order_loading: false,
+            folder_order_reset_pending: false,
             switcher_roots: Vec::new(),
             computer_switcher_roots: Vec::new(),
             scope_label: "All projects".into(),
@@ -804,7 +838,9 @@ impl Sidebar {
             vim_by_row: Vec::new(),
             vim_order: Vec::new(),
             bridged_tasks: RefCell::new(Vec::new()),
-        }
+        };
+        sidebar.load_folder_order(cx);
+        sidebar
     }
 
     // ---- Inputs from the screen ------------------------------------------
@@ -1277,6 +1313,10 @@ impl Sidebar {
             ..SidebarView::default()
         };
         self.pinned_tasks.clear();
+        self.folder_order.clear();
+        self.folder_order_loaded = true;
+        self.folder_order_loading = false;
+        self.folder_order_reset_pending = false;
         self.project_metadata.clear();
         self.task_project_labels.clear();
         self.removed_projects.clear();
@@ -1479,6 +1519,19 @@ impl Sidebar {
             .filter(|root| !self.removed_projects.contains(*root))
             .map(|root| SwitcherRoot::new(self.project_target(root), self.root_name(root).into()))
             .collect();
+        if self.manual_folder_mode() && self.folder_order_loaded {
+            let known: HashSet<&str> = self.folder_order.iter().map(String::as_str).collect();
+            let added: Vec<String> = self
+                .switcher_roots
+                .iter()
+                .filter(|root| !known.contains(root.root.as_str()))
+                .map(|root| root.root.clone())
+                .collect();
+            if !added.is_empty() {
+                self.folder_order.extend(added);
+                self.persist_folder_order();
+            }
+        }
         let order = |a: &usize, b: &usize| {
             let order = match if self.computers.len() > 1 {
                 SidebarSort::Updated
@@ -1549,8 +1602,26 @@ impl Sidebar {
                                 || root.name.to_lowercase().contains(filter))
                     })
                     .collect();
-                // The folder with the latest activity leads.
-                folders.sort_by_key(|(_, (latest, _))| std::cmp::Reverse(*latest));
+                if self.manual_folder_mode() && self.folder_order_loaded {
+                    let ranks: HashMap<&str, usize> = self
+                        .folder_order
+                        .iter()
+                        .enumerate()
+                        .map(|(position, root)| (root.as_str(), position))
+                        .collect();
+                    folders.sort_by_key(|(index, _)| {
+                        ranks
+                            .get(self.switcher_roots[*index].root.as_str())
+                            .copied()
+                            .unwrap_or(usize::MAX)
+                    });
+                } else {
+                    // The folder with the latest activity leads.
+                    folders.sort_by_key(|(_, (latest, _))| std::cmp::Reverse(*latest));
+                }
+                for (position, (index, _)) in folders.iter().enumerate() {
+                    self.switcher_roots[*index].folder_position = position;
+                }
                 sections.extend(
                     folders
                         .into_iter()
@@ -2016,19 +2087,219 @@ impl Sidebar {
             .unwrap_or(self.view.group != SidebarGroup::Folder)
     }
 
+    fn manual_folder_mode(&self) -> bool {
+        self.computers.len() <= 1
+            && self.view.group == SidebarGroup::Folder
+            && self.view.manual_folders
+    }
+
+    fn can_reorder_folders(&self) -> bool {
+        self.manual_folder_mode()
+            && self.folder_order_loaded
+            && self.filter.is_empty()
+            && self.project_filter.is_none()
+            && self.rename.is_none()
+    }
+
+    fn load_folder_order(&mut self, cx: &mut Context<Self>) {
+        if self.folder_order_loaded || self.folder_order_loading {
+            return;
+        }
+        self.folder_order_loading = true;
+        let backend = self.backend.clone();
+        let user = self.user_id.clone();
+        let computer = backend.remote_host().map(str::to_owned);
+        self.call(
+            async move { backend.get_sidebar_folder_order(&user, computer).await },
+            cx,
+            |this, result, cx| {
+                if this.folder_order_loaded {
+                    return;
+                }
+                this.folder_order_loading = false;
+                match result {
+                    Ok(order) => {
+                        let reset = std::mem::take(&mut this.folder_order_reset_pending);
+                        this.folder_order = if reset { Vec::new() } else { order };
+                        this.folder_order_loaded = true;
+                        let seed = this.manual_folder_mode() && this.folder_order.is_empty();
+                        if seed {
+                            this.seed_folder_order();
+                        }
+                        this.rebuild_sections();
+                        if seed || reset {
+                            this.save_folder_order(cx);
+                        }
+                        cx.notify();
+                    }
+                    Err(message) => cx.emit(SidebarEvent::Notice(message.into())),
+                }
+            },
+        );
+    }
+
+    fn seed_folder_order(&mut self) {
+        self.folder_order = self
+            .sections
+            .iter()
+            .filter_map(|(section, _)| match section {
+                SidebarSection::Folder(index) => Some(self.switcher_roots[*index].root.clone()),
+                _ => None,
+            })
+            .collect();
+    }
+
+    fn persist_folder_order(&self) {
+        if self.folder_order_loaded {
+            // The shared settings writer owns retries and the normal Quit
+            // barrier, so a screen change cannot discard this presentation edit.
+            drop(crate::settings::save_sidebar_folder_order(
+                self.backend.clone(),
+                self.user_id.clone(),
+                self.backend.remote_host().map(str::to_owned),
+                self.folder_order.clone(),
+            ));
+        }
+    }
+
+    fn save_folder_order(&self, cx: &mut Context<Self>) {
+        let saved = crate::settings::save_sidebar_folder_order(
+            self.backend.clone(),
+            self.user_id.clone(),
+            self.backend.remote_host().map(str::to_owned),
+            self.folder_order.clone(),
+        );
+        self.call(
+            async move {
+                saved
+                    .await
+                    .map_err(|_| "Could not save folder order".to_string())?
+            },
+            cx,
+            |_, result, cx| {
+                if let Err(message) = result {
+                    cx.emit(SidebarEvent::Notice(message.into()));
+                }
+            },
+        );
+    }
+
+    /// Move only the two current folders' presentation slots. Resolve roots at
+    /// drop time so paging or a metadata refresh cannot retarget a stale index.
+    fn reorder_folder(
+        &mut self,
+        source: &ProjectTarget,
+        target: &ProjectTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_reorder_folders()
+            || source == target
+            || source.computer.as_deref() != self.backend.remote_host()
+            || target.computer.as_deref() != self.backend.remote_host()
+            || ![source, target].iter().all(|target| {
+                self.switcher_roots
+                    .iter()
+                    .any(|root| &root.target == *target)
+            })
+        {
+            return;
+        }
+        let Some(from) = self
+            .folder_order
+            .iter()
+            .position(|root| root == &source.path)
+        else {
+            return;
+        };
+        let Some(to) = self
+            .folder_order
+            .iter()
+            .position(|root| root == &target.path)
+        else {
+            return;
+        };
+        let moved = self.folder_order.remove(from);
+        self.folder_order.insert(to, moved);
+        self.close_popups(cx);
+        self.save_folder_order(cx);
+        self.rebuild_sections();
+        cx.notify();
+    }
+
+    fn move_folder(&mut self, target: &ProjectTarget, forward: bool, cx: &mut Context<Self>) {
+        if !self.can_reorder_folders() {
+            return;
+        }
+        let roots: Vec<_> = self
+            .sections
+            .iter()
+            .filter_map(|(section, _)| match section {
+                SidebarSection::Folder(index) => Some(self.switcher_roots[*index].target.clone()),
+                _ => None,
+            })
+            .collect();
+        let Some(position) = roots.iter().position(|root| root == target) else {
+            return;
+        };
+        let adjacent = if forward {
+            roots.get(position + 1)
+        } else {
+            position
+                .checked_sub(1)
+                .and_then(|position| roots.get(position))
+        };
+        if let Some(adjacent) = adjacent {
+            self.reorder_folder(target, adjacent, cx);
+        }
+    }
+
+    fn reset_view(&mut self, cx: &mut Context<Self>) {
+        self.folder_order.clear();
+        self.folder_order_reset_pending = !self.folder_order_loaded;
+        self.view = SidebarView::default();
+        self.rebuild_sections();
+        self.list.remeasure_items(0..self.entries.len());
+        self.save_folder_order(cx);
+        self.load_folder_order(cx);
+        crate::settings::update_settings_in_background(|settings| {
+            settings.sidebar_view = SidebarView::default();
+        });
+        cx.notify();
+    }
+
     /// Change the view, keep it in the app settings, and rebuild what it
     /// shapes. The project line changes row heights, so every row is
     /// measured again.
     pub(super) fn set_view(&mut self, view: SidebarView, cx: &mut Context<Self>) {
         if self.view == view {
+            if self.manual_folder_mode() {
+                self.load_folder_order(cx);
+                if self.folder_order_loaded {
+                    self.save_folder_order(cx);
+                }
+            }
             return;
+        }
+        if view.group == SidebarGroup::Folder
+            && view.manual_folders
+            && self.folder_order_loaded
+            && self.folder_order.is_empty()
+        {
+            // Enter manual ordering without moving the folders already on screen.
+            self.seed_folder_order();
         }
         self.view = view;
         self.rebuild_sections();
         self.list.remeasure_items(0..self.entries.len());
         cx.notify();
+        if self.manual_folder_mode() {
+            self.load_folder_order(cx);
+            if self.folder_order_loaded {
+                self.save_folder_order(cx);
+            }
+        }
         crate::settings::update_settings_in_background(move |settings| {
-            settings.sidebar_view = view
+            settings.sidebar_view = view;
         });
     }
 
@@ -2502,6 +2773,39 @@ impl Sidebar {
                 this.begin_rename(RenameTarget::Project(rename_target.clone()), cx)
             }),
         }];
+        if self.can_reorder_folders()
+            && let Some(root) = self
+                .switcher_roots
+                .iter()
+                .find(|root| &root.target == target)
+        {
+            for (forward, available, id, icon, label) in [
+                (
+                    false,
+                    root.folder_position > 0 && root.folder_position != usize::MAX,
+                    "move-project-up",
+                    "arrow-up",
+                    "Move up",
+                ),
+                (
+                    true,
+                    root.folder_position.saturating_add(1) < self.sections.len(),
+                    "move-project-down",
+                    "chevron-down",
+                    "Move down",
+                ),
+            ] {
+                if available {
+                    let target = target.clone();
+                    items.push(SidebarMenuItem {
+                        id: target.element_id(id),
+                        icon,
+                        label,
+                        on_click: Box::new(move |this, cx| this.move_folder(&target, forward, cx)),
+                    });
+                }
+            }
+        }
         // Other actions are still scoped to the active ChatScreen. Never offer
         // them against a foreign folder or reveal its path on this computer.
         if target.computer.as_deref() != self.backend.remote_host() {
@@ -3230,6 +3534,7 @@ impl Sidebar {
         use ViewSubmenu::{Group, Show, Sort};
 
         let view = self.view;
+        let manual = view.group == SidebarGroup::Folder && view.manual_folders;
         let choice = |id: &'static str, label: &'static str, current: bool, next: SidebarView| {
             MenuItem::new(id, label, move |this: &mut Self, _: &mut Window, cx| {
                 this.set_view(next, cx)
@@ -3262,21 +3567,38 @@ impl Sidebar {
             sort_menu = sort_menu.item(choice(
                 id,
                 label,
-                view.sort == sort,
-                SidebarView { sort, ..view },
+                !manual && view.sort == sort,
+                SidebarView {
+                    sort,
+                    manual_folders: false,
+                    ..view
+                },
             ));
         }
-        sort_menu = sort_menu.separator();
-        for (id, label, ascending) in [
-            ("view-sort-descending", "Descending", false),
-            ("view-sort-ascending", "Ascending", true),
-        ] {
+        if view.group == SidebarGroup::Folder {
             sort_menu = sort_menu.item(choice(
-                id,
-                label,
-                view.ascending == ascending,
-                SidebarView { ascending, ..view },
+                "view-sort-manual",
+                "Manually",
+                manual,
+                SidebarView {
+                    manual_folders: true,
+                    ..view
+                },
             ));
+        }
+        if !manual {
+            sort_menu = sort_menu.separator();
+            for (id, label, ascending) in [
+                ("view-sort-descending", "Descending", false),
+                ("view-sort-ascending", "Ascending", true),
+            ] {
+                sort_menu = sort_menu.item(choice(
+                    id,
+                    label,
+                    view.ascending == ascending,
+                    SidebarView { ascending, ..view },
+                ));
+            }
         }
         let metadata = self.show_metadata();
         let show_menu = Menu::new("view-show-menu", px(220.))
@@ -3306,10 +3628,14 @@ impl Sidebar {
             .item(
                 self.view_popup
                     .submenu(Sort, "view-sort", "Sort by", sort_menu, window, cx)
-                    .value(match view.sort {
-                        SidebarSort::Updated => "Last updated",
-                        SidebarSort::Created => "Date created",
-                        SidebarSort::Name => "Name",
+                    .value(if manual {
+                        "Manually"
+                    } else {
+                        match view.sort {
+                            SidebarSort::Updated => "Last updated",
+                            SidebarSort::Created => "Date created",
+                            SidebarSort::Name => "Name",
+                        }
                     }),
             )
             .item(
@@ -3318,13 +3644,16 @@ impl Sidebar {
             )
             .separator()
             .item(
-                choice(
+                MenuItem::new(
                     "view-reset",
                     "Reset to defaults",
-                    false,
-                    SidebarView::default(),
+                    |this: &mut Self, _, cx| this.reset_view(cx),
                 )
-                .enabled(view != SidebarView::default()),
+                .enabled(
+                    view != SidebarView::default()
+                        || !self.folder_order.is_empty()
+                        || self.folder_order_reset_pending,
+                ),
             )
     }
 
@@ -3362,6 +3691,7 @@ impl Sidebar {
         // While a sidebar menu is open, only its owning header shows actions.
         let menu_open = self.project_popup.is_open(&root.target);
         let hover = !renaming && !self.sidebar_menu_open();
+        let reorderable = hover && self.can_reorder_folders();
         let new_task = root.target.clone();
         let menu_target = root.target.clone();
         let selector = root.folder_id.clone();
@@ -3389,10 +3719,54 @@ impl Sidebar {
             })
             .when(hover, |row| {
                 row.hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
+                    let style = style.bg(gpui::rgb(theme::bg_sidebar_row_hover()));
+                    if reorderable {
+                        style.cursor_move()
+                    } else {
+                        style.cursor_pointer()
+                    }
                 })
+            })
+            .when(reorderable, |row| {
+                let sidebar_id = cx.entity_id();
+                let owner = cx.weak_entity();
+                let target = root.target.clone();
+                let highlight_target = target.clone();
+                let drop_target = target.clone();
+                let root_target = target.clone();
+                row.on_drag(
+                    DraggedFolder {
+                        sidebar: sidebar_id,
+                        target,
+                        name: root.name.clone(),
+                    },
+                    move |drag, _, _, cx| {
+                        owner
+                            .update(cx, |this, cx| {
+                                this.close_popups(cx);
+                                this.set_hovered_entry(None, cx);
+                            })
+                            .ok();
+                        cx.new(|_| drag.clone())
+                    },
+                )
+                .can_drop(move |value, _, _| {
+                    value.downcast_ref::<DraggedFolder>().is_some_and(|drag| {
+                        drag.sidebar == sidebar_id && drag.target != drop_target
+                    })
+                })
+                .drag_over::<DraggedFolder>(move |style, drag, _, _| {
+                    if drag.sidebar == sidebar_id && drag.target != highlight_target {
+                        style.bg(gpui::rgb(theme::bg_sidebar_row_selected_hover()))
+                    } else {
+                        style
+                    }
+                })
+                .on_drop(cx.listener(move |this, drag: &DraggedFolder, _, cx| {
+                    if drag.sidebar == cx.entity_id() {
+                        this.reorder_folder(&drag.target, &root_target, cx);
+                    }
+                }))
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.toggle_section_expanded(section, cx);

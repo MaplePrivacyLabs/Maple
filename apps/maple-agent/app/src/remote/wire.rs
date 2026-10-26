@@ -238,6 +238,12 @@ impl Method {
         )
     }
     pub fn parse(value: &str) -> Result<Self, String> {
+        if matches!(
+            value,
+            "get_sidebar_folder_order" | "set_sidebar_folder_order"
+        ) {
+            return Err("This operation is available only on the local computer.".into());
+        }
         serde_json::from_value(serde_json::Value::String(value.into()))
             .map_err(|_| "This operation is available only on the local computer.".into())
     }

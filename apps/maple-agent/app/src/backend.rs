@@ -245,6 +245,8 @@ operations! {
     add_word(word: (String)) -> bool;
     get_remote_sidebars(user_id: (&str)) -> HashMap<String, crate::settings::RemoteSidebarSettings>;
     set_remote_sidebar(user_id: (&str), computer: (String), patch: (serde_json::Value)) -> ();
+    get_sidebar_folder_order(user_id: (&str), computer: (Option<String>)) -> Vec<String>;
+    set_sidebar_folder_order(user_id: (&str), computer: (Option<String>), order: (Vec<String>)) -> ();
     set_task_pinned(user_id: (&str), task: (&str), pinned: (bool)) -> ();
     login(email: (String), password: (String)) -> AuthSession;
     logout_and_clear(account_user: (&str)) -> ();
@@ -521,6 +523,8 @@ impl AgentBackend {
                     | "account"
                     | "get_remote_sidebars"
                     | "set_remote_sidebar"
+                    | "get_sidebar_folder_order"
+                    | "set_sidebar_folder_order"
             ) {
             &controller.client
         } else {

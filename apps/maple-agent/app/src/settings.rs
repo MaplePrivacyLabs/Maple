@@ -19,6 +19,9 @@ pub struct RemoteSidebarSettings {
 pub struct SidebarView {
     pub group: SidebarGroup,
     pub sort: SidebarSort,
+    /// Use saved folder order; task sorting stays unchanged.
+    #[serde(default)]
+    pub manual_folders: bool,
     pub ascending: bool,
     /// The project line under each title. `None` shows it except when
     /// grouped by folder, whose header already names the project.
@@ -307,11 +310,19 @@ enum SettingsSink {
     Test(std::sync::Arc<maple_agent::store::Store>),
 }
 
+#[derive(Clone)]
+struct PendingFolderOrder {
+    backend: std::sync::Arc<crate::backend::AgentBackend>,
+    order: Vec<String>,
+}
+
 struct SettingsCache {
     generation: u64,
     value: AppSettings,
     pending: serde_json::Map<String, serde_json::Value>,
     words: std::collections::BTreeSet<String>,
+    /// Account-owned writes stay in memory and never enter global UI settings.
+    pending_folder_orders: std::collections::BTreeMap<(String, Option<String>), PendingFolderOrder>,
     sink: Option<SettingsSink>,
 }
 
@@ -322,6 +333,7 @@ static CACHE: std::sync::LazyLock<std::sync::Mutex<SettingsCache>> =
             value: AppSettings::default(),
             pending: Default::default(),
             words: Default::default(),
+            pending_folder_orders: Default::default(),
             sink: None,
         })
     });
@@ -343,6 +355,9 @@ pub fn attach_backend(backend: std::sync::Arc<crate::backend::AgentBackend>, val
 pub fn clear_decrypted_cache() {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.value = AppSettings::default();
+    // Account-owned paths cannot survive losing the verified account/store
+    // context. Normal navigation and Quit flush them before this boundary.
+    cache.pending_folder_orders.clear();
     // Retain unsynchronized edits privately for this generation, but stop
     // retries until an Open snapshot supplies a fresh host attachment.
     cache.sink = None;
@@ -356,6 +371,7 @@ pub fn discard_decrypted_cache() {
     cache.value = AppSettings::default();
     cache.pending.clear();
     cache.words.clear();
+    cache.pending_folder_orders.clear();
     cache.sink = None;
     cache.generation = cache.generation.wrapping_add(1);
 }
@@ -443,6 +459,24 @@ fn edit_cache(update: impl FnOnce(&mut AppSettings)) {
 pub fn update_settings_in_background(update: impl FnOnce(&mut AppSettings) + Send + 'static) {
     edit_cache(update);
     queue_flush(None);
+}
+
+/// Queue an account-owned folder preference through the same Quit barrier as
+/// ordinary settings. The captured account/backend are never rebound on retry.
+pub(crate) fn save_sidebar_folder_order(
+    backend: std::sync::Arc<crate::backend::AgentBackend>,
+    user: String,
+    computer: Option<String>,
+    order: Vec<String>,
+) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pending_folder_orders
+        .insert((user, computer), PendingFolderOrder { backend, order });
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    queue_flush(Some(SettingsAck::Async(sender)));
+    receiver
 }
 
 /// A synchronous barrier for existing GUI state tests. Runtime callers use
@@ -533,9 +567,12 @@ fn queue_flush(ack: Option<SettingsAck>) {
 }
 
 fn synchronize_once() -> Result<(), String> {
-    let (generation, sink, patch, words) = {
+    let (generation, sink, patch, words, folder_orders) = {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.pending.is_empty() && cache.words.is_empty() {
+        if cache.pending.is_empty()
+            && cache.words.is_empty()
+            && cache.pending_folder_orders.is_empty()
+        {
             return Ok(());
         }
         (
@@ -543,6 +580,7 @@ fn synchronize_once() -> Result<(), String> {
             cache.sink.clone(),
             cache.pending.clone(),
             cache.words.clone(),
+            cache.pending_folder_orders.clone(),
         )
     };
     match sink.ok_or("Maple host is unavailable; settings edits remain pending")? {
@@ -574,19 +612,69 @@ fn synchronize_once() -> Result<(), String> {
             }
         }
     }
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if cache.generation != generation {
-        return Ok(());
-    }
-    for (key, value) in patch {
-        if cache.pending.get(&key) == Some(&value) {
-            cache.pending.remove(&key);
+    {
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.generation != generation {
+            return if folder_orders.is_empty() {
+                Ok(())
+            } else {
+                Err("Maple settings state changed; folder order edits remain pending".into())
+            };
+        }
+        for (key, value) in patch {
+            if cache.pending.get(&key) == Some(&value) {
+                cache.pending.remove(&key);
+            }
+        }
+        for word in words {
+            cache.words.remove(&word);
         }
     }
-    for word in words {
-        cache.words.remove(&word);
+    let mut first_error = None;
+    for ((user, computer), pending) in folder_orders {
+        {
+            let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.generation != generation || cache.sink.is_none() {
+                first_error.get_or_insert_with(|| {
+                    "Maple settings state changed; folder order edits remain pending".to_string()
+                });
+                break;
+            }
+        }
+        let result = pending.backend.runtime_handle().block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                pending.backend.set_sidebar_folder_order(
+                    &user,
+                    computer.clone(),
+                    pending.order.clone(),
+                ),
+            )
+            .await
+            .map_err(|_| "Maple folder order synchronization timed out".to_string())?
+        });
+        match result {
+            Ok(()) => {
+                let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                let key = (user, computer);
+                if cache.generation == generation
+                    && cache
+                        .pending_folder_orders
+                        .get(&key)
+                        .is_some_and(|current| {
+                            current.order == pending.order
+                                && std::sync::Arc::ptr_eq(&current.backend, &pending.backend)
+                        })
+                {
+                    cache.pending_folder_orders.remove(&key);
+                }
+            }
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 fn merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
@@ -819,6 +907,7 @@ pub(crate) fn install_test_settings(value: AppSettings) {
         value,
         pending: Default::default(),
         words: Default::default(),
+        pending_folder_orders: Default::default(),
         sink: None,
     };
 }
@@ -833,6 +922,7 @@ pub(crate) fn install_test_store(store: std::sync::Arc<maple_agent::store::Store
         value,
         pending: Default::default(),
         words: Default::default(),
+        pending_folder_orders: Default::default(),
         sink: Some(SettingsSink::Test(store)),
     };
 }
@@ -849,6 +939,7 @@ mod tests {
         let view = SidebarView {
             group: SidebarGroup::Recent,
             sort: SidebarSort::Name,
+            manual_folders: false,
             ascending: true,
             metadata: Some(false),
         };
@@ -1033,6 +1124,7 @@ mod tests {
         let view = SidebarView {
             group: SidebarGroup::Recent,
             sort: SidebarSort::Name,
+            manual_folders: false,
             ascending: true,
             metadata: Some(false),
         };
@@ -1079,6 +1171,7 @@ mod tests {
             value: AppSettings::default(),
             pending: Default::default(),
             words: Default::default(),
+            pending_folder_orders: Default::default(),
             sink: None,
         };
         edit_cache(|settings| settings.theme = "dark".into());

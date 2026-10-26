@@ -5,7 +5,7 @@
 // there by design.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -61,6 +61,40 @@ pub use maple_agent::maple_api::{
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AuthSession {
     pub user_id: String,
+}
+
+fn sidebar_folder_order_key(computer: &Option<String>) -> Result<String, String> {
+    if computer.as_ref().is_some_and(|computer| {
+        computer.is_empty() || computer.len() > 128 || computer.chars().any(char::is_control)
+    }) {
+        return Err("Invalid sidebar computer".into());
+    }
+    serde_json::to_string(computer).map_err(|_| "Could not encode sidebar computer".into())
+}
+
+fn validate_sidebar_folder_order(order: &[String]) -> Result<(), String> {
+    const MAX_FOLDERS: usize = 4096;
+    const MAX_ROOT_BYTES: usize = 32768;
+    const MAX_ORDER_BYTES: usize = 1024 * 1024;
+    if order.len() > MAX_FOLDERS {
+        return Err("Sidebar folder order is too large".into());
+    }
+    let mut bytes = 0_usize;
+    let mut seen = HashSet::new();
+    for root in order {
+        if root.is_empty()
+            || root.len() > MAX_ROOT_BYTES
+            || root.contains('\0')
+            || !seen.insert(root.as_str())
+        {
+            return Err("Invalid sidebar folder order".into());
+        }
+        bytes += root.len();
+        if bytes > MAX_ORDER_BYTES {
+            return Err("Sidebar folder order is too large".into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1310,6 +1344,70 @@ impl LocalBackend {
         })
         .await
         .map_err(|_| "Could not save remote sidebar settings".to_string())?
+    }
+
+    /// Folder order is account-owned controller presentation state, independent
+    /// of the execution host's project ordering and navigation cursors.
+    pub async fn get_sidebar_folder_order(
+        &self,
+        user_id: &str,
+        computer: Option<String>,
+    ) -> Result<Vec<String>, String> {
+        let key = sidebar_folder_order_key(&computer)?;
+        let (store, account) = self.presentation_account(user_id)?;
+        tokio::task::spawn_blocking(move || {
+            let mut all: HashMap<String, Vec<String>> = serde_json::from_value(
+                store
+                    .account_setting(account, "sidebar.folder.order")
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or_else(|| serde_json::json!({})),
+            )
+            .map_err(|_| "Saved sidebar folder order is invalid".to_string())?;
+            let order = all.remove(&key).unwrap_or_default();
+            validate_sidebar_folder_order(&order)?;
+            Ok(order)
+        })
+        .await
+        .map_err(|_| "Could not read sidebar folder order".to_string())?
+    }
+
+    pub async fn set_sidebar_folder_order(
+        &self,
+        user_id: &str,
+        computer: Option<String>,
+        order: Vec<String>,
+    ) -> Result<(), String> {
+        let key = sidebar_folder_order_key(&computer)?;
+        validate_sidebar_folder_order(&order)?;
+        // Host dispatch already holds the account read gate. Reuse the
+        // presentation writer gate without taking a nested account read lock.
+        let _gate = self.ui_settings_gate.lock().await;
+        let (store, account) = self.presentation_account(user_id)?;
+        tokio::task::spawn_blocking(move || {
+            let mut all: HashMap<String, Vec<String>> = serde_json::from_value(
+                store
+                    .account_setting(account, "sidebar.folder.order")
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or_else(|| serde_json::json!({})),
+            )
+            .map_err(|_| "Saved sidebar folder order is invalid".to_string())?;
+            if order.is_empty() {
+                all.remove(&key);
+            } else {
+                all.insert(key, order);
+            }
+            store
+                .set_account_setting(
+                    account,
+                    "sidebar.folder.order",
+                    &serde_json::to_value(all)
+                        .map_err(|_| "Could not encode sidebar folder order".to_string())?,
+                    crate::settings::timestamp_ms(),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "Could not save sidebar folder order".to_string())?
     }
 
     pub async fn set_task_pinned(
