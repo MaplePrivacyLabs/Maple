@@ -3014,6 +3014,8 @@ pub fn run() {
                 cx,
             );
             ui::theme::apply_preference(ui::theme::Preference::parse(&startup_settings.theme), cx);
+            #[cfg(target_os = "linux")]
+            crate::platform::portal::start(&backend, cx);
             ui::typography::apply(
                 ui::typography::ChatFontFamily::parse(&startup_settings.chat_font_family),
                 startup_settings.chat_font_size,

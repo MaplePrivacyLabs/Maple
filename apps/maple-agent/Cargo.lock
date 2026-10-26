@@ -5820,6 +5820,7 @@ dependencies = [
 name = "maple-agent-app"
 version = "0.0.8"
 dependencies = [
+ "ashpd",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -5827,6 +5828,7 @@ dependencies = [
  "cpal",
  "dirs 6.0.0",
  "env_logger",
+ "futures-lite",
  "gpui",
  "gpui_platform",
  "hostname",

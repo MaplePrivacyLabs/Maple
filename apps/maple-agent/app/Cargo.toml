@@ -27,6 +27,8 @@ desktop = [
     "dep:wayland-client",
     "dep:tray-icon",
     "dep:zbus",
+    "dep:ashpd",
+    "dep:futures-lite",
     "dep:objc",
     "dep:raw-window-handle",
 ]
@@ -90,6 +92,9 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = { version = "0.31", optional = true }
 zbus = { version = "=5.19.0", optional = true }
+# Used only in the credential-free desktop theme helper, not the GUI process.
+ashpd = { version = "=0.13.13", default-features = false, features = ["async-io", "settings"], optional = true }
+futures-lite = { version = "2", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tray-icon = { version = "=0.26.1", default-features = false, features = ["ksni"], optional = true }

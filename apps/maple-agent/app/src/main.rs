@@ -69,6 +69,10 @@ struct Cli {
         conflicts_with = "build_info"
     )]
     internal_store_integrity_check: Option<std::path::PathBuf>,
+    /// Internal Linux desktop-portal watcher; never opens application state.
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args"])]
+    internal_theme_watch: bool,
     #[command(subcommand)]
     mode: Option<Mode>,
     /// Arguments a desktop launcher may append (file paths, `%u` expansions).
@@ -234,6 +238,16 @@ fn main() {
         );
         return;
     }
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    if cli.internal_theme_watch {
+        // The helper is a separate, credential-free process. It must remain
+        // identifiable to the portal, but never reaches normal app startup.
+        if platform::portal::run_helper().is_err() {
+            eprintln!("Desktop theme watcher unavailable.");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = host::hardening::apply() {
         eprintln!("{error}");
         std::process::exit(1);
@@ -246,8 +260,8 @@ fn main() {
         }
         return;
     }
-    // SAFETY: argument parsing starts no threads. No other thread exists
-    // yet, so mutating the process environment here cannot race a reader.
+    // SAFETY: argument parsing and hardening start no threads. No other
+    // thread exists yet, so environment mutation cannot race a reader.
     unsafe { maple_agent::prepare_process_environment() };
     #[cfg(feature = "desktop")]
     let _ = PROCESS_START.set(std::time::Instant::now());

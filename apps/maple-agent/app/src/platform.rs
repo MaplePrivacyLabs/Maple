@@ -2,6 +2,9 @@
 
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+pub(crate) mod portal;
+
 /// Open a folder in the platform file manager. Runs the launcher without
 /// waiting for it; call from a blocking task, not the UI thread.
 pub fn reveal_folder(path: &str) -> Result<(), String> {
