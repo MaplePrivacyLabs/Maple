@@ -4,7 +4,7 @@ use crate::{
     backend::AgentBackend,
     remote::{
         manager::{PairingWindow, Status},
-        update::{InstallAccepted, InstallRequest, OperationState, PeerInfo, UpdateState},
+        update::{InstallReply, InstallRequest, OperationState, PeerInfo, UpdateState},
     },
     ui::{task, text_input::TextInput, theme, widgets},
 };
@@ -13,6 +13,7 @@ use maple_sdk::remote::RemoteDevice;
 use std::{
     cell::RefCell,
     collections::HashMap,
+    future::Future,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -57,6 +58,35 @@ enum InstallPhase {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PeerInfoQuery {
+    #[default]
+    Read,
+    Check,
+}
+
+async fn request_peer_info<F, Fut>(
+    query: PeerInfoQuery,
+    account: String,
+    peer: String,
+    call: F,
+) -> Result<Option<PeerInfo>, String>
+where
+    F: FnOnce(&'static str, serde_json::Value) -> Fut,
+    Fut: Future<Output = Result<serde_json::Value, String>>,
+{
+    let method = match query {
+        PeerInfoQuery::Read => "remote_peer_info",
+        PeerInfoQuery::Check => "remote_refresh_update",
+    };
+    let value = call(method, serde_json::json!([account, peer])).await?;
+    match query {
+        PeerInfoQuery::Read => serde_json::from_value(value),
+        PeerInfoQuery::Check => serde_json::from_value(value).map(Some),
+    }
+    .map_err(|_| "Could not read remote update status".to_owned())
+}
+
 struct InstallAttempt {
     request: InstallRequest,
     phase: InstallPhase,
@@ -67,6 +97,8 @@ struct InstallAttempt {
 struct ComputerUpdate {
     generation: u64,
     phase: PeerInfoPhase,
+    query: PeerInfoQuery,
+    check_required: bool,
     info: Option<PeerInfo>,
     running_label: String,
     update_label: String,
@@ -154,8 +186,10 @@ impl ComputerUpdate {
         let Some(info) = &self.info else {
             self.running_label = "Version unavailable".into();
             self.update_label = match self.phase {
-                PeerInfoPhase::Loading => "Reading update status…",
+                PeerInfoPhase::Loading if self.query == PeerInfoQuery::Check => "Checking for updates on this computer…",
+                PeerInfoPhase::Loading => "Reading reported update status…",
                 PeerInfoPhase::Unsupported => "Remote update status is unavailable. Use Open projects for ordinary remote access.",
+                PeerInfoPhase::Unreachable if self.query == PeerInfoQuery::Check => "Could not check for updates. Check that this computer is online, then refresh.",
                 PeerInfoPhase::Unreachable => "Could not read update status. Check that this computer is online, then refresh.",
                 PeerInfoPhase::Incompatible => PROTOCOL_UPDATE_REQUIRED,
                 _ => "Refresh to read this computer’s version and update status.",
@@ -174,15 +208,33 @@ impl ComputerUpdate {
             None => format!("{prefix} v{}", info.running.version),
         };
         self.update_label = if self.phase == PeerInfoPhase::Loading {
-            "Refreshing update status…".into()
+            if self.query == PeerInfoQuery::Check {
+                "Checking for updates on this computer…"
+            } else {
+                "Reading reported update status…"
+            }
+            .into()
         } else if self.phase == PeerInfoPhase::Unreachable {
-            "Could not refresh update status. The last reported version is shown above.".into()
+            if self.query == PeerInfoQuery::Check && !info.supports_remote_refresh() {
+                "This version cannot check for updates remotely. Check on that computer; its last reported status is shown above."
+            } else if self.query == PeerInfoQuery::Check {
+                "Could not check for updates. The last reported version is shown above."
+            } else {
+                "Could not read update status. The last reported version is shown above."
+            }.into()
         } else if self.phase == PeerInfoPhase::Incompatible {
             PROTOCOL_UPDATE_REQUIRED.into()
-        } else if let Some(offered) = &info.update.offered {
-            format!("v{} · {}", offered.version, info.update.state.label())
         } else {
-            info.update.state.label().into()
+            let status = if let Some(offered) = &info.update.offered {
+                format!("v{} · {}", offered.version, info.update.state.label())
+            } else {
+                info.update.state.label().into()
+            };
+            if self.phase == PeerInfoPhase::Loaded && self.query == PeerInfoQuery::Check {
+                format!("Update check: {status}")
+            } else {
+                format!("Last reported update: {status}")
+            }
         };
         // Cached observations remain useful as history, but must not look like
         // a current offer, policy decision or version comparison after failure.
@@ -218,8 +270,16 @@ impl ComputerUpdate {
                 }
                 InstallPhase::Failed => false,
             });
-        self.install_available =
-            self.phase == PeerInfoPhase::Loaded && !pending && blocked.is_none();
+        self.install_available = self.phase == PeerInfoPhase::Loaded
+            && !pending
+            && !self.check_required
+            && blocked.is_none();
+        if self.check_required && self.blocked_label.is_none() {
+            self.blocked_label = Some(
+                "Refresh this computer’s update status before reviewing another update request."
+                    .into(),
+            );
+        }
     }
 
     fn reconcile_operation(&mut self) {
@@ -436,8 +496,25 @@ impl RemoteScreen {
             .map(|peer| peer.grant)
     }
 
+    fn install_grant(&self, peer: &str) -> Option<[u8; 16]> {
+        self.status
+            .as_ref()?
+            .peers
+            .get(peer)
+            .filter(|peer| peer.can_connect)
+            .and_then(|peer| peer.host_grant)
+    }
+
+    fn can_install(&self, peer: &str) -> bool {
+        self.install_grant(peer).is_some()
+            && self
+                .computer_updates
+                .get(peer)
+                .is_some_and(|update| update.install_available)
+    }
+
     fn confirmation_is_current(&self, confirmation: &InstallConfirmation) -> bool {
-        self.peer_grant(&confirmation.peer) == Some(confirmation.grant)
+        self.install_grant(&confirmation.peer) == Some(confirmation.grant)
             && self
                 .computer_updates
                 .get(&confirmation.peer)
@@ -463,6 +540,14 @@ impl RemoteScreen {
     }
 
     fn refresh_peer_info(&mut self, peer: String, cx: &mut Context<Self>) {
+        self.query_peer_info(peer, PeerInfoQuery::Read, cx);
+    }
+
+    fn check_peer_update(&mut self, peer: String, cx: &mut Context<Self>) {
+        self.query_peer_info(peer, PeerInfoQuery::Check, cx);
+    }
+
+    fn query_peer_info(&mut self, peer: String, query: PeerInfoQuery, cx: &mut Context<Self>) {
         let Some(grant) = self.peer_grant(&peer) else {
             return;
         };
@@ -478,6 +563,7 @@ impl RemoteScreen {
         let update = self.computer_updates.entry(peer.clone()).or_default();
         update.generation = generation;
         update.phase = PeerInfoPhase::Loading;
+        update.query = query;
         update.refresh_presentation();
         self.invalidate_confirmation();
         let backend = self.backend.clone();
@@ -486,13 +572,16 @@ impl RemoteScreen {
         let bridge = task::call(
             &self.backend,
             async move {
-                backend
-                    .remote_setting::<Option<PeerInfo>>("remote_peer_info", (account, target))
-                    .await
+                request_peer_info(query, account, target, move |method, params| async move {
+                    backend
+                        .remote_setting::<serde_json::Value>(method, params)
+                        .await
+                })
+                .await
             },
             cx,
             move |screen, result, cx| {
-                screen.apply_peer_info(&peer, grant, generation, result);
+                screen.apply_peer_info_result(&peer, grant, generation, query, result);
                 cx.notify();
             },
         );
@@ -500,11 +589,23 @@ impl RemoteScreen {
         cx.notify();
     }
 
+    #[cfg(test)]
     fn apply_peer_info(
         &mut self,
         peer: &str,
         grant: [u8; 16],
         generation: u64,
+        result: Result<Option<PeerInfo>, String>,
+    ) {
+        self.apply_peer_info_result(peer, grant, generation, PeerInfoQuery::Read, result);
+    }
+
+    fn apply_peer_info_result(
+        &mut self,
+        peer: &str,
+        grant: [u8; 16],
+        generation: u64,
+        query: PeerInfoQuery,
         result: Result<Option<PeerInfo>, String>,
     ) {
         if self.peer_grant(peer) != Some(grant) {
@@ -516,9 +617,13 @@ impl RemoteScreen {
         if update.generation != generation {
             return;
         }
+        update.query = query;
         match result {
             Ok(Some(info)) => {
                 update.phase = PeerInfoPhase::Loaded;
+                if query == PeerInfoQuery::Check {
+                    update.check_required = false;
+                }
                 update.info = Some(info);
                 update.reconcile_operation();
             }
@@ -542,7 +647,7 @@ impl RemoteScreen {
         if self.install_confirmation.is_some() {
             return;
         }
-        let Some(grant) = self.peer_grant(&peer) else {
+        let Some(grant) = self.install_grant(&peer) else {
             return;
         };
         let Some(update) = self
@@ -655,7 +760,7 @@ impl RemoteScreen {
             &self.backend,
             async move {
                 backend
-                    .remote_setting::<InstallAccepted>(
+                    .remote_setting::<InstallReply>(
                         "remote_install_update",
                         (intent.account, intent.peer, intent.grant, intent.request),
                     )
@@ -676,9 +781,9 @@ impl RemoteScreen {
         peer: &str,
         grant: [u8; 16],
         request: &InstallRequest,
-        result: Result<InstallAccepted, String>,
+        result: Result<InstallReply, String>,
     ) {
-        if self.peer_grant(peer) != Some(grant) {
+        if self.install_grant(peer) != Some(grant) {
             return;
         }
         let Some(update) = self.computer_updates.get_mut(peer) else {
@@ -689,15 +794,23 @@ impl RemoteScreen {
         }) else {
             return;
         };
-        if let Ok(reply) = result
-            && reply.operation_id == request.operation_id
-            && reply.target == request.target
-        {
-            attempt.phase = InstallPhase::Accepted;
-            attempt.label = "Update accepted. Remote access will disconnect while this computer restarts. Refresh to check when it returns.".into();
-        } else {
-            attempt.phase = InstallPhase::Uncertain;
-            attempt.label = UNCONFIRMED_INSTALL.into();
+        match result {
+            Ok(InstallReply::Accepted { receipt })
+                if receipt.operation_id == request.operation_id
+                    && receipt.target == request.target =>
+            {
+                attempt.phase = InstallPhase::Accepted;
+                attempt.label = "Update accepted. Remote access will disconnect while this computer restarts. Refresh to check when it returns.".into();
+            }
+            Ok(InstallReply::Refused { reason }) => {
+                attempt.phase = InstallPhase::Failed;
+                attempt.label = format!("Update request declined: {}", reason.message());
+                update.check_required = true;
+            }
+            _ => {
+                attempt.phase = InstallPhase::Uncertain;
+                attempt.label = UNCONFIRMED_INSTALL.into();
+            }
         }
         update.refresh_presentation();
     }
@@ -743,15 +856,40 @@ impl RemoteScreen {
         {
             self.clear_selection(cx);
         }
-        self.computer_updates.retain(|key, _| {
-            status.peers.get(key).is_some_and(|peer| {
-                peer.can_connect
-                    && self
-                        .status
-                        .as_ref()
-                        .and_then(|old| old.peers.get(key))
-                        .is_some_and(|old| old.can_connect && old.grant == peer.grant)
-            })
+        self.computer_updates.retain(|key, update| {
+            let old = self.status.as_ref().and_then(|old| old.peers.get(key));
+            let peer = status.peers.get(key);
+            if old.zip(peer).is_some_and(|(old, peer)| {
+                old.can_connect
+                    && peer.can_connect
+                    && old.grant == peer.grant
+                    && old.host_grant == peer.host_grant
+            }) {
+                return true;
+            }
+            // Neither re-pairing direction settles an outstanding install.
+            // Retain its nonce through revocation/recovery, but invalidate all
+            // observations and callbacks made under the previous bindings.
+            let Some(attempt) = update.attempt.as_mut().filter(|attempt| {
+                matches!(
+                    attempt.phase,
+                    InstallPhase::Sending | InstallPhase::Accepted | InstallPhase::Uncertain
+                )
+            }) else {
+                return false;
+            };
+            let outgoing_changed = old.zip(peer).is_none_or(|(old, peer)| {
+                !old.can_connect || !peer.can_connect || old.host_grant != peer.host_grant
+            });
+            if outgoing_changed && attempt.phase == InstallPhase::Sending {
+                attempt.phase = InstallPhase::Uncertain;
+                attempt.label = UNCONFIRMED_INSTALL.into();
+            }
+            update.generation = update.generation.wrapping_add(1);
+            update.phase = PeerInfoPhase::Unchecked;
+            update.query = PeerInfoQuery::Read;
+            update.refresh_presentation();
+            true
         });
         self.status = Some(status);
         self.invalidate_confirmation();
@@ -1299,7 +1437,24 @@ impl RemoteScreen {
     fn render_computer_update(&self, peer: &str, cx: &mut Context<Self>) -> Div {
         let update = self.computer_updates.get(peer);
         let loading = update.is_some_and(|update| update.phase == PeerInfoPhase::Loading);
-        let can_install = update.is_some_and(|update| update.install_available);
+        let can_install = self.can_install(peer);
+        let blocked_label = update
+            .and_then(|update| update.blocked_label.clone())
+            .or_else(|| {
+                (self.install_grant(peer).is_none()
+                    && update.is_some_and(|update| {
+                        update.phase == PeerInfoPhase::Loaded
+                            && update
+                                .info
+                                .as_ref()
+                                .is_some_and(PeerInfo::supports_remote_updates)
+                    }))
+                .then(|| {
+                    crate::remote::update::BlockedReason::PairingConfirmationRequired
+                        .message()
+                        .to_owned()
+                })
+            });
         let has_offer = update.is_some_and(|update| {
             update
                 .info
@@ -1352,17 +1507,14 @@ impl RemoteScreen {
                     )
                 },
             )
-            .when_some(
-                update.and_then(|update| update.blocked_label.as_ref()),
-                |row, reason| {
-                    row.child(
-                        div()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(reason.clone()),
-                    )
-                },
-            )
+            .when_some(blocked_label.as_ref(), |row, reason| {
+                row.child(
+                    div()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(reason.clone()),
+                )
+            })
             .when_some(
                 update.and_then(|update| update.attempt.as_ref()),
                 |row, attempt| row.child(div().text_sm().child(attempt.label.clone())),
@@ -1378,16 +1530,21 @@ impl RemoteScreen {
                                 let peer = peer.to_owned();
                                 move || format!("refresh-update-{peer}")
                             })
-                            .aria_label("Refresh this computer’s version and update status")
+                            .aria_label("Check this computer for updates and refresh its status")
                             .child(if loading {
-                                "Reading status…"
+                                if update.is_some_and(|update| update.query == PeerInfoQuery::Check)
+                                {
+                                    "Checking for updates…"
+                                } else {
+                                    "Reading status…"
+                                }
                             } else {
                                 "Refresh update status"
                             })
                             .when(loading, |button| button.opacity(0.5))
                             .when(!loading, |button| {
                                 button.on_click(cx.listener(move |screen, _, _, cx| {
-                                    screen.refresh_peer_info(refresh.clone(), cx)
+                                    screen.check_peer_update(refresh.clone(), cx)
                                 }))
                             }),
                     )

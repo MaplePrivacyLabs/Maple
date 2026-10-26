@@ -111,6 +111,7 @@ impl Hello {
 pub enum Method {
     PeerInfo,
     RemoteUpdateInstall,
+    RemoteUpdateRefresh,
     NavigationBootstrap,
     ListTasks,
     ListProjects,
@@ -196,6 +197,7 @@ impl Method {
             self,
             Self::PeerInfo
                 | Self::RemoteUpdateInstall
+                | Self::RemoteUpdateRefresh
                 | Self::UploadAttachment
                 | Self::AttachmentUploadStatus
                 | Self::CancelAttachmentUpload
@@ -271,7 +273,6 @@ const INCOMPATIBLE_PROTOCOL_MESSAGE: &str =
 /// The GUI receives terminal refusals through the host's string error boundary.
 /// Only the explicit protocol refusal establishes that an update is required;
 /// malformed frames, network failures and revoked authority do not.
-#[cfg(any(feature = "desktop", test))]
 pub(crate) fn is_protocol_incompatibility_refusal(message: &str) -> bool {
     message.strip_prefix("Remote access ended: ") == Some(INCOMPATIBLE_PROTOCOL_MESSAGE)
 }

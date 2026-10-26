@@ -111,12 +111,19 @@ Quit or `maple-agent host stop` completes local shutdown.
 
 In **Settings → Remote computers**, each paired execution computer can report
 its running application version and update status. **Refresh update status**
-queries that computer; it does not check or update the controller's installation.
-It reads the remote updater's existing state; checks and automatic downloads
-continue to follow that computer's own schedule and saved preference.
+requests a new check by that computer's running desktop. Opening the view or
+reading status in the background only reads its last reported updater state.
+The explicit check requires a compatible peer with remote-refresh support;
+older peers need a local check. Automatic downloads still follow the execution
+computer's saved preference. Neither action installs an update or checks the
+controller's installation. A failed check retains the last reported values as
+history and cannot make a cached offer eligible for installation.
 When available, the row shows the offered version and whether its verified
 download is ready. Numeric package build numbers may be absent from running
 executable metadata; the UI does not infer them from the protocol version.
+Status reads remain available while a confirmed pairing from an older version
+is recovered. If confirmation cannot be recovered, ordinary access is preserved
+but remote installation requires confirming or pairing that computer again.
 
 Installation requires the remote computer's running desktop updater and its
 exact prepared, signed candidate. A daemon without its desktop reports that
@@ -149,6 +156,11 @@ after a restart. The restarted host records success only when it observes the
 requested version and source running, checking the package build when known.
 That recorded outcome survives later updates. A changed or withdrawn offer needs
 a fresh confirmation.
+An explicit refusal before acceptance is shown as a declined request, rather
+than an unconfirmed installation. Check the remote's status again before
+reviewing another request. A transport failure that could have followed sending
+the request remains uncertain and retains the original operation ID, even when
+no receipt is visible yet.
 
 A refusal before shutdown leaves the same verified download ready to try again;
 it does not require quitting a healthy execution host. Uncertain shutdowns still

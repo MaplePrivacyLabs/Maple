@@ -270,7 +270,7 @@ fn seed_update(screen: &mut RemoteScreen, key: &str, grant: [u8; 16]) {
     screen.status.as_mut().unwrap().peers.insert(
         key.into(),
         serde_json::from_value(serde_json::json!({
-            "name": format!("Office {key}"), "grant": grant, "can_connect": true,
+            "name": format!("Office {key}"), "grant": grant, "host_grant": grant, "can_connect": true,
             "controls_this_computer": false, "pending_confirmation": null
         }))
         .unwrap(),
@@ -798,7 +798,7 @@ fn stale_grant_or_offer_invalidates_remote_update_consent(cx: &mut TestAppContex
             .peers
             .get_mut("a")
             .unwrap()
-            .grant = [2; 16];
+            .host_grant = Some([2; 16]);
         assert!(
             screen.take_install_intent().is_none(),
             "submission rechecks pairing even before a refresh callback"
@@ -811,7 +811,7 @@ fn stale_grant_or_offer_invalidates_remote_update_consent(cx: &mut TestAppContex
             .peers
             .get_mut("a")
             .unwrap()
-            .grant = [1; 16];
+            .host_grant = Some([1; 16]);
     });
     cx.update(|window, cx| {
         screen.update(cx, |screen, cx| {
@@ -986,7 +986,10 @@ fn current_and_idle_without_offers_do_not_show_download_instructions() {
                 ..Default::default()
             };
             update.refresh_presentation();
-            assert_eq!(update.update_label, state.label());
+            assert_eq!(
+                update.update_label,
+                format!("Last reported update: {}", state.label())
+            );
             assert!(update.blocked_label.is_none());
             assert!(
                 !update.install_available,
@@ -1036,7 +1039,7 @@ fn confirmed_remote_outcome_stays_historical_after_later_upgrade() {
         let attempt = update.attempt.as_ref().unwrap();
         assert_eq!(attempt.phase, InstallPhase::Succeeded);
         assert_eq!(attempt.label, confirmed);
-        assert_eq!(update.update_label, "Up to date");
+        assert_eq!(update.update_label, "Last reported update: Up to date");
         assert!(update.blocked_label.is_none());
         assert!(!update.install_available);
     }
@@ -1095,4 +1098,520 @@ fn only_matching_success_receipt_can_finish_a_nonterminal_request() {
             InstallPhase::Succeeded
         );
     }
+}
+
+#[tokio::test]
+async fn status_reads_and_explicit_checks_invoke_different_backend_routes() {
+    let mut calls = Vec::new();
+    for (query, method) in [
+        (PeerInfoQuery::Read, "remote_peer_info"),
+        (PeerInfoQuery::Check, "remote_refresh_update"),
+    ] {
+        let mut info = ready_peer();
+        info.update.offered.as_mut().unwrap().version = if query == PeerInfoQuery::Read {
+            "0.0.7"
+        } else {
+            "0.0.8"
+        }
+        .into();
+        let response = serde_json::to_value(&info).unwrap();
+        let reported = request_peer_info(
+            query,
+            "account-a".into(),
+            "remote-a".into(),
+            |called, params| {
+                calls.push((called, params));
+                async move { Ok(response) }
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reported, info);
+        assert_eq!(
+            calls.last().unwrap(),
+            &(method, serde_json::json!(["account-a", "remote-a"]))
+        );
+    }
+    assert_eq!(calls.len(), 2);
+}
+
+#[tokio::test]
+async fn fresh_check_requires_a_report_and_does_not_accept_legacy_null_as_success() {
+    let read = request_peer_info(
+        PeerInfoQuery::Read,
+        "account".into(),
+        "peer".into(),
+        |method, _| async move {
+            assert_eq!(method, "remote_peer_info");
+            Ok(serde_json::Value::Null)
+        },
+    )
+    .await
+    .unwrap();
+    assert!(read.is_none());
+    let checked = request_peer_info(
+        PeerInfoQuery::Check,
+        "account".into(),
+        "peer".into(),
+        |method, _| async move {
+            assert_eq!(method, "remote_refresh_update");
+            Ok(serde_json::Value::Null)
+        },
+    )
+    .await;
+    assert_eq!(checked.unwrap_err(), "Could not read remote update status");
+}
+
+#[test]
+fn reported_status_is_not_presented_as_a_fresh_update_check() {
+    for state in [
+        UpdateState::Idle,
+        UpdateState::Checking,
+        UpdateState::Current,
+        UpdateState::Available,
+        UpdateState::Downloading,
+        UpdateState::Ready,
+        UpdateState::Error,
+    ] {
+        let mut info = ready_peer();
+        info.update.state = state;
+        if matches!(
+            state,
+            UpdateState::Idle | UpdateState::Checking | UpdateState::Current
+        ) {
+            info.update.offered = None;
+        }
+        let mut update = ComputerUpdate {
+            phase: PeerInfoPhase::Loaded,
+            info: Some(info),
+            ..Default::default()
+        };
+        update.refresh_presentation();
+        assert!(update.update_label.starts_with("Last reported update:"));
+        update.query = PeerInfoQuery::Check;
+        update.refresh_presentation();
+        assert!(update.update_label.starts_with("Update check:"));
+        update.phase = PeerInfoPhase::Unreachable;
+        update.refresh_presentation();
+        assert!(update.running_label.starts_with("Last reported"));
+        assert!(!update.update_label.starts_with("Update check:"));
+        assert!(!update.install_available);
+    }
+    let mut cold = ComputerUpdate {
+        query: PeerInfoQuery::Check,
+        phase: PeerInfoPhase::Loading,
+        ..Default::default()
+    };
+    cold.refresh_presentation();
+    assert_eq!(cold.running_label, "Version unavailable");
+    assert!(cold.update_label.contains("Checking for updates"));
+    cold.phase = PeerInfoPhase::Unreachable;
+    cold.refresh_presentation();
+    assert!(cold.update_label.contains("Could not check"));
+}
+
+#[gpui::test]
+fn missing_outgoing_grant_blocks_consent_but_still_allows_status_reads(cx: &mut TestAppContext) {
+    let (screen, cx) = show_update(cx);
+    screen.update(cx, |screen, _| {
+        screen
+            .status
+            .as_mut()
+            .unwrap()
+            .peers
+            .get_mut("a")
+            .unwrap()
+            .host_grant = None;
+        assert_eq!(screen.peer_grant("a"), Some([1; 16]));
+        assert!(screen.install_grant("a").is_none());
+        assert!(!screen.can_install("a"));
+    });
+    cx.update(|window, cx| {
+        screen.update(cx, |screen, cx| {
+            screen.ask_remote_install("a".into(), window, cx);
+            assert!(screen.install_confirmation.is_none());
+            screen.refresh_peer_info("a".into(), cx);
+            assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Loading);
+            assert_eq!(screen.computer_updates["a"].query, PeerInfoQuery::Read);
+        })
+    });
+}
+
+#[gpui::test]
+fn explicit_refresh_button_requests_a_check_without_an_outgoing_install_grant(
+    cx: &mut TestAppContext,
+) {
+    let (screen, cx) = show_update(cx);
+    screen.update(cx, |screen, cx| {
+        screen
+            .status
+            .as_mut()
+            .unwrap()
+            .peers
+            .get_mut("a")
+            .unwrap()
+            .host_grant = None;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    screen.read_with(cx, |screen, _| {
+        assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Loaded);
+        assert_eq!(screen.computer_updates["a"].query, PeerInfoQuery::Read);
+        assert!(screen.install_grant("a").is_none());
+    });
+    let refresh = cx.debug_bounds("refresh-update-a").unwrap();
+    cx.simulate_click(refresh.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    screen.read_with(cx, |screen, _| {
+        assert_eq!(screen.computer_updates["a"].query, PeerInfoQuery::Check);
+        assert!(screen.install_confirmation.is_none());
+    });
+}
+
+#[gpui::test]
+fn failed_check_keeps_only_historical_values_and_sanitized_legacy_or_offline_messages(
+    cx: &mut TestAppContext,
+) {
+    let screen = screen(cx);
+    screen.update(cx, |screen, _| {
+        for legacy in [false, true] {
+            seed_update(screen, "a", [1; 16]);
+            if legacy {
+                screen
+                    .computer_updates
+                    .get_mut("a")
+                    .unwrap()
+                    .info
+                    .as_mut()
+                    .unwrap()
+                    .protocol
+                    .capabilities
+                    .retain(|cap| cap != crate::remote::update::REFRESH_CAPABILITY);
+            }
+            screen.apply_peer_info_result(
+                "a",
+                [1; 16],
+                1,
+                PeerInfoQuery::Check,
+                Err("private-canary https://user:token@example.invalid/private".into()),
+            );
+            let update = &screen.computer_updates["a"];
+            assert!(update.running_label.starts_with("Last reported"));
+            assert!(!update.install_available);
+            assert!(!update.update_label.contains("private-canary"));
+            assert!(!update.update_label.contains("token"));
+            assert_eq!(
+                update
+                    .update_label
+                    .contains("cannot check for updates remotely"),
+                legacy
+            );
+            assert!(screen.status.as_ref().unwrap().peers["a"].can_connect);
+        }
+    });
+}
+
+#[gpui::test]
+fn definite_install_refusal_is_not_uncertain_and_requires_a_new_check(cx: &mut TestAppContext) {
+    use crate::remote::update::InstallRefusal;
+    let screen = screen(cx);
+    screen.update(cx, |screen, _| {
+        for reason in [
+            InstallRefusal::AuthorizationChanged,
+            InstallRefusal::UpdateChanged,
+            InstallRefusal::NotReady,
+            InstallRefusal::Unsupported,
+            InstallRefusal::AccountChanged,
+            InstallRefusal::Busy,
+            InstallRefusal::Unavailable,
+        ] {
+            seed_update(screen, "a", [1; 16]);
+            let request = InstallRequest {
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                target: target_release(),
+            };
+            screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
+                request: request.clone(),
+                phase: InstallPhase::Sending,
+                label: String::new(),
+            });
+            screen.apply_install_reply(
+                "a",
+                [1; 16],
+                &request,
+                Ok(InstallReply::Refused { reason }),
+            );
+            let update = &screen.computer_updates["a"];
+            let attempt = update.attempt.as_ref().unwrap();
+            assert_eq!(attempt.phase, InstallPhase::Failed);
+            assert!(attempt.label.contains(reason.message()));
+            assert!(!attempt.label.contains("Do not resend"));
+            assert!(!screen.can_install("a"));
+            screen.apply_peer_info("a", [1; 16], 1, Ok(Some(ready_peer())));
+            assert!(
+                !screen.can_install("a"),
+                "reading a cached offer is not a new check"
+            );
+            screen.apply_peer_info_result(
+                "a",
+                [1; 16],
+                1,
+                PeerInfoQuery::Check,
+                Ok(Some(ready_peer())),
+            );
+            assert!(screen.can_install("a"));
+        }
+    });
+}
+
+#[gpui::test]
+fn typed_acceptance_requires_the_original_operation_and_target(cx: &mut TestAppContext) {
+    use crate::remote::update::InstallAccepted;
+    let screen = screen(cx);
+    screen.update(cx, |screen, _| {
+        for matches in [false, true] {
+            seed_update(screen, "a", [1; 16]);
+            let request = InstallRequest {
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                target: target_release(),
+            };
+            screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
+                request: request.clone(),
+                phase: InstallPhase::Sending,
+                label: String::new(),
+            });
+            let receipt = InstallAccepted {
+                operation_id: if matches {
+                    request.operation_id.clone()
+                } else {
+                    uuid::Uuid::new_v4().to_string()
+                },
+                target: request.target.clone(),
+            };
+            screen.apply_install_reply(
+                "a",
+                [1; 16],
+                &request,
+                Ok(InstallReply::Accepted { receipt }),
+            );
+            let attempt = screen.computer_updates["a"].attempt.as_ref().unwrap();
+            assert_eq!(
+                attempt.phase,
+                if matches {
+                    InstallPhase::Accepted
+                } else {
+                    InstallPhase::Uncertain
+                }
+            );
+            assert_eq!(attempt.request, request);
+            assert!(!screen.can_install("a"));
+        }
+    });
+}
+
+#[gpui::test]
+fn incoming_repair_does_not_erase_an_uncertain_outgoing_install(cx: &mut TestAppContext) {
+    let screen = screen(cx);
+    screen.update(cx, |screen, cx| {
+        seed_update(screen, "a", [1; 16]);
+        let request = InstallRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            target: target_release(),
+        };
+        screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
+            request: request.clone(),
+            phase: InstallPhase::Uncertain,
+            label: UNCONFIRMED_INSTALL.into(),
+        });
+        screen.computer_updates.get_mut("a").unwrap().query = PeerInfoQuery::Check;
+        let mut status = screen.status.clone().unwrap();
+        status.peers.get_mut("a").unwrap().grant = [9; 16];
+        screen.update_status(status, cx);
+        assert_eq!(screen.install_grant("a"), Some([1; 16]));
+        let update = &screen.computer_updates["a"];
+        assert_eq!(update.attempt.as_ref().unwrap().request, request);
+        assert_eq!(update.phase, PeerInfoPhase::Unchecked);
+        assert_eq!(update.query, PeerInfoQuery::Read);
+        assert!(update.update_label.starts_with("Last reported update:"));
+        assert!(!screen.can_install("a"));
+        let generation = update.generation;
+        screen.apply_peer_info_result(
+            "a",
+            [1; 16],
+            1,
+            PeerInfoQuery::Check,
+            Ok(Some(ready_peer())),
+        );
+        assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Unchecked);
+        screen.apply_peer_info_result(
+            "a",
+            [9; 16],
+            generation,
+            PeerInfoQuery::Check,
+            Ok(Some(ready_peer())),
+        );
+        let attempt = screen.computer_updates["a"].attempt.as_ref().unwrap();
+        assert_eq!(attempt.request, request);
+        assert_eq!(attempt.phase, InstallPhase::Uncertain);
+        assert!(!screen.can_install("a"));
+    });
+}
+
+#[gpui::test]
+fn outgoing_repair_invalidates_status_and_keeps_unresolved_install_identity(
+    cx: &mut TestAppContext,
+) {
+    use crate::remote::update::InstallAccepted;
+    let screen = screen(cx);
+    screen.update(cx, |screen, cx| {
+        for phase in [
+            InstallPhase::Sending,
+            InstallPhase::Accepted,
+            InstallPhase::Uncertain,
+        ] {
+            for host_grant in [Some([9; 16]), None] {
+                seed_update(screen, "a", [1; 16]);
+                let request = InstallRequest {
+                    operation_id: uuid::Uuid::new_v4().to_string(),
+                    target: target_release(),
+                };
+                let update = screen.computer_updates.get_mut("a").unwrap();
+                update.query = PeerInfoQuery::Check;
+                update.attempt = Some(InstallAttempt {
+                    request: request.clone(),
+                    phase,
+                    label: "Original request".into(),
+                });
+                let mut status = screen.status.clone().unwrap();
+                status.peers.get_mut("a").unwrap().host_grant = host_grant;
+                screen.update_status(status, cx);
+                assert_eq!(screen.peer_grant("a"), Some([1; 16]));
+                let update = &screen.computer_updates["a"];
+                let expected = if phase == InstallPhase::Sending {
+                    InstallPhase::Uncertain
+                } else {
+                    phase
+                };
+                assert_eq!(update.phase, PeerInfoPhase::Unchecked);
+                assert_eq!(update.query, PeerInfoQuery::Read);
+                assert_ne!(update.generation, 1);
+                assert!(update.update_label.starts_with("Last reported update:"));
+                assert_eq!(update.attempt.as_ref().unwrap().request, request);
+                assert_eq!(update.attempt.as_ref().unwrap().phase, expected);
+                if phase == InstallPhase::Sending {
+                    assert_eq!(update.attempt.as_ref().unwrap().label, UNCONFIRMED_INSTALL);
+                }
+                assert!(!screen.can_install("a"));
+                let generation = update.generation;
+                screen.apply_peer_info_result(
+                    "a",
+                    [1; 16],
+                    1,
+                    PeerInfoQuery::Check,
+                    Ok(Some(ready_peer())),
+                );
+                assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Unchecked);
+                screen.apply_install_reply(
+                    "a",
+                    [1; 16],
+                    &request,
+                    Ok(InstallReply::Accepted {
+                        receipt: InstallAccepted {
+                            operation_id: request.operation_id.clone(),
+                            target: request.target.clone(),
+                        },
+                    }),
+                );
+                assert_eq!(
+                    screen.computer_updates["a"].attempt.as_ref().unwrap().phase,
+                    expected
+                );
+                screen.apply_peer_info_result(
+                    "a",
+                    [1; 16],
+                    generation,
+                    PeerInfoQuery::Check,
+                    Ok(Some(ready_peer())),
+                );
+                assert_eq!(
+                    screen.computer_updates["a"]
+                        .attempt
+                        .as_ref()
+                        .unwrap()
+                        .request,
+                    request
+                );
+                assert_eq!(
+                    screen.computer_updates["a"].attempt.as_ref().unwrap().phase,
+                    expected
+                );
+                assert!(!screen.can_install("a"));
+            }
+        }
+    });
+}
+
+#[gpui::test]
+fn lost_outgoing_authority_preserves_unknown_request_through_repair(cx: &mut TestAppContext) {
+    let screen = screen(cx);
+    screen.update(cx, |screen, cx| {
+        for absent in [false, true] {
+            seed_update(screen, "a", [1; 16]);
+            let request = InstallRequest {
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                target: target_release(),
+            };
+            screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
+                request: request.clone(),
+                phase: InstallPhase::Sending,
+                label: String::new(),
+            });
+            let original = screen.status.clone().unwrap();
+            let mut revoked = original.clone();
+            if absent {
+                revoked.peers.remove("a");
+            } else {
+                revoked.peers.get_mut("a").unwrap().can_connect = false;
+            }
+            screen.update_status(revoked, cx);
+            assert_eq!(
+                screen.computer_updates["a"].attempt.as_ref().unwrap().phase,
+                InstallPhase::Uncertain
+            );
+            assert!(!screen.can_install("a"));
+            screen.update_status(original, cx);
+            let update = &screen.computer_updates["a"];
+            assert_eq!(update.attempt.as_ref().unwrap().request, request);
+            assert_eq!(update.attempt.as_ref().unwrap().label, UNCONFIRMED_INSTALL);
+            let generation = update.generation;
+            screen.apply_peer_info_result(
+                "a",
+                [1; 16],
+                generation,
+                PeerInfoQuery::Check,
+                Ok(Some(ready_peer())),
+            );
+            assert_eq!(
+                screen.computer_updates["a"].attempt.as_ref().unwrap().phase,
+                InstallPhase::Uncertain
+            );
+            assert!(!screen.can_install("a"));
+        }
+    });
+}
+
+#[gpui::test]
+fn outgoing_binding_change_discards_observations_without_unresolved_requests(
+    cx: &mut TestAppContext,
+) {
+    let screen = screen(cx);
+    screen.update(cx, |screen, cx| {
+        seed_update(screen, "a", [1; 16]);
+        let mut status = screen.status.clone().unwrap();
+        status.peers.get_mut("a").unwrap().host_grant = Some([9; 16]);
+        screen.update_status(status, cx);
+        assert!(!screen.computer_updates.contains_key("a"));
+        assert!(!screen.can_install("a"));
+    });
 }

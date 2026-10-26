@@ -1415,6 +1415,8 @@ impl OwnerContext {
                 | "remote_update_publish"
                 | "remote_update_take"
                 | "remote_update_complete"
+                | "remote_update_refresh_take"
+                | "remote_update_refresh_complete"
         ) {
             let account = request
                 .params
@@ -1455,6 +1457,26 @@ impl OwnerContext {
                         .await?,
                 )
                 .map_err(|_| "Could not encode desktop updater response".to_owned()),
+                "remote_update_refresh_take" => serde_json::to_value(
+                    backend
+                        .remote_updates
+                        .take_refresh(
+                            serde_json::from_value(request.params.clone())
+                                .map_err(|_| "Invalid desktop update check poll")?,
+                        )
+                        .await?,
+                )
+                .map_err(|_| "Could not encode desktop updater response".to_owned()),
+                "remote_update_refresh_complete" => {
+                    backend
+                        .remote_updates
+                        .complete_refresh(
+                            serde_json::from_value(request.params.clone())
+                                .map_err(|_| "Invalid desktop update check completion")?,
+                        )
+                        .await?;
+                    Ok(serde_json::Value::Null)
+                }
                 _ => {
                     backend
                         .remote_updates

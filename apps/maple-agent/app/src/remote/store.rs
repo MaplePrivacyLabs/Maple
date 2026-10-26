@@ -58,6 +58,13 @@ pub struct Store {
     record: RemoteIdentity,
 }
 
+/// A durable legacy record, captured before asking the authenticated host to
+/// confirm its outgoing grant. It is compared again inside the storage edit.
+pub(super) struct HostGrantRecovery {
+    pub peer: Peer,
+    pub attempts: Vec<[u8; 16]>,
+}
+
 impl Store {
     fn scope(
         database: &Database,
@@ -193,6 +200,41 @@ impl Store {
             window,
         ))
     }
+    pub(super) fn host_grant_recovery(&self, key: EndpointId) -> Result<HostGrantRecovery, String> {
+        let key = key.to_string();
+        let peer = self
+            .record
+            .peers
+            .get(&key)
+            .filter(|peer| {
+                peer.can_connect && peer.host_grant.is_none() && peer.pending_confirmation.is_none()
+            })
+            .ok_or("Pair this computer again before updating it remotely")?;
+        Ok(HostGrantRecovery {
+            peer: peer.clone(),
+            attempts: self
+                .record
+                .attempted_windows
+                .get(&key)
+                .cloned()
+                .unwrap_or_default(),
+        })
+    }
+    pub(super) fn recover_host_grant(
+        &mut self,
+        key: EndpointId,
+        expected: &HostGrantRecovery,
+        window: [u8; 16],
+    ) -> Result<(), String> {
+        self.refresh(self.database.recover_remote_host_grant(
+            self.account,
+            &self.namespace,
+            &key.to_string(),
+            &expected.peer,
+            &expected.attempts,
+            window,
+        ))
+    }
     /// The transaction commits before any code-derived proof is sent.
     pub fn reserve_attempt(&mut self, key: EndpointId, window: [u8; 16]) -> Result<(), String> {
         self.refresh(self.database.reserve_remote_pairing_attempt(
@@ -307,11 +349,16 @@ mod tests {
         let mut expected = Peer {
             name: "Maple computer".into(),
             grant: [1; 16],
+            host_grant: None,
             controls_this_computer: true,
             can_connect: false,
-            pending_confirmation: Some([2; 16]),
+            pending_confirmation: None,
         };
         store.grant(peer, expected.clone()).unwrap();
+        store
+            .remember_host_proof(peer, [2; 16], "Maple computer".into())
+            .unwrap();
+        expected.pending_confirmation = Some([2; 16]);
         store
             .refresh_peer_names([(key.as_str(), "Office Mac"), (&unknown, "Unknown")])
             .unwrap();
@@ -345,6 +392,7 @@ mod tests {
             Peer {
                 name: "Test".into(),
                 grant: [1; 16],
+                host_grant: None,
                 controls_this_computer: true,
                 can_connect: false,
                 pending_confirmation: None,
@@ -381,16 +429,22 @@ mod tests {
             .remember_host_proof(peer, [1; 16], "B".into())
             .unwrap();
         assert!(!store.peers()[&peer.to_string()].can_connect);
+        assert_eq!(store.peers()[&peer.to_string()].host_grant, None);
         drop(store);
         let mut store = open();
         assert!(store.reserve_attempt(peer, [1; 16]).is_err());
+        assert_eq!(store.peers()[&peer.to_string()].host_grant, None);
         store.confirm_host(peer, [1; 16]).unwrap();
+        drop(store);
+        let mut store = open();
+        assert_eq!(store.peers()[&peer.to_string()].host_grant, Some([1; 16]));
         store
             .grant(
                 peer,
                 Peer {
                     name: "B".into(),
                     grant: [2; 16],
+                    host_grant: None,
                     controls_this_computer: true,
                     can_connect: false,
                     pending_confirmation: None,
@@ -399,6 +453,7 @@ mod tests {
             .unwrap();
         assert!(store.permits(peer));
         assert!(store.peers()[&peer.to_string()].can_connect);
+        assert_eq!(store.peers()[&peer.to_string()].host_grant, Some([1; 16]));
         store
             .remember_host_proof(peer, [3; 16], "B".into())
             .unwrap();

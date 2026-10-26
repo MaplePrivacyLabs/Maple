@@ -118,9 +118,118 @@ async fn optional_probe_has_an_overall_deadline_even_before_first_reply_byte() {
     b.close().await;
 }
 
+#[tokio::test]
+async fn refresh_reply_has_a_bounded_check_budget_without_relaxing_urgent_controls() {
+    // Exercise the same response-await path as call() over real loopback QUIC.
+    // Scale only the deadline, so CI need not stall for 42 wall-clock seconds.
+    assert_eq!(IO_TIMEOUT, Duration::from_secs(10));
+    assert_eq!(REFRESH_REPLY_TIMEOUT, Duration::from_secs(42));
+    let ordinary = Duration::from_millis(100);
+    for (method, budget, success) in [
+        (Method::RemoteUpdateRefresh, Duration::from_secs(5), true),
+        (Method::CancelRun, ordinary, false),
+        (Method::RemoteUpdateRefresh, ordinary, false),
+    ] {
+        let (a, b, client, server) = endpoints().await;
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (received, ready) = tokio::sync::oneshot::channel();
+        let receiver = tokio::spawn({
+            let release = release.clone();
+            async move {
+                let capacity = Capacity::new();
+                let (header, mut tx, mut rx, _slot) = receive(&server, &capacity).await;
+                assert_eq!(header.method, method);
+                header.body(&mut rx).await.unwrap();
+                received.send(()).unwrap();
+                release.notified().await;
+                reply_with_limit(
+                    &mut tx,
+                    &Message::Response {
+                        id: 1,
+                        result: Ok(json!("fresh check completed")),
+                    },
+                    method.reply_limit(),
+                )
+                .await
+            }
+        });
+        let exercise = async {
+            let (mut tx, mut rx) = client.open_bi().await.unwrap();
+            wire::write(
+                &mut tx,
+                &Header {
+                    id: 1,
+                    method,
+                    send_id: None,
+                },
+                wire::MAX_PREFACE,
+            )
+            .await
+            .unwrap();
+            wire::write(&mut tx, &json!({}), body_limit(method))
+                .await
+                .unwrap();
+            tx.finish().unwrap();
+            ready.await.unwrap();
+            let delayed_reply = success.then(|| {
+                tokio::spawn({
+                    let release = release.clone();
+                    async move {
+                        tokio::time::sleep(ordinary * 3).await;
+                        release.notify_one();
+                    }
+                })
+            });
+            let response = await_response(
+                method,
+                budget,
+                wire::read_progress::<Message>(
+                    &mut rx,
+                    method.reply_limit(),
+                    TRANSFER_TIMEOUT,
+                    true,
+                ),
+            )
+            .await;
+            if success {
+                assert!(
+                    matches!(response.unwrap().unwrap(), Message::Response { id:1, result:Ok(value) } if value == json!("fresh check completed"))
+                );
+                finish_reply(&mut rx, IO_TIMEOUT).await.unwrap();
+                delayed_reply.unwrap().await.unwrap();
+                receiver.await.unwrap().unwrap();
+            } else {
+                let Err(error) = response else {
+                    panic!("the withheld reply must time out");
+                };
+                assert_eq!(
+                    error,
+                    if method == Method::RemoteUpdateRefresh {
+                        "Remote update check reply timed out"
+                    } else {
+                        "Remote control reply timed out"
+                    }
+                );
+                // The failed caller rejects its stream. Release the fixture
+                // afterward; a delivery error to that receiver is expected.
+                rx.stop(17u32.into()).unwrap();
+                release.notify_one();
+                let _ = receiver.await.unwrap();
+            }
+        };
+        let result = tokio::time::timeout(Duration::from_secs(15), exercise).await;
+        tokio::join!(a.close(), b.close());
+        result.expect("bounded loopback reply test stalled");
+    }
+}
+
 #[test]
 fn management_messages_have_small_independent_limits() {
-    for method in [Method::PeerInfo, Method::RemoteUpdateInstall] {
+    for method in [
+        Method::PeerInfo,
+        Method::RemoteUpdateInstall,
+        Method::RemoteUpdateRefresh,
+    ] {
         assert_eq!(body_limit(method), 4096);
         assert_eq!(method.reply_limit(), 16 * 1024);
     }

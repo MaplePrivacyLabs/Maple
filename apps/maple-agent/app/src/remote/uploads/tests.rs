@@ -483,6 +483,7 @@ fn revocation_disable_and_repair_do_not_publish_an_upload_admitted_under_an_old_
             grant: [1; 16],
             controls_this_computer: true,
             can_connect: false,
+            host_grant: None,
             pending_confirmation: None,
         };
         policy.set_enabled(true).unwrap();
@@ -604,6 +605,7 @@ fn receiver_fixture(
                 grant: [1; 16],
                 controls_this_computer: true,
                 can_connect: false,
+                host_grant: None,
                 pending_confirmation: None,
             },
         )

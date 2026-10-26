@@ -24,6 +24,9 @@ const STREAM_RECEIVE_WINDOW: u32 = 512 * 1024;
 const CONNECTION_RECEIVE_WINDOW: u32 = 32 * 1024 * 1024;
 const _: () = assert!(CONNECTION_RECEIVE_WINDOW > MAX_BIDI_STREAMS * STREAM_RECEIVE_WINDOW);
 pub const IO_TIMEOUT: Duration = Duration::from_secs(10);
+// The execution broker may wait 40 seconds for its desktop check. Leave response
+// margin inside the manager's overall refresh deadline of 45 seconds.
+const REFRESH_REPLY_TIMEOUT: Duration = Duration::from_secs(42);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const FOLDERS_UNCONFIRMED: &str =
     "Could not confirm folder browsing support. Try again, or update Maple on the remote computer.";
@@ -222,6 +225,7 @@ fn body_limit(method: Method) -> usize {
         method,
         Method::PeerInfo
             | Method::RemoteUpdateInstall
+            | Method::RemoteUpdateRefresh
             | Method::UploadAttachment
             | Method::AttachmentUploadStatus
             | Method::CancelAttachmentUpload
@@ -362,13 +366,12 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
         TRANSFER_TIMEOUT,
         true,
     );
-    let response = if header.method.urgent() {
-        tokio::time::timeout(IO_TIMEOUT, response)
-            .await
-            .map_err(|_| "Remote control reply timed out")?
+    let reply_budget = if header.method == Method::RemoteUpdateRefresh {
+        REFRESH_REPLY_TIMEOUT
     } else {
-        response.await
+        IO_TIMEOUT
     };
+    let response = await_response(header.method, reply_budget, response).await?;
     let message = match response {
         Ok(message @ Message::Response { id: received, .. }) if received == id => message,
         Ok(message @ Message::Closed { .. }) => message,
@@ -387,6 +390,28 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
     // Only EOF belongs after the one bounded reply; reject extra data promptly.
     finish_reply(&mut rx, IO_TIMEOUT).await?;
     Ok(message)
+}
+
+async fn await_response<F>(
+    method: Method,
+    budget: Duration,
+    response: F,
+) -> Result<F::Output, String>
+where
+    F: std::future::Future,
+{
+    if method == Method::RemoteUpdateRefresh || method.urgent() {
+        tokio::time::timeout(budget, response).await.map_err(|_| {
+            if method == Method::RemoteUpdateRefresh {
+                "Remote update check reply timed out"
+            } else {
+                "Remote control reply timed out"
+            }
+            .to_owned()
+        })
+    } else {
+        Ok(response.await)
+    }
 }
 
 pub(super) async fn finish_reply(rx: &mut RecvStream, deadline: Duration) -> Result<(), String> {

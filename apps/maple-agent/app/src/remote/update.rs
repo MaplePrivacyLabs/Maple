@@ -6,9 +6,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::{Arc, Weak};
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "7.0.0";
+pub const PROTOCOL_VERSION: &str = "7.1.0";
 pub const PEER_INFO_CAPABILITY: &str = "peer_info_v1";
 pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
+pub const REFRESH_CAPABILITY: &str = "remote_update_refresh_v1";
 pub const PROJECT_FOLDERS_CAPABILITY: &str = "project_folders_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +26,7 @@ impl ProtocolInfo {
             capabilities: vec![
                 PEER_INFO_CAPABILITY.into(),
                 INSTALL_CAPABILITY.into(),
+                REFRESH_CAPABILITY.into(),
                 PROJECT_FOLDERS_CAPABILITY.into(),
             ],
         }
@@ -154,6 +156,7 @@ pub enum BlockedReason {
     Busy,
     DesktopUnavailable,
     CoordinatorUnavailable,
+    PairingConfirmationRequired,
     #[serde(other)]
     Unknown,
 }
@@ -174,6 +177,9 @@ impl BlockedReason {
             Self::DesktopUnavailable => "Open Maple on the remote computer before updating it.",
             Self::CoordinatorUnavailable => {
                 "Remote update controls need attention on this computer. Update it locally."
+            }
+            Self::PairingConfirmationRequired => {
+                "Pair this computer again before updating it remotely. Its saved pairing confirmation is unavailable."
             }
             Self::Unknown => "The remote computer cannot install this update remotely.",
         }
@@ -224,6 +230,10 @@ pub struct PeerInfo {
 impl PeerInfo {
     pub fn supports_remote_updates(&self) -> bool {
         self.protocol.supports(INSTALL_CAPABILITY)
+    }
+
+    pub fn supports_remote_refresh(&self) -> bool {
+        self.protocol.supports(REFRESH_CAPABILITY)
     }
 
     pub fn supports_project_folders(&self) -> bool {
@@ -335,6 +345,54 @@ pub struct InstallAccepted {
     pub target: ReleaseIdentity,
 }
 
+/// Local controller result. The remote wire receipt remains InstallAccepted;
+/// definite refusal must not be presented as an unconfirmed installation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InstallReply {
+    Accepted { receipt: InstallAccepted },
+    Refused { reason: InstallRefusal },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallRefusal {
+    AuthorizationChanged,
+    UpdateChanged,
+    NotReady,
+    Unsupported,
+    AccountChanged,
+    Busy,
+    Unavailable,
+}
+
+impl InstallRefusal {
+    #[cfg(feature = "desktop")]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::AuthorizationChanged => {
+                "The pairing confirmation changed. Refresh this computer’s status, or pair it again before updating it."
+            }
+            Self::UpdateChanged => {
+                "The remote update changed. Refresh this computer’s status before continuing."
+            }
+            Self::NotReady => {
+                "The remote computer is not ready to install this update. Refresh its status before continuing."
+            }
+            Self::Unsupported => {
+                "This computer does not support this remote update. Update Maple directly on it."
+            }
+            Self::AccountChanged => {
+                "The signed-in account changed. Reopen Remote settings before continuing."
+            }
+            Self::Busy => "The remote computer is busy. Refresh its status after it finishes.",
+            Self::Unavailable => {
+                "The update request was not accepted. Refresh this computer’s status or check it directly."
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct InstallCommand {
@@ -350,26 +408,36 @@ pub(crate) struct RemoteInstallAuthority {
     grant: [u8; 16],
 }
 
+/// The incoming, durable pairing policy used at capture and final consumption.
+/// Authentication/session and lease checks remain with their existing owners.
+pub(super) fn capture_install_grant(
+    store: &super::store::Store,
+    peer: EndpointId,
+    expected_grant: [u8; 16],
+) -> Result<(), String> {
+    if !store.permits(peer)
+        || !store
+            .peers()
+            .get(&peer.to_string())
+            .is_some_and(|value| value.controls_this_computer && value.grant == expected_grant)
+    {
+        return Err("Remote update authorization changed. Reopen this computer.".into());
+    }
+    Ok(())
+}
+
 impl RemoteInstallAuthority {
     pub(super) fn capture(
         node: &Arc<Node>,
         peer: EndpointId,
         expected_grant: [u8; 16],
     ) -> Result<Self, String> {
-        let peer = peer.to_string();
         let store = node.store.read().map_err(|_| "Remote grant unavailable")?;
-        if !store.permits(peer.parse().map_err(|_| "Remote grant unavailable")?)
-            || !store
-                .peers()
-                .get(&peer)
-                .is_some_and(|value| value.controls_this_computer && value.grant == expected_grant)
-        {
-            return Err("Remote update authorization changed. Reopen this computer.".into());
-        }
+        capture_install_grant(&store, peer, expected_grant)?;
         Ok(Self {
             node: Arc::downgrade(node),
             account: node.account.clone(),
-            peer,
+            peer: peer.to_string(),
             grant: expected_grant,
         })
     }
@@ -404,14 +472,10 @@ impl RemoteInstallAuthority {
         let store = node.store.read().map_err(|_| "Remote grant unavailable")?;
         if node.stopped.is_cancelled()
             || node.backend.saved_user_id().as_deref() != Some(&self.account)
-            || !store.permits(peer)
-            || !store
-                .peers()
-                .get(&self.peer)
-                .is_some_and(|value| value.grant == self.grant)
         {
             return Err("Remote update authorization changed. Reopen this computer.".into());
         }
+        capture_install_grant(&store, peer, self.grant)?;
         effect()
     }
 }
@@ -443,6 +507,53 @@ mod tests {
             source_sha: "a".repeat(40),
             manifest_sha256: "b".repeat(64),
         }
+    }
+
+    #[test]
+    fn a_cached_peer_status_is_not_remote_refresh_support() {
+        let mut info = current_peer_for_compatibility();
+        assert!(info.supports_remote_refresh());
+        info.protocol.version = "7.0.0".into();
+        info.protocol
+            .capabilities
+            .retain(|value| value != REFRESH_CAPABILITY);
+        assert!(info.supports_remote_updates());
+        assert!(!info.supports_remote_refresh());
+        info.protocol.capabilities.push(REFRESH_CAPABILITY.into());
+        assert!(info.supports_remote_refresh());
+        info.protocol.version = "6.1.0".into();
+        assert!(!info.supports_remote_refresh());
+    }
+
+    #[test]
+    fn a_definite_local_refusal_cannot_decode_as_an_accepted_wire_receipt() {
+        let refused = InstallReply::Refused {
+            reason: InstallRefusal::AuthorizationChanged,
+        };
+        let encoded = serde_json::to_value(&refused).unwrap();
+        assert!(serde_json::from_value::<InstallAccepted>(encoded.clone()).is_err());
+        assert_eq!(
+            serde_json::from_value::<InstallReply>(encoded).unwrap(),
+            refused
+        );
+        let accepted = InstallAccepted {
+            operation_id: "11111111-1111-4111-8111-111111111111".into(),
+            target: target(),
+        };
+        assert!(
+            serde_json::from_value::<InstallReply>(serde_json::to_value(&accepted).unwrap())
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::from_value::<InstallReply>(
+                serde_json::to_value(InstallReply::Accepted {
+                    receipt: accepted.clone(),
+                })
+                .unwrap()
+            )
+            .unwrap(),
+            InstallReply::Accepted { receipt: accepted },
+        );
     }
 
     #[test]
@@ -491,6 +602,7 @@ mod tests {
             u64::from(super::super::wire::VERSION)
         );
         assert!(current.supports(INSTALL_CAPABILITY));
+        assert!(current.supports(REFRESH_CAPABILITY));
         assert!(current.supports(PROJECT_FOLDERS_CAPABILITY));
     }
 
@@ -747,7 +859,7 @@ mod tests {
             );
             let legacy: released_v6_1::PeerInfo = serde_json::from_slice(&bytes).unwrap();
             assert!(legacy.valid());
-            assert_eq!(legacy.protocol.version, "7.0.0");
+            assert_eq!(legacy.protocol.version, PROTOCOL_VERSION);
             assert!(
                 !legacy.supports_remote_updates(),
                 "no cross-major management bridge"

@@ -423,11 +423,51 @@ impl Controller {
         let Ok(_operation) = self.0.operation.try_lock() else {
             return;
         };
-        self.check_inner().await;
+        self.check_inner(true).await;
     }
-    async fn check_inner(&self) {
+    /// A remote check must actually acquire the updater and read its signed
+    /// feed. A busy operation or failed recheck cannot turn cached Ready into
+    /// a successful fresh response. Downloads resume separately after the reply.
+    pub(crate) async fn refresh_remote(
+        &self,
+    ) -> Result<crate::remote::update::RemoteUpdateStatus, crate::remote_updates::RefreshFailure>
+    {
+        self.refresh_remote_with(|| self.check_inner(false)).await
+    }
+
+    async fn refresh_remote_with<C, F>(
+        &self,
+        check: C,
+    ) -> Result<crate::remote::update::RemoteUpdateStatus, crate::remote_updates::RefreshFailure>
+    where
+        C: FnOnce() -> F,
+        F: std::future::Future<Output = bool>,
+    {
+        use crate::remote_updates::RefreshFailure;
+        if self.0.cancel.is_cancelled() || self.restart_path().is_some() {
+            return Err(RefreshFailure::Unavailable);
+        }
         if self.snapshot().state == State::Disabled {
-            return;
+            return Err(RefreshFailure::Disabled);
+        }
+        let Ok(_operation) = self.0.operation.try_lock() else {
+            return Err(RefreshFailure::Busy);
+        };
+        // The broker bounds the remote caller's wait. Keep this operation
+        // owned until it finishes: a caller timeout must not abandon a blocking
+        // package validation and let a second updater operation overlap it.
+        tokio::select! {
+            _ = self.0.cancel.cancelled() => Err(RefreshFailure::Unavailable),
+            checked = check() => match checked {
+                true => Ok(self.remote_status()),
+                false => Err(RefreshFailure::CheckFailed),
+            },
+        }
+    }
+
+    async fn check_inner(&self, automatic_download: bool) -> bool {
+        if self.snapshot().state == State::Disabled {
+            return false;
         }
         let previous = self.snapshot();
         self.begin_check();
@@ -435,7 +475,7 @@ impl Controller {
             Ok(service) => service,
             Err(error) => {
                 self.fail(error);
-                return;
+                return false;
             }
         };
         match service.updater.check().await {
@@ -454,12 +494,29 @@ impl Controller {
                 snapshot.primary = Some(UpdateAction::Check);
                 snapshot.primary_label = "Check for Updates";
                 self.publish(snapshot);
+                true
             }
-            Ok(CheckOutcome::Available(release)) => self.accept_release(service, *release).await,
-            Err(_) => self.recheck_failed(previous),
+            Ok(CheckOutcome::Available(release)) => {
+                self.accept_release_with_policy(service, *release, automatic_download)
+                    .await;
+                true
+            }
+            Err(_) => {
+                self.recheck_failed(previous);
+                false
+            }
         }
     }
     async fn accept_release(&self, service: &Service, release: VerifiedRelease) {
+        self.accept_release_with_policy(service, release, true)
+            .await;
+    }
+    async fn accept_release_with_policy(
+        &self,
+        service: &Service,
+        release: VerifiedRelease,
+        automatic_download: bool,
+    ) {
         let (prepared, previous_staging, previous_lock) = {
             let mut releases = self.0.releases.lock().await;
             let prepared = releases
@@ -484,7 +541,10 @@ impl Controller {
                 Ok(()) => self.release_snapshot(service, &release, State::Ready).await,
                 Err(error) => self.installation_failed(service, &release, error).await,
             }
-        } else if self.0.automatic.load(Ordering::Relaxed) && !service.manual_only() {
+        } else if automatic_download
+            && self.0.automatic.load(Ordering::Relaxed)
+            && !service.manual_only()
+        {
             self.download_inner(service, release).await;
         } else {
             self.release_snapshot(service, &release, State::Available)
@@ -1147,6 +1207,53 @@ fn manual_macos_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn remote_refresh_invokes_a_new_check_even_for_cached_current_or_ready() {
+        use std::sync::atomic::AtomicUsize;
+        for cached in [State::Idle, State::Current, State::Ready, State::Error] {
+            let controller = Controller::new(false);
+            controller.set_test_state(cached);
+            let calls = AtomicUsize::new(0);
+            let result = controller
+                .refresh_remote_with(|| async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    controller.publish(Snapshot::new(State::Available, "New signed offer"));
+                    true
+                })
+                .await
+                .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(result.state, crate::remote::update::UpdateState::Available);
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_refresh_failure_never_reports_cached_ready_as_fresh() {
+        let controller = Controller::new(false);
+        controller.set_test_state(State::Ready);
+        let result = controller.refresh_remote_with(|| async { false }).await;
+        assert_eq!(
+            result,
+            Err(crate::remote_updates::RefreshFailure::CheckFailed)
+        );
+        assert_eq!(controller.snapshot().state, State::Ready);
+        let operation = controller.0.operation.lock().await;
+        assert_eq!(
+            controller
+                .refresh_remote_with(|| async { panic!("busy check must not run") })
+                .await,
+            Err(crate::remote_updates::RefreshFailure::Busy)
+        );
+        drop(operation);
+        controller.set_test_state(State::Disabled);
+        assert_eq!(
+            controller
+                .refresh_remote_with(|| async { panic!("disabled check must not run") })
+                .await,
+            Err(crate::remote_updates::RefreshFailure::Disabled)
+        );
+    }
 
     // Model the controller after preparation has passed, without replacing an
     // application or bypassing the installer's separate validation tests.

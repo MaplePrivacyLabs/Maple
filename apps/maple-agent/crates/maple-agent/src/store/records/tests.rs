@@ -1282,12 +1282,14 @@ fn pairing_confirmation_attempts_and_discovery_preserve_authority() {
                 grant: [4; 16],
                 controls_this_computer: true,
                 can_connect: false,
+                host_grant: None,
                 pending_confirmation: None,
             },
         )
         .unwrap();
     let before = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
     assert!(before.peers[&key].can_connect && before.peers[&key].controls_this_computer);
+    assert_eq!(before.peers[&key].host_grant, Some([2; 16]));
     store
         .refresh_remote_peer_names(
             alice,
@@ -1301,11 +1303,21 @@ fn pairing_confirmation_attempts_and_discovery_preserve_authority() {
     let after = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
     assert_eq!(after.peers.len(), 1);
     assert_eq!(after.peers[&key].grant, before.peers[&key].grant);
+    assert_eq!(after.peers[&key].host_grant, before.peers[&key].host_grant);
     assert_eq!(after.attempted_windows, before.attempted_windows);
     assert!(!after.enabled);
     store.close().unwrap();
     drop(store);
     let reopened = Store::open(StorePaths::new(directory.path())).unwrap();
+    assert_eq!(
+        reopened
+            .saved_remote_identity(alice, &ns)
+            .unwrap()
+            .unwrap()
+            .peers[&key]
+            .host_grant,
+        Some([2; 16])
+    );
     assert_eq!(
         reopened.reserve_remote_pairing_attempt(alice, &ns, &key, [1; 16]),
         Err(StoreError::Conflict)
@@ -1314,6 +1326,423 @@ fn pairing_confirmation_attempts_and_discovery_preserve_authority() {
     let saved = reopened.saved_remote_identity(alice, &ns).unwrap().unwrap();
     assert!(saved.peers.is_empty());
     assert_eq!(saved.attempted_windows[&key], vec![[1; 16]]);
+}
+
+fn incoming_remote_peer(grant: [u8; 16]) -> RemotePeer {
+    RemotePeer {
+        name: "Synthetic peer".into(),
+        grant,
+        controls_this_computer: true,
+        can_connect: false,
+        host_grant: None,
+        pending_confirmation: None,
+    }
+}
+
+#[test]
+fn remote_host_confirmation_is_durable_and_pending_proof_is_not_authority() {
+    let (directory, store, alice, _bob, _task) = fixture();
+    let ns = namespace("local");
+    let key = "11".repeat(32);
+    let window = [1; 16];
+    store.remote_identity(alice, &ns).unwrap();
+    store
+        .reserve_remote_pairing_attempt(alice, &ns, &key, window)
+        .unwrap();
+    store
+        .remember_remote_host_proof(alice, &ns, &key, window, "Synthetic peer")
+        .unwrap();
+    store.close().unwrap();
+    drop(store);
+
+    let store = Store::open(StorePaths::new(directory.path())).unwrap();
+    let pending = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
+    assert_eq!(pending.peers[&key].pending_confirmation, Some(window));
+    assert_eq!(pending.peers[&key].host_grant, None);
+    assert!(!pending.peers[&key].can_connect);
+    assert_eq!(
+        store.confirm_remote_host(alice, &ns, &key, [2; 16]),
+        Err(StoreError::Conflict)
+    );
+    assert_eq!(
+        store.saved_remote_identity(alice, &ns).unwrap(),
+        Some(pending)
+    );
+    store.confirm_remote_host(alice, &ns, &key, window).unwrap();
+    store.close().unwrap();
+    drop(store);
+
+    let reopened = Store::open(StorePaths::new(directory.path())).unwrap();
+    let saved = reopened.saved_remote_identity(alice, &ns).unwrap().unwrap();
+    let peer = &saved.peers[&key];
+    assert_eq!(peer.host_grant, Some(window));
+    assert_eq!(peer.pending_confirmation, None);
+    assert!(peer.can_connect);
+    assert_eq!(peer.grant, [0; 16]);
+    assert!(!peer.controls_this_computer);
+    assert_eq!(saved.attempted_windows[&key], vec![window]);
+}
+
+#[test]
+fn mutual_pairing_keeps_both_directions_across_sequential_and_interleaved_acks() {
+    for interleaved in [false, true] {
+        let (a_directory, a, a_account, _bob, _task) = fixture();
+        let (b_directory, b, b_account, _bob, _task) = fixture();
+        let ns = namespace("local");
+        let a_key = "11".repeat(32);
+        let b_key = "22".repeat(32);
+        let a_window = [1; 16];
+        let b_window = [2; 16];
+        a.remote_identity(a_account, &ns).unwrap();
+        b.remote_identity(b_account, &ns).unwrap();
+        a.reserve_remote_pairing_attempt(a_account, &ns, &b_key, b_window)
+            .unwrap();
+        a.remember_remote_host_proof(a_account, &ns, &b_key, b_window, "B")
+            .unwrap();
+        if interleaved {
+            b.reserve_remote_pairing_attempt(b_account, &ns, &a_key, a_window)
+                .unwrap();
+            b.remember_remote_host_proof(b_account, &ns, &a_key, a_window, "A")
+                .unwrap();
+            a.grant_remote_peer(a_account, &ns, &b_key, incoming_remote_peer(a_window))
+                .unwrap();
+        }
+        b.grant_remote_peer(b_account, &ns, &a_key, incoming_remote_peer(b_window))
+            .unwrap();
+        a.confirm_remote_host(a_account, &ns, &b_key, b_window)
+            .unwrap();
+        if !interleaved {
+            b.reserve_remote_pairing_attempt(b_account, &ns, &a_key, a_window)
+                .unwrap();
+            b.remember_remote_host_proof(b_account, &ns, &a_key, a_window, "A")
+                .unwrap();
+            a.grant_remote_peer(a_account, &ns, &b_key, incoming_remote_peer(a_window))
+                .unwrap();
+        }
+        b.confirm_remote_host(b_account, &ns, &a_key, a_window)
+            .unwrap();
+        a.close().unwrap();
+        b.close().unwrap();
+        drop(a);
+        drop(b);
+
+        let a = Store::open(StorePaths::new(a_directory.path())).unwrap();
+        let b = Store::open(StorePaths::new(b_directory.path())).unwrap();
+        let a_saved = a.saved_remote_identity(a_account, &ns).unwrap().unwrap();
+        let b_saved = b.saved_remote_identity(b_account, &ns).unwrap().unwrap();
+        let a_peer = &a_saved.peers[&b_key];
+        let b_peer = &b_saved.peers[&a_key];
+        assert_eq!(a_peer.grant, a_window);
+        assert_eq!(b_peer.grant, b_window);
+        assert_eq!(a_peer.host_grant, Some(b_peer.grant));
+        assert_eq!(b_peer.host_grant, Some(a_peer.grant));
+        assert!(a_peer.can_connect && a_peer.controls_this_computer);
+        assert!(b_peer.can_connect && b_peer.controls_this_computer);
+        assert_eq!(a_peer.pending_confirmation, None);
+        assert_eq!(b_peer.pending_confirmation, None);
+    }
+}
+
+#[test]
+fn incoming_pairing_cannot_create_outgoing_authority_or_pending_proof() {
+    let (_directory, store, alice, _bob, _task) = fixture();
+    let ns = namespace("local");
+    let key = "11".repeat(32);
+    store.remote_identity(alice, &ns).unwrap();
+    let mut supplied = incoming_remote_peer([1; 16]);
+    supplied.can_connect = true;
+    supplied.host_grant = Some([2; 16]);
+    supplied.pending_confirmation = Some([3; 16]);
+    store.grant_remote_peer(alice, &ns, &key, supplied).unwrap();
+    let saved = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
+    assert_eq!(saved.peers[&key], incoming_remote_peer([1; 16]));
+    assert_eq!(
+        store.confirm_remote_host(alice, &ns, &key, [3; 16]),
+        Err(StoreError::Conflict)
+    );
+    store
+        .reserve_remote_pairing_attempt(alice, &ns, &key, [2; 16])
+        .unwrap();
+    let saved = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
+    assert_eq!(
+        store.recover_remote_host_grant(
+            alice,
+            &ns,
+            &key,
+            &saved.peers[&key],
+            &saved.attempted_windows[&key],
+            [2; 16],
+        ),
+        Err(StoreError::Conflict)
+    );
+    assert_eq!(
+        store.saved_remote_identity(alice, &ns).unwrap(),
+        Some(saved)
+    );
+}
+
+fn legacy_remote_host(
+    store: &Store,
+    account: AccountId,
+    ns: &RemoteNamespace,
+    key: &str,
+    incoming_grant: Option<[u8; 16]>,
+) -> RemoteIdentity {
+    store.remote_identity(account, ns).unwrap();
+    store
+        .reserve_remote_pairing_attempt(account, ns, key, [1; 16])
+        .unwrap();
+    let legacy: RemotePeer = serde_json::from_value(json!({
+        "name": "Legacy peer",
+        "grant": incoming_grant.unwrap_or([0; 16]),
+        "controls_this_computer": incoming_grant.is_some(),
+        "can_connect": true,
+        "pending_confirmation": null,
+    }))
+    .unwrap();
+    assert_eq!(legacy.host_grant, None);
+    assert!(
+        serde_json::to_value(&legacy)
+            .unwrap()
+            .get("host_grant")
+            .is_none()
+    );
+    store
+        .edit_remote(account, ns, Durability::Durable, |identity| {
+            identity.peers.insert(key.to_owned(), legacy);
+            Ok(())
+        })
+        .unwrap();
+    store.saved_remote_identity(account, ns).unwrap().unwrap()
+}
+
+#[test]
+fn legacy_host_grant_recovery_is_durable_and_changes_only_confirmed_outgoing_binding() {
+    for incoming_grant in [None, Some([4; 16])] {
+        let (directory, store, alice, _bob, _task) = fixture();
+        let ns = namespace("local");
+        let key = "11".repeat(32);
+        let before = legacy_remote_host(&store, alice, &ns, &key, incoming_grant);
+        assert!(!before.enabled);
+        assert_eq!(
+            store.recover_remote_host_grant(
+                alice,
+                &ns,
+                &key,
+                &before.peers[&key],
+                &before.attempted_windows[&key],
+                [9; 16],
+            ),
+            Err(StoreError::Conflict)
+        );
+        assert_eq!(
+            store.saved_remote_identity(alice, &ns).unwrap(),
+            Some(before.clone())
+        );
+        store
+            .recover_remote_host_grant(
+                alice,
+                &ns,
+                &key,
+                &before.peers[&key],
+                &before.attempted_windows[&key],
+                [1; 16],
+            )
+            .unwrap();
+        let mut expected = before.clone();
+        expected.peers.get_mut(&key).unwrap().host_grant = Some([1; 16]);
+        assert_eq!(
+            store.saved_remote_identity(alice, &ns).unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            store.recover_remote_host_grant(
+                alice,
+                &ns,
+                &key,
+                &before.peers[&key],
+                &before.attempted_windows[&key],
+                [1; 16],
+            ),
+            Err(StoreError::Conflict)
+        );
+        assert_eq!(
+            store.recover_remote_host_grant(
+                alice,
+                &ns,
+                &key,
+                &expected.peers[&key],
+                &expected.attempted_windows[&key],
+                [1; 16],
+            ),
+            Err(StoreError::Conflict)
+        );
+        store.close().unwrap();
+        drop(store);
+        let reopened = Store::open(StorePaths::new(directory.path())).unwrap();
+        assert_eq!(
+            reopened.saved_remote_identity(alice, &ns).unwrap(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn host_grant_recovery_preserves_a_new_discovery_name() {
+    let (_directory, store, alice, _bob, _task) = fixture();
+    let ns = namespace("local");
+    let key = "11".repeat(32);
+    let before = legacy_remote_host(&store, alice, &ns, &key, Some([4; 16]));
+    store
+        .refresh_remote_peer_names(
+            alice,
+            &ns,
+            &BTreeMap::from([(key.clone(), "Changed peer".into())]),
+        )
+        .unwrap();
+    let mut expected = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
+    expected.peers.get_mut(&key).unwrap().host_grant = Some([1; 16]);
+    store
+        .recover_remote_host_grant(
+            alice,
+            &ns,
+            &key,
+            &before.peers[&key],
+            &before.attempted_windows[&key],
+            [1; 16],
+        )
+        .unwrap();
+    let saved = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
+    assert_eq!(saved, expected);
+    assert_eq!(saved.peers[&key].name, "Changed peer");
+}
+
+#[test]
+fn host_grant_recovery_rejects_changed_authority_attempts_pending_proof_and_revocation() {
+    for changed in ["authority", "attempts", "pending", "revoked"] {
+        let (_directory, store, alice, _bob, _task) = fixture();
+        let ns = namespace("local");
+        let key = "11".repeat(32);
+        let before = legacy_remote_host(&store, alice, &ns, &key, Some([4; 16]));
+        match changed {
+            "authority" => store
+                .grant_remote_peer(alice, &ns, &key, incoming_remote_peer([5; 16]))
+                .unwrap(),
+            "attempts" => store
+                .reserve_remote_pairing_attempt(alice, &ns, &key, [2; 16])
+                .unwrap(),
+            "pending" => store
+                .remember_remote_host_proof(alice, &ns, &key, [2; 16], "Legacy peer")
+                .unwrap(),
+            "revoked" => store.revoke_remote_peer(alice, &ns, &key).unwrap(),
+            _ => unreachable!(),
+        }
+        let changed_state = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
+        assert_eq!(
+            store.recover_remote_host_grant(
+                alice,
+                &ns,
+                &key,
+                &before.peers[&key],
+                &before.attempted_windows[&key],
+                [1; 16],
+            ),
+            Err(StoreError::Conflict)
+        );
+        if changed == "pending" {
+            assert_eq!(
+                store.recover_remote_host_grant(
+                    alice,
+                    &ns,
+                    &key,
+                    &changed_state.peers[&key],
+                    &changed_state.attempted_windows[&key],
+                    [1; 16],
+                ),
+                Err(StoreError::Conflict)
+            );
+        }
+        assert_eq!(
+            store.saved_remote_identity(alice, &ns).unwrap(),
+            Some(changed_state)
+        );
+    }
+}
+
+#[test]
+fn zero_host_acknowledgements_never_become_confirmed_authority() {
+    let (directory, store, alice, _bob, _task) = fixture();
+    let ns = namespace("local");
+    let key = "11".repeat(32);
+    store.remote_identity(alice, &ns).unwrap();
+    store
+        .reserve_remote_pairing_attempt(alice, &ns, &key, [0; 16])
+        .unwrap();
+    store
+        .remember_remote_host_proof(alice, &ns, &key, [0; 16], "Synthetic peer")
+        .unwrap();
+    let pending = store.saved_remote_identity(alice, &ns).unwrap().unwrap();
+    assert_eq!(pending.peers[&key].host_grant, None);
+    assert_eq!(
+        store.confirm_remote_host(alice, &ns, &key, [0; 16]),
+        Err(StoreError::InvalidInput)
+    );
+    assert_eq!(
+        store.saved_remote_identity(alice, &ns).unwrap(),
+        Some(pending)
+    );
+    let legacy = legacy_remote_host(&store, alice, &ns, &key, None);
+    assert!(legacy.attempted_windows[&key].contains(&[0; 16]));
+    assert_eq!(
+        store.recover_remote_host_grant(
+            alice,
+            &ns,
+            &key,
+            &legacy.peers[&key],
+            &legacy.attempted_windows[&key],
+            [0; 16],
+        ),
+        Err(StoreError::InvalidInput)
+    );
+    store.close().unwrap();
+    drop(store);
+    let reopened = Store::open(StorePaths::new(directory.path())).unwrap();
+    assert_eq!(
+        reopened.saved_remote_identity(alice, &ns).unwrap(),
+        Some(legacy)
+    );
+}
+
+#[test]
+fn persisted_zero_or_unpermitted_confirmed_host_grants_are_invalid() {
+    for (grant, can_connect) in [([0; 16], true), ([1; 16], false)] {
+        let (_directory, store, alice, _bob, _task) = fixture();
+        let ns = namespace("local");
+        let key = "11".repeat(32);
+        store.remote_identity(alice, &ns).unwrap();
+        let mut peer = incoming_remote_peer([2; 16]);
+        peer.host_grant = Some(grant);
+        peer.can_connect = can_connect;
+        let record = serde_json::to_string(&RemoteRecord {
+            version: 1,
+            peers: BTreeMap::from([(key, peer)]),
+            attempted_windows: BTreeMap::new(),
+        })
+        .unwrap();
+        store
+            .write(Durability::Durable, |tx| {
+                tx.execute(
+                    "UPDATE remote_identities SET record=?2 WHERE account_id=?1",
+                    params![alice.0, record],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            store.saved_remote_identity(alice, &ns),
+            Err(StoreError::InvalidData)
+        );
+    }
 }
 
 #[test]
