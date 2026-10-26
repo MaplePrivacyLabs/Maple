@@ -390,7 +390,7 @@ jobs:
           )
           printf '%s\n' "$RUNNER_TEMP/cargo-about-0.9.0-x86_64-pc-windows-msvc" >> "$GITHUB_PATH"
       - name: Build Windows release binary and notices without signing credentials
-        run: python3 ../../scripts/ci/agent_measure.py --phase windows-release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+        run: python3 ../../scripts/ci/agent_measure.py --phase windows-release-build --target target -- bash ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Inspect immutable Windows profile and source
         run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE"
       - name: Upload prebuilt Windows binary and notices

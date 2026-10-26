@@ -414,6 +414,10 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         fingerprint = next(i for i, step in enumerate(steps) if step.get("id") == "environment")
         self.assertLess(linker, fingerprint)
         self.assertTrue(any("test_windows_build_info.py" in step.get("run", "") for step in steps))
+        release = next(step["run"] for step in steps
+                       if step.get("name") == "Build Windows release binary and notices without signing credentials")
+        # Native Windows CreateProcess cannot launch a Unix shebang script.
+        self.assertIn('--target target -- bash ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"', release)
         upload = next(step["with"] for step in steps
                       if step.get("uses", "").startswith("actions/upload-artifact@"))
         self.assertEqual(upload["path"].splitlines(), [
