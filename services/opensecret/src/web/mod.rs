@@ -1,4 +1,5 @@
 pub mod attestation_routes;
+pub(crate) mod dev_spend_gate;
 pub mod encryption_middleware;
 mod health_routes;
 pub(crate) mod inference_rate_limit;
