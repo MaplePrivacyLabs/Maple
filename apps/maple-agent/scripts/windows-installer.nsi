@@ -36,9 +36,15 @@ Function .onInit
   StrCmp $0 "AMD64" 0 unsupported
   GetDLLVersion "$SYSDIR\kernel32.dll" $0 $1
   IntOp $0 $0 >> 16
-  IntCmp $0 10 supported unsupported supported
+  IntCmp $0 10 check_build unsupported supported
+check_build:
+  ; GPUI imports the OS ICU library, first shipped in Windows 10 version 1703.
+  ; GetDLLVersion's second DWORD contains the build in its high 16 bits.
+  IntOp $1 $1 >> 16
+  IntOp $1 $1 & 0xFFFF
+  IntCmp $1 15063 supported unsupported supported
 unsupported:
-  MessageBox MB_OK|MB_ICONSTOP "${DISPLAY_NAME} requires Windows 10 or later on an x64 computer." /SD IDOK
+  MessageBox MB_OK|MB_ICONSTOP "${DISPLAY_NAME} requires Windows 10 version 1703 (build 15063) or later on an x64 computer." /SD IDOK
   SetErrorLevel 1
   Abort
 supported:

@@ -70,11 +70,14 @@ class WindowsMetadataTests(unittest.TestCase):
 
 class RuntimeClosureTests(unittest.TestCase):
     def test_os_components_and_api_sets_are_allowed_but_compiler_runtime_is_not(self):
+        # ICU is an OS component from Win10 1703; WER is an OS component from
+        # Vista. Both appeared in the actual optimized Agent executable.
         allowed = ["kernel32.dll", "dwrite.dll", "d3d11.dll", "uiautomationcore.dll",
+                   "icuuc.dll", "wer.dll",
                    "api-ms-win-core-synch-l1-2-0.dll"]
         with patch.object(release.pe, "inspect_pe", return_value={"imports": allowed}):
             release.validate_imports(Path("unused.exe"))
-        for unexpected in ("vcruntime140.dll", "msvcp140.dll", "libcrypto.dll", "onnxruntime.dll", "api-ms-win-../../evil.dll", "unknown.dll"):
+        for unexpected in ("vcruntime140.dll", "msvcp140.dll", "libcrypto.dll", "onnxruntime.dll", "icuuc999.dll", "api-ms-win-../../evil.dll", "unknown.dll"):
             with self.subTest(unexpected=unexpected), patch.object(release.pe, "inspect_pe", return_value={"imports": allowed + [unexpected]}):
                 with self.assertRaisesRegex(ValueError, "non-OS DLL"):
                     release.validate_imports(Path("unused.exe"))

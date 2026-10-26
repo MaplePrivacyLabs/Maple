@@ -18,7 +18,10 @@ with a bundled runtime and a normal application directory. CI checks each
 downloaded bundle's command-line startup and detached host lifecycle in an
 Ubuntu 24.04 container with no Nix installation and no network
 access. Each master run completes independently; newer PR updates cancel older
-previews. Windows x64 packages are per-user NSIS installers. Trusted master
+previews. Windows x64 packages are per-user NSIS installers requiring Windows 10
+version 1703 (build 15063) or later. This baseline supplies the OS `icuuc.dll`
+imported by GPUI; see Microsoft's [Windows ICU version history](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
+Trusted master
 packages use the existing Azure publisher to Authenticode-sign the application,
 embedded uninstaller and final installer. PRs produce unsigned Dev previews.
 

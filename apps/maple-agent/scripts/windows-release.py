@@ -30,20 +30,20 @@ PLATFORM = "windows-x86_64"
 NSIS_VERSION = "3.12"
 NSIS_URL = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12.zip"
 NSIS_SHA256 = "56581f90db321581c5381193d796fffcf2d24b2f8fed2160a6c6a3baa67f2c4f"
-# Windows 10+ OS components only. No compiler-installation, VC redistributable,
+# Windows 10 version 1703+ OS components only. No compiler-installation, VC redistributable,
 # crypto-provider or application DLL may be supplied by the build runner's PATH.
 SYSTEM_IMPORTS = frozenset("""
     advapi32.dll avrt.dll bcrypt.dll bcryptprimitives.dll cabinet.dll cfgmgr32.dll
     combase.dll comctl32.dll comdlg32.dll credui.dll crypt32.dll cryptbase.dll cryptnet.dll
     cryptsp.dll d2d1.dll d3d11.dll d3d12.dll d3dcompiler_47.dll dbghelp.dll
     dcomp.dll dhcpcsvc.dll dnsapi.dll dwmapi.dll dwrite.dll dxgi.dll
-    gdi32.dll glu32.dll hid.dll imm32.dll iphlpapi.dll kernel32.dll kernelbase.dll
+    gdi32.dll glu32.dll hid.dll icuuc.dll imm32.dll iphlpapi.dll kernel32.dll kernelbase.dll
     mf.dll mfplat.dll mfreadwrite.dll mmdevapi.dll msasn1.dll msimg32.dll
     msctf.dll msvcrt.dll mswsock.dll ncrypt.dll netapi32.dll normaliz.dll ntdll.dll ole32.dll oleacc.dll
     oleaut32.dll opengl32.dll powrprof.dll propsys.dll psapi.dll rasapi32.dll
     rpcrt4.dll secur32.dll setupapi.dll shcore.dll shell32.dll shlwapi.dll
     synchronization.dll ucrtbase.dll uiautomationcore.dll urlmon.dll user32.dll userenv.dll usp10.dll
-    uxtheme.dll version.dll wevtapi.dll windowscodecs.dll winhttp.dll wininet.dll
+    uxtheme.dll version.dll wer.dll wevtapi.dll windowscodecs.dll winhttp.dll wininet.dll
     winmm.dll winspool.drv wintrust.dll winusb.dll wldap32.dll ws2_32.dll wtsapi32.dll
 """.split())
 NOTICE_FILES = (
