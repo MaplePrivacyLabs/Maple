@@ -355,6 +355,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_history_observers_do_not_reject_committed_project_renames() {
+        let fixture = fixture().await;
+        // Maintenance observes this same state from a blocking worker. A reader
+        // of `None` is not retained history and must not reject ordinary work.
+        let observed = fixture.service.state.shutdown_pending.read().await;
+        assert!(observed.is_none());
+        let root = fixture
+            .handle
+            .rename_project_root(fixture.root.clone(), "While observed".into())
+            .await
+            .unwrap();
+        assert_eq!(root.name, "While observed");
+        assert_eq!(
+            fixture
+                .handle
+                .project_root_metadata(fixture.root.clone())
+                .await
+                .unwrap(),
+            root
+        );
+        assert!(matches!(
+            fixture.recorder.events().as_slice(),
+            [AgentServiceEvent::ProjectsChanged { roots, .. }]
+                if roots.as_slice() == std::slice::from_ref(&root)
+        ));
+        drop(observed);
+
+        // An exclusive transition still blocks admission even before it has
+        // installed retained history. No rename is committed or published.
+        let transition = fixture.service.state.shutdown_pending.write().await;
+        assert_eq!(
+            fixture
+                .handle
+                .rename_project_root(fixture.root.clone(), "During transition".into())
+                .await
+                .unwrap_err(),
+            super::super::RUNTIME_SAVE_PENDING_ERROR
+        );
+        drop(transition);
+        assert_eq!(
+            fixture
+                .handle
+                .project_root_metadata(fixture.root)
+                .await
+                .unwrap(),
+            root
+        );
+        assert_eq!(fixture.recorder.events().len(), 1);
+    }
+
+    #[tokio::test]
     async fn concurrent_renames_publish_single_committed_records_in_order() {
         let fixture = fixture().await;
         let second = fixture.temp.path().join("second");

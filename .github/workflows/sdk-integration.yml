@@ -81,19 +81,19 @@ jobs:
 
       - name: Migrate the disposable database and build OpenSecret
         run: |
-          nix develop --no-update-lock-file './services/opensecret?submodules=1' -c bash -lc '
+          nix develop --no-update-lock-file './services/opensecret?submodules=1#ci' -c bash -lc '
             set -euo pipefail
             cd services/opensecret
             diesel migration run
             cargo build --locked
           '
-          nix develop --no-update-lock-file './services/opensecret?submodules=1' -c \
+          nix develop --no-update-lock-file './services/opensecret?submodules=1#ci' -c \
             psql "${DATABASE_URL}" -X -v ON_ERROR_STOP=1 \
             -f sdk/test/integration/bootstrap.sql
 
       - name: Verify OAuth persistence and encrypted callback flows
         run: |
-          nix develop --no-update-lock-file './services/opensecret?submodules=1' -c bash -lc '
+          nix develop --no-update-lock-file './services/opensecret?submodules=1#ci' -c bash -lc '
             set -euo pipefail
             cd services/opensecret
             bash ../../.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh
@@ -101,7 +101,7 @@ jobs:
 
       - name: Start and verify OpenSecret
         run: |
-          nix develop --no-update-lock-file './services/opensecret?submodules=1' -c \
+          nix develop --no-update-lock-file './services/opensecret?submodules=1#ci' -c \
             services/opensecret/target/debug/opensecret \
             > "${RUNNER_TEMP}/opensecret.log" 2>&1 &
           echo "$!" > "${RUNNER_TEMP}/opensecret.pid"

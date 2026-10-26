@@ -680,7 +680,8 @@ async fn a_new_task_gets_a_generated_title_unless_renamed_first() {
     .await
     .expect("the generated title is saved");
     let request = harness.side.requests().pop().unwrap();
-    assert_eq!(request.model.id, side_models::SIDE_MODEL);
+    assert_eq!(request.model.id, side_models::TITLE_MODEL);
+    assert_eq!(request.options.reasoning, None);
     assert!(last_user_text(&request).contains("please fix the login bug"));
     assert!(harness.recorder.events.lock().unwrap().iter().any(|event| {
         matches!(event, AgentServiceEvent::SessionUpdated { session, .. }
@@ -718,7 +719,7 @@ async fn a_new_task_gets_a_generated_title_unless_renamed_first() {
 }
 
 #[tokio::test]
-async fn tool_calls_and_thinking_are_summarized_by_the_side_model() {
+async fn tool_calls_and_thinking_are_summarized_by_deepseek_without_thinking() {
     let harness = Harness::new().await;
     harness.side.push_text("\"Listed the files\"\nextra");
     harness.side.push_text("Decided to read main.rs first");
@@ -736,6 +737,16 @@ async fn tool_calls_and_thinking_are_summarized_by_the_side_model() {
         .unwrap();
     assert_eq!(summary.as_deref(), Some("Decided to read main.rs first"));
     let requests = harness.side.requests();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        let body =
+            pi_ai::openai::build_request_body(&request.model, &request.context, &request.options)
+                .unwrap();
+        assert_eq!(body["model"], "deepseek-v4-1-flash");
+        assert_eq!(body["reasoning_effort"], "none");
+        assert_eq!(body["max_tokens"], 48);
+        assert!(body.get("tools").is_none());
+    }
     assert_eq!(
         last_user_text(&requests[0]),
         "Tool: bash\nInput: {\"command\":\"ls\"}\nOutput: main.rs"

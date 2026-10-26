@@ -816,6 +816,8 @@
             cd "$src"
             python3 scripts/ci/test_agent_workflows.py
             python3 scripts/ci/test_agent_cache.py
+            python3 scripts/ci/test_agent_cache_scope.py
+            python3 scripts/ci/test_agent_dependency_archive.py
             python3 scripts/ci/test_agent_windows.py
             python3 scripts/ci/test_agent_measure.py
             python3 apps/maple-agent/scripts/test_rusqlite_provider.py

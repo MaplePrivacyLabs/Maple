@@ -3,7 +3,7 @@
 //! and thinking for the activity feed, descriptions of images for a model
 //! without vision, and `/btw` side questions.
 //!
-//! Titles, summaries and descriptions ask one fixed model a bounded
+//! Titles, summaries and descriptions each ask a fixed model a bounded
 //! question, without thinking or tools. A side question asks the task's own
 //! model with the task's context, so the provider can reuse its cached
 //! prefix, and is told not to call tools; nothing it says is saved to the
@@ -15,7 +15,7 @@ use std::time::Duration;
 use futures_util::FutureExt;
 use pi_ai::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, Context, Message, Model, StopReason,
-    StreamOptions, UserMessage,
+    StreamOptions, ThinkingLevel, UserMessage,
 };
 use pi_coding_agent::ModelRegistry;
 use serde_json::{Value, json};
@@ -28,13 +28,15 @@ use super::{
     SideQuestionTurn, emit_agent_event,
 };
 
-/// The model titles and summaries ask.
-pub(super) const SIDE_MODEL: &str = "llama3-3-70b";
+/// The model that generates task titles.
+pub(super) const TITLE_MODEL: &str = "llama3-3-70b";
+/// The normal DeepSeek model that summarizes tool calls and thinking.
+pub(super) const SUMMARY_MODEL: &str = "deepseek-v4-1-flash";
 /// The vision model that describes images for a model without vision.
 pub(super) const IMAGE_DESCRIPTION_MODEL: &str = "gemma4-31b";
 /// Every model asked beside a task.
 #[cfg(test)]
-pub(super) const SIDE_MODELS: [&str; 2] = [SIDE_MODEL, IMAGE_DESCRIPTION_MODEL];
+pub(super) const SIDE_MODELS: [&str; 3] = [TITLE_MODEL, SUMMARY_MODEL, IMAGE_DESCRIPTION_MODEL];
 
 const IMAGE_DESCRIPTION_TIMEOUT: Duration = Duration::from_secs(60);
 const IMAGE_DESCRIPTION_TEMPERATURE: f64 = 0.0;
@@ -110,12 +112,15 @@ async fn ask_side_model(
     cancel: CancellationToken,
 ) -> Result<String, String> {
     let has_image = request.image.is_some();
+    // DeepSeek thinks by default. Advertise its optional reasoning so Off
+    // reaches the provider as an explicit `reasoning_effort: "none"`.
+    let summary_reasoning = (request.model == SUMMARY_MODEL).then_some(ThinkingLevel::Off);
     let model = maple_model(
         request.model,
         Some(&CatalogEntry {
             context_window: None,
             vision: Some(has_image),
-            ..CatalogEntry::default()
+            reasoning: summary_reasoning.map(|_| Default::default()),
         }),
         None,
     );
@@ -132,6 +137,7 @@ async fn ask_side_model(
         })],
     );
     let options = StreamOptions {
+        reasoning: summary_reasoning,
         max_tokens: Some(request.max_tokens),
         temperature: Some(request.temperature),
         session_id: Some(session_id.to_string()),
@@ -175,7 +181,7 @@ pub(super) async fn generate_title(
         models,
         session_id,
         SideRequest {
-            model: SIDE_MODEL,
+            model: TITLE_MODEL,
             system_prompt: TITLE_SYSTEM_PROMPT,
             text: format!(
                 "Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{bounded}\""
@@ -515,7 +521,7 @@ impl AgentRuntimeHandle {
             runtime.models(),
             session_id,
             SideRequest {
-                model: SIDE_MODEL,
+                model: SUMMARY_MODEL,
                 system_prompt,
                 text,
                 image: None,

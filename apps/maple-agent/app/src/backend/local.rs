@@ -2800,7 +2800,7 @@ impl LocalBackend {
         .map_err(|error| format!("Slash command resolve failed: {error}"))?
     }
 
-    /// One-line summary of a completed tool call from the cheap title model.
+    /// One-line summary of a completed tool call from the summary model.
     pub async fn summarize_tool_call(
         &self,
         user_id: &str,
@@ -2816,8 +2816,7 @@ impl LocalBackend {
             .await
     }
 
-    /// One-line summary of a finished thinking block from the cheap title
-    /// model.
+    /// One-line summary of a finished thinking block from the summary model.
     pub async fn summarize_thinking(
         &self,
         user_id: &str,

@@ -81,6 +81,9 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
     runs-on: blacksmith-6vcpu-macos-26
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -88,6 +91,7 @@ jobs:
         variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      DEPENDENCY_CACHE_JOB: Build macOS binary (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -107,37 +111,66 @@ jobs:
         run: python3 scripts/ci/select-xcode.py
       - name: Fingerprint the actual release environment
         id: environment
-        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
+        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache_scope.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
+      - name: Restore validated master dependency archive
+        id: dependency-archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 ../../scripts/ci/agent_dependency_archive.py restore \
+            --environment "$RUNNER_TEMP/agent-environment.json" --target "target" \
+            --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
+            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
+
       - name: Cache Agent release dependencies
         id: rust-cache
+        if: ${{ steps.dependency-archive.outputs.restored != 'true' }}
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: apps/maple-agent -> target
           add-rust-environment-hash-key: "true"
           key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
           cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save-if: "false"
       - name: Check whether Cargo targets were restored
         id: restored-target
         run: |
-          if [ -f "$GITHUB_WORKSPACE/apps/maple-agent/target/CACHEDIR.TAG" ]; then
-            echo 'present=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'present=false' >> "$GITHUB_OUTPUT"
-          fi
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          target = Path(os.environ["GITHUB_WORKSPACE"]) / "apps/maple-agent/target"
+          present = any(
+              any(fingerprint.iterdir()) and any(
+                  output.is_file() and output.stat().st_size > 0
+                  for pattern in ("*.rlib", "*.rmeta")
+                  for output in (fingerprint.parent / "deps").glob(pattern)
+              )
+              for fingerprint in target.rglob(".fingerprint") if fingerprint.is_dir()
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"present={str(present).lower()}\n")
+          PYTHON
+
       - name: Restore compatible legacy Cargo targets on a cache miss
-        if: ${{ steps.rust-cache.outputs.cache-hit != 'true' && steps.restored-target.outputs.present != 'true' }}
+        if: ${{ steps.dependency-archive.outputs.restored != 'true' && steps.restored-target.outputs.present != 'true' }}
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: apps/maple-agent -> target
           add-rust-environment-hash-key: "false"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
+          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.legacy_compatibility }}
           cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
           save-if: "false"
       - name: Record the current release environment after restore
         run: |
           mkdir -p target/ci-metrics
           cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
+      - name: Verify the canonical SDK and proxy dependency graph
+        run: |
+          metadata="$RUNNER_TEMP/agent-workspace-metadata.json"
+          # shellcheck disable=SC2016 # The child shell expands its own positional argument.
+          nix develop --no-update-lock-file . -c bash -c 'cargo metadata --locked --format-version 1 > "$1"' -- "$metadata"
+          python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
+          nix develop --no-update-lock-file . -c python3 scripts/verify-sqlcipher-build.py "$metadata"
       - name: Build optimized Agent with embedded profile
         run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Upload prebuilt Agent binary and notices
@@ -150,6 +183,29 @@ jobs:
             apps/maple-agent/target/third-party-notices
           if-no-files-found: error
           retention-days: 7
+
+      - name: Prepare trusted dependency archive after validation
+        id: dependency-seed
+        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        run: |
+          python3 ../../scripts/ci/agent_dependency_archive.py pack \
+            --environment "$RUNNER_TEMP/agent-environment.json" --metadata "$RUNNER_TEMP/agent-workspace-metadata.json" \
+            --target "target" --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
+            --output-dir "$RUNNER_TEMP/agent-dependency-seed" \
+            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
+
+      - name: Upload durable dependency archive
+        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.dependency-seed.outputs.needs-upload == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.dependency-seed.outputs.artifact-name }}
+          path: |
+            ${{ runner.temp }}/agent-dependency-seed/manifest.json
+            ${{ runner.temp }}/agent-dependency-seed/dependencies.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 3
 
       - name: Summarize release phase timings and target size
         if: always()
@@ -291,6 +347,9 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
     runs-on: windows-2025
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -298,6 +357,7 @@ jobs:
         variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      DEPENDENCY_CACHE_JOB: Build Windows binary (${{ matrix.variant }})
       # Ship the CRT with the executable rather than requiring a machine-wide
       # redistributable. Native verification rejects non-system DLL imports.
       RUSTFLAGS: -D warnings -C target-feature=+crt-static
@@ -343,31 +403,53 @@ jobs:
           python3 -c 'import subprocess, sys; host = subprocess.check_output([sys.argv[1], "-c", "uname -s"], text=True).strip(); assert host.startswith(("MINGW", "MSYS")), host; print("Verified native Git Bash: " + host)' "$git_bash"
       - name: Fingerprint the actual release environment
         id: environment
-        run: python3 ../../scripts/ci/agent_cache.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
+        run: python3 ../../scripts/ci/agent_cache_scope.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
+      - name: Restore validated master dependency archive
+        id: dependency-archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 ../../scripts/ci/agent_dependency_archive.py restore \
+            --environment "$RUNNER_TEMP/agent-environment.json" --target "target" \
+            --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
+            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
+
       - name: Cache Agent release dependencies
         id: rust-cache
+        if: ${{ steps.dependency-archive.outputs.restored != 'true' }}
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: apps/maple-agent -> target
           add-rust-environment-hash-key: "true"
           key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
           cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save-if: "false"
       - name: Check whether Cargo targets were restored
         id: restored-target
         run: |
-          if [ -f "$GITHUB_WORKSPACE/apps/maple-agent/target/CACHEDIR.TAG" ]; then
-            echo 'present=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'present=false' >> "$GITHUB_OUTPUT"
-          fi
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          target = Path(os.environ["GITHUB_WORKSPACE"]) / "apps/maple-agent/target"
+          present = any(
+              any(fingerprint.iterdir()) and any(
+                  output.is_file() and output.stat().st_size > 0
+                  for pattern in ("*.rlib", "*.rmeta")
+                  for output in (fingerprint.parent / "deps").glob(pattern)
+              )
+              for fingerprint in target.rglob(".fingerprint") if fingerprint.is_dir()
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"present={str(present).lower()}\n")
+          PYTHON
+
       - name: Restore compatible legacy Cargo targets on a cache miss
-        if: ${{ steps.rust-cache.outputs.cache-hit != 'true' && steps.restored-target.outputs.present != 'true' }}
+        if: ${{ steps.dependency-archive.outputs.restored != 'true' && steps.restored-target.outputs.present != 'true' }}
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: apps/maple-agent -> target
           add-rust-environment-hash-key: "false"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
+          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.legacy_compatibility }}
           cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
           save-if: "false"
       - name: Record the current build environment after restore
@@ -376,8 +458,7 @@ jobs:
           cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
       - name: Verify the canonical SDK and proxy dependency graph
         run: |
-          metadata="$(mktemp)"
-          trap 'rm -f "$metadata"' EXIT
+          metadata="$RUNNER_TEMP/agent-workspace-metadata.json"
           cargo metadata --locked --format-version 1 > "$metadata"
           python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
           python3 scripts/verify-sqlcipher-build.py "$metadata"
@@ -410,6 +491,30 @@ jobs:
             apps/maple-agent/target/third-party-notices
           if-no-files-found: error
           retention-days: 7
+
+      - name: Prepare trusted dependency archive after validation
+        id: dependency-seed
+        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        run: |
+          python3 ../../scripts/ci/agent_dependency_archive.py pack \
+            --environment "$RUNNER_TEMP/agent-environment.json" --metadata "$RUNNER_TEMP/agent-workspace-metadata.json" \
+            --target "target" --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
+            --output-dir "$RUNNER_TEMP/agent-dependency-seed" \
+            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
+
+      - name: Upload durable dependency archive
+        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.dependency-seed.outputs.needs-upload == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.dependency-seed.outputs.artifact-name }}
+          path: |
+            ${{ runner.temp }}/agent-dependency-seed/manifest.json
+            ${{ runner.temp }}/agent-dependency-seed/dependencies.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 3
+
       - name: Summarize phase timings and target size
         if: always()
         run: python3 ../../scripts/ci/agent_measure.py --summarize target
@@ -565,6 +670,9 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -572,6 +680,7 @@ jobs:
         variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      DEPENDENCY_CACHE_JOB: Linux bundle (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -588,37 +697,66 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
       - name: Fingerprint the actual release environment
         id: environment
-        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
+        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache_scope.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
+      - name: Restore validated master dependency archive
+        id: dependency-archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 ../../scripts/ci/agent_dependency_archive.py restore \
+            --environment "$RUNNER_TEMP/agent-environment.json" --target "target" \
+            --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
+            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
+
       - name: Cache Agent release dependencies
         id: rust-cache
+        if: ${{ steps.dependency-archive.outputs.restored != 'true' }}
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: apps/maple-agent -> target
           add-rust-environment-hash-key: "true"
           key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
           cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save-if: "false"
       - name: Check whether Cargo targets were restored
         id: restored-target
         run: |
-          if [ -f "$GITHUB_WORKSPACE/apps/maple-agent/target/CACHEDIR.TAG" ]; then
-            echo 'present=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'present=false' >> "$GITHUB_OUTPUT"
-          fi
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          target = Path(os.environ["GITHUB_WORKSPACE"]) / "apps/maple-agent/target"
+          present = any(
+              any(fingerprint.iterdir()) and any(
+                  output.is_file() and output.stat().st_size > 0
+                  for pattern in ("*.rlib", "*.rmeta")
+                  for output in (fingerprint.parent / "deps").glob(pattern)
+              )
+              for fingerprint in target.rglob(".fingerprint") if fingerprint.is_dir()
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"present={str(present).lower()}\n")
+          PYTHON
+
       - name: Restore compatible legacy Cargo targets on a cache miss
-        if: ${{ steps.rust-cache.outputs.cache-hit != 'true' && steps.restored-target.outputs.present != 'true' }}
+        if: ${{ steps.dependency-archive.outputs.restored != 'true' && steps.restored-target.outputs.present != 'true' }}
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: apps/maple-agent -> target
           add-rust-environment-hash-key: "false"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
+          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.legacy_compatibility }}
           cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
           save-if: "false"
       - name: Record the current release environment after restore
         run: |
           mkdir -p target/ci-metrics
           cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
+      - name: Verify the canonical SDK and proxy dependency graph
+        run: |
+          metadata="$RUNNER_TEMP/agent-workspace-metadata.json"
+          # shellcheck disable=SC2016 # The child shell expands its own positional argument.
+          nix develop --no-update-lock-file . -c bash -c 'cargo metadata --locked --format-version 1 > "$1"' -- "$metadata"
+          python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
+          nix develop --no-update-lock-file . -c python3 scripts/verify-sqlcipher-build.py "$metadata"
       - name: Build optimized Agent with embedded profile
         run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Package Linux installed bundle
@@ -639,6 +777,29 @@ jobs:
           path: apps/maple-agent/dist/${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Prepare trusted dependency archive after validation
+        id: dependency-seed
+        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        run: |
+          python3 ../../scripts/ci/agent_dependency_archive.py pack \
+            --environment "$RUNNER_TEMP/agent-environment.json" --metadata "$RUNNER_TEMP/agent-workspace-metadata.json" \
+            --target "target" --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
+            --output-dir "$RUNNER_TEMP/agent-dependency-seed" \
+            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
+
+      - name: Upload durable dependency archive
+        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.dependency-seed.outputs.needs-upload == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.dependency-seed.outputs.artifact-name }}
+          path: |
+            ${{ runner.temp }}/agent-dependency-seed/manifest.json
+            ${{ runner.temp }}/agent-dependency-seed/dependencies.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 3
 
       - name: Summarize release phase timings and target size
         if: always()

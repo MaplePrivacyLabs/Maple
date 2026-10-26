@@ -132,28 +132,73 @@ The final `Agent CI required jobs` check rejects failed or unexpectedly skipped
 selected jobs. All retain fail-closed change selection. The plain Linux binary
 and Desktop Dev/Prod packages have separate profiles and caches.
 
-Before restoring targets, `scripts/ci/agent_cache.py` fingerprints Rust inside
-the component Nix shell, or the explicitly selected Windows MSVC environment,
-plus native ABI/toolchain, flags, features, profile and provider configuration.
-The component shell also pins Rustup proxies to its Nix toolchain so Cargo's
-external Clippy/rustfmt commands cannot silently select a host compiler.
-Windows setup also pins Cargo's linker to the selected MSVC `link.exe` and
-compiles/runs an offline fixture with a Cargo build script before restoring
-targets. This catches Git Bash's unrelated `link.exe` shadowing Microsoft tools.
-The workspace and Desktop caches use this compatibility prefix with
-`rust-cache`'s automatic dependency suffix. PRs only read; successful master
-pushes write. Application version changes can reuse compatible dependencies;
-Cargo still checks freshness. Cache probes use `agent_cache_command.py` to
-identify only the actual selected compiler; incidental installed Rustup
-toolchains do not describe these builds and are excluded from the inventory.
-After a complete target-cache miss, a read-only lookup can restore an older
-archive within the same actual compiler/native ABI, job, OS and architecture
-prefix. A restored Cargo target marker prevents a second archive download
-after an ordinary dependency-prefix hit. The primary action retains its exact
-dependency hash and remains the only writer. The provider cache additionally requires the
-verified, resolved upstream test-only lockfile and transformed manifest, with
-no fallback across provider dependency graphs. Its temporary source and target
-remain outside shipping workspace outputs.
+Before restoring targets, `scripts/ci/agent_cache_scope.py` wraps the existing
+`agent_cache.py` identity without changing its legacy digest. It fingerprints
+Rust inside the component Nix shell, or the explicitly selected Windows MSVC
+environment, plus the native ABI/toolchain, flags, profile, Cargo configuration
+and provider inputs. For a known native target and modern Cargo resolver it
+omits only dependency declarations and feature edges proved inactive on that
+target. Unknown cfg expressions, target overrides and ambiguous feature edges
+stay conservative. Real compiler/native changes still invalidate; the original
+identity remains available for legacy bootstrap.
+
+The component shell pins Rustup proxies to its Nix toolchain so Cargo's external
+Clippy/rustfmt commands cannot silently select a host compiler. Windows setup
+pins Cargo's linker to the selected MSVC `link.exe` and compiles/runs an offline
+Cargo build-script fixture before restore. Cache probes use
+`agent_cache_command.py` to identify the selected compiler while excluding its
+optional incidental installed-Rustup inventory.
+
+Agent workspace, provider, plain release and Desktop Dev/Prod builders first
+try `agent_dependency_archive.py` through the Actions artifact service. A
+consumer accepts only this repository's designated push/master workflow and
+its exact matching platform/profile job. GitHub run/attempt, source commit,
+artifact creation interval and completed-successful producer job/steps must
+agree with the manifest. This proves that dependency seed's producer job; it
+does not declare unrelated workflow jobs or product checks green. Actual
+compiler/native/profile compatibility must match, and providers additionally
+require their exact verified upstream test-only dependency fingerprint.
+Workspace/release archives record their dependency graph; Cargo still resolves
+the current locked graph and checks freshness after a compatible restore.
+
+The archive includes only crates.io and reviewed, pinned public Git dependencies,
+registry/index data and their permitted dependency build outputs. New Git
+repositories require public-source review before entering the helper's allowlist;
+unknown sources and colliding package/target names are excluded. Local/path
+crates, application/test executables, app bundles, notices, credentials and
+Git hooks are excluded. The helper verifies the API's artifact ZIP digest,
+manifest/archive digest, bounded sizes/file counts and safe dependency-only
+paths before extraction; it rejects links, special files, traversal and path
+aliases. Missing, incompatible or unproven artifacts fall back to native
+bootstrap or a cold build. These archives remain executable dependency build
+inputs, so trusted provenance is required in addition to checksums. PRs only
+read them and run with no signing or publication credentials.
+
+Native `rust-cache` and exact provider-cache lookups are now read-only bootstrap
+sources. The initial lookup retains the scoped compiler/dependency key; an
+older compatible namespace can be searched with the unchanged legacy identity
+only when actual dependency libraries/fingerprints were not restored. It does
+not rely on `CACHEDIR.TAG`, which can be absent from an otherwise usable archive.
+Provider bootstrap never falls back across verified test-only graphs.
+
+After its existing validation passes, only a successful master-push builder
+prepares/uploads a dependency seed. Preparation or required upload failure
+fails the job instead of becoming a cache-save warning. Uploads have three-day
+retention. A successful master builder can reuse its proven restore receipt
+without repacking only when the dependency graph still matches and the seed
+was created within the previous 24 hours; otherwise it refreshes the seed.
+This refresh occurs during selected master builds, not a new daily dispatch.
+Each builder preserves its platform/profile/job boundary; signed packages and
+publication artifacts are separate outputs.
+
+Agent CI also compares master cumulatively against the last successful
+ancestor whose three workspace jobs, three provider jobs and plain Linux
+release job actually passed. Desktop packaging retains its independent
+all-six-downloaded-verifier baseline. Selector-only, failed or cancelled runs
+cannot consume outstanding changes. The existing master cancellation policy
+can still replace a run, but a subsequent unrelated push reselects the
+unverified component changes; lookup/history uncertainty selects a build.
+PRs retain their merge-base selection and superseded-preview cancellation.
 
 Unsigned builders upload seven-day `maple-agent-*-metrics-*` artifacts with
 actual environment identity, phase durations, logical target sizes, and bounded

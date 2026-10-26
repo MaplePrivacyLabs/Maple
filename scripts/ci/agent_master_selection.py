@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Agent inputs with the last fully verified master package run."""
+"""Retain Agent changes until the selected master lane actually validates them."""
 
 from __future__ import annotations
 
@@ -21,6 +21,16 @@ VERIFIERS = frozenset(
     f"Verify downloaded {platform} ({profile})"
     for platform in ("macOS", "Linux", "Windows") for profile in ("dev", "prod")
 )
+CI_WORKFLOW = ".github/workflows/agent-ci.yml"
+CI_VERIFIERS = frozenset({
+    "Agent (blacksmith-8vcpu-ubuntu-2404)",
+    "Agent (macos-26)",
+    "Agent (windows-latest)",
+    "Agent provider (blacksmith-8vcpu-ubuntu-2404)",
+    "Agent provider (macos-26)",
+    "Agent provider (windows-latest)",
+    "Agent Linux release binary",
+})
 
 
 def api(path: str) -> dict:
@@ -37,11 +47,17 @@ def git(root: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def select_master(head: str, current_run_id: int, root: Path = ROOT) -> tuple[bool, str]:
+def select_master(
+    head: str, current_run_id: int, root: Path = ROOT, *, lane: str = "desktop",
+) -> tuple[bool, str]:
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise ValueError("invalid current commit")
+    if lane not in ("desktop", "ci"):
+        raise ValueError("unknown Agent validation lane")
+    workflow = CI_WORKFLOW if lane == "ci" else WORKFLOW
+    verifiers = CI_VERIFIERS if lane == "ci" else VERIFIERS
     runs = api(
-        f"repos/{REPOSITORY}/actions/workflows/agent-desktop-build.yml/runs"
+        f"repos/{REPOSITORY}/actions/workflows/{workflow.rsplit('/', 1)[1]}/runs"
         "?branch=master&status=success&per_page=100"
     )["workflow_runs"]
     for run in runs:
@@ -51,7 +67,7 @@ def select_master(head: str, current_run_id: int, root: Path = ROOT) -> tuple[bo
             or run["head_repository"]["full_name"] != REPOSITORY
             or run["head_branch"] != "master"
             or run["event"] not in ("push", "workflow_dispatch")
-            or run["path"] != WORKFLOW
+            or run["path"] != workflow
             or run["status"] != "completed"
             or run["conclusion"] != "success"
         ):
@@ -76,7 +92,7 @@ def select_master(head: str, current_run_id: int, root: Path = ROOT) -> tuple[bo
             job["name"] for job in jobs["jobs"]
             if job["status"] == "completed" and job["conclusion"] == "success"
         }
-        if not VERIFIERS <= verified:
+        if not verifiers <= verified:
             # Selector-only successes and incomplete profiles cannot advance
             # the baseline past an Agent change that still needs packaging.
             continue
@@ -93,6 +109,7 @@ def select_master(head: str, current_run_id: int, root: Path = ROOT) -> tuple[bo
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lane", choices=("desktop", "ci"), default="desktop")
     parser.add_argument("--head", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--run-id", type=int, default=os.environ.get("GITHUB_RUN_ID", "0"))
     args = parser.parse_args()
@@ -103,7 +120,7 @@ def main() -> int:
         reason = "Manual or non-master event; building without a baseline lookup."
     else:
         try:
-            selected, reason = select_master(args.head, args.run_id)
+            selected, reason = select_master(args.head, args.run_id, lane=args.lane)
         except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
             reason = "Master baseline lookup or diff unavailable; building."
     print(reason, file=sys.stderr)
