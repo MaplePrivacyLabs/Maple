@@ -81,6 +81,10 @@ makes no update requests. Active trust requires two distinct public keys; the
 backup supports planned rotation and does not revoke a compromised accepted
 primary.
 
+Windows Dev/Prod installers use the same profile and state identities, but their
+compiled update feed is absent. Windows upgrades currently require a new
+installer download; the existing macOS/Linux feeds do not authorize Windows updates.
+
 Dev and unpackaged builds contain no updater feed or keys. No runtime override
 can opt either into production updating. `MAPLE_DISABLE_UPDATE_CHECK=1` remains
 a hard off for every profile. Release tag prefixes still identify packaging
