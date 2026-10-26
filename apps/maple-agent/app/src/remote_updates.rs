@@ -15,12 +15,64 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use tokio::sync::watch;
 use uuid::Uuid;
 
 const LEASE_TIME: Duration = Duration::from_secs(20);
 const MAX_RECEIPTS: usize = 512;
 const MAX_JOURNAL: u64 = 1024 * 1024;
 const ACK_LIFETIME: Duration = Duration::from_secs(60);
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(40);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RefreshFailure {
+    Busy,
+    Disabled,
+    Unavailable,
+    CheckFailed,
+    TimedOut,
+}
+impl RefreshFailure {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Busy => {
+                "The remote updater is busy. Wait for its current operation, then check again."
+            }
+            Self::Disabled => "Updates are unavailable for this remote installation.",
+            Self::Unavailable => "Open Maple on the remote computer before checking for updates.",
+            Self::CheckFailed => {
+                "The remote computer could not check its signed update feed. Its last reported status is not a fresh check."
+            }
+            Self::TimedOut => {
+                "The remote update check timed out. Its last reported status is not a fresh check."
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct DesktopRefreshCommand {
+    pub id: String,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RefreshCompleteRequest {
+    pub expected_account: String,
+    pub lease: String,
+    pub id: String,
+    pub result: Result<RemoteUpdateStatus, RefreshFailure>,
+}
+
+#[derive(Clone)]
+struct Refresh {
+    id: String,
+    account: String,
+    lease: String,
+    expires: Instant,
+    claimed: bool,
+    completion: watch::Sender<Option<Result<RemoteUpdateStatus, RefreshFailure>>>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DesktopLease {
@@ -83,6 +135,8 @@ struct State {
     receipts: BTreeMap<String, Receipt>,
     lease: Option<Lease>,
     authorities: BTreeMap<String, RemoteInstallAuthority>,
+    // Ephemeral: a restart never recreates or retries a remote check.
+    refresh: Option<Refresh>,
 }
 
 pub(crate) struct Broker {
@@ -185,6 +239,151 @@ impl Broker {
         .await
     }
 
+    pub(crate) async fn request_refresh(
+        &self,
+        account: String,
+        peer: String,
+    ) -> Result<RemoteUpdateStatus, String> {
+        let (completion, mut response) = watch::channel(None);
+        let expected_account = account.clone();
+        let (id, owner) = self
+            .access(move |state, _| {
+                let owner = state
+                    .lease
+                    .as_ref()
+                    .filter(|lease| {
+                        lease.account == expected_account && lease.expires > Instant::now()
+                    })
+                    .ok_or_else(|| RefreshFailure::Unavailable.message().to_owned())?;
+                if state.refresh.is_some()
+                    || state.receipts.values().any(|receipt| {
+                        receipt.lease == owner.id
+                            && matches!(
+                                receipt.operation.state,
+                                OperationState::PendingAck
+                                    | OperationState::Queued
+                                    | OperationState::Installing
+                            )
+                    })
+                {
+                    return Err(RefreshFailure::Busy.message().into());
+                }
+                let id = Uuid::new_v4().to_string();
+                let owner = owner.id.clone();
+                state.refresh = Some(Refresh {
+                    id: id.clone(),
+                    account: expected_account,
+                    lease: owner.clone(),
+                    expires: Instant::now() + REFRESH_TIMEOUT,
+                    claimed: false,
+                    completion,
+                });
+                Ok((id, owner))
+            })
+            .await?;
+        let result = tokio::time::timeout(REFRESH_TIMEOUT, async {
+            loop {
+                let completed = response.borrow().clone();
+                if let Some(result) = completed {
+                    return result;
+                }
+                if response.changed().await.is_err() {
+                    return Err(RefreshFailure::Unavailable);
+                }
+            }
+        })
+        .await
+        .unwrap_or(Err(RefreshFailure::TimedOut));
+        // Consume only this generation under the same desktop/account owner.
+        // A heartbeat or a replacement desktop cannot manufacture completion.
+        self.access(move |state, store| {
+            let owned = state.lease.as_ref().is_some_and(|lease| {
+                lease.id == owner && lease.account == account && lease.expires > Instant::now()
+            });
+            if !owned {
+                return Ok(Err(RefreshFailure::Unavailable));
+            }
+            if !state
+                .refresh
+                .as_ref()
+                .is_some_and(|refresh| refresh.id == id && refresh.lease == owner)
+            {
+                return Ok(Err(result.err().unwrap_or(RefreshFailure::Unavailable)));
+            }
+            state.refresh = None;
+            Ok(result.map(|mut status| {
+                apply_store_policy(&mut status, store);
+                let account = scope_binding("account", &account);
+                let peer = scope_binding("peer", &peer);
+                status.operation = state
+                    .receipts
+                    .values()
+                    .filter(|receipt| {
+                        receipt.account_binding == account && receipt.peer_binding == peer
+                    })
+                    .max_by_key(|receipt| receipt.sequence)
+                    .map(|receipt| receipt.operation.clone());
+                status
+            }))
+        })
+        .await?
+        .map_err(|failure| failure.message().to_owned())
+    }
+
+    pub(crate) async fn take_refresh(
+        &self,
+        request: TakeRequest,
+    ) -> Result<Option<DesktopRefreshCommand>, String> {
+        self.access(move |state, _| {
+            lease(state, &request.expected_account, &request.lease)?;
+            let Some(refresh) = state.refresh.as_mut().filter(|refresh| {
+                refresh.account == request.expected_account
+                    && refresh.lease == request.lease
+                    && !refresh.claimed
+            }) else {
+                return Ok(None);
+            };
+            refresh.claimed = true;
+            Ok(Some(DesktopRefreshCommand {
+                id: refresh.id.clone(),
+            }))
+        })
+        .await
+    }
+
+    pub(crate) async fn complete_refresh(
+        &self,
+        request: RefreshCompleteRequest,
+    ) -> Result<(), String> {
+        self.access(move |state, _| {
+            lease(state, &request.expected_account, &request.lease)?;
+            let refresh = state
+                .refresh
+                .as_ref()
+                .filter(|refresh| {
+                    refresh.id == request.id
+                        && refresh.account == request.expected_account
+                        && refresh.lease == request.lease
+                        && refresh.claimed
+                })
+                .ok_or("Remote update check expired or changed owner")?;
+            if refresh.completion.borrow().is_some() {
+                return Err("Remote update check already completed".into());
+            }
+            let mut result = request.result;
+            if let Ok(status) = &mut result {
+                if let Some(offered) = &status.offered {
+                    offered.validate()?;
+                }
+                status.operation = None;
+                state.lease.as_mut().expect("checked lease").status = status.clone();
+            }
+            refresh.completion.send_replace(Some(result));
+            Ok(())
+        })
+        .await
+    }
+
     pub(crate) async fn take(
         &self,
         request: TakeRequest,
@@ -259,14 +458,7 @@ impl Broker {
                 })
                 .map(|l| l.status.clone())
                 .unwrap_or_else(unavailable);
-            match store.map(|s| s.lock_status()) {
-                Some(Ok(lock)) if lock.mode == StoreMode::Password => {
-                    status.blocked = Some(BlockedReason::PasswordProtected)
-                }
-                Some(Ok(lock)) if lock.state == StoreState::Open => {}
-                Some(_) => status.blocked = Some(BlockedReason::Busy),
-                None => status.blocked = Some(BlockedReason::DesktopUnavailable),
-            }
+            apply_store_policy(&mut status, store);
             status.operation = state
                 .receipts
                 .values()
@@ -313,6 +505,9 @@ impl Broker {
                 return Err(
                     "Remote update receipt limit reached; update this computer manually".into(),
                 );
+            }
+            if state.refresh.is_some() {
+                return Err("A remote update check is in progress".into());
             }
             let lease = state
                 .lease
@@ -574,6 +769,14 @@ fn scope_binding(domain: &str, value: &str) -> String {
 }
 fn expire_requests(state: &mut State) {
     let now = Instant::now();
+    if state.refresh.as_ref().is_some_and(|refresh| {
+        refresh.expires <= now
+            || !state.lease.as_ref().is_some_and(|lease| {
+                lease.id == refresh.lease && lease.account == refresh.account && lease.expires > now
+            })
+    }) {
+        state.refresh = None;
+    }
     let milliseconds = now_ms();
     for (id, receipt) in &mut state.receipts {
         let active = state.lease.as_ref().is_some_and(|l| {
@@ -609,6 +812,16 @@ fn plain_store(store: Option<&Store>) -> Result<String, String> {
     status
         .store_id
         .ok_or_else(|| "Remote local data identity is unavailable".into())
+}
+fn apply_store_policy(status: &mut RemoteUpdateStatus, store: Option<&Store>) {
+    match store.map(Store::lock_status) {
+        Some(Ok(lock)) if lock.mode == StoreMode::Password => {
+            status.blocked = Some(BlockedReason::PasswordProtected);
+        }
+        Some(Ok(lock)) if lock.state == StoreState::Open => {}
+        Some(_) => status.blocked = Some(BlockedReason::Busy),
+        None => status.blocked = Some(BlockedReason::DesktopUnavailable),
+    }
 }
 fn unavailable() -> RemoteUpdateStatus {
     RemoteUpdateStatus {
@@ -783,6 +996,179 @@ mod tests {
         let store = Arc::new(Store::open(StorePaths::new(directory.path())).unwrap());
         let broker = Broker::new(Some(store.clone()));
         (directory, store, broker)
+    }
+
+    async fn claim_refresh(broker: &Broker, lease: &DesktopLease) -> DesktopRefreshCommand {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(command) = broker
+                    .take_refresh(TakeRequest {
+                        expected_account: "alice".into(),
+                        lease: lease.id.clone(),
+                    })
+                    .await
+                    .unwrap()
+                {
+                    return command;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("queued refresh must become claimable")
+    }
+
+    #[tokio::test]
+    async fn fresh_refresh_requires_one_claimed_generation_not_a_cached_publication() {
+        let (_directory, _store, broker) = fixture();
+        let broker = Arc::new(broker);
+        let lease = desktop(&broker).await;
+        let waiting = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .request_refresh("alice".into(), "paired-peer".into())
+                    .await
+            }
+        });
+        let command = claim_refresh(&broker, &lease).await;
+        broker
+            .publish(PublishRequest {
+                expected_account: "alice".into(),
+                lease: lease.id.clone(),
+                status: RemoteUpdateStatus {
+                    state: UpdateState::Current,
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        assert!(
+            !waiting.is_finished(),
+            "a heartbeat is not a fresh-check completion"
+        );
+        assert!(
+            broker
+                .take_refresh(TakeRequest {
+                    expected_account: "alice".into(),
+                    lease: lease.id.clone(),
+                })
+                .await
+                .unwrap()
+                .is_none(),
+            "a check is claimed only once"
+        );
+        assert!(
+            broker
+                .request_refresh("alice".into(), "paired-peer".into())
+                .await
+                .unwrap_err()
+                .contains("busy")
+        );
+        assert!(
+            broker
+                .complete_refresh(RefreshCompleteRequest {
+                    expected_account: "alice".into(),
+                    lease: lease.id.clone(),
+                    id: Uuid::new_v4().to_string(),
+                    result: Ok(RemoteUpdateStatus::default()),
+                })
+                .await
+                .is_err()
+        );
+        assert!(!waiting.is_finished());
+        let fresh = RemoteUpdateStatus {
+            state: UpdateState::Available,
+            offered: Some(target()),
+            ..Default::default()
+        };
+        broker
+            .complete_refresh(RefreshCompleteRequest {
+                expected_account: "alice".into(),
+                lease: lease.id.clone(),
+                id: command.id,
+                result: Ok(fresh.clone()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(waiting.await.unwrap().unwrap(), fresh);
+        assert!(broker.state.lock().unwrap().receipts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_or_disconnected_refresh_never_returns_the_old_offer() {
+        for disconnect in [false, true] {
+            let (_directory, _store, broker) = fixture();
+            let broker = Arc::new(broker);
+            let lease = desktop(&broker).await;
+            let waiting = tokio::spawn({
+                let broker = broker.clone();
+                async move {
+                    broker
+                        .request_refresh("alice".into(), "paired-peer".into())
+                        .await
+                }
+            });
+            let command = claim_refresh(&broker, &lease).await;
+            if disconnect {
+                broker
+                    .access(|state, _| {
+                        state.lease.as_mut().unwrap().expires =
+                            Instant::now() - Duration::from_secs(1);
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+                let _ = broker.status("alice", "paired-peer").await.unwrap();
+            } else {
+                broker
+                    .complete_refresh(RefreshCompleteRequest {
+                        expected_account: "alice".into(),
+                        lease: lease.id.clone(),
+                        id: command.id,
+                        result: Err(RefreshFailure::CheckFailed),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let result = tokio::time::timeout(Duration::from_secs(2), waiting)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_rechecks_store_policy_after_the_desktop_check() {
+        let (_directory, store, broker) = fixture();
+        let broker = Arc::new(broker);
+        let lease = desktop(&broker).await;
+        let waiting = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .request_refresh("alice".into(), "paired-peer".into())
+                    .await
+            }
+        });
+        let command = claim_refresh(&broker, &lease).await;
+        store.close().unwrap();
+        broker
+            .complete_refresh(RefreshCompleteRequest {
+                expected_account: "alice".into(),
+                lease: lease.id.clone(),
+                id: command.id,
+                result: Ok(RemoteUpdateStatus {
+                    state: UpdateState::Ready,
+                    offered: Some(target()),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        let status = waiting.await.unwrap().unwrap();
+        assert_eq!(status.blocked, Some(BlockedReason::Busy));
     }
     fn target() -> ReleaseIdentity {
         ReleaseIdentity {
@@ -1225,8 +1611,34 @@ mod tests {
         })
         .await
         .unwrap();
-        let broker = Broker::new(Some(store.clone()));
+        let broker = Arc::new(Broker::new(Some(store.clone())));
         let lease = desktop(&broker).await;
+        let check = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .request_refresh("alice".into(), "paired-peer".into())
+                    .await
+            }
+        });
+        let command = claim_refresh(&broker, &lease).await;
+        broker
+            .complete_refresh(RefreshCompleteRequest {
+                expected_account: "alice".into(),
+                lease: lease.id.clone(),
+                id: command.id,
+                result: Ok(RemoteUpdateStatus {
+                    state: UpdateState::Ready,
+                    offered: Some(target()),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            check.await.unwrap().unwrap().blocked,
+            Some(BlockedReason::PasswordProtected)
+        );
         receipt(&broker, &lease, OperationState::Queued).await;
         assert_eq!(store.state(), StoreState::Open);
         assert!(

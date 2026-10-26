@@ -24,6 +24,93 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+const HOST_GRANT_RECOVERY_LIMIT: usize = 8;
+const HOST_GRANT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const HOST_GRANT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+const PAIRING_CONFIRMATION_REQUIRED: &str = "Pair this computer again before updating it remotely. Its saved pairing confirmation is unavailable.";
+
+fn encode_install_reply(reply: super::update::InstallReply) -> Result<serde_json::Value, String> {
+    serde_json::to_value(reply).map_err(|_| "Could not display remote update receipt".into())
+}
+
+fn remote_refresh_failure(error: &str) -> String {
+    use crate::remote_updates::RefreshFailure;
+    [
+        RefreshFailure::Busy,
+        RefreshFailure::Disabled,
+        RefreshFailure::Unavailable,
+        RefreshFailure::CheckFailed,
+        RefreshFailure::TimedOut,
+    ]
+    .into_iter()
+    .map(RefreshFailure::message)
+    .find(|message| *message == error)
+    .unwrap_or(RefreshFailure::CheckFailed.message())
+    .to_owned()
+}
+
+fn confirmed_host_grant_reply(
+    window: [u8; 16],
+    confirmed: Result<[u8; 16], wire::Refusal>,
+) -> Result<bool, String> {
+    match confirmed {
+        Ok(grant) if grant == window => Ok(true),
+        Err(refusal)
+            if refusal.terminal && refusal.message == "No current grant matches this pairing" =>
+        {
+            Ok(false)
+        }
+        Err(refusal) => Err(refusal.into_error()),
+        Ok(_) => Err("Invalid grant acknowledgement".into()),
+    }
+}
+
+/// Attempt history is only a bounded candidate list, never authority. A
+/// successful authenticated ConfirmGrant response supplies the missing proof.
+async fn recover_confirmed_host_grant<P, F>(
+    attempts: &[[u8; 16]],
+    probe_timeout: Duration,
+    total_timeout: Duration,
+    mut probe: P,
+) -> Result<[u8; 16], String>
+where
+    P: FnMut([u8; 16]) -> F,
+    F: std::future::Future<Output = Result<bool, String>>,
+{
+    tokio::time::timeout(total_timeout, async {
+        for window in attempts.iter().rev().take(HOST_GRANT_RECOVERY_LIMIT) {
+            match tokio::time::timeout(probe_timeout, probe(*window)).await {
+                Ok(Ok(true)) => return Ok(*window),
+                Ok(Ok(false)) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(PAIRING_CONFIRMATION_REQUIRED.into()),
+            }
+        }
+        Err(PAIRING_CONFIRMATION_REQUIRED.into())
+    })
+    .await
+    .map_err(|_| PAIRING_CONFIRMATION_REQUIRED.to_owned())?
+}
+
+async fn retain_observed_peer_info<F>(
+    mut info: Option<super::update::PeerInfo>,
+    known: bool,
+    deadline: tokio::time::Instant,
+    recovery: F,
+) -> Option<super::update::PeerInfo>
+where
+    F: std::future::Future<Output = Result<[u8; 16], String>>,
+{
+    if let Some(info) = &mut info {
+        let confirmed =
+            known || matches!(tokio::time::timeout_at(deadline, recovery).await, Ok(Ok(_)));
+        if !confirmed && info.update.blocked.is_none() {
+            info.update.blocked = Some(super::update::BlockedReason::PairingConfirmationRequired);
+        }
+    }
+    info
+}
+
 async fn query_peer_information<T, F>(
     connect: impl std::future::Future<Output = Result<T, String>>,
     probe: impl FnOnce(T) -> F,
@@ -360,30 +447,80 @@ impl Manager {
         let encode = |value| {
             serde_json::to_value(value).map_err(|_| "Could not encode remote settings".to_string())
         };
-        if request.method == "remote_peer_info" {
+        if matches!(
+            request.method.as_str(),
+            "remote_peer_info" | "remote_refresh_update"
+        ) {
+            let refresh = request.method == "remote_refresh_update";
             let (account, peer): (String, String) = serde_json::from_value(request.params)
                 .map_err(|_| "Invalid remote update request")?;
             let _account_guard = self.backend.account_gate.read().await;
             self.backend.authorize_account(&account)?;
-            let info = query_peer_information(
+            let limit = Duration::from_secs(if refresh { 45 } else { 20 });
+            let deadline = tokio::time::Instant::now() + limit;
+            let mut recovery = None;
+            let mut info = query_peer_information(
                 self.connect(&peer),
                 |link| {
+                    recovery = Some((link.node.clone(), link.peer));
                     let account = &account;
                     async move {
                         if link.node.account != *account {
                             return Err("The signed-in account changed".into());
                         }
-                        Ok(super::streams::peer_info(&link.connection).await)
+                        let observed = super::streams::peer_info(&link.connection).await;
+                        let info = if refresh {
+                            let observed = observed.ok_or("Could not read this computer’s update capabilities")?;
+                            if !observed.supports_remote_refresh() {
+                                return Err("This Maple version cannot check for updates remotely. Check for Updates directly on that computer.".into());
+                            }
+                            let response = super::streams::call(&link.connection, wire::Command {
+                                id: 3,
+                                method: wire::Method::RemoteUpdateRefresh,
+                                send_id: None,
+                                params: serde_json::json!({}),
+                            }).await.map_err(|_| "The remote update check could not be completed")?;
+                            let protocol::Message::Response { id: 3, result } = response else {
+                                return Err("The remote update check returned an invalid response".into());
+                            };
+                            let value = result.map_err(|error| remote_refresh_failure(&error))?;
+                            let checked: super::update::PeerInfo = serde_json::from_value(value)
+                                .map_err(|_| "The remote update check returned an invalid response")?;
+                            checked.validate()?;
+                            Some(checked)
+                        } else {
+                            observed
+                        };
+                        Ok(info)
                     }
                 },
-                Duration::from_secs(5),
+                limit,
             )
             .await?;
+            // Retain the independently read status before attempting metadata
+            // recovery. Slow confirmation must never erase a known version or
+            // turn a completed signed-feed check into an unavailable response.
+            if let Some((node, peer)) = recovery.filter(|_| info.is_some()) {
+                let known = node.store.read().ok().is_some_and(|store| {
+                    store
+                        .peers()
+                        .get(&peer.to_string())
+                        .is_some_and(|saved| saved.can_connect && saved.host_grant.is_some())
+                });
+                info =
+                    retain_observed_peer_info(info, known, deadline, node.ensure_host_grant(peer))
+                        .await;
+            }
             self.backend.authorize_account(&account)?;
+            if refresh && info.is_none() {
+                return Err("The remote update check did not finish. Its previous status is not a fresh update check.".into());
+            }
             return serde_json::to_value(info)
                 .map_err(|_| "Could not display remote update status".into());
         }
         if request.method == "remote_install_update" {
+            use super::update::{InstallRefusal as Refusal, InstallReply};
+            let refused = |reason| Ok::<_, String>(InstallReply::Refused { reason });
             let (account, peer, expected_grant, install): (
                 String,
                 String,
@@ -391,52 +528,96 @@ impl Manager {
                 super::update::InstallRequest,
             ) = serde_json::from_value(request.params)
                 .map_err(|_| "Invalid remote update request")?;
-            install.validate()?;
+            if install.validate().is_err() {
+                return encode_install_reply(InstallReply::Refused {
+                    reason: Refusal::Unsupported,
+                });
+            }
             let _account_guard = self.backend.account_gate.read().await;
-            self.backend.authorize_account(&account)?;
-            let response = tokio::time::timeout(Duration::from_secs(15), async {
-                let link = self.connect(&peer).await?;
-                self.backend.authorize_account(&account)?;
-                if link.node.account != account { return Err("The signed-in account changed".into()); }
-                let paired = link.node.store.read().map_err(|_| "Remote grant unavailable")?.peers()
-                    .get(&link.peer.to_string()).is_some_and(|value| value.can_connect && value.grant == expected_grant);
-                if !paired { return Err("Remote update authorization changed. Reopen this computer.".into()); }
-                let info = super::streams::peer_info(&link.connection).await
-                    .filter(super::update::PeerInfo::supports_remote_updates)
-                    .ok_or("This computer does not support remote updates")?;
+            if self.backend.authorize_account(&account).is_err() {
+                return encode_install_reply(InstallReply::Refused {
+                    reason: Refusal::AccountChanged,
+                });
+            }
+            let submitted = AtomicBool::new(false);
+            let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+                let link = match self.connect(&peer).await {
+                    Ok(link) => link,
+                    Err(error) if wire::is_protocol_incompatibility_refusal(&error) => return refused(Refusal::Unsupported),
+                    Err(_) => return refused(Refusal::Unavailable),
+                };
+                if self.backend.authorize_account(&account).is_err() || link.node.account != account {
+                    return refused(Refusal::AccountChanged);
+                }
+                let paired = match link.node.store.read() {
+                    Ok(store) => store.peers().get(&link.peer.to_string()).is_some_and(|value| value.can_connect && value.host_grant == Some(expected_grant)),
+                    Err(_) => return refused(Refusal::Unavailable),
+                };
+                if !paired { return refused(Refusal::AuthorizationChanged); }
+                let Some(info) = super::streams::peer_info(&link.connection).await else {
+                    return refused(Refusal::Unavailable);
+                };
+                if !info.supports_remote_updates() { return refused(Refusal::Unsupported); }
                 if info.update.offered.as_ref() != Some(&install.target) {
-                    return Err("The remote update changed. Refresh before trying again.".into());
+                    return refused(Refusal::UpdateChanged);
                 }
                 if info.update.state != super::update::UpdateState::Ready || info.update.blocked.is_some() {
-                    return Err("The remote computer is not ready to install this update.".into());
+                    return refused(if info.update.blocked == Some(super::update::BlockedReason::Busy) { Refusal::Busy } else { Refusal::NotReady });
                 }
-                self.backend.authorize_account(&account)?;
-                link.node.ensure_valid().await?;
-                if !link.node.store.read().map_err(|_| "Remote grant unavailable")?.peers()
-                    .get(&link.peer.to_string()).is_some_and(|value| value.can_connect && value.grant == expected_grant) {
-                    return Err("Remote update authorization changed. Reopen this computer.".into());
+                if self.backend.authorize_account(&account).is_err() {
+                    return refused(Refusal::AccountChanged);
                 }
+                if link.node.ensure_valid().await.is_err() { return refused(Refusal::AuthorizationChanged); }
+                let paired = match link.node.store.read() {
+                    Ok(store) => store.peers().get(&link.peer.to_string()).is_some_and(|value| value.can_connect && value.host_grant == Some(expected_grant)),
+                    Err(_) => return refused(Refusal::Unavailable),
+                };
+                if !paired {
+                    return refused(Refusal::AuthorizationChanged);
+                }
+                // From this point a lost/invalid reply can follow admission.
+                // Never turn that ambiguity into a definite refusal or retry.
+                let params = match serde_json::to_value(super::update::InstallCommand {
+                    expected_grant, request: install.clone(),
+                }) {
+                    Ok(params) => params,
+                    Err(_) => return refused(Refusal::Unsupported),
+                };
+                submitted.store(true, Ordering::Relaxed);
                 let message = super::streams::call(&link.connection, wire::Command {
                     id: 2,
                     method: wire::Method::RemoteUpdateInstall,
                     send_id: None,
-                    params: serde_json::to_value(super::update::InstallCommand {
-                        expected_grant, request: install.clone(),
-                    }).map_err(|_| "Invalid remote update request")?,
+                    params,
                 }).await.map_err(|_| "Remote update outcome is uncertain. Refresh its status; do not submit another update.")?;
                 let protocol::Message::Response { result, .. } = message else {
                     return Err("Remote update outcome is uncertain. Refresh its status; do not submit another update.".into());
                 };
-                let accepted: super::update::InstallAccepted = serde_json::from_value(result?)
+                let value = match result {
+                    Ok(value) => value,
+                    // The execution host replies Err only when admission failed.
+                    // Do not copy its arbitrary private error into the client UI.
+                    Err(_) => return refused(Refusal::Unavailable),
+                };
+                let accepted: super::update::InstallAccepted = serde_json::from_value(value)
                     .map_err(|_| "Remote update outcome is uncertain. Refresh its status; do not submit another update.")?;
                 if accepted.operation_id != install.operation_id || accepted.target != install.target {
                     return Err("Remote update outcome is uncertain. Refresh its status; do not submit another update.".into());
                 }
-                Ok::<_, String>(accepted)
-            }).await.map_err(|_| "Remote update outcome is uncertain. Refresh its status; do not submit another update.")??;
-            self.backend.authorize_account(&account)?;
-            return serde_json::to_value(response)
-                .map_err(|_| "Could not display remote update receipt".into());
+                Ok::<_, String>(InstallReply::Accepted { receipt: accepted })
+            }).await;
+            let response = match outcome {
+                Ok(response) => response?,
+                Err(_) if !submitted.load(Ordering::Relaxed) => InstallReply::Refused { reason: Refusal::Unavailable },
+                Err(_) => return Err("Remote update outcome is uncertain. Refresh its status; do not submit another update.".into()),
+            };
+            if self.backend.authorize_account(&account).is_err() {
+                return match response {
+                    InstallReply::Refused { .. } => encode_install_reply(InstallReply::Refused { reason: Refusal::AccountChanged }),
+                    InstallReply::Accepted { .. } => Err("Remote update outcome is uncertain. Refresh its status; do not submit another update.".into()),
+                };
+            }
+            return encode_install_reply(response);
         }
         if request.method == "remote_pairing_window" {
             let current = self.node.lock().await.clone();
@@ -1005,6 +1186,76 @@ impl Node {
             .await
             .map_err(|_| "Pairing acknowledgement is still pending; reconnect to confirm it")?
     }
+    /// Repair only confirmed outgoing metadata in a released record. The caller
+    /// holds its local account gate and has already admitted a normal control
+    /// connection to this exact endpoint. No pairing proof or install is replayed.
+    async fn ensure_host_grant(&self, peer: EndpointId) -> Result<[u8; 16], String> {
+        let generation = self.pairing_generation.load(Ordering::SeqCst);
+        let expected = {
+            let store = self.store.read().map_err(|_| "Remote grant unavailable")?;
+            let saved = store
+                .peers()
+                .get(&peer.to_string())
+                .filter(|saved| saved.can_connect)
+                .ok_or(PAIRING_CONFIRMATION_REQUIRED)?;
+            if let Some(grant) = saved.host_grant {
+                return Ok(grant);
+            }
+            store.host_grant_recovery(peer)?
+        };
+        let window = recover_confirmed_host_grant(
+            &expected.attempts,
+            HOST_GRANT_PROBE_TIMEOUT,
+            HOST_GRANT_RECOVERY_TIMEOUT,
+            |window| self.confirm_saved_host_grant(peer, window),
+        )
+        .await?;
+        self.ensure_valid().await?;
+        let mut store = write_policy(&self.store).await?;
+        self.backend.authorize_account(&self.account)?;
+        if self.pairing_generation.load(Ordering::SeqCst) != generation {
+            return Err(PAIRING_CONFIRMATION_REQUIRED.into());
+        }
+        // The durable edit checks directional authority and the attempt snapshot:
+        // ordinary re-pairing does not necessarily change pairing_generation.
+        store.recover_host_grant(peer, &expected, window)?;
+        Ok(window)
+    }
+
+    async fn confirm_saved_host_grant(
+        &self,
+        peer: EndpointId,
+        window: [u8; 16],
+    ) -> Result<bool, String> {
+        self.ensure_valid().await?;
+        let (address, _) = self.destination(peer).await?;
+        let connection = self
+            .endpoint
+            .connect(address, wire::ALPN)
+            .await
+            .map_err(|_| PAIRING_CONFIRMATION_REQUIRED)?;
+        if connection.remote_id() != peer {
+            return Err("Remote identity changed".into());
+        }
+        let (mut tx, mut rx) = connection
+            .open_bi()
+            .await
+            .map_err(|_| PAIRING_CONFIRMATION_REQUIRED)?;
+        wire::write(
+            &mut tx,
+            &self.hello(wire::Mode::ConfirmGrant { window }),
+            wire::MAX_PREFACE,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        let confirmed: Result<[u8; 16], wire::Refusal> = wire::read(&mut rx, wire::MAX_PREFACE)
+            .await
+            .map_err(|error| error.to_string())?;
+        // Only the exact legacy negative acknowledgement permits another
+        // candidate. Context, protocol and identity failures stop recovery.
+        confirmed_host_grant_reply(window, confirmed)
+    }
+
     pub(super) async fn accept_pairing(
         &self,
         peer: EndpointId,
@@ -1089,6 +1340,7 @@ impl Node {
                 Peer {
                     name: "Paired controller".into(),
                     grant: window,
+                    host_grant: None,
                     controls_this_computer: true,
                     can_connect: false,
                     pending_confirmation: None,
@@ -1278,6 +1530,175 @@ fn validate_devices(devices: &[RemoteDevice]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_legacy_confirmation_cannot_erase_an_observed_ready_release() {
+        use super::super::update::{
+            BlockedReason, PeerInfo, ProtocolInfo, RemoteUpdateStatus, RunningApplication,
+            UpdateState,
+        };
+        let observed = PeerInfo {
+            protocol: ProtocolInfo::current(),
+            running: RunningApplication::current(),
+            update: RemoteUpdateStatus {
+                state: UpdateState::Ready,
+                ..Default::default()
+            },
+        };
+        let returned = retain_observed_peer_info(
+            Some(observed.clone()),
+            false,
+            tokio::time::Instant::now() + Duration::from_secs(2),
+            std::future::pending::<Result<[u8; 16], String>>(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(returned.running, observed.running);
+        assert_eq!(returned.update.state, UpdateState::Ready);
+        assert_eq!(
+            returned.update.blocked,
+            Some(BlockedReason::PairingConfirmationRequired)
+        );
+
+        let mut protected = observed;
+        protected.update.blocked = Some(BlockedReason::PasswordProtected);
+        let returned = retain_observed_peer_info(
+            Some(protected.clone()),
+            false,
+            tokio::time::Instant::now(),
+            std::future::ready(Err(PAIRING_CONFIRMATION_REQUIRED.into())),
+        )
+        .await;
+        assert_eq!(returned, Some(protected));
+    }
+
+    #[test]
+    fn remote_refresh_preserves_controlled_failure_categories_without_peer_text() {
+        use crate::remote_updates::RefreshFailure;
+        for failure in [
+            RefreshFailure::Busy,
+            RefreshFailure::Disabled,
+            RefreshFailure::Unavailable,
+            RefreshFailure::CheckFailed,
+            RefreshFailure::TimedOut,
+        ] {
+            assert_eq!(remote_refresh_failure(failure.message()), failure.message());
+        }
+        assert_eq!(
+            remote_refresh_failure("synthetic private remote path or account detail"),
+            RefreshFailure::CheckFailed.message(),
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_grant_recovery_needs_an_exact_confirmation_and_has_a_bounded_tail() {
+        let attempts: Vec<_> = (1..=12).map(|n| [n; 16]).collect();
+        let mut probes = Vec::new();
+        let recovered = recover_confirmed_host_grant(
+            &attempts,
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            |candidate| {
+                probes.push(candidate);
+                std::future::ready(confirmed_host_grant_reply(
+                    candidate,
+                    if candidate == [10; 16] {
+                        Ok(candidate)
+                    } else {
+                        Err(wire::Refusal::terminal(
+                            "No current grant matches this pairing",
+                        ))
+                    },
+                ))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(recovered, [10; 16]);
+        assert_eq!(probes, [[12; 16], [11; 16], [10; 16]]);
+
+        probes.clear();
+        let missing = recover_confirmed_host_grant(
+            &attempts,
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            |candidate| {
+                probes.push(candidate);
+                std::future::ready(Ok(candidate == [1; 16]))
+            },
+        )
+        .await;
+        assert_eq!(missing.unwrap_err(), PAIRING_CONFIRMATION_REQUIRED);
+        assert_eq!(probes.len(), HOST_GRANT_RECOVERY_LIMIT);
+        assert_eq!(probes.last(), Some(&[5; 16]));
+    }
+
+    #[tokio::test]
+    async fn malformed_or_context_refused_confirmation_cannot_fall_through_to_another_attempt() {
+        for response in [
+            Ok([9; 16]),
+            Err(wire::Refusal::terminal(
+                "Remote account or deployment mismatch",
+            )),
+            Err(wire::Refusal::terminal(
+                wire::Error::Incompatible.to_string(),
+            )),
+        ] {
+            let mut response = Some(response);
+            let mut calls = 0;
+            let result = recover_confirmed_host_grant(
+                &[[1; 16], [2; 16]],
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                |candidate| {
+                    calls += 1;
+                    std::future::ready(confirmed_host_grant_reply(
+                        candidate,
+                        response.take().unwrap(),
+                    ))
+                },
+            )
+            .await;
+            assert!(result.is_err());
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn legacy_grant_recovery_times_out_without_trying_another_candidate() {
+        let started = tokio::time::Instant::now();
+        let mut calls = 0;
+        let result = recover_confirmed_host_grant(
+            &[[1; 16], [2; 16]],
+            Duration::from_secs(3),
+            Duration::from_secs(15),
+            |_| {
+                calls += 1;
+                std::future::pending::<Result<bool, String>>()
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), PAIRING_CONFIRMATION_REQUIRED);
+        assert_eq!(calls, 1);
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn legacy_grant_recovery_total_budget_bounds_a_slow_negative_history() {
+        let started = tokio::time::Instant::now();
+        let result = recover_confirmed_host_grant(
+            &[[1; 16]; 12],
+            Duration::from_secs(3),
+            Duration::from_secs(5),
+            |_| async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Ok(false)
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), PAIRING_CONFIRMATION_REQUIRED);
+        assert_eq!(started.elapsed(), Duration::from_secs(5));
+    }
 
     fn policy_fixture() -> (tempfile::TempDir, Arc<RwLock<Store>>) {
         let root = tempfile::tempdir().unwrap();

@@ -11,7 +11,8 @@ use crate::{
     backend::AgentBackend,
     remote::update::{ReleaseIdentity, RemoteUpdateStatus},
     remote_updates::{
-        AttachRequest, CompleteRequest, DesktopCommand, DesktopLease, PublishRequest, TakeRequest,
+        AttachRequest, CompleteRequest, DesktopCommand, DesktopLease, DesktopRefreshCommand,
+        PublishRequest, RefreshCompleteRequest, RefreshFailure, TakeRequest,
     },
     update::{Controller, Snapshot, State},
 };
@@ -37,6 +38,13 @@ pub(super) struct Pending {
     bridge: Bridge,
 }
 
+struct PendingRefresh {
+    account: String,
+    lease: String,
+    command: DesktopRefreshCommand,
+    bridge: Bridge,
+}
+
 impl Bridge {
     /// Called by the existing five-second local status pump. No new timer or
     /// long-polling host request keeps an account/admission guard alive.
@@ -45,18 +53,104 @@ impl Bridge {
         backend: Arc<AgentBackend>,
         account: Option<String>,
         status: RemoteUpdateStatus,
+        updater: Controller,
     ) -> Option<Pending> {
         let account = account.filter(|_| !backend.is_retired_after_update());
-        self.poll_with(
-            account,
-            status,
+        let caller = backend.clone();
+        let pending = self
+            .poll_with(
+                account.clone(),
+                status,
+                Duration::from_secs(5),
+                move |method, params| {
+                    let backend = caller.clone();
+                    async move { backend.remote_setting(method, params).await }
+                },
+            )
+            .await;
+        if pending.is_none()
+            && let Some(refresh) = self
+                .take_refresh_with(account, {
+                    let backend = backend.clone();
+                    move |method, params| {
+                        let backend = backend.clone();
+                        async move { backend.remote_setting(method, params).await }
+                    }
+                })
+                .await
+        {
+            let work_backend = backend.clone();
+            let download_backend = backend.clone();
+            drop(backend.spawn(async move {
+                let expected = refresh.account.clone();
+                let check_account = expected.clone();
+                let check_backend = work_backend.clone();
+                let check_updater = updater.clone();
+                let completed = refresh
+                    .run_with(
+                        move |method, params| {
+                            let backend = work_backend.clone();
+                            async move { backend.remote_setting(method, params).await }
+                        },
+                        async move {
+                            if check_backend.is_retired_after_update()
+                                || check_backend.saved_user_id().as_deref()
+                                    != Some(check_account.as_str())
+                                || check_backend.store_state()
+                                    != maple_agent::store::StoreState::Open
+                            {
+                                return Err(RefreshFailure::Unavailable);
+                            }
+                            check_updater.refresh_remote().await
+                        },
+                    )
+                    .await;
+                if completed
+                    && download_backend.saved_user_id().as_deref() == Some(expected.as_str())
+                    && !download_backend.is_retired_after_update()
+                {
+                    // Follow the execution desktop's saved download preference;
+                    // this never installs or restarts either computer.
+                    updater.download_if_automatic().await;
+                }
+            }));
+        }
+        pending
+    }
+
+    async fn take_refresh_with<C, F>(
+        &self,
+        account: Option<String>,
+        mut call: C,
+    ) -> Option<PendingRefresh>
+    where
+        C: FnMut(&'static str, serde_json::Value) -> F,
+        F: Future<Output = Result<serde_json::Value, String>>,
+    {
+        let registration = self.0.lock().await;
+        let current = registration
+            .as_ref()
+            .filter(|current| Some(&current.account) == account.as_ref())?;
+        let command: Option<DesktopRefreshCommand> = tokio::time::timeout(
             Duration::from_secs(5),
-            move |method, params| {
-                let backend = backend.clone();
-                async move { backend.remote_setting(method, params).await }
-            },
+            request(
+                &mut call,
+                "remote_update_refresh_take",
+                TakeRequest {
+                    expected_account: current.account.clone(),
+                    lease: current.lease.id.clone(),
+                },
+            ),
         )
         .await
+        .ok()?
+        .ok()?;
+        command.map(|command| PendingRefresh {
+            account: current.account.clone(),
+            lease: current.lease.id.clone(),
+            command,
+            bridge: self.clone(),
+        })
     }
 
     async fn poll_with<C, F>(
@@ -159,6 +253,47 @@ impl Bridge {
                 None
             }
         }
+    }
+}
+
+impl PendingRefresh {
+    async fn owned(&self) -> bool {
+        self.bridge.0.lock().await.as_ref().is_some_and(|current| {
+            current.account == self.account && current.lease.id == self.lease
+        })
+    }
+
+    async fn run_with<C, F, Check>(self, mut call: C, check: Check) -> bool
+    where
+        C: FnMut(&'static str, serde_json::Value) -> F,
+        F: Future<Output = Result<serde_json::Value, String>>,
+        Check: Future<Output = Result<RemoteUpdateStatus, RefreshFailure>>,
+    {
+        if !self.owned().await {
+            return false;
+        }
+        let result = check.await;
+        if !self.owned().await {
+            return false;
+        }
+        let checked = result.is_ok();
+        matches!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                request::<(), _, _>(
+                    &mut call,
+                    "remote_update_refresh_complete",
+                    RefreshCompleteRequest {
+                        expected_account: self.account,
+                        lease: self.lease,
+                        id: self.command.id,
+                        result,
+                    },
+                )
+            )
+            .await,
+            Ok(Ok(()))
+        ) && checked
     }
 }
 
@@ -324,6 +459,136 @@ mod tests {
             blocked: None,
             operation: None,
         }
+    }
+
+    async fn refresh_call(
+        broker: Arc<crate::remote_updates::Broker>,
+        method: &'static str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        match method {
+            "remote_update_refresh_take" => serde_json::to_value(
+                broker
+                    .take_refresh(serde_json::from_value(params).unwrap())
+                    .await?,
+            )
+            .map_err(|_| "fixture response".into()),
+            "remote_update_refresh_complete" => {
+                broker
+                    .complete_refresh(serde_json::from_value(params).unwrap())
+                    .await?;
+                Ok(serde_json::Value::Null)
+            }
+            _ => panic!("unexpected refresh RPC {method}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_refresh_invokes_check_once_and_returns_its_fresh_result() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for outcome in [
+            Ok(RemoteUpdateStatus {
+                state: UpdateState::Current,
+                ..Default::default()
+            }),
+            Ok(RemoteUpdateStatus {
+                state: UpdateState::Available,
+                offered: Some(target()),
+                ..Default::default()
+            }),
+            Err(RefreshFailure::CheckFailed),
+            Err(RefreshFailure::Busy),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Arc::new(
+                maple_agent::store::Store::open(maple_agent::store::StorePaths::new(
+                    directory.path(),
+                ))
+                .unwrap(),
+            );
+            let broker = Arc::new(crate::remote_updates::Broker::new(Some(store)));
+            let lease = broker.attach("alice".into()).await.unwrap();
+            let bridge = Bridge::default();
+            *bridge.0.lock().await = Some(Registration {
+                account: "alice".into(),
+                lease,
+                published: Some(ready_status()),
+                completion: None,
+            });
+            let waiting = tokio::spawn({
+                let broker = broker.clone();
+                async move {
+                    broker
+                        .request_refresh("alice".into(), "paired-peer".into())
+                        .await
+                }
+            });
+            let pending = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let caller = broker.clone();
+                    if let Some(pending) = bridge
+                        .take_refresh_with(Some("alice".into()), move |method, params| {
+                            refresh_call(caller.clone(), method, params)
+                        })
+                        .await
+                    {
+                        break pending;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!waiting.is_finished());
+            let calls = AtomicUsize::new(0);
+            let expected = outcome.clone();
+            let caller = broker.clone();
+            let completed = pending
+                .run_with(
+                    move |method, params| refresh_call(caller.clone(), method, params),
+                    async {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        outcome
+                    },
+                )
+                .await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(completed, expected.is_ok());
+            let reply = waiting.await.unwrap();
+            match expected {
+                Ok(status) => assert_eq!(reply.unwrap(), status),
+                Err(error) => assert_eq!(reply.unwrap_err(), error.message()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_desktop_owner_does_not_invoke_or_complete_an_old_refresh() {
+        let bridge = Bridge::default();
+        let pending = PendingRefresh {
+            account: "old-account".into(),
+            lease: "old-lease".into(),
+            command: DesktopRefreshCommand {
+                id: "old-check".into(),
+            },
+            bridge: bridge.clone(),
+        };
+        *bridge.0.lock().await = Some(Registration {
+            account: "new-account".into(),
+            lease: DesktopLease {
+                id: "new-lease".into(),
+            },
+            published: None,
+            completion: None,
+        });
+        assert!(
+            !pending
+                .run_with(
+                    |_, _| async { panic!("stale completion must not be sent") },
+                    async { panic!("stale check must not run") },
+                )
+                .await
+        );
     }
 
     enum CompletionDelivery {

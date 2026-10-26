@@ -3247,6 +3247,7 @@ pub fn run() {
                     let expected_account = account.clone();
                     let bridge = update_bridge.clone();
                     let update_status = remote_updater.remote_status();
+                    let check_updater = remote_updater.clone();
                     let task = status_backend.spawn(async move {
                         tokio::join!(
                             backend.remote_setting::<crate::remote::manager::Status>(
@@ -3254,7 +3255,12 @@ pub fn run() {
                                 ()
                             ),
                             backend.local_control::<DesktopStoreStatus>("store_status", ()),
-                            bridge.poll(backend.clone(), expected_account, update_status),
+                            bridge.poll(
+                                backend.clone(),
+                                expected_account,
+                                update_status,
+                                check_updater
+                            ),
                         )
                     });
                     if let Ok((remote, store, update_command)) = task.await {

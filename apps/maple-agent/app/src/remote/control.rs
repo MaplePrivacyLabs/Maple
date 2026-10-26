@@ -262,20 +262,39 @@ async fn serve_request(
         return serve_install(node, peer, &mut tx, request).await;
     }
     let id = request.id;
-    let result = if request.method == wire::Method::PeerInfo {
+    let result = if matches!(
+        request.method,
+        wire::Method::PeerInfo | wire::Method::RemoteUpdateRefresh
+    ) {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Empty {}
         if request.send_id.is_some() || serde_json::from_value::<Empty>(request.params).is_err() {
             Err("Invalid remote information request".into())
         } else {
-            let info = peer_information(
+            let update = if request.method == wire::Method::RemoteUpdateRefresh {
+                // This response is tied to a new check claimed by the current
+                // execution desktop, never to its cached status heartbeat.
+                node.backend
+                    .remote_updates
+                    .request_refresh(node.account.clone(), peer.to_string())
+                    .await
+            } else {
                 node.backend
                     .remote_updates
                     .status(&node.account, &peer.to_string())
-                    .await,
-            )?;
-            serde_json::to_value(info).map_err(|_| "Remote information unavailable".into())
+                    .await
+            };
+            if request.method == wire::Method::RemoteUpdateRefresh {
+                match update {
+                    Ok(status) => serde_json::to_value(peer_information(Ok(status))?)
+                        .map_err(|_| "Remote information unavailable".into()),
+                    Err(error) => Err(error),
+                }
+            } else {
+                serde_json::to_value(peer_information(update)?)
+                    .map_err(|_| "Remote information unavailable".into())
+            }
         }
     } else if request.method == wire::Method::Subscribe {
         set_subscription(&subscription, &node.account, request.params)
@@ -376,9 +395,30 @@ async fn serve_install(
             .await;
         }
     };
-    command.request.validate()?;
-    let authority = RemoteInstallAuthority::capture(&node, peer, command.expected_grant)?;
-    authority.ensure_current().await?;
+    // These refusals precede Broker admission. Reply explicitly so the client
+    // does not confuse a known rejection with a lost installation receipt.
+    if command.request.validate().is_err() {
+        return install_refused(tx, id, "Invalid remote update request").await;
+    }
+    let authority = match RemoteInstallAuthority::capture(&node, peer, command.expected_grant) {
+        Ok(authority) => authority,
+        Err(_) => {
+            return install_refused(
+                tx,
+                id,
+                "Remote update authorization changed. Reopen this computer.",
+            )
+            .await;
+        }
+    };
+    if authority.ensure_current().await.is_err() {
+        return install_refused(
+            tx,
+            id,
+            "Remote update authorization changed. Reopen this computer.",
+        )
+        .await;
+    }
     let mut pending = PendingInstallReply {
         broker: node.backend.remote_updates.clone(),
         authority,
@@ -389,11 +429,22 @@ async fn serve_install(
         .broker
         .request_install(pending.authority.clone(), command.request)
         .await;
-    pending.authority.ensure_current().await?;
     let admitted = accepted.is_ok();
-    let result = accepted.and_then(|value| {
-        serde_json::to_value(value).map_err(|_| "Remote update receipt unavailable".into())
-    });
+    if admitted {
+        pending.authority.ensure_current().await?;
+    }
+    let result = match accepted {
+        Ok(value) => {
+            serde_json::to_value(value).map_err(|_| "Remote update receipt unavailable".into())
+        }
+        Err(error) => Err(if error.contains("in progress") || error.contains("busy") {
+            "The remote computer is busy".into()
+        } else if error.contains("ready") || error.contains("Open Maple") {
+            "The remote computer is not ready to install this update".into()
+        } else {
+            "The remote computer refused the update before accepting it".into()
+        }),
+    };
     streams::reply_with_limit(
         tx,
         &Message::Response { id, result },
@@ -409,6 +460,22 @@ async fn serve_install(
         pending.completed = true;
     }
     Ok(())
+}
+
+async fn install_refused(
+    tx: &mut SendStream,
+    id: u64,
+    message: &'static str,
+) -> Result<(), String> {
+    streams::reply_with_limit(
+        tx,
+        &Message::Response {
+            id,
+            result: Err(message.to_owned()),
+        },
+        wire::MAX_MANAGEMENT_REPLY,
+    )
+    .await
 }
 
 fn set_subscription(

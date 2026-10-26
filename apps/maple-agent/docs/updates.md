@@ -35,6 +35,11 @@ menu, and the tray provide update access.
 
 Paired controllers can inspect a computer's version and prepared update through
 the optional [experimental remote update controls](remote-access.md#experimental-remote-updates).
+Opening that view reads the remote's reported state. **Refresh update status**
+requests a new update check on a compatible remote desktop; automatic downloads
+still follow that computer's saved preference. It never installs an update or
+checks the controller's updater. Failed checks retain clearly labelled last
+reported information. Older peers without this capability require a local check.
 An acknowledged request is consumed by the execution computer's running desktop
 and uses this same installer. Password-protected hosts are excluded even while
 unlocked; an independent host-side check runs at the final shutdown boundary.
@@ -48,6 +53,48 @@ retain the original install operation rather than resubmitting it; verify the
 running identity and its receipt after both computers reconnect on wire 7.
 Updating the controller first requires updating the execution computer directly.
 A remote mismatch does not disable the controller's local update controls.
+Definite install refusals are shown as declined requests and require a new check
+before another confirmation. A potentially sent request with an unknown outcome
+keeps its original operation identity; refreshing never resends installation.
+
+### Remote upgrade qualification
+
+Changes to pairing, remote update controls or the installer require a composed
+upgrade test in addition to package verification. Package consumers establish
+provenance, signatures and package startup; they do not establish a paired
+remote upgrade.
+
+The normal Agent test suite includes
+`cpace_confirm_restart_and_mutual_pairing_feed_the_real_install_grant_policy`.
+It exchanges real CPace and ConfirmGrant frames between two loopback endpoints,
+reopens both durable stores, and checks the production install-grant policy.
+It covers lost pairing acknowledgement, independent pairing directions and
+revocation. Do not replace its pairing-produced records with pre-authorized
+fixtures. Enrollment, account sessions and signed installation are separate
+boundaries.
+
+Before claiming native remote-upgrade coverage, record these observations from
+isolated installations and a disposable account:
+
+1. Pair through the normal application path, restart both applications, and
+   request the execution computer's exact verified update from its controller.
+   Observe admission, the durable receipt, shutdown, replacement, relaunch and
+   the new running version/source. The controller must remain unchanged.
+2. Change the signed feed after observing Current. Explicit refresh must produce
+   a new HTTP check on the execution computer and report that result. A cached
+   heartbeat, failed check, disconnected desktop or unsupported old peer cannot
+   be reported as a successful fresh check.
+3. Exercise a definite pre-admission refusal and a lost acknowledgement after
+   sending. The latter must retain its operation ID without replaying the
+   installation. Include re-pairing or disconnect while its reply is pending.
+4. For a wire-major transition, exercise the supported remote-first order with
+   the previous published application. Record the expected incompatibility if
+   the controller is updated first and verify the direct local recovery path.
+
+Preserve failures and identify the exact source, binary hashes, profiles,
+operating systems and signing identities used. A Local fixture signed by a test
+key can establish that fixture's lifecycle; it does not establish production
+Developer ID, notarization, production account routing or public publication.
 
 The installer holds the per-application lock while staging a verified bundle
 beside the installed application and while that update is ready. It checks the
