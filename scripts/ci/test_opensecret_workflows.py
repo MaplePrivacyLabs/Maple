@@ -301,9 +301,9 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         commands = [step["run"] for step in config["jobs"]["rust"]["steps"] if "run" in step]
         self.assertEqual(commands, [
             VERIFY_NIX,
-            "nix develop --no-update-lock-file '.?submodules=1' -c cargo fmt --all -- --check",
-            "nix develop --no-update-lock-file '.?submodules=1' -c cargo clippy --locked --all-targets --all-features -- -D warnings",
-            "nix develop --no-update-lock-file '.?submodules=1' -c cargo test --locked --all-features",
+            "nix develop --no-update-lock-file '.?submodules=1#ci' -c cargo fmt --all -- --check",
+            "nix develop --no-update-lock-file '.?submodules=1#ci' -c cargo clippy --locked --all-targets --all-features -- -D warnings",
+            "nix develop --no-update-lock-file '.?submodules=1#ci' -c cargo test --locked --all-features",
         ])
         nix_commands = [step["run"] for step in config["jobs"]["nix"]["steps"] if "run" in step]
         self.assertEqual(nix_commands, [
@@ -378,12 +378,17 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("opensecret-integration-revision", commands)
         self.assertFalse((ROOT / "sdk/opensecret-integration-revision").exists())
         self.assertIn("cd services/opensecret", commands)
-        self.assertIn("'./services/opensecret?submodules=1'", commands)
+        self.assertEqual(commands.count("'./services/opensecret?submodules=1#ci'"), 4)
+        self.assertNotIn("'./services/opensecret?submodules=1'", commands)
         self.assertIn("services/opensecret/target/debug/opensecret", commands)
         self.assertIn("diesel migration run", commands)
+        self.assertIn("bash ../../.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh", commands)
         self.assertIn("sdk/test/integration/bootstrap.sql", commands)
         self.assertIn("bun test src/lib/test/integration/api.test.ts", commands)
         self.assertIn("cargo test --locked --all-features --tests", commands)
+        self.assertIn("client::tests::native_handoff_full_stack_round_trip", commands)
+        for key in ("OPENSECRET_DEV_POSTGRES", "OPENSECRET_DEV_ENV", "OPENSECRET_DEV_CONTAINERS"):
+            self.assertEqual(config["env"][key], "0")
         self.assertEqual(config["env"]["APP_MODE"], "local")
         self.assertEqual(config["env"]["OPENAI_API_BASE"], "http://127.0.0.1:9")
         self.assertEqual(job["services"]["postgres"]["env"]["POSTGRES_DB"], "opensecret")

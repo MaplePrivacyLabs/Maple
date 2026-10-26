@@ -1,4 +1,4 @@
-"""Master packaging must retain changes until all profiles are verified."""
+"""Master lanes retain cancelled, failed and skipped work across later pushes."""
 
 from contextlib import redirect_stderr, redirect_stdout
 import io
@@ -37,7 +37,7 @@ def verified_jobs(**conclusions):
     return {"total_count": len(jobs), "jobs": jobs}
 
 
-class MasterSelectionTests(unittest.TestCase):
+class GitFixture(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -59,6 +59,8 @@ class MasterSelectionTests(unittest.TestCase):
         self.git("commit", "--quiet", "-m", "fixture")
         return self.git("rev-parse", "HEAD")
 
+
+class MasterSelectionTests(GitFixture):
     def select(self, head, runs, jobsets=None, current_run=999):
         jobsets = jobsets or {}
 
@@ -230,6 +232,82 @@ class MainFallbackTests(unittest.TestCase):
     def test_manual_force_build_avoids_api(self):
         api = self.invoke(event="workflow_dispatch", error=AssertionError("must not query"))
         api.assert_not_called()
+
+
+class MasterCISelectionTests(GitFixture):
+    def select(self, head, runs, jobsets=None):
+        jobsets = jobsets or {}
+
+        def response(path):
+            if "/workflows/" in path:
+                self.assertIn("/agent-ci.yml/runs?", path)
+                return {"workflow_runs": runs}
+            run_id = int(path.split("/runs/")[1].split("/")[0])
+            return jobsets.get(run_id, self.jobs())
+
+        with patch.object(selector, "api", side_effect=response):
+            return selector.select_master(head, 999, self.root, lane="ci")
+
+    @staticmethod
+    def record(run_id, head, **overrides):
+        return run_record(run_id, head, path=selector.CI_WORKFLOW, **overrides)
+
+    @staticmethod
+    def jobs(**conclusions):
+        jobs = [{"name": name, "status": "completed",
+                 "conclusion": conclusions.get(name, "success")}
+                for name in sorted(selector.CI_VERIFIERS)]
+        return {"total_count": len(jobs), "jobs": jobs}
+
+    def test_unrelated_push_retains_cancelled_or_failed_agent_changes(self):
+        changed = self.commit("apps/maple-agent/app/src/main.rs", "unverified change\n")
+        head = self.commit("services/opensecret/pcrDev.json", "unrelated later push\n")
+        for conclusion in ("cancelled", "failure"):
+            with self.subTest(conclusion=conclusion):
+                selected, reason = self.select(head, [
+                    self.record(2, changed, conclusion=conclusion),
+                    self.record(1, self.base),
+                ])
+                self.assertTrue(selected)
+                self.assertIn("master run 1", reason)
+
+    def test_green_selector_only_does_not_consume_unverified_changes(self):
+        changed = self.commit("apps/maple-agent/app/src/main.rs", "cancelled change\n")
+        head = self.commit("README.md", "unrelated\n")
+        skipped = self.jobs(**{name: "skipped" for name in selector.CI_VERIFIERS})
+        skipped["jobs"].append({"name": "Agent CI required jobs", "status": "completed",
+                                "conclusion": "success"})
+        skipped["total_count"] += 1
+        selected, reason = self.select(head, [self.record(2, changed), self.record(1, self.base)],
+                                       {2: skipped})
+        self.assertTrue(selected)
+        self.assertIn("master run 1", reason)
+
+    def test_every_platform_provider_and_release_must_actually_pass(self):
+        changed = self.commit("apps/maple-agent/app/src/main.rs", "partly validated\n")
+        head = self.commit("README.md", "unrelated\n")
+        for name in selector.CI_VERIFIERS:
+            for conclusion in ("skipped", "failure", "cancelled"):
+                with self.subTest(job=name, conclusion=conclusion):
+                    selected, reason = self.select(
+                        head, [self.record(2, changed), self.record(1, self.base)],
+                        {2: self.jobs(**{name: conclusion})},
+                    )
+                    self.assertTrue(selected)
+                    self.assertIn("master run 1", reason)
+
+    def test_completed_platform_validation_allows_later_unrelated_push_to_skip(self):
+        changed = self.commit("apps/maple-agent/app/src/main.rs", "fully validated\n")
+        head = self.commit("README.md", "unrelated\n")
+        selected, reason = self.select(head, [self.record(2, changed)])
+        self.assertFalse(selected)
+        self.assertIn("master run 2", reason)
+
+    def test_desktop_packaging_success_cannot_replace_ci_validation(self):
+        changed = self.commit("apps/maple-agent/app/src/main.rs", "only packaged\n")
+        head = self.commit("README.md", "unrelated\n")
+        selected, _ = self.select(head, [run_record(2, changed)])
+        self.assertTrue(selected)
 
 
 if __name__ == "__main__":
