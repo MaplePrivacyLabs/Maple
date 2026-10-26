@@ -728,12 +728,22 @@ pub struct ChatScreen {
     slash_selected: Option<usize>,
     /// Set when a pending question should steal focus at the next render.
     question_focus_pending: bool,
-    /// One-line model summaries per completed tool item id.
+    /// One-line model summaries per tool item id.
     tool_summaries: HashMap<String, SharedString>,
     /// Item ids with a summary request sent; never asked twice.
     summary_requests: HashSet<String>,
-    /// Summary requests in flight; caps how many ride at once.
-    pending_summaries: usize,
+    /// Item ids whose summary landed before their row was durable; each is
+    /// stored when its row gains a persisted identity.
+    unsaved_summaries: HashSet<String>,
+    /// Summary requests in flight by token, each with its row's current
+    /// key; caps how many ride at once.
+    summary_inflight: HashMap<u64, String>,
+    next_summary_token: u64,
+    /// Tool rows the host could not summarize from their input; each is
+    /// summarized from its output once it completes.
+    output_summaries: HashSet<String>,
+    #[cfg(test)]
+    summary_probe: Option<summaries::SummaryProbe>,
     /// Item ids waiting for a free summary slot, oldest first.
     summary_queue: std::collections::VecDeque<String>,
     /// Bumped on session switch; results from an older generation are
@@ -1408,7 +1418,12 @@ impl ChatScreen {
             question_focus_pending: false,
             tool_summaries: HashMap::new(),
             summary_requests: HashSet::new(),
-            pending_summaries: 0,
+            unsaved_summaries: HashSet::new(),
+            summary_inflight: HashMap::new(),
+            next_summary_token: 0,
+            output_summaries: HashSet::new(),
+            #[cfg(test)]
+            summary_probe: None,
             summary_queue: std::collections::VecDeque::new(),
             summary_generation: 0,
             summaries_enabled: settings.tool_summaries,
@@ -3246,9 +3261,11 @@ impl ChatScreen {
         // Summaries in flight belong to the previous screen state; their
         // results are dropped and the queue restarts.
         self.summary_generation += 1;
-        self.pending_summaries = 0;
+        self.summary_inflight.clear();
         self.summary_queue.clear();
         self.summary_requests.clear();
+        self.unsaved_summaries.clear();
+        self.output_summaries.clear();
         self.list_state.scroll_to_end();
         self.awaiting_first_token = false;
         self.lightbox = None;
@@ -5520,9 +5537,7 @@ impl ChatScreen {
             self.timeline_index.remove(&old);
             self.timeline[index].id = item.id.clone();
             self.timeline_index.insert(item.id.clone(), (index, 0));
-            if let Some(summary) = self.tool_summaries.remove(&old) {
-                self.tool_summaries.insert(item.id.clone(), summary);
-            }
+            self.rekey_summary(&old, &item.id);
         }
         if let Some((index, _)) = self.timeline_index.get(&item.id)
             && let (Some(old), Some(new)) = (&self.timeline[*index].persisted, &item.persisted)
@@ -5671,7 +5686,7 @@ impl ChatScreen {
             self.awaiting_first_token = false;
         }
         // Cheap gates first so the common streaming chunk does no extra
-        // work; the summary check reads the stored item after the merge.
+        // work; the summary checks read the stored item after the merge.
         let completed = item.status.as_deref() == Some("completed");
         let is_tool = matches!(item.item_type.as_str(), "tool" | "toolCall");
         self.load_attachment_images_for(&item, cx);
@@ -5695,10 +5710,15 @@ impl ChatScreen {
         {
             self.maybe_summarize_thinking(previous, cx);
         }
+        // A tool call is summarized from its input as soon as the call
+        // starts; the request-once gate makes later updates cheap.
+        if is_tool && self.summaries_enabled {
+            self.maybe_summarize_tool(index, cx);
+        }
+        if !self.unsaved_summaries.is_empty() {
+            self.save_summary(index, cx);
+        }
         if completed {
-            if is_tool && self.summaries_enabled {
-                self.maybe_summarize_tool(index, cx);
-            }
             // A finished item marks a turn boundary: the usage ledger has
             // a new row.
             self.refresh_context_usage(cx);

@@ -233,6 +233,9 @@ reconnecting checks it again. Failed discovery remains retryable rather than
 being remembered as an unsupported host. Folder dispatch rechecks account and
 grant authority after discovery, including when support was cached. Update
 offers and installation readiness are always read afresh.
+Input-only tool summaries require `tool_summary_start_v1`; without it, the
+controller summarizes that call from its output once it finishes, as earlier
+versions did, and the next call checks support again.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps

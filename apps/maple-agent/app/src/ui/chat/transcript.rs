@@ -1119,8 +1119,11 @@ fn render_tool(
     );
     let item_id = item.id.clone();
     let chat_header = transcript.chat.clone();
-    let summary = transcript.tool_summaries.get(&item.id).cloned();
-    let has_summary = summary.is_some();
+    // An external agent's row draws its own activity; a summary asked
+    // when its call started would hide what it did.
+    let summary = (!has_external_agent_activity(item))
+        .then(|| transcript.tool_summaries.get(&item.id).cloned())
+        .flatten();
     // The model summary stands in for the title; until it lands, show just
     // the tool label ("Terminal"), not the raw `tool: args` title.
     let title = summary.clone().unwrap_or_else(|| {
@@ -1211,8 +1214,8 @@ fn render_tool(
     }
     // A click anywhere on the card, payload included, toggles it.
     let mut payload = div().flex().flex_col().gap_1();
-    // Expanded: the call arguments and, until a summary exists, the raw
-    // output.
+    // Expanded: the call arguments and the raw output. The summary is
+    // made from the input alone, so it never stands in for the output.
     if let Some(input) = &derived.input_line {
         payload = payload.child(
             div()
@@ -1223,7 +1226,7 @@ fn render_tool(
                 .child(input.clone()),
         );
     }
-    if !has_summary && let Some(output) = &derived.output_text {
+    if let Some(output) = &derived.output_text {
         payload = payload.child(
             typography::chat_reading(div())
                 .mt_1()

@@ -84,6 +84,7 @@ const SUMMARY_MAX_TOKENS: u64 = 48;
 const SUMMARY_MAX_INPUT_CHARS: usize = 4000;
 const SUMMARY_MAX_CHARS: usize = 100;
 const TOOL_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a coding agent's activity feed. Reply with ONE short line of at most 12 words that says what the call did. No prefix, no quotes, no explanations.";
+const TOOL_START_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a coding agent's activity feed from the tool's name and input; it may still be running, so do not state its result. Reply with ONE short line of at most 12 words that says what the call does. No prefix, no quotes, no explanations.";
 const THINKING_SUMMARY_SYSTEM_PROMPT: &str = "You summarize a coding agent's reasoning for its activity feed. Reply with ONE short line of at most 12 words that says what the agent thought about or decided. No prefix, no quotes, no explanations.";
 
 const SIDE_QUESTION_TIMEOUT: Duration = Duration::from_secs(120);
@@ -470,9 +471,20 @@ async fn stream_side_question(
     }
 }
 
+/// The bounded JSON of a tool call's input, or nothing.
+fn tool_input_line(input: Option<&Value>) -> String {
+    match input {
+        Some(value) if !value.is_null() => {
+            bounded_input(&serde_json::to_string(value).unwrap_or_default())
+        }
+        _ => String::new(),
+    }
+}
+
 impl AgentRuntimeHandle {
     /// A one-line summary of a finished tool call for the activity feed, or
-    /// `None` when the model gave nothing usable.
+    /// `None` when the model gave nothing usable. Clients older than
+    /// [`Self::summarize_tool_call_start`] still call this, remotely too.
     pub async fn summarize_tool_call(
         &self,
         session_id: &str,
@@ -480,17 +492,26 @@ impl AgentRuntimeHandle {
         input: Option<&Value>,
         output_text: &str,
     ) -> Result<Option<String>, String> {
-        let input_line = match input {
-            Some(value) if !value.is_null() => {
-                bounded_input(&serde_json::to_string(value).unwrap_or_default())
-            }
-            _ => String::new(),
-        };
         let text = format!(
-            "Tool: {tool_name}\nInput: {input_line}\nOutput: {}",
+            "Tool: {tool_name}\nInput: {}\nOutput: {}",
+            tool_input_line(input),
             bounded_input(output_text)
         );
         self.summarize(session_id, TOOL_SUMMARY_SYSTEM_PROMPT, text)
+            .await
+    }
+
+    /// A one-line summary of a tool call from its name and input alone, so
+    /// it can be asked as soon as the call starts, or `None` when the model
+    /// gave nothing usable.
+    pub async fn summarize_tool_call_start(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Option<&Value>,
+    ) -> Result<Option<String>, String> {
+        let text = format!("Tool: {tool_name}\nInput: {}", tool_input_line(input));
+        self.summarize(session_id, TOOL_START_SUMMARY_SYSTEM_PROMPT, text)
             .await
     }
 

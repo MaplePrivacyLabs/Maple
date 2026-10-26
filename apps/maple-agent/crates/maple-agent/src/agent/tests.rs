@@ -722,6 +722,7 @@ async fn a_new_task_gets_a_generated_title_unless_renamed_first() {
 async fn tool_calls_and_thinking_are_summarized_by_deepseek_without_thinking() {
     let harness = Harness::new().await;
     harness.side.push_text("\"Listed the files\"\nextra");
+    harness.side.push_text("Lists the files");
     harness.side.push_text("Decided to read main.rs first");
     let task = harness.create_task().await;
     let summary = harness
@@ -732,12 +733,18 @@ async fn tool_calls_and_thinking_are_summarized_by_deepseek_without_thinking() {
     assert_eq!(summary.as_deref(), Some("Listed the files"));
     let summary = harness
         .handle
+        .summarize_tool_call_start(&task, "bash", Some(&json!({"command": "ls"})))
+        .await
+        .unwrap();
+    assert_eq!(summary.as_deref(), Some("Lists the files"));
+    let summary = harness
+        .handle
         .summarize_thinking(&task, "I should read main.rs before editing.")
         .await
         .unwrap();
     assert_eq!(summary.as_deref(), Some("Decided to read main.rs first"));
     let requests = harness.side.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     for request in &requests {
         let body =
             pi_ai::openai::build_request_body(&request.model, &request.context, &request.options)
@@ -747,9 +754,19 @@ async fn tool_calls_and_thinking_are_summarized_by_deepseek_without_thinking() {
         assert_eq!(body["max_tokens"], 48);
         assert!(body.get("tools").is_none());
     }
+    // Legacy callers keep the output-based request; a call summarized as it
+    // starts sends only its input.
     assert_eq!(
         last_user_text(&requests[0]),
         "Tool: bash\nInput: {\"command\":\"ls\"}\nOutput: main.rs"
+    );
+    assert_eq!(
+        last_user_text(&requests[1]),
+        "Tool: bash\nInput: {\"command\":\"ls\"}"
+    );
+    assert_ne!(
+        pi_ai::transcript::current_system_prompt(&requests[0].context.messages),
+        pi_ai::transcript::current_system_prompt(&requests[1].context.messages)
     );
     assert_eq!(requests[0].options.max_tokens, Some(48));
     assert!(
