@@ -6124,7 +6124,8 @@ impl ChatScreen {
             self.loading_timeline.insert(item.id.clone(), item.clone());
         }
         match event {
-            AgentServiceEvent::AccountChanged(_)
+            AgentServiceEvent::LocalApiChanged
+            | AgentServiceEvent::AccountChanged(_)
             | AgentServiceEvent::StoreStateChanged { .. }
             | AgentServiceEvent::PersistenceFailureChanged { .. } => {
                 return false;

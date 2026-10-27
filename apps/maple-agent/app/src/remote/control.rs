@@ -520,7 +520,8 @@ pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
         | AgentServiceEvent::SideQuestion { .. } => true,
         AgentServiceEvent::HistoryReplaced { .. }
         | AgentServiceEvent::PersistenceFailureChanged { .. } => true,
-        AgentServiceEvent::StoreStateChanged { .. }
+        AgentServiceEvent::LocalApiChanged
+        | AgentServiceEvent::StoreStateChanged { .. }
         | AgentServiceEvent::AccountChanged(_)
         | AgentServiceEvent::RemoteAccessEnded(_)
         | AgentServiceEvent::HostReconnecting
@@ -780,6 +781,11 @@ async fn local_send(
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn local_api_status_never_enters_remote_event_streams() {
+        assert!(!remote_event(&AgentServiceEvent::LocalApiChanged));
+    }
 
     #[test]
     fn peer_info_journal_failure_keeps_baked_identity_and_blocks_installation() {

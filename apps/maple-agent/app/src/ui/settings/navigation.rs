@@ -10,6 +10,8 @@ use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, 
 use super::account::AccountTarget;
 use super::api_keys::ApiKeysTarget;
 use super::billing::BillingTarget;
+#[cfg(feature = "proxy")]
+use super::local_api::LocalApiTarget;
 use super::{
     Section, SettingMenu, SettingsScreen, integration_can_setup, integration_can_toggle,
     integration_is_visible,
@@ -45,6 +47,8 @@ pub(super) enum SettingsTarget {
     Account(AccountTarget),
     Billing(BillingTarget),
     ApiKeys(ApiKeysTarget),
+    #[cfg(feature = "proxy")]
+    LocalApi(LocalApiTarget),
     Shortcut(String),
     PromptEditor,
     PromptSave,
@@ -87,6 +91,8 @@ impl SettingsScreen {
         let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
         inputs.extend(self.account.inputs());
         inputs.push(self.api_keys.name.clone());
+        #[cfg(feature = "proxy")]
+        inputs.push(self.local_api.port.clone());
         if let Some(editor) = &self.mcp_editor {
             inputs.extend([
                 editor.name.clone(),
@@ -145,6 +151,8 @@ impl SettingsScreen {
             Section::Account => self.account_targets(),
             Section::Billing => self.billing_targets(),
             Section::ApiKeys => self.api_keys_targets(),
+            #[cfg(feature = "proxy")]
+            Section::LocalApi => self.local_api_targets(),
             Section::Shortcuts => self
                 .shortcut_list_cache
                 .visible_indices
@@ -355,6 +363,10 @@ impl SettingsScreen {
             Some(SettingsTarget::ApiKeys(target)) => {
                 self.activate_api_keys_target(target, window, cx)
             }
+            #[cfg(feature = "proxy")]
+            Some(SettingsTarget::LocalApi(target)) => {
+                self.activate_local_api_target(target, window, cx)
+            }
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);
@@ -425,6 +437,10 @@ impl SettingsScreen {
     fn application_text_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         let focused = window.focused(cx);
         let mut inputs = vec![&self.prompt_editor, &self.shortcut_search];
+        #[cfg(feature = "proxy")]
+        if self.section == Section::LocalApi {
+            inputs.push(&self.local_api.port);
+        }
         if let Some(editor) = &self.mcp_editor {
             inputs.extend([
                 &editor.name,

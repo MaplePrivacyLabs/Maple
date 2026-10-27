@@ -14,6 +14,8 @@ pub use attachments::AttachmentUploadRequest;
 pub use attachments::ImportAttachmentRequest;
 #[cfg(feature = "desktop")]
 pub use paging::*;
+#[cfg(all(test, feature = "proxy"))]
+mod local_api_tests;
 mod mcp;
 
 use crate::host::{RemoteClient, protocol::Request};
@@ -76,6 +78,40 @@ enum BackendClient {
 }
 
 impl AgentBackend {
+    #[cfg(feature = "proxy")]
+    fn require_local_api(&self) -> Result<(), String> {
+        self.ensure_active()?;
+        if self.remote_host.is_some() {
+            return Err("Local API settings require this computer's local host".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "proxy")]
+    pub async fn get_local_api_status(&self) -> Result<crate::local_api::LocalApiStatus, String> {
+        self.require_local_api()?;
+        self.call("get_local_api_status", ()).await
+    }
+
+    #[cfg(feature = "proxy")]
+    // Recovery clients can stop without reading encrypted preferences. The
+    // normal settings switch uses the durable configure operation instead.
+    #[allow(dead_code)]
+    pub async fn stop_local_api(&self) -> Result<crate::local_api::LocalApiStatus, String> {
+        self.require_local_api()?;
+        self.call("stop_local_api", ()).await
+    }
+
+    #[cfg(feature = "proxy")]
+    pub async fn set_local_api_config(
+        &self,
+        user_id: &str,
+        config: crate::local_api::LocalApiConfig,
+    ) -> Result<crate::local_api::LocalApiStatus, String> {
+        self.require_local_api()?;
+        self.call("set_local_api_config", (user_id, config)).await
+    }
+
     #[cfg(feature = "acp")]
     pub async fn get_acp_config(
         &self,
@@ -685,6 +721,19 @@ async fn dispatch_special(
         "restore_auth" => {
             serde_json::to_value(backend.validate_persisted_auth().await).map_err(|e| e.to_string())
         }
+        #[cfg(feature = "proxy")]
+        "get_local_api_status" => serde_json::to_value(backend.get_local_api_status().await?)
+            .map_err(|_| "Could not encode Local API status".into()),
+        #[cfg(feature = "proxy")]
+        "stop_local_api" => serde_json::to_value(backend.stop_local_api().await?)
+            .map_err(|_| "Could not encode Local API status".into()),
+        #[cfg(feature = "proxy")]
+        "set_local_api_config" => {
+            let (user_id, config): (String, crate::local_api::LocalApiConfig) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            serde_json::to_value(backend.set_local_api_config(&user_id, config).await?)
+                .map_err(|_| "Could not encode Local API status".into())
+        }
         "cancel_oauth" => {
             backend.cancel_oauth();
             Ok(serde_json::Value::Null)
@@ -749,6 +798,13 @@ pub(crate) async fn dispatch(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "proxy")]
+    if matches!(
+        request.method.as_str(),
+        "get_local_api_status" | "stop_local_api"
+    ) {
+        return dispatch_inner(backend, request).await;
+    }
     // Account switches cannot interleave with an operation admitted for the
     // previous account. Restoring that same account is a reader: its network
     // validation must not prevent local history, configuration, or stop calls.
@@ -768,11 +824,31 @@ pub(crate) async fn dispatch(
             | "oauth_complete"
             | "confirm_account_deletion"
     ) {
+        #[cfg(feature = "proxy")]
+        backend.local_api.stop().await;
         let _account = backend.account_gate.write().await;
-        dispatch_inner(backend, request).await
+        #[cfg(feature = "proxy")]
+        backend.local_api.stop().await;
+        #[cfg(feature = "proxy")]
+        let generation = backend.local_api.generation();
+        let result = dispatch_inner(backend, request).await;
+        #[cfg(feature = "proxy")]
+        if result.is_ok() {
+            let _ = backend.resume_local_api(generation).await;
+        }
+        result
     } else {
         let _account = backend.account_gate.read().await;
-        dispatch_inner(backend, request).await
+        #[cfg(feature = "proxy")]
+        let resume = (request.method == "restore_auth").then(|| backend.local_api.generation());
+        let result = dispatch_inner(backend, request).await;
+        #[cfg(feature = "proxy")]
+        if result.is_ok()
+            && let Some(generation) = resume
+        {
+            let _ = backend.resume_local_api(generation).await;
+        }
+        result
     }
 }
 

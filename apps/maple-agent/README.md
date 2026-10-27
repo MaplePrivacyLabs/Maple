@@ -504,6 +504,16 @@ compatibility](docs/local-host.md) before configuring an ACP launcher.
 
 ### `maple-agent proxy`
 
+The desktop also offers **Settings → Local API**. It starts this computer's
+loopback endpoint in the shared local host, including while a remote computer
+is selected. Create a key under API keys, enable Local API, then configure your
+client with the displayed `/v1` base URL and that key. See
+[Local API ownership and lifecycle](docs/local-api.md).
+
+The command below remains an independent foreground server. It cannot share a
+port with an enabled desktop listener; an occupied port is reported without
+stopping or adopting the other server.
+
 ```
 --host HOST     bind address (default 127.0.0.1, env MAPLE_PROXY_HOST)
 --port PORT     bind port (default 8080, env MAPLE_PORT)
@@ -527,7 +537,7 @@ window and its display libraries:
 | --- | --- |
 | `desktop` | The gpui window. Without it the binary is headless. |
 | `acp` | `maple-agent acp` and `maple_agent::acp`. |
-| `proxy` | `maple-agent proxy`. |
+| `proxy` | `maple-agent proxy` and the local host's optional API service. |
 
 ```sh
 cargo build --release -p maple-agent-app --no-default-features --features acp
