@@ -34,8 +34,9 @@ LINUX_HEAVY = Runner("blacksmith-32vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
 MACOS = Runner("blacksmith-6vcpu-macos-26", "CI_MACOS_RUNNER")
 WINDOWS = Runner("blacksmith-8vcpu-windows-2025", "CI_WINDOWS_RUNNER")
 GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile nothing heavy
-# The Agent updater's native Windows tests need GitHub's runner workspace: Blacksmith's
-# inherits a foreign write ACE that the updater's storage validation correctly rejects.
+# The Agent updater's native Windows tests and the installer smoke test need GitHub's
+# runner: Blacksmith's workspace inherits a foreign write ACE the updater rejects, and
+# master's Windows install smoke (agent-desktop-build.yml verify-windows) runs there too.
 GITHUB_WINDOWS = Runner("windows-2025")
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
@@ -262,8 +263,8 @@ LANES: Tuple[Lane, ...] = (
          gate=False, **AGENT_PACKAGE_FLAKE),
     # Windows is on the Agent feed, so its own packaging inputs select it too.
     Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
-         job="agent-package-windows", runner=WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
-         env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),), timeout=60, gate=False),
+         job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
+         env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),), timeout=90, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script
     # tests, the release gates, and release metadata (read from the version files).
     Lane("repo", (

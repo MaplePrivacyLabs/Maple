@@ -278,8 +278,9 @@ jobs:
     name: agent-package-windows
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['agent-package-windows']
-    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
-    timeout-minutes: 60
+    # GitHub's image, where master's install smoke runs (scripts/ci/lanes.py GITHUB_WINDOWS).
+    runs-on: windows-2025
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -290,16 +291,6 @@ jobs:
       - uses: ./.github/actions/setup-agent-windows
         with:
           release: "true"
-      - name: Restore master's Agent release cache (read-only)
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          # Exactly agent-desktop-build.yml's builder key; it is the only writer.
-          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            apps/maple-agent/target
       - name: Build, package and verify an unsigned Dev installer
         run: python3 scripts/ci/plan.py run agent-package-windows
       - name: Upload the unsigned package
