@@ -166,13 +166,15 @@ class ChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_routes([path], "macos", "ios")
 
-    def test_research_dev_packaging_scripts_select_macos(self) -> None:
+    def test_pull_request_build_scripts_select_no_signed_build(self) -> None:
+        # Only ci.yml's unsigned lanes run them; editing one must not start a
+        # signed build or a TestFlight upload on master.
         for path in (
-            "scripts/ci/research-dev-desktop.sh",
-            "scripts/ci/research-dev-profile.py",
+            "scripts/ci/android-pr.sh", "scripts/ci/desktop-pr.sh", "scripts/ci/desktop-windows-pr.sh",
+            "scripts/ci/ios-pr.sh", "scripts/ci/research-dev-desktop.sh", "scripts/ci/research-dev-profile.py",
         ):
             with self.subTest(path=path):
-                self.assert_routes([path], "macos")
+                self.assert_routes([path])
 
     def test_mixed_changes_union_their_routes(self) -> None:
         self.assert_routes(

@@ -18,12 +18,12 @@ on:
       - "flake.lock"
   push:
     branches: [master]
+    # Publisher edits also run, so master's Dev deployment rehearses them before Prod.
     paths:
-      - ".github/workflows/auth-pages-ci.yml"
+      - ".github/workflows/auth-pages-*.yml"
       - "apps/maple-auth/**"
       - "scripts/ci/auth-*.sh"
-      - "scripts/ci/pages_artifact.py"
-      - "scripts/ci/pages_auth_build.py"
+      - "scripts/ci/pages_*.py"
       - "flake.nix"
       - "flake.lock"
 

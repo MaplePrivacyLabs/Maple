@@ -1,6 +1,6 @@
-# Nightly checks of what drifts without a commit: advisories, pinned upstream
-# sources, the SQLCipher provider suite on every OS and the store benchmark,
-# plus OpenSecret's x86_64 package, which no pull request builds.
+# Nightly checks that ci.yml's scheduled run does not cover: Bun advisories,
+# the SQLCipher provider suite on every OS and the store benchmark. (ci.yml's
+# nightly run re-checks the Rust advisories and pinned sources.)
 # One `ci-nightly` issue reports failures here and in ci.yml's scheduled run;
 # a green night closes it. Nothing here gates a pull request.
 name: Nightly
@@ -18,51 +18,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  advisories:
-    name: Advisories (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: research
-            manifest: apps/maple-research/frontend/src-tauri/Cargo.toml
-            config: apps/maple-research/deny.toml
-          - name: sdk
-            manifest: sdk/rust/Cargo.toml
-            config: sdk/deny.toml
-          - name: proxy
-            manifest: proxy/Cargo.toml
-            config: proxy/deny.toml
-          - name: opensecret
-            manifest: services/opensecret/Cargo.toml
-            config: services/opensecret/deny.toml
-            rust: 1.91.1
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-      - name: Check RustSec advisories
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          rust-version: ${{ matrix.rust }}
-          manifest-path: ${{ matrix.manifest }}
-          command: check advisories
-          arguments: --config ${{ matrix.config }} --all-features --locked
-
-  agent-supply-chain:
-    name: Agent advisories and SQLCipher sources
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-nix
-      - name: Check advisories and bans per target, SQLCipher sources and notices
-        run: python3 scripts/ci/plan.py run agent-supply-chain
-
   bun-audit:
     name: Bun advisories
     runs-on: ubuntu-latest
@@ -132,25 +87,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  opensecret-package:
-    name: OpenSecret x86_64 package
-    # The shipped EIF is aarch64 (ci.yml's os-eif); nothing consumes this build.
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-          submodules: recursive
-          # Nix requires revCount for recursively fetched Git inputs.
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-nix
-      - name: Build the application package
-        run: nix build --no-link --no-update-lock-file './services/opensecret?submodules=1#default'
-
   report:
     name: Report
-    needs: [advisories, agent-supply-chain, bun-audit, agent-provider, store-bench, opensecret-package]
+    needs: [bun-audit, agent-provider, store-bench]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

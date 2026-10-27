@@ -45,7 +45,7 @@ shortcuts are `just opensecret-check` and `just opensecret-pcr-check`.
 
 Root workflows replace the backend's inactive nested workflows. Backend CI
 (the `os-*` and `deps-opensecret` lanes of `ci.yml`) checks Rust, the ordinary
-Nix checks, and dependency policy; `nightly.yml` builds the Nix package.
+Nix package/checks, and dependency policy.
 The SDK integration lane starts the backend from this same checkout against
 a disposable database; it no longer fetches an external backend revision.
 This advances that lane from the former pinned commit

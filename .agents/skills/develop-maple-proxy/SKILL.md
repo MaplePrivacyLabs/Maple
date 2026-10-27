@@ -61,7 +61,8 @@ nix develop --no-update-lock-file .#ci -c \
 The root `ci.yml` lanes `proxy`, `deps-proxy`, and `proxy-container` (both
 architectures on `master`) run these checks, cargo-deny, and a non-publishing
 container build; `just lane proxy` runs the first locally. `proxy-rust.yml`
-rehearses the native release builds, and `nightly.yml` re-checks advisories.
+rehearses the native release builds, and `ci.yml`'s nightly run re-checks
+advisories.
 `proxy/src/**`, `proxy/Cargo.toml`, and
 unknown proxy build inputs are desktop application inputs; tests, examples,
 docs, the standalone lockfile, and container-only files do not by themselves

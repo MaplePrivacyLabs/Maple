@@ -15,13 +15,14 @@ and timeout. `scripts/ci/plan.py` (the `plan` job) selects lanes from the diff:
 - A pull request is judged on its own diff from the merge base with its base
   branch, so each layer of a stack gets its own `ci-ok`. A merge-queue group
   uses its base and head; a master push uses `before..after`.
-- Docs, guides and component hooks select nothing. A path that no lane owns
-  selects every lane. Editing `ci.yml`, the planner or `.github/actions/`
-  selects every gate lane.
-- If selection fails on a pull request, `plan` and `ci-ok` fail; on master,
-  nightly and dispatch runs every lane runs instead.
+- Docs, guides and component hooks select no lane but those the OpenSecret
+  selector routes them to (below). A path that no lane owns selects every
+  lane. Editing `ci.yml`, the planner or `.github/actions/` selects every gate
+  lane.
+- If selection fails on a pull request, `plan` and `ci-ok` fail; master,
+  nightly and dispatch runs select every lane instead.
 - OpenSecret lanes are selected by `scripts/ci/opensecret_change_detection.py`,
-  imported unchanged.
+  imported unchanged and asked about every changed path, docs included.
 
 The `plan` job summary lists each selected lane and why. To preview locally:
 
@@ -35,7 +36,7 @@ python3 scripts/ci/plan.py explain --base origin/master --head HEAD
 | --- | --- |
 | Pull request, merge queue | Selected lanes, including unsigned platform and package rehearsals when their native inputs change. A new push cancels the superseded run. |
 | Master push | The selected lanes again (for Agent inputs, also the full Agent suites on Linux, macOS and Windows), the signed builds, the release-evidence workflows and CodeQL. Never cancelled. |
-| Nightly | `ci.yml` runs its nightly lanes on the master tip, which also refreshes their caches. `nightly.yml` runs advisories, the SQLCipher provider suite on every OS, the store benchmark and OpenSecret's x86_64 package. Failures open or update one `ci-nightly` issue; a green night closes it. |
+| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories included, which also refreshes their caches. `nightly.yml` runs the Bun advisories, the SQLCipher provider suite on every OS and the store benchmark. Failures open or update one `ci-nightly` issue; a green night closes it. |
 | On demand | PR labels (below), or a `ci.yml` dispatch with comma-separated lane ids or `all`. |
 
 ## Labels
@@ -46,17 +47,19 @@ Add the label, then re-run the CI workflow: `plan` reads labels when it runs.
 | --- | --- |
 | `ci:full` | Every lane except the OpenSecret EIF candidate |
 | `ci:package` | Unsigned Agent and Research desktop packages on every OS |
-| `ci:windows` | Agent Windows Clippy and the Research Windows package |
+| `ci:windows` | Agent Windows tests and Clippy, and the Research Windows package |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build |
 | `ci:research-dev-macos` | The unsigned Research Dev app |
 | `ci:perf` | The Agent store benchmark |
+| `ci:eif` | The OpenSecret EIF candidate (same-repository PRs to `master` that edit no PCR approval) |
 
 ## Run a lane locally
 
 `just lane <id>` (the same as `python3 scripts/ci/plan.py run <id>`) runs the
 lane's command in its pinned Nix shell, exactly as `ci.yml` does. macOS lanes
-need macOS, Windows lanes need Windows with the toolchain from
-`.github/actions/setup-agent-windows`, `os-sdk-e2e` needs a local PostgreSQL
+need macOS and use its selected Xcode (CI pins it with
+`scripts/ci/select-xcode.py`), Windows lanes need Windows with the toolchain
+from `.github/actions/setup-agent-windows`, `os-sdk-e2e` needs a local PostgreSQL
 and `os-eif` needs Linux on ARM64. Before pushing a workflow, CI-script or
 flake change, run `just lane repo` (every root flake check). The
 [pre-commit hook](repository-workflows.md#pre-commit-hook) runs the fast part
@@ -71,10 +74,15 @@ of the lanes your staged files select.
    special `ci.yml` job only when its steps cannot be generic (services, OIDC,
    artifacts, or a cache another workflow writes). The job id is the lane's
    `job`, its real work is a script or recipe, and `ci-ok` needs it.
-4. Run `python3 scripts/ci/plan.py lint` (every glob matches a tracked file,
-   every tracked file is owned or inert, the `ci.yml` jobs match the table)
-   and `just lane repo`. A new runner label also goes in
-   `.github/actionlint.yaml`.
+4. A new top-level directory, or a new one under `services/`, is unknown to
+   the OpenSecret selector, which then runs every OpenSecret lane for it, as
+   it does for `services/agent-updates/`. Adding its prefix to the selector's
+   `KNOWN_INDEPENDENT_PREFIXES` is an OpenSecret change: it also changes what
+   `opensecret-eif.yml` checks.
+5. Run `python3 scripts/ci/plan.py lint` (every glob matches a tracked file,
+   every tracked file is owned or inert, the `ci.yml` jobs and their runners
+   and timeouts match the table) and `just lane repo`. A new runner label also
+   goes in `.github/actionlint.yaml`.
 
 ## Rules
 

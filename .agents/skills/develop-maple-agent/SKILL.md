@@ -45,10 +45,10 @@ the tree, but not for TypeScript SDK changes. Component-only
 changes should not unnecessarily select Research packaging. Agent lanes live in
 `scripts/ci/lanes.py`, with fixtures in `scripts/ci/test_plan.py`; root
 `just lane <id>` runs one locally. PRs run `agent-lint`, `agent-test` and
-`agent-macos`, plus Windows clippy for Windows paths, `agent-supply-chain` and
-`agent-provider` for dependency inputs, and an unsigned Dev package rehearsal for
-packaging inputs. Labels `ci:windows`, `ci:package`, `ci:perf` and `ci:full` add
-lanes; master adds the full macOS and Windows suites. On master,
+`agent-macos`, plus Windows tests and clippy for Windows paths,
+`agent-supply-chain` and `agent-provider` for dependency inputs, and an unsigned
+Dev package rehearsal for packaging inputs. Labels `ci:windows`, `ci:package`,
+`ci:perf` and `ci:full` add lanes; master adds the full macOS and Windows suites. On master,
 `.github/workflows/agent-desktop-build.yml` builds signed packages for pushes
 that change `AGENT_DESKTOP` inputs and on every manual dispatch.
 

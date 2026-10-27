@@ -6,6 +6,7 @@
   only NAME    another workflow's push selector: print selected=true|false
   opensecret   opensecret-eif.yml's changes job: the OpenSecret selector's outputs
   explain      show what changed paths select (stdin, or --base/--head)
+  verdict      ci.yml's ci-ok job: every selected lane's job succeeded
   hook         .githooks/pre-commit: the components whose checks the staged paths select
   check-rust   the Agent flake's rustc must equal the Windows rustup pin
   lint         the table classifies every tracked file and matches ci.yml
@@ -92,10 +93,13 @@ def select(event: str, paths: Iterable[str], labels: Sequence[str] = ()) -> Sele
     chosen: Selection = {}
     approvals = False
     for path in paths:
-        if inert(path):
-            continue
-        checks = opensecret_checks(path)
+        checks = opensecret_checks(path)  # verbatim, inert paths included
         approvals = approvals or "pcr_approvals" in checks
+        if inert(path):
+            for lane in lanes:
+                if lane.opensecret in checks:
+                    chosen.setdefault(lane.id, []).append(path)
+            continue
         if not classified(path):
             # Fail safe: an unknown path may be an input of anything.
             for lane in lanes:
@@ -166,16 +170,19 @@ def plan_event(event: str, payload: dict) -> Selection:
         unknown = sorted(set(names) - {lane.id for lane in active(event)})
         if unknown:
             raise ValueError(f"not an active lane: {', '.join(unknown)}")
+        if "research-desktop-windows-verify" in names:  # it verifies that lane's artifact
+            names.append("research-desktop-windows")
         return {name: ["dispatch"] for name in names}
     if event == NIGHTLY:
         return everything(event, "nightly")
     labels: List[str] = []
-    same_repository = False
+    candidate = False  # may the EIF candidate build?
     if event == PR:
         pull = payload["pull_request"]
         base, head = pull["base"]["sha"], pull["head"]["sha"]
         labels = pr_labels(os.environ["GITHUB_REPOSITORY"], pull["number"])
-        same_repository = (pull["head"].get("repo") or {}).get("full_name") == os.environ["GITHUB_REPOSITORY"]
+        candidate = (pull["base"].get("ref") == "master"
+                     and (pull["head"].get("repo") or {}).get("full_name") == os.environ["GITHUB_REPOSITORY"])
     elif event == QUEUE:
         base, head = payload["merge_group"]["base_sha"], payload["merge_group"]["head_sha"]
     elif event == PUSH:
@@ -188,8 +195,9 @@ def plan_event(event: str, payload: dict) -> Selection:
     else:
         selected = select(event, paths, labels)
     # The EIF candidate mints an OIDC token for the FlakeHub cache, so it builds only
-    # a same-repository head, and only when the diff shows that no approval changed.
-    if paths is None or not same_repository:
+    # a same-repository head of a PR to master, and only when the diff shows that no
+    # approval changed.
+    if paths is None or not candidate:
         selected.pop("os-eif", None)
     return selected
 
@@ -250,6 +258,26 @@ def github() -> int:
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
             output.write(text)
     print(text, end="")
+    return 0
+
+
+def verdict() -> int:
+    """ci-ok: the job of every selected lane succeeded, and every other job was
+    skipped (or succeeded). NEEDS is ci-ok's `needs` context, plan included."""
+    needs = json.loads(os.environ["NEEDS"])
+    if needs.get("plan", {}).get("result") != "success":
+        print("::error::plan did not succeed")
+        return 1
+    selected = json.loads(needs["plan"]["outputs"]["lanes"])
+    failed = []
+    for job, state in sorted(needs.items()):
+        wanted = any(selected.get(lane.id) for lane in LANES if lane.job == job)
+        if state.get("result") not in (("success",) if wanted else ("success", "skipped")):
+            failed.append(f"{job} ({'selected' if wanted else 'not selected'}): {state.get('result')}")
+    if failed:
+        print("::error::a job did not finish as planned: " + "; ".join(failed))
+        return 1
+    print("ci-ok: every selected lane succeeded")
     return 0
 
 
@@ -390,6 +418,19 @@ def lint_problems(files: Sequence[str]) -> List[str]:
     expected = {"plan", "ci-ok", *MATRIX_JOBS} | {lane.job for lane in LANES}
     if jobs != expected:
         problems.append(f"ci.yml jobs {sorted(jobs)} != plan, ci-ok, matrix and special lane jobs {sorted(expected)}")
+    # A special job repeats its lane's runner (with the override variable) and timeout.
+    blocks = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  \S|\Z)", workflow.split("\njobs:\n", 1)[1],
+                             re.M | re.S))
+    for lane in LANES:
+        if lane.job in MATRIX_JOBS or lane.job not in blocks:
+            continue
+        runner = lane.runner.label
+        if lane.runner.variable:
+            runner = f"${{{{ vars.{lane.runner.variable} || '{runner}' }}}}"
+        if not re.search(rf"^    runs-on: {re.escape(runner)}$", blocks[lane.job], re.M):
+            problems.append(f"ci.yml {lane.job}: runs-on is not {runner}")
+        if not re.search(rf"^    timeout-minutes: {lane.timeout}\b", blocks[lane.job], re.M):
+            problems.append(f"ci.yml {lane.job}: timeout-minutes is not {lane.timeout}")
     if f"toolchain: {AGENT_WINDOWS_RUST}\n" not in WINDOWS_SETUP.read_text():
         problems.append(f"setup-agent-windows does not pin Rust {AGENT_WINDOWS_RUST}")
     declared = set(re.findall(r"^\s+- (\S+)$", (ROOT / ".github/actionlint.yaml").read_text(), re.M))
@@ -413,6 +454,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     explain_parser.add_argument("--base")
     explain_parser.add_argument("--head")
     modes.add_parser("hook").add_argument("--staged", action="store_true", help="read the index, not stdin")
+    modes.add_parser("verdict")
     modes.add_parser("check-rust")
     modes.add_parser("lint")
     args = parser.parse_args(argv)
@@ -428,6 +470,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return explain(args.event, args.base, args.head)
     if args.mode == "hook":
         return hook(args.staged)
+    if args.mode == "verdict":
+        return verdict()
     if args.mode == "check-rust":
         return check_rust()
     files = tracked_files()

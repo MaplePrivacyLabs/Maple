@@ -396,6 +396,7 @@ jobs:
       - uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # v1
         with:
           bun-version: 1.3.5
+          no-cache: true # its post step would save the binary from a pull request
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable action, exact toolchain below
         with:
           toolchain: 1.94.1 # desktop-build.yml's Windows toolchain
@@ -522,11 +523,12 @@ jobs:
           scanners: vuln
           cache: "false" # pull requests save no caches
 
-  # The PR EIF candidate that opensecret-eif.yml built, with its runner,
-  # permissions and steps unchanged. The planner selects it only for
-  # same-repository PRs whose diff has EIF inputs and edits no PCR approval
-  # (opensecret-eif.yml compares approval edits); because it mints an OIDC token
-  # for the FlakeHub cache, the event and head repository are checked here too.
+  # The PR EIF candidate: dev and prod EIFs built on the release builder's runner
+  # class, never signed or published. The planner selects it only for
+  # same-repository PRs to master whose diff has EIF inputs (or the ci:eif label)
+  # and edits no PCR approval (opensecret-eif.yml compares approval edits);
+  # because it mints an OIDC token for the FlakeHub cache, the event, base branch
+  # and head repository are checked here too.
   os-eif:
     name: os-eif (${{ matrix.mode }})
     needs: plan
@@ -534,6 +536,7 @@ jobs:
       ${{
         fromJSON(needs.plan.outputs.lanes)['os-eif'] &&
         github.event_name == 'pull_request' &&
+        github.event.pull_request.base.ref == 'master' &&
         github.event.pull_request.head.repo.full_name == github.repository
       }}
     permissions:
@@ -592,24 +595,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
       - name: Every selected lane succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
-          LANES: ${{ needs.plan.outputs.lanes }}
-          NIX: ${{ needs.plan.outputs.nix }}
-          WINDOWS: ${{ needs.plan.outputs.windows }}
-        run: |
-          set -euo pipefail
-          if [ "$(jq -r '.plan.result' <<<"$NEEDS")" != success ]; then
-            echo "::error::plan did not succeed"; exit 1
-          fi
-          # Selected => success; an unselected job may only be skipped (or succeed).
-          jq -n -e --argjson needs "$NEEDS" --argjson lanes "$LANES" --argjson nix "$NIX" --argjson windows "$WINDOWS" '
-            def ok($job; $selected):
-              if $selected then $needs[$job].result == "success"
-              else ($needs[$job].result | IN("skipped", "success")) end;
-            ok("nix"; ($nix | length) > 0) and ok("windows"; ($windows | length) > 0)
-            and ([$needs | keys[] | select(IN("plan", "nix", "windows") | not)]
-                 | all(. as $job | ok($job; $lanes[$job] // false)))
-          ' >/dev/null || { echo "::error::a selected lane did not succeed"; exit 1; }
-          echo "ci-ok: every selected lane succeeded"
+        run: python3 scripts/ci/plan.py verdict

@@ -40,7 +40,9 @@ branches in step with the lane table.
   (`<os>-sccache-*`, `xcode-cache-*`, `release-onnxruntime-ios-*`,
   `<os>-bun-*`, `<os>-gradle-*`). No pull-request job writes these prefixes;
   the Research platform lanes only restore them. The iOS ONNX key text is
-  identical in every workflow that uses it.
+  identical in every workflow that uses it. A release job reads only the store
+  of its own runner vendor, so `release.yml`'s `build-web` (GitHub-hosted)
+  starts with a cold Bun cache; Bun installs in seconds.
 - `agent-desktop-build.yml`'s unsigned builders save the exact key
   `ci-v1-agent-release-<os>-<hash of both lockfiles>` on master pushes, with
   no fallback keys; the Agent packaging lanes only restore it. Signing,
@@ -98,14 +100,21 @@ verified Nix install; a timeout on every job; `ci-ok` needing every other
 
 Master pushes start signed Research builds (`desktop-build`, `android-build`,
 `mobile-build`, `ios-dev-testflight`) when `app-change-detection.yml` and
-`scripts/ci/change_detection.py` find Research inputs for that platform; a
-manual dispatch always builds. The selector routes proxy runtime and Rust SDK
-build inputs to the native builds, because the Research shell builds both from
-the tree. TypeScript SDK changes never select app builds: each frontend builds
-the SDK its own manifest selects. Agent desktop packages build on master pushes
-that change Agent inputs (`plan.py only agent-desktop`) and on every manual
-dispatch. Signing jobs keep their protected environments; approving one trusts
-its runner with that environment's secrets.
+`scripts/ci/change_detection.py` find Research inputs for that platform; the
+scripts only `ci.yml`'s unsigned lanes run select none. Only `mobile-build` and
+`ios-dev-testflight` can also be dispatched, which always builds; desktop and
+Android release evidence comes only from master pushes. The selector routes
+proxy runtime and Rust SDK build inputs to the native builds, because the
+Research shell builds both from the tree. TypeScript SDK changes never select
+app builds: each frontend builds the SDK its own manifest selects. Agent desktop
+packages build on master pushes that change Agent inputs (`plan.py only
+agent-desktop`) and on every manual dispatch. Signing jobs keep their protected
+environments; approving one trusts its runner with that environment's secrets.
+To rehearse the signed Research release scripts outside CI, run
+`scripts/ci/signed-release-rehearsal.sh <desktop|ios|android|all>` in the root
+Nix shell that builds the platform (`.#apple`, `.#android`, and
+`.#desktop-linux` on Linux or `.#ci` on macOS); its usage text lists the
+signing variables, and nothing is uploaded.
 
 Routine development never authorizes releases, signing, store submission,
 deployment, or live-service changes. Never push to `master` as a validation
@@ -144,12 +153,14 @@ interoperability only.
 
 ## OpenSecret checks
 
-`ci.yml` runs `os-rust`, `os-flake-check`, `os-helpers` (the parent helper
-images), `deps-opensecret`, `os-pcr` (the root `pcr-compatibility` check for
-PCR tooling and approval edits) and `os-sdk-e2e`, which tests both SDKs against
+`ci.yml` runs `os-rust`, `os-flake-check` (the component flake's checks and
+the x86_64 package), `os-helpers` (the parent helper images),
+`deps-opensecret`, `os-pcr` (the root `pcr-compatibility` check for PCR tooling
+and approval edits) and `os-sdk-e2e`, which tests both SDKs against
 `services/opensecret/` from the same checkout. The `os-eif` lane builds dev and
-prod EIF candidates on same-repository PRs that change measured inputs without
-editing PCR approvals, on the release builder's
+prod EIF candidates on same-repository PRs to `master` that change measured
+inputs (or carry the `ci:eif` label) without editing PCR approvals, on the
+release builder's
 `blacksmith-8vcpu-ubuntu-2404-arm` class, and reports their PCRs.
 `opensecret-eif.yml` compares measurements on PRs that edit approved PCR JSON,
 on relevant master changes and on manual runs; that approval status is not
@@ -177,14 +188,14 @@ caps Bash heredoc pipes at 512 bytes, and larger bodies use a temporary file.
 ## Runners and toolchains
 
 Compilation runs on Blacksmith runners (ARM64 `blacksmith-6vcpu-macos-26` for
-macOS); lane runners are the constants in `scripts/ci/lanes.py`. Artifact
-verifiers, TestFlight uploads, Agent attestation and protected signing use
-GitHub-hosted runners. Windows signing
-and the Windows release stay on GitHub's `windows-2025`; unsigned Agent and
-Research Windows builds use `blacksmith-8vcpu-windows-2025`, with Rust, MSVC,
-Perl and the linker pinned by `.github/actions/setup-agent-windows` for the
-Agent. The Research Windows PR package has no cache, because its signed build's
-cache lives in GitHub's store.
+macOS); lane runners are the constants in `scripts/ci/lanes.py`. The signed
+Research macOS, Linux, Android and iOS builds compile and sign on Blacksmith.
+Artifact verifiers, TestFlight submission, and the Agent's signing and
+attestation use GitHub-hosted runners. Windows signing and the Windows release
+stay on GitHub's `windows-2025`; unsigned Agent and Research Windows builds use
+`blacksmith-8vcpu-windows-2025`, with Rust, MSVC, Perl and the linker pinned by
+`.github/actions/setup-agent-windows` for the Agent. The Research Windows PR
+package has no cache, because its signed build's cache lives in GitHub's store.
 
 Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through

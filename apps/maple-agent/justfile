@@ -27,13 +27,15 @@ store-bench-ci:
     python3 crates/store-bench/scripts/evaluate.py target/store-bench-ci.json --profile linux-ci
     python3 -m unittest discover -s crates/store-bench/tests -p 'test_*.py'
 
-# Run all the checks that CI runs.
-ci: fmt-check git-metadata-test clippy test
+# Run the checks of CI's Linux Agent lanes (agent-lint, agent-test, agent-full-linux).
+ci: ci-lint ci-test ci-extra
 
-# The ci.yml agent-lint lane: format, packaging tests, clippy and the dependency graph.
+# The ci.yml agent-lint lane: format, packaging tests, clippy for every feature set and the dependency graph.
 ci-lint: fmt-check git-metadata-test packaging-test
     cargo clippy --workspace --all-targets --locked -- -D warnings
     cargo clippy -p maple-agent-app --all-targets --locked {{headless}} -- -D warnings
+    cargo clippy -p maple-agent-app --locked --no-default-features --features acp -- -D warnings
+    cargo clippy -p maple-agent-app --locked --no-default-features --features proxy -- -D warnings
     metadata="$(mktemp)"; trap 'rm -f "$metadata"' EXIT; \
       cargo metadata --locked --format-version 1 > "$metadata"; \
       python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"; \
@@ -43,10 +45,8 @@ ci-lint: fmt-check git-metadata-test packaging-test
 ci-test:
     RUSTFLAGS="-D warnings" cargo test --workspace --locked
 
-# The ci.yml agent-full-linux lane: the rest of `just ci` after ci-lint and ci-test.
+# The ci.yml agent-full-linux lane: every target built, and the headless tests.
 ci-extra:
-    cargo clippy -p maple-agent-app --locked --no-default-features --features acp -- -D warnings
-    cargo clippy -p maple-agent-app --locked --no-default-features --features proxy -- -D warnings
     RUSTFLAGS="-D warnings" cargo build --workspace --all-targets --locked
     RUSTFLAGS="-D warnings" cargo test -p maple-agent-app --locked {{headless}}
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # ci.yml's os-helpers lane: build OpenSecret's parent-side helper images for
 # Linux ARM64 and run their tests offline, without publishing them (ci.yml then
-# scans each image). HELPER picks one image; the default is both. The steps are
-# the former opensecret-ci.yml `helpers` job's, unchanged.
+# scans each image). HELPER picks one image; the default is both.
 set -euo pipefail
 cd "$(dirname "$0")/../../services/opensecret"
 

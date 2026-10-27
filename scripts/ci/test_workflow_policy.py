@@ -55,7 +55,9 @@ ENVIRONMENTS = {
     "sdk-crates": frozenset({"CRATES_BOOTSTRAP_TOKEN"}),
 }
 # Actions-cache writers; a key under these prefixes feeds release.yml's fallbacks.
-CACHE_WRITERS = ("actions/cache@", "actions/cache/save@", "irgaly/xcode-cache@", "Swatinem/rust-cache@")
+# setup-bun's post step saves the Bun binary unless `no-cache` is set.
+CACHE_WRITERS = ("actions/cache@", "actions/cache/save@", "irgaly/xcode-cache@", "Swatinem/rust-cache@",
+                 "oven-sh/setup-bun@")
 
 @functools.lru_cache(maxsize=None)
 def load(path: Path) -> dict:
@@ -125,8 +127,9 @@ def runner_labels(name: str, job_id: str, job: dict) -> set:
 
 
 def cache_writer(step: dict) -> bool:
-    uses = step.get("uses", "")
-    return uses.startswith(CACHE_WRITERS) and str(step.get("with", {}).get("save-if", "true")) != "false"
+    settings = step.get("with", {})
+    return (step.get("uses", "").startswith(CACHE_WRITERS) and str(settings.get("save-if", "true")) != "false"
+            and str(settings.get("no-cache", "false")).lower() != "true")
 
 
 class WorkflowPolicyTests(unittest.TestCase):
@@ -215,6 +218,9 @@ class WorkflowPolicyTests(unittest.TestCase):
         verdict = config["jobs"]["ci-ok"]
         self.assertEqual(verdict["if"], "always()")
         self.assertEqual(set(verdict["needs"]), set(config["jobs"]) - {"ci-ok"})
+        # nightly.yml's report likewise needs every other nightly job.
+        nightly = workflows()["nightly.yml"]["jobs"]
+        self.assertEqual(set(nightly["report"]["needs"]), set(nightly) - {"report"})
 
     def test_9_runner_labels_are_github_hosted_or_declared(self):
         declared = set(load(ROOT / ".github/actionlint.yaml")["self-hosted-runner"]["labels"])

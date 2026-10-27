@@ -4,9 +4,9 @@ Read by scripts/ci/plan.py (the ci.yml plan job, `just lane`, and lint). Globs
 are repository-relative: `**` spans directories, `*` stays within one path
 segment, and a leading `!` excludes paths from the globs it is listed with.
 
-OpenSecret lanes have no globs: opensecret_change_detection.py, imported
-verbatim, selects them from each changed path that is not inert here
-(`opensecret` names its output).
+OpenSecret lanes are selected by opensecret_change_detection.py, imported
+verbatim, from every changed path, inert ones included (`opensecret` names its
+output). Their only globs are the entry scripts of os-sdk-e2e and os-helpers.
 
 `hook` names the .githooks/pre-commit component that runs a lane's checks
 locally. The hook selects it from the lane's own paths only, without the CI
@@ -28,7 +28,7 @@ class Runner:
 
 # The override variables are unset; set one to fail over during an outage.
 LINUX = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_RUNNER")
-LINUX_HEAVY = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
+LINUX_HEAVY = Runner("blacksmith-32vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
 MACOS = Runner("blacksmith-6vcpu-macos-26", "CI_MACOS_RUNNER")
 WINDOWS = Runner("blacksmith-8vcpu-windows-2025", "CI_WINDOWS_RUNNER")
 GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile nothing heavy
@@ -76,16 +76,19 @@ AGENT_WINDOWS = (
     STORE + "paths.rs", STORE + "keys.rs", STORE + "keys/**", STORE + "lifecycle.rs", STORE + "lifecycle/**",
     "scripts/ci/agent_windows.py",
 )
+# The packaging scripts and what they call, and the toolchain that builds the bundles.
 AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
-    "scripts/build-*", "scripts/package-*", "scripts/verify-*", "release-profiles.json",
-    "release_profile.rs", "about.toml", "app/build.rs", "app/packaging/**", "flake.lock",
+    "scripts/build-*", "scripts/package-*", "scripts/verify-*", "scripts/release-info.py",
+    "scripts/macos-build-info.py", "scripts/macos-release-*", "scripts/linux-*", "scripts/smoke-*",
+    "scripts/*third*party*notices*", "release-profiles.json", "release_profile.rs", "about.toml", "app/build.rs",
+    "app/packaging/**", "flake.nix", "flake.lock",
 )) + (".github/workflows/agent-desktop-build.yml",)
+APPLE_TOOLCHAIN = ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py")
 # What agent-desktop-build.yml builds and signs on master (`plan.py only agent-desktop`).
 AGENT_DESKTOP = AGENT + RUST_SDK + PROXY_RUNTIME + (
     ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/**",
-    "scripts/ci/verify-agent-rust-deps.py", "scripts/ci/select-xcode.py", "scripts/ci/apple-toolchain.json",
-    "scripts/ci/agent_windows.py", "scripts/ci/install-windows-artifact-signing.ps1",
-    "scripts/ci/windows-artifact-sign.ps1",
+    "scripts/ci/verify-agent-rust-deps.py", *APPLE_TOOLCHAIN, "scripts/ci/agent_windows.py",
+    "scripts/ci/install-windows-artifact-signing.ps1", "scripts/ci/windows-artifact-sign.ps1",
 )
 # Selectors for workflows outside ci.yml, read by `plan.py only NAME`.
 SELECTORS = {"agent-desktop": AGENT_DESKTOP}
@@ -148,14 +151,14 @@ SDK_CRATE = (
 
 
 def deny(manifest: str, component: str) -> str:
-    """cargo-deny with the component's own toolchain. The Agent flake's nixpkgs pins
-    the cargo-deny that agent-supply-chain and nightly.yml's cargo-deny-action run."""
+    """cargo-deny with the component's own toolchain, from the Agent flake's nixpkgs
+    (the cargo-deny that agent-supply-chain runs)."""
     return ("nix shell --no-update-lock-file --inputs-from ./apps/maple-agent nixpkgs#cargo-deny -c cargo deny"
             f" --manifest-path {manifest} --config {component}/deny.toml --all-features --locked"
             " check advisories bans")
 
 
-DEPS = dict(events=NOT_NIGHTLY, runner=GITHUB, gate=False)
+DEPS = dict(runner=GITHUB, gate=False)
 # Research platform builds: PR side only, never on CI edits (ci:full runs them).
 PLATFORM = dict(events=PR_SIDE, gate=False)
 DESKTOP = tuple(TAURI + glob for glob in ("tauri.conf.json", "build.rs", "scripts/onnxruntime-pins.sh",
@@ -182,13 +185,14 @@ LANES: Tuple[Lane, ...] = (
          cache="agent-lint", timeout=15, hook="agent", **AGENT_FLAKE),
     Lane("agent-test", AGENT, also=RUST_SDK + PROXY_RUNTIME, runner=LINUX_HEAVY,
          run="just ci-test", cache="agent-test", timeout=20, hook="agent", **AGENT_FLAKE),
-    Lane("agent-macos", AGENT,
-         also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/select-xcode.py", "scripts/ci/apple-toolchain.json"),
+    Lane("agent-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME + APPLE_TOOLCHAIN,
          runner=MACOS, run="cargo clippy --workspace --all-targets --locked -- -D warnings",
          cache="agent-macos", timeout=25, **AGENT_FLAKE),
-    # PRs get Windows clippy only for Windows-specific paths or the ci:windows label.
+    # PRs get the native Windows tests and Clippy only for Windows-specific paths or the ci:windows label.
     Lane("agent-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=AGENT_WINDOWS,
-         labels=("ci:windows", "ci:full"), run="cargo clippy --workspace --all-targets --locked -- -D warnings",
+         labels=("ci:windows", "ci:full"),
+         run="python3 scripts/test_windows_build_info.py && python3 scripts/test_windows_host_spawn.py"
+             " && cargo clippy --workspace --all-targets --locked -- -D warnings",
          cache="agent-windows", timeout=45, **AGENT_WIN),
     # The rest of `just ci`, and the native macOS and Windows suites: master, nightly and ci:full.
     Lane("agent-full-linux", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), run="just ci-extra",
@@ -202,7 +206,7 @@ LANES: Tuple[Lane, ...] = (
              " && cargo test --workspace --locked",
          cache="agent-full-windows", timeout=60, gate=False, **AGENT_WIN),
     # Pinned SQLCipher sources, per-target advisories and bans, and notices.
-    Lane("agent-supply-chain", AGENT_DEPENDENCIES, events=NOT_NIGHTLY, run="just supply-chain", **AGENT_FLAKE),
+    Lane("agent-supply-chain", AGENT_DEPENDENCIES, run="just supply-chain", **AGENT_FLAKE),
     # Released rusqlite's own tests against the static SQLCipher provider (nightly.yml: all three OSes).
     Lane("agent-provider", tuple("apps/maple-agent/" + glob for glob in (
         "Cargo.lock", "dependencies/sqlcipher/**", "scripts/test-rusqlite-provider.py",
@@ -216,9 +220,9 @@ LANES: Tuple[Lane, ...] = (
     # Unsigned Dev packages built the way agent-desktop-build.yml builds master's.
     Lane("agent-package-linux", AGENT_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
          job="agent-package-linux", run="just package-rehearsal", timeout=60, gate=False, **AGENT_FLAKE),
-    Lane("agent-package-macos", AGENT_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
-         job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60, gate=False,
-         **AGENT_FLAKE),
+    Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN, labels=("ci:package", "ci:full"),
+         events=PR_SIDE, job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60,
+         gate=False, **AGENT_FLAKE),
     Lane("agent-package-windows", (), labels=("ci:package", "ci:full"), events=PR_SIDE,
          job="agent-package-windows", runner=WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),), timeout=60, gate=False),
@@ -249,7 +253,7 @@ LANES: Tuple[Lane, ...] = (
     Lane("proxy-container-arm64", PROXY_CONTAINER, pr_paths=(), runner=Runner("ubuntu-24.04-arm"),
          run="docker build --platform linux/arm64 -f proxy/Dockerfile .", timeout=20, gate=False),
     # Advisories and bans when a dependency graph changes. A new advisory is drift,
-    # not a CI change, so CI edits skip these; nightly.yml re-checks advisories.
+    # not a CI change, so CI edits skip these; ci.yml's nightly run re-checks them.
     Lane("deps-research", ("apps/maple-research/deny.toml", TAURI + "Cargo.toml", TAURI + "Cargo.lock",
                            "proxy/Cargo.toml", "sdk/rust/Cargo.toml"),
          run=deny(TAURI + "Cargo.toml", "apps/maple-research"), flake=".#ci", **DEPS),
@@ -307,9 +311,10 @@ LANES: Tuple[Lane, ...] = (
          labels=("ci:research-dev-macos", "ci:package", "ci:full"), job="research-dev-macos", runner=MACOS,
          flake=".#ci", run="./scripts/ci/research-dev-desktop.sh", timeout=45, **PLATFORM),
 
-    # Services and the hosted Auth app. auth-pages-ci.yml builds Auth on master.
-    Lane("auth", ("apps/maple-auth/**", "scripts/ci/auth-*.sh", "scripts/ci/pages_auth_build.py", "flake.nix",
-                  "flake.lock"),
+    # Services and the hosted Auth app. auth-pages-ci.yml also builds Auth, for the
+    # Dev deployment on master and a preview artifact on PRs.
+    Lane("auth", ("apps/maple-auth/**", "scripts/ci/auth-*.sh", "scripts/ci/pages_auth_build.py",
+                  "scripts/ci/pages_artifact.py", "flake.nix", "flake.lock"),
          events=PR_SIDE, runner=GITHUB, flake=".#ci", run="./scripts/ci/auth-ci.sh", hook="auth"),
     Lane("updates", ("services/updates/**", "services/download-tracking/**", "scripts/ci/updates.sh",
                      "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
@@ -321,28 +326,32 @@ LANES: Tuple[Lane, ...] = (
          runner=GITHUB, flake=".#ci", run="./scripts/ci/agent-updates.sh", hook="agent_updates"),
 
     # OpenSecret, selected by its own selector (see the module docstring). The PR
-    # EIF candidate builds only for same-repository PRs that edit no approval, on
-    # the release builder's runner class; opensecret-eif.yml compares approvals.
+    # EIF candidate builds only for same-repository PRs to master that edit no
+    # approval, on the release builder's runner class; opensecret-eif.yml compares
+    # approvals.
     Lane("os-rust", (), opensecret="rust", flake=OPENSECRET_SHELL, workdir="services/opensecret",
          run="cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings"
              " && cargo test --locked --all-features",
          cache="os-rust", workspaces="services/opensecret -> target", cache_files=tuple(
              "services/opensecret/" + name for name in ("Cargo.lock", "rust-toolchain.toml", "flake.lock")),
          submodules=True, timeout=30, env=OPENSECRET_ENV, hook="opensecret"),
-    Lane("os-sdk-e2e", (), opensecret="integration", job="os-sdk-e2e", run="./scripts/ci/opensecret-sdk-e2e.sh",
-         timeout=45),
+    Lane("os-sdk-e2e", ("scripts/ci/opensecret-sdk-e2e.sh",), opensecret="integration", job="os-sdk-e2e",
+         run="./scripts/ci/opensecret-sdk-e2e.sh", timeout=45),
+    # The component flake's checks and the x86_64 application package.
     Lane("os-flake-check", (), opensecret="nix", runner=GITHUB, workdir="services/opensecret",
-         run="nix flake check --no-update-lock-file --print-build-logs '.?submodules=1'", submodules=True,
-         timeout=30, env=OPENSECRET_ENV, hook="opensecret"),  # the hook runs its entrypoint checks
-    Lane("os-helpers", (), opensecret="helpers", job="os-helpers", runner=Runner("ubuntu-24.04-arm"),
+         run="nix flake check --no-update-lock-file --print-build-logs '.?submodules=1'"
+             " && nix build --no-link --no-update-lock-file '.?submodules=1#default'", submodules=True,
+         timeout=60, env=OPENSECRET_ENV, hook="opensecret"),  # the hook runs its entrypoint checks
+    Lane("os-helpers", ("scripts/ci/opensecret-helpers.sh",), opensecret="helpers", job="os-helpers",
+         runner=Runner("ubuntu-24.04-arm"),
          run="./scripts/ci/opensecret-helpers.sh", timeout=30),
     Lane("os-pcr", (), opensecret="pcr", runner=GITHUB, timeout=10,
          run='nix build --no-update-lock-file --no-link'
              ' ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).pcr-compatibility"'),
     Lane("deps-opensecret", (), opensecret="audit", flake=OPENSECRET_SHELL, submodules=True, env=OPENSECRET_ENV,
          run=deny("services/opensecret/Cargo.toml", "services/opensecret"), **DEPS),
-    Lane("os-eif", (), opensecret="eif", labels=(), events=frozenset({PR}), job="os-eif", runner=EIF_BUILDER,
-         # ci.yml runs the former opensecret-eif.yml candidate steps verbatim; this is that build.
+    # ci.yml's os-eif job runs these two scripts with the FlakeHub cache; `just lane os-eif` runs them locally.
+    Lane("os-eif", (), opensecret="eif", labels=("ci:eif",), events=frozenset({PR}), job="os-eif", runner=EIF_BUILDER,
          run='mode="${EIF_MODE:?dev or prod}" && out="$(mktemp -d)/eif-candidate-$mode"'
              ' && bash scripts/ci/build_opensecret_eif.sh "$mode" "$out"'
              ' && python3 scripts/ci/verify_opensecret_eif_rootfs.py "$mode" "$out" "$(git rev-parse HEAD)"',

@@ -2,8 +2,9 @@
 """Keep one open `ci-nightly` issue while a nightly check fails.
 
 nightly.yml's report job runs this with its jobs' results in NEEDS. Failures
-there, or in ci.yml's latest completed scheduled run, open the issue or comment
-on it; a green night closes it. DRY_RUN=true prints instead of writing.
+there, or in today's scheduled ci.yml run (also when it is missing or still
+running), open the issue or comment on it; a green night closes it.
+DRY_RUN=true prints instead of writing.
 """
 
 from __future__ import annotations
@@ -25,14 +26,15 @@ def gh(path: str, method: str = "GET", payload: Optional[dict] = None) -> object
     return json.loads(result.stdout or "null")
 
 
-def failures(needs: dict, ci_run: Optional[dict]) -> List[str]:
+def failures(needs: dict, ci_run: Optional[dict], today: str) -> List[str]:
     lines = [f"- `{job}`: {state.get('result')}" for job, state in sorted(needs.items())
              if state.get("result") != "success"]
-    if ci_run is None:
-        lines.append("- ci.yml: no completed scheduled run on master")
+    if ci_run is None or ci_run["created_at"][:10] != today:
+        lines.append(f"- ci.yml: no scheduled run on master on {today}")
+    elif ci_run.get("status") != "completed":
+        lines.append(f"- ci.yml scheduled run of {today}: still {ci_run.get('status')} ({ci_run['html_url']})")
     elif ci_run.get("conclusion") != "success":
-        lines.append(f"- ci.yml scheduled run of {ci_run['created_at'][:10]}: {ci_run.get('conclusion')} "
-                     f"({ci_run['html_url']})")
+        lines.append(f"- ci.yml scheduled run of {today}: {ci_run.get('conclusion')} ({ci_run['html_url']})")
     return lines
 
 
@@ -48,8 +50,9 @@ def main() -> int:
     repo = os.environ["GITHUB_REPOSITORY"]
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     run_url = f"{server}/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    runs = gh(f"repos/{repo}/actions/workflows/ci.yml/runs?event=schedule&branch=master&status=completed&per_page=1")
-    lines = failures(json.loads(os.environ["NEEDS"]), (runs["workflow_runs"] or [None])[0])
+    runs = gh(f"repos/{repo}/actions/workflows/ci.yml/runs?event=schedule&branch=master&per_page=1")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    lines = failures(json.loads(os.environ["NEEDS"]), (runs["workflow_runs"] or [None])[0], today)
     open_issues = [item["number"] for item in gh(f"repos/{repo}/issues?labels={LABEL}&state=open&per_page=100")
                    if "pull_request" not in item]
     issue = min(open_issues) if open_issues else None

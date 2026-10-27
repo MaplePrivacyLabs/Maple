@@ -101,10 +101,10 @@ with the repository's Nix flake on the appropriate Linux/ARM environment. Build,
 PCR comparison, deployment, and live trust verification are distinct evidence.
 
 The monorepo-root [`ci.yml`](../../.github/workflows/ci.yml) lanes `os-rust`,
-`os-flake-check`, and `deps-opensecret` validate Rust, Nix checks, and dependency
-policy; `os-sdk-e2e` exercises both SDKs against the backend in the same
-checkout, and the nightly workflow builds the default backend binary. These
-lanes do not build or publish EIFs or deploy the TEE service. Before an authorized dev or
+`os-flake-check`, and `deps-opensecret` validate Rust, Nix checks and the
+default backend binary, and dependency policy. Its `os-sdk-e2e` lane exercises
+both SDKs against the backend in the same checkout. These lanes do not
+build or publish EIFs or deploy the TEE service. Before an authorized dev or
 prod publish/deployment, use the supported Linux/ARM64 release builder to review
 and deliberately update/verify the target measurements; never update checked-in
 PCRs solely to clear ordinary pull-request CI.

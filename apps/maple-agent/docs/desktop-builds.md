@@ -4,8 +4,10 @@
 `master` push changes Agent inputs, and always on a manual dispatch from
 `master`. Its `changes` job runs `scripts/ci/plan.py only agent-desktop` on the
 push's own diff; an unusable diff or a selector error builds. No master run is
-cancelled, so every Agent push gets its own packages; a failed run is re-run or
-fixed forward. Pull requests that change packaging inputs rehearse unsigned Dev
+cancelled, so every Agent push gets its own packages. A later push without Agent
+changes does not retry a failed run: re-run its failed jobs, dispatch, or fix
+forward. Pull requests that change packaging inputs (the packaging and release
+scripts, the Agent flake, and for macOS the Xcode pin) rehearse unsigned Dev
 packages in `ci.yml` (`agent-package-linux`, `agent-package-macos`); the
 `ci:package` label adds `agent-package-windows`.
 

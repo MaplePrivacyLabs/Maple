@@ -9,19 +9,26 @@ from unittest import mock
 
 import nightly_report
 
-GREEN = {"conclusion": "success", "created_at": "2026-10-26T04:17:00Z", "html_url": "https://ci/1"}
+DAY = "2026-10-26"
+GREEN = {"status": "completed", "conclusion": "success", "created_at": DAY + "T04:17:00Z", "html_url": "https://ci/1"}
 
 
 class NightlyReportTests(unittest.TestCase):
-    def test_failures_list_failed_jobs_and_a_red_or_missing_scheduled_ci_run(self):
+    def test_failures_list_failed_jobs_and_a_red_stale_running_or_missing_scheduled_ci_run(self):
         needs = {"store-bench": {"result": "success"}, "agent-provider": {"result": "failure"},
-                 "advisories": {"result": "cancelled"}}
-        self.assertEqual(nightly_report.failures(needs, GREEN),
-                         ["- `advisories`: cancelled", "- `agent-provider`: failure"])
+                 "bun-audit": {"result": "cancelled"}}
+        self.assertEqual(nightly_report.failures(needs, GREEN, DAY),
+                         ["- `agent-provider`: failure", "- `bun-audit`: cancelled"])
         red = dict(GREEN, conclusion="failure")
-        self.assertEqual(nightly_report.failures({}, red),
+        self.assertEqual(nightly_report.failures({}, red, DAY),
                          ["- ci.yml scheduled run of 2026-10-26: failure (https://ci/1)"])
-        self.assertEqual(len(nightly_report.failures({}, None)), 1)
+        running = dict(GREEN, status="in_progress", conclusion=None)
+        self.assertEqual(nightly_report.failures({}, running, DAY),
+                         ["- ci.yml scheduled run of 2026-10-26: still in_progress (https://ci/1)"])
+        # Yesterday's green run says nothing about tonight's.
+        for stale in (GREEN, None):
+            self.assertEqual(nightly_report.failures({}, stale, "2026-10-27"),
+                             ["- ci.yml: no scheduled run on master on 2026-10-27"])
 
     def test_one_issue_is_created_commented_or_closed(self):
         self.assertEqual(nightly_report.decide(["- x"], None, "u")[0], "create")
@@ -35,7 +42,8 @@ class NightlyReportTests(unittest.TestCase):
         def gh(path, method="GET", payload=None):
             calls.append((method, path, payload))
             if "/actions/workflows/ci.yml/runs" in path:
-                return {"workflow_runs": [GREEN]}
+                return {"workflow_runs": [dict(GREEN, created_at=nightly_report.datetime.now(
+                    nightly_report.timezone.utc).strftime("%Y-%m-%dT04:17:00Z"))]}
             return [{"number": number} for number in open_issues] + [{"number": 1, "pull_request": {}}]
 
         env = {"GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "9", "NEEDS": json.dumps(needs), "DRY_RUN": dry_run}

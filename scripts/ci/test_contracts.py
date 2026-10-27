@@ -283,7 +283,8 @@ class ContractTests(unittest.TestCase):
     def test_c5_eif_event_gate_matches_the_approval_policy(self):
         # Evaluate the real GitHub expressions with equivalent Python semantics. The
         # PR candidate is ci.yml's os-eif: the planner selects it, and its job repeats
-        # the event and head-repository checks. Its jobs need a successful plan.
+        # the event, base-branch and head-repository checks. Its jobs need a successful
+        # plan. opensecret-eif.yml's pull_request trigger accepts only PRs to master.
         approval = {job: expression(workflows()["opensecret-eif.yml"]["jobs"][job]) for job in ("eif", "eif-trusted")}
         candidate = expression(workflows()["ci.yml"]["jobs"]["os-eif"])
         cases = (
@@ -315,10 +316,14 @@ class ContractTests(unittest.TestCase):
         )
         heads = (("MaplePrivacyLabs/Maple", True), ("contributor/Maple", False),
                  ("MaplePrivacyLabs/Maple-fork", False), ("", False), (None, False))
-        for case, (head, same_repo), cancelled in itertools.product(cases, heads, (False, True)):
+        self.assertEqual(workflows()["opensecret-eif.yml"]["on"]["pull_request"], {"branches": ["master"]})
+        for case, (head, same_repo), base, cancelled in itertools.product(
+                cases, heads, ("master", "feature"), (False, True)):
             event, ref, result, eif, approvals, expected = case
+            runs = event != "pull_request" or base == "master"  # opensecret-eif.yml's trigger
             context = {
                 "github.event_name": event, "github.ref": ref,
+                "github.event.pull_request.base.ref": base,
                 "github.event.pull_request.head.repo.full_name": head,
                 "github.repository": "MaplePrivacyLabs/Maple", "needs.changes.result": result,
                 "needs.changes.outputs.eif": eif, "needs.changes.outputs.pcr_approvals": approvals,
@@ -327,29 +332,29 @@ class ContractTests(unittest.TestCase):
             # The diff the planner classifies: an EIF input, an approval edit (itself an EIF input), or neither.
             paths = (["services/opensecret/src/main.rs"] if eif == "true" else []) + (
                 ["services/opensecret/pcrDev.json"] if approvals == "true" else [])
-            planned = "os-eif" in self.plan(event, head, paths)
-            # The job's own condition holds the event and fork boundary even if the planner erred.
+            planned = "os-eif" in self.plan(event, head, paths, base)
+            # The job's own condition holds the event, base and fork boundary even if the planner erred.
             self.assertEqual(evaluate(candidate, {"fromJSON(needs.plan.outputs.lanes)['os-eif']": True, **context}),
-                             event == "pull_request" and same_repo, (case, head))
+                             event == "pull_request" and base == "master" and same_repo, (case, head, base))
             selected = []
             if result == "success" and not cancelled and evaluate(candidate, {
                     "fromJSON(needs.plan.outputs.lanes)['os-eif']": planned, **context}):
                 selected.append("os-eif")
-            selected += [job for job, text in approval.items() if evaluate(text, context)]
+            selected += [job for job, text in approval.items() if runs and evaluate(text, context)]
             trusted = ((event == "pull_request" and same_repo)
                        or (event in ("push", "workflow_dispatch") and ref == "refs/heads/master"))
             wanted = []
-            if (not cancelled and event == "pull_request" and same_repo and result == "success"
-                    and eif == "true" and approvals == "false"):
+            if (not cancelled and event == "pull_request" and base == "master" and same_repo
+                    and result == "success" and eif == "true" and approvals == "false"):
                 wanted.append("os-eif")
-            if expected and not cancelled:
+            if expected and not cancelled and runs:
                 wanted.append("eif-trusted" if trusted else "eif")
-            self.assertEqual(selected, wanted, (case, head, cancelled))
+            self.assertEqual(selected, wanted, (case, head, base, cancelled))
 
     @staticmethod
-    def plan(event: str, head, paths: list) -> dict:
-        """ci.yml's plan job for this event, head repository and diff."""
-        payload = {"pull_request": {"number": 1, "base": {"sha": "a" * 40}, "head": {
+    def plan(event: str, head, paths: list, base: str = "master") -> dict:
+        """ci.yml's plan job for this event, base branch, head repository and diff."""
+        payload = {"pull_request": {"number": 1, "base": {"sha": "a" * 40, "ref": base}, "head": {
             "sha": "b" * 40, "repo": None if head is None else {"full_name": head}}},
                    "merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}, "before": "a" * 40, "after": "b" * 40}
         with mock.patch.object(plan, "changed_paths", return_value=paths), \

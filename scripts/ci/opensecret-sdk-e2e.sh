@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ci.yml's os-sdk-e2e lane: both in-tree SDKs against the in-tree OpenSecret
 # backend and a disposable PostgreSQL on 127.0.0.1:5432 (a ci.yml service; the
-# backend's dev shell uses the same database URL). The environment and steps are
-# the former sdk-integration.yml's, unchanged; its two final steps are the trap.
+# backend's dev shell uses the same database URL). The EXIT trap stops the
+# backend and, on failure, prints its log.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
