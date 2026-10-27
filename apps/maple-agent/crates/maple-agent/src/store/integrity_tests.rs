@@ -18,8 +18,10 @@ fn fixture() -> (tempfile::TempDir, Store) {
 fn quick_is_clean_and_full_schedule_requires_explicit_receipt() {
     let (_directory, store) = fixture();
     let cancel = IntegrityCancellation::default();
+    // Allow CI scheduling latency while checking clean/receipt semantics.
+    // Deadline and cancellation behavior have separate negative fixtures.
     let report = store
-        .check_integrity(IntegrityKind::Quick, Duration::from_millis(100), &cancel)
+        .check_integrity(IntegrityKind::Quick, Duration::from_secs(10), &cancel)
         .unwrap();
     assert_eq!(report.outcome, IntegrityOutcome::Clean);
     assert!(report.complete);

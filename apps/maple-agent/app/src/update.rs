@@ -143,12 +143,36 @@ impl From<&str> for InstallationFailure {
         message.to_owned().into()
     }
 }
+
+#[cfg(not(test))]
+type HeldInstallLock = maple_agent_updater::installer::InstallLock;
+#[cfg(test)]
+enum HeldInstallLock {
+    Native {
+        _lock: maple_agent_updater::installer::InstallLock,
+    },
+    Fixture {
+        _lock: tests::FixtureInstallLock,
+    },
+}
+
+fn hold_install_lock(lock: maple_agent_updater::installer::InstallLock) -> HeldInstallLock {
+    #[cfg(test)]
+    {
+        HeldInstallLock::Native { _lock: lock }
+    }
+    #[cfg(not(test))]
+    {
+        lock
+    }
+}
+
 #[derive(Default)]
 struct ReleaseState {
     release: Option<VerifiedRelease>,
     prepared: Option<PreparedUpdate>,
     installation: Option<maple_agent_updater::installer::InstallPreparation>,
-    install_lock: Option<maple_agent_updater::installer::InstallLock>,
+    install_lock: Option<HeldInstallLock>,
     deferred: Option<String>,
 }
 struct Inner {
@@ -563,6 +587,7 @@ impl Controller {
                 Some(lock) => lock,
                 None => {
                     maple_agent_updater::installer::acquire_install_lock(&prepared.installed_path)
+                        .map(hold_install_lock)
                         .map_err(InstallationFailure::from)?
                 }
             };
@@ -821,6 +846,7 @@ impl Controller {
             let lock = match saved_lock {
                 Some(lock) => lock,
                 None => maple_agent_updater::installer::acquire_install_lock(&installed_path)
+                    .map(hold_install_lock)
                     .map_err(InstallationFailure::from)?,
             };
             let preparation = match saved {
@@ -1052,7 +1078,7 @@ async fn cleanup_installed_update(service: &Service) {
 
 async fn discard_preparation_with_lock(
     preparation: maple_agent_updater::installer::InstallPreparation,
-    lock: Option<maple_agent_updater::installer::InstallLock>,
+    lock: Option<HeldInstallLock>,
 ) {
     let _ = tokio::task::spawn_blocking(move || {
         let _lock = lock;
@@ -1238,6 +1264,34 @@ fn manual_macos_path(path: &Path) -> bool {
 mod tests {
     use super::*;
 
+    // These controller tests begin after native installation admission has
+    // completed. Keep a real OS file lock without asking a synthetic bundle to
+    // satisfy a platform's installed-path, registry or code-signature policy.
+    pub(super) struct FixtureInstallLock {
+        file: std::fs::File,
+    }
+    impl Drop for FixtureInstallLock {
+        fn drop(&mut self) {
+            let _ = self.file.unlock();
+        }
+    }
+
+    fn acquire_fixture_install_lock(
+        installed: &Path,
+    ) -> Result<FixtureInstallLock, std::fs::TryLockError> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(installed.join(".fixture-install.lock"))
+            .map_err(std::fs::TryLockError::Error)?;
+        // Like the installer's fs2 guard, std uses flock on Unix and whole-file
+        // LockFileEx on Windows. A separately opened handle must still contend.
+        file.try_lock()?;
+        Ok(FixtureInstallLock { file })
+    }
+
     #[tokio::test]
     async fn remote_refresh_invokes_a_new_check_even_for_cached_current_or_ready() {
         use std::sync::atomic::AtomicUsize;
@@ -1287,9 +1341,9 @@ mod tests {
 
     // Model the controller after preparation has passed, without replacing an
     // application or bypassing the installer's separate validation tests.
-    async fn ready_remote_fixture(root: &Path) -> (Controller, Snapshot) {
+    async fn ready_remote_fixture(root: &Path) -> (Controller, Snapshot, PathBuf) {
         let root = root.canonicalize().unwrap();
-        let installed = root.join("Maple Agent.app");
+        let installed = root.join("installed application");
         std::fs::create_dir(&installed).unwrap();
         std::fs::write(installed.join("sentinel"), b"current application").unwrap();
         let feed = "https://updates.trymaple.ai/agent/stable/latest.json"
@@ -1321,14 +1375,15 @@ mod tests {
                 installed_path: installed.clone(),
                 staging_dir: staging.clone(),
                 payload_path: payload,
-                staged_path: staging.join("Maple Agent.app"),
+                staged_path: staging.join("staged application"),
                 version: release.manifest.version.clone(),
                 build: release.manifest.build.clone(),
                 size: artifact.size,
                 sha256: artifact.sha256,
             });
-            releases.install_lock =
-                Some(maple_agent_updater::installer::acquire_install_lock(&installed).unwrap());
+            releases.install_lock = Some(HeldInstallLock::Fixture {
+                _lock: acquire_fixture_install_lock(&installed).unwrap(),
+            });
         }
         let mut ready = Snapshot::new(State::Ready, "v0.0.2 is ready to install");
         ready.version = Some(release.manifest.version.clone());
@@ -1337,7 +1392,7 @@ mod tests {
         ready.primary_label = "Restart to Update";
         ready.show_banner = true;
         controller.publish(ready.clone());
-        (controller, ready)
+        (controller, ready, installed)
     }
 
     #[tokio::test]
@@ -1348,7 +1403,7 @@ mod tests {
             "Could not revalidate the update. Maple is still running.",
         ] {
             let root = tempfile::tempdir().unwrap();
-            let (controller, ready) = ready_remote_fixture(root.path()).await;
+            let (controller, ready, installed) = ready_remote_fixture(root.path()).await;
             let target = ready.remote_candidate.clone().unwrap();
             controller.publish(Snapshot::new(State::Installing, "Preparing update"));
             controller
@@ -1370,24 +1425,22 @@ mod tests {
             );
             assert!(controller.remote_status().blocked.is_none());
             assert_eq!(controller.remote_status().offered, Some(target));
-            let installed = root.path().canonicalize().unwrap().join("Maple Agent.app");
-            let contention = match maple_agent_updater::installer::acquire_install_lock(&installed)
-            {
+            let contention = match acquire_fixture_install_lock(&installed) {
                 Ok(_) => panic!("a refused remote update released its installation lock"),
                 Err(error) => error,
             };
             assert!(
-                matches!(
-                    &contention,
-                    maple_agent_updater::installer::InstallError::Busy
-                ),
+                matches!(&contention, std::fs::TryLockError::WouldBlock),
                 "unexpected retained-lock result: {contention:?}"
             );
             assert_eq!(
-                std::fs::read(root.path().join("Maple Agent.app/sentinel")).unwrap(),
+                std::fs::read(installed.join("sentinel")).unwrap(),
                 b"current application"
             );
             assert!(!controller.snapshot().label.contains("Quit and reopen"));
+            drop(controller);
+            acquire_fixture_install_lock(&installed)
+                .expect("dropping the controller must release its fixture lock");
         }
     }
 
@@ -1397,10 +1450,11 @@ mod tests {
             "uncertain",
             "different candidate",
             "missing staging",
+            "missing install lock",
             "local install",
         ] {
             let root = tempfile::tempdir().unwrap();
-            let (controller, ready) = ready_remote_fixture(root.path()).await;
+            let (controller, ready, _installed) = ready_remote_fixture(root.path()).await;
             let target = ready.remote_candidate.clone().unwrap();
             {
                 let mut releases = controller.0.releases.lock().await;
@@ -1414,6 +1468,8 @@ mod tests {
                         .push('\n');
                 } else if scenario == "missing staging" {
                     releases.installation = None;
+                } else if scenario == "missing install lock" {
+                    releases.install_lock = None;
                 }
             }
             controller.publish(Snapshot::new(State::Installing, "Preparing update"));
@@ -1586,7 +1642,7 @@ mod tests {
                 size: 20,
                 sha256: "0".repeat(64),
             });
-            releases.install_lock = Some(lock);
+            releases.install_lock = Some(hold_install_lock(lock));
         }
         let backend = Arc::new(
             crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
