@@ -116,6 +116,16 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_routes([path])
 
+    def test_update_services_are_independent_but_a_new_service_selects_every_check(self):
+        for path in ("services/agent-updates/src/worker.ts", "services/agent-updates/publisher/publisher.py",
+                     "services/agent-updates/wrangler.jsonc", "services/agent-updates/README.md",
+                     "services/download-tracking/tracking.ts", "services/updates/wrangler.jsonc"):
+            with self.subTest(path=path):
+                self.assert_routes([path])
+        for path in ("services/new-service/src/main.ts", "services/agent-updates-v2/src/worker.ts"):
+            with self.subTest(path=path):
+                self.assert_routes([path], *CHECK_OUTPUTS)
+
     def test_disposable_database_harness_selects_integration_without_app_packaging(self):
         path = ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh"
         self.assert_routes([path], "integration")

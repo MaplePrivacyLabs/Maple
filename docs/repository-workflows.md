@@ -153,11 +153,12 @@ interoperability only.
 
 ## OpenSecret checks
 
-`ci.yml` runs `os-rust`, `os-flake-check` (the component flake's checks and
-the x86_64 package), `os-helpers` (the parent helper images),
-`deps-opensecret`, `os-pcr` (the root `pcr-compatibility` check for PCR tooling
-and approval edits) and `os-sdk-e2e`, which tests both SDKs against
-`services/opensecret/` from the same checkout. The `os-eif` lane builds dev and
+`ci.yml` runs `os-rust`, `os-flake-check` (the component flake's checks),
+`os-helpers` (the parent helper images), `deps-opensecret` (when its
+manifest, lockfile or `deny.toml` changes), `os-pcr` (the root
+`pcr-compatibility` check for PCR tooling and approval edits) and
+`os-sdk-e2e`, which tests both SDKs against `services/opensecret/` from the
+same checkout. The `os-eif` lane builds dev and
 prod EIF candidates on same-repository PRs to `master` that change measured
 inputs (or carry the `ci:eif` label) without editing PCR approvals, on the
 release builder's

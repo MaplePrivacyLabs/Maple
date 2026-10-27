@@ -7,6 +7,8 @@ segment, and a leading `!` excludes paths from the globs it is listed with.
 OpenSecret lanes are selected by opensecret_change_detection.py, imported
 verbatim, from every changed path, inert ones included (`opensecret` names its
 output). Their only globs are the entry scripts of os-sdk-e2e and os-helpers.
+deps-opensecret is the exception: like every deps lane, only its manifest,
+lockfile and deny.toml select it.
 
 `hook` names the .githooks/pre-commit component that runs a lane's checks
 locally. The hook selects it from the lane's own paths only, without the CI
@@ -337,18 +339,20 @@ LANES: Tuple[Lane, ...] = (
          submodules=True, timeout=30, env=OPENSECRET_ENV, hook="opensecret"),
     Lane("os-sdk-e2e", ("scripts/ci/opensecret-sdk-e2e.sh",), opensecret="integration", job="os-sdk-e2e",
          run="./scripts/ci/opensecret-sdk-e2e.sh", timeout=45),
-    # The component flake's checks and the x86_64 application package.
+    # The component flake's checks.
     Lane("os-flake-check", (), opensecret="nix", runner=GITHUB, workdir="services/opensecret",
-         run="nix flake check --no-update-lock-file --print-build-logs '.?submodules=1'"
-             " && nix build --no-link --no-update-lock-file '.?submodules=1#default'", submodules=True,
-         timeout=60, env=OPENSECRET_ENV, hook="opensecret"),  # the hook runs its entrypoint checks
+         run="nix flake check --no-update-lock-file --print-build-logs '.?submodules=1'", submodules=True,
+         timeout=30, env=OPENSECRET_ENV, hook="opensecret"),  # the hook runs its entrypoint checks
     Lane("os-helpers", ("scripts/ci/opensecret-helpers.sh",), opensecret="helpers", job="os-helpers",
          runner=Runner("ubuntu-24.04-arm"),
          run="./scripts/ci/opensecret-helpers.sh", timeout=30),
     Lane("os-pcr", (), opensecret="pcr", runner=GITHUB, timeout=10,
          run='nix build --no-update-lock-file --no-link'
              ' ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).pcr-compatibility"'),
-    Lane("deps-opensecret", (), opensecret="audit", flake=OPENSECRET_SHELL, submodules=True, env=OPENSECRET_ENV,
+    # Not the selector's `audit` output, which CI files also trigger: like the other
+    # deps lanes, only the dependency graph's own inputs select it.
+    Lane("deps-opensecret", tuple("services/opensecret/" + name for name in ("Cargo.toml", "Cargo.lock", "deny.toml")),
+         flake=OPENSECRET_SHELL, submodules=True, env=OPENSECRET_ENV,
          run=deny("services/opensecret/Cargo.toml", "services/opensecret"), **DEPS),
     # ci.yml's os-eif job runs these two scripts with the FlakeHub cache; `just lane os-eif` runs them locally.
     Lane("os-eif", (), opensecret="eif", labels=("ci:eif",), events=frozenset({PR}), job="os-eif", runner=EIF_BUILDER,

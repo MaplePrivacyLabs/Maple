@@ -156,8 +156,8 @@ nix build --no-link --no-write-lock-file '.?submodules=1#default'
 
 PCR reference/history updates remain operator-controlled release work.
 Read-only EIF construction and PCR comparison are validation when in scope.
-Root backend CI runs applicable Nix checks, and the nightly workflow builds
-the default backend binary. The separate root EIF approval workflow builds dev/prod
+Root backend CI runs the component flake checks but does not build the
+default package. The separate root EIF approval workflow builds dev/prod
 and compares generated measurements on PRs that explicitly edit the four
 approved PCR JSON files, relevant backend/TEE or approval changes to master,
 and manual runs. Ordinary backend PRs do not require new PCR approvals; master

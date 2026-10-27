@@ -44,8 +44,8 @@ SDK_INTEGRATION_FILES = frozenset({
     ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh",
 })
 KNOWN_INDEPENDENT_PREFIXES = (
-    "apps/", "proxy/", "services/updates/", "services/download-tracking/", ".agents/", ".github/",
-    ".githooks/", "docs/", "scripts/",
+    "apps/", "proxy/", "services/updates/", "services/agent-updates/", "services/download-tracking/",
+    ".agents/", ".github/", ".githooks/", "docs/", "scripts/",
 )
 KNOWN_INDEPENDENT_FILES = frozenset({
     "AGENTS.md", "README.md", "LICENSE", ".gitignore", ".dockerignore",

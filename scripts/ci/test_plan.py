@@ -23,8 +23,9 @@ ACTIVE = {lane.id for lane in lanes.LANES}
 AGENT_PR = {"agent-lint", "agent-test", "agent-macos"}
 AGENT_PUSH = AGENT_PR | {"agent-windows", "agent-full-linux", "agent-full-macos", "agent-full-windows"}
 AGENT_PACKAGE = {"agent-package-linux", "agent-package-macos"}
-# What opensecret_change_detection.py's "all checks" selects in ci.yml.
-OPENSECRET_ALL = {"os-rust", "os-sdk-e2e", "os-flake-check", "os-helpers", "deps-opensecret", "os-eif"}
+# What opensecret_change_detection.py's "all checks" selects in ci.yml (deps-opensecret follows its manifests).
+OPENSECRET_ALL = {"os-rust", "os-sdk-e2e", "os-flake-check", "os-helpers", "os-eif"}
+DEPS = {"deps-research", "deps-sdk", "deps-proxy", "deps-opensecret"}
 SHA_A, SHA_B = "a" * 40, "b" * 40
 HOOK = list(dict.fromkeys(lane.hook for lane in lanes.LANES if lane.hook))
 
@@ -187,7 +188,10 @@ class LaneTableTests(unittest.TestCase):
     def test_the_opensecret_selector_also_routes_inert_paths(self):
         # Its routing is verbatim: these notes still select what it selects for them.
         self.assertEqual(selected(["sdk/rust/README.md"]), {"os-sdk-e2e"})
-        self.assertEqual(selected(["services/agent-updates/README.md"]), OPENSECRET_ALL)
+        self.assertEqual(selected(["services/agent-updates/README.md"]), set())
+        # A new service root is unknown to it: every OpenSecret check, and every lane if not inert.
+        self.assertEqual(selected(["services/new-service/README.md"]), OPENSECRET_ALL)
+        self.assertEqual(selected(["services/new-service/src/main.ts"]), active(PR))
         self.assertEqual(selected(["services/opensecret/README.md", "services/opensecret/docs/x.md"]), set())
 
     def test_ci_infrastructure_selects_every_active_gate_lane(self):
@@ -389,9 +393,7 @@ class ClientLaneTests(unittest.TestCase):
             ("apps/maple-auth/src/main.tsx", {"auth"}, set()),
             ("services/download-tracking/tracking.ts", {"updates", "agent-updates"}, {"updates", "agent-updates"}),
             ("services/updates/src/index.ts", {"updates"}, {"updates"}),
-            # The OpenSecret selector (imported verbatim) treats this root as unknown: every check.
-            ("services/agent-updates/src/index.ts", {"agent-updates"} | OPENSECRET_ALL,
-             {"agent-updates"} | OPENSECRET_ALL - {"os-eif"}),
+            ("services/agent-updates/src/index.ts", {"agent-updates"}, {"agent-updates"}),
             # Master runs these in frontend-tests.yml, web-build.yml and rust-tests.yml.
             ("apps/maple-research/frontend/src/App.tsx", {"research-web"}, set()),
             ("apps/maple-research/frontend/src-tauri/src/lib.rs", {"research-rust"}, set()),
@@ -400,6 +402,31 @@ class ClientLaneTests(unittest.TestCase):
                 self.assertEqual(selected([path]), pr)
                 self.assertEqual(selected([path], PUSH), push)
         self.assertLessEqual({"deps-research", "deps-sdk", "deps-proxy"}, active(NIGHTLY))  # new advisories
+
+    def test_dependency_audits_follow_only_their_manifests_labels_and_nightly(self):
+        # A new advisory is drift, not a CI change: no CI edit selects a deps lane.
+        for path in (".github/workflows/ci.yml", ".github/actions/setup-nix/action.yml", "scripts/ci/plan.py",
+                     "scripts/ci/lanes.py", "scripts/ci/opensecret_change_detection.py", ".gitmodules",
+                     ".github/workflows/opensecret-eif.yml", "scripts/ci/check_opensecret_eif.sh",
+                     "services/opensecret/flake.lock", "services/opensecret/rust-toolchain.toml",
+                     "services/opensecret/src/main.rs", "apps/maple-agent/flake.lock"):
+            for event in (PR, QUEUE, PUSH):
+                with self.subTest(path=path, event=event):
+                    self.assertFalse(selected([path], event) & DEPS)
+        for lane, paths in (
+                ("deps-opensecret", ("services/opensecret/Cargo.toml", "services/opensecret/Cargo.lock",
+                                     "services/opensecret/deny.toml")),
+                ("deps-research", ("apps/maple-research/frontend/src-tauri/Cargo.lock",
+                                   "apps/maple-research/deny.toml", "sdk/rust/Cargo.toml")),
+                ("deps-sdk", ("sdk/rust/Cargo.lock", "sdk/deny.toml")),
+                ("deps-proxy", ("proxy/Cargo.lock", "proxy/deny.toml"))):
+            for path in paths:
+                with self.subTest(lane=lane, path=path):
+                    self.assertIn(lane, selected([path]))
+                    self.assertIn(lane, selected([path], PUSH))
+        self.assertLessEqual(DEPS, selected(["docs/x.md"], labels=["ci:full"]))
+        self.assertLessEqual(DEPS, active(NIGHTLY))
+        self.assertFalse(selected(["docs/x.md"], labels=["ci:package", "ci:eif", "ci:windows"]) & DEPS)
 
     def test_research_platform_builds_run_on_native_inputs_or_labels(self):
         desktop = {"research-desktop-macos", "research-desktop-linux"}
@@ -442,6 +469,8 @@ class OpenSecretLaneTests(unittest.TestCase):
             ("sdk/test/integration/bootstrap.sql", {"os-sdk-e2e"}, {"os-sdk-e2e"}),
             ("scripts/ci/build_opensecret_eif.sh", {"os-eif", "repo"}, {"repo"}),
             (".gitmodules", OPENSECRET_ALL, OPENSECRET_ALL - {"os-eif"}),
+            (backend + "Cargo.lock", OPENSECRET_ALL | {"deps-opensecret"}, OPENSECRET_ALL - {"os-eif"} | {
+                "deps-opensecret"}),
             ("scripts/ci/opensecret_change_detection.py", OPENSECRET_ALL | {"repo"},
              OPENSECRET_ALL - {"os-eif"} | {"repo"}),
             # Each lane's own entry script.
