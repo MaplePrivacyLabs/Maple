@@ -734,10 +734,11 @@ impl Sidebar {
 
     /// Also used after reconnect: deeper pages are discarded and visible first
     /// pages are re-authorized on the current host/account.
-    /// Ordering changes invalidate cursors, while retaining already visible
-    /// membership until the new ordered pages extend it. This keeps a drop in
-    /// a later loaded page visible and avoids discarding its scroll anchor.
+    /// Ordering changes replace desktop page positions while keeping the
+    /// existing task-summary API unchanged. Retain visible membership so a
+    /// drop in a later loaded page keeps its scroll anchor.
     pub(super) fn refresh_task_order(&mut self, cx: &mut Context<Self>) {
+        self.manual_catalog.cancel_pending();
         self.order_query_dirty = false;
         if self.pages.enabled {
             self.pages.generation = self.pages.generation.wrapping_add(1);
@@ -767,6 +768,8 @@ impl Sidebar {
     }
 
     fn refresh_pages_with_display(&mut self, preserve_display: bool, cx: &mut Context<Self>) {
+        self.manual_catalog.cancel_pending();
+        self.manual_catalog.invalidate();
         let retained = if preserve_display {
             self.group_pages.own_task_ids(self.backend.remote_host())
         } else {
@@ -830,12 +833,14 @@ impl Sidebar {
             }
         }
         if changed {
+            self.manual_catalog.invalidate();
             self.rebuild_sections();
             cx.notify();
         }
     }
 
     pub(super) fn forget_page_tasks(&mut self, ids: &[String]) {
+        self.manual_catalog.invalidate();
         self.pages.deleted.extend(ids.iter().cloned());
         self.sessions.retain(|session| !ids.contains(&session.id));
         for members in self.pages.ids.values_mut() {
@@ -889,6 +894,7 @@ impl Sidebar {
         if !self.pages.enabled {
             return;
         }
+        self.manual_catalog.invalidate();
         let id = summary.id.clone();
         self.pages.live.insert(id.clone(), summary.clone());
         let target = match summary.state {
@@ -962,7 +968,9 @@ impl Sidebar {
         let user = self.user_id.clone();
         let project = self.project_filter.clone();
         let filter = self.filter.clone();
-        let manual = self.manual_task_order(&self.backend.remote_host().map(str::to_owned));
+        let manual = self
+            .local_manual_order(&self.backend.remote_host().map(str::to_owned))
+            .map(|order| (self.manual_catalog.reader(), order));
         let search = if kind == PageKind::Search {
             if self.pages.search.is_none() {
                 let roots = self
@@ -972,7 +980,6 @@ impl Sidebar {
                     .map(|(root, _)| root.clone())
                     .collect();
                 self.pages.search = Some(NavigationSearchQuery {
-                    manual: manual.clone(),
                     text: filter,
                     project: project.clone(),
                     project_roots: roots,
@@ -993,41 +1000,40 @@ impl Sidebar {
         };
         self.call(
             async move {
-                if kind == PageKind::Search {
-                    backend
-                        .search_tasks(&user, search.ok_or("Search is unavailable")?)
-                        .await
+                let query = if kind == PageKind::Search {
+                    catalog::TaskQuery::Search(search.ok_or("Search is unavailable")?)
                 } else if kind == PageKind::Pinned {
-                    backend
-                        .pinned_tasks(
-                            &user,
-                            crate::backend::PinnedTasksRequest {
-                                manual: manual.clone(),
-                                project,
-                                cursor,
-                                limit: 200,
-                            },
-                        )
-                        .await
+                    catalog::TaskQuery::Pinned(crate::backend::PinnedTasksRequest {
+                        project,
+                        cursor,
+                        limit: 200,
+                    })
                 } else {
                     let section = TaskSection::State(match kind {
                         PageKind::Archived => TaskState::Archived,
                         PageKind::Settled => TaskState::Settled,
                         _ => TaskState::Active,
                     });
-                    backend
-                        .list_tasks(
-                            &user,
-                            NavigationTaskQuery {
-                                manual,
-                                section,
-                                project,
-                                pins,
-                                cursor,
-                                limit: 50,
-                            },
-                        )
-                        .await
+                    catalog::TaskQuery::Tasks(NavigationTaskQuery {
+                        section,
+                        project,
+                        pins,
+                        cursor,
+                        limit: 50,
+                    })
+                };
+                if let Some((reader, order)) = manual {
+                    reader.page(backend, user, query, order).await
+                } else {
+                    match query {
+                        catalog::TaskQuery::Search(query) => {
+                            backend.search_tasks(&user, query).await
+                        }
+                        catalog::TaskQuery::Pinned(query) => {
+                            backend.pinned_tasks(&user, query).await
+                        }
+                        catalog::TaskQuery::Tasks(query) => backend.list_tasks(&user, query).await,
+                    }
                 }
             },
             cx,
@@ -1049,6 +1055,13 @@ impl Sidebar {
                         if kind == PageKind::Pinned && this.pages.has_more(kind) {
                             this.load_page(kind, cx);
                         }
+                    }
+                    Err(message) if message == catalog::CANCELLED => {
+                        if !this.pages.next.contains_key(&kind) {
+                            this.pages.started.remove(&kind);
+                        }
+                        this.load_page(kind, cx);
+                        return;
                     }
                     Err(message) => {
                         if !append {

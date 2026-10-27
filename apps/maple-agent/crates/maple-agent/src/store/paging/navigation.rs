@@ -14,7 +14,6 @@ use crate::store::{AccountId, PinFilter, Store, StoreError, StoreResult, TaskSec
 
 const MAX_ROWS: u16 = 200;
 const MAX_TEXT_BYTES: usize = 16 * 1024;
-const MAX_MANUAL_TASKS: usize = 8192;
 // SQLite bounds even anomalously long model/title values before Rust allocates.
 const TASK_COLUMNS: &str = "id,uuid,project_id,substr(title,1,4096),state,kind,pinned_ms,web_enabled,\
     substr(model,1,1024),message_count,created_ms,updated_ms,\
@@ -54,15 +53,6 @@ pub struct ProjectSummary {
     pub truncated: bool,
 }
 
-/// A bounded owner-UUID order. Tasks created after the snapshot lead the saved
-/// order; unranked older history follows it by creation time, never activity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct NavigationManualOrder {
-    pub created_before_ms: i64,
-    pub tasks: Vec<String>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavigationTaskQuery {
@@ -70,8 +60,6 @@ pub struct NavigationTaskQuery {
     pub project: Option<String>,
     #[serde(default = "default_pin_filter")]
     pub pins: PinFilter,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manual: Option<NavigationManualOrder>,
     pub cursor: Option<String>,
     #[serde(default = "default_task_limit")]
     pub limit: u16,
@@ -92,8 +80,6 @@ pub struct NavigationSearchQuery {
     pub project: Option<String>,
     #[serde(default)]
     pub project_roots: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manual: Option<NavigationManualOrder>,
     pub cursor: Option<String>,
     #[serde(default = "default_search_limit")]
     pub limit: u16,
@@ -121,8 +107,6 @@ pub struct NavigationGroupQuery {
     pub limit_groups: u16,
     #[serde(default = "default_group_limit")]
     pub per_project: u16,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manual: Option<NavigationManualOrder>,
     pub cursor: Option<String>,
 }
 
@@ -175,100 +159,6 @@ struct ProjectRow {
     summary: ProjectSummary,
 }
 
-struct PreparedManualOrder {
-    cutoff: i64,
-    ranks: HashMap<String, i64>,
-    encoded_tasks: String,
-    fingerprint: Value,
-}
-
-impl PreparedManualOrder {
-    fn new(order: &NavigationManualOrder) -> StoreResult<Self> {
-        if order.created_before_ms < 0 || order.tasks.len() > MAX_MANUAL_TASKS {
-            return Err(StoreError::InvalidInput);
-        }
-        let mut ranks = HashMap::with_capacity(order.tasks.len());
-        let mut tasks = Vec::with_capacity(order.tasks.len());
-        for (index, task) in order.tasks.iter().enumerate() {
-            validate_uuid(task)?;
-            let task = task.to_ascii_lowercase();
-            if ranks.insert(task.clone(), index as i64).is_some() {
-                return Err(StoreError::InvalidInput);
-            }
-            tasks.push(task);
-        }
-        Ok(Self {
-            cutoff: order.created_before_ms,
-            ranks,
-            encoded_tasks: serde_json::to_string(&tasks).map_err(|_| StoreError::InvalidInput)?,
-            fingerprint: cursor_scope(order)?,
-        })
-    }
-
-    fn position(&self, row: &SummaryRow) -> TaskPosition {
-        let rank = self
-            .ranks
-            .get(&row.summary.uuid.to_ascii_lowercase())
-            .copied();
-        TaskPosition::Manual {
-            band: if rank.is_some() {
-                1
-            } else if row.summary.created_ms > self.cutoff {
-                0
-            } else {
-                2
-            },
-            rank: rank.unwrap_or(0),
-            created: if rank.is_some() {
-                0
-            } else {
-                row.summary.created_ms
-            },
-            uuid: row.summary.uuid.clone(),
-        }
-    }
-
-    fn compare(&self, left: &SummaryRow, right: &SummaryRow) -> std::cmp::Ordering {
-        let TaskPosition::Manual {
-            band: left_band,
-            rank: left_rank,
-            created: left_created,
-            uuid: left_uuid,
-        } = self.position(left)
-        else {
-            unreachable!()
-        };
-        let TaskPosition::Manual {
-            band: right_band,
-            rank: right_rank,
-            created: right_created,
-            uuid: right_uuid,
-        } = self.position(right)
-        else {
-            unreachable!()
-        };
-        left_band
-            .cmp(&right_band)
-            .then_with(|| left_rank.cmp(&right_rank))
-            .then_with(|| right_created.cmp(&left_created))
-            .then_with(|| left_uuid.cmp(&right_uuid))
-    }
-}
-
-#[derive(Clone)]
-enum TaskPosition {
-    Updated {
-        updated: i64,
-        key: i64,
-    },
-    Manual {
-        band: i64,
-        rank: i64,
-        created: i64,
-        uuid: String,
-    },
-}
-
 impl Store {
     pub fn list_task_summaries(
         &self,
@@ -280,19 +170,13 @@ impl Store {
         if let Some(root) = &query.project {
             validate_root(root)?;
         }
-        let manual = query
-            .manual
-            .as_ref()
-            .map(PreparedManualOrder::new)
-            .transpose()?;
         let scope = cursor_scope(&task_scope(
             query.section,
             query.project.as_deref(),
             query.pins,
-            manual.as_ref(),
         ))?;
         let position = cursor_position(query.cursor.as_deref(), "tasks", account, &scope)?;
-        let position = read_task_position(position.as_ref(), manual.is_some())?;
+        let position = read_task_position(position.as_ref())?;
         self.read(|tx| {
             let project = resolve_project(tx, account, query.project.as_deref())?;
             if query.project.is_some() && project.is_none() {
@@ -304,20 +188,11 @@ impl Store {
                 query.section,
                 project,
                 query.pins,
-                manual.as_ref(),
                 position,
                 usize::from(query.limit) + 1,
             )?;
             populate_roots(tx, account, &mut rows)?;
-            finish_task_page(
-                account,
-                &scope,
-                "tasks",
-                rows,
-                query.limit,
-                transport,
-                manual.as_ref(),
-            )
+            finish_task_page(account, &scope, "tasks", rows, query.limit, transport)
         })
     }
 
@@ -335,7 +210,6 @@ impl Store {
                 section: TaskSection::Pinned,
                 project: project.map(str::to_owned),
                 pins: PinFilter::Ignore,
-                manual: None,
                 cursor: cursor.map(str::to_owned),
                 limit,
             },
@@ -419,63 +293,44 @@ impl Store {
             return Err(StoreError::InvalidInput);
         }
         let fold = query.text.to_lowercase();
-        let manual = query
-            .manual
-            .as_ref()
-            .map(PreparedManualOrder::new)
-            .transpose()?;
-        let mut scope = json!({"text":fold,"project_roots":roots,"project":query.project});
-        if let Some(manual) = &manual {
-            scope["manual"] = manual.fingerprint.clone();
-        }
-        let scope = cursor_scope(&scope)?;
+        let scope =
+            cursor_scope(&json!({"text":fold,"project_roots":roots,"project":query.project}))?;
         let position = cursor_position(query.cursor.as_deref(), "search", account, &scope)?;
-        let position = read_task_position(position.as_ref(), manual.is_some())?;
+        let position = read_task_position(position.as_ref())?;
         let roots = serde_json::to_string(&roots).map_err(|_| StoreError::InvalidInput)?;
         self.read(|tx| {
             let project = resolve_project(tx, account, query.project.as_deref())?;
             if query.project.is_some() && project.is_none() {
                 return Ok(NavigationTaskPage::default());
             }
-            let (mut sql, mut values) = task_select("tasks_recent", account, manual.as_ref());
-            sql.push_str(
-                " AND provisional=0 AND deleted_ms IS NULL AND message_count>0
+            let mut sql = format!(
+                "SELECT {TASK_COLUMNS} FROM tasks INDEXED BY tasks_recent
+                WHERE account_id=? AND provisional=0 AND deleted_ms IS NULL AND message_count>0
                 AND (instr(title_fold,?)>0 OR project_id IN
                     (SELECT id FROM projects WHERE account_id=? AND
                         (root IN (SELECT value FROM json_each(?)) OR
-                            instr(maple_project_label_fold(root,display_name),?)>0)))",
+                            instr(maple_project_label_fold(root,display_name),?)>0)))"
             );
-            values.extend([
+            let mut values = vec![
+                account.0.into(),
                 fold.clone().into(),
                 account.0.into(),
                 roots.clone().into(),
                 fold.clone().into(),
-            ]);
+            ];
             if let Some(project) = project {
                 sql.push_str(" AND project_id=?");
                 values.push(project.into());
             }
-            append_task_order(
-                &mut sql,
-                &mut values,
-                position,
-                manual.is_some(),
-                usize::from(query.limit) + 1,
-            )?;
+            append_task_position(&mut sql, &mut values, position);
+            sql.push_str(" ORDER BY updated_ms DESC,id DESC LIMIT ?");
+            values.push((i64::from(query.limit) + 1).into());
             let mut statement = tx.prepare_cached(&sql)?;
             let mut rows = statement
                 .query_map(params_from_iter(values), read_summary)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             populate_roots(tx, account, &mut rows)?;
-            finish_task_page(
-                account,
-                &scope,
-                "search",
-                rows,
-                query.limit,
-                transport,
-                manual.as_ref(),
-            )
+            finish_task_page(account, &scope, "search", rows, query.limit, transport)
         })
     }
 
@@ -572,16 +427,7 @@ impl Store {
     ) -> StoreResult<NavigationGroupPage> {
         validate_limit(query.limit_groups, 50)?;
         validate_limit(query.per_project, 50)?;
-        let manual = query
-            .manual
-            .as_ref()
-            .map(PreparedManualOrder::new)
-            .transpose()?;
-        let mut scope = json!({"view":"groups","per_project":query.per_project});
-        if let Some(manual) = &manual {
-            scope["manual"] = manual.fingerprint.clone();
-        }
-        let scope = cursor_scope(&scope)?;
+        let scope = cursor_scope(&json!({"view":"groups","per_project":query.per_project}))?;
         let position = cursor_position(query.cursor.as_deref(), "groups", account, &scope)?;
         let position = read_project_position(position.as_ref())?;
         self.read(|tx| {
@@ -613,13 +459,11 @@ impl Store {
                     TaskSection::State(TaskState::Active),
                     Some(&project.summary.root),
                     PinFilter::Ignore,
-                    manual.as_ref(),
                 ))?;
                 let settled_scope = cursor_scope(&task_scope(
                     TaskSection::State(TaskState::Settled),
                     Some(&project.summary.root),
                     PinFilter::Ignore,
-                    manual.as_ref(),
                 ))?;
                 let budget = usize::from(query.per_project).min(usize::from(MAX_ROWS) - flat_count);
                 // Read at most the remaining task budget plus one lookahead.
@@ -629,7 +473,6 @@ impl Store {
                     TaskSection::State(TaskState::Active),
                     Some(project.key),
                     PinFilter::Ignore,
-                    manual.as_ref(),
                     None,
                     budget + 1,
                 )?;
@@ -639,7 +482,6 @@ impl Store {
                     TaskSection::State(TaskState::Settled),
                     Some(project.key),
                     PinFilter::Ignore,
-                    manual.as_ref(),
                     None,
                     budget + 1,
                 )?;
@@ -683,17 +525,11 @@ impl Store {
                 }
                 let mut active_taken = 0;
                 let mut settled_taken = 0;
-                let mut tasks: Vec<_> = active
+                for (is_active, row) in active
                     .into_iter()
                     .map(|r| (true, r))
                     .chain(settled.into_iter().map(|r| (false, r)))
-                    .collect();
-                if let Some(manual) = &manual {
-                    // Merge the independently paged sections by the same
-                    // immutable order before applying the shared row budget.
-                    tasks.sort_by(|(_, left), (_, right)| manual.compare(left, right));
-                }
-                for (is_active, row) in tasks {
+                {
                     if group.tasks.len() == budget {
                         break;
                     }
@@ -703,24 +539,14 @@ impl Store {
                         active_taken += 1;
                         group.more.active = (active_taken < active_len)
                             .then(|| {
-                                make_cursor(
-                                    "tasks",
-                                    account,
-                                    &active_scope,
-                                    task_position(&row, manual.as_ref()),
-                                )
+                                make_cursor("tasks", account, &active_scope, task_position(&row))
                             })
                             .transpose()?;
                     } else {
                         settled_taken += 1;
                         group.more.settled = (settled_taken < settled_len)
                             .then(|| {
-                                make_cursor(
-                                    "tasks",
-                                    account,
-                                    &settled_scope,
-                                    task_position(&row, manual.as_ref()),
-                                )
+                                make_cursor("tasks", account, &settled_scope, task_position(&row))
                             })
                             .transpose()?;
                     }
@@ -745,8 +571,7 @@ fn task_rows(
     section: TaskSection,
     project: Option<i64>,
     pins: PinFilter,
-    manual: Option<&PreparedManualOrder>,
-    position: Option<TaskPosition>,
+    position: Option<(i64, i64)>,
     limit: usize,
 ) -> StoreResult<Vec<SummaryRow>> {
     let index = match (section, project) {
@@ -756,8 +581,11 @@ fn task_rows(
         (TaskSection::State(_), Some(_)) => "tasks_project_section",
         (TaskSection::State(_), None) => "tasks_section",
     };
-    let (mut sql, mut values) = task_select(index, account, manual);
-    sql.push_str(" AND provisional=0 AND deleted_ms IS NULL");
+    let mut sql = format!(
+        "SELECT {TASK_COLUMNS} FROM tasks INDEXED BY {index}
+        WHERE account_id=? AND provisional=0 AND deleted_ms IS NULL"
+    );
+    let mut values = vec![rusqlite::types::Value::Integer(account.0)];
     match section {
         TaskSection::State(state) => {
             sql.push_str(" AND state=? AND message_count>0");
@@ -775,94 +603,28 @@ fn task_rows(
         sql.push_str(" AND project_id=?");
         values.push(project.into());
     }
-    append_task_order(&mut sql, &mut values, position, manual.is_some(), limit)?;
+    append_task_position(&mut sql, &mut values, position);
+    sql.push_str(" ORDER BY updated_ms DESC,id DESC LIMIT ?");
+    values.push(
+        i64::try_from(limit)
+            .map_err(|_| StoreError::InvalidInput)?
+            .into(),
+    );
     let mut statement = tx.prepare_cached(&sql)?;
     Ok(statement
         .query_map(params_from_iter(values), read_summary)?
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn task_select(
-    index: &str,
-    account: AccountId,
-    manual: Option<&PreparedManualOrder>,
-) -> (String, Vec<rusqlite::types::Value>) {
-    if let Some(manual) = manual {
-        // Materialize at most 8192 UUID ranks once; SQLite can index the
-        // materialized rank relation rather than scanning JSON per task.
-        return (
-            format!(
-                "WITH manual_ranks AS MATERIALIZED (
-                    SELECT value AS rank_uuid,CAST(key AS INTEGER) AS rank_index FROM json_each(?)
-                ), manual_tasks AS (
-                    SELECT {TASK_COLUMNS},
-                        CASE WHEN rank_index IS NOT NULL THEN 1 WHEN created_ms>? THEN 0 ELSE 2 END AS manual_band,
-                        coalesce(rank_index,0) AS manual_rank,
-                        CASE WHEN rank_index IS NULL THEN created_ms ELSE 0 END AS manual_created
-                    FROM tasks INDEXED BY {index}
-                    LEFT JOIN manual_ranks ON manual_ranks.rank_uuid=lower(tasks.uuid)
-                    WHERE account_id=?"
-            ),
-            vec![manual.encoded_tasks.clone().into(), manual.cutoff.into(), account.0.into()],
-        );
-    }
-    (
-        format!("SELECT {TASK_COLUMNS} FROM tasks INDEXED BY {index} WHERE account_id=?"),
-        vec![account.0.into()],
-    )
-}
-
-fn append_task_order(
+fn append_task_position(
     sql: &mut String,
     values: &mut Vec<rusqlite::types::Value>,
-    position: Option<TaskPosition>,
-    manual: bool,
-    limit: usize,
-) -> StoreResult<()> {
-    if manual {
-        sql.push_str(") SELECT * FROM manual_tasks WHERE 1=1");
-        if let Some(position) = position {
-            let TaskPosition::Manual {
-                band,
-                rank,
-                created,
-                uuid,
-            } = position
-            else {
-                return Err(StoreError::InvalidInput);
-            };
-            sql.push_str(
-                " AND ((manual_band,manual_rank)>(?,?) OR
-                    ((manual_band,manual_rank)=(?,?) AND
-                        (manual_created<? OR (manual_created=? AND uuid>?))))",
-            );
-            values.extend([
-                band.into(),
-                rank.into(),
-                band.into(),
-                rank.into(),
-                created.into(),
-                created.into(),
-                uuid.into(),
-            ]);
-        }
-        sql.push_str(" ORDER BY manual_band,manual_rank,manual_created DESC,uuid ASC LIMIT ?");
-    } else {
-        if let Some(position) = position {
-            let TaskPosition::Updated { updated, key } = position else {
-                return Err(StoreError::InvalidInput);
-            };
-            sql.push_str(" AND (updated_ms,id)<(?,?)");
-            values.extend([updated.into(), key.into()]);
-        }
-        sql.push_str(" ORDER BY updated_ms DESC,id DESC LIMIT ?");
+    position: Option<(i64, i64)>,
+) {
+    if let Some((updated, key)) = position {
+        sql.push_str(" AND (updated_ms,id)<(?,?)");
+        values.extend([updated.into(), key.into()]);
     }
-    values.push(
-        i64::try_from(limit)
-            .map_err(|_| StoreError::InvalidInput)?
-            .into(),
-    );
-    Ok(())
 }
 
 fn finish_task_page(
@@ -872,14 +634,13 @@ fn finish_task_page(
     rows: Vec<SummaryRow>,
     limit: u16,
     transport: PageTransport,
-    manual: Option<&PreparedManualOrder>,
 ) -> StoreResult<NavigationTaskPage> {
     let mut page = NavigationTaskPage::default();
     let count = rows.len();
     for (index, row) in rows.iter().take(usize::from(limit)).enumerate() {
         page.tasks.push(row.summary.clone());
         page.next_cursor = (index + 1 < count)
-            .then(|| make_cursor(kind, account, scope, task_position(row, manual)))
+            .then(|| make_cursor(kind, account, scope, task_position(row)))
             .transpose()?;
         if serialized_len(&page)? > reply_limit(transport) {
             page.tasks.pop();
@@ -890,7 +651,7 @@ fn finish_task_page(
                 kind,
                 account,
                 scope,
-                task_position(&rows[index - 1], manual),
+                task_position(&rows[index - 1]),
             )?);
             return Ok(page);
         }
@@ -1164,85 +925,33 @@ fn read_summary(row: &Row<'_>) -> rusqlite::Result<SummaryRow> {
     })
 }
 
-fn task_scope(
-    section: TaskSection,
-    project: Option<&str>,
-    pins: PinFilter,
-    manual: Option<&PreparedManualOrder>,
-) -> Value {
+fn task_scope(section: TaskSection, project: Option<&str>, pins: PinFilter) -> Value {
     let section = match section {
         TaskSection::State(state) => state.as_str(),
         TaskSection::Pinned => "pinned",
         TaskSection::Recent => "recent",
     };
-    let mut scope = json!({"section":section,"project":project,"pins":if pins==PinFilter::Exclude {"exclude"} else {"ignore"}});
-    if let Some(manual) = manual {
-        scope["manual"] = manual.fingerprint.clone();
-    }
-    scope
+    json!({"section":section,"project":project,"pins":if pins==PinFilter::Exclude {"exclude"} else {"ignore"}})
 }
 
-fn task_position(row: &SummaryRow, manual: Option<&PreparedManualOrder>) -> Value {
-    if let Some(manual) = manual {
-        let TaskPosition::Manual {
-            band,
-            rank,
-            created,
-            uuid,
-        } = manual.position(row)
-        else {
-            unreachable!()
-        };
-        return json!({"band":band,"rank":rank,"created_ms":created,"uuid":uuid});
-    }
+fn task_position(row: &SummaryRow) -> Value {
     json!({"updated_ms":row.summary.updated_ms,"id":row.key})
 }
 
-fn read_task_position(value: Option<&Value>, manual: bool) -> StoreResult<Option<TaskPosition>> {
+fn read_task_position(value: Option<&Value>) -> StoreResult<Option<(i64, i64)>> {
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(value) => {
-            if manual {
-                let band = value
-                    .get("band")
-                    .and_then(Value::as_i64)
-                    .filter(|band| (0..=2).contains(band))
-                    .ok_or(StoreError::InvalidInput)?;
-                let rank = value
-                    .get("rank")
-                    .and_then(Value::as_i64)
-                    .filter(|rank| (0..MAX_MANUAL_TASKS as i64).contains(rank))
-                    .ok_or(StoreError::InvalidInput)?;
-                let created = value
-                    .get("created_ms")
-                    .and_then(Value::as_i64)
-                    .ok_or(StoreError::InvalidInput)?;
-                if (band != 1 && rank != 0) || (band == 1 && created != 0) {
-                    return Err(StoreError::InvalidInput);
-                }
-                let uuid = value
-                    .get("uuid")
-                    .and_then(Value::as_str)
-                    .ok_or(StoreError::InvalidInput)?;
-                validate_uuid(uuid)?;
-                Ok(Some(TaskPosition::Manual {
-                    band,
-                    rank,
-                    created,
-                    uuid: uuid.to_owned(),
-                }))
-            } else {
-                let key = value
-                    .get("id")
-                    .and_then(Value::as_i64)
-                    .filter(|n| *n > 0)
-                    .ok_or(StoreError::InvalidInput)?;
-                let updated = value
-                    .get("updated_ms")
-                    .and_then(Value::as_i64)
-                    .ok_or(StoreError::InvalidInput)?;
-                Ok(Some(TaskPosition::Updated { updated, key }))
-            }
+            let updated = value
+                .get("updated_ms")
+                .and_then(Value::as_i64)
+                .ok_or(StoreError::InvalidInput)?;
+            let key = value
+                .get("id")
+                .and_then(Value::as_i64)
+                .filter(|n| *n > 0)
+                .ok_or(StoreError::InvalidInput)?;
+            Ok(Some((updated, key)))
         }
     }
 }

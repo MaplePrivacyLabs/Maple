@@ -47,12 +47,13 @@ unlocked; an independent host-side check runs at the final shutdown boundary.
 The controller's updater is never installed or restarted by this operation.
 Daemon-only hosts require a local update. Remote management requires compatible
 remote protocol majors, just like ordinary task access. The attachment change
-introduced wire 7; Manual sidebar paging now requires wire 8 on both computers.
-There is no cross-version management bridge. Update the execution computer
-first while both still use the same wire major, then update the controller
-through its local updater. During the expected mismatch, retain the original
-install operation rather than resubmitting it; verify the running identity and
-its receipt after both computers reconnect on wire 8.
+requires wire 7 on both computers; it does not add a cross-version management
+bridge. Update the execution computer first while both still use wire 6, then
+update the controller through its local updater. During the expected mismatch,
+retain the original install operation rather than resubmitting it; verify the
+running identity and its receipt after both computers reconnect on wire 7.
+Sidebar grouping and manual ordering use those existing APIs and apply only on
+the viewing desktop; they require no remote protocol upgrade or capability.
 Updating the controller first requires updating the execution computer directly.
 A remote mismatch does not disable the controller's local update controls.
 Definite install refusals are shown as declined requests and require a new check

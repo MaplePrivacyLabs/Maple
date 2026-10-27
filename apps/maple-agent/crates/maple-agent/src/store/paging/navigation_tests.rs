@@ -52,7 +52,6 @@ fn task(store: &Store, account: AccountId, number: u64, project_root: &str, titl
 
 fn query(section: TaskSection, limit: u16) -> NavigationTaskQuery {
     NavigationTaskQuery {
-        manual: None,
         section,
         project: None,
         pins: PinFilter::Ignore,
@@ -201,7 +200,6 @@ fn search_is_unicode_folded_and_cursor_binds_search_terms() {
     task(&store, alice, 2, &project, "äpfel two");
     task(&store, alice, 3, &root("other"), "unrelated");
     let mut request = NavigationSearchQuery {
-        manual: None,
         project: None,
         text: "Äpfel".to_owned(),
         project_roots: Vec::new(),
@@ -219,7 +217,6 @@ fn search_is_unicode_folded_and_cursor_binds_search_terms() {
     assert_eq!(second.tasks.len(), 1);
     assert_ne!(first.tasks[0].uuid, second.tasks[0].uuid);
     let scoped = NavigationSearchQuery {
-        manual: None,
         text: "äpfel".to_owned(),
         project: Some(root("other")),
         project_roots: vec![project.clone()],
@@ -264,7 +261,6 @@ fn group_flatten_cap_retains_empty_group_section_cursors() {
         .list_project_group_summaries(
             alice,
             &NavigationGroupQuery {
-                manual: None,
                 limit_groups: 5,
                 per_project: 50,
                 cursor: None,
@@ -287,7 +283,6 @@ fn group_flatten_cap_retains_empty_group_section_cursors() {
         .list_task_summaries(
             alice,
             &NavigationTaskQuery {
-                manual: None,
                 section: TaskSection::State(TaskState::Active),
                 project: Some(last.project.root.clone()),
                 pins: PinFilter::Ignore,
@@ -321,7 +316,6 @@ fn mixed_group_sections_keep_independent_continuations() {
         .list_project_group_summaries(
             alice,
             &NavigationGroupQuery {
-                manual: None,
                 limit_groups: 1,
                 per_project: 1,
                 cursor: None,
@@ -335,7 +329,6 @@ fn mixed_group_sections_keep_independent_continuations() {
         .list_task_summaries(
             alice,
             &NavigationTaskQuery {
-                manual: None,
                 section: TaskSection::State(TaskState::Active),
                 project: Some(project.clone()),
                 pins: PinFilter::Ignore,
@@ -349,7 +342,6 @@ fn mixed_group_sections_keep_independent_continuations() {
         .list_task_summaries(
             alice,
             &NavigationTaskQuery {
-                manual: None,
                 section: TaskSection::State(TaskState::Settled),
                 project: Some(project),
                 pins: PinFilter::Ignore,
@@ -384,7 +376,6 @@ fn remote_group_byte_cap_keeps_all_groups_and_unloaded_tasks_reachable() {
         }
     }
     let mut request = NavigationGroupQuery {
-        manual: None,
         limit_groups: 4,
         per_project: 50,
         cursor: None,
@@ -413,7 +404,6 @@ fn remote_group_byte_cap_keeps_all_groups_and_unloaded_tasks_reachable() {
                     .list_task_summaries(
                         alice,
                         &NavigationTaskQuery {
-                            manual: None,
                             section: TaskSection::State(TaskState::Active),
                             project: Some(group.project.root.clone()),
                             pins: PinFilter::Ignore,
@@ -648,7 +638,6 @@ fn name_revisions_survive_reset_and_are_in_both_bounded_project_projections() {
         .list_project_group_summaries(
             alice,
             &NavigationGroupQuery {
-                manual: None,
                 limit_groups: 1,
                 per_project: 1,
                 cursor: None,
@@ -691,7 +680,6 @@ fn search_finds_unloaded_owner_project_names_with_unicode_and_bounded_cursors() 
     let second_id = task(&store, alice, 100, &target, "Another unrelated title");
     task(&store, bob, 200, &target, "Unrelated other account");
     let mut request = NavigationSearchQuery {
-        manual: None,
         text: "äpfel".into(),
         project: None,
         project_roots: Vec::new(),
@@ -740,7 +728,6 @@ fn search_resolves_owner_default_basename_and_workspace_label_without_client_hin
     let project = root("ÅngströmFolder");
     let id = task(&store, alice, 1, &project, "Unrelated title");
     let mut request = NavigationSearchQuery {
-        manual: None,
         text: "ångströmfolder".into(),
         project: None,
         project_roots: Vec::new(),

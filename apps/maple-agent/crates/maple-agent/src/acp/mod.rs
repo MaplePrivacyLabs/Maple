@@ -890,7 +890,6 @@ impl AcpConnectionContext {
         let mut listed = Vec::new();
         loop {
             let query = crate::store::NavigationTaskQuery {
-                manual: None,
                 section: crate::store::TaskSection::Recent,
                 project: project.clone(),
                 pins: crate::store::PinFilter::Ignore,

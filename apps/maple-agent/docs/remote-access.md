@@ -191,22 +191,22 @@ Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
 protocol keeps the `maple-agent/remote/1` ALPN family and currently advertises
-wire version 8 with minimum version 8, independent of application builds. Its
+wire version 7 with minimum version 7, independent of application builds. Its
 shared project names, bounded navigation/history pages, stable row identities,
 attachment ranges, and per-connection task subscriptions remain unchanged.
 Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
-Version 7 and earlier peers receive an explicit version refusal. Bounded frames
+Version 6 and earlier peers receive an explicit version refusal. Bounded frames
 and an explicit task-operation allowlist apply.
-Manual sidebar ordering adds bounded task-order inputs to navigation, search,
-project-group, and continuation queries. Both computers must be updated for this
-wire-8 paging contract; older peers are refused during the handshake before
-requests are admitted, rather than accepting a partially working sidebar.
+The viewing desktop applies sidebar grouping and manual ordering to summaries
+received through the existing navigation and project APIs. These preferences
+stay on that desktop; no ordering parameters, commands, or capabilities are
+added to the remote protocol.
 Account operations and arbitrary whole-host administration cannot be forwarded.
 The narrow experimental update capability uses the host's own signed updater;
 it does not expose the ordinary host-stop command.
 
-Optional discovery reports protocol version `8.0.0` and explicit capabilities
+Optional discovery reports protocol version `7.1.0` and explicit capabilities
 over separate request streams. The acknowledgement shape and ALPN remain
 readable across the required version transition. Bounded folder browsing and single-folder creation require
 the `project_folders_v1` capability. The controller checks support before sending
@@ -226,9 +226,9 @@ separate from ordinary requests, range reads and urgent replies; generic files
 are limited to 30 MiB each, while
 composer images retain their 10 MiB limit. See [local storage](local-store.md).
 
-Both computers must use wire 8 for remote access, including remote update
+Both computers must use wire 7 for remote access, including remote update
 management. Upgrade the execution computer first while the old pair is still
-compatible, then update the controller locally. A wire-8 controller stops
+compatible, then update the controller locally. A wire-7 controller stops
 automatic reconnection after an explicit version refusal and shows **Update
 required**, without treating ordinary offline errors as version mismatches.
 Released wire-6 controllers keep their shipped behavior during the gap: cold

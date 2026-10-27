@@ -10,6 +10,8 @@
 //! Clicks that need the window (new task, settings, collapse) call the
 //! screen directly from plain closures, which run outside any update.
 
+#[path = "sidebar_catalog.rs"]
+mod catalog;
 #[path = "sidebar_computers.rs"]
 mod computers;
 #[path = "sidebar_ordering.rs"]
@@ -62,6 +64,7 @@ pub(crate) struct BrowseState {
     /// Application Vim's row. Other computers' sidebars name a task by its
     /// computer, so it travels in that form.
     vim_selected: Option<SidebarTarget>,
+    catalog: catalog::Catalog,
     computers: computers::ComputerBrowseState,
 }
 
@@ -569,6 +572,7 @@ pub(super) struct Sidebar {
     order: SidebarOrder,
     order_loaded: bool,
     order_loading: bool,
+    manual_catalog: catalog::Catalog,
     task_ranks: HashMap<Option<String>, HashMap<String, usize>>,
     order_query_dirty: bool,
     project_ranks: HashMap<Option<String>, HashMap<String, usize>>,
@@ -742,6 +746,7 @@ impl Sidebar {
                 }),
                 target => target,
             }),
+            catalog: self.manual_catalog.clone(),
             computers: self.computer_browse_state(),
         }
     }
@@ -750,6 +755,7 @@ impl Sidebar {
         if state.computers.user_id != self.user_id {
             return;
         }
+        self.manual_catalog = state.catalog;
         let mut sort_changed = self.order_query_dirty || self.view.sort != state.view.sort;
         self.view = state.view;
         self.collapsed_projects = state.collapsed_projects;
@@ -890,6 +896,7 @@ impl Sidebar {
             order: SidebarOrder::default(),
             order_loaded: false,
             order_loading: false,
+            manual_catalog: catalog::Catalog::default(),
             task_ranks: HashMap::new(),
             order_query_dirty: false,
             project_ranks: HashMap::new(),

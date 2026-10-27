@@ -152,6 +152,98 @@ enum ComputerPageReply {
     Tasks(NavigationTaskPage),
 }
 
+async fn computer_task_page(
+    reader: catalog::Reader,
+    backend: Arc<AgentBackend>,
+    user: String,
+    query: catalog::TaskQuery,
+    manual: Option<catalog::ManualOrder>,
+) -> Result<NavigationTaskPage, String> {
+    if let Some(order) = manual {
+        return reader.page(backend, user, query, order).await;
+    }
+    match query {
+        catalog::TaskQuery::Tasks(query) => backend.list_tasks(&user, query).await,
+        catalog::TaskQuery::Search(query) => backend.search_tasks(&user, query).await,
+        catalog::TaskQuery::Pinned(query) => backend.pinned_tasks(&user, query).await,
+    }
+}
+
+/// Project headers keep their host cursor. Task prefixes and their independent
+/// section continuations are projected from the desktop's complete inventory.
+async fn manual_computer_groups(
+    reader: catalog::Reader,
+    backend: Arc<AgentBackend>,
+    user: String,
+    mut page: NavigationGroupPage,
+    order: catalog::ManualOrder,
+) -> Result<NavigationGroupPage, String> {
+    let mut remaining = 200usize;
+    for group in &mut page.groups {
+        let budget = remaining.min(20) as u16;
+        let active_query = NavigationTaskQuery {
+            section: TaskSection::State(TaskState::Active),
+            project: Some(group.project.root.clone()),
+            pins: PinFilter::Ignore,
+            cursor: None,
+            limit: budget,
+        };
+        let settled_query = NavigationTaskQuery {
+            section: TaskSection::State(TaskState::Settled),
+            ..active_query.clone()
+        };
+        // At most two scans run concurrently for this execution computer.
+        let (active, settled) = tokio::try_join!(
+            reader.clone().page(
+                backend.clone(),
+                user.clone(),
+                catalog::TaskQuery::Tasks(active_query.clone()),
+                order.clone(),
+            ),
+            reader.clone().page(
+                backend.clone(),
+                user.clone(),
+                catalog::TaskQuery::Tasks(settled_query.clone()),
+                order.clone(),
+            ),
+        )?;
+        let mut candidates = active
+            .tasks
+            .iter()
+            .chain(settled.tasks.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        order.sort(&mut candidates);
+        candidates.truncate(usize::from(budget));
+        let settled_count = candidates
+            .iter()
+            .filter(|task| task.state == "settled")
+            .count();
+        let active_count = candidates.len() - settled_count;
+        group.tasks = candidates;
+        remaining -= group.tasks.len();
+        // Derive each continuation from this exact candidate snapshot. A
+        // section contributing no rows keeps a local start cursor when needed.
+        group.more.active = reader.prefix_cursor(
+            &backend,
+            &user,
+            &catalog::TaskQuery::Tasks(active_query),
+            &order,
+            &active,
+            active_count,
+        )?;
+        group.more.settled = reader.prefix_cursor(
+            &backend,
+            &user,
+            &catalog::TaskQuery::Tasks(settled_query),
+            &order,
+            &settled,
+            settled_count,
+        )?;
+    }
+    Ok(page)
+}
+
 /// The bounded visible projection travels with the desktop's browse state.
 /// Exact backend handles and the account fence it from a retired attachment.
 pub(super) struct ComputerBrowseState {
@@ -420,6 +512,7 @@ impl Sidebar {
         // Pending callbacks belong to the previous Sidebar entity. Fence this
         // entity's earlier requests, and restart any inherited initial reads.
         self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
+        let mut inventory_changed = false;
         state.pages.hosts.retain(|key, page| {
             let owners = state
                 .computers
@@ -427,6 +520,7 @@ impl Sidebar {
                 .find(|computer| &computer.key == key)
                 .zip(self.computers.iter().find(|computer| &computer.key == key));
             let Some((old, new)) = owners.filter(|(old, new)| same_computer_owner(old, new)) else {
+                inventory_changed = true;
                 return false;
             };
             let refreshing = self
@@ -440,10 +534,14 @@ impl Sidebar {
                     != computer_revision(std::slice::from_ref(new))
                 || existing_snapshot_changed(std::slice::from_ref(old), std::slice::from_ref(new))
             {
+                inventory_changed = true;
                 page.invalidate();
             }
             true
         });
+        if inventory_changed {
+            self.manual_catalog.invalidate();
+        }
         self.group_pages.hosts = state.pages.hosts;
         self.group_pages.scope = Some(scope);
         self.group_pages.more.clear();
@@ -488,6 +586,7 @@ impl Sidebar {
     }
 
     pub(super) fn revalidate_computer_pages(&mut self, cx: &mut Context<Self>) {
+        self.manual_catalog.invalidate();
         self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
         for page in self.group_pages.hosts.values_mut() {
             page.invalidate();
@@ -622,7 +721,8 @@ impl Sidebar {
         let Some(backend) = computer.backend.clone() else {
             return;
         };
-        let manual = self.manual_task_order(&action.computer);
+        let manual = self.local_manual_order(&action.computer);
+        let reader = self.manual_catalog.reader();
         let key = action.kind.key();
         let page = self
             .group_pages
@@ -676,68 +776,77 @@ impl Sidebar {
                         )
                         .await
                         .map(ComputerPageReply::Projects),
-                    ComputerPageKind::Groups => backend
-                        .list_project_groups(
-                            &user,
-                            NavigationGroupQuery {
-                                limit_groups: 20,
-                                per_project: 20,
-                                cursor: request.cursor.clone(),
-                                manual: manual.clone(),
-                            },
-                        )
-                        .await
-                        .map(ComputerPageReply::Groups),
-                    ComputerPageKind::Search => backend
-                        .search_tasks(
-                            &user,
-                            NavigationSearchQuery {
-                                text: search_text,
-                                project,
-                                project_roots: matched_roots,
-                                cursor: request.cursor.clone(),
-                                limit: 100,
-                                manual: manual.clone(),
-                            },
-                        )
-                        .await
-                        .map(ComputerPageReply::Tasks),
-                    ComputerPageKind::Tasks { settled }
-                    | ComputerPageKind::Project { settled, .. } => backend
-                        .list_tasks(
-                            &user,
-                            NavigationTaskQuery {
-                                section: TaskSection::State(if *settled {
-                                    TaskState::Settled
-                                } else {
-                                    TaskState::Active
-                                }),
-                                project: match &request.kind {
-                                    ComputerPageKind::Project { root, .. } => Some(root.clone()),
-                                    _ => project,
+                    ComputerPageKind::Groups => {
+                        let groups = backend
+                            .list_project_groups(
+                                &user,
+                                NavigationGroupQuery {
+                                    limit_groups: 20,
+                                    per_project: 20,
+                                    cursor: request.cursor.clone(),
                                 },
-                                pins: PinFilter::Ignore,
-                                cursor: request.cursor.clone(),
-                                limit: 50,
-                                manual: manual.clone(),
+                            )
+                            .await?;
+                        let groups = if let Some(order) = manual {
+                            manual_computer_groups(reader, backend, user, groups, order).await?
+                        } else {
+                            groups
+                        };
+                        Ok(ComputerPageReply::Groups(groups))
+                    }
+                    ComputerPageKind::Search => computer_task_page(
+                        reader,
+                        backend,
+                        user,
+                        catalog::TaskQuery::Search(NavigationSearchQuery {
+                            text: search_text,
+                            project,
+                            project_roots: matched_roots,
+                            cursor: request.cursor.clone(),
+                            limit: 100,
+                        }),
+                        manual,
+                    )
+                    .await
+                    .map(ComputerPageReply::Tasks),
+                    ComputerPageKind::Tasks { settled }
+                    | ComputerPageKind::Project { settled, .. } => computer_task_page(
+                        reader,
+                        backend,
+                        user,
+                        catalog::TaskQuery::Tasks(NavigationTaskQuery {
+                            section: TaskSection::State(if *settled {
+                                TaskState::Settled
+                            } else {
+                                TaskState::Active
+                            }),
+                            project: match &request.kind {
+                                ComputerPageKind::Project { root, .. } => Some(root.clone()),
+                                _ => project,
                             },
-                        )
-                        .await
-                        .map(ComputerPageReply::Tasks),
-                    ComputerPageKind::Archived => backend
-                        .list_tasks(
-                            &user,
-                            NavigationTaskQuery {
-                                section: TaskSection::State(TaskState::Archived),
-                                project,
-                                pins: PinFilter::Ignore,
-                                cursor: request.cursor.clone(),
-                                limit: 50,
-                                manual,
-                            },
-                        )
-                        .await
-                        .map(ComputerPageReply::Tasks),
+                            pins: PinFilter::Ignore,
+                            cursor: request.cursor.clone(),
+                            limit: 50,
+                        }),
+                        manual,
+                    )
+                    .await
+                    .map(ComputerPageReply::Tasks),
+                    ComputerPageKind::Archived => computer_task_page(
+                        reader,
+                        backend,
+                        user,
+                        catalog::TaskQuery::Tasks(NavigationTaskQuery {
+                            section: TaskSection::State(TaskState::Archived),
+                            project,
+                            pins: PinFilter::Ignore,
+                            cursor: request.cursor.clone(),
+                            limit: 50,
+                        }),
+                        manual,
+                    )
+                    .await
+                    .map(ComputerPageReply::Tasks),
                 }
             },
             cx,
@@ -766,6 +875,10 @@ impl Sidebar {
         page.loading.remove(&key);
         let result = match result {
             Ok(reply) => reply,
+            Err(error) if error == catalog::CANCELLED => {
+                self.load_computer_page(action, cx);
+                return;
+            }
             Err(error) => {
                 page.errors.insert(key, error);
                 self.rebuild_entries();

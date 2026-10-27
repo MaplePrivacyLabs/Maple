@@ -125,21 +125,19 @@ impl Sidebar {
         }
     }
 
-    pub(super) fn manual_task_order(
+    pub(super) fn local_manual_order(
         &self,
         computer: &Option<String>,
-    ) -> Option<maple_agent::store::NavigationManualOrder> {
-        (self.view.sort == SidebarSort::Manual && self.order_loaded).then(|| {
-            maple_agent::store::NavigationManualOrder {
-                created_before_ms: self.order.created_before_ms,
-                tasks: self
-                    .order
-                    .tasks
-                    .iter()
-                    .filter(|task| &task.computer == computer)
-                    .map(|task| task.id.clone())
-                    .collect(),
-            }
+    ) -> Option<catalog::ManualOrder> {
+        (self.view.sort == SidebarSort::Manual && self.order_loaded).then(|| catalog::ManualOrder {
+            cutoff: self.order.created_before_ms,
+            tasks: self
+                .order
+                .tasks
+                .iter()
+                .filter(|task| &task.computer == computer)
+                .map(|task| task.id.clone())
+                .collect(),
         })
     }
 
