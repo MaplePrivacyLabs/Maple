@@ -16,7 +16,7 @@ use crate::ui;
 use crate::ui::chat::computers::{
     Computer, Destination, Navigate, NavigationChanged, ProjectRenameRequest, ProjectTarget,
 };
-use crate::ui::chat::{ChatScreen, LoggedOut};
+use crate::ui::chat::{ChatScreen, LoggedOut, SignOutFailed};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
     AccountDeleted, Section, SettingsClosed, SettingsScreen, ShortcutSettingsChange,
@@ -1159,7 +1159,9 @@ impl MapleApp {
     /// is reported twice (Settings button, then the backend) keeps the
     /// form the user may already be typing in.
     fn show_login(&mut self, cx: &mut Context<Self>) {
-        self.user_id = None;
+        if let Some(user_id) = self.user_id.take() {
+            crate::settings::retire_sidebar_account(&user_id);
+        }
         self.settings.remote_sidebars.clear();
         self.set_remote_enabled(false, cx);
         self.parked_chat = None;
@@ -1190,6 +1192,11 @@ impl MapleApp {
 
     /// Show the chat screen for a signed-in account and wire its events.
     fn open_chat(&mut self, user_id: String, cx: &mut Context<Self>) {
+        if self.user_id.as_deref() != Some(user_id.as_str())
+            && let Some(previous) = self.user_id.as_deref()
+        {
+            crate::settings::retire_sidebar_account(previous);
+        }
         log::debug!(
             "startup: chat screen open at {} ms",
             crate::startup_elapsed()
@@ -1785,17 +1792,22 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             &screen,
-            |app: &mut MapleApp, _emitter, _event: &SignOutRequested, cx| {
-                if let Some(chat) = app.local_chat.take() {
+            |app: &mut MapleApp, emitter, _event: &SignOutRequested, cx| {
+                if !app.is_current_settings_screen(&emitter) {
+                    return;
+                }
+                if let Some(chat) = app.local_chat.clone() {
                     chat.update(cx, |chat, cx| chat.sign_out(cx));
                 }
-                app.show_login(cx);
             },
         )
         .detach();
         cx.subscribe(
             &screen,
-            |app: &mut MapleApp, _emitter, _event: &AccountDeleted, cx| {
+            |app: &mut MapleApp, emitter, _event: &AccountDeleted, cx| {
+                if !app.is_current_settings_screen(&emitter) {
+                    return;
+                }
                 // The runtime stopped and the credentials went before the
                 // event; the parked chat has nothing left to sign out of.
                 app.parked_chat = None;
@@ -1836,8 +1848,33 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             chat,
-            |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
-                app.show_login(cx);
+            |app: &mut MapleApp, emitter, _event: &LoggedOut, cx| {
+                if app
+                    .local_chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.entity_id() == emitter.entity_id())
+                {
+                    app.show_login(cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe(
+            chat,
+            |app: &mut MapleApp, emitter, event: &SignOutFailed, cx| {
+                if app.user_id.as_deref() == Some(event.user_id.as_str())
+                    && app
+                        .local_chat
+                        .as_ref()
+                        .is_some_and(|chat| chat.entity_id() == emitter.entity_id())
+                {
+                    app.present_store_attention(
+                        event.message.clone(),
+                        StoreAttentionKind::Persistence,
+                        true,
+                        cx,
+                    );
+                }
             },
         )
         .detach();

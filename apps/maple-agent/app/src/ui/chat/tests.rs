@@ -240,12 +240,15 @@ mod state_tests {
             this.sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_view(crate::settings::SidebarView::default(), cx);
                 sidebar.set_project_filter(Some("/tmp/proj".into()), cx);
-                assert!(sidebar.folder_names().is_empty());
+                assert!(sidebar.grouped_project_names().is_empty());
             });
             let local = this.computer_snapshot("This computer".into(), cx);
             this.set_computers(Arc::new(vec![local]), cx);
             assert_eq!(this.sidebar.read(cx).project_filter(), None);
-            assert_eq!(this.sidebar.read(cx).folder_names(), ["proj", "other"]);
+            assert_eq!(
+                this.sidebar.read(cx).grouped_project_names(),
+                ["proj", "other"]
+            );
             assert!(!this.sidebar.read(cx).entries().iter().any(|e| matches!(
                 e,
                 SidebarEntry::OtherTask(_) | SidebarEntry::ComputerProject(_)
@@ -5374,7 +5377,7 @@ mod state_tests {
             this.sync_sidebar(cx);
             // Saved roots keep their order; roots only tasks know about append
             // alphabetically so their position never moves.
-            assert_eq!(this.switcher_root_paths(cx), ["/z", "/a", "/m"]);
+            assert_eq!(this.project_root_paths(cx), ["/z", "/a", "/m"]);
         });
     }
 
@@ -5436,7 +5439,7 @@ mod state_tests {
             assert_eq!(this.sidebar_active(cx), vec![1]);
             assert!(this.sidebar_settled(cx).is_empty());
             // The draft's project still feeds the switcher.
-            assert_eq!(this.switcher_root_paths(cx), ["/a"]);
+            assert_eq!(this.project_root_paths(cx), ["/a"]);
 
             // A first run is visible before the cached count catches up.
             this.handle_run_event("s1", "run-1", AgentRunEvent::Started, cx);
@@ -5467,12 +5470,11 @@ mod state_tests {
         });
     }
 
-    /// Grouped by folder, each project heads its own tasks, the project
-    /// with the latest activity first. Pinned tasks stay on top and
-    /// archived ones in their own tail, and rows drop the project line the
-    /// header already shows.
+    /// Each project heads its own tasks in its initial stable container
+    /// order. Pinned tasks stay on top, archived ones stay in their own tail,
+    /// and project headings provide the context for their task rows.
     #[gpui::test]
-    fn test_folder_grouping_heads_each_project(cx: &mut TestAppContext) {
+    fn test_project_grouping_keeps_container_order(cx: &mut TestAppContext) {
         use crate::settings::SidebarView;
         use crate::ui::chat::sidebar::{SidebarEntry, SidebarSection};
         cx.executor().allow_parking();
@@ -5497,10 +5499,10 @@ mod state_tests {
                 assert!(sidebar.show_metadata_for_test());
                 sidebar.set_view(SidebarView::default(), cx);
                 assert!(!sidebar.show_metadata_for_test());
-                assert_eq!(sidebar.folder_names(), ["b", "a"]);
+                assert_eq!(sidebar.grouped_project_names(), ["a", "b"]);
                 assert_eq!(sidebar.pinned_rows(), [3]);
-                assert_eq!(sidebar.section_rows(SidebarSection::Folder(1)), [1]);
-                assert_eq!(sidebar.section_rows(SidebarSection::Folder(0)), [2, 0]);
+                assert_eq!(sidebar.section_rows(SidebarSection::Project(1)), [1]);
+                assert_eq!(sidebar.section_rows(SidebarSection::Project(0)), [2, 0]);
                 assert_eq!(sidebar.archived_rows(), [4]);
                 let task = |session| {
                     SidebarEntry::Task(crate::ui::chat::sidebar::SidebarTaskEntry {
@@ -5519,31 +5521,32 @@ mod state_tests {
                         SidebarEntry::SectionLabel(SidebarSection::Pinned),
                         task(3),
                         SidebarEntry::ProjectsHeader,
-                        SidebarEntry::SectionLabel(SidebarSection::Folder(1)),
-                        task(1),
-                        SidebarEntry::SectionLabel(SidebarSection::Folder(0)),
+                        SidebarEntry::SectionLabel(SidebarSection::Project(0)),
                         task(2),
                         task(0),
+                        SidebarEntry::SectionLabel(SidebarSection::Project(1)),
+                        task(1),
                         SidebarEntry::ArchivedHeader,
                     ]
                 );
                 sidebar.set_pinned_tasks_for_test(Vec::new());
-                assert_eq!(sidebar.folder_names(), ["b", "a"]);
+                assert_eq!(sidebar.grouped_project_names(), ["a", "b"]);
                 sidebar.set_pinned_tasks_for_test(vec!["s4".into()]);
-                assert_eq!(sidebar.folder_names(), ["b", "a"]);
+                assert_eq!(sidebar.grouped_project_names(), ["a", "b"]);
             });
         });
     }
 
-    /// Metadata can be shown over Folder defaults; Recent is one sorted
-    /// list below Pinned, with its own heading and Archived at the tail.
+    /// Project headings supply task context; the flat list supplies it on
+    /// each row, with pinned work above and archived work at the tail.
     #[gpui::test]
-    fn test_metadata_and_recent_grouping(cx: &mut TestAppContext) {
+    fn test_project_and_list_grouping_choose_contextual_labels(cx: &mut TestAppContext) {
         use crate::settings::{SidebarGroup, SidebarView};
         use crate::ui::chat::sidebar::{SidebarEntry, SidebarSection};
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
+            this.apply_recent_roots(vec![recent_root("/empty")], cx);
             this.sessions = vec![
                 summary("s1", "One"),
                 summary("s2", "Two"),
@@ -5552,32 +5555,23 @@ mod state_tests {
             this.sessions[0].updated_ms = 1;
             this.sessions[1].updated_ms = 2;
             this.sessions[2].state = AgentTaskState::Archived;
-            this.apply_recent_roots(vec![recent_root("/empty")], cx);
             this.sync_sidebar(cx);
             this.sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_view(SidebarView::default(), cx);
-                assert_eq!(sidebar.folder_names(), ["proj", "empty"]);
+                assert_eq!(sidebar.grouped_project_names(), ["empty", "proj"]);
                 sidebar.set_filter_for_test("one", cx);
-                assert_eq!(sidebar.folder_names(), ["proj"]);
+                assert_eq!(sidebar.grouped_project_names(), ["proj"]);
                 sidebar.set_filter_for_test("", cx);
                 assert!(!sidebar.show_metadata_for_test());
-                sidebar.set_view(
-                    SidebarView {
-                        metadata: Some(true),
-                        ..SidebarView::default()
-                    },
-                    cx,
-                );
-                assert!(sidebar.show_metadata_for_test());
                 sidebar.set_pinned_tasks_for_test(vec!["s1".into()]);
                 sidebar.set_view(
                     SidebarView {
-                        group: SidebarGroup::Recent,
+                        group: SidebarGroup::List,
                         ..SidebarView::default()
                     },
                     cx,
                 );
-                assert_eq!(sidebar.section_rows(SidebarSection::Recents), [1]);
+                assert_eq!(sidebar.section_rows(SidebarSection::List), [1]);
                 assert_eq!(sidebar.pinned_rows(), [0]);
                 assert!(sidebar.show_metadata_for_test());
                 assert!(matches!(
@@ -5606,7 +5600,7 @@ mod state_tests {
             this.sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_pinned_tasks_for_test(vec!["s3".to_string()]);
                 sidebar.set_view(SidebarView::default(), cx);
-                sidebar.set_folder_expanded("/a", Some(false), cx);
+                sidebar.set_project_expanded("/a", Some(false), cx);
             });
             this.sessions.push(summary_at("s4", "Four", "/a"));
             this.sync_sidebar(cx);
@@ -5626,7 +5620,7 @@ mod state_tests {
                 this.sidebar
                     .read(cx)
                     .entries()
-                    .contains(&SidebarEntry::SectionLabel(SidebarSection::Folder(0)))
+                    .contains(&SidebarEntry::SectionLabel(SidebarSection::Project(0)))
             );
             this.sidebar
                 .update(cx, |sidebar, cx| sidebar.set_projects_expanded(false, cx));
@@ -5634,101 +5628,113 @@ mod state_tests {
             assert!(
                 !this.sidebar.read(cx).entries().iter().any(|entry| matches!(
                     entry,
-                    SidebarEntry::SectionLabel(SidebarSection::Folder(_)) | SidebarEntry::Empty(_)
+                    SidebarEntry::SectionLabel(SidebarSection::Project(_)) | SidebarEntry::Empty(_)
                 ))
             );
         });
     }
 
-    /// Every sort key and direction orders Recent, Pinned and Archived,
-    /// preserving input order for equal keys, including case-insensitive names.
+    /// Manual task ordering snapshots all visible sections and stays stable
+    /// through activity changes; Last updated then restores activity order.
     #[gpui::test]
-    fn test_sort_and_direction_order_each_section(cx: &mut TestAppContext) {
-        use crate::settings::SidebarSort::{Created, Name, Updated};
-        use crate::settings::{SidebarGroup, SidebarView};
+    fn test_manual_task_order_survives_activity_changes(cx: &mut TestAppContext) {
+        use crate::settings::{SidebarGroup, SidebarSort, SidebarView};
         use crate::ui::chat::sidebar::SidebarSection;
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            let at = |id, title, updated_ms, created_ms| AgentSessionSummary {
+            let at = |id, updated_ms, created_ms| AgentSessionSummary {
                 updated_ms,
                 created_ms,
-                ..summary(id, title)
+                ..summary(id, id)
             };
-            let archived = |id, title, updated_ms, created_ms| AgentSessionSummary {
+            let archived = |id, updated_ms, created_ms| AgentSessionSummary {
                 state: AgentTaskState::Archived,
-                ..at(id, title, updated_ms, created_ms)
+                ..at(id, updated_ms, created_ms)
             };
             this.sessions = vec![
-                at("s1", "Beta", 1, 3),
-                at("s2", "alpha", 2, 1),
-                at("s3", "Gamma", 3, 2),
-                at("s4", "BETA", 1, 3),
-                archived("s5", "Delta", 4, 5),
-                archived("s6", "epsilon", 5, 4),
-                archived("s7", "delta", 4, 5),
-                at("p1", "zeta", 6, 8),
-                at("p2", "ZETA", 6, 8),
-                at("p3", "eta", 7, 7),
+                at("s1", 1, 3),
+                at("s2", 2, 1),
+                at("s3", 3, 2),
+                at("s4", 1, 3),
+                archived("s5", 4, 5),
+                archived("s6", 5, 4),
+                archived("s7", 4, 5),
+                at("p1", 6, 8),
+                at("p2", 6, 8),
+                at("p3", 7, 7),
             ];
             this.sync_sidebar(cx);
             this.sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_pinned_tasks_for_test(vec!["p1".into(), "p2".into(), "p3".into()]);
-                for (sort, ascending, listed, archived, pinned) in [
-                    (Updated, false, [2, 1, 0, 3], [5, 4, 6], [9, 7, 8]),
-                    (Updated, true, [0, 3, 1, 2], [4, 6, 5], [7, 8, 9]),
-                    (Created, false, [0, 3, 2, 1], [4, 6, 5], [7, 8, 9]),
-                    (Created, true, [1, 2, 0, 3], [5, 4, 6], [9, 7, 8]),
-                    (Name, false, [2, 0, 3, 1], [5, 4, 6], [7, 8, 9]),
-                    (Name, true, [1, 0, 3, 2], [4, 6, 5], [9, 7, 8]),
-                ] {
-                    sidebar.set_view(
-                        SidebarView {
-                            group: SidebarGroup::Recent,
-                            sort,
-                            ascending,
-                            ..SidebarView::default()
-                        },
-                        cx,
-                    );
-                    assert_eq!(
-                        sidebar.section_rows(SidebarSection::Recents),
-                        listed,
-                        "Recent: {sort:?}, ascending={ascending}"
-                    );
-                    assert_eq!(
-                        sidebar.archived_rows(),
-                        archived,
-                        "Archived: {sort:?}, ascending={ascending}"
-                    );
-                    assert_eq!(
-                        sidebar.pinned_rows(),
-                        pinned,
-                        "Pinned: {sort:?}, ascending={ascending}"
-                    );
-                }
+                sidebar.set_archived_expanded(true, cx);
+                sidebar.set_view(
+                    SidebarView {
+                        group: SidebarGroup::List,
+                        sort: SidebarSort::Updated,
+                    },
+                    cx,
+                );
+                assert_eq!(sidebar.section_rows(SidebarSection::List), [2, 1, 0, 3]);
+                assert_eq!(sidebar.archived_rows(), [5, 4, 6]);
+                assert_eq!(sidebar.pinned_rows(), [9, 7, 8]);
+                sidebar.set_view(
+                    SidebarView {
+                        group: SidebarGroup::List,
+                        sort: SidebarSort::Manual,
+                    },
+                    cx,
+                );
+            });
+            this.sessions[0].updated_ms = 100;
+            this.sessions[4].updated_ms = 101;
+            this.sessions[7].updated_ms = 102;
+            this.sync_sidebar(cx);
+            this.sidebar.update(cx, |sidebar, cx| {
+                assert_eq!(sidebar.section_rows(SidebarSection::List), [2, 1, 0, 3]);
+                assert_eq!(sidebar.archived_rows(), [5, 4, 6]);
+                assert_eq!(sidebar.pinned_rows(), [9, 7, 8]);
+                sidebar.set_view(
+                    SidebarView {
+                        group: SidebarGroup::List,
+                        sort: SidebarSort::Updated,
+                    },
+                    cx,
+                );
+                assert_eq!(sidebar.section_rows(SidebarSection::List), [0, 2, 1, 3]);
+                assert_eq!(sidebar.archived_rows(), [4, 5, 6]);
+                assert_eq!(sidebar.pinned_rows(), [7, 9, 8]);
             });
         });
     }
 
-    /// Equal-activity folders keep recent-root order, then path order,
-    /// even when the task list first encounters a different project.
+    /// Initial project order follows recent roots, then unseen roots by path,
+    /// and later task activity leaves those container positions intact.
     #[gpui::test]
-    fn test_equal_activity_folders_keep_root_order(cx: &mut TestAppContext) {
+    fn test_projects_keep_initial_root_order_after_activity(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
+            this.apply_recent_roots(vec![recent_root("/z")], cx);
             this.sessions = vec![
                 summary_at("s1", "One", "/b"),
                 summary_at("s2", "Two", "/a"),
                 summary_at("s3", "Three", "/z"),
             ];
-            this.apply_recent_roots(vec![recent_root("/z")], cx);
             this.sync_sidebar(cx);
             this.sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_view(crate::settings::SidebarView::default(), cx)
             });
-            assert_eq!(this.sidebar.read(cx).folder_names(), ["z", "a", "b"]);
+            assert_eq!(
+                this.sidebar.read(cx).grouped_project_names(),
+                ["z", "a", "b"]
+            );
+            this.sessions[0].updated_ms = 100;
+            this.sync_sidebar(cx);
+            assert_eq!(
+                this.sidebar.read(cx).grouped_project_names(),
+                ["z", "a", "b"]
+            );
         });
     }
 
@@ -5752,8 +5758,8 @@ mod state_tests {
                     })
                 };
                 sidebar.set_view(SidebarView::default(), cx);
-                sidebar.set_folder_expanded("/a", Some(false), cx);
-                sidebar.set_folder_expanded("/b", Some(false), cx);
+                sidebar.set_project_expanded("/a", Some(false), cx);
+                sidebar.set_project_expanded("/b", Some(false), cx);
                 assert_eq!(empty(sidebar), None);
                 sidebar.set_filter_for_test("two", cx);
                 assert_eq!(empty(sidebar), None);
@@ -6263,7 +6269,7 @@ mod state_tests {
         assert!(!sidebar.update(cx, |sidebar, _| sidebar.view_submenu_open()));
         assert_eq!(
             sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
-            Some("view-group".into())
+            Some("sidebar-group".into())
         );
         cx.simulate_keystrokes("right j enter");
         assert_eq!(
@@ -6279,18 +6285,20 @@ mod state_tests {
             sidebar.vim_select(SidebarTarget::Projects, cx)
         });
         cx.simulate_keystrokes("enter");
-        assert!(sidebar.update(cx, |sidebar, _| sidebar.header_menu_open()));
+        assert_eq!(open_menu(&chat, cx), "View");
+        cx.simulate_keystrokes("j right k enter");
         assert_eq!(
-            sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
-            Some("switcher-all-projects".into())
+            sidebar.update(cx, |sidebar, _| sidebar.view().group),
+            SidebarGroup::Connection
         );
-        cx.simulate_keystrokes("escape");
+        assert_eq!(open_menu(&chat, cx), "");
     }
 
-    /// Picking a View option closes the chain; reset restores the defaults.
+    /// Sidebar exposes Group tasks by and Sort tasks by. Picking a choice
+    /// closes the submenu chain and preserves the independent preference.
     #[gpui::test]
-    fn test_the_view_menu_sets_and_resets_the_view(cx: &mut TestAppContext) {
-        use crate::settings::{SidebarGroup, SidebarSort, SidebarView};
+    fn test_sidebar_menu_selects_grouping_and_task_order(cx: &mut TestAppContext) {
+        use crate::settings::{SidebarGroup, SidebarSort};
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
@@ -6298,39 +6306,56 @@ mod state_tests {
         let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
         let view =
             |cx: &mut gpui::VisualTestContext| sidebar.update(cx, |sidebar, _| sidebar.view());
-        press(cx, "view-options");
-        assert_eq!(open_menu(&chat, cx), "View");
         let closed = |cx: &mut gpui::VisualTestContext| {
             assert_eq!(open_menu(&chat, cx), "");
             assert!(!sidebar.update(cx, |sidebar, _| sidebar.view_submenu_open()));
         };
-        press(cx, "view-sort");
-        press(cx, "view-sort-name");
-        assert_eq!(view(cx).sort, SidebarSort::Name);
-        closed(cx);
         press(cx, "view-options");
-        press(cx, "view-sort");
-        press(cx, "view-sort-ascending");
-        assert!(view(cx).ascending);
+        assert_eq!(open_menu(&chat, cx), "View");
+        assert!(cx.debug_bounds("sidebar-group").is_some());
+        assert!(cx.debug_bounds("sidebar-sort").is_some());
+        press(cx, "sidebar-sort");
+        assert!(cx.debug_bounds("sort-updated").is_some());
+        assert!(cx.debug_bounds("sort-manual").is_some());
+        press(cx, "sort-manual");
+        assert_eq!(view(cx).sort, SidebarSort::Manual);
         closed(cx);
-        press(cx, "view-options");
-        press(cx, "view-reset");
-        assert_eq!(view(cx), SidebarView::default());
-        assert_eq!(view(cx).group, SidebarGroup::Folder);
-        press(cx, "view-options");
-        press(cx, "view-group");
-        press(cx, "view-group-recent");
-        closed(cx);
-        assert_eq!(view(cx).group, SidebarGroup::Recent);
+        for (selector, group) in [
+            ("group-project", SidebarGroup::Project),
+            ("group-status", SidebarGroup::Status),
+            ("group-list", SidebarGroup::List),
+        ] {
+            press(cx, "view-options");
+            press(cx, "sidebar-group");
+            assert!(cx.debug_bounds("group-project").is_some());
+            assert!(cx.debug_bounds("group-status").is_some());
+            assert!(cx.debug_bounds("group-list").is_some());
+            assert!(cx.debug_bounds("group-connection").is_none());
+            press(cx, selector);
+            assert_eq!(view(cx).group, group);
+            assert_eq!(view(cx).sort, SidebarSort::Manual);
+            closed(cx);
+        }
         assert!(sidebar.update(cx, |sidebar, _| sidebar.entries().contains(
             &crate::ui::chat::sidebar::SidebarEntry::SectionLabel(
-                crate::ui::chat::sidebar::SidebarSection::Recents
+                crate::ui::chat::sidebar::SidebarSection::List
             )
         )));
         press(cx, "view-options");
-        press(cx, "view-show");
-        press(cx, "view-show-metadata");
-        assert_eq!(view(cx).metadata, Some(false));
+        press(cx, "sidebar-sort");
+        press(cx, "sort-updated");
+        assert_eq!(view(cx).group, SidebarGroup::List);
+        assert_eq!(view(cx).sort, SidebarSort::Updated);
+        closed(cx);
+        chat.update(cx, |this, cx| {
+            this.set_computers(identical_path_project_catalog(), cx)
+        });
+        press(cx, "view-options");
+        press(cx, "sidebar-group");
+        assert!(cx.debug_bounds("group-connection").is_some());
+        press(cx, "group-connection");
+        assert_eq!(view(cx).group, SidebarGroup::Connection);
+        assert_eq!(view(cx).sort, SidebarSort::Updated);
         closed(cx);
     }
 
@@ -6453,7 +6478,7 @@ mod state_tests {
         }
     }
 
-    /// Reordering, filtering and folding invalidate a stationary pointer's
+    /// Activity, filtering and folding invalidate a stationary pointer's
     /// old row index instead of assigning its hover to the rebuilt entry.
     #[gpui::test]
     fn test_section_chevrons_clear_on_stationary_rebuilds(cx: &mut TestAppContext) {
@@ -6470,7 +6495,7 @@ mod state_tests {
             });
         });
         let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
-        for change in ["reorder", "filter", "fold"] {
+        for change in ["activity", "filter", "fold"] {
             cx.simulate_mouse_move(
                 gpui::point(px(600.), px(400.)),
                 None,
@@ -6485,7 +6510,7 @@ mod state_tests {
                 assert!(!sidebar.section_hover_is_clear_for_test());
             });
             match change {
-                "reorder" => chat.update(cx, |this, cx| {
+                "activity" => chat.update(cx, |this, cx| {
                     this.sessions[0].updated_ms = 3;
                     this.sync_sidebar(cx);
                 }),
@@ -6494,7 +6519,7 @@ mod state_tests {
                     cx.notify();
                 }),
                 "fold" => sidebar.update(cx, |sidebar, cx| {
-                    sidebar.set_folder_expanded("/a", Some(false), cx);
+                    sidebar.set_project_expanded("/a", Some(false), cx);
                 }),
                 _ => unreachable!(),
             }
@@ -6621,9 +6646,9 @@ mod state_tests {
                 SidebarTarget::NewTask,
                 SidebarTarget::Search,
                 SidebarTarget::Projects,
-                SidebarTarget::Folder("/b".into()),
+                SidebarTarget::Project("/b".into()),
                 task("s2"),
-                SidebarTarget::Folder("/a".into()),
+                SidebarTarget::Project("/a".into()),
                 task("s1"),
                 task("s3"),
             ]
@@ -6638,7 +6663,7 @@ mod state_tests {
             );
         });
         sidebar.update(cx, |sidebar, cx| {
-            sidebar.vim_select(SidebarTarget::Folder("/a".into()), cx);
+            sidebar.vim_select(SidebarTarget::Project("/a".into()), cx);
             sidebar.vim_set_expanded(false, cx);
             assert!(!sidebar.vim_targets_for_test().contains(&task("s1")));
             sidebar.vim_set_expanded(true, cx);
@@ -6795,14 +6820,7 @@ mod state_tests {
                 open.push(format!("{popup:?}"));
             }
             if sidebar.header_menu_open() {
-                open.push(
-                    if this.computers.len() > 1 {
-                        "Switcher"
-                    } else {
-                        "View"
-                    }
-                    .to_string(),
-                );
+                open.push("View".to_string());
             }
             if let Some(task) = sidebar.task_menu() {
                 open.push(format!("Task({task})"));
@@ -7529,7 +7547,7 @@ mod state_tests {
         let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.close_popups(cx);
-            sidebar.set_folder_expanded("/tmp/proj", Some(true), cx);
+            sidebar.set_project_expanded("/tmp/proj", Some(true), cx);
         });
 
         // A menu opened without the pointer closes the open one too: it
@@ -7805,12 +7823,14 @@ mod state_tests {
         )
     }
 
+    /// A scoped paired view keeps its selected organization instead of
+    /// forcing status sections; changing it preserves pinned membership.
     #[gpui::test]
-    fn test_paired_scoped_sidebar_keeps_status_sections_and_switcher_rename(
-        cx: &mut TestAppContext,
-    ) {
-        use sidebar::{SidebarEntry, SidebarSection};
-        let (chat, cx) = chat_window(cx, |this, cx| {
+    fn test_paired_scoped_sidebar_preserves_selected_grouping(cx: &mut TestAppContext) {
+        use crate::settings::{SidebarGroup, SidebarView};
+        use sidebar::SidebarSection;
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
             this.sessions = vec![
                 summary_at("pinned", "Pinned", "/shared"),
                 summary_at("active", "Active", "/shared"),
@@ -7824,68 +7844,32 @@ mod state_tests {
             this.sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_pinned_tasks_for_test(vec!["pinned".into()]);
                 sidebar.set_project_filter(Some("/shared".into()), cx);
-                sidebar.set_view(crate::settings::SidebarView::default(), cx);
+                sidebar.set_view(
+                    SidebarView {
+                        group: SidebarGroup::Status,
+                        ..SidebarView::default()
+                    },
+                    cx,
+                );
+                assert_eq!(sidebar.active_rows(), [1]);
+                assert_eq!(sidebar.settled_rows(), [2]);
+                assert_eq!(sidebar.pinned_rows(), [0]);
+                assert!(sidebar.grouped_project_names().is_empty());
+                sidebar.set_view(SidebarView::default(), cx);
+                assert_eq!(sidebar.grouped_project_names(), ["Local project"]);
+                assert_eq!(sidebar.section_rows(SidebarSection::Project(0)), [1, 2]);
+                assert_eq!(sidebar.pinned_rows(), [0]);
+                sidebar.set_view(
+                    SidebarView {
+                        group: SidebarGroup::List,
+                        ..SidebarView::default()
+                    },
+                    cx,
+                );
+                assert_eq!(sidebar.section_rows(SidebarSection::List), [1, 2]);
+                assert_eq!(sidebar.pinned_rows(), [0]);
             });
         });
-        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
-        sidebar.update(cx, |sidebar, _| {
-            let entries = sidebar.entries();
-            assert_eq!(
-                entries[0..4],
-                [
-                    SidebarEntry::NewTask,
-                    SidebarEntry::Search,
-                    SidebarEntry::ProjectsHeader,
-                    SidebarEntry::SectionLabel(SidebarSection::Pinned)
-                ]
-            );
-            let sections: Vec<_> = entries
-                .iter()
-                .filter_map(|entry| match entry {
-                    SidebarEntry::SectionLabel(section) => Some(*section),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                sections,
-                [
-                    SidebarSection::Pinned,
-                    SidebarSection::Active,
-                    SidebarSection::Settled
-                ]
-            );
-            assert_eq!(sidebar.active_rows(), [1]);
-            assert_eq!(sidebar.settled_rows(), [2]);
-            assert!(sidebar.folder_names().is_empty());
-        });
-        press(cx, "projects-header");
-        assert_eq!(open_menu(&chat, cx), "Switcher");
-        let options = cx.debug_bounds("menu-project-/shared").unwrap();
-        cx.simulate_mouse_move(options.center(), None, gpui::Modifiers::default());
-        cx.run_until_parked();
-        cx.executor()
-            .advance_clock(std::time::Duration::from_secs(1));
-        cx.run_until_parked();
-        assert!(
-            cx.debug_bounds("tooltip").is_some(),
-            "paired project options retains its tooltip"
-        );
-        press(cx, "menu-project-/shared");
-        press(cx, "rename-project-/shared");
-        cx.run_until_parked();
-        assert_eq!(
-            sidebar.update(cx, |sidebar, _| sidebar.rename_target()),
-            Some(RenameTarget::Project(ProjectTarget {
-                computer: None,
-                path: "/shared".into()
-            }))
-        );
-        assert!(cx.debug_bounds("rename-field").is_some());
-        cx.simulate_input("Renamed project");
-        let field = sidebar.update(cx, |sidebar, _| sidebar.inputs().last().unwrap().clone());
-        assert_eq!(field.update(cx, |field, _| field.text()), "Renamed project");
-        cx.simulate_keystrokes("escape");
-        assert!(sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none()));
     }
 
     #[gpui::test]

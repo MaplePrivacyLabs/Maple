@@ -108,7 +108,7 @@ mod tests {
             sidebar.pages.enabled = true;
             sidebar.set_application_vim_enabled(true, cx);
             sidebar.set_project_name_for_test("/empty", "Empty");
-            let note = SidebarEntry::FolderEmpty(0);
+            let note = SidebarEntry::ProjectEmpty(0);
             assert!(
                 !sidebar.entries.contains(&note),
                 "unrequested pages are unknown"
@@ -146,9 +146,9 @@ mod tests {
             sidebar.rebuild_sections();
             assert!(!sidebar.entries.contains(&note));
             sidebar.pages.pin_batches.clear();
-            sidebar.set_folder_expanded("/empty", Some(false), cx);
+            sidebar.set_project_expanded("/empty", Some(false), cx);
             assert!(!sidebar.entries.contains(&note));
-            sidebar.set_folder_expanded("/empty", Some(true), cx);
+            sidebar.set_project_expanded("/empty", Some(true), cx);
             assert!(sidebar.entries.contains(&note));
             sidebar.set_projects_expanded(false, cx);
             assert!(!sidebar.entries.contains(&note));
@@ -235,7 +235,7 @@ mod tests {
                 assert_eq!(shown, ["b"]);
                 assert!(sidebar.pinned_rows.is_empty());
                 assert!(sidebar.archived_rows.is_empty());
-                assert!(sidebar.folder_names().is_empty());
+                assert!(sidebar.grouped_project_names().is_empty());
                 assert_eq!(sidebar.active_rows(), [2]);
                 assert!(
                     sidebar
@@ -252,7 +252,7 @@ mod tests {
                     2,
                     "only live A tasks survive refresh"
                 );
-                assert_eq!(sidebar.folder_names(), ["a"]);
+                assert_eq!(sidebar.grouped_project_names(), ["a"]);
                 sidebar.set_computers(
                     Arc::new(vec![
                         Computer::pending("one".into(), "One".into(), None),
@@ -294,11 +294,11 @@ mod tests {
                 cx,
             );
             sidebar.rebuild_sections();
-            assert_eq!(sidebar.folder_names(), ["a"]);
+            assert_eq!(sidebar.grouped_project_names(), ["a"]);
             assert!(
                 sidebar
                     .entries
-                    .contains(&SidebarEntry::SectionLabel(SidebarSection::Folder(0)))
+                    .contains(&SidebarEntry::SectionLabel(SidebarSection::Project(0)))
             );
             assert!(
                 sidebar
@@ -314,14 +314,14 @@ mod tests {
                 cx,
             );
             sidebar.rebuild_sections();
-            assert_eq!(sidebar.folder_names(), ["a", "b"]);
+            assert_eq!(sidebar.grouped_project_names(), ["a", "b"]);
             assert_eq!(
                 sidebar
                     .entries
                     .iter()
                     .filter(|entry| matches!(
                         entry,
-                        SidebarEntry::SectionLabel(SidebarSection::Folder(_))
+                        SidebarEntry::SectionLabel(SidebarSection::Project(_))
                     ))
                     .count(),
                 2
@@ -332,7 +332,7 @@ mod tests {
                     .iter()
                     .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
             );
-            for group in [SidebarGroup::Status, SidebarGroup::Recent] {
+            for group in [SidebarGroup::Status, SidebarGroup::List] {
                 sidebar.view.group = group;
                 sidebar.rebuild_sections();
                 assert!(
@@ -341,7 +341,7 @@ mod tests {
                         .contains(&SidebarEntry::Empty(SidebarEmpty::NoTasks))
                 );
             }
-            sidebar.view.group = SidebarGroup::Folder;
+            sidebar.view.group = SidebarGroup::Project;
             sidebar.apply_task_page(
                 PageKind::Active,
                 vec![TaskSummary {
@@ -351,11 +351,11 @@ mod tests {
                 false,
             );
             sidebar.rebuild_sections();
-            assert_eq!(sidebar.folder_names(), ["b", "a"]);
+            assert_eq!(sidebar.grouped_project_names(), ["b", "a"]);
             sidebar.set_filter_for_test("a", cx);
-            assert_eq!(sidebar.folder_names(), ["a"]);
+            assert_eq!(sidebar.grouped_project_names(), ["a"]);
             sidebar.set_filter_for_test("unmatched", cx);
-            assert!(sidebar.folder_names().is_empty());
+            assert!(sidebar.grouped_project_names().is_empty());
         });
     }
 
@@ -409,7 +409,7 @@ mod tests {
             }
             sidebar.archived_expanded = true;
             sidebar.rebuild_sections();
-            assert_eq!(sidebar.folder_names(), ["a", "b"]);
+            assert_eq!(sidebar.grouped_project_names(), ["a", "b"]);
             assert_eq!(sidebar.pinned_rows.len(), 1);
             assert_eq!(sidebar.archived_rows.len(), 1);
             sidebar.apply_task_page(
@@ -418,7 +418,7 @@ mod tests {
                 true,
             );
             sidebar.rebuild_sections();
-            assert_eq!(sidebar.folder_names(), ["a", "b", "c"]);
+            assert_eq!(sidebar.grouped_project_names(), ["a", "b", "c"]);
             assert_eq!(
                 sidebar
                     .sections
@@ -463,10 +463,10 @@ mod tests {
             sidebar.toggle_section_expanded(SidebarSection::Active, cx);
             assert!(!more(sidebar).contains(&PageKind::Active));
             assert!(more(sidebar).contains(&PageKind::Settled));
-            sidebar.view.group = SidebarGroup::Recent;
+            sidebar.view.group = SidebarGroup::List;
             sidebar.rebuild_sections();
             assert!(more(sidebar).contains(&PageKind::Active));
-            assert_eq!(sidebar.section_rows(SidebarSection::Recents).len(), 4);
+            assert_eq!(sidebar.section_rows(SidebarSection::List).len(), 4);
         });
     }
 
@@ -587,6 +587,7 @@ pub(super) struct SidebarPages {
     deleted: HashSet<String>,
     pin_batches: VecDeque<Vec<String>>,
     project_generation: u64,
+    retain_loaded: bool,
 }
 
 impl SidebarPages {
@@ -733,6 +734,34 @@ impl Sidebar {
 
     /// Also used after reconnect: deeper pages are discarded and visible first
     /// pages are re-authorized on the current host/account.
+    /// Ordering changes invalidate cursors, while retaining already visible
+    /// membership until the new ordered pages extend it. This keeps a drop in
+    /// a later loaded page visible and avoids discarding its scroll anchor.
+    pub(super) fn refresh_task_order(&mut self, cx: &mut Context<Self>) {
+        self.order_query_dirty = false;
+        if self.pages.enabled {
+            self.pages.generation = self.pages.generation.wrapping_add(1);
+            self.pages.next.clear();
+            self.pages.loading.clear();
+            self.pages.started.clear();
+            self.pages.failed.clear();
+            self.pages.ready.clear();
+            self.pages.search = None;
+            self.pages.retain_loaded = true;
+            if self.filter.is_empty() {
+                self.load_page(PageKind::Active, cx);
+                self.load_page(PageKind::Settled, cx);
+                self.load_page(PageKind::Pinned, cx);
+                if self.archived_expanded {
+                    self.load_page(PageKind::Archived, cx);
+                }
+            } else {
+                self.load_page(PageKind::Search, cx);
+            }
+        }
+        self.refresh_computer_pages(cx);
+    }
+
     pub(super) fn refresh_pages(&mut self, cx: &mut Context<Self>) {
         self.refresh_pages_with_display(false, cx);
     }
@@ -902,6 +931,10 @@ impl Sidebar {
     }
 
     pub(super) fn load_page(&mut self, kind: PageKind, cx: &mut Context<Self>) {
+        if self.order_query_dirty {
+            self.refresh_task_order(cx);
+            return;
+        }
         if !self.pages.enabled || self.pages.loading.contains(&kind) {
             return;
         }
@@ -920,7 +953,7 @@ impl Sidebar {
             return;
         }
         let cursor = self.pages.next.get(&kind).cloned();
-        let append = self.pages.started.contains(&kind);
+        let append = self.pages.retain_loaded || self.pages.started.contains(&kind);
         let generation = self.pages.generation;
         self.pages.failed.remove(&kind);
         self.pages.loading.insert(kind);
@@ -929,6 +962,7 @@ impl Sidebar {
         let user = self.user_id.clone();
         let project = self.project_filter.clone();
         let filter = self.filter.clone();
+        let manual = self.manual_task_order(&self.backend.remote_host().map(str::to_owned));
         let search = if kind == PageKind::Search {
             if self.pages.search.is_none() {
                 let roots = self
@@ -938,6 +972,7 @@ impl Sidebar {
                     .map(|(root, _)| root.clone())
                     .collect();
                 self.pages.search = Some(NavigationSearchQuery {
+                    manual: manual.clone(),
                     text: filter,
                     project: project.clone(),
                     project_roots: roots,
@@ -967,6 +1002,7 @@ impl Sidebar {
                         .pinned_tasks(
                             &user,
                             crate::backend::PinnedTasksRequest {
+                                manual: manual.clone(),
                                 project,
                                 cursor,
                                 limit: 200,
@@ -983,6 +1019,7 @@ impl Sidebar {
                         .list_tasks(
                             &user,
                             NavigationTaskQuery {
+                                manual,
                                 section,
                                 project,
                                 pins,

@@ -58,11 +58,11 @@ pub use error::{DamageReason, RefusalReason, StoreError, StoreResult};
 pub use gc::{CollectionProgress, CollectionStage, DeletedTask};
 pub use paging::{
     AttachmentRangeReply, HistoryAnchorRequest, HistoryPage, HistoryPageRequest,
-    NavigationGetTasksReply, NavigationGroupPage, NavigationGroupQuery, NavigationProjectGroup,
-    NavigationProjectPage, NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery,
-    OpenTaskPage, OpenTaskPageRequest, PageTransport, ProjectSummary, ProjectTaskCursors, RowRange,
-    RowRangeRequest, RowReader, TaskFactsReply, TaskHistoryStamp, TaskSummary, TimelineRow,
-    TransportCaps,
+    NavigationGetTasksReply, NavigationGroupPage, NavigationGroupQuery, NavigationManualOrder,
+    NavigationProjectGroup, NavigationProjectPage, NavigationSearchQuery, NavigationTaskPage,
+    NavigationTaskQuery, OpenTaskPage, OpenTaskPageRequest, PageTransport, ProjectSummary,
+    ProjectTaskCursors, RowRange, RowRangeRequest, RowReader, TaskFactsReply, TaskHistoryStamp,
+    TaskSummary, TimelineRow, TransportCaps,
 };
 pub use paths::{FilesystemKind, StorePaths};
 pub use persistence::{PersistenceFailure, PersistenceFailureReason, PersistenceStatus};

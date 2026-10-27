@@ -49,7 +49,7 @@ impl ChatScreen {
             ChatCommand::Escape | ChatCommand::ApplicationVim(ApplicationVimCommand::Escape)
         ) && self
             .sidebar
-            .update(cx, |sidebar, cx| sidebar.cancel_folder_drag(window, cx))
+            .update(cx, |sidebar, cx| sidebar.cancel_sidebar_drag(window, cx))
         {
             return;
         }

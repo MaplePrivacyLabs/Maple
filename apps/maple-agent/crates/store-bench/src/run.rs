@@ -99,6 +99,7 @@ pub fn execute(mode: Mode, options: &Options) -> Result<Run> {
         store.bench_raw_connection_open()
     })?);
     let list = NavigationTaskQuery {
+        manual: None,
         section: TaskSection::State(TaskState::Active),
         project: None,
         pins: PinFilter::Ignore,
@@ -121,11 +122,13 @@ pub fn execute(mode: Mode, options: &Options) -> Result<Run> {
             .map(|_| ())
     })?);
     let groups = NavigationGroupQuery {
+        manual: None,
         limit_groups: 20,
         per_project: 10,
         cursor: None,
     };
     let search = NavigationSearchQuery {
+        manual: None,
         text: "synthetic".into(),
         project: None,
         project_roots: Vec::new(),

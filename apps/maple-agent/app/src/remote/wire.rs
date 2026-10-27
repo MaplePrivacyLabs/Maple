@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 pub const MAX_MANAGEMENT_REPLY: usize = 16 * 1024;
@@ -238,10 +238,7 @@ impl Method {
         )
     }
     pub fn parse(value: &str) -> Result<Self, String> {
-        if matches!(
-            value,
-            "get_sidebar_folder_order" | "set_sidebar_folder_order"
-        ) {
+        if matches!(value, "get_sidebar_order" | "set_sidebar_order") {
             return Err("This operation is available only on the local computer.".into());
         }
         serde_json::from_value(serde_json::Value::String(value.into()))
@@ -571,7 +568,7 @@ mod tests {
     #[test]
     fn optional_management_keeps_the_shipped_control_ack_and_alpn() {
         assert_eq!(ALPN, b"maple-agent/remote/1");
-        assert_eq!(VERSION, 7);
+        assert_eq!(VERSION, 8);
         assert_eq!(
             serde_json::to_string(&Ok::<(), Refusal>(())).unwrap(),
             r#"{"Ok":null}"#
@@ -613,6 +610,38 @@ mod tests {
                 Ok(_) => panic!("wire 6 must update before file attachments are sent"),
             };
             assert!(is_protocol_incompatibility_refusal(&refusal.into_error()));
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_paging_wire_upgrade_refuses_seven_before_decoding_requests() {
+        let previous: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v7.json")).unwrap();
+        for kind in ["hello", "pair"] {
+            let (mut tx, mut rx) = tokio::io::duplex(4096);
+            write(&mut tx, &previous[kind], MAX_PREFACE).await.unwrap();
+            let refusal = match read_hello(&mut rx).await {
+                Err(refusal) => refusal,
+                Ok(_) => panic!("wire 7 must update before manual paged queries are sent"),
+            };
+            assert!(is_protocol_incompatibility_refusal(&refusal.into_error()));
+        }
+    }
+
+    #[test]
+    fn released_wire_seven_refuses_eight_before_request_admission() {
+        // Preserve the released policy independently of the current constant.
+        let mut current: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v7.json")).unwrap();
+        for kind in ["hello", "pair"] {
+            current[kind]["version"] = serde_json::json!(VERSION);
+            current[kind]["minimum_version"] = serde_json::json!(VERSION);
+            let version = current[kind]["version"].as_u64().unwrap();
+            let minimum = current[kind]["minimum_version"].as_u64().unwrap();
+            let refused = minimum == 0 || minimum > version || minimum > 7 || version < 7;
+            assert!(refused, "released wire 7 must refuse the new baseline");
+            let hello: Hello = serde_json::from_value(current[kind].clone()).unwrap();
+            assert!(hello.check_version().is_ok());
         }
     }
 
@@ -715,7 +744,7 @@ mod tests {
         );
     }
     #[test]
-    fn wire_seven_examples_are_stable() {
+    fn frozen_wire_seven_examples_keep_their_payload_shapes() {
         let examples: serde_json::Value =
             serde_json::from_str(include_str!("wire_v7.json")).unwrap();
         fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
@@ -788,7 +817,7 @@ mod tests {
                 "fixture must exercise a forwarded event"
             );
         }
-        assert_eq!(examples["hello"]["version"], VERSION);
+        assert_eq!(examples["hello"]["version"], 7);
     }
 
     #[test]

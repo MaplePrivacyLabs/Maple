@@ -126,7 +126,14 @@ Goose, with an independent dependency graph.
   Renaming from its desktop or a paired controller updates connected views and
   persists across restarts without changing the folder path. The owner supplies
   the default workspace label too. Personal pins remain desktop preferences.
-- Sessions grouped by project, with rename, archive, and restore.
+- Sidebar organization by Project, Connection, Status, or In one list, with
+  Last updated or Manual order for tasks. Connection becomes available after
+  another computer is added, including while it is offline. Project views keep
+  known empty projects visible. Project and connection order stays stable;
+  dragging rearranges the sidebar without changing a task's project, computer
+  or status. Dragging a task silently selects Manual order, which persists
+  across grouping changes and restarts; new tasks appear at the top. Tasks also
+  support rename, archive, and restore.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
   speech voice and speed), Keyboard Shortcuts, System prompt, Integrations

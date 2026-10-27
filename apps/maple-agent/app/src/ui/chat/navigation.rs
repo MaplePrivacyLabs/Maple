@@ -34,7 +34,7 @@ pub(super) enum SidebarTarget {
     Search,
     Projects,
     /// A folder group's header, by project root.
-    Folder(String),
+    Project(String),
     Task(String),
     Archived,
     LoadMore(String),
@@ -569,10 +569,17 @@ impl ChatScreen {
                     let open = sidebar.header_menu_open();
                     sidebar.set_header_menu_open(!open, cx);
                 }),
-                Some(SidebarTarget::Folder(root)) => self.sidebar.update(cx, |sidebar, cx| {
-                    sidebar.set_folder_expanded(&root, None, cx);
+                Some(SidebarTarget::Project(root)) => self.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.set_project_expanded(&root, None, cx);
                 }),
-                Some(SidebarTarget::Computer(request)) => cx.emit(request),
+                Some(SidebarTarget::Computer(request)) => {
+                    let handled = self.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.toggle_computer_group(&request, cx)
+                    });
+                    if !handled {
+                        cx.emit(request);
+                    }
+                }
                 Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
                 Some(SidebarTarget::Archived) => self.toggle_archived_visibility(cx),
                 Some(SidebarTarget::LoadMore(id)) => self

@@ -12,9 +12,9 @@ use maple_agent::agent::{
 use maple_agent::store::{AccountId, PageTransport, Store};
 pub use maple_agent::store::{
     AttachmentRangeReply, HistoryAnchorRequest, HistoryPage, HistoryPageRequest,
-    NavigationGetTasksReply, NavigationGroupPage, NavigationGroupQuery, NavigationProjectPage,
-    NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery, OpenTaskPageRequest,
-    ProjectSummary, RowRange, RowRangeRequest, TaskSummary, TimelineRow,
+    NavigationGetTasksReply, NavigationGroupPage, NavigationGroupQuery, NavigationManualOrder,
+    NavigationProjectPage, NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery,
+    OpenTaskPageRequest, ProjectSummary, RowRange, RowRangeRequest, TaskSummary, TimelineRow,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -27,6 +27,8 @@ use crate::host::protocol::Request;
 pub struct PinnedTasksRequest {
     pub project: Option<String>,
     pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual: Option<NavigationManualOrder>,
     #[serde(default = "default_limit")]
     pub limit: u16,
 }
@@ -431,11 +433,16 @@ pub(super) async fn dispatch(
             let (store, account) = context(backend, &user).await?;
             encode(
                 blocking(move || {
-                    store.pinned_task_summaries(
+                    store.list_task_summaries(
                         account,
-                        query.project.as_deref(),
-                        query.cursor.as_deref(),
-                        query.limit,
+                        &NavigationTaskQuery {
+                            section: maple_agent::store::TaskSection::Pinned,
+                            project: query.project,
+                            pins: maple_agent::store::PinFilter::Ignore,
+                            cursor: query.cursor,
+                            manual: query.manual,
+                            limit: query.limit,
+                        },
                         transport,
                     )
                 })

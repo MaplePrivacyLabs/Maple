@@ -94,6 +94,11 @@ pub struct PickQuestionOption {
 
 pub struct LoggedOut;
 
+pub(crate) struct SignOutFailed {
+    pub(crate) user_id: String,
+    pub(crate) message: String,
+}
+
 /// Emitted when the user opens app settings from the chat header.
 pub struct OpenSettings;
 
@@ -606,6 +611,7 @@ pub struct ChatScreen {
     unresolved_sends: HashMap<String, UnresolvedSend>,
     attachment_uploads: HashMap<String, uploads::PendingUpload>,
     accept_send_results: bool,
+    sign_out_pending: bool,
     discarded_sends: HashSet<String>,
     checking_sends: bool,
     /// Source of `DraftAttachment::id`.
@@ -1047,10 +1053,10 @@ impl ChatScreen {
     }
 
     #[cfg(test)]
-    fn switcher_root_paths(&self, cx: &gpui::App) -> Vec<String> {
+    fn project_root_paths(&self, cx: &gpui::App) -> Vec<String> {
         self.sidebar
             .read(cx)
-            .switcher_root_paths()
+            .project_root_paths()
             .into_iter()
             .map(str::to_owned)
             .collect()
@@ -1363,6 +1369,7 @@ impl ChatScreen {
             unresolved_sends: HashMap::new(),
             attachment_uploads: HashMap::new(),
             accept_send_results: true,
+            sign_out_pending: false,
             discarded_sends: HashSet::new(),
             checking_sends: false,
             draft_counter: 0,
@@ -5396,6 +5403,43 @@ impl ChatScreen {
     }
 
     pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
+        if self.sign_out_pending {
+            return;
+        }
+        self.sign_out_pending = true;
+        // Pending upload completions cannot admit a prompt while saving the
+        // account's final presentation edits before sign-out.
+        self.accept_send_results = false;
+        self.call(
+            async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    crate::settings::flush_pending(),
+                )
+                .await
+                .map_err(|_| "Saving changes before sign-out timed out. Try again.".to_string())?
+                .map_err(|message| format!("Could not save changes before signing out: {message}"))
+            },
+            cx,
+            |this, result, cx| match result {
+                Ok(()) => this.sign_out_after_settings_flush(cx),
+                Err(message) => this.sign_out_failed(message, cx),
+            },
+        );
+    }
+
+    fn sign_out_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.sign_out_pending = false;
+        self.accept_send_results = true;
+        self.notice = Some(message.clone().into());
+        cx.emit(SignOutFailed {
+            user_id: self.user_id.clone(),
+            message,
+        });
+        cx.notify();
+    }
+
+    fn sign_out_after_settings_flush(&mut self, cx: &mut Context<Self>) {
         // A logout during upload must win before prompt admission, even while
         // the host is still shutting down an earlier run.
         self.accept_send_results = false;
@@ -5420,8 +5464,13 @@ impl ChatScreen {
                 backend.logout_and_clear(&user_id).await
             },
             cx,
-            |_this, _result, cx| {
-                cx.emit(LoggedOut);
+            |this, result, cx| match result {
+                Ok(()) => {
+                    this.sign_out_pending = false;
+                    crate::settings::retire_sidebar_account(&this.user_id);
+                    cx.emit(LoggedOut);
+                }
+                Err(message) => this.sign_out_failed(message, cx),
             },
         );
     }
@@ -6496,6 +6545,7 @@ impl ChatScreen {
 
 impl EventEmitter<crate::update::UpdateRequested> for ChatScreen {}
 impl EventEmitter<LoggedOut> for ChatScreen {}
+impl EventEmitter<SignOutFailed> for ChatScreen {}
 
 impl EventEmitter<OpenSettings> for ChatScreen {}
 impl EventEmitter<OpenSettingsSection> for ChatScreen {}

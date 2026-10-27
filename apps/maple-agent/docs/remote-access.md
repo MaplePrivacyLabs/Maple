@@ -24,15 +24,25 @@ attempt. A failed attempt requires a new, locally opened window. Leaving Setting
 keeps the current window alive; returning shows the same code and remaining time,
 with Cancel available. Navigation never renews its deadline or attempt.
 
-Paired computers appear alongside local projects in the sidebar and project
-menus. Each group is **computer · folder**, with its tasks beneath it; a globe
-marks remote folders. The sidebar only shows folders with visible tasks; empty
-folders remain available in the project menus. Selecting a task or project also
-selects its execution computer. Select a **This computer** project to return to
-local work. Local-only installations retain the existing sidebar layout.
+The sidebar's **View options** menu groups tasks by **Project**, **Connection**,
+**Status**, or **In one list**. Connection becomes available after another
+computer is added, including while it is offline; enabling remote access on
+this computer alone does not add that choice. Project and Connection views keep
+known empty projects visible. A globe marks remote projects. Selecting a task or
+project also selects its execution computer; select a **This computer** project
+to return to local work.
+
+**Sort tasks by** offers **Last updated** and **Manual order**, independently of
+grouping. Project and connection positions stay stable in either mode and can
+be rearranged by dragging. Dragging a task silently selects Manual order; this
+changes only presentation order, preserving its project, execution computer and
+status. The manual task order carries across grouping changes and restarts on
+the viewing desktop. New tasks appear at the top; activity on existing tasks
+does not reshuffle their manual order. These preferences belong to the viewing
+desktop's signed-in account.
 
 Project display names belong to the execution computer and the signed-in account.
-**Rename project** in the sidebar project switcher updates that one name from
+**Rename project** in a sidebar project's menu updates that one name from
 either its desktop or a paired controller. Every computer's folders have this
 action, so renaming does not switch the current conversation or draft. Every
 connected desktop receives the change, including computers whose projects are
@@ -181,18 +191,22 @@ Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
 protocol keeps the `maple-agent/remote/1` ALPN family and currently advertises
-wire version 7 with minimum version 7, independent of application builds. Its
+wire version 8 with minimum version 8, independent of application builds. Its
 shared project names, bounded navigation/history pages, stable row identities,
 attachment ranges, and per-connection task subscriptions remain unchanged.
 Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
-Version 6 and earlier peers receive an explicit version refusal. Bounded frames
+Version 7 and earlier peers receive an explicit version refusal. Bounded frames
 and an explicit task-operation allowlist apply.
+Manual sidebar ordering adds bounded task-order inputs to navigation, search,
+project-group, and continuation queries. Both computers must be updated for this
+wire-8 paging contract; older peers are refused during the handshake before
+requests are admitted, rather than accepting a partially working sidebar.
 Account operations and arbitrary whole-host administration cannot be forwarded.
 The narrow experimental update capability uses the host's own signed updater;
 it does not expose the ordinary host-stop command.
 
-Optional discovery reports protocol version `7.0.0` and explicit capabilities
+Optional discovery reports protocol version `8.0.0` and explicit capabilities
 over separate request streams. The acknowledgement shape and ALPN remain
 readable across the required version transition. Bounded folder browsing and single-folder creation require
 the `project_folders_v1` capability. The controller checks support before sending
@@ -200,7 +214,7 @@ either folder command. A compatible host without that capability keeps ordinary
 project/task access and its existing remote-update support; only the folder
 browser reports that support is unavailable or an update is needed.
 
-Wire 7 requires attachment-reference sends. Images, ordinary files and archives
+Since wire 7, task sends require attachment references. Images, ordinary files and archives
 are copied into the execution daemon's session-owned plaintext file store;
 SQLite contains metadata. Local imports use a controller-local staged path.
 Remote imports send bounded metadata followed by raw bytes on a dedicated
@@ -212,9 +226,9 @@ separate from ordinary requests, range reads and urgent replies; generic files
 are limited to 30 MiB each, while
 composer images retain their 10 MiB limit. See [local storage](local-store.md).
 
-Both computers must use wire 7 for remote access, including remote update
+Both computers must use wire 8 for remote access, including remote update
 management. Upgrade the execution computer first while the old pair is still
-compatible, then update the controller locally. A wire-7 controller stops
+compatible, then update the controller locally. A wire-8 controller stops
 automatic reconnection after an explicit version refusal and shows **Update
 required**, without treating ordinary offline errors as version mismatches.
 Released wire-6 controllers keep their shipped behavior during the gap: cold
