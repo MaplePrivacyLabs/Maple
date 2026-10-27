@@ -103,6 +103,17 @@ popup before a nested one). The popup handles the rest:
 A text field inside a menu that goes away calls `Popup::refocus`, so the
 menu keeps the keyboard. Menu keys live in the keymap's `Menu` context.
 
+## Ordinary forms and application Vim
+
+Ordinary `TextInput` fields use `.application_vim(enabled)` and an
+`.on_application_escape(...)` handoff, as in the project-folder dialog. They
+keep standard text editing; `.composer_vim(...)` belongs only to the composer.
+Propagate changes to application Vim into open forms. Modal typing must leave
+Chat's composer fallback before its application-navigation handling runs.
+Test forms beneath the real Chat key context with `simulate_keystrokes`,
+including literal `i`, `j`, `k`, and `l`; `simulate_input` alone bypasses the
+key bindings that can steal those characters.
+
 ## Performance
 
 This app must feel instant. Treat frame time and UI-thread stalls as bugs.

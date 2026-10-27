@@ -140,6 +140,7 @@ impl ChatScreen {
                 dialog.set_application_vim_enabled(enabled, cx)
             });
         }
+        self.set_feedback_application_vim_enabled(enabled, cx);
         for input in [self.composer.as_ref(), self.pending_question_input.as_ref()]
             .into_iter()
             .flatten()

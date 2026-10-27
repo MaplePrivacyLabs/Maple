@@ -4231,7 +4231,7 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.project_folder_dialog.is_some() {
+        if self.project_folder_dialog.is_some() || self.feedback.is_some() {
             return;
         }
         let Some(composer) = self.composer.clone() else {
@@ -4259,7 +4259,7 @@ impl ChatScreen {
             return;
         }
         // A modal dialog owns the keyboard; nothing types past it.
-        if self.trust_prompt.is_some() || self.confirm.is_some() || self.feedback.is_some() {
+        if self.trust_prompt.is_some() || self.confirm.is_some() {
             return;
         }
         // A focused text field already receives typing: the composer, the

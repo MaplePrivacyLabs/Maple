@@ -6152,6 +6152,51 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn feedback_form_accepts_normal_typing_with_application_vim(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.set_application_vim_enabled(true, cx);
+            this.composer.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_vim_enabled(true, cx);
+                input.set_text("Unsent chat draft", cx);
+            });
+        });
+        press(cx, "send-feedback");
+        let input = chat.update(cx, |this, _| this.feedback.as_ref().unwrap().input.clone());
+        let composer = chat.update(cx, |this, _| this.composer.clone().unwrap());
+        cx.simulate_keystrokes("i j k l o g g i n g");
+        assert_eq!(input.update(cx, |input, _| input.text()), "ijklogging");
+        assert_eq!(input.update(cx, |input, _| input.vim_mode()), None);
+        cx.simulate_keystrokes("left backspace right shift-enter");
+        cx.simulate_input("Second line");
+        assert_eq!(
+            input.update(cx, |input, _| input.text()),
+            "ijkloggig\nSecond line"
+        );
+        for enabled in [false, true] {
+            chat.update(cx, |this, cx| this.set_application_vim_enabled(enabled, cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("x");
+        }
+        assert_eq!(
+            input.update(cx, |input, _| input.text()),
+            "ijkloggig\nSecond linexx"
+        );
+        let focus = cx.update(|window, app| window.focused(app));
+        cx.simulate_keystrokes("tab tab tab tab tab tab");
+        assert_eq!(cx.update(|window, app| window.focused(app)), focus);
+        assert_eq!(
+            composer.update(cx, |input, _| input.text()),
+            "Unsent chat draft"
+        );
+        cx.simulate_keystrokes("escape");
+        assert!(chat.update(cx, |this, _| this.feedback.is_none()));
+        assert_eq!(
+            composer.update(cx, |input, _| input.text()),
+            "Unsent chat draft"
+        );
+    }
+
+    #[gpui::test]
     fn feedback_form_keeps_typing_out_of_chat_and_rejects_empty_submission(
         cx: &mut TestAppContext,
     ) {
