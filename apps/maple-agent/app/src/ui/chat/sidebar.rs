@@ -440,6 +440,7 @@ struct TaskMenuItems {
 /// Destructive project actions are rendered in their own popup section.
 struct ProjectMenuItems {
     actions: Vec<SidebarMenuItem>,
+    ordering: Vec<SidebarMenuItem>,
     remove: Option<SidebarMenuItem>,
 }
 
@@ -1334,6 +1335,7 @@ impl Sidebar {
         items
             .actions
             .into_iter()
+            .chain(items.ordering)
             .chain(items.remove)
             .map(|item| item.label)
             .collect()
@@ -2548,6 +2550,7 @@ impl Sidebar {
                 });
             }
         }
+        let mut ordering = Vec::new();
         if self.can_reorder() {
             for (forward, id, icon, label) in [
                 (false, "move-project-up", "arrow-up", "Move up"),
@@ -2555,7 +2558,7 @@ impl Sidebar {
             ] {
                 if self.project_move_available(target, forward) {
                     let target = target.clone();
-                    actions.push(SidebarMenuItem {
+                    ordering.push(SidebarMenuItem {
                         id: target.element_id(id),
                         icon,
                         label,
@@ -2573,7 +2576,11 @@ impl Sidebar {
                 on_click: Box::new(move |_, cx| cx.emit(SidebarEvent::RemoveRoot(root.clone()))),
             }
         });
-        ProjectMenuItems { actions, remove }
+        ProjectMenuItems {
+            actions,
+            ordering,
+            remove,
+        }
     }
 
     /// The task entry whose overflow menu is open.
@@ -3589,6 +3596,11 @@ impl Sidebar {
                 .label("Project options")
                 .application_vim(self.application_vim_enabled)
                 .items(items.actions.into_iter().map(menu_item));
+            if !items.ordering.is_empty() {
+                menu = menu
+                    .separator()
+                    .items(items.ordering.into_iter().map(menu_item));
+            }
             if let Some(remove) = items.remove {
                 menu = menu.separator().item(menu_item(remove));
             }
