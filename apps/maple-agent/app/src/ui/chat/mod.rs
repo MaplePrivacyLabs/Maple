@@ -1965,7 +1965,7 @@ impl ChatScreen {
                 if self.backend.remote_host().is_some() {
                     "Remote computer".into()
                 } else {
-                    "This computer".into()
+                    "This Computer".into()
                 }
             });
         let dialog = cx.new(|cx| {

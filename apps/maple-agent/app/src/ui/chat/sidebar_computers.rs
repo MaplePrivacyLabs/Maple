@@ -2114,8 +2114,17 @@ impl Sidebar {
                     computer: computer.key.clone(),
                     destination: Destination::Overview,
                 };
+                let action_group: SharedString =
+                    format!("computer-header-actions-{:?}", computer.key).into();
+                let new_project = Navigate {
+                    computer: computer.key.clone(),
+                    destination: Destination::NewProject,
+                };
+                let new_project_label: SharedString =
+                    format!("New project on {}", computer.label).into();
                 div()
                     .id(SharedString::from(format!("computer-{:?}", computer.key)))
+                    .group(action_group.clone())
                     .role(gpui::Role::Button)
                     .aria_label(computer.label.clone())
                     .when(collapsible, |row| row.aria_expanded(expanded))
@@ -2144,6 +2153,7 @@ impl Sidebar {
                     }))
                     .child(
                         div()
+                            .w_full()
                             .flex()
                             .items_center()
                             .gap_2()
@@ -2159,7 +2169,44 @@ impl Sidebar {
                                 ))
                             })
                             .child(icon("monitor", px(14.), theme::text_muted()))
-                            .child(computer.label.clone()),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(computer.label.clone()),
+                            )
+                            .when(
+                                collapsible && !dragging && !self.sidebar_menu_open(),
+                                |row| {
+                                    row.child(
+                                        div()
+                                            .flex_none()
+                                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                                cx.stop_propagation();
+                                            })
+                                            .child(
+                                                header_button(
+                                                    "connection-new-project",
+                                                    "folder-plus",
+                                                    "New project",
+                                                    false,
+                                                )
+                                                .aria_label(new_project_label)
+                                                .opacity(0.)
+                                                .group_hover(action_group, |style| {
+                                                    style.opacity(1.)
+                                                })
+                                                .on_click(cx.listener(move |_, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    cx.emit(SidebarEvent::Navigate(
+                                                        new_project.clone(),
+                                                    ));
+                                                })),
+                                            ),
+                                    )
+                                },
+                            ),
                     )
                     .when_some(status, |row, status| row.child(status))
                     .into_any_element()

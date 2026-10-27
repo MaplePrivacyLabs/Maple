@@ -504,7 +504,7 @@ impl Sidebar {
                 return None;
             }
             let target = self.reorder_rows.get(row)?.target(drag, self.view.group)?;
-            let (first, last) = *self.drag_ranges.get(&target)?;
+            let (first, _) = *self.drag_ranges.get(&target)?;
             let after = if row == first {
                 position.y >= bounds.center().y
             } else {
@@ -516,6 +516,13 @@ impl Sidebar {
             if to == from || to == from + 1 {
                 return None;
             }
+            // The trailing edge of one item and leading edge of the next are
+            // the same slot. Give that slot one target and one line position.
+            let (target, after) = match sequence.get(to) {
+                Some(next) => (next.clone(), false),
+                None => (sequence.last()?.clone(), true),
+            };
+            let (first, last) = *self.drag_ranges.get(&target)?;
             Some(SidebarDrop {
                 target,
                 after,

@@ -1382,7 +1382,7 @@ impl MapleApp {
         let Some(local) = &self.local_chat else {
             return;
         };
-        let mut computers = vec![local.read(cx).computer_snapshot("This computer".into(), cx)];
+        let mut computers = vec![local.read(cx).computer_snapshot("This Computer".into(), cx)];
         for (key, computer) in &self.remote_computers {
             computers.push(match &computer.chat {
                 Some(chat) => chat

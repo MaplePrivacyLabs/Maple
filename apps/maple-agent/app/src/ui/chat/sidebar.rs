@@ -3464,7 +3464,7 @@ impl Sidebar {
             .application_vim(self.application_vim_enabled)
             .header("New project on")
             .item(
-                MenuItem::new("new-project-local", "This computer", |_, _, cx| {
+                MenuItem::new("new-project-local", "This Computer", |_, _, cx| {
                     cx.emit(SidebarEvent::Navigate(Navigate {
                         computer: None,
                         destination: Destination::NewProject,
