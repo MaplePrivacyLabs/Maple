@@ -3274,8 +3274,12 @@ impl Sidebar {
     fn render_projects_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let open = self.popup.is_open(&SidebarPopup::View);
         let menu = open.then(|| {
-            self.popup
-                .render(self.view_menu(window, cx), Placement::BelowEnd, window, cx)
+            self.popup.render(
+                self.view_menu(window, cx),
+                Placement::BelowStart,
+                window,
+                cx,
+            )
         });
         let choose_computer = self.uses_computer_projection();
         let add_open = choose_computer && self.popup.is_open(&SidebarPopup::NewProject);
