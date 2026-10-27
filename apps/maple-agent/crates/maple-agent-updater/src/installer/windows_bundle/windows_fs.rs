@@ -1046,14 +1046,49 @@ mod tests {
 
     #[test]
     fn native_shared_read_validation_accepts_mapped_image_and_mutation_guard() {
-        let mapped = open_shared_readonly(&std::env::current_exe().unwrap())
-            .expect("shared read validation must admit the mapped native test image");
-        assert!(mapped.metadata().unwrap().len() > 0);
-        drop(mapped);
+        const PRIVATE_IMAGE: &str = "maple-updater-mapped-fixture.exe";
+        const MAPPED_PROOF: &str = "private mapped image shared-read verified";
+        const TEST: &str = "installer::windows_bundle::windows_fs::tests::native_shared_read_validation_accepts_mapped_image_and_mutation_guard";
+        let current = std::env::current_exe().unwrap();
+        if current.file_name() == Some(OsStr::new(PRIVATE_IMAGE)) {
+            // Re-executing this exact test keeps the private copy mapped while
+            // the production validator opens and reads its executable image.
+            let mut mapped = open_shared_readonly(&current)
+                .expect("shared read validation must admit the mapped native test image");
+            assert!(mapped.metadata().unwrap().len() > 0);
+            let mut header = [0; 2];
+            mapped.read_exact(&mut header).unwrap();
+            assert_eq!(&header, b"MZ");
+            println!("{MAPPED_PROOF}");
+            return;
+        }
 
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("protected");
         private_directory(&root).unwrap();
+        let image = root.join(PRIVATE_IMAGE);
+        // Runner workspace ACLs are not installed-storage fixtures. Copy bytes
+        // into a new production-created private file, retaining no source ACL.
+        let mut source = File::open(current).unwrap();
+        let mut copied = open_private(&image, false).unwrap();
+        io::copy(&mut source, &mut copied).unwrap();
+        copied.sync_all().unwrap();
+        drop(copied);
+        drop(source);
+        let result = std::process::Command::new(&image)
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .output()
+            .expect("the private copied native test image must load");
+        assert!(
+            result.status.success(),
+            "mapped image fixture failed: {result:?}"
+        );
+        assert!(
+            String::from_utf8(result.stdout)
+                .unwrap()
+                .contains(MAPPED_PROOF)
+        );
+
         let path = root.join("fixture.exe");
         let bytes = b"unchanged guarded fixture";
         let mut file = open_private(&path, false).unwrap();
@@ -1071,6 +1106,88 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert!(open_shared_readonly(&root.join("absent")).is_err());
         assert!(!root.join("absent").exists());
+    }
+
+    #[test]
+    fn native_mapped_private_image_reports_append_and_generic_write_admission() {
+        use sha2::Digest as _;
+
+        const PRIVATE_IMAGE: &str = "maple-updater-mapped-access-probe.exe";
+        const PROOF: &str = "MAPPED_PRIVATE_IMAGE_ACCESS ";
+        const TEST: &str = "installer::windows_bundle::windows_fs::tests::native_mapped_private_image_reports_append_and_generic_write_admission";
+        let current = std::env::current_exe().unwrap();
+        if current.file_name() == Some(OsStr::new(PRIVATE_IMAGE)) {
+            let mapped = open_shared_readonly(&current)
+                .expect("access probes require a validated, currently mapped private image");
+            assert!(mapped.metadata().unwrap().len() > 0);
+            let before = sha2::Sha256::digest(fs::read(&current).unwrap());
+            let outcome = |result: io::Result<File>| match result {
+                Ok(file) => {
+                    drop(file);
+                    serde_json::json!({"opened": true, "os_error": null, "error_kind": null})
+                }
+                Err(error) => serde_json::json!({
+                    "opened": false,
+                    "os_error": error.raw_os_error(),
+                    "error_kind": format!("{:?}", error.kind()),
+                }),
+            };
+            // These are the exact prepare and activation opens. Close each
+            // result before the next probe and never write through either.
+            let append = outcome(fs::OpenOptions::new().append(true).open(&current));
+            let generic_write = outcome(open_private(&current, false));
+            let after = sha2::Sha256::digest(fs::read(&current).unwrap());
+            assert_eq!(before, after, "access probes must not change image bytes");
+            println!(
+                "{PROOF}{}",
+                serde_json::json!({
+                    "schema": "maple-mapped-private-image-access-v1",
+                    "image_mapped": true,
+                    "append": append,
+                    "generic_write": generic_write,
+                    "contents_unchanged": true,
+                })
+            );
+            drop(mapped);
+            return;
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("protected");
+        private_directory(&root).unwrap();
+        let image = root.join(PRIVATE_IMAGE);
+        let mut source = File::open(current).unwrap();
+        let mut copied = open_private(&image, false).unwrap();
+        io::copy(&mut source, &mut copied).unwrap();
+        copied.sync_all().unwrap();
+        drop(copied);
+        drop(source);
+        let result = std::process::Command::new(&image)
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .output()
+            .expect("the private mapped access probe image must load");
+        assert!(
+            result.status.success(),
+            "mapped access probe failed: {result:?}"
+        );
+        let output = String::from_utf8(result.stdout).unwrap();
+        let proof: serde_json::Value = output
+            .lines()
+            .find_map(|line| line.split_once(PROOF).map(|(_, proof)| proof))
+            .map(|proof| serde_json::from_str(proof).unwrap())
+            .expect("the exact mapped child test must emit its access outcomes");
+        assert_eq!(proof["schema"], "maple-mapped-private-image-access-v1");
+        assert_eq!(proof["image_mapped"], true);
+        assert_eq!(proof["contents_unchanged"], true);
+        assert!(proof["append"]["opened"].as_bool().is_some());
+        assert!(proof["generic_write"]["opened"].as_bool().is_some());
+        // Direct output keeps this bounded diagnostic in the native Cargo log
+        // even when libtest captures successful tests' println! output.
+        std::io::Write::write_all(
+            &mut io::stdout().lock(),
+            format!("{PROOF}{proof}\n").as_bytes(),
+        )
+        .unwrap();
     }
 
     #[test]

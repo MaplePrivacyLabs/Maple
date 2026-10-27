@@ -71,6 +71,25 @@ NSIS_FAILURE_PHASES = {
     41: "activation-child", 50: "uninstall-registration", 51: "uninstall-launch",
     52: "uninstall-child", 53: "uninstall-files",
 }
+ACTIVATION_FAILURE_MARKER = 0x4D000000
+ACTIVATION_FAILURE_STAGES = {
+    1: "activation-input", 2: "root-storage", 3: "registration",
+    4: "bootstrap-identity", 5: "install-lock", 6: "intent-identity",
+    7: "generation-identity", 8: "generation-verification",
+    9: "generation-guards", 10: "pointer-commit",
+}
+
+
+def decode_activation_failure(code):
+    # This fixed status is emitted by the actual native activation child and
+    # passed through NSIS. No helper replay or arbitrary child output is read.
+    if type(code) is not int or not 0 <= code <= 0xFFFFFFFF or code & 0xFF000000 != ACTIVATION_FAILURE_MARKER:
+        return None
+    stage = (code >> 16) & 0xFF
+    if stage not in ACTIVATION_FAILURE_STAGES:
+        return None
+    return {"native_stage": ACTIVATION_FAILURE_STAGES[stage],
+            "native_win32_error": (code & 0xFFFF) or None}
 
 
 def module(name):
@@ -568,9 +587,15 @@ def smoke_failure_evidence(phase, error, installed, generation_name, registry, a
         except OSError:
             registration = "unavailable"
         code = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+        native = decode_activation_failure(code) if phase in ("install", "repeat-install") else None
+        installer_phase = NSIS_FAILURE_PHASES.get(code, "unknown") if phase in ("install", "repeat-install", "uninstall") else None
+        if native:
+            installer_phase = "activation-child"
         evidence = {"phase": phase, "error": type(error).__name__, "exit_code": code,
-                    "installer_phase": NSIS_FAILURE_PHASES.get(code, "unknown") if phase in ("install", "repeat-install", "uninstall") else None,
+                    "installer_phase": installer_phase,
                     "registration": registration, "owned_paths": paths}
+        if native:
+            evidence.update(native)
         print("Windows installer failure evidence: " + json.dumps(evidence, sort_keys=True), file=sys.stderr)
     except Exception:
         # Diagnostics must never replace the failure being diagnosed.

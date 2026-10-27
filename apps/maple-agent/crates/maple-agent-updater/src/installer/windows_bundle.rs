@@ -1825,66 +1825,82 @@ pub fn activate_windows_installation(
 ) -> Result<()> {
     #[cfg(windows)]
     {
-        if !valid_generation(generation_name) {
-            return Err(InstallError::Invalid("Windows activation generation"));
-        }
-        let executable = executable.canonicalize()?;
-        let root = executable
-            .parent()
-            .ok_or(InstallError::Invalid("Windows activation root"))?;
-        if executable
-            .file_name()
-            .is_none_or(|x| x != "maple-agent.exe")
-        {
-            return Err(InstallError::Invalid("Windows activation executable"));
-        }
-        windows_fs::private_directory(root)?;
-        registered_root(root, profile)?;
-        let _ = trusted_installer(&executable, profile)?;
-        let lock = open_install_lock(root)?;
-        lock.try_lock_exclusive().map_err(|error| {
-            if error.kind() == io::ErrorKind::WouldBlock
-                || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
-            {
-                InstallError::Busy
-            } else {
-                error.into()
+        let mut stage = WindowsActivationStage::Input;
+        let result = (|| -> Result<()> {
+            if !valid_generation(generation_name) {
+                return Err(InstallError::Invalid("Windows activation generation"));
             }
-        })?;
-        let intent: ManualIntent =
-            serde_json::from_slice(&read_bounded(&root.join(MANUAL_INTENT), DESCRIPTOR_LIMIT)?)
-                .map_err(|_| InstallError::Invalid("Windows installer intent"))?;
-        if intent.format != "maple-agent-windows-installer-intent-v1"
-            || intent.profile != profile
-            || intent.generation != generation_name
-            || (intent.owner_pid, intent.owner_created) != installer_owner()?
-        {
-            return Err(InstallError::Invalid("Windows installer intent identity"));
-        }
-        let path = root.join("versions").join(generation_name);
-        let bundle = descriptor(&path, profile)?;
-        if bundle.generation() != generation_name
-            || bundle.version != intent.version
-            || bundle.source_sha != intent.source_sha
-            || exact_file_digest(&path.join("maple-agent.exe"))? != intent.executable_sha256
-        {
-            return Err(InstallError::Invalid(
-                "Windows installer activation identity",
-            ));
-        }
-        let _ = scan_generation(&path)?;
-        verify_identity(&path, &bundle)?;
-        let _generation_guards = generation_write_guards(root)?;
-        write_private_json(&root.join(POINTER), &Current::new(&bundle))?;
-        drop(_generation_guards);
-        // Publication committed. Cleanup cannot report an uncommitted failure
-        // to NSIS, which would otherwise roll back valid registration. Startup
-        // authenticates this exact generation and retries retained intent.
-        if retire_abandoned_uninstall(root, profile, &bundle.generation()).is_ok() {
-            let _ = fs::remove_file(root.join(MANUAL_INTENT));
-        }
-        let _ = windows_sync_directory(root);
-        Ok(())
+            let executable = executable.canonicalize()?;
+            let root = executable
+                .parent()
+                .ok_or(InstallError::Invalid("Windows activation root"))?;
+            if executable
+                .file_name()
+                .is_none_or(|x| x != "maple-agent.exe")
+            {
+                return Err(InstallError::Invalid("Windows activation executable"));
+            }
+            stage = WindowsActivationStage::RootStorage;
+            windows_fs::private_directory(root)?;
+            stage = WindowsActivationStage::Registration;
+            registered_root(root, profile)?;
+            stage = WindowsActivationStage::BootstrapIdentity;
+            let _ = trusted_installer(&executable, profile)?;
+            stage = WindowsActivationStage::InstallLock;
+            let lock = open_install_lock(root)?;
+            lock.try_lock_exclusive().map_err(|error| {
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+                {
+                    InstallError::Busy
+                } else {
+                    error.into()
+                }
+            })?;
+            stage = WindowsActivationStage::IntentIdentity;
+            let intent: ManualIntent =
+                serde_json::from_slice(&read_bounded(&root.join(MANUAL_INTENT), DESCRIPTOR_LIMIT)?)
+                    .map_err(|_| InstallError::Invalid("Windows installer intent"))?;
+            if intent.format != "maple-agent-windows-installer-intent-v1"
+                || intent.profile != profile
+                || intent.generation != generation_name
+                || (intent.owner_pid, intent.owner_created) != installer_owner()?
+            {
+                return Err(InstallError::Invalid("Windows installer intent identity"));
+            }
+            stage = WindowsActivationStage::GenerationIdentity;
+            let path = root.join("versions").join(generation_name);
+            let bundle = descriptor(&path, profile)?;
+            if bundle.generation() != generation_name
+                || bundle.version != intent.version
+                || bundle.source_sha != intent.source_sha
+                || exact_file_digest(&path.join("maple-agent.exe"))? != intent.executable_sha256
+            {
+                return Err(InstallError::Invalid(
+                    "Windows installer activation identity",
+                ));
+            }
+            stage = WindowsActivationStage::GenerationVerification;
+            let _ = scan_generation(&path)?;
+            verify_identity(&path, &bundle)?;
+            stage = WindowsActivationStage::GenerationGuards;
+            let _generation_guards = generation_write_guards(root)?;
+            stage = WindowsActivationStage::PointerCommit;
+            write_private_json(&root.join(POINTER), &Current::new(&bundle))?;
+            drop(_generation_guards);
+            // Publication committed. Cleanup cannot report an uncommitted failure
+            // to NSIS, which would otherwise roll back valid registration. Startup
+            // authenticates this exact generation and retries retained intent.
+            if retire_abandoned_uninstall(root, profile, &bundle.generation()).is_ok() {
+                let _ = fs::remove_file(root.join(MANUAL_INTENT));
+            }
+            let _ = windows_sync_directory(root);
+            Ok(())
+        })();
+        result.map_err(|source| InstallError::WindowsActivation {
+            stage,
+            source: Box::new(source),
+        })
     }
     #[cfg(not(windows))]
     {
@@ -2054,3 +2070,71 @@ mod tests;
 #[cfg(all(test, windows))]
 #[path = "windows_bundle_transaction_tests.rs"]
 mod transaction_tests;
+
+#[cfg(all(test, windows))]
+mod manual_activation_tests {
+    use super::*;
+
+    fn generation_fixture(root: &Path, version: &str, build: &str) -> Bundle {
+        let bundle = Bundle {
+            format: "maple-agent-windows-bundle-v1".into(),
+            product: "maple-agent".into(),
+            profile: "dev".into(),
+            version: version.into(),
+            build: build.into(),
+            source_sha: "a".repeat(40),
+            bundle_id: profile_identity("dev").unwrap().into(),
+            entrypoint: "maple-agent.exe".into(),
+        };
+        let path = root.join("versions").join(bundle.generation());
+        for directory in DIRS {
+            windows_fs::private_directory(&path.join(directory)).unwrap();
+        }
+        for name in FILES {
+            let bytes = if *name == DESCRIPTOR {
+                serde_json::to_vec(&bundle).unwrap()
+            } else {
+                format!("ordinary manual-activation fixture {version}/{build}: {name}\n")
+                    .into_bytes()
+            };
+            let mut file = windows_fs::open_private(&path.join(name), true).unwrap();
+            file.write_all(&bytes).unwrap();
+            file.sync_all().unwrap();
+        }
+        bundle
+    }
+
+    #[test]
+    fn native_manual_pointer_republication_with_generation_guards_preserves_payloads() {
+        // Exercise the filesystem publication phase only. These ordinary data
+        // files claim no executable, Authenticode or registered-install proof.
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("installation");
+        windows_fs::private_directory(&root.join("versions")).unwrap();
+        let previous = generation_fixture(&root, "0.0.11", "738");
+        let next = generation_fixture(&root, "0.0.12", "739");
+        let previous_path = root.join("versions").join(previous.generation());
+        let next_path = root.join("versions").join(next.generation());
+        let previous_nodes = scan_generation(&previous_path).unwrap();
+        let next_nodes = scan_generation(&next_path).unwrap();
+        write_private_json(&root.join(POINTER), &Current::new(&previous)).unwrap();
+
+        for bundle in [&previous, &next, &next] {
+            let guards = generation_write_guards(&root).unwrap();
+            assert_eq!(guards.len(), 2);
+            for path in [&previous_path, &next_path] {
+                assert!(windows_fs::open_readonly(&path.join("maple-agent.exe")).is_err());
+            }
+            // First repeat the already-selected generation, then publish and
+            // repeat the next one using the same guards as manual activation.
+            write_private_json(&root.join(POINTER), &Current::new(bundle)).unwrap();
+            drop(guards);
+            assert_eq!(
+                Current::parse(&read_bounded(&root.join(POINTER), 1024).unwrap()).unwrap(),
+                Current::new(bundle)
+            );
+            assert_eq!(scan_generation(&previous_path).unwrap(), previous_nodes);
+            assert_eq!(scan_generation(&next_path).unwrap(), next_nodes);
+        }
+    }
+}

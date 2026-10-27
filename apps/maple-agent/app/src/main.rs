@@ -271,6 +271,7 @@ fn main() {
         // The stable launcher and installer modes never open application data,
         // credentials or a host. Their paths and code identities are checked
         // by the updater's native installer before mutation or delegation.
+        let mut internal_exit_code = 1;
         let internal = if let Some(root) = &cli.internal_windows_installer_preflight {
             Some(
                 std::env::current_exe()
@@ -313,7 +314,10 @@ fn main() {
                             profile::PROFILE,
                             generation,
                         )
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| {
+                            internal_exit_code = error.windows_activation_exit_code().unwrap_or(1);
+                            error.to_string()
+                        })
                     }),
             )
         } else if cli.internal_windows_uninstall_cleanup {
@@ -337,7 +341,7 @@ fn main() {
         if let Some(result) = internal {
             if let Err(error) = result {
                 eprintln!("{error}");
-                std::process::exit(1);
+                std::process::exit(internal_exit_code);
             }
             return;
         }
