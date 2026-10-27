@@ -29,7 +29,7 @@ use windows_sys::Win32::{
         CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
         GetTokenInformation, INHERIT_ONLY_ACE, IsValidAcl, IsValidSid, OWNER_SECURITY_INFORMATION,
         PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, TOKEN_QUERY, TOKEN_USER, TokenUser,
-        WinBuiltinAdministratorsSid, WinLocalSystemSid,
+        WinBuiltinAdministratorsSid, WinCreatorOwnerRightsSid, WinLocalSystemSid,
     },
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE, FILE_APPEND_DATA,
@@ -328,7 +328,16 @@ fn trusted_storage_sid(sid: PSID, user: PSID, system: PSID, admins: PSID) -> boo
 }
 
 fn validate_private_handle(file: &File) -> io::Result<()> {
-    information(file)?;
+    let info = information(file)?;
+    // FILE_DELETE_CHILD is meaningful only for a directory. NSIS can leave
+    // that bit in an inherited read ACE on a regular file; it grants no file
+    // mutation authority. Classify the same opened handle, retaining every
+    // other mutating right and the full directory mask.
+    let write_rights = if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        WRITE_RIGHTS
+    } else {
+        WRITE_RIGHTS & !FILE_DELETE_CHILD
+    };
     let user = CurrentUser::new()?;
     let system = known_sid(WinLocalSystemSid)?;
     let admins = known_sid(WinBuiltinAdministratorsSid)?;
@@ -363,6 +372,10 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
     ) {
         return Err(invalid_at("owner-outside-trusted-set"));
     }
+    // OWNER RIGHTS (S-1-3-4) grants rights only to this object's current owner.
+    // Resolve its authority only after the actual handle owner passed the
+    // fixed owner allowlist above; it is never itself an allowed owner SID.
+    let owner_rights = known_sid(WinCreatorOwnerRightsSid)?;
     if dacl.is_null() {
         return Err(invalid_at("null-dacl"));
     }
@@ -410,13 +423,14 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
         {
             return Err(invalid_at("ace-sid-bounds-or-validity"));
         }
-        if ace.Mask & WRITE_RIGHTS != 0
+        if ace.Mask & write_rights != 0
             && !trusted_storage_sid(
                 sid,
                 user.sid(),
                 system.as_ptr().cast_mut().cast(),
                 admins.as_ptr().cast_mut().cast(),
             )
+            && !same_sid(sid, owner_rights.as_ptr().cast_mut().cast())
         {
             return Err(invalid_at("foreign-write-ace"));
         }
@@ -650,6 +664,220 @@ pub(super) fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn directory_with_inheritable_everyone_access(path: &Path, access: u32) {
+        let sid = CurrentUser::new().unwrap().string().unwrap();
+        directory_with_sddl(
+            path,
+            &format!("O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;0x{access:x};;;WD)"),
+        );
+    }
+
+    fn directory_with_sddl(path: &Path, sddl: &str) {
+        let sddl = wide(OsStr::new(sddl)).unwrap();
+        let mut descriptor = null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    null_mut(),
+                )
+            },
+            0
+        );
+        let descriptor = Local(descriptor);
+        let attributes = security_attributes(&descriptor);
+        let name = wide(path.as_os_str()).unwrap();
+        assert_ne!(unsafe { CreateDirectoryW(name.as_ptr(), &attributes) }, 0);
+    }
+
+    fn assert_effective_allow_access(file: &File, kind: i32, access: u32, inherited: bool) {
+        use windows_sys::Win32::Security::INHERITED_ACE;
+
+        let expected = known_sid(kind).unwrap();
+        let mut dacl: *mut ACL = null_mut();
+        let mut descriptor = null_mut();
+        assert_eq!(
+            unsafe {
+                GetSecurityInfo(
+                    file.as_raw_handle().cast(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    &mut dacl,
+                    null_mut(),
+                    &mut descriptor,
+                )
+            },
+            0
+        );
+        let _allocation = Local(descriptor);
+        assert!(!dacl.is_null());
+        assert_ne!(unsafe { IsValidAcl(dacl) }, 0);
+        let mut size = ACL_SIZE_INFORMATION::default();
+        assert_ne!(
+            unsafe {
+                GetAclInformation(
+                    dacl,
+                    (&mut size as *mut ACL_SIZE_INFORMATION).cast(),
+                    size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation,
+                )
+            },
+            0
+        );
+        assert!(size.AceCount <= 1024);
+        let mut matches = 0;
+        for index in 0..size.AceCount {
+            let mut raw = null_mut();
+            assert_ne!(unsafe { GetAce(dacl, index, &mut raw) }, 0);
+            let header = unsafe { &*raw.cast::<ACE_HEADER>() };
+            if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE {
+                continue;
+            }
+            let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+            let sid = (&ace.SidStart as *const u32).cast_mut().cast::<c_void>();
+            if same_sid(sid, expected.as_ptr().cast_mut().cast()) {
+                assert_eq!(u32::from(header.AceFlags) & INHERITED_ACE != 0, inherited);
+                assert_eq!(u32::from(header.AceFlags) & INHERIT_ONLY_ACE, 0);
+                assert_eq!(ace.Mask, access);
+                matches += 1;
+            }
+        }
+        assert_eq!(matches, 1, "fixture must retain the exact effective ACE");
+    }
+
+    #[test]
+    fn native_nsis_inherited_read_acl_accepts_files_but_rejects_directories() {
+        use windows_sys::Win32::Security::WinWorldSid;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("nsis-style");
+        // NSIS's administrator temp-directory ACE is inheritable Everyone
+        // 0x1200c1: SYNCHRONIZE | READ_CONTROL | FILE_READ_ATTRIBUTES |
+        // FILE_DELETE_CHILD | FILE_READ_DATA. Let Windows inherit the actual
+        // ACE onto the file, instead of testing only an arithmetic mask.
+        directory_with_inheritable_everyone_access(&root, 0x0012_00c1);
+        let state = root.join("fixture");
+        fs::write(&state, b"preserve").unwrap();
+        let file = open_raw(&state, READ_CONTROL, OPEN_EXISTING, null()).unwrap();
+        assert_effective_allow_access(&file, WinWorldSid, 0x0012_00c1, true);
+        drop(file);
+        let directory = open_raw(
+            &root,
+            READ_CONTROL | FILE_READ_ATTRIBUTES,
+            OPEN_EXISTING,
+            null(),
+        )
+        .unwrap();
+        let error = validate_private_handle(&directory).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("foreign-write-ace"));
+        drop(directory);
+
+        assert_eq!(read_bounded(&state, 64).unwrap().unwrap(), b"preserve");
+        drop(open_private(&state, false).unwrap());
+        drop(open_executable_mutation_guard(&state).unwrap());
+        assert_eq!(fs::read(&state).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn native_python_owner_rights_acl_accepts_files_and_directories() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("python-0700");
+        // This is CPython's exact os.mkdir(mode=0o700) Windows descriptor.
+        // It deliberately omits O:, letting the token supply the actual owner.
+        directory_with_sddl(&root, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)");
+        let directory = open_raw(
+            &root,
+            READ_CONTROL | FILE_READ_ATTRIBUTES,
+            OPEN_EXISTING,
+            null(),
+        )
+        .unwrap();
+        assert_effective_allow_access(&directory, WinCreatorOwnerRightsSid, 0x001f_01ff, false);
+        drop(directory);
+        private_directory(&root).unwrap();
+
+        let state = root.join("fixture");
+        fs::write(&state, b"preserve").unwrap();
+        let file = open_raw(&state, READ_CONTROL, OPEN_EXISTING, null()).unwrap();
+        assert_effective_allow_access(&file, WinCreatorOwnerRightsSid, 0x001f_01ff, true);
+        drop(file);
+        assert_eq!(read_bounded(&state, 64).unwrap().unwrap(), b"preserve");
+        drop(open_private(&state, false).unwrap());
+        drop(open_executable_mutation_guard(&state).unwrap());
+        assert_eq!(fs::read(&state).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn native_owner_rights_sid_is_not_a_trusted_storage_owner() {
+        let user = CurrentUser::new().unwrap();
+        let system = known_sid(WinLocalSystemSid).unwrap();
+        let admins = known_sid(WinBuiltinAdministratorsSid).unwrap();
+        let owner_rights = known_sid(WinCreatorOwnerRightsSid).unwrap();
+        assert!(!trusted_storage_sid(
+            owner_rights.as_ptr().cast_mut().cast(),
+            user.sid(),
+            system.as_ptr().cast_mut().cast(),
+            admins.as_ptr().cast_mut().cast(),
+        ));
+    }
+
+    #[test]
+    fn native_owner_rights_acl_still_rejects_foreign_writers() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("python-0700-with-foreign-writer");
+        directory_with_sddl(
+            &root,
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)(A;OICI;FW;;;WD)",
+        );
+        let error = private_directory(&root).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("foreign-write-ace"));
+
+        let state = root.join("fixture");
+        fs::write(&state, b"preserve").unwrap();
+        let error = open_readonly(&state).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("foreign-write-ace"));
+        assert!(open_private(&state, true).is_err());
+        assert!(open_executable_mutation_guard(&state).is_err());
+        assert_eq!(fs::read(&state).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn native_foreign_file_mutation_rights_remain_rejected() {
+        let temporary = tempfile::tempdir().unwrap();
+        for (index, access) in [
+            GENERIC_ALL,
+            GENERIC_WRITE,
+            DELETE,
+            WRITE_DAC,
+            WRITE_OWNER,
+            FILE_WRITE_DATA,
+            FILE_APPEND_DATA,
+            FILE_WRITE_EA,
+            FILE_WRITE_ATTRIBUTES,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let root = temporary.path().join(format!("foreign-access-{index}"));
+            directory_with_inheritable_everyone_access(&root, 0x0012_00c1 | access);
+            let state = root.join("fixture");
+            fs::write(&state, b"preserve").unwrap();
+            let error = open_readonly(&state).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains("foreign-write-ace"));
+            assert!(open_private(&state, true).is_err());
+            assert!(open_executable_mutation_guard(&state).is_err());
+            assert_eq!(fs::read(&state).unwrap(), b"preserve");
+        }
+    }
 
     #[test]
     fn native_owner_allowlist_rejects_unprivileged_sids() {

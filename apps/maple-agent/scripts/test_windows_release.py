@@ -380,6 +380,41 @@ class InstallerExtractionTests(unittest.TestCase):
 
 
 class PackageBoundaryTests(unittest.TestCase):
+    def test_extraction_cleanup_failure_preserves_the_original_smoke_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            extraction = directory / "extracted"
+            extraction.mkdir()
+            manifest = {"package": "installer.exe", "updater": "bundle.tar.gz", "build": "12"}
+            primary = ValueError("original installer failure")
+            def cleanup():
+                raise PermissionError("secondary extraction cleanup failure")
+            proxy = types.SimpleNamespace(name=str(extraction), cleanup=cleanup)
+            diagnostics = io.StringIO()
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", return_value=extraction / "uninstall.exe"), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "smoke_installer", side_effect=primary), patch.object(sys, "stderr", diagnostics):
+                with self.assertRaises(ValueError) as raised:
+                    release.verify("dev", directory, True, smoke=True)
+            self.assertIs(raised.exception, primary)
+            self.assertIn("Windows verification cleanup failure: PermissionError", diagnostics.getvalue())
+
+    def test_smoke_keeps_the_verified_extracted_checker_alive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            manifest = {"package": "installer.exe", "updater": "bundle.tar.gz", "build": "12"}
+            checked = []
+            def extract(_installer, payload, *_arguments):
+                checker = payload / release.INSTALLER_CHECKER
+                checker.parent.mkdir()
+                checker.write_bytes(b"verified checker fixture")
+                return payload / "uninstall.exe"
+            def smoke(*_arguments, checker):
+                self.assertEqual(checker.read_bytes(), b"verified checker fixture")
+                checked.append(checker)
+            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "smoke_installer", side_effect=smoke):
+                release.verify("dev", directory, True, smoke=True)
+            self.assertEqual(len(checked), 1)
+            self.assertFalse(checked[0].exists())
+
     def test_downloaded_verifier_checks_the_standalone_uninstaller_in_both_policies(self):
         for unsigned in (False, True):
             with self.subTest(unsigned=unsigned), tempfile.TemporaryDirectory() as temporary:
@@ -489,7 +524,23 @@ class PackageBoundaryTests(unittest.TestCase):
                 # Test its error flag before ever reading a stale zero in $0.
                 self.assertEqual(instructions[index - 1], 'ClearErrors')
                 self.assertEqual(instructions[index + 1], 'IfErrors ' + destination)
-                self.assertEqual(instructions[index + 2], 'StrCmp $0 0 0 ' + destination)
+                child = {'refused': (22, 24), 'failed': (41,), 'refuse': (52,)}[destination]
+                self.assertIn(instructions[index + 2], ['StrCpy $FailureCode ' + str(code) for code in child])
+                self.assertEqual(instructions[index + 3], 'StrCmp $0 0 0 ' + destination)
+
+    def test_nsis_exit_codes_identify_probe_phase_and_launch_vs_child_failures(self):
+        source = (SCRIPTS / "windows-installer.nsi").read_text()
+        codes = {int(value) for value in re.findall(r'StrCpy \$FailureCode ([0-9]+)', source)}
+        self.assertEqual(codes, set(release.NSIS_FAILURE_PHASES))
+        for flag, launch, child in (("installer-preflight", 21, 22), ("installer-prepare", 23, 24),
+                                    ("installer-activate", 40, 41), ("uninstall-cleanup", 51, 52)):
+            with self.subTest(flag=flag):
+                pattern = (r'StrCpy \$FailureCode ' + str(launch) + r'\s+ClearErrors\s+ExecWait [^\n]*--internal-windows-' + flag
+                           + r'[^\n]*\n\s+IfErrors \w+\s+StrCpy \$FailureCode ' + str(child))
+                self.assertRegex(source, pattern)
+        self.assertRegex(source, r'ClearErrors\s+GetDLLVersion [^\n]+\n\s+IfErrors unsupported')
+        self.assertIn('SetErrorLevel 0', source)
+        self.assertIn('SetErrorLevel $FailureCode', source)
 
     def test_nsis_uninstall_keeps_native_fence_until_all_mutations_are_finished(self):
         source = (SCRIPTS / "windows-installer.nsi").read_text().split('Section "Uninstall"', 1)[1]
@@ -507,6 +558,97 @@ class PackageBoundaryTests(unittest.TestCase):
         self.assertEqual(remaining, [])
 
 
+class SmokeDiagnosticsTests(unittest.TestCase):
+    def registry(self):
+        def missing(*_arguments):
+            raise FileNotFoundError
+        return types.SimpleNamespace(KEY_READ=1, KEY_WOW64_32KEY=2, HKEY_CURRENT_USER=3, OpenKey=missing)
+
+    def test_direct_preflight_captures_both_streams_and_bounds_output(self):
+        result = release.capture_preflight([sys.executable, "-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"], dict(release.os.environ))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"stdout", result.stdout)
+        self.assertIn(b"stderr", result.stdout)
+        diagnostics = io.StringIO()
+        with patch.object(sys, "stderr", diagnostics), self.assertRaisesRegex(ValueError, "diagnostic bounds"):
+            release.capture_preflight([sys.executable, "-c", "import sys; sys.stderr.buffer.write(b'x' * 65536)"], dict(release.os.environ))
+        self.assertLessEqual(len(diagnostics.getvalue()), release.DIAGNOSTIC_LIMIT + 100)
+
+    def test_direct_preflight_timeout_is_bounded(self):
+        with patch.object(sys, "stderr", io.StringIO()), self.assertRaises(subprocess.TimeoutExpired):
+            release.capture_preflight([sys.executable, "-c", "import time; time.sleep(2)"], dict(release.os.environ), timeout=0.02)
+
+    def test_first_installer_failure_preserves_phase_and_evidence_before_failed_temp_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary) / "scratch"
+            scratch.mkdir()
+            diagnostics = io.StringIO()
+            primary = subprocess.CalledProcessError(24, "fixture installer")
+            environment = {"FIXTURE": "same sanitized environment"}
+            def install(command, **options):
+                self.assertIs(options["env"], environment)
+                root = Path(command.split("/D=", 1)[1])
+                root.mkdir()
+                (root / "current.json").write_text("do not print pointer contents")
+                (root / ".installer-intent.json").write_text("do not print intent contents")
+                raise primary
+            def cleanup():
+                self.assertIn('"installer_phase": "prepare-child"', diagnostics.getvalue())
+                self.assertIn('"current.json": "file"', diagnostics.getvalue())
+                raise PermissionError("do not print cleanup details")
+            proxy = types.SimpleNamespace(name=str(scratch), cleanup=cleanup)
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value=environment), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")) as probe, patch.object(release, "run", side_effect=install) as commands, patch.object(sys, "stderr", diagnostics):
+                with self.assertRaises(subprocess.CalledProcessError) as raised:
+                    release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
+            self.assertIs(raised.exception, primary)
+            self.assertEqual(commands.call_count, 1)
+            self.assertIs(probe.call_args.args[1], environment)
+            self.assertEqual(probe.call_args.args[0][1], "--internal-windows-installer-preflight")
+            self.assertIn("Windows verification cleanup failure: PermissionError", diagnostics.getvalue())
+            self.assertNotIn("do not print", diagnostics.getvalue())
+
+    def test_cleanup_command_failure_never_masks_the_primary_failure(self):
+        registry = self.registry()
+        primary = ValueError("primary verification failure")
+        queries = 0
+        def query(*_arguments):
+            nonlocal queries
+            queries += 1
+            if queries == 2:
+                raise primary
+            raise FileNotFoundError
+        registry.OpenKey = query
+        calls = 0
+        def command(arguments, **_options):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                root = Path(arguments.split("/D=", 1)[1])
+                root.mkdir()
+                (root / "maple-agent.exe").write_bytes(b"owned fixture")
+                return subprocess.CompletedProcess(arguments, 0)
+            raise subprocess.CalledProcessError(1, "cleanup fixture")
+        diagnostics = io.StringIO()
+        with patch.dict(sys.modules, winreg=registry), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")), patch.object(release, "run", side_effect=command), patch.object(sys, "stderr", diagnostics):
+            with self.assertRaises(ValueError) as raised:
+                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(calls, 2)
+        self.assertIn('"phase": "installed-verification"', diagnostics.getvalue())
+        self.assertIn('"phase": "host-stop"', diagnostics.getvalue())
+
+    def test_failed_readonly_preflight_never_runs_the_installer_or_prepare(self):
+        diagnostics = io.StringIO()
+        result = subprocess.CompletedProcess(["checker", "--internal-windows-installer-preflight"], 1, b"fixed native guard failure\x1b[31m\x00")
+        with patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=result), patch.object(release, "run") as commands, patch.object(sys, "stderr", diagnostics):
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
+        commands.assert_not_called()
+        self.assertIn("fixed native guard failure", diagnostics.getvalue())
+        self.assertNotIn("\x1b", diagnostics.getvalue())
+        self.assertNotIn("\x00", diagnostics.getvalue())
+
+
 class UnsignedProdSmokeTests(unittest.TestCase):
     def registry(self):
         def missing(*_arguments):
@@ -516,8 +658,8 @@ class UnsignedProdSmokeTests(unittest.TestCase):
     def smoke(self, invoke):
         # This portable test covers the verifier's negative-proof assertions.
         # Actual NSIS/native trust behavior remains a Windows consumer test.
-        with patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value={}), patch.object(subprocess, "run", side_effect=invoke), patch.object(release, "gui_smoke") as gui:
-            release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {})
+        with patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 1, b"expected unsigned refusal")), patch.object(subprocess, "run", side_effect=invoke), patch.object(release, "gui_smoke") as gui:
+            release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {}, checker=Path("checker.exe"))
             gui.assert_not_called()
 
     def test_unsigned_prod_requires_failure_without_destination_changes(self):
@@ -547,9 +689,9 @@ class UnsignedProdSmokeTests(unittest.TestCase):
                 raise FileNotFoundError
             return Opened()
         registry.OpenKey = changed
-        with patch.dict(sys.modules, winreg=registry), patch.object(release, "smoke_environment", return_value={}), patch.object(subprocess, "run", return_value=subprocess.CompletedProcess("preview", 1)):
+        with patch.dict(sys.modules, winreg=registry), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 1, b"expected unsigned refusal")), patch.object(subprocess, "run", return_value=subprocess.CompletedProcess("preview", 1)):
             with self.assertRaisesRegex(ValueError, "registration"):
-                release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {})
+                release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {}, checker=Path("checker.exe"))
 
 
 if __name__ == "__main__":

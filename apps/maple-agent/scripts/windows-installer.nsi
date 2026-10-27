@@ -34,13 +34,23 @@ Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
 
+Var FailureCode
+
 Function .onInit
   SetShellVarContext current
   ; This SYSTEM registry key is not redirected by WOW64. Built-in instructions
   ; keep the installer payload free of executable third-party UI plugins.
+  StrCpy $FailureCode 10
+  ClearErrors
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "PROCESSOR_ARCHITECTURE"
+  IfErrors unsupported
+  StrCpy $FailureCode 11
   StrCmp $0 "AMD64" 0 unsupported
+  StrCpy $FailureCode 12
+  ClearErrors
   GetDLLVersion "$SYSDIR\kernel32.dll" $0 $1
+  IfErrors unsupported
+  StrCpy $FailureCode 13
   IntOp $0 $0 >> 16
   IntCmp $0 10 check_build unsupported supported
 check_build:
@@ -51,7 +61,7 @@ check_build:
   IntCmp $1 15063 supported unsupported supported
 unsupported:
   MessageBox MB_OK|MB_ICONSTOP "${DISPLAY_NAME} requires Windows 10 version 1703 (build 15063) or later on an x64 computer." /SD IDOK
-  SetErrorLevel 1
+  SetErrorLevel $FailureCode
   Abort
 supported:
 FunctionEnd
@@ -65,22 +75,31 @@ Section "Install"
   ; early command performs no GUI, account, store or backend initialization.
   ; All destination/DACL/reparse checks happen before any installed file or
   ; registry changes. Unsigned Prod previews deliberately stop here.
+  StrCpy $FailureCode 20
+  SetErrorLevel 20
+  ClearErrors
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File /oname=maple-installer-check.exe "${PAYLOAD}\maple-agent.exe"
+  IfErrors refused
+  StrCpy $FailureCode 21
   ClearErrors
   ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-preflight "$INSTDIR"' $0
   IfErrors refused
+  StrCpy $FailureCode 22
   StrCmp $0 0 0 refused
   ; The signed helper durably records the manual operation, creates a private
   ; root, bootstraps only a fresh install and repairs incomplete non-current
   ; generation files. A retry must never overwrite a live or valid rollback
   ; generation, nor remain stuck with an interrupted NSIS file copy.
+  StrCpy $FailureCode 23
   ClearErrors
   ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-prepare "$INSTDIR" ${GENERATION}' $0
   IfErrors refused
+  StrCpy $FailureCode 24
   StrCmp $0 0 0 refused
 
+  StrCpy $FailureCode 31
   StrCpy $HadRegistration 0
   ClearErrors
   ReadRegStr $PreviousInstallLocation HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation"
@@ -91,6 +110,7 @@ Section "Install"
 unregistered:
   ; Never overwrite the stable bootstrap or an existing generation. All new
   ; generation bytes arrive before the native helper commits current.json.
+  StrCpy $FailureCode 30
   SetOutPath "$INSTDIR"
   IfFileExists "$INSTDIR\maple-agent.exe" bootstrap_ready
   ClearErrors
@@ -119,6 +139,7 @@ bootstrap_ready:
   WriteUninstaller "$INSTDIR\uninstall.exe"
   IfErrors failed
 uninstaller_ready:
+  StrCpy $FailureCode 31
   CreateDirectory "$SMPROGRAMS\${DISPLAY_NAME}"
   CreateShortcut "$SMPROGRAMS\${DISPLAY_NAME}\${DISPLAY_NAME}.lnk" "$INSTDIR\maple-agent.exe"
   CreateShortcut "$SMPROGRAMS\${DISPLAY_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
@@ -132,9 +153,11 @@ uninstaller_ready:
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "NoRepair" 1
   IfErrors failed
+  StrCpy $FailureCode 40
   ClearErrors
   ExecWait '"$INSTDIR\maple-agent.exe" --internal-windows-installer-activate ${GENERATION}' $0
   IfErrors failed
+  StrCpy $FailureCode 41
   StrCmp $0 0 0 failed
   SetErrorLevel 0
   Goto done
@@ -149,22 +172,26 @@ restore_registration:
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayVersion" "$PreviousDisplayVersion"
 refused:
   MessageBox MB_OK|MB_ICONSTOP "Installation could not be completed safely. Close the application and retry from a verified installer." /SD IDOK
-  SetErrorLevel 1
+  SetErrorLevel $FailureCode
   Abort
 done:
 SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
+  StrCpy $FailureCode 50
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation"
   StrCmp $0 "$INSTDIR" 0 refuse
   ; The trusted bootstrap derives its actual root and removes fixed owned
   ; generation files only after signature, lock, DACL and reparse checks.
   ; It preserves unknown user files, AppData and profile/database state.
+  StrCpy $FailureCode 51
   ClearErrors
   ExecWait '"$INSTDIR\maple-agent.exe" --internal-windows-uninstall-cleanup' $0
   IfErrors refuse
+  StrCpy $FailureCode 52
   StrCmp $0 0 0 refuse
+  StrCpy $FailureCode 53
   ClearErrors
   Delete "$INSTDIR\current.json"
   ; The helper has exited and released this exact private lock. Removing only
@@ -193,7 +220,7 @@ intent_removed:
   Goto done
 refuse:
   MessageBox MB_OK|MB_ICONSTOP "Close ${DISPLAY_NAME} and its background host, then uninstall from its registered installed location." /SD IDOK
-  SetErrorLevel 1
+  SetErrorLevel $FailureCode
   Abort
 done:
 SectionEnd

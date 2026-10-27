@@ -117,6 +117,14 @@ class WindowsUpdaterWorkflowTests(unittest.TestCase):
         self.assertIn("Get-AuthenticodeSignature -LiteralPath $unrelated", script)
         self.assertIn("A required native Windows test group is missing", script)
         self.assertIn("without skipped tests", script)
+        for case in (
+            "native_nsis_inherited_read_acl_accepts_files_but_rejects_directories",
+            "native_foreign_file_mutation_rights_remain_rejected",
+            "native_python_owner_rights_acl_accepts_files_and_directories",
+            "native_owner_rights_sid_is_not_a_trusted_storage_owner",
+            "native_owner_rights_acl_still_rejects_foreign_writers",
+        ):
+            self.assertIn("installer::windows_bundle::windows_fs::tests::" + case, script)
         for field in (
             "official_maple_signature_qualified", "signed_installed_a_to_b_qualified",
             "visible_gui_upgrade_qualified", "paired_remote_upgrade_qualified",
