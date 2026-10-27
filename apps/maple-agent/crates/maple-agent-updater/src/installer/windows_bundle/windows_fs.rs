@@ -58,16 +58,22 @@ const WRITE_RIGHTS: u32 = GENERIC_ALL
     | FILE_DELETE_CHILD;
 
 fn invalid() -> io::Error {
+    invalid_at("unspecified-guard")
+}
+
+// Fixed operation labels make native qualification failures actionable without
+// exposing filesystem paths, user names, SIDs, ACL contents or other state.
+fn invalid_at(stage: &'static str) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        "unsafe Windows updater storage",
+        format!("unsafe Windows updater storage ({stage})"),
     )
 }
 
 fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut result: Vec<u16> = value.encode_wide().collect();
     if result.contains(&0) || result.len() > 32_000 {
-        return Err(invalid());
+        return Err(invalid_at("path-encoding-or-length"));
     }
     result.push(0);
     Ok(result)
@@ -81,14 +87,14 @@ fn checked_components(path: &Path) -> io::Result<Vec<PathBuf>> {
     if !matches!(prefix, Component::Prefix(p) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
         || !matches!(components.next(), Some(Component::RootDir))
     {
-        return Err(invalid());
+        return Err(invalid_at("nonlocal-or-relative-path"));
     }
     let mut current = PathBuf::from(prefix.as_os_str());
     current.push("\\");
     let mut paths = vec![current.clone()];
     for part in components {
         let Component::Normal(name) = part else {
-            return Err(invalid());
+            return Err(invalid_at("nonnormal-path-component"));
         };
         let name = name.to_str().ok_or_else(invalid)?;
         // Windows aliases (trailing space/dot), ADS and reserved device names
@@ -118,7 +124,7 @@ fn checked_components(path: &Path) -> io::Result<Vec<PathBuf>> {
                 })
             })
         {
-            return Err(invalid());
+            return Err(invalid_at("ambiguous-path-component"));
         }
         current.push(name);
         paths.push(current.clone());
@@ -181,7 +187,7 @@ fn validate_path_binding(path: &Path, file: &File) -> io::Result<()> {
         second.nFileIndexHigh,
         second.nFileIndexLow,
     ) {
-        return Err(invalid());
+        return Err(invalid_at("opened-path-identity-mismatch"));
     }
     Ok(())
 }
@@ -191,10 +197,11 @@ fn information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
     if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-        || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 && info.nNumberOfLinks != 1)
-    {
-        return Err(invalid());
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(invalid_at("reparse-point"));
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 && info.nNumberOfLinks != 1 {
+        return Err(invalid_at("file-hardlink-count"));
     }
     Ok(info)
 }
@@ -210,7 +217,7 @@ fn ancestors(path: &Path, include_leaf: bool) -> io::Result<Vec<File>> {
         let info = information(&file)?;
         if path != paths.last().unwrap() || !include_leaf {
             if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-                return Err(invalid());
+                return Err(invalid_at("ancestor-not-directory"));
             }
         }
         guards.push(file);
@@ -316,6 +323,10 @@ fn same_sid(a: PSID, b: PSID) -> bool {
     !a.is_null() && !b.is_null() && unsafe { EqualSid(a, b) } != 0
 }
 
+fn trusted_storage_sid(sid: PSID, user: PSID, system: PSID, admins: PSID) -> bool {
+    same_sid(sid, user) || same_sid(sid, system) || same_sid(sid, admins)
+}
+
 fn validate_private_handle(file: &File) -> io::Result<()> {
     information(file)?;
     let user = CurrentUser::new()?;
@@ -340,8 +351,23 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(code as i32));
     }
     let _allocation = Local(descriptor);
-    if !same_sid(owner, user.sid()) || dacl.is_null() || unsafe { IsValidAcl(dacl) } == 0 {
-        return Err(invalid());
+    // TokenOwner may be Administrators for an elevated process even when
+    // TokenUser is the signed-in user. Owners have implicit WRITE_DAC, so the
+    // owner must belong to the exact same authority set as allowed writers.
+    // Explicit updater-created objects continue to specify O:<current user>.
+    if !trusted_storage_sid(
+        owner,
+        user.sid(),
+        system.as_ptr().cast_mut().cast(),
+        admins.as_ptr().cast_mut().cast(),
+    ) {
+        return Err(invalid_at("owner-outside-trusted-set"));
+    }
+    if dacl.is_null() {
+        return Err(invalid_at("null-dacl"));
+    }
+    if unsafe { IsValidAcl(dacl) } == 0 {
+        return Err(invalid_at("invalid-dacl"));
     }
     let mut size = ACL_SIZE_INFORMATION::default();
     if unsafe {
@@ -354,12 +380,12 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
     } == 0
         || size.AceCount > 1024
     {
-        return Err(invalid());
+        return Err(invalid_at("dacl-information-or-count"));
     }
     for index in 0..size.AceCount {
         let mut raw = null_mut();
         if unsafe { GetAce(dacl, index, &mut raw) } == 0 || raw.is_null() {
-            return Err(invalid());
+            return Err(invalid_at("dacl-ace-read"));
         }
         let header = unsafe { &*raw.cast::<ACE_HEADER>() };
         if header.AceFlags as u32 & INHERIT_ONLY_ACE != 0 {
@@ -368,10 +394,11 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
         if header.AceType as u32 == ACCESS_DENIED_ACE_TYPE {
             continue;
         }
-        if header.AceType as u32 != ACCESS_ALLOWED_ACE_TYPE
-            || (header.AceSize as usize) < size_of::<ACCESS_ALLOWED_ACE>() + 4
-        {
-            return Err(invalid());
+        if header.AceType as u32 != ACCESS_ALLOWED_ACE_TYPE {
+            return Err(invalid_at("unsupported-effective-ace-type"));
+        }
+        if (header.AceSize as usize) < size_of::<ACCESS_ALLOWED_ACE>() + 4 {
+            return Err(invalid_at("short-allowed-ace"));
         }
         let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
         let sid = (&ace.SidStart as *const u32).cast_mut().cast::<c_void>();
@@ -381,14 +408,17 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
             || 8 + 8 + subauthorities * 4 > header.AceSize as usize
             || unsafe { IsValidSid(sid) } == 0
         {
-            return Err(invalid());
+            return Err(invalid_at("ace-sid-bounds-or-validity"));
         }
         if ace.Mask & WRITE_RIGHTS != 0
-            && !same_sid(sid, user.sid())
-            && !same_sid(sid, system.as_ptr().cast_mut().cast())
-            && !same_sid(sid, admins.as_ptr().cast_mut().cast())
+            && !trusted_storage_sid(
+                sid,
+                user.sid(),
+                system.as_ptr().cast_mut().cast(),
+                admins.as_ptr().cast_mut().cast(),
+            )
         {
-            return Err(invalid());
+            return Err(invalid_at("foreign-write-ace"));
         }
     }
     Ok(())
@@ -620,6 +650,55 @@ pub(super) fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_owner_allowlist_rejects_unprivileged_sids() {
+        use windows_sys::Win32::Security::{WinBuiltinUsersSid, WinWorldSid};
+
+        let user = CurrentUser::new().unwrap();
+        let system = known_sid(WinLocalSystemSid).unwrap();
+        let admins = known_sid(WinBuiltinAdministratorsSid).unwrap();
+        let users = known_sid(WinBuiltinUsersSid).unwrap();
+        let everyone = known_sid(WinWorldSid).unwrap();
+        let allowed = |sid| {
+            trusted_storage_sid(
+                sid,
+                user.sid(),
+                system.as_ptr().cast_mut().cast(),
+                admins.as_ptr().cast_mut().cast(),
+            )
+        };
+        assert!(allowed(user.sid()));
+        assert!(allowed(system.as_ptr().cast_mut().cast()));
+        assert!(allowed(admins.as_ptr().cast_mut().cast()));
+        assert!(!allowed(users.as_ptr().cast_mut().cast()));
+        assert!(!allowed(everyone.as_ptr().cast_mut().cast()));
+        assert!(!allowed(null_mut()));
+    }
+
+    #[test]
+    fn native_default_owner_storage_and_named_temp_atomic_replace() {
+        // Default Windows ownership is TokenOwner, which can be the exact
+        // Administrators SID under an elevated native runner/installer.
+        let temporary = tempfile::tempdir().unwrap();
+        private_directory(temporary.path()).unwrap();
+        let destination = temporary.path().join("state.json");
+        fs::write(&destination, b"previous").unwrap();
+        assert_eq!(
+            read_bounded(&destination, 64).unwrap().unwrap(),
+            b"previous"
+        );
+        let mut pending = tempfile::NamedTempFile::new_in(temporary.path()).unwrap();
+        std::io::Write::write_all(&mut pending, b"replacement").unwrap();
+        pending.as_file().sync_all().unwrap();
+        let pending = pending.into_temp_path();
+        atomic_replace(&pending, &destination).unwrap();
+        assert_eq!(
+            read_bounded(&destination, 64).unwrap().unwrap(),
+            b"replacement"
+        );
+        assert!(!pending.exists());
+    }
 
     #[test]
     fn refuses_nonlocal_and_ambiguous_windows_names() {

@@ -85,6 +85,7 @@ try {
     throw 'The unrelated signed Windows fixture is unavailable or has another identity.'
   }
   $receipt.unrelated_os_signature_valid = $true
+  $receipt.unrelated_os_signature_type = [string]$signature.SignatureType
 
   Push-Location $component
   try {
@@ -105,6 +106,8 @@ try {
       'installer::windows_bundle::authenticode::tests::pe_certificate_directory_must_be_completely_absent',
       'installer::windows_bundle::authenticode::tests::purpose_provider_flags_pin_startup_offline_and_admission_revocation',
       'installer::windows_bundle::authenticode::tests::native_trust_configuration_keeps_startup_and_admission_separate',
+      'installer::windows_bundle::authenticode::tests::catalog_presence_and_lookup_errors_never_enable_unsigned_dev',
+      'installer::windows_bundle::authenticode::tests::native_catalog_lookup_distinguishes_unsigned_and_windows_signed_executables',
       'installer::windows_bundle::windows_fs::tests::refuses_nonlocal_and_ambiguous_windows_names',
       'installer::windows_bundle::windows_fs::tests::private_storage_round_trip_and_atomic_replacement',
       'installer::windows_bundle::windows_fs::tests::rejects_hard_linked_state_and_preserves_oversized_file',
@@ -112,6 +115,8 @@ try {
       'installer::windows_bundle::windows_fs::tests::rejects_file_and_ancestor_reparse_points_when_symlink_privilege_available',
       'installer::windows_bundle::windows_fs::tests::native_mutation_guard_blocks_loader_until_released',
       'installer::windows_bundle::windows_fs::tests::native_shared_read_validation_accepts_mapped_image_and_mutation_guard',
+      'installer::windows_bundle::windows_fs::tests::native_owner_allowlist_rejects_unprivileged_sids',
+      'installer::windows_bundle::windows_fs::tests::native_default_owner_storage_and_named_temp_atomic_replace',
       'installer::windows_bundle::tests::exact_archive_round_trip_binds_all_nine_files_and_three_directories',
       'installer::windows_bundle::tests::rejected_archive_never_begins_extraction',
       'installer::windows_bundle::tests::descriptors_bind_profile_product_release_and_strict_json_fields',

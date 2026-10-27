@@ -4,7 +4,7 @@
 
 use std::{
     ffi::c_void,
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom},
     mem::size_of,
     os::windows::{ffi::OsStrExt, fs::MetadataExt, fs::OpenOptionsExt, io::AsRawHandle},
@@ -12,9 +12,20 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{GetLastError, INVALID_HANDLE_VALUE, SetLastError, TRUST_E_NOSIGNATURE},
+    Foundation::{
+        CRYPT_E_NOT_FOUND, ERROR_INVALID_DATA, ERROR_INVALID_HANDLE, ERROR_NOT_FOUND, GetLastError,
+        INVALID_HANDLE_VALUE, SetLastError, TRUST_E_NOSIGNATURE,
+    },
     Security::{
-        Cryptography::{CERT_NAME_ATTR_TYPE, CertGetNameStringW, szOID_COMMON_NAME},
+        Cryptography::{
+            BCRYPT_SHA1_ALGORITHM, BCRYPT_SHA256_ALGORITHM, CERT_NAME_ATTR_TYPE,
+            Catalog::{
+                CryptCATAdminAcquireContext2, CryptCATAdminCalcHashFromFileHandle2,
+                CryptCATAdminEnumCatalogFromHash, CryptCATAdminReleaseCatalogContext,
+                CryptCATAdminReleaseContext,
+            },
+            CertGetNameStringW, szOID_COMMON_NAME,
+        },
         WinTrust::{
             CRYPT_PROVIDER_SGNR, SGNR_TYPE_TIMESTAMP, WINTRUST_ACTION_GENERIC_VERIFY_V2,
             WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
@@ -80,6 +91,144 @@ impl Drop for TrustState {
             );
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CatalogLookup {
+    Absent,
+    Present,
+    Error(u32),
+}
+
+fn catalog_lookup_result(catalog: isize, error: u32) -> CatalogLookup {
+    if catalog != 0 {
+        CatalogLookup::Present
+    } else if error == 0 || error == ERROR_NOT_FOUND || error == CRYPT_E_NOT_FOUND as u32 {
+        // EnumCatalogFromHash documents NULL as exhaustion. Preserve an actual
+        // error rather than treating every NULL return as an unsigned file.
+        CatalogLookup::Absent
+    } else {
+        CatalogLookup::Error(error)
+    }
+}
+
+struct CatalogState {
+    admin: isize,
+    catalog: isize,
+}
+
+impl Drop for CatalogState {
+    fn drop(&mut self) {
+        // SAFETY: these handles come only from their matching CryptCAT APIs.
+        // Catalog state must be released before its administrator context.
+        unsafe {
+            if self.catalog != 0 {
+                CryptCATAdminReleaseCatalogContext(self.admin, self.catalog, 0);
+            }
+            if self.admin != 0 {
+                CryptCATAdminReleaseContext(self.admin, 0);
+            }
+        }
+    }
+}
+
+fn catalog_membership(file: &File, algorithm: *const u16, expected_size: u32) -> CatalogLookup {
+    let mut state = CatalogState {
+        admin: 0,
+        catalog: 0,
+    };
+    // NULL subsystem requests global catalog finds, not just driver catalogs.
+    // The policy is NULL because this is presence detection, not a new way to
+    // trust signed code. A weak/untrusted catalog still excludes unsigned Dev.
+    if unsafe {
+        CryptCATAdminAcquireContext2(
+            &mut state.admin,
+            std::ptr::null(),
+            algorithm,
+            std::ptr::null(),
+            0,
+        )
+    } == 0
+    {
+        return CatalogLookup::Error(unsafe { GetLastError() });
+    }
+    if state.admin == 0 {
+        return CatalogLookup::Error(ERROR_INVALID_HANDLE);
+    }
+    let mut reader = file;
+    if let Err(error) = reader.seek(SeekFrom::Start(0)) {
+        return CatalogLookup::Error(
+            error.raw_os_error().unwrap_or(ERROR_INVALID_DATA as i32) as u32
+        );
+    }
+    let mut length = 0;
+    // SAFETY: the file remains open without write/delete sharing. The context
+    // selects the exact algorithm; the first call obtains a bounded hash size.
+    if unsafe {
+        CryptCATAdminCalcHashFromFileHandle2(
+            state.admin,
+            file.as_raw_handle(),
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0
+    {
+        return CatalogLookup::Error(unsafe { GetLastError() });
+    }
+    if length != expected_size || length > 32 {
+        return CatalogLookup::Error(ERROR_INVALID_DATA);
+    }
+    if let Err(error) = reader.seek(SeekFrom::Start(0)) {
+        return CatalogLookup::Error(
+            error.raw_os_error().unwrap_or(ERROR_INVALID_DATA as i32) as u32
+        );
+    }
+    let mut hash = [0u8; 32];
+    // SAFETY: length was checked against both the algorithm and buffer bounds.
+    if unsafe {
+        CryptCATAdminCalcHashFromFileHandle2(
+            state.admin,
+            file.as_raw_handle(),
+            &mut length,
+            hash.as_mut_ptr(),
+            0,
+        )
+    } == 0
+    {
+        return CatalogLookup::Error(unsafe { GetLastError() });
+    }
+    if length != expected_size {
+        return CatalogLookup::Error(ERROR_INVALID_DATA);
+    }
+    // SAFETY: context and immutable calculated hash remain live. We need only
+    // the first result; its ownership transfers directly into the close guard.
+    let error = unsafe {
+        SetLastError(0);
+        state.catalog = CryptCATAdminEnumCatalogFromHash(
+            state.admin,
+            hash.as_ptr(),
+            length,
+            0,
+            std::ptr::null_mut(),
+        );
+        GetLastError()
+    };
+    catalog_lookup_result(state.catalog, error)
+}
+
+fn catalog_memberships(file: &File) -> [CatalogLookup; 2] {
+    // Documented Windows catalog v2/v1 member algorithms. This checks local
+    // system catalog membership; it does not inspect unregistered external .cat
+    // files or introduce catalog signatures as an accepted Maple payload format.
+    [
+        catalog_membership(file, BCRYPT_SHA256_ALGORITHM, 32),
+        catalog_membership(file, BCRYPT_SHA1_ALGORITHM, 20),
+    ]
+}
+
+fn no_catalog_membership(lookups: [CatalogLookup; 2]) -> bool {
+    lookups == [CatalogLookup::Absent; 2]
 }
 
 fn publisher_matches(name: &[u16]) -> bool {
@@ -215,7 +364,8 @@ fn verify_for_purpose(path: &Path, allow_unsigned: bool, purpose: Purpose) -> bo
         (status, GetLastError())
     };
     if allow_unsigned && status == TRUST_E_NOSIGNATURE && reason == TRUST_E_NOSIGNATURE as u32 {
-        return pe_has_no_certificate(&mut &file);
+        return pe_has_no_certificate(&mut &file)
+            && no_catalog_membership(catalog_memberships(&file));
     }
     // WinVerifyTrust returns LONG, not HRESULT. Only exactly zero is success.
     if status != 0 || state.0.hWVTStateData.is_null() {
@@ -288,6 +438,26 @@ unsafe fn valid_timestamp(timestamp: *const CRYPT_PROVIDER_SGNR) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_presence_and_lookup_errors_never_enable_unsigned_dev() {
+        assert!(no_catalog_membership([CatalogLookup::Absent; 2]));
+        for error in [0, ERROR_NOT_FOUND, CRYPT_E_NOT_FOUND as u32] {
+            assert_eq!(catalog_lookup_result(0, error), CatalogLookup::Absent);
+            assert_eq!(catalog_lookup_result(1, error), CatalogLookup::Present);
+        }
+        for error in [5, ERROR_INVALID_DATA, ERROR_INVALID_HANDLE, 1062, u32::MAX] {
+            assert_eq!(catalog_lookup_result(0, error), CatalogLookup::Error(error));
+        }
+        for rejected in [
+            CatalogLookup::Present,
+            CatalogLookup::Error(0),
+            CatalogLookup::Error(5),
+        ] {
+            assert!(!no_catalog_membership([rejected, CatalogLookup::Absent]));
+            assert!(!no_catalog_membership([CatalogLookup::Absent, rejected]));
+        }
+    }
 
     #[test]
     fn purpose_provider_flags_pin_startup_offline_and_admission_revocation() {
@@ -397,15 +567,36 @@ mod tests {
         assert!(verify_startup_or_unsigned(&executable, true));
     }
 
+    fn windows_powershell_fixture() -> std::path::PathBuf {
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe")
+    }
+
+    #[test]
+    fn native_catalog_lookup_distinguishes_unsigned_and_windows_signed_executables() {
+        let unsigned = File::open(std::env::current_exe().unwrap()).unwrap();
+        let unsigned_memberships = catalog_memberships(&unsigned);
+        assert_eq!(unsigned_memberships, [CatalogLookup::Absent; 2]);
+
+        // The native harness independently verifies Microsoft's OS signature.
+        // This same fixed fixture caught the original embedded-only bypass.
+        let signed = File::open(windows_powershell_fixture()).unwrap();
+        let signed_memberships = catalog_memberships(&signed);
+        assert!(
+            signed_memberships.contains(&CatalogLookup::Present),
+            "expected a registered Windows catalog: {signed_memberships:?}"
+        );
+        assert!(!no_catalog_membership(signed_memberships));
+    }
+
     #[test]
     fn native_microsoft_publisher_is_rejected_even_for_unsigned_dev() {
         // Native qualification separately proves this fixed Windows binary has
         // a valid Microsoft signature; another publisher cannot be a Dev bypass.
-        let executable = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32")
-            .join("WindowsPowerShell")
-            .join("v1.0")
-            .join("powershell.exe");
+        let executable = windows_powershell_fixture();
         assert!(executable.is_file());
         assert!(!verify(&executable));
         assert!(!verify_or_unsigned(&executable, true));

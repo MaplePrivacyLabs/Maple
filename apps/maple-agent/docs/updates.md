@@ -163,6 +163,14 @@ generation. Native checks reject reparse points, hardlinks, unsupported paths
 and directories writable by another unprivileged account. The updater does not
 repair unsafe ownership or permissions.
 
+Storage ownership must belong to the current user, SYSTEM or the built-in
+Administrators group, the same principals permitted to write its private DACL.
+This admits Windows' elevated default owner without admitting another
+unprivileged owner or writer. Native-created private objects explicitly select
+the user owner. Unsigned Dev previews require both an absent embedded PE
+certificate and no registered local SHA-256/SHA-1 catalog membership; a
+catalog-signed system file cannot be treated as an unsigned Dev executable.
+
 Restart uses native process arguments and waits for the retiring process's
 exact PID and creation time. It does not construct a PowerShell command from
 the installation path. If relaunch fails, reopen the registered launcher;
