@@ -211,8 +211,11 @@ Artifact verifiers, TestFlight submission, and the Agent's signing and
 attestation use GitHub-hosted runners. Windows signing and the Windows release
 stay on GitHub's `windows-2025`; unsigned Agent and Research Windows builds use
 `blacksmith-8vcpu-windows-2025`, with Rust, MSVC, Perl and the linker pinned by
-`.github/actions/setup-agent-windows` for the Agent. The Research Windows PR
-package has no cache, because its signed build's cache lives in GitHub's store.
+`.github/actions/setup-agent-windows` for the Agent. The Agent's native Windows
+test lanes (`agent-windows-updater` and `agent-full-windows`) also run on GitHub's
+`windows-2025`: Blacksmith's workspace inherits a foreign write ACE that the
+updater's storage validation rejects. The Research Windows PR package has no
+cache, because its signed build's cache lives in GitHub's store.
 
 Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through

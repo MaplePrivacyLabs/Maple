@@ -34,6 +34,9 @@ LINUX_HEAVY = Runner("blacksmith-32vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
 MACOS = Runner("blacksmith-6vcpu-macos-26", "CI_MACOS_RUNNER")
 WINDOWS = Runner("blacksmith-8vcpu-windows-2025", "CI_WINDOWS_RUNNER")
 GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile nothing heavy
+# The Agent updater's native Windows tests need GitHub's runner workspace: Blacksmith's
+# inherits a foreign write ACE that the updater's storage validation correctly rejects.
+GITHUB_WINDOWS = Runner("windows-2025")
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"
@@ -224,7 +227,7 @@ LANES: Tuple[Lane, ...] = (
     # bootstrap tests, compiled without a cache. Both scripts always run; each needs the
     # Actions context and leaves a receipt and its Cargo log, which the job keeps.
     Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"),
-         job="agent-windows-updater", runner=WINDOWS,
+         job="agent-windows-updater", runner=GITHUB_WINDOWS,
          run="status=0; pwsh -NoProfile -File scripts/ci/windows-app-typecheck.ps1 || status=1;"
              " pwsh -NoProfile -File scripts/ci/windows-updater-tests.ps1 || status=1; exit $status",
          env=(("RUSTFLAGS", "-D warnings"), ("CARGO_TERM_COLOR", "never")), timeout=60),
@@ -238,7 +241,7 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-full-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(),
          run="python3 scripts/test_git_metadata.py && cargo build --workspace --all-targets --locked"
              " && cargo test --workspace --locked",
-         cache="agent-full-windows", timeout=60, gate=False, **AGENT_WIN),
+         cache="agent-full-windows", timeout=90, gate=False, **dict(AGENT_WIN, runner=GITHUB_WINDOWS)),
     # Pinned SQLCipher sources, per-target advisories and bans, and notices.
     Lane("agent-supply-chain", AGENT_DEPENDENCIES, run="just supply-chain", timeout=30, **AGENT_FLAKE),
     # Released rusqlite's own tests against the static SQLCipher provider (nightly.yml: all three OSes).

@@ -160,7 +160,8 @@ jobs:
     name: agent-windows-updater
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['agent-windows-updater']
-    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    # GitHub's image, as the native updater tests require (scripts/ci/lanes.py GITHUB_WINDOWS).
+    runs-on: windows-2025
     timeout-minutes: 60
     defaults:
       run:
