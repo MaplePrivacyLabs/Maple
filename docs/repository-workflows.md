@@ -1,75 +1,130 @@
 # Repository checks and publication boundaries
 
-Read this reference when changing hooks, workflow selection, shared CI, caching,
-or publication configuration. Commands and paths are relative to the monorepo
-root. For everyday setup, use the owning component guide and skill.
+Read this reference when changing hooks, workflows, caches, runners or
+publication configuration. [CI](ci.md) explains the pull-request checks: the
+single required check `ci-ok`, the tiers, labels, the lane table in
+`scripts/ci/lanes.py`, running a lane locally and adding one. Commands and
+paths are relative to the monorepo root.
 
 ## Pre-commit hook
 
-`./setup-hooks.sh` installs `.githooks/pre-commit`. It classifies staged paths
-with `scripts/ci/hook_change_detection.py` and runs each affected component's
-own `.githooks/pre-commit` inside that component's Nix flake, so the tools match
-CI: the root `.#ci` shell for Research, Auth, `services/updates/`, the independent
-Agent delivery checks in `scripts/ci/agent-updates.sh`, and repository
-checks; the component flakes for `apps/maple-agent/`, `sdk/`, `proxy/`, and
-`services/opensecret?submodules=1`. Without Nix it runs the same commands from
-`PATH` and warns that results may differ. It runs each selected component's format, lint, type-check, and unit-test gates;
-Research Rust runs formatting and tests, without Clippy. Other Rust components
-include their documented Clippy checks; shared
-crates do not fan out to their consumers. It never runs integration suites,
-cargo-deny, `nix flake check`, or packaging. `MAPLE_HOOK_FULL=1` runs the
-slower CI-complete variants (for example the Agent's full `just ci`);
-`MAPLE_HOOK_SKIP=1` or `git commit --no-verify` bypasses it. The hook is a fast
-local gate before the GitHub Actions cycle, not full CI parity. Keep the
-classifier, its table-driven tests, and the component scripts in step with the
-workflows when a lane changes.
+`./setup-hooks.sh` installs `.githooks/pre-commit`. It asks
+`scripts/ci/plan.py hook --staged` which components to check: a lane's own
+paths select the component in its `hook` field, without CI's fan-out to
+consumers, and an unclassified path selects every component. Each selected
+component's `.githooks/pre-commit` runs inside its Nix flake: the root `.#ci`
+shell for repository checks, Research, Auth, `services/updates/` and
+`scripts/ci/agent-updates.sh`; the component flakes for `apps/maple-agent/`,
+`sdk/`, `proxy/` and `services/opensecret?submodules=1`. Without Nix the same
+commands run from `PATH` with a warning.
 
-`scripts/ci/change_detection.py` routes expensive app packaging. It selects
-desktop builds for proxy runtime inputs and native builds for Rust SDK build
-inputs (`sdk/rust/Cargo.toml`, `src/`, `build.rs`, `assets/`), because the
-proxy, the Agent and the Research native shell build both from the tree as
-path dependencies; the proxy workflows' path filters list the same inputs.
-TypeScript SDK changes never select app builds: each frontend builds the SDK
-source its own manifest selects, so changing that manifest (a pin bump or a
-local link) is what selects its lanes. Tests, docs, container-only inputs, and
-standalone component lockfiles retain their independent lanes. Update the classifier and
-its table-driven tests when the dependency graph or component layout changes.
-The backend has its own root `opensecret-ci.yml` workflow and change selector;
-`sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
-same checkout. Backend changes do not imply Research or Agent packaging.
-Agent desktop packages compare master against the last successful ancestor run
-with all six Dev/Prod macOS/Linux/Windows download verifiers completed; selector-only
-and failed runs do not consume outstanding changes. Unrelated master pushes skip
-Agent packages. Manual master dispatch always builds both profiles. PR previews
-build and package only Dev on macOS, Linux and Windows, including the matching
-Linux and Windows downloaded-package verifiers; Prod packages remain covered by master builds.
-PRs keep their merge-base selection and signing stays confined to trusted master.
-Research desktop, Android and iOS PR workflows group runs by workflow and PR.
-A new run cancels earlier runs for that same unsigned preview; unrelated PRs
-and signed, master and manual queues keep their existing behavior.
-The separate `opensecret-eif.yml` builds dev/prod EIF candidates on
-same-repository PRs changing measured inputs without editing PCR approvals.
-Each diagnostic build explicitly realizes the user ramdisk selected by its EIF
-derivation, even when Nix substitutes a cached final EIF. The entrypoint's CA
-bundle must be present in that archive and omit the affected emSign roots. If
-the source CA store path is also present, its bytes must match the archive.
-The check records whether retained Comodo AAA is excluded from ordinary TLS
-PEMs and explicitly rejected by OpenSSL for server trust. It records the
-archived bundle and EIF hashes with the PCRs in the job summary; it does not upload
-an artifact. The workflow compares measurements
-on PRs editing approved PCR JSON, relevant master changes, and manual runs.
-Preserve ordinary backend PRs without fresh approvals and meaningful master
-mismatches; these checks never change approvals, sign, release, or authorize
-deployment. Master and same-repository PR EIF builds receive OIDC for FlakeHub caching.
-Fork PRs and non-master manual runs use GitHub's branch-scoped cache without
-OIDC. Preserve that head-repository boundary and verify cache changes on fresh
-hosted runners, not just a warm local Nix store. See the [cache policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
+The hook runs the fast part of the selected lanes: format, lint, type checks
+and unit tests. The Agent runs its `agent-lint` and `agent-test` recipes;
+Research Rust runs formatting and tests, without Clippy; repository changes
+run actionlint on staged workflows and the `scripts/ci` tests. Integration
+suites, cargo-deny, `nix flake check` and packaging stay in CI.
+`MAPLE_HOOK_FULL=1` runs slower variants where they exist, `MAPLE_HOOK_ONLY=a,b`
+restricts the components, and `MAPLE_HOOK_SKIP=1` or `git commit --no-verify`
+skips the hook. `scripts/ci/test_plan.py` keeps the hook's components and its
+branches in step with the lane table.
 
-For Pages, read [the deployment guide](pages-deployments.md). Preserve
-unprivileged preview builds and separate development/production profiles.
-Credential-bearing publication executes trusted master. Publishing flags,
-protected environments, and native Cloudflare build controls are operator
-configuration, not consequences of merging source.
+## Caches
+
+- Pull requests restore caches and never save one. The one exception is
+  `opensecret-eif.yml`'s `eif` job (fork PRs that edit PCR approvals, and
+  manual runs outside `master`): without FlakeHub credentials, its Nix store
+  goes to the run's branch-scoped Actions cache, which `master` and other
+  pull requests cannot read.
+- Lane caches (`Swatinem/rust-cache`, prefix `ci-v1`, keyed by lane and
+  lockfile hashes) are saved by master pushes and the nightly run on Blacksmith
+  runners only. Heavy Rust caches therefore live in Blacksmith's store; GitHub's
+  own store, which is small, holds only what GitHub-hosted jobs need (the
+  Research Windows signed build, the release, the Nix installer and that EIF
+  check).
+- The signed master builds write the keys `release.yml` restores by prefix
+  (`<os>-sccache-*`, `xcode-cache-*`, `release-onnxruntime-ios-*`,
+  `<os>-bun-*`, `<os>-gradle-*`). No pull-request job writes these prefixes;
+  the Research platform lanes only restore them. The iOS ONNX key text is
+  identical in every workflow that uses it. A release job reads only the store
+  of its own runner vendor, so `release.yml`'s `build-web` (GitHub-hosted)
+  starts with a cold Bun cache; Bun installs in seconds.
+- `agent-desktop-build.yml`'s unsigned builders save the exact key
+  `ci-v1-agent-release-<os>-<hash of both lockfiles>` on master pushes, with
+  no fallback keys; the Agent packaging lanes only restore it. Signing,
+  attestation and verification jobs restore nothing.
+
+## Concurrency
+
+| Workflow | Group | Cancelled |
+| --- | --- | --- |
+| `ci.yml` | per PR, or per merge-queue head or SHA | superseded PR runs only |
+| `frontend-tests`, `rust-tests`, `web-build`, `desktop-build`, `android-build`, `proxy-rust` | none | never |
+| `codeql.yml` | per SHA | never |
+| `agent-desktop-build.yml` | per run | never |
+| `mobile-build.yml`, `ios-dev-testflight.yml` | one queue each (`queue: max`) | never |
+| `opensecret-eif.yml`, `pages-preview-build.yml`, `auth-pages-ci.yml` | per PR or SHA | PR runs only |
+| `nightly.yml` | one group | never |
+| Publishers | their own serial groups | never |
+
+## Contracts
+
+`scripts/ci/test_contracts.py` runs in the `repo` lane and imports the code on
+the other side of each contract. A failure means the workflow change is wrong:
+
+1. `release.yml` and the publishers (`pages-publish`, `proxy-publish`,
+   `updates-publish`, `zapstore-publish`, `sdk-publish-npm`, `sdk-publish-rust`,
+   `agent-updates-publish`, `auth-pages-publish`, `opensecret-eif-release`)
+   change only with owner review. Exactly one workflow is named `Release`, and
+   every `workflow_run` listener names its producer and checks the head
+   repository, conclusion and event.
+2. `services/agent-updates/publisher/publisher.py` trusts
+   `agent-desktop-build.yml` by path, job names, artifact names and signer, and
+   its run number is the Agent build number: never rename that file. The
+   Windows packaging and verification jobs set `MAPLE_PACKAGE_BUILD_NUMBER` to
+   that run number. `scripts/ci/windows_signature_reference.py` (the manual
+   signature probe) trusts the same file's Windows Prod jobs and their runners.
+3. The release preflight (`.agents/skills/release-maple/scripts/ci_evidence.py`)
+   needs the evidence jobs of `frontend-tests`, `rust-tests`, `web-build`,
+   `desktop-build`, `android-build` and `mobile-build` on master pushes, and
+   CodeQL on the exact commit. These run on every relevant master push and are
+   never cancelled.
+4. The signed master builds write the release cache keys above, and
+   `ios-dev-testflight.yml`'s run number is the Maple Dev build number: never
+   rename that file.
+5. OpenSecret EIF builds use the release builder's runner class, and only the
+   listed jobs receive `id-token: write` or use FlakeHub. An EIF approval
+   mismatch fails only where that environment's approval files are edited
+   (or a manual run outside `master`); on master it is a notice.
+6. Each protected environment has a fixed set of consumer jobs;
+   `windows-signing` runs only on GitHub-hosted runners.
+7. Docs, guides and READMEs name only workflows that exist.
+
+`scripts/ci/test_workflow_policy.py` holds the rules every workflow keeps: no
+`pull_request_target`; actions pinned to commits; checkouts without persisted
+credentials; read-only workflow permissions, with write scopes granted to the
+jobs that need them; secrets only inside their environment's jobs; a pinned,
+verified Nix install; a timeout on every job; `ci-ok` needing every other
+`ci.yml` job; and declared runner labels.
+
+## Signed builds and publication
+
+Master pushes start signed Research builds (`desktop-build`, `android-build`,
+`mobile-build`, `ios-dev-testflight`) when `app-change-detection.yml` and
+`scripts/ci/change_detection.py` find Research inputs for that platform; the
+scripts only `ci.yml`'s unsigned lanes run select none. Only `mobile-build` and
+`ios-dev-testflight` can also be dispatched, which always builds; desktop and
+Android release evidence comes only from master pushes. The selector routes
+proxy runtime and Rust SDK build inputs to the native builds, because the
+Research shell builds both from the tree. TypeScript SDK changes never select
+app builds: each frontend builds the SDK its own manifest selects. Agent desktop
+packages build on master pushes that change Agent inputs (`plan.py only
+agent-desktop`) and on every manual dispatch. Signing jobs keep their protected
+environments; approving one trusts its runner with that environment's secrets.
+To rehearse the signed Research release scripts outside CI, run
+`scripts/ci/signed-release-rehearsal.sh <desktop|ios|android|all>` in the root
+Nix shell that builds the platform (`.#apple`, `.#android`, and
+`.#desktop-linux` on Linux or `.#ci` on macOS); its usage text lists the
+signing variables, and nothing is uploaded.
 
 Routine development never authorizes releases, signing, store submission,
 deployment, or live-service changes. Never push to `master` as a validation
@@ -78,232 +133,116 @@ artifacts to TestFlight. Creating a GitHub Release starts release builds and
 downstream publication. Use `$release-maple` only for explicitly requested
 release work, and report the tag and commit before publishing.
 
+For Pages, read [the deployment guide](pages-deployments.md). Credential-bearing
+publication runs from trusted master; publishing flags, protected environments
+and Cloudflare build controls are operator configuration, not consequences of
+merging source.
+
+## Agent Windows updater checks
+
+The `agent-windows-updater` lane runs on pull requests and master pushes that
+change the updater, the Windows bootstrap, the app's update and desktop code,
+the release profiles or the Windows packaging scripts, and with `ci:windows` or
+`ci:full`. It compiles from source, with no cache, signing credential or
+protected environment. `scripts/ci/windows-app-typecheck.ps1` typechecks
+`maple-agent-app --all-targets` with `cargo check --locked`, Windows-only test
+fixtures included, without code generation. `scripts/ci/windows-updater-tests.ps1`
+refuses signing and publication credentials, then runs the native updater,
+filesystem, Authenticode-rejection and bootstrap tests; every listed native case
+must run, so a runner without the symlink privilege the reparse fixtures need
+fails. Both scripts run even when the first fails, and both need the Actions
+context (`RUNNER_TEMP`, `GITHUB_SHA`, the run id and attempt). Their receipts
+and Cargo logs are kept as an artifact even on failure. Neither qualifies an
+official signature, a signed installed upgrade, the visible GUI or a paired
+remote upgrade.
+
+The manual `agent-windows-signature-probe.yml` takes an exact historical
+producer run, attempt and source and the artifact's ZIP and PE digests. It
+checks that the trusted-master Windows Prod build, signing and download
+verification jobs passed and that the ZIP and package identity match, then runs
+the production Authenticode verifier on the PE without launching it. It has no
+default reference and nothing depends on it; a pass proves historical signature
+interoperability only.
+
+## OpenSecret checks
+
+`ci.yml` runs `os-rust`, `os-flake-check` (the component flake's checks),
+`os-helpers` (the parent helper images), `deps-opensecret` (when its
+manifest, lockfile or `deny.toml` changes), `os-pcr` (the root
+`pcr-compatibility` check for PCR tooling and approval edits) and
+`os-sdk-e2e`, which tests both SDKs against `services/opensecret/` from the
+same checkout. The `os-eif` lane builds dev and
+prod EIF candidates on same-repository PRs to `master` that change measured
+inputs (or carry the `ci:eif` label) without editing PCR approvals, on the
+release builder's
+`blacksmith-8vcpu-ubuntu-2404-arm` class, and reports their PCRs.
+`opensecret-eif.yml` compares measurements on PRs that edit approved PCR JSON,
+on relevant master changes and on manual runs; that approval status is not
+part of `ci-ok`. A mismatch fails a manual run outside `master`, and a PR only
+in an environment whose approval files it edits. On master it is pending
+approval: the job passes with a notice and the built PCRs in its summary. Build
+and comparison errors always fail. These checks never change approvals, sign,
+release, or authorize deployment. Master and same-repository PR EIF builds receive OIDC for
+FlakeHub caching; fork PRs and non-master manual runs never do. Verify cache
+changes on fresh hosted runners, not a warm local Nix store. Details:
+[CI approval checks](../services/opensecret/docs/nitro-deploy.md#ci-approval-checks)
+and the [cache policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
+
 ## Nix runtime
 
-GitHub Actions jobs use Determinate Nix 3.23.3 through an immutable
-`DeterminateSystems/determinate-nix-action` commit and an explicit
-`source-tag: v3.23.3`. Keep the action revision and source tag synchronized when
-upgrading. `scripts/ci/test_nix_workflows.py` rejects the floating installer,
-an unexpected action revision or tag, installation before checkout, or a missing
-runtime verification step. Each job checks the installed Determinate and
-upstream Nix versions before doing build work. The workflows pass no GitHub
-token to the installer; FlakeHub authentication remains limited to jobs that
-separately receive `id-token: write`.
+Jobs install Determinate Nix 3.23.3 through an immutable
+`DeterminateSystems/determinate-nix-action` commit with `source-tag: v3.23.3`
+(`.github/actions/setup-nix`, or inline in the sacred workflows), then run
+`scripts/ci/verify-nix-runtime.sh`. Keep the revision and tag in step when
+upgrading. No GitHub token reaches the installer; FlakeHub authentication is
+limited to jobs with `id-token: write`.
 
-The pinned `actionlint` has a small source patch in
-`scripts/ci/patches/actionlint-stream-stdin.patch`: analyzer input streams after
-the child starts, so workflow lint cannot fill a pipe before its reader runs.
-The Nix package runs a large-input regression for stdout and combined output.
-Remove the patch when the pinned upstream includes this behavior.
-The macOS validation shell also caps Bash heredoc pipes at the POSIX 512-byte
-minimum; larger bodies use its normal temporary-file path. Package regressions
-exercise both heredocs and here-strings against the built Bash. Apple’s shell
-bootstraps this macOS tool build so the cached Bash cannot block configure.
+The pinned `actionlint` carries
+`scripts/ci/patches/actionlint-stream-stdin.patch`, so analyzer input streams
+after the child starts; remove it when upstream includes this. The macOS shell
+caps Bash heredoc pipes at 512 bytes, and larger bodies use a temporary file.
 
-## Linux runners
+## Runners and toolchains
 
-Research desktop/Android compilation and Agent Linux CI/AppImage builds use
-`blacksmith-8vcpu-ubuntu-2404`. Lightweight selectors, web builds, artifact
-verification and the separate Agent attestation job remain on GitHub's standard
-runners. Signing jobs retain their protected environments. The desktop release
-build command only receives Apple environment variables on macOS, but that
-condition does not restrict the runner's job secret context: approving a signing
-job trusts its runner with the selected environment's secrets. PR builds have
-no signing credentials and retain their existing branch-scoped caches. No
-persistent vendor disks or Docker builders are configured by these workflows.
+Compilation runs on Blacksmith runners (ARM64 `blacksmith-6vcpu-macos-26` for
+macOS); lane runners are the constants in `scripts/ci/lanes.py`. The signed
+Research macOS, Linux, Android and iOS builds compile and sign on Blacksmith.
+Artifact verifiers, TestFlight submission, and the Agent's signing and
+attestation use GitHub-hosted runners. Windows signing and the Windows release
+stay on GitHub's `windows-2025`; unsigned Agent and Research Windows builds use
+`blacksmith-8vcpu-windows-2025`, with Rust, MSVC, Perl and the linker pinned by
+`.github/actions/setup-agent-windows` for the Agent. The Agent's native Windows
+test lanes (`agent-windows-updater`, `agent-full-windows`) and the Windows
+packaging rehearsal also run on GitHub's `windows-2025`: Blacksmith's workspace
+inherits a foreign write ACE that the updater's storage validation rejects, and
+master's install smoke runs on GitHub's image. The Research Windows PR package has no
+cache, because its signed build's cache lives in GitHub's store.
 
-Research Linux packaging builds AppImage and DEB through Tauri, then creates
-the final RPM once from the normalized DEB payload. Its staging executable is
-marked as RPM so Tauri selects the RPM updater entry and installer. Build and
-download verifiers check the executable identity in all three package formats;
-updater metadata, signing and publication keep their existing flow.
-
-Research's Unix compiler-cache statistics use `scripts/ci/sccache-stats.sh`,
-which shares the build's cache configuration. In Actions the sccache socket
-lives under `RUNNER_TEMP`, so separate Nix shells reach the same server despite
-their different `TMPDIR` values. Cache archive restoration and compiler hits
-remain separate measurements.
-
-## Agent compilation and cache measurements
-
-Agent CI runs the three-platform workspace matrix, three-platform upstream
-SQLCipher provider suite, and plain Linux optimized binary as independent jobs.
-The final `Agent CI required jobs` check rejects failed or unexpectedly skipped
-selected jobs. All retain fail-closed change selection. The plain Linux binary
-and Desktop Dev/Prod packages have separate profiles and caches.
-
-Before restoring targets, `scripts/ci/agent_cache_scope.py` wraps the existing
-`agent_cache.py` identity without changing its legacy digest. It fingerprints
-Rust inside the component Nix shell, or the explicitly selected Windows MSVC
-environment, plus the native ABI/toolchain, flags, profile, Cargo configuration
-and provider inputs. For a known native target and modern Cargo resolver it
-omits only dependency declarations and feature edges proved inactive on that
-target. Unknown cfg expressions, target overrides and ambiguous feature edges
-stay conservative. Real compiler/native changes still invalidate; the original
-identity remains available for legacy bootstrap.
-
-The component shell pins Rustup proxies to its Nix toolchain so Cargo's external
-Clippy/rustfmt commands cannot silently select a host compiler. Windows setup
-pins Cargo's linker to the selected MSVC `link.exe` and compiles/runs an offline
-Cargo build-script fixture before restore. Cache probes use
-`agent_cache_command.py` to identify the selected compiler while excluding its
-optional incidental installed-Rustup inventory.
-
-`agent-windows-updater-tests.yml` separately runs native updater, filesystem,
-Authenticode rejection and application bootstrap component tests on
-`windows-2025` for the affected Agent paths. It uses the existing pinned Windows
-Rust and linker setup without signing credentials, release environments or
-dependency-artifact restoration. Required native cases must execute, including
-reparse fixtures; missing fixture privileges fail the job. Its source/run/attempt
-receipt and Cargo logs are retained even on failure. The lightweight bootstrap
-target does not replace the real Windows application build, official Maple
-signature verification, signed installed A-to-B upgrade, visible GUI or paired
-remote upgrade qualification.
-
-The same workflow independently typechecks `maple-agent-app --all-targets` on
-Windows with `cargo check --locked`, including Windows-only desktop fixtures.
-It runs in parallel with native updater tests and retains its own source/run
-receipt and complete compiler log. This catches app/test type errors without
-release code generation or waiting for release LTO. A successful typecheck does
-not claim test execution, packaging or installed-upgrade qualification.
-
-The separate manual-only `agent-windows-signature-probe.yml` accepts an exact
-historical producer run/attempt/source and artifact ZIP/PE digests. It validates
-successful trusted-master Windows Prod build, signing and downloaded-consumer
-jobs, bounded ZIP bytes and package identity before reading the selected PE with
-the real admission/startup Authenticode verifier. It never launches that PE.
-There is no default historical reference or dependency from ordinary PR tests;
-expired references must be selected again explicitly. Its result proves only
-historical signature interoperability, not the new updater's installed upgrade
-or final-source release qualification.
-
-Agent workspace, provider, plain release and Desktop Dev/Prod builders first
-try `agent_dependency_archive.py` through the Actions artifact service. A
-consumer accepts only this repository's designated push/master workflow and
-its exact matching platform/profile job. GitHub run/attempt, source commit,
-artifact creation interval and completed-successful producer job/steps must
-agree with the manifest. This proves that dependency seed's producer job; it
-does not declare unrelated workflow jobs or product checks green. Actual
-compiler/native/profile compatibility must match, and providers additionally
-require their exact verified upstream test-only dependency fingerprint.
-Workspace/release archives record their dependency graph; Cargo still resolves
-the current locked graph and checks freshness after a compatible restore.
-
-The archive includes only crates.io and reviewed, pinned public Git dependencies,
-registry/index data and their permitted dependency build outputs. New Git
-repositories require public-source review before entering the helper's allowlist;
-unknown sources and colliding package/target names are excluded. Local/path
-crates, application/test executables, app bundles, notices, credentials and
-Git hooks are excluded. The helper verifies the API's artifact ZIP digest,
-manifest/archive digest, bounded sizes/file counts and safe dependency-only
-paths before extraction; it rejects links, special files, traversal and path
-aliases. Missing, incompatible or unproven artifacts fall back to native
-bootstrap or a cold build. These archives remain executable dependency build
-inputs, so trusted provenance is required in addition to checksums. PRs only
-read them and run with no signing or publication credentials.
-
-Native `rust-cache` and exact provider-cache lookups are now read-only bootstrap
-sources. The initial lookup retains the scoped compiler/dependency key; an
-older compatible namespace can be searched with the unchanged legacy identity
-only when actual dependency libraries/fingerprints were not restored. It does
-not rely on `CACHEDIR.TAG`, which can be absent from an otherwise usable archive.
-Provider bootstrap never falls back across verified test-only graphs.
-
-After its existing validation passes, only a successful master-push builder
-prepares/uploads a dependency seed. Preparation or required upload failure
-fails the job instead of becoming a cache-save warning. Uploads have three-day
-retention. A successful master builder can reuse its proven restore receipt
-without repacking only when the dependency graph still matches and the seed
-was created within the previous 24 hours; otherwise it refreshes the seed.
-This refresh occurs during selected master builds, not a new daily dispatch.
-Each builder preserves its platform/profile/job boundary; signed packages and
-publication artifacts are separate outputs.
-
-Agent CI also compares master cumulatively against the last successful
-ancestor whose three workspace jobs, three provider jobs and plain Linux
-release job actually passed. Desktop packaging retains its independent
-all-six-downloaded-verifier baseline. Selector-only, failed or cancelled runs
-cannot consume outstanding changes. The existing master cancellation policy
-can still replace a run, but a subsequent unrelated push reselects the
-unverified component changes; lookup/history uncertainty selects a build.
-PRs retain their merge-base selection and superseded-preview cancellation.
-
-Unsigned builders upload seven-day `maple-agent-*-metrics-*` artifacts with
-actual environment identity, phase durations, logical target sizes, and bounded
-current Cargo timing HTML. Action logs report exact/restore keys and transferred
-cache bytes; logical target size is not compressed cache size. Windows build
-and test are separate phases. See [the Agent performance audit](agent-ci-performance.md)
-for the baseline, tradeoffs and cold/warm validation procedure.
-
-## macOS runners and Apple toolchain
-
-Research desktop/iOS builds, Agent release-binary jobs
-and native proxy macOS archives use ARM64 `blacksmith-6vcpu-macos-26` runners.
-Artifact verifiers, TestFlight uploads, and Agent preview packaging/protected
-signing use standard GitHub `macos-26` runners. Research signed builders retain
-their existing `desktop-signing` or `apple-signing` environment, so their
-provider receives that environment's secret context. Existing master pushes
-can build and upload independent Dev/Prod TestFlight artifacts after verification.
-The Agent's final signed-package provenance identifies its GitHub
-packaging/signing job; Blacksmith is trusted for prebuilt binary integrity.
-Research desktop and iOS builds select stable Xcode 26.5, build `17F42`, from
+Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
-the shared selector, which aligns the runner's active `xcode-select` directory
-and `DEVELOPER_DIR`; the root Nix shell exports the same version and build
-for its Apple recipes. Tauri mobile tooling discovers the active Xcode directly.
-Do not rely on the runner's default Xcode or beta app
-names. The independent Agent shell selects a full installed Xcode, and the
-SDK/proxy flakes own their Nix compiler and SDK inputs.
+`scripts/ci/select-xcode.py`; the root Nix shell exports the same version for
+its Apple recipes. Do not rely on a runner's default Xcode. The
+[iOS ONNX pins](../apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh)
+verify artifacts against that exact build, so an Xcode upgrade means rebuilding
+and reviewing those hashes and validating desktop and iOS packaging. A newer
+CI image does not raise the shipped deployment targets: Research supports
+macOS 13.4 and iOS 16.0.
 
-The [iOS ONNX pins](../apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh)
-verify artifacts against the exact Xcode build. An Xcode upgrade requires
-rebuilding and reviewing those hashes, keeping cache keys tied to the selected
-version/build and artifact inputs, and validating desktop and iOS packaging.
-Retiring a CI host image does not raise the shipped client's deployment
-targets: Research still supports macOS 13.4 and iOS 16.0.
-
-iOS builds share the unsigned ONNX dependency cache written by trusted master
-and release jobs. PRs only restore it; a miss builds locally and never saves a
-PR cache. Every restored artifact is checked against the pinned Xcode and ONNX
-hashes before use. Dev and Prod app build caches, signing and publication remain
-independent; there is no separate ONNX cache warmer.
-
-## Windows runner pilot
-
-Agent Windows x64 release binaries use standard GitHub `windows-2025`, pinned
-Rust/MSVC selection, static CRT linkage and the selected SDK's shader compiler.
-Credential-free builders upload the executable and third-party notices. A fresh
-master job inspects embedded PE profile/source metadata without executing the
-artifact, then reuses `windows-signing` and the existing Azure Artifact Signing
-helpers for the app, NSIS uninstaller and installer. Separate native verifiers
-check downloaded provenance, payload identity, signatures and isolated
-install/uninstall. PRs build unsigned Dev installers without signing credentials.
-These packages are Actions downloads; Windows automatic updates and built-in
-computer-use remain unsupported.
-
-The Research unsigned Windows PR package uses
-`blacksmith-8vcpu-windows-2025` (Windows Server 2025, public beta). The job
-records its actual capacity and Visual Studio Build Tools installation before
-running the existing pinned Bun/Rust, ONNX Runtime, VC runtime DLL staging,
-and NSIS build. Its cache remains restore-only, and downloaded package proofs
-are checked independently on a standard GitHub runner. Signed Windows master
-and release builds remain on GitHub's `windows-2025`; this pilot does not
-validate Azure signing, updater signing, or installed application behavior.
-Windows master/release artifact verifiers also use standard `ubuntu-latest`
-runners rather than larger runners.
+Research Linux packaging builds AppImage and DEB with Tauri, then the RPM from
+the normalized DEB payload. `scripts/ci/sccache-stats.sh` reports compiler-cache
+statistics with the build's own cache configuration.
 
 ## SDK consumption
 
 Follow the [consumer version policy](sdk-publishing.md#consumer-version-policy).
-Consumers independently select published SDK pins; local links are supported
-for development. Inspect each consumer's manifest/lockfile and actual SDK
-source. SDK publication and upgrading a consumer are separate decisions.
+Consumers select published SDK pins independently; local links are for
+development. SDK publication and upgrading a consumer are separate decisions.
 
 ## Maintaining guidance
 
 Re-check prescriptive language against source, tests, and executed workflows.
 Correct material workflow, ownership, or validation changes alongside the
-implementation. Keep unrelated drift separately scoped and avoid generic or
-duplicated policy. Public guides describe implementation, supported setup,
-tests, and CI; company credential administration and private operational
-procedures belong with their owners outside this repository.
+implementation. Keep unrelated drift separately scoped and avoid duplicated
+policy. Public guides describe implementation, supported setup, tests, and CI;
+credential administration and private operational procedures belong with their
+owners outside this repository.

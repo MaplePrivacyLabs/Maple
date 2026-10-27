@@ -15,7 +15,7 @@ out of the task.
 | `proxy/` | [Proxy guide](proxy/README.md); `$develop-maple-proxy` for the separate OpenAI-compatible relay |
 | `services/opensecret/` | [Backend guide](services/opensecret/AGENTS.md); `$develop-opensecret` and its API/provider/validation/security skills |
 | `services/updates/` | [Updater guide](services/updates/README.md); preserve deployed identity and installed-client metadata compatibility |
-| Shared CI, Nix, hooks, docs | [Repository workflows](docs/repository-workflows.md); root `scripts/`, `.github/`, `.agents/`, flake, Just and repository metadata |
+| Shared CI, Nix, hooks, docs | [CI](docs/ci.md) and [repository workflows](docs/repository-workflows.md); root `scripts/`, `.github/`, `.agents/`, flake, Just and repository metadata |
 
 ## Choose the development environment
 
@@ -70,9 +70,9 @@ or hook pass does not prove runtime integration.
 `./setup-hooks.sh` enables component-selected fast gates. Research Rust runs
 formatting and tests; strict Clippy is a separate optional diagnostic, absent
 from current Research CI/hook. Hooks do not run integration, cargo-deny, flake
-checks, or packaging. Read [hook and CI details](docs/repository-workflows.md#pre-commit-hook)
-when those boundaries change; run `nix flake check --no-update-lock-file` for
-flake, workflow, CI-script, or release-configuration changes.
+checks, or packaging. Read [hook details](docs/repository-workflows.md#pre-commit-hook)
+when those boundaries change; run `just lane repo` (the root `nix flake check`)
+for flake, workflow, CI-script, or release-configuration changes.
 
 Routine development never authorizes signing, releases, store uploads, deployment,
 or live-service changes. A master push can start signed builds/TestFlight uploads;
@@ -80,6 +80,17 @@ a GitHub Release starts release publication. Use `$release-maple` only for
 authorized release work. EIF/PCR comparison, signed approval, and deployment
 are separate; preserve [manual PCR compatibility](services/opensecret/docs/pcr-compatibility.md)
 and installed-client raw URLs. Never change approvals to clear ordinary PR checks.
+
+## CI rules for agents
+
+- `ci-ok` is the one required check; [CI](docs/ci.md) explains its lanes and labels.
+- Add or change checks only as lanes in `scripts/ci/lanes.py`, with a `test_plan.py` case.
+- Pull requests never save caches, and master runs are never cancelled.
+- Never edit release or publisher workflows, signing environments, or OpenSecret
+  approval gating to clear a check; a failing contract test means fix the change.
+- Run `just lane <id>` for the lanes your change selects before pushing.
+- Defaults cover ordinary PRs. Add a `ci:*` label when the change carries
+  platform or packaging risk its paths do not show ([labels](docs/ci.md#labels)).
 
 ## Maintaining this guidance
 

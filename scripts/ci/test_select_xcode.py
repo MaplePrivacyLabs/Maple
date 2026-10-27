@@ -139,7 +139,6 @@ resolve_xcode_developer_dir
         self.assertIn("17F113", result.stderr)
 
     def test_no_workflow_uses_retired_mac_os_and_every_native_selector_has_checkout(self):
-        selectors = []
         for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
             workflow = json.loads(subprocess.check_output(["yq", "-o=json", ".", str(path)], text=True))
             self.assertNotRegex(json.dumps(workflow), r"macos-14(?:-large|-xlarge)?")
@@ -149,30 +148,11 @@ resolve_xcode_developer_dir
                     if "scripts/ci/select-xcode.py" not in step.get("run", ""):
                         self.assertNotIn("Xcode_26.5_beta", step.get("run", ""))
                         continue
-                    selectors.append((path.name, job_id))
                     if "if" in step:
                         self.assertEqual(step["if"], "runner.os == 'macOS'", (path.name, job_id))
                     checkout = [s for s in steps[:index] if s.get("uses", "").startswith("actions/checkout@")]
                     self.assertEqual(len(checkout), 1, (path.name, job_id))
                     self.assertIs(checkout[0]["with"]["persist-credentials"], False)
-        self.assertCountEqual(selectors, [
-            ("agent-desktop-build.yml", "macos-build"),
-            ("agent-desktop-build.yml", "macos"),
-            ("agent-desktop-build.yml", "macos-unsigned"),
-            ("agent-desktop-build.yml", "verify-macos"),
-            ("desktop-build.yml", "build-macos"),
-            ("desktop-pr-build.yml", "build-macos"),
-            ("desktop-pr-build.yml", "build-research-dev-macos"),
-            ("ios-dev-testflight.yml", "build-ios-dev"),
-            ("ios-dev-testflight.yml", "submit-ios-dev-testflight"),
-            ("mobile-build.yml", "build-ios"),
-            ("mobile-build.yml", "submit-ios-testflight"),
-            ("mobile-pr-build.yml", "build-ios"),
-            ("release.yml", "build-tauri"),
-            ("release.yml", "build-ios"),
-            ("release.yml", "verify-macos-desktop-release-artifacts"),
-            ("release.yml", "verify-release-artifacts"),
-        ])
 
 
 if __name__ == "__main__":

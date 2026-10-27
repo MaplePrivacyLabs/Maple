@@ -26,9 +26,6 @@ on:
       - ".github/workflows/pages-*.yml"
       - "apps/maple-research/frontend/**"
       - "!apps/maple-research/frontend/src-tauri/**"
-      # Older open PR heads retain their development preview until rebased.
-      - "frontend/**"
-      - "!frontend/src-tauri/**"
       - "scripts/prepare-frontend-deps.sh"
       - "scripts/prepare-typescript-sdk.sh"
       - "scripts/ci/_common.sh"
@@ -37,6 +34,11 @@ on:
       - "scripts/ci/test_pages_*.py"
       - "flake.nix"
       - "flake.lock"
+
+concurrency:
+  # A newer PR head replaces an older preview build; master builds never cancel.
+  group: pages-preview-build-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-preview:
@@ -82,19 +84,8 @@ jobs:
           MAPLE_IOS_DEV_AUTH_ORIGIN: ${{ vars.MAPLE_IOS_DEV_AUTH_ORIGIN }}
 
       - name: Describe the preview artifact
-        id: artifact
         run: |
-          set -euo pipefail
-          # Existing PR heads may still use the pre-relocation source layout.
-          # Accept exactly one known output location; never search arbitrary paths.
-          artifact_dir=""
-          for candidate in apps/maple-research/frontend/src-tauri/target/reproducibility frontend/src-tauri/target/reproducibility; do
-            if [ -f "$candidate/maple-web-dist.tar.gz" ]; then
-              [ -z "$artifact_dir" ] || { echo "Ambiguous preview artifact layout" >&2; exit 1; }
-              artifact_dir="$candidate"
-            fi
-          done
-          [ -n "$artifact_dir" ] || { echo "Missing preview artifact" >&2; exit 1; }
+          artifact_dir=apps/maple-research/frontend/src-tauri/target/reproducibility
           nix develop --no-update-lock-file "$GITHUB_WORKSPACE/.pages-tools#pages" \
             -c python3 -I "$GITHUB_WORKSPACE/.pages-tools/scripts/ci/pages_artifact.py" manifest \
             --archive "$artifact_dir/maple-web-dist.tar.gz" \
@@ -103,14 +94,13 @@ jobs:
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --output "$artifact_dir/pages-artifact.json"
-          printf 'directory=%s\n' "$artifact_dir" >> "$GITHUB_OUTPUT"
 
       - name: Upload the preview artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: maple-pages-preview-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ steps.artifact.outputs.directory }}/maple-web-dist.tar.gz
-            ${{ steps.artifact.outputs.directory }}/pages-artifact.json
+            apps/maple-research/frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz
+            apps/maple-research/frontend/src-tauri/target/reproducibility/pages-artifact.json
           if-no-files-found: error
           retention-days: 5

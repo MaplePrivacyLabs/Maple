@@ -74,10 +74,10 @@ artifact's `pcr.json`; the deployment verifier rejects anything else.
 
 ## CI approval checks
 
-`opensecret-eif.yml` builds dev/prod EIF candidates on Linux ARM64 for
-same-repository PRs that change measured inputs without editing PCR approvals.
-The candidate job explicitly realizes and inspects the exact user initramfs
-passed to the EIF builder, including when the final EIF comes from cache,
+The root `ci.yml` `os-eif` lane builds dev/prod EIF candidates on Linux ARM64
+for same-repository PRs that change measured inputs without editing PCR
+approvals. The candidate job explicitly realizes and inspects the exact user
+initramfs passed to the EIF builder, including when the final EIF comes from cache,
 resolves its entrypoint's CA path, and reports the archived bundle's hash and
 affected-root check alongside the EIF hash and PCRs. The archived CA bytes
 are the primary evidence; the source store bytes are compared when separately
@@ -89,13 +89,18 @@ it does not independently extract the final EIF, upload a deployable artifact,
 or require an approval match. A PR
 runs approval comparisons only if its own diff edits
 `pcrDev.json`, `pcrProd.json`, `pcrDevHistory.json`, or `pcrProdHistory.json`
-under `services/opensecret/`. Backend code changes alone do not require new
-approvals to pass PR CI. The PR's checkout supplies both source and references.
+under `services/opensecret/`; such a PR fails on a mismatch only in an
+environment whose files it edits (`pcrDev.json` or `pcrDevHistory.json` for
+dev, `pcrProd.json` or `pcrProdHistory.json` for prod). Backend code changes
+alone do not require new approvals to pass PR CI. The PR's checkout supplies
+both source and references.
 
 Master compares on backend/TEE build-input, approved-PCR, and EIF-check tooling
-changes. A mismatch intentionally leaves the distinct EIF/PCR approval check
-red until an operator reviews and updates approvals. Unrelated client-only or
-documentation changes skip it. Manual dispatch checks both environments.
+changes. A master mismatch is pending approval, not a failure: the job passes
+with a notice and lists the built PCRs in its summary until an operator reviews
+and updates approvals. Build and comparison errors still fail. Unrelated
+client-only or documentation changes skip it. Manual dispatch checks both
+environments; outside `master`, a mismatch fails.
 If a PR's changed files cannot be determined, routing fails explicitly instead
 of treating missing information as an approval edit.
 
@@ -138,8 +143,8 @@ cache used by GitHub-hosted forks. Keep Blacksmith's Actions cache branch
 protection enabled for fallback jobs: PR writes must not populate master's
 cache. Blacksmith can redirect Actions cache requests to its own backend.
 The cache
-action's post step can run after an expected PCR mismatch; the comparison still
-fails and approvals stay unchanged.
+action's post step also runs after a PCR mismatch; caching never changes
+approvals.
 
 Fork PRs, PRs with missing head-repository metadata, and manual runs on other
 refs have no OIDC permission. They use the pinned Magic Nix Cache action with

@@ -215,10 +215,10 @@ fn ancestors(path: &Path, include_leaf: bool) -> io::Result<Vec<File>> {
     for path in paths.iter().take(count) {
         let file = open_raw(path, FILE_READ_ATTRIBUTES, OPEN_EXISTING, null())?;
         let info = information(&file)?;
-        if path != paths.last().unwrap() || !include_leaf {
-            if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-                return Err(invalid_at("ancestor-not-directory"));
-            }
+        if (path != paths.last().unwrap() || !include_leaf)
+            && info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+        {
+            return Err(invalid_at("ancestor-not-directory"));
         }
         guards.push(file);
     }

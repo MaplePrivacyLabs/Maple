@@ -381,12 +381,12 @@ nix develop --no-update-lock-file -c cargo test --locked \
 
 These tests need no existing backend or account credentials. The full format,
 Clippy, library-test, and rustdoc gates are in the
-[SDK development instructions](../README.md#rust-sdk) and
-[`sdk-rust.yml`](../../.github/workflows/sdk-rust.yml).
+[SDK development instructions](../README.md#rust-sdk) and CI's `sdk-rust` lane
+(`just lane sdk-rust` from the repository root).
 
 Integration tests are a separate selection. Follow
-[`sdk-integration.yml`](../../.github/workflows/sdk-integration.yml) for its
-disposable database, same-checkout OpenSecret backend, and fixture setup. It
+[`opensecret-sdk-e2e.sh`](../../scripts/ci/opensecret-sdk-e2e.sh) (CI's
+`os-sdk-e2e` lane) for its disposable database, same-checkout OpenSecret backend, and fixture setup. It
 uses loopback and does not require hosted development accounts. Configure the
 actual test endpoint and port, project UUID, and test identities from that
 setup rather than assuming a backend is running on `localhost:3000`.

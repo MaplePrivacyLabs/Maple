@@ -33,20 +33,25 @@ just ci
 and warning-denied workspace builds/tests. Use `just release` for optimized
 build and performance evidence. Root `just agent-check`, `agent-build`, and
 `agent-dev` enter this component environment. The repository pre-commit hook
-runs `cargo fmt`, one workspace Clippy pass, and the workspace tests in this
-shell when Agent files are staged; set `MAPLE_HOOK_FULL=1` for the complete
-`just ci`. Root `nix flake check
+runs `just ci-lint` and `just ci-test` (the `agent-lint` and `agent-test` CI
+lanes) in this shell when Agent files are staged; `MAPLE_HOOK_FULL=1` adds
+`just ci-extra`, the rest of `just ci`. Root `nix flake check
 --no-update-lock-file` additionally validates workflow selection and security
 contracts when CI, Nix, or routing changes.
 
 Agent has its own Cargo and Nix lockfiles. CI selects Agent for proxy runtime
 changes and for Rust SDK build inputs, both path dependencies it builds from
 the tree, but not for TypeScript SDK changes. Component-only
-changes should not unnecessarily select Research packaging. Maintain the root
-selectors, their tests, `.github/workflows/agent-ci.yml`, and unsigned PR
-selection in `.github/workflows/agent-desktop-build.yml` together. The desktop
-workflow compares `master` with the last fully verified ancestor package run;
-unrelated pushes skip packages, while manual master dispatch forces both profiles.
+changes should not unnecessarily select Research packaging. Agent lanes live in
+`scripts/ci/lanes.py`, with fixtures in `scripts/ci/test_plan.py`; root
+`just lane <id>` runs one locally. PRs run `agent-lint`, `agent-test` and
+`agent-macos`, plus Windows tests and clippy for Windows paths,
+`agent-supply-chain` and `agent-provider` for dependency inputs, and an unsigned
+Dev package rehearsal for packaging inputs. Labels `ci:windows`, `ci:package` and
+`ci:full` add lanes when a change carries Windows or packaging risk its paths do not
+show ([labels](../../../docs/ci.md#labels)); master adds the full macOS and Windows suites. On master,
+`.github/workflows/agent-desktop-build.yml` builds signed packages for pushes
+that change `AGENT_DESKTOP` inputs and on every manual dispatch.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including
 the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency

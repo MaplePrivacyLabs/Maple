@@ -1,8 +1,9 @@
 #!/bin/sh
 # Maple monorepo pre-commit hook.
 #
-# Classifies the staged paths with scripts/ci/hook_change_detection.py and runs
-# each selected component's own .githooks/pre-commit inside that component's
+# `scripts/ci/plan.py hook --staged` selects components from the ci.yml lane
+# table (scripts/ci/lanes.py): a lane's own paths select its `hook` component.
+# Each selected component's .githooks/pre-commit runs inside that component's
 # Nix flake, so the tools match CI. Without Nix the same commands run from PATH
 # with a warning. Only fast, hermetic checks run here (format, lint, type
 # checks, unit tests); integration suites, cargo-deny, nix flake check and
@@ -48,9 +49,8 @@ for candidate in python3 /usr/bin/python3 /run/current-system/sw/bin/python3; do
 done
 [ -n "$PYTHON" ] || hook_fail "python3 is required to classify staged paths (it is in every Maple Nix shell)."
 
-SELECTED=$(git diff --cached --name-only -z --diff-filter=ACMR \
-    | "$PYTHON" "$REPO_ROOT/scripts/ci/hook_change_detection.py" --selected) \
-    || hook_fail "hook_change_detection.py failed."
+SELECTED=$("$PYTHON" "$REPO_ROOT/scripts/ci/plan.py" hook --staged) \
+    || hook_fail "scripts/ci/plan.py hook failed."
 SELECTED=$(printf '%s\n' "$SELECTED" | tr '\n' ' ')
 
 if [ -n "${MAPLE_HOOK_ONLY:-}" ]; then

@@ -31,7 +31,7 @@ checks for every affected client path.
 The Maple Proxy source lives under `proxy/`. From the repository root,
 run its Rust commands through
 `nix develop --no-update-lock-file ./proxy -c bash -lc 'cd proxy && ...'`;
-root path-scoped workflows own proxy CI. Proxy runtime changes select desktop
+the root `ci.yml` `proxy` lane owns proxy CI. Proxy runtime changes select desktop
 builds; SDK-only changes do not, since Research builds the SDK source its own
 manifests select. Container, test, documentation, and standalone lockfile
 changes remain independent.

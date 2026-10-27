@@ -1,5 +1,9 @@
 name: Rust Unit Tests
 
+# Release evidence for every master push that changes the Research Rust inputs
+# (.agents/skills/release-maple/scripts/ci_evidence.py), and the only writer of
+# the cache that ci.yml's research-rust lane restores on pull requests. Never
+# cancelled.
 permissions:
   contents: read
 
@@ -22,28 +26,18 @@ on:
       - "scripts/ci/test_agent_rust_deps.py"
       - "flake.nix"
       - "flake.lock"
-  pull_request:
-    # Run unprivileged validation for stacked PRs as well as master targets.
-    paths:
-      - ".github/workflows/rust-tests.yml"
-      - "apps/maple-research/frontend/src-tauri/**"
-      - "proxy/Cargo.toml"
-      - "sdk/rust/Cargo.toml"
-      - "sdk/rust/build.rs"
-      - "sdk/rust/src/**"
-      - "sdk/rust/assets/**"
-      - "proxy/src/**"
-      - "scripts/ci/_common.sh"
-      - "scripts/ci/rust.sh"
-      - "scripts/ci/verify-local-rust-deps.sh"
-      - "scripts/ci/verify-agent-rust-deps.py"
-      - "scripts/ci/test_agent_rust_deps.py"
-      - "flake.nix"
-      - "flake.lock"
+
+# The same compiler settings as ci.yml, so research-rust hits this sccache.
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   rust-tests:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
@@ -58,14 +52,16 @@ jobs:
       - name: Verify pinned Nix runtime
         run: bash scripts/ci/verify-nix-runtime.sh
 
-      - name: Cache sccache
+      - name: Cache sccache and Cargo downloads
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
-          path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-rust-tests-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-rust-tests-
-            ${{ runner.os }}-sccache-
+          key: ci-v1-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
+          restore-keys: ci-v1-research-rust-
+          path: |
+            ~/.cache/sccache
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
 
       - name: Run Rust unit tests
         run: |

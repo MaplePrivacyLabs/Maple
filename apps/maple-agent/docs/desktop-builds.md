@@ -1,13 +1,17 @@
 # Agent desktop builds
 
-`Maple Agent Desktop Builds` builds both hosted profiles when Agent inputs change
-on protected `master`, and always on a manual dispatch from `master`. It compares
-the current source with the last successful ancestor run that actually completed
-all six Dev/Prod macOS/Linux/Windows downloaded-package verifiers. Failed, in-flight and
-selector-only runs do not advance that baseline, so a later unrelated push still
-builds outstanding Agent changes. Missing history, API failures or no verified
-baseline in the last 100 successful master runs select a full build. PRs continue
-to select unsigned previews from their whole merge-base diff.
+`Maple Agent Desktop Builds` builds both hosted profiles when a protected
+`master` push changes Agent inputs, and always on a manual dispatch from
+`master`. Its `changes` job runs `scripts/ci/plan.py only agent-desktop` on the
+push's own diff; an unusable diff or a selector error builds. No master run is
+cancelled, so every Agent push gets its own packages. A later push without Agent
+changes does not retry a failed run: re-run its failed jobs, dispatch, or fix
+forward. Pull requests that change packaging inputs (the packaging and release
+scripts, the Agent flake, and for macOS the Xcode pin) rehearse unsigned Dev
+packages in `ci.yml` (`agent-package-linux`, `agent-package-macos`).
+`agent-package-windows` runs when the Windows packaging scripts,
+`build-release.sh`, the release profile files or the Windows toolchain change;
+the `ci:package` label adds all three.
 
 Unrelated master commits have no new Agent artifacts. Existing downloads keep
 their original source SHA and provenance; they are never relabeled as a newer
@@ -17,13 +21,14 @@ Developer ID signed, notarized, and stapled. Linux x86_64 builds are tar bundles
 with a bundled runtime and a normal application directory. CI checks each
 downloaded bundle's command-line startup and detached host lifecycle in an
 Ubuntu 24.04 container with no Nix installation and no network
-access. Each master run completes independently; newer PR updates cancel older
-previews. Windows x64 packages are per-user NSIS installers requiring Windows 10
-version 1703 (build 15063) or later. This baseline supplies the OS `icuuc.dll`
+access. Each master run completes independently. Windows x64 packages are
+per-user NSIS installers requiring Windows 10 version 1703 (build 15063) or later. This baseline supplies the OS `icuuc.dll`
 imported by GPUI; see Microsoft's [Windows ICU version history](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
 Trusted master
 packages use the existing Azure publisher to Authenticode-sign the application,
-embedded uninstaller and final installer. PRs produce unsigned Dev previews.
+embedded uninstaller and final installer. Pull requests that change those
+Windows packaging inputs, or carry the `ci:package` label, build, install and
+smoke-test an unsigned Dev installer.
 
 | Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |
@@ -49,10 +54,9 @@ compiles a small updater-only scanner from its trusted checkout, before the step
 receiving Apple credentials. After packaging, that tool reads the actual
 `.app.tar.gz` through the installer's archive scanner, without extracting or
 executing the app, and checks its SHA-256 against the package checksums before
-final artifact upload or attestation. The same gate covers unsigned Prod PR
-packages. Dev uses a different bundle root and has no production updater.
-PR previews use the same prebuilt verification on runners without signing
-credentials. Runtime metadata, duplicate
+final artifact upload or attestation. Dev uses a different bundle root and has
+no production updater. PR rehearsals build Dev only, on runners without signing
+credentials, and run the same prebuilt verification. Runtime metadata, duplicate
 Swift runtime, and real GPUI window/first-render checks run only in credential-free
 verification. GUI startup uses empty temporary state and does not sign in.
 
@@ -165,13 +169,13 @@ gh attestation verify FILE -R MaplePrivacyLabs/Maple \
 The source SHA is recorded in `build-info.json`. Provenance authenticates the
 build origin; Linux checksums alone do not provide that authentication.
 
-Pull requests produce unsigned macOS previews and Linux packaging evidence on
-fresh hosted runners. Their macOS artifacts include `unsigned` in the name and
-cannot satisfy the signed-artifact verifier. The preview app is ad-hoc signed
-without hardened runtime so macOS can load its bundled libraries without a
-Developer ID Team ID. Signed master apps retain hardened runtime. Preview
-verification rejects incompatible library-validation flags; downloaded previews
-may still require macOS's **Open Anyway** approval. PR previews are not attested.
+PR rehearsals upload unsigned Dev packages for seven days. Their artifacts
+include `unsigned` in the name and cannot satisfy the signed-artifact verifier.
+The preview app is ad-hoc signed without hardened runtime so macOS can load its
+bundled libraries without a Developer ID Team ID. Signed master apps retain
+hardened runtime. Preview verification rejects incompatible library-validation
+flags; downloaded previews may still require macOS's **Open Anyway** approval.
+PR previews are not attested.
 
 The macOS GUI smoke establishes window creation, entry into the first render,
 and process survival; it does not capture a presented frame or verify login, chat,
@@ -203,10 +207,12 @@ continues to use the macOS feed. Dev has no update feed on either platform.
 Both platforms retain one release version and source commit; separate feed
 paths preserve compatibility with existing macOS clients.
 
-Windows builds run on the pinned Windows Rust/MSVC environment in CI, with
-`RUSTFLAGS='-D warnings -C target-feature=+crt-static'` set before fingerprinting
-and compilation. `build-release.sh` selects the explicit x64 MSVC target so host
-build tools keep their normal linkage, then stages the exact resulting executable.
+Windows builds run on `blacksmith-8vcpu-windows-2025` with the pinned Rust/MSVC
+environment from `.github/actions/setup-agent-windows` and
+`RUSTFLAGS='-D warnings -C target-feature=+crt-static'`; signing stays on
+GitHub's `windows-2025`. `build-release.sh` selects the explicit x64 MSVC target
+so host build tools keep their normal linkage, then stages the exact resulting
+executable.
 From the component directory in Git Bash on Windows:
 
 ```sh
@@ -240,7 +246,7 @@ activation (40–41), and uninstall (50–53). A failed installer is not retried
 the verifier. These diagnostics do not establish installed upgrade qualification.
 
 For a produced Prod updater archive, compile the trusted data-only scanner and
-validate the exact package directory (add `--unsigned` for PR packages):
+validate the exact package directory (add `--unsigned` for unsigned packages):
 
 ```sh
 nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive

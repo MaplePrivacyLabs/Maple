@@ -27,8 +27,56 @@ store-bench-ci:
     python3 crates/store-bench/scripts/evaluate.py target/store-bench-ci.json --profile linux-ci
     python3 -m unittest discover -s crates/store-bench/tests -p 'test_*.py'
 
-# Run all the checks that CI runs.
-ci: fmt-check git-metadata-test clippy test
+# Run the checks of CI's Linux Agent lanes (agent-lint, agent-test, agent-full-linux).
+ci: ci-lint ci-test ci-extra
+
+# The ci.yml agent-lint lane: format, packaging tests, clippy for every feature set and the dependency graph.
+ci-lint: fmt-check git-metadata-test packaging-test
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo clippy -p maple-agent-app --all-targets --locked {{headless}} -- -D warnings
+    cargo clippy -p maple-agent-app --locked --no-default-features --features acp -- -D warnings
+    cargo clippy -p maple-agent-app --locked --no-default-features --features proxy -- -D warnings
+    metadata="$(mktemp)"; trap 'rm -f "$metadata"' EXIT; \
+      cargo metadata --locked --format-version 1 > "$metadata"; \
+      python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"; \
+      python3 scripts/verify-sqlcipher-build.py "$metadata"
+
+# The ci.yml agent-test lane; `cargo test` builds the examples, ci-lint's clippy checks the benches.
+ci-test:
+    RUSTFLAGS="-D warnings" cargo test --workspace --locked
+
+# The ci.yml agent-full-linux lane: every target built, and the headless tests.
+ci-extra:
+    RUSTFLAGS="-D warnings" cargo build --workspace --all-targets --locked
+    RUSTFLAGS="-D warnings" cargo test -p maple-agent-app --locked {{headless}}
+
+# The ci.yml agent-supply-chain lane: SQLCipher sources, per-target advisories and bans, notices.
+supply-chain:
+    python3 -m unittest discover -s dependencies/sqlcipher -p 'test_*.py'
+    metadata="$(mktemp)"; trap 'rm -f "$metadata"' EXIT; \
+      cargo metadata --locked --format-version 1 > "$metadata"; \
+      python3 dependencies/sqlcipher/verify_sources.py --metadata "$metadata"; \
+      python3 dependencies/sqlcipher/verify_sqlcipher.py --metadata "$metadata"
+    python3 scripts/audit-sqlcipher-dependencies.py
+    python3 scripts/generate-third-party-notices.py
+    python3 scripts/generate-third-party-notices.py --check
+
+# The ci.yml agent-package-linux/macos lanes: an unsigned Dev package, built and verified like master's.
+package-rehearsal:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/build-release.sh dev
+    if [ "$(uname -s)" = Darwin ]; then
+        ./scripts/verify-prebuilt-release.sh dev
+        ./scripts/package-release.sh dev --unsigned
+        ./scripts/verify-release.sh dev dist/dev --unsigned
+    else
+        ./scripts/package-release.sh dev --unsigned
+        ./scripts/verify-release.sh dev dist/dev --unsigned --platform linux-x86_64
+        cargo build --locked -p maple-agent-updater --example validate-release-archive
+        ./scripts/verify-updater-archive.sh dist/dev --profile dev --platform linux-x86_64 --unsigned
+        ./scripts/verify-linux-bundle-docker.sh dev dist/dev
+    fi
 
 # Exercise the production Git metadata helper without compiling the app graph.
 git-metadata-test:

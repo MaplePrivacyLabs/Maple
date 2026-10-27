@@ -132,11 +132,12 @@ Load `$validate-opensecret` and run the tiers reached by the diff. Report local,
 database, provider, client, build/artifact, and live evidence separately.
 
 Local artifact builds and read-only PCR comparison are validation when in
-scope. Root backend CI validates Rust, Nix checks/default binary, and SDK
-compatibility. A separate ARM64 workflow compares dev/prod EIF
+scope. Root backend CI validates Rust, Nix checks, and SDK compatibility. A
+separate ARM64 workflow compares dev/prod EIF
 measurements on explicit approved-PCR JSON edits in PRs, relevant master
 changes, and manual runs. Do not require ordinary backend PRs to update
-approvals, and do not suppress meaningful master mismatches. Master push/manual
+approvals. A master mismatch is a pending-approval notice with the built PCRs;
+do not hide it or turn it into a pass without that notice. Master push/manual
 runs and same-repository PR comparisons receive OIDC for FlakeHub caching;
 fork PRs and non-master manual refs use GitHub's branch-scoped cache without
 OIDC. Review event/ref guards and the PR head-repository equality check,

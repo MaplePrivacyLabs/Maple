@@ -1,9 +1,9 @@
 #!/bin/sh
 # SDK pre-commit checks. Runs from sdk/ inside the SDK flake; the orchestrator
 # sets MAPLE_HOOK_SELECTED to sdk_rust and/or sdk_ts.
-# CI equivalents: sdk-rust.yml and sdk-typescript.yml. Integration suites
-# (sdk-integration.yml, sdk/src/lib/test/integration/, sdk/rust/tests/) need a
-# live backend and never run here.
+# CI equivalents: the ci.yml sdk-rust and sdk-ts lanes (scripts/ci/build-sdk-publish.sh).
+# Integration suites (the ci.yml os-sdk-e2e lane, sdk/src/lib/test/integration/,
+# sdk/rust/tests/) need a live backend and never run here.
 
 set -u
 . "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"

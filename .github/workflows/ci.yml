@@ -1,0 +1,665 @@
+# CI: the single required check (ci-ok) for every pull request, on any base.
+# Lane selection lives in scripts/ci/lanes.py and scripts/ci/plan.py. Generic
+# lanes run in the `nix` and `windows` matrices; a special job exists only where
+# a step list cannot be expressed generically (services, OIDC, artifacts, or a
+# cache that another workflow writes).
+# Never add `paths:` here: ci-ok must always report.
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [master]
+  schedule:
+    # Every lane on the master tip: refreshes the caches and catches misroutes.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      lanes:
+        description: "Lane ids (comma-separated) or 'all'"
+        type: string
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  # PRs replace superseded runs. Master, queue and dispatch runs are grouped per
+  # SHA and never cancelled, so every master commit gets a full verdict.
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read          # live PR labels: add a label, then re-run
+      pull-requests: read
+    outputs:
+      lanes: ${{ steps.plan.outputs.lanes }}
+      nix: ${{ steps.plan.outputs.nix }}
+      windows: ${{ steps.plan.outputs.windows }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Select lanes
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANES_INPUT: ${{ inputs.lanes }}
+          CI_LINUX_RUNNER: ${{ vars.CI_LINUX_RUNNER }}
+          CI_LINUX_HEAVY_RUNNER: ${{ vars.CI_LINUX_HEAVY_RUNNER }}
+          CI_MACOS_RUNNER: ${{ vars.CI_MACOS_RUNNER }}
+          CI_WINDOWS_RUNNER: ${{ vars.CI_WINDOWS_RUNNER }}
+        run: python3 scripts/ci/plan.py github
+
+  nix:
+    name: ${{ matrix.id }}
+    needs: plan
+    if: needs.plan.outputs.nix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.nix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          # OpenSecret's flake reads its submodule, which Nix fetches only with full history.
+          submodules: ${{ matrix.submodules }}
+          fetch-depth: ${{ matrix.fetch_depth }}
+      - uses: ./.github/actions/setup-nix
+      - name: Select pinned Xcode
+        if: runner.os == 'macOS'
+        run: python3 scripts/ci/select-xcode.py
+      - name: Restore master's Research Rust cache (read-only)
+        if: matrix.restore == 'research-rust'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Exactly rust-tests.yml's key and paths; it is the only writer. Its Cargo git
+          # database spares the Goose and PDFOxide fetches Cargo makes for every target.
+          key: ci-v1-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
+          restore-keys: ci-v1-research-rust-
+          path: |
+            ~/.cache/sccache
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+      - name: Rust cache (restore everywhere, save only on master and on Blacksmith)
+        if: matrix.cache != ''
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: ci-v1
+          # rust-cache ignores `key` when `shared-key` is set, so the lockfile
+          # hash (which also pins the flake's toolchain) goes into the shared key.
+          shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
+          workspaces: ${{ matrix.workspaces }}
+          add-rust-environment-hash-key: "false"
+          # The action runs cargo from the workspace directory: use an absolute flake path.
+          cmd-format: nix develop --no-update-lock-file ${{ github.workspace }}/${{ matrix.flake }} -c {0}
+          # A failover to a GitHub-hosted runner must not fill GitHub's small cache store.
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(matrix.runner, 'blacksmith-') }}
+      - name: Run lane
+        env:
+          LANE: ${{ matrix.id }}
+        run: python3 scripts/ci/plan.py run "$LANE"
+
+  windows:
+    name: ${{ matrix.id }}
+    needs: plan
+    if: needs.plan.outputs.windows != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.windows) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-agent-windows
+      - name: Rust cache (restore everywhere, save only on master and on Blacksmith)
+        if: matrix.cache != ''
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: ci-v1
+          shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
+          workspaces: ${{ matrix.workspaces }}
+          add-rust-environment-hash-key: "false"
+          # A failover to a GitHub-hosted runner must not fill GitHub's small cache store.
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(matrix.runner, 'blacksmith-') }}
+      - name: Run lane
+        env:
+          LANE: ${{ matrix.id }}
+        run: python3 scripts/ci/plan.py run "$LANE"
+
+  # Native Windows updater tests and the app typecheck, compiled from source with
+  # no cache, credential or environment. Their receipts and Cargo logs are kept
+  # as an artifact even when a script fails.
+  agent-windows-updater:
+    name: agent-windows-updater
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-windows-updater']
+    # GitHub's image, as the native updater tests require (scripts/ci/lanes.py GITHUB_WINDOWS).
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-agent-windows
+      - name: Typecheck the Windows app and run the native updater tests
+        run: python3 scripts/ci/plan.py run agent-windows-updater
+      - name: Keep the receipts and Cargo logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-windows-updater-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/maple-windows-app-typecheck/
+            ${{ runner.temp }}/maple-windows-updater-tests/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Unsigned Dev packages built like agent-desktop-build.yml's master builds, from
+  # their master-written cache. Required when the packaging selector fires.
+  agent-package-linux:
+    name: agent-package-linux
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-package-linux']
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Restore the packaging rehearsal cache
+        id: package-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
+          key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          restore-keys: ci-v1-agent-package-${{ runner.os }}-
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
+      - name: Build, package, verify and smoke-test an unsigned Dev bundle
+        run: python3 scripts/ci/plan.py run agent-package-linux
+      - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
+        if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          key: ${{ steps.package-cache.outputs.cache-primary-key }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
+      - name: Upload the unsigned package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-agent-dev-linux-x86_64-unsigned-${{ github.run_id }}
+          path: apps/maple-agent/dist/dev/
+          if-no-files-found: error
+          retention-days: 7
+
+  agent-package-macos:
+    name: agent-package-macos
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-package-macos']
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+      - name: Restore the packaging rehearsal cache
+        id: package-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
+          key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          restore-keys: ci-v1-agent-package-${{ runner.os }}-
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
+      - name: Build, package and verify an unsigned Dev app
+        run: python3 scripts/ci/plan.py run agent-package-macos
+      - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
+        if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          key: ${{ steps.package-cache.outputs.cache-primary-key }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
+      - name: Upload the unsigned package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-agent-dev-macos-aarch64-unsigned-${{ github.run_id }}
+          path: apps/maple-agent/dist/dev/
+          if-no-files-found: error
+          retention-days: 7
+
+  agent-package-windows:
+    name: agent-package-windows
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-package-windows']
+    # GitHub's image, where master's install smoke runs (scripts/ci/lanes.py GITHUB_WINDOWS).
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-agent-windows
+        with:
+          release: "true"
+      - name: Build, package and verify an unsigned Dev installer
+        run: python3 scripts/ci/plan.py run agent-package-windows
+      - name: Upload the unsigned package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-agent-dev-windows-x86_64-unsigned-${{ github.run_id }}
+          path: apps/maple-agent/dist/dev/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Research Rust on PRs, warm from rust-tests.yml's master cache (read-only).
+  research-rust:
+    name: research-rust
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['research-rust']
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Restore master's Research Rust cache (read-only)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Exactly rust-tests.yml's key and paths; it is the only writer.
+          key: ci-v1-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
+          restore-keys: ci-v1-research-rust-
+          path: |
+            ~/.cache/sccache
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+      - name: Check formatting and local dependencies, then test
+        run: python3 scripts/ci/plan.py run research-rust
+
+  # Unsigned Research platform builds. They restore what the master signed
+  # builds save and never save anything.
+  research-ios:
+    name: research-ios
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['research-ios']
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    timeout-minutes: 120 # a missed ONNX Runtime cache builds it from source
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Select pinned Xcode
+        id: select_xcode
+        run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/setup-nix
+      - name: Restore master's ONNX Runtime iOS artifact (read-only)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            apps/maple-research/frontend/src-tauri/onnxruntime-ios
+          key: release-onnxruntime-ios-artifact-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/apple-toolchain.json', 'scripts/ci/select-xcode.py', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
+          restore-keys: |
+            release-onnxruntime-ios-artifact-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-
+      - name: Build the iOS simulator app
+        run: python3 scripts/ci/plan.py run research-ios
+      - name: Upload the simulator app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-ios-simulator-pr
+          path: |
+            apps/maple-research/frontend/src-tauri/gen/apple/build/**/*.app
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-*.sha256
+          retention-days: 5
+
+  research-desktop-macos:
+    name: research-desktop-macos
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['research-desktop-macos']
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/setup-nix
+      - name: Restore master's macOS sccache (read-only)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/Library/Caches/Mozilla.sccache
+          key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-sccache-macos-release-
+      - name: Build the unsigned universal app and DMG
+        run: python3 scripts/ci/plan.py run research-desktop-macos
+      - name: Upload the unsigned app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-macos-universal-pr
+          path: |
+            apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            apps/maple-research/frontend/src-tauri/target/reproducibility/maple-macos-app.tar.gz
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-macos-*.sha256
+          retention-days: 5
+
+  research-desktop-linux:
+    name: research-desktop-linux
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['research-desktop-linux']
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Restore master's Linux sccache (read-only)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-sccache-linux-release-
+      - name: Allow bubblewrap user namespaces
+        # Ubuntu 24.04 restricts them; AppImage packaging fails without them.
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+      - name: Build unsigned packages with fake updater signatures
+        run: python3 scripts/ci/plan.py run research-desktop-linux
+      - name: Upload the packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-linux-pr
+          path: |
+            apps/maple-research/frontend/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/maple-research/frontend/src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            apps/maple-research/frontend/src-tauri/target/release/bundle/deb/*.deb
+            apps/maple-research/frontend/src-tauri/target/release/bundle/deb/*.deb.sig
+            apps/maple-research/frontend/src-tauri/target/release/bundle/rpm/*.rpm
+            apps/maple-research/frontend/src-tauri/target/release/bundle/rpm/*.rpm.sig
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-linux-fake-updater.pub
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-linux-*.sha256
+          retention-days: 5
+
+  # No cache: desktop-build.yml writes the Windows one to GitHub's store, which
+  # a Blacksmith runner cannot read.
+  research-desktop-windows:
+    name: research-desktop-windows
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['research-desktop-windows']
+    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # v1
+        with:
+          bun-version: 1.3.5
+          no-cache: true # its post step would save the binary from a pull request
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable action, exact toolchain below
+        with:
+          toolchain: 1.94.1 # desktop-build.yml's Windows toolchain
+      - name: Build the unsigned installer
+        run: python3 scripts/ci/plan.py run research-desktop-windows
+      - name: Upload the installer and its proofs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-windows-x64-pr
+          path: |
+            apps/maple-research/frontend/src-tauri/target/release/bundle/nsis/*.exe
+            apps/maple-research/frontend/src-tauri/target/release/maple.exe
+            apps/maple-research/frontend/src-tauri/resources/windows/*.dll
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-windows-*.sha256
+          retention-days: 5
+
+  research-desktop-windows-verify:
+    name: research-desktop-windows-verify
+    needs: [plan, research-desktop-windows]
+    if: fromJSON(needs.plan.outputs.lanes)['research-desktop-windows-verify']
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Download the installer and its proofs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: maple-windows-x64-pr
+          path: artifacts
+      - name: Verify the reproducibility proofs
+        run: python3 scripts/ci/plan.py run research-desktop-windows-verify
+
+  research-dev-macos:
+    name: research-dev-macos
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['research-dev-macos']
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The package's evidence names the exact PR head, not the merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/setup-nix
+      - name: Build the unsigned Research Dev app
+        run: python3 scripts/ci/plan.py run research-dev-macos
+      - name: Upload the Dev package and its identity proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-research-dev-macos-pr
+          path: |
+            apps/maple-research/frontend/src-tauri/target/research-dev/maple-research-dev-macos.tar.gz
+            apps/maple-research/frontend/src-tauri/target/research-dev/build-profile.json
+          if-no-files-found: error
+          retention-days: 5
+
+  # Both SDKs against the in-tree OpenSecret backend and a disposable PostgreSQL.
+  os-sdk-e2e:
+    name: os-sdk-e2e
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['os-sdk-e2e']
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: opensecret
+          POSTGRES_PASSWORD: password
+          POSTGRES_USER: opensecret_user
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opensecret_user -d opensecret"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+          # Nix requires revCount for recursively fetched Git inputs.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-nix
+      - name: Migrate, start OpenSecret and run both SDKs' integration suites
+        run: python3 scripts/ci/plan.py run os-sdk-e2e
+
+  # OpenSecret's parent-side helper images (they run beside the enclave, not in
+  # the EIF): built for ARM64 and tested offline, never published, then scanned.
+  os-helpers:
+    name: os-helpers (${{ matrix.helper }})
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['os-helpers']
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        helper: [credential-requester, enclave-logging]
+    env:
+      HELPER: ${{ matrix.helper }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Build the Linux ARM64 image and run its tests offline
+        run: python3 scripts/ci/plan.py run os-helpers
+      - name: Scan finished image for fixable high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.75.0
+          image-ref: ${{ matrix.helper }}:ci
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          cache: "false" # pull requests save no caches
+
+  # The PR EIF candidate: dev and prod EIFs built on the release builder's runner
+  # class, never signed or published. The planner selects it only for
+  # same-repository PRs to master whose diff has EIF inputs (or the ci:eif label)
+  # and edits no PCR approval (opensecret-eif.yml compares approval edits);
+  # because it mints an OIDC token for the FlakeHub cache, the event, base branch
+  # and head repository are checked here too.
+  os-eif:
+    name: os-eif (${{ matrix.mode }})
+    needs: plan
+    if: >-
+      ${{
+        fromJSON(needs.plan.outputs.lanes)['os-eif'] &&
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.base.ref == 'master' &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      }}
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: blacksmith-8vcpu-ubuntu-2404-arm
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [dev, prod]
+    env:
+      EIF_MODE: ${{ matrix.mode }}
+      OPENSECRET_DEV_POSTGRES: "0"
+      OPENSECRET_DEV_ENV: "0"
+      OPENSECRET_DEV_CONTAINERS: "0"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install pinned Determinate Nix for FlakeHub authentication
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        with:
+          source-tag: v3.23.3
+          github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
+
+      - name: Reuse FlakeHub with an Actions cache fallback
+        uses: DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea # v3
+        with:
+          diff-store: true
+
+      # No Actions artifact, attestation, signing, or release is produced here.
+      # The Nix cache is only a build cache, not an approved deployment handoff.
+      - name: Build PR candidate without signing or publication
+        shell: bash
+        run: |
+          echo 'PR diagnostic only: source_sha is the PR merge ref, not a release source commit. No approved artifact is uploaded.' >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/build_opensecret_eif.sh "$EIF_MODE" "$RUNNER_TEMP/eif-candidate-$EIF_MODE"
+
+      - name: Inspect exact PR candidate user ramdisk CA bundle
+        shell: bash
+        run: python3 scripts/ci/verify_opensecret_eif_rootfs.py "$EIF_MODE" "$RUNNER_TEMP/eif-candidate-$EIF_MODE" "$GITHUB_SHA"
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [plan, nix, windows, agent-windows-updater, agent-package-linux, agent-package-macos,
+            agent-package-windows, research-rust, research-ios, research-desktop-macos, research-desktop-linux,
+            research-desktop-windows, research-desktop-windows-verify, research-dev-macos, os-sdk-e2e, os-helpers,
+            os-eif]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      - name: Every selected lane succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/plan.py verdict

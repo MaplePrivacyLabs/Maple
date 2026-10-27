@@ -19,11 +19,13 @@ and release verification together when changing the compiled Auth destination.
 
 ## Build, test, run
 
-`just` lists the recipes. `just ci` runs the same checks as CI (format,
-clippy with `-D warnings` for every feature set, tests). Run it before a
+`just` lists the recipes. `just ci` runs the checks of CI's Agent lanes
+together (format, clippy with `-D warnings` for every feature set, tests); root
+`just lane <id>` runs one lane exactly as CI does. Run `just ci` before a
 commit. The repository pre-commit hook (`.githooks/pre-commit` here) runs
-format, one workspace clippy pass, and the workspace tests when Agent files
-are staged; `MAPLE_HOOK_FULL=1` runs the full `just ci`.
+`just ci-lint` and `just ci-test`, the recipes of CI's `agent-lint` and
+`agent-test` lanes, when Agent files are staged; `MAPLE_HOOK_FULL=1` adds
+`just ci-extra`.
 
 Build and test through `just` or `nix develop` so this checkout shares
 Cargo intermediates with other Agent worktrees

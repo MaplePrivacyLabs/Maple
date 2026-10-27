@@ -556,8 +556,7 @@ fn registered_root(root: &Path, profile: &str) -> Result<()> {
         )
     } != ERROR_SUCCESS
         || kind != REG_SZ
-        || length < 4
-        || length > 65536
+        || !(4..=65536).contains(&length)
         || length % 2 != 0
     {
         return Err(InstallError::Invalid(
@@ -600,10 +599,10 @@ fn validate_destination_for(root: &Path, purpose: IdentityPurpose) -> Result<()>
     #[cfg(windows)]
     {
         windows_fs::private_directory(root)?;
-        if root.join(MANUAL_INTENT).try_exists()? {
-            if let Ok((_, _, current)) = generation_for(root, "prod", IdentityPurpose::Startup) {
-                recover_completed_manual_intent(root, &current)?;
-            }
+        if root.join(MANUAL_INTENT).try_exists()?
+            && let Ok((_, _, current)) = generation_for(root, "prod", IdentityPurpose::Startup)
+        {
+            recover_completed_manual_intent(root, &current)?;
         }
         if root.join(MANUAL_INTENT).try_exists()? || root.join(UNINSTALL_INTENT).try_exists()? {
             return Err(InstallError::Busy);
@@ -1254,8 +1253,10 @@ fn installer_owner() -> Result<(u32, u64)> {
         }
     }
     let snapshot = Handle(snapshot);
-    let mut entry = PROCESSENTRY32W::default();
-    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
     let current = unsafe { GetCurrentProcessId() };
     let mut more = unsafe { Process32FirstW(snapshot.0, &mut entry) };
     while more != 0 {
@@ -1468,14 +1469,13 @@ fn validate_uninstall_repair(root: &Path, profile: &str, intent: &UninstallInten
     } else {
         None
     };
-    if let Some(current) = &current {
-        if !intent.generations.contains(&current.generation)
-            && generation_for(root, profile, IdentityPurpose::Startup).is_err()
-        {
-            return Err(InstallError::Invalid(
-                "Windows missing generation is not in uninstall journal",
-            ));
-        }
+    if let Some(current) = &current
+        && !intent.generations.contains(&current.generation)
+        && generation_for(root, profile, IdentityPurpose::Startup).is_err()
+    {
+        return Err(InstallError::Invalid(
+            "Windows missing generation is not in uninstall journal",
+        ));
     }
     let versions = root.join("versions");
     if versions.try_exists()? {

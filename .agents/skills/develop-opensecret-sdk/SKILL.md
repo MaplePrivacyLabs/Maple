@@ -59,9 +59,10 @@ nix develop --no-update-lock-file -c bun run build
 ```
 
 For tests without service fixtures, use the credential-free selection in
-`.github/workflows/sdk-typescript.yml`. An unfiltered `bun test` also collects
+`scripts/ci/build-sdk-publish.sh`. An unfiltered `bun test` also collects
 integration tests that require a configured backend and test identities; use
-`sdk-integration.yml` for that complete local-stack setup.
+`scripts/ci/opensecret-sdk-e2e.sh` (the `os-sdk-e2e` lane) for that complete
+local-stack setup.
 
 For Rust work:
 
@@ -76,16 +77,18 @@ nix develop --no-update-lock-file -c bash -lc '
 '
 ```
 
-Run focused tests while iterating, then match the root path-scoped workflows:
-`sdk-typescript.yml`, `sdk-rust.yml`, and `sdk-supply-chain.yml` as applicable.
+Run focused tests while iterating, then match CI from the repository root with
+`just lane sdk-ts`, `just lane sdk-rust`, and `just lane deps-sdk` as applicable
+(lanes in `scripts/ci/lanes.py`).
 The repository pre-commit hook runs `sdk/.githooks/pre-commit` in this shell
 when SDK files are staged: the Rust format, Clippy, `--lib` tests, and docs,
 and the TypeScript format, build, and top-level unit tests. It never runs the
 integration suites or cargo-deny.
 When the change reaches backend behavior, authentication, or the encrypted wire
-contract, also match `sdk-integration.yml`. It starts disposable PostgreSQL and
-the in-tree `services/opensecret/` backend from the same checkout, then tests
-both SDK implementations without a hosted development server. Inspect backend
+contract, also match the `os-sdk-e2e` lane (`scripts/ci/opensecret-sdk-e2e.sh`).
+It migrates a disposable PostgreSQL, starts the in-tree `services/opensecret/`
+backend from the same checkout, then tests both SDK implementations without a
+hosted development server. Inspect backend
 changes and run its component validation when the compatibility contract reaches
 them; there is no separate integration revision to advance.
 

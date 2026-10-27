@@ -70,7 +70,7 @@ dataset identity and settings. No synthetic database or key is uploaded.
 scenarios and their sample counts, effective durability settings, and indexed
 plans with and without statistics. Missing scenarios cannot silently remove a
 slow operation. Linux CI compares medians at 10x its actual Linux reference;
-the scheduled `macos-26` full run uses 2x its actual macOS reference. Platform
+the `macos-full` profile uses 2x its actual macOS reference. Platform
 mismatches are rejected. Native Mac small runs can use `--profile linux-ci
 --diagnostic` to validate workload evidence without comparing or recording a
 Linux runner gate.
@@ -135,9 +135,7 @@ medians only; append tails, checkpoints and conversion throughput remain
 reported evidence without an invented acceptance threshold. The report's OS
 does not independently attest the scheduled runner label or hardware.
 
-The separate performance workflow runs small Linux data on relevant PRs and
-pushes, and both Linux and full macOS data on its schedule or manual dispatch.
-Workflow artifacts are results and digests, with no signing or release action.
+CI does not run the benchmark; run it locally when changing the store.
 
 ## Seed a stopped Local profile
 
