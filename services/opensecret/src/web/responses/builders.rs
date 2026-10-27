@@ -159,6 +159,7 @@ impl OutputItemBuilder {
                 id: message_id.to_string(),
                 output_type: OUTPUT_TYPE_MESSAGE.to_string(),
                 status: STATUS_IN_PROGRESS.to_string(),
+                encrypted_content: None,
                 role: Some(ROLE_ASSISTANT.to_string()),
                 content: Some(vec![]),
                 call_id: None,

@@ -138,6 +138,11 @@ diesel::table! {
         embedding_enc -> Nullable<Bytea>,
         previous_summary_id -> Nullable<Int8>,
         created_at -> Timestamptz,
+        format_version -> Int4,
+        generation -> Int8,
+        source_fingerprint -> Nullable<Bytea>,
+        origin_response_uuid -> Nullable<Uuid>,
+        after_item_uuid -> Nullable<Uuid>,
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::{
-    db::{setup_db, DBError},
+    db::{setup_test_db, DBError},
     encrypt::{decrypt_with_key, encrypt_with_key},
     generate_reset_hash,
     login_routes::RegisterCredentials,
@@ -2111,7 +2111,7 @@ async fn insert_conversation_item_of_each_type(
 }
 
 async fn build_local_test_app_state(database_url: String) -> AppState {
-    let db = setup_db(database_url);
+    let db = setup_test_db(database_url);
     AppStateBuilder::default()
         .app_mode(AppMode::Local)
         .db(db)
