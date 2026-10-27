@@ -202,11 +202,14 @@ def plan_event(event: str, payload: dict) -> Selection:
 
 def quarantined() -> List[str]:
     """CI_QUARANTINE: comma-separated lane ids that still run, but whose failures
-    ci-ok reports without failing. An id that names no lane is an error."""
+    ci-ok reports without failing. An id that names no lane is an error, and so is
+    `repo`: it enforces the workflow policy and the release contracts."""
     names = sorted({name.strip() for name in os.environ.get("CI_QUARANTINE", "").split(",") if name.strip()})
     unknown = [name for name in names if name not in {lane.id for lane in LANES}]
     if unknown:
         raise ValueError(f"CI_QUARANTINE names no lane: {', '.join(unknown)}")
+    if "repo" in names:
+        raise ValueError("CI_QUARANTINE cannot name repo: it enforces the workflow policy and release contracts")
     return names
 
 

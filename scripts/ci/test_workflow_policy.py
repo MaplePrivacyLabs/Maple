@@ -303,7 +303,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                             self.assertIn(ON_BLACKSMITH, guard)
                             self.assertEqual("!" + ON_BLACKSMITH in guard,
                                              {lanes.cache_store(label) for label in labels} == {"github"})
-                if any(GITHUB_HOSTED.fullmatch(label) for label in labels):
+                if "github" in {lanes.cache_store(label) for label in labels}:  # any non-Blacksmith runner
                     writers.add((name, job_id))
         self.assertEqual(writers, GITHUB_STORE_WRITERS)
         # Within a matrix writer, pin the lanes themselves.

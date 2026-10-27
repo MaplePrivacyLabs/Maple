@@ -487,6 +487,8 @@ class ClientLaneTests(unittest.TestCase):
                              (tauri + "tauri.conf.json", desktop | {"research-rust", "repo"}),
                              (tauri + "resources/windows/README.md", windows | {"research-rust"}),
                              ("scripts/ci/desktop-windows-pr.sh", windows | {"repo"}),
+                             # Only the Windows lane runs the verifier in Git Bash.
+                             ("scripts/ci/verify-release-artifacts.sh", desktop | windows | {"repo"}),
                              ("scripts/ci/research-dev-desktop.sh", {"research-dev-macos", "repo"})):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), lanes_)
@@ -589,6 +591,7 @@ class PlannerTests(unittest.TestCase):
         for event, payload in ((NIGHTLY, {}), (PUSH, {"before": SHA_A, "after": SHA_B})):
             with self.subTest(event=event):
                 self.assertEqual(self.github(event, payload, CI_QUARANTINE="agent-test,agent-tset")[0], 1)
+                self.assertEqual(self.github(event, payload, CI_QUARANTINE="agent-test,repo")[0], 1)
 
     def test_eif_candidate_builds_only_same_repository_prs_to_master_with_a_usable_diff(self):
         pull = {"number": 1, "base": {"sha": SHA_A, "ref": "master"},

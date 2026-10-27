@@ -214,6 +214,8 @@ jobs:
         uses: ./.github/actions/setup-agent-windows
         with:
           release: "true"
+      - name: Exercise Windows metadata parser and native linker retention
+        run: python3 scripts/test_windows_build_info.py
       - name: Exercise Windows host launch in a restrictive job
         run: python3 scripts/test_windows_host_spawn.py
       - name: Restore the exact-key Agent release cache

@@ -39,6 +39,10 @@ class NightlyReportTests(unittest.TestCase):
         self.assertEqual(nightly_report.decide(["- x"], 7, "u")[0], "comment")
         self.assertEqual(nightly_report.decide([], 7, "u")[0], "close")
         self.assertIsNone(nightly_report.decide([], None, "u"))
+        # A green night with an active quarantine keeps the issue open, without calling it a failure.
+        quarantine = nightly_report.failures({}, GREEN, DAY, "os-pcr")
+        self.assertTrue(nightly_report.decide(quarantine, 7, "u")[1].startswith("Nightly checks passed"))
+        self.assertTrue(nightly_report.decide(quarantine + ["- x"], 7, "u")[1].startswith("Nightly checks failed"))
 
     def run_main(self, dry_run, open_issues, needs):
         calls = []

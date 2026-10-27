@@ -122,8 +122,9 @@ is still selected and runs, and its own check shows its real result, but
 `ci-ok` reports its failure as a warning instead of failing. In the `nix` and
 `windows` matrices, the run's job results tell its failure apart from its
 neighbours'. An id that names no lane fails `plan`, so a typo cannot
-quarantine nothing. The nightly report lists every active quarantine; clear
-the variable when the lane is fixed.
+quarantine nothing; so does `repo`, which enforces the workflow policy and
+release contracts. The nightly report lists every active quarantine; clear the
+variable when the lane is fixed.
 
 ## Runners
 
@@ -131,10 +132,11 @@ Lanes use Blacksmith runners or GitHub-hosted runners; the runner
 constants are at the top of `scripts/ci/lanes.py`. During an outage, set the
 repository variable `CI_LINUX_RUNNER`, `CI_LINUX_HEAVY_RUNNER`,
 `CI_MACOS_RUNNER` or `CI_WINDOWS_RUNNER` to another label; no pull request is
-needed. The Windows lanes a pull request waits on that need GitHub's image
-(`agent-windows-updater`, `agent-package-windows`, `research-desktop-windows`)
-run on the org's 16-core GitHub-hosted runner `maple-windows-2025-16core`
-(billed by the minute); `CI_WINDOWS_GITHUB_RUNNER=windows-2025` moves them back
-to the standard runner, which uses the same cache store. `agent-full-windows`,
-which nobody waits on, uses the free standard `windows-2025`. A runner from the
-other vendor never saves a cache.
+needed. The Agent Windows lanes that need GitHub's image
+(`agent-windows-updater`, `agent-package-windows`) and, for speed,
+`research-desktop-windows` run on the org's 16-core GitHub-hosted runner
+`maple-windows-2025-16core` (billed by the minute);
+`CI_WINDOWS_GITHUB_RUNNER=windows-2025` moves them back to the standard runner,
+which uses the same cache store. `agent-full-windows` (nightly, or by label)
+uses the free standard `windows-2025`. A runner from the other vendor never
+saves a cache.

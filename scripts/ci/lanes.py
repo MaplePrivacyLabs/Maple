@@ -45,7 +45,7 @@ GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile no
 # PR lanes use the org's 16-core GitHub-hosted Windows 2025 runner (the same image family,
 # GitHub's cache store); CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
 GITHUB_WINDOWS = Runner("maple-windows-2025-16core", "CI_WINDOWS_GITHUB_RUNNER")
-GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the standard runner, for lanes nobody waits on
+GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the free standard runner, for the nightly full suite
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"
@@ -191,8 +191,10 @@ DESKTOP = tuple(TAURI + glob for glob in ("tauri.conf.json", "build.rs", "script
                                           "scripts/run-with-desktop-onnxruntime.sh")) + tuple(
     "scripts/ci/" + name for name in ("desktop-pr.sh", "desktop-release.sh", "_common.sh", "tauri_bundle_type.py",
                                       "verify-release-artifacts.sh", "attestation-manifest.sh"))
+# The Windows PR lane is the only one that runs the scripts it shares with DESKTOP in Git Bash.
 WINDOWS_DESKTOP = (TAURI + "tauri.windows.conf.json", TAURI + "resources/windows/**", TAURI + "scripts/*windows*",
-                   "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py")
+                   "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py", "scripts/ci/_common.sh",
+                   "scripts/ci/verify-release-artifacts.sh")
 
 # The paths only OpenSecret lanes consume; plan.py counts them as classified.
 OPENSECRET_HOME = "services/opensecret/**"
