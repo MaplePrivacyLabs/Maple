@@ -520,7 +520,7 @@ mod tests {
     fn a_cached_peer_status_is_not_remote_refresh_support() {
         let mut info = current_peer_for_compatibility();
         assert!(info.supports_remote_refresh());
-        info.protocol.version = "7.0.0".into();
+        info.protocol.version = "8.0.0".into();
         info.protocol
             .capabilities
             .retain(|value| value != REFRESH_CAPABILITY);
@@ -953,17 +953,17 @@ mod tests {
             serde_json::from_value(fixtures["peer_info_without_tool_summary_start"].clone())
                 .unwrap();
         without.validate().unwrap();
-        assert!(without.supports_remote_updates());
+        assert!(!without.supports_remote_updates());
         assert!(!without.supports_tool_summary_start());
         let mut info = PeerInfo {
             protocol: ProtocolInfo::current(),
             ..without
         };
-        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+        for version in ["8.0.0", "8.1.0", "8.2.0"] {
             info.protocol.version = version.into();
             assert!(info.supports_tool_summary_start(), "{version}");
         }
-        for version in ["6.2.0", "8.0.0", "invalid"] {
+        for version in ["6.2.0", "7.1.0", "9.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_tool_summary_start(), "{version}");
         }
