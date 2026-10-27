@@ -145,7 +145,9 @@ export function Sidebar({
     if (nextMode === mode) return;
 
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      void completeWorkspaceModeChange(nextMode);
+      // Navigate after the radio's change event. A history push from inside that
+      // handler changes the URL without the router matching the new location.
+      window.setTimeout(() => void completeWorkspaceModeChange(nextMode), 0);
       return;
     }
 
