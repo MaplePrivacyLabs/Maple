@@ -6,6 +6,7 @@ Only an explicit --smoke on a credential-free Windows verifier runs the app.
 """
 
 import argparse
+from contextlib import contextmanager
 import gzip
 import hashlib
 import importlib.util
@@ -61,6 +62,15 @@ BUNDLE_FILES = PAYLOAD_FILES | {"bundle-info.json"}
 BUNDLE_DIRECTORIES = {"", "notices", "notices/wordlists"}
 MAX_BUNDLE_BYTES = 768 * 1024 * 1024
 INSTALLER_CHECKER = "$PLUGINSDIR/maple-installer-check.exe"
+DIAGNOSTIC_LIMIT = 8192
+NSIS_FAILURE_PHASES = {
+    10: "architecture-probe", 11: "unsupported-architecture", 12: "version-probe",
+    13: "unsupported-os", 20: "checker-extraction", 21: "preflight-launch",
+    22: "preflight-child", 23: "prepare-launch", 24: "prepare-child",
+    30: "payload-copy", 31: "registration", 40: "activation-launch",
+    41: "activation-child", 50: "uninstall-registration", 51: "uninstall-launch",
+    52: "uninstall-child", 53: "uninstall-files",
+}
 
 
 def module(name):
@@ -477,7 +487,97 @@ def smoke_environment(scratch):
     return environment
 
 
-def smoke_installer(installer, info, unsigned, build, expected_hashes):
+def capture_preflight(arguments, environment, timeout=120):
+    """Read-only checker only: bound combined output before retaining it."""
+    command = [str(value) for value in arguments]
+    process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    expired = threading.Event()
+    def expire():
+        expired.set()
+        process.kill()
+    timer = threading.Timer(timeout, expire)
+    timer.start()
+    output = bytearray()
+    try:
+        while block := process.stdout.read(min(1024, DIAGNOSTIC_LIMIT + 1 - len(output))):
+            output.extend(block)
+            if len(output) > DIAGNOSTIC_LIMIT:
+                bounded_diagnostics(output[:DIAGNOSTIC_LIMIT])
+                raise ValueError("Read-only Windows preflight exceeded diagnostic bounds")
+        code = process.wait(timeout=5)
+        if expired.is_set():
+            bounded_diagnostics(output)
+            raise subprocess.TimeoutExpired(command, timeout)
+        return subprocess.CompletedProcess(command, code, bytes(output))
+    finally:
+        timer.cancel()
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
+@contextmanager
+def verification_scratch(prefix):
+    temporary = tempfile.TemporaryDirectory(prefix=prefix)
+    primary = None
+    try:
+        yield Path(temporary.name).resolve()
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            temporary.cleanup()
+        except Exception as error:
+            print("Windows verification cleanup failure: " + type(error).__name__, file=sys.stderr)
+            if primary is None:
+                raise
+
+
+def smoke_failure_evidence(phase, error, installed, generation_name, registry, access, winreg):
+    """Presence/type evidence only; no profile/store data or arbitrary walks."""
+    def state(path):
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return "absent"
+        except OSError:
+            return "unavailable"
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
+            return "reparse"
+        return "directory" if stat.S_ISDIR(metadata.st_mode) else "file" if stat.S_ISREG(metadata.st_mode) else "special"
+    try:
+        root = state(installed)
+        paths = {"root": root}
+        if root == "directory":
+            for name in ("maple-agent.exe", "uninstall.exe", "current.json", ".install.lock", ".installer-intent.json", ".uninstaller-intent.json", "versions"):
+                paths[name] = state(installed / name)
+            if paths["versions"] == "directory":
+                generation = installed / "versions" / generation_name
+                paths["generation"] = state(generation)
+                if paths["generation"] == "directory":
+                    for name in ("maple-agent.exe", "build-info.json", "bundle-info.json"):
+                        paths["generation/" + name] = state(generation / name)
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, access):
+                registration = "present"
+        except FileNotFoundError:
+            registration = "absent"
+        except OSError:
+            registration = "unavailable"
+        code = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+        evidence = {"phase": phase, "error": type(error).__name__, "exit_code": code,
+                    "installer_phase": NSIS_FAILURE_PHASES.get(code, "unknown") if phase in ("install", "repeat-install", "uninstall") else None,
+                    "registration": registration, "owned_paths": paths}
+        print("Windows installer failure evidence: " + json.dumps(evidence, sort_keys=True), file=sys.stderr)
+    except Exception:
+        # Diagnostics must never replace the failure being diagnosed.
+        print("Windows installer failure evidence unavailable", file=sys.stderr)
+
+
+def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checker):
     import winreg  # Only the explicit native smoke path loads the Windows API.
 
     registry = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + info["bundle_id"]
@@ -487,30 +587,40 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes):
             raise ValueError("Refusing to smoke over an existing Agent installation")
     except FileNotFoundError:
         pass
-    with tempfile.TemporaryDirectory(prefix="maple-windows-install-") as temporary:
-        scratch = Path(temporary).resolve()
+    with verification_scratch("maple-windows-install-") as scratch:
         environment = smoke_environment(scratch)
         installed = scratch / "install with spaces"
         command = f'"{installer}" /S /D={installed}'
-        if unsigned and info["profile"] == "prod":
-            # Prod trust is never relaxed for a preview. The same native
-            # preflight must refuse before destination files or registration.
-            result = subprocess.run(command_as_windows_args(command), env=environment, timeout=120)
-            if result.returncode == 0 or installed.exists():
-                raise ValueError("Unsigned Prod installer did not refuse before destination changes")
-            try:
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
-                    raise ValueError("Unsigned Prod installer changed installation registration")
-            except FileNotFoundError:
-                pass
-            print("Verified unsigned Prod refusal before installed files, pointer or registration changes; no positive GUI/install proof")
-            return
-        run(command_as_windows_args(command), env=environment, timeout=120)
+        generation_name = info["version"] + "-" + build
+        phase, primary, installed_ok = "read-only-preflight", None, False
         executable = installed / "maple-agent.exe"
         uninstaller = installed / "uninstall.exe"
-        generation_name = info["version"] + "-" + build
         generation = installed / "versions" / generation_name
         try:
+            arguments = [checker, "--internal-windows-installer-preflight", installed]
+            preflight = capture_preflight(arguments, environment)
+            if not (unsigned and info["profile"] == "prod") and preflight.returncode:
+                bounded_diagnostics(preflight.stdout)
+                raise subprocess.CalledProcessError(preflight.returncode, preflight.args)
+            if unsigned and info["profile"] == "prod" and preflight.returncode == 0:
+                raise ValueError("Unsigned Prod checker did not refuse read-only preflight")
+            phase = "install"
+            if unsigned and info["profile"] == "prod":
+                # Keep the actual NSIS refusal proof in addition to the direct
+                # read-only probe; neither may enable unsigned Prod installs.
+                result = subprocess.run(command_as_windows_args(command), env=environment, timeout=120)
+                if result.returncode == 0 or installed.exists():
+                    raise ValueError("Unsigned Prod installer did not refuse before destination changes")
+                try:
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
+                        raise ValueError("Unsigned Prod installer changed installation registration")
+                except FileNotFoundError:
+                    pass
+                print("Verified unsigned Prod refusal before installed files, pointer or registration changes; no positive GUI/install proof")
+                return
+            run(command_as_windows_args(command), env=environment, timeout=120)
+            installed_ok = True
+            phase = "installed-verification"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access) as key:
                 if winreg.QueryValueEx(key, "InstallLocation")[0] != str(installed):
                     raise ValueError("Installer did not register the exact per-user installation")
@@ -527,6 +637,7 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes):
                 raise ValueError("Freshly installed Windows bootstrap differs from its generation")
             signature(executable, unsigned)
             signature(uninstaller, unsigned)
+            phase = "installed-cli"
             actual = run([executable, "--build-info"], env=environment, capture_output=True, text=True).stdout
             if json.loads(actual) != info:
                 raise ValueError("Installed Windows binary reports another profile/source")
@@ -543,34 +654,48 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes):
             # forwarding. GUI bootstrap intentionally detaches, so observe
             # the exact selected installed generation for render/lifetime and
             # deterministic cleanup instead of the short-lived launcher PID.
+            phase = "gui"
             gui_smoke(generation / "maple-agent.exe", scratch, environment)
             # A repeated manual installer must retain the active generation
             # and stable bootstrap rather than rewriting a running payload.
             bootstrap_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
+            phase = "repeat-install"
             run(command_as_windows_args(command), env=environment, timeout=120)
             if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
                 raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
+        except BaseException as error:
+            primary = error
+            smoke_failure_evidence(phase, error, installed, generation_name, registry, registry_access, winreg)
+            raise
         finally:
-            if executable.is_file():
-                run([executable, "host", "stop"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
-            if uninstaller.is_file():
-                sentinel = installed / "user-created-file.txt"
-                sentinel.write_text("preserve me", encoding="utf-8")
-                state = scratch / "data" / info["data_namespace"] / "state-marker.txt"
-                state.parent.mkdir(parents=True, exist_ok=True)
-                state.write_text("preserve state", encoding="utf-8")
-                # _?= suppresses the uninstaller's detached temp copy, so the
-                # process exit really completes the cleanup being checked.
-                run(command_as_windows_args(f'"{uninstaller}" /S _?={installed}'), env=environment, timeout=120)
-                if executable.exists() or sentinel.read_text(encoding="utf-8") != "preserve me" or state.read_text(encoding="utf-8") != "preserve state":
-                    raise ValueError("Uninstall did not remove the app while preserving user files and state")
-                if any((installed / name).exists() for name in ("current.json", ".install.lock", ".installer-intent.json", ".uninstaller-intent.json", "versions")):
-                    raise ValueError("Uninstall left owned generation or transaction files behind")
+            if installed_ok:
+                cleanup_phase = "host-stop"
                 try:
-                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
-                        raise ValueError("Uninstall left the profile's registration behind")
-                except FileNotFoundError:
-                    pass
+                    if executable.is_file():
+                        run([executable, "host", "stop"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
+                    if uninstaller.is_file():
+                        sentinel = installed / "user-created-file.txt"
+                        sentinel.write_text("preserve me", encoding="utf-8")
+                        state = scratch / "data" / info["data_namespace"] / "state-marker.txt"
+                        state.parent.mkdir(parents=True, exist_ok=True)
+                        state.write_text("preserve state", encoding="utf-8")
+                        # _?= suppresses the uninstaller's detached temp copy, so the
+                        # process exit really completes the cleanup being checked.
+                        cleanup_phase = "uninstall"
+                        run(command_as_windows_args(f'"{uninstaller}" /S _?={installed}'), env=environment, timeout=120)
+                        if executable.exists() or sentinel.read_text(encoding="utf-8") != "preserve me" or state.read_text(encoding="utf-8") != "preserve state":
+                            raise ValueError("Uninstall did not remove the app while preserving user files and state")
+                        if any((installed / name).exists() for name in ("current.json", ".install.lock", ".installer-intent.json", ".uninstaller-intent.json", "versions")):
+                            raise ValueError("Uninstall left owned generation or transaction files behind")
+                        try:
+                            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
+                                raise ValueError("Uninstall left the profile's registration behind")
+                        except FileNotFoundError:
+                            pass
+                except Exception as error:
+                    smoke_failure_evidence(cleanup_phase, error, installed, generation_name, registry, registry_access, winreg)
+                    if primary is None:
+                        raise
     print("Verified Windows install, identity, signed-out ACP, GUI first render, host stop and state-preserving uninstall")
 
 
@@ -625,17 +750,17 @@ def verify(profile, directory, unsigned, *, smoke):
     info = release_info.read_info(profile, directory / "build-info.json", source_sha(), PLATFORM)
     installer = directory / manifest["package"]
     signature(installer, unsigned)
-    with tempfile.TemporaryDirectory(prefix="maple-windows-extract-") as temporary:
-        payload = Path(temporary)
+    with verification_scratch("maple-windows-extract-") as payload:
         uninstaller = extract_installer(installer, payload, unsigned, info, manifest["build"])
         generation = payload / "versions" / (info["version"] + "-" + manifest["build"])
         verify_payload(profile, generation, info, unsigned)
         signature(uninstaller, unsigned)
         expected_hashes = inspect_bundle(directory / manifest["updater"], info, manifest["build"], generation)
-    if smoke:
-        if any(name.startswith(("AZURE_", "MAPLE_WINDOWS_ARTIFACT_SIGNING_")) for name in os.environ):
-            raise ValueError("Installed Windows smoke requires a verifier without signing configuration")
-        smoke_installer(installer, info, unsigned, manifest["build"], expected_hashes)
+        if smoke:
+            if any(name.startswith(("AZURE_", "MAPLE_WINDOWS_ARTIFACT_SIGNING_")) for name in os.environ):
+                raise ValueError("Installed Windows smoke requires a verifier without signing configuration")
+            smoke_installer(installer, info, unsigned, manifest["build"], expected_hashes,
+                            checker=payload / INSTALLER_CHECKER)
     print(f"Verified {profile} Windows installer identity, exact inventory and signatures")
 
 

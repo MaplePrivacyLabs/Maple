@@ -230,6 +230,15 @@ install intent permits safe interrupted-install recovery. Unsigned Prod must
 refuse before modification; unsigned Dev remains a positive install/GUI/uninstall
 preview with no production feed or keys.
 
+The downloaded verifier captures the signed checker's read-only preflight
+output before invoking NSIS. On failure it records the install phase and only
+the presence/type of fixed files and registration in its isolated fixture;
+cleanup errors do not replace the original failure. NSIS exit codes distinguish
+architecture/version probes (10–13), checker extraction (20), preflight launch
+or child refusal (21–22), preparation (23–24), payload/registration (30–31),
+activation (40–41), and uninstall (50–53). A failed installer is not retried by
+the verifier. These diagnostics do not establish installed upgrade qualification.
+
 For a produced Prod updater archive, compile the trusted data-only scanner and
 validate the exact package directory (add `--unsigned` for PR packages):
 
