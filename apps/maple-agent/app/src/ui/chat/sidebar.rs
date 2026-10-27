@@ -3576,7 +3576,6 @@ impl Sidebar {
         // While a sidebar menu is open, only its owning header shows actions.
         let menu_open = self.project_popup.is_open(&root.target);
         let hover = !renaming && !self.sidebar_menu_open();
-        let reorderable = hover && self.can_reorder();
         let new_task = root.target.clone();
         let menu_target = root.target.clone();
         let selector = root.folder_id.clone();
@@ -3604,15 +3603,10 @@ impl Sidebar {
             })
             .when(hover, |row| {
                 row.hover(|style| {
-                    let style = if self.dragging {
+                    if self.dragging {
                         style
                     } else {
                         style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    };
-                    if reorderable {
-                        style.cursor_move()
-                    } else {
-                        style.cursor_pointer()
                     }
                 })
             })
