@@ -236,8 +236,9 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-full-linux", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), run="just ci-extra",
          cache="agent-full-linux", timeout=30, gate=False, **AGENT_FLAKE),
     Lane("agent-full-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), runner=MACOS,
+         # The debug app's notices run `cargo about --offline`: fetch every target's crates first.
          run="python3 scripts/test_git_metadata.py && cargo build --workspace --all-targets --locked"
-             " && ./scripts/macos-debug-app.sh && cargo test --workspace --locked",
+             " && cargo fetch --locked && ./scripts/macos-debug-app.sh && cargo test --workspace --locked",
          cache="agent-full-macos", timeout=45, gate=False, **AGENT_FLAKE),
     Lane("agent-full-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(),
          run="python3 scripts/test_git_metadata.py && cargo build --workspace --all-targets --locked"
