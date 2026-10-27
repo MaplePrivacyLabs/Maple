@@ -1,5 +1,5 @@
 import { isAndroid, isMobile, isTauri } from "@/utils/platform";
-import { billingReturnOrigin } from "./returnOrigin";
+import { billingPortalReturnOrigin } from "./returnOrigin";
 import {
   isAllowedZapriteCheckoutUrl,
   parseBillingApiError,
@@ -177,7 +177,7 @@ export async function fetchProducts(version?: string): Promise<BillingProduct[]>
 export async function fetchPortalUrl(thirdPartyToken: string): Promise<string> {
   assertPurchasingAvailable();
   const requestBody = {
-    return_url: billingReturnOrigin()
+    return_url: billingPortalReturnOrigin()
   };
 
   const response = await fetch(
