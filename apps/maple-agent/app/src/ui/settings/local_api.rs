@@ -7,6 +7,8 @@ use super::{Section, SettingsScreen, SettingsTarget, section_title, setting_copy
 use crate::local_api::{LocalApiConfig, LocalApiState, LocalApiStatus};
 use crate::ui::{text_input::TextInput, theme, widgets};
 
+const PROXY_DOCS_URL: &str = "https://maple.ai/docs/proxy";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum LocalApiTarget {
     Enabled,
@@ -15,6 +17,7 @@ pub(super) enum LocalApiTarget {
     SavePort,
     CopyUrl,
     ApiKeys,
+    LearnMore,
     Refresh,
 }
 
@@ -257,6 +260,7 @@ impl SettingsScreen {
             targets.push(target(LocalApiTarget::CopyUrl));
         }
         targets.push(target(LocalApiTarget::ApiKeys));
+        targets.push(target(LocalApiTarget::LearnMore));
         if !self.local_api.refreshing && !self.local_api.saving {
             targets.push(target(LocalApiTarget::Refresh));
         }
@@ -280,6 +284,7 @@ impl SettingsScreen {
             LocalApiTarget::SavePort => self.save_local_api_port(cx),
             LocalApiTarget::CopyUrl => self.copy_local_api_url(cx),
             LocalApiTarget::ApiKeys => self.select_section(Section::ApiKeys, cx),
+            LocalApiTarget::LearnMore => crate::ui::rich_text::open_link(PROXY_DOCS_URL),
             LocalApiTarget::Refresh => self.refresh_local_api_status(cx),
         }
     }
@@ -470,6 +475,25 @@ impl SettingsScreen {
                             }
                         }))
                         .child("Manage API keys"),
+                ))
+                .child(self.application_target(
+                    || SettingsTarget::LocalApi(LocalApiTarget::LearnMore),
+                    div()
+                        .id("local-api-learn-more")
+                        .role(gpui::Role::Link)
+                        .aria_label("Learn more about the local API")
+                        .text_color(gpui::rgb(theme::link()))
+                        .focus_visible(widgets::focus_ring)
+                        .hover(|style| style.underline().cursor_pointer())
+                        .tab_index(23)
+                        .on_click(|_, _, _| crate::ui::rich_text::open_link(PROXY_DOCS_URL))
+                        .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, _, cx| {
+                            if activates(event) {
+                                cx.stop_propagation();
+                                crate::ui::rich_text::open_link(PROXY_DOCS_URL);
+                            }
+                        }))
+                        .child("Learn more"),
                 )),
         ).child(
             widgets::card_row().flex().flex_col().gap_2()
@@ -485,7 +509,7 @@ impl SettingsScreen {
             pane.child(self.application_target(
                 || SettingsTarget::LocalApi(LocalApiTarget::Refresh),
                 widgets::ghost_button("local-api-refresh")
-                    .tab_index(23)
+                    .tab_index(24)
                     .on_click(cx.listener(|this, _, _, cx| this.refresh_local_api_status(cx)))
                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                         if activates(event) {
@@ -660,6 +684,7 @@ mod tests {
                 vec![
                     target(LocalApiTarget::CopyUrl),
                     target(LocalApiTarget::ApiKeys),
+                    target(LocalApiTarget::LearnMore),
                 ]
             );
         });
