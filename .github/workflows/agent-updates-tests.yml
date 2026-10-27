@@ -9,6 +9,7 @@ on:
     paths:
       - ".github/workflows/agent-updates-*.yml"
       - "services/agent-updates/**"
+      - "services/download-tracking/**"
       - "scripts/ci/agent-updates.sh"
       - "scripts/ci/test_agent_updates_workflows.py"
       - "scripts/ci/_common.sh"
@@ -20,6 +21,7 @@ on:
     paths:
       - ".github/workflows/agent-updates-*.yml"
       - "services/agent-updates/**"
+      - "services/download-tracking/**"
       - "scripts/ci/agent-updates.sh"
       - "scripts/ci/test_agent_updates_workflows.py"
       - "scripts/ci/_common.sh"

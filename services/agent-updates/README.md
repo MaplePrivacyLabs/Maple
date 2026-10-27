@@ -8,6 +8,9 @@ See [publisher tooling](publisher/README.md) for exact commands and retry behavi
 The checked-in binding names the owner-provisioned private `maple-agent-updates`
 bucket. This is configuration, not evidence of Worker deployment or activated
 delivery. There is no deploy script or automatic deployment workflow.
+Private download metrics use the shared Queue and D1 ledger described in
+[download tracking](../download-tracking/README.md). The existing Agent Worker
+consumes events from both update Workers; it has no public metrics endpoint.
 `workers_dev` and preview URLs are off; routine configuration must never contain
 `route`, `routes` or a Custom Domain. Local checks use a separate fixture bucket.
 

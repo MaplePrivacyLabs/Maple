@@ -102,6 +102,9 @@ class HookChangeDetectionTests(unittest.TestCase):
         self.assert_selects(["services/opensecret/nix/eif.nix"])
         self.assert_selects(["services/updates/src/index.ts"], "updates")
 
+    def test_download_tracking_selects_both_workers(self) -> None:
+        self.assert_selects(["services/download-tracking/tracking.ts"], "updates", "agent_updates")
+
     def test_agent_updates_component_is_isolated_from_research(self) -> None:
         for path in (
             "services/agent-updates/src/worker.ts",

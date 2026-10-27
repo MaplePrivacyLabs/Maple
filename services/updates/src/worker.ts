@@ -1,3 +1,8 @@
+import {
+  trackResponse,
+  type TrackingEnv,
+  type TrackingContext,
+} from "../../download-tracking/tracking";
 import repositoryMetadata from "../../../repo.meta.json";
 import {
   INSTALLER_KEYS,
@@ -27,7 +32,7 @@ interface AssetFetcher {
   fetch(request: Request): Promise<Response>;
 }
 
-export interface Env {
+export interface Env extends TrackingEnv {
   ASSETS: AssetFetcher;
 }
 
@@ -296,5 +301,13 @@ export async function handleRequest(
 }
 
 export default {
-  fetch: handleRequest,
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx?: TrackingContext,
+  ): Promise<Response> {
+    const result = await handleRequest(request, env);
+    if (ctx) trackResponse(request, result, env, ctx, "research");
+    return result;
+  },
 };
