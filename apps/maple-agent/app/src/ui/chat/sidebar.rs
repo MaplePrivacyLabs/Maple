@@ -54,6 +54,9 @@ pub(crate) struct BrowseState {
     search: String,
     archived_expanded: bool,
     scroll: gpui::ListOffset,
+    /// Application Vim's row. Other computers' sidebars name a task by its
+    /// computer, so it travels in that form.
+    vim_selected: Option<SidebarTarget>,
     computers: computers::ComputerBrowseState,
 }
 
@@ -582,6 +585,13 @@ impl Sidebar {
             search: self.search_input.read(cx).text(),
             archived_expanded: self.archived_expanded,
             scroll: self.list.logical_scroll_top(),
+            vim_selected: self.vim_selected.clone().map(|target| match target {
+                SidebarTarget::Task(id) => SidebarTarget::Computer(Navigate {
+                    computer: self.backend.remote_host().map(str::to_owned),
+                    destination: Destination::Task(id),
+                }),
+                target => target,
+            }),
             computers: self.computer_browse_state(),
         }
     }
@@ -606,6 +616,21 @@ impl Sidebar {
         }
         self.restore_computer_browse_state(state.computers, cx);
         self.rebuild_sections();
+        // Stay on the row the window had, usually the task just opened
+        // here. This computer's own tasks are plain task rows.
+        if let Some(target) = state
+            .vim_selected
+            .map(|target| match target {
+                SidebarTarget::Computer(Navigate {
+                    computer,
+                    destination: Destination::Task(id),
+                }) if computer.as_deref() == self.backend.remote_host() => SidebarTarget::Task(id),
+                target => target,
+            })
+            .filter(|target| self.vim_target_row(target).is_some())
+        {
+            self.vim_selected = Some(target);
+        }
         self.list.scroll_to(state.scroll);
         cx.notify();
     }
