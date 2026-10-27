@@ -38,6 +38,7 @@ mod billing;
 mod licenses;
 mod mcp;
 mod navigation;
+mod vana;
 use self::account::AccountState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
@@ -155,6 +156,12 @@ pub struct SettingsScreen {
     mcp_editor: Option<McpEditor>,
     mcp_notice: Option<String>,
     mcp_saving: bool,
+    /// This computer can authorize Vana; saved OAuth values never enter the UI.
+    vana_local_available: bool,
+    vana_details_open: bool,
+    vana_connecting: bool,
+    vana_notice: Option<String>,
+    vana_endpoint: Entity<TextInput>,
     /// Device-local integrations discovered by the runtime; None until loaded.
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<String>,
@@ -411,6 +418,14 @@ impl SettingsScreen {
         let application_anchor = ScrollAnchor::for_handle(pane_scroll.clone());
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
+        let vana_local_available = integrations_backend.vana_local_available();
+        let vana_application_focus = application_focus.clone();
+        let vana_endpoint = cx.new(move |cx| {
+            TextInput::new("http://127.0.0.1:PORT/mcp", cx)
+                .with_tab_index(3)
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, cx| window.focus(&vana_application_focus, cx))
+        });
         let this = Self {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
@@ -430,6 +445,11 @@ impl SettingsScreen {
             mcp_editor: None,
             mcp_notice: None,
             mcp_saving: false,
+            vana_local_available,
+            vana_details_open: false,
+            vana_connecting: false,
+            vana_notice: None,
+            vana_endpoint,
             integrations: None,
             integration_notice: None,
             integration_saving: HashSet::new(),
@@ -658,8 +678,19 @@ impl SettingsScreen {
         );
     }
 
+    /// Avoid applying an old settings list after the OAuth flow publishes its definition.
+    fn mcp_change_blocked(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.vana_connecting {
+            return false;
+        }
+        self.mcp_notice =
+            Some("Wait for Vana to finish connecting before changing MCP servers.".to_string());
+        cx.notify();
+        true
+    }
+
     fn save_mcp_servers(&mut self, servers: Vec<McpServerEdit>, cx: &mut Context<Self>) {
-        if self.mcp_saving {
+        if self.mcp_change_blocked(cx) || self.mcp_saving {
             return;
         }
         self.mcp_saving = true;
@@ -688,6 +719,9 @@ impl SettingsScreen {
     }
 
     fn open_mcp_editor(&mut self, existing: Option<McpDefinition>, cx: &mut Context<Self>) {
+        if self.mcp_change_blocked(cx) {
+            return;
+        }
         let application_focus = self.application_focus.clone();
         let application_vim_enabled = self.settings.application_vim_enabled;
         let mut field = |placeholder: &str, value: &str, index: isize, secret: bool| {
@@ -777,6 +811,9 @@ impl SettingsScreen {
     }
 
     fn submit_mcp_editor(&mut self, cx: &mut Context<Self>) {
+        if self.mcp_change_blocked(cx) {
+            return;
+        }
         let Some(editor) = self.mcp_editor.as_ref() else {
             return;
         };
@@ -865,6 +902,9 @@ impl SettingsScreen {
     /// Open the editor for the server called `name`, looked up on click so
     /// the list rows do not clone a server per frame.
     fn edit_mcp_server(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.mcp_change_blocked(cx) {
+            return;
+        }
         let server = self
             .mcp_servers
             .as_deref()
@@ -878,6 +918,9 @@ impl SettingsScreen {
     }
 
     fn toggle_mcp_server(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.mcp_change_blocked(cx) {
+            return;
+        }
         let mut servers: Vec<_> = self
             .mcp_servers
             .as_deref()
@@ -892,6 +935,9 @@ impl SettingsScreen {
     }
 
     fn remove_mcp_server(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.mcp_change_blocked(cx) {
+            return;
+        }
         let mut servers: Vec<_> = self
             .mcp_servers
             .as_deref()
@@ -1515,6 +1561,13 @@ impl SettingsScreen {
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
+        if self.vana_connecting {
+            self.vana_notice =
+                Some("Finish connecting in Vana before leaving Settings.".to_string());
+            self.vana_details_open = true;
+            self.select_section(Section::Integrations, cx);
+            return;
+        }
         if self.password_operation_busy(cx) {
             return;
         }
@@ -2417,8 +2470,14 @@ impl SettingsScreen {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child("Manage integrations here. Enable coding agents to make them available in the composer, then select them for each task."),
+                    .child("Give Maple the tools and context you choose. Connect an integration here, then select it for each chat."),
             );
+
+        pane = pane.child(
+            div()
+                .mt_2()
+                .child(subsection_title("Tools & coding agents")),
+        );
 
         if let Some(notice) = &self.integration_notice {
             pane = pane.child(widgets::notice(
@@ -2474,6 +2533,7 @@ impl SettingsScreen {
                     self.application_target(
                         || SettingsTarget::McpAdd,
                         widgets::primary_button("mcp-add")
+                            .when(self.vana_connecting, |button| button.opacity(0.5))
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.open_mcp_editor(None, cx);
                             }))
@@ -2488,10 +2548,14 @@ impl SettingsScreen {
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child("Connect additional tools over MCP."),
         );
-        if let Some(notice) = &self.mcp_notice {
+        if let Some(notice) = &self.mcp_notice
+            && !self.vana_editor_open()
+        {
             pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
         }
-        if let Some(editor) = &self.mcp_editor {
+        if let Some(editor) = &self.mcp_editor
+            && !self.vana_editor_open()
+        {
             pane = pane.child(self.render_mcp_editor(editor, cx));
         }
         match &self.mcp_servers {
@@ -2502,7 +2566,11 @@ impl SettingsScreen {
                         .child("Loading custom MCP servers…"),
                 );
             }
-            Some(servers) if servers.is_empty() => {
+            Some(servers)
+                if servers
+                    .iter()
+                    .all(|server| server.name.eq_ignore_ascii_case("vana")) =>
+            {
                 pane = pane.child(
                     div()
                         .text_sm()
@@ -2511,7 +2579,10 @@ impl SettingsScreen {
                 );
             }
             Some(servers) => {
-                pane = pane.children(servers.iter().map(|server| {
+                let custom_servers = servers
+                    .iter()
+                    .filter(|server| !server.name.eq_ignore_ascii_case("vana"));
+                pane = pane.children(custom_servers.map(|server| {
                     let name = server.name.clone();
                     let summary = match &server.target {
                         McpTarget::Stdio { command } => format!("STDIO · {command}"),
@@ -2551,19 +2622,24 @@ impl SettingsScreen {
                                         .child(summary),
                                 ),
                         )
-                        .child(pill_button(
-                            format!("mcp-toggle-{name}"),
-                            if server.enabled {
-                                "Enabled"
-                            } else {
-                                "Disabled"
-                            },
-                            server.enabled,
-                            cx.listener({
-                                let name = name.clone();
-                                move |this, _event, _window, cx| this.toggle_mcp_server(&name, cx)
-                            }),
-                        ))
+                        .child(
+                            pill_button(
+                                format!("mcp-toggle-{name}"),
+                                if server.enabled {
+                                    "Enabled"
+                                } else {
+                                    "Disabled"
+                                },
+                                server.enabled,
+                                cx.listener({
+                                    let name = name.clone();
+                                    move |this, _event, _window, cx| {
+                                        this.toggle_mcp_server(&name, cx)
+                                    }
+                                }),
+                            )
+                            .when(self.vana_connecting, |button| button.opacity(0.5)),
+                        )
                         .child(
                             widgets::icon_button(
                                 gpui::SharedString::from(format!("mcp-edit-{name}")),
@@ -2572,6 +2648,7 @@ impl SettingsScreen {
                                 widgets::ROW_ICON,
                                 theme::text_secondary(),
                             )
+                            .when(self.vana_connecting, |button| button.opacity(0.5))
                             .on_click(cx.listener({
                                 let name = name.clone();
                                 move |this, _event, _window, cx| this.edit_mcp_server(&name, cx)
@@ -2585,6 +2662,7 @@ impl SettingsScreen {
                                 widgets::ROW_ICON,
                                 theme::status_error(),
                             )
+                            .when(self.vana_connecting, |button| button.opacity(0.5))
                             .on_click(cx.listener(
                                 move |this, _event, _window, cx| this.remove_mcp_server(&name, cx),
                             )),
@@ -2593,7 +2671,19 @@ impl SettingsScreen {
                 }));
             }
         }
-        pane
+        pane = pane.child(
+            div()
+                .mt_2()
+                .pt_5()
+                .border_t_1()
+                .border_color(gpui::rgb(theme::border_subtle()))
+                .child(subsection_title("Supported MCP integrations")),
+        );
+        pane.child(if self.vana_details_open {
+            self.render_vana_details(cx)
+        } else {
+            self.render_vana_catalog_card(cx)
+        })
     }
 
     fn render_integration_card(
@@ -2926,7 +3016,9 @@ impl SettingsScreen {
                     .pt_1()
                     .child(
                         widgets::primary_button("mcp-save")
-                            .when(self.mcp_saving, |el| el.opacity(0.5))
+                            .when(self.mcp_saving || self.vana_connecting, |el| {
+                                el.opacity(0.5)
+                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.submit_mcp_editor(cx);
                             }))

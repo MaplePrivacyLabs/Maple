@@ -49,7 +49,9 @@ maple-proxy = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # MCP clients for the account's servers: stdio pipes Maple spawns itself, and streamable HTTP.
-rmcp = { version = "=3.4.1", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "=3.4.1", default-features = false, features = ["client", "auth", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+sse-stream = "=0.2.6"
 pi-ai = { path = "../pi-ai", default-features = false }
 pi-agent-core = { path = "../pi-agent-core" }
 pi-coding-agent = { path = "../pi-coding-agent" }

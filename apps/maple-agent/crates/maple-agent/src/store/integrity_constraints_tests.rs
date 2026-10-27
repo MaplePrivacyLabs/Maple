@@ -12,6 +12,7 @@ use super::super::{
     open_readonly,
 };
 use super::*;
+use crate::store::records::{McpServerEdit, McpTarget, SecretString};
 use crate::store::{Store, StorePaths, keys};
 
 fn fixture(encrypted: bool) -> (tempfile::TempDir, Store) {
@@ -187,6 +188,114 @@ fn readonly_plain_and_keyed_checks_detect_json_and_integer_constraints() {
 }
 
 #[test]
+fn readonly_plain_and_keyed_checks_cover_oauth_boundaries_and_tombstones() {
+    for encrypted in [false, true] {
+        let (_directory, store) = fixture(encrypted);
+        let account = store.upsert_account("oauth-constraint-fixture", 1).unwrap();
+        let payload = "{\"syntheticToken\":\"not-a-real-credential\"}";
+        let original = store
+            .install_mcp_oauth(
+                account,
+                None,
+                &McpServerEdit {
+                    key: "vana".into(),
+                    name: "Vana".into(),
+                    description: "Synthetic local OAuth fixture".into(),
+                    enabled: false,
+                    timeout_seconds: 30,
+                    target: McpTarget::StreamableHttp {
+                        url: "http://127.0.0.1:47321/mcp".into(),
+                    },
+                    environment: vec![],
+                    headers: vec![],
+                },
+                SecretString::new(payload.into()),
+            )
+            .unwrap();
+        let target: Vec<u8> = store
+            .writer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .query_row("SELECT target FROM mcp_oauth_credentials", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        for (assignment, damaged) in [
+            ("target = zeroblob(31)", true),
+            ("generation = substr(generation, 1, 31)", true),
+            ("revision = -1", true),
+            ("payload = zeroblob(0)", true),
+            ("payload = zeroblob(65537)", true),
+            ("payload = NULL", false),
+            ("payload = zeroblob(1)", false),
+            ("payload = zeroblob(65536)", false),
+        ] {
+            {
+                let guard = store.writer.lock().unwrap();
+                let writer = guard.as_ref().unwrap();
+                writer
+                    .pragma_update(None, "ignore_check_constraints", true)
+                    .unwrap();
+                writer
+                    .execute(
+                        "UPDATE mcp_oauth_credentials SET target=?1,generation=?2,revision=?3,payload=?4",
+                        rusqlite::params![target, original.generation, original.revision, payload.as_bytes()],
+                    )
+                    .unwrap();
+                writer
+                    .execute(
+                        &format!("UPDATE mcp_oauth_credentials SET {assignment}"),
+                        [],
+                    )
+                    .unwrap();
+                writer
+                    .pragma_update(None, "ignore_check_constraints", false)
+                    .unwrap();
+            }
+            store
+                .with_authenticated_store_key(|key| {
+                    let connection = open_readonly(&store.paths, key)?;
+                    let report = check_connection(
+                        &connection,
+                        IntegrityKind::Full,
+                        encrypted,
+                        Duration::from_secs(5),
+                        &IntegrityCancellation::default(),
+                        &store.paths,
+                    );
+                    assert_eq!(
+                        report.outcome,
+                        if damaged {
+                            IntegrityOutcome::Damaged
+                        } else {
+                            IntegrityOutcome::Clean
+                        },
+                        "{assignment}: {report:?}"
+                    );
+                    assert_eq!(
+                        report.findings.iter().any(|finding| {
+                            finding.kind == FindingKind::Constraint
+                                && finding.table == Some(IntegrityTable::McpOAuthCredentials)
+                        }),
+                        damaged,
+                        "{assignment}: {report:?}"
+                    );
+                    let encoded = serde_json::to_string(&report).unwrap();
+                    if damaged {
+                        assert!(encoded.contains("\"table\":\"mcp_oauth_credentials\""));
+                    }
+                    assert!(!encoded.contains("not-a-real-credential"));
+                    assert!(!encoded.contains(&original.generation));
+                    Ok(())
+                })
+                .unwrap();
+        }
+    }
+}
+
+#[test]
 fn readonly_checks_accept_nullable_checks_and_version_one_without_new_column() {
     for version in [1, 2] {
         let directory = tempfile::tempdir().unwrap();
@@ -330,6 +439,10 @@ fn readonly_plain_and_keyed_checks_detect_orphan_foreign_keys() {
                 "INSERT INTO account_settings(account_id,key,value,updated_ms) VALUES (-1,'orphan-fixture','{}',1)",
                 [],
             ).unwrap();
+            writer.execute(
+                "INSERT INTO mcp_oauth_credentials(server_id,target,generation,revision,payload) VALUES (-1,zeroblob(32),'0123456789abcdef0123456789abcdef',0,NULL)",
+                [],
+            ).unwrap();
             writer.pragma_update(None, "foreign_keys", true).unwrap();
         }
         store.with_authenticated_store_key(|key| {
@@ -346,9 +459,9 @@ fn readonly_plain_and_keyed_checks_detect_orphan_foreign_keys() {
                 &store.paths,
             );
             assert_eq!(report.outcome, IntegrityOutcome::Damaged, "{report:?}");
-            assert!(report.findings.iter().any(|finding|
+            assert!(report.findings.iter().filter(|finding|
                 finding.kind == FindingKind::ForeignKey
-            ));
+            ).count() >= 2);
             assert!(report.receipt.is_none());
             Ok(())
         }).unwrap();

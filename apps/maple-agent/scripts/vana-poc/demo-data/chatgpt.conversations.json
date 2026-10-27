@@ -1,0 +1,1071 @@
+{
+  "conversations": [
+    {
+      "id": "synthetic-alex-chat-01",
+      "title": "Synthetic demo persona: Alex Rivera",
+      "create_time": "2026-09-18T16:00:00.000Z",
+      "update_time": "2026-09-18T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-01-message-1",
+          "role": "user",
+          "content": "For this fictional demo, I am Alex Rivera, a privacy and AI engineer based in San Francisco. I am preparing an eight-minute talk in Washington, DC on October 15, 2026. None of these conversations or metrics belong to a real person.",
+          "content_type": "text",
+          "create_time": "2026-09-18T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-01-message-2",
+          "role": "assistant",
+          "content": "Understood. I will treat Alex Rivera and every record in this demo as synthetic. Your talk can show useful personalization while being clear about where the data comes from.",
+          "content_type": "text",
+          "create_time": "2026-09-18T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-01-message-3",
+          "role": "user",
+          "content": "My theme is: personal context should be permissioned, portable, and useful. Keep my answers concise and cite the vault records you use.",
+          "content_type": "text",
+          "create_time": "2026-09-18T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-01-message-4",
+          "role": "assistant",
+          "content": "I will lead with the action, use short bullets, and identify the conversation or memory that supports each personalized recommendation.",
+          "content_type": "text",
+          "create_time": "2026-09-18T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-02",
+      "title": "An eight-minute privacy talk",
+      "create_time": "2026-09-19T16:00:00.000Z",
+      "update_time": "2026-09-19T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-02-message-1",
+          "role": "user",
+          "content": "I have eight minutes for my DC privacy talk. How should I structure it?",
+          "content_type": "text",
+          "create_time": "2026-09-19T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-02-message-2",
+          "role": "assistant",
+          "content": "Try four beats: a one-minute problem, a two-minute live vault demo, a three-minute explanation of permission boundaries, and a two-minute closing with questions.",
+          "content_type": "text",
+          "create_time": "2026-09-19T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-02-message-3",
+          "role": "user",
+          "content": "I want one concrete outcome instead of a tour of technical features.",
+          "content_type": "text",
+          "create_time": "2026-09-19T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-02-message-4",
+          "role": "assistant",
+          "content": "Show an assistant producing a personalized talk preparation plan from your own prior chats, with sources and an explicit grant.",
+          "content_type": "text",
+          "create_time": "2026-09-19T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-03",
+      "title": "My working style",
+      "create_time": "2026-09-20T16:00:00.000Z",
+      "update_time": "2026-09-20T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-03-message-1",
+          "role": "user",
+          "content": "When helping me plan, I prefer a short prioritized list over a long essay. I want at most three priorities, each with a reason.",
+          "content_type": "text",
+          "create_time": "2026-09-20T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-03-message-2",
+          "role": "assistant",
+          "content": "I will keep plans to three priorities, make the next action concrete, and put additional detail behind a follow-up.",
+          "content_type": "text",
+          "create_time": "2026-09-20T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-03-message-3",
+          "role": "user",
+          "content": "Please cite the actual vault item. Do not invent studies or make guesses sound like stored facts.",
+          "content_type": "text",
+          "create_time": "2026-09-20T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-03-message-4",
+          "role": "assistant",
+          "content": "I will distinguish retrieved facts from suggestions and cite the record title or scope for each retrieved fact.",
+          "content_type": "text",
+          "create_time": "2026-09-20T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-04",
+      "title": "Portable context across assistants",
+      "create_time": "2026-09-21T16:00:00.000Z",
+      "update_time": "2026-09-21T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-04-message-1",
+          "role": "user",
+          "content": "My conversations are spread across tools. I want to carry my preferences into Maple without retyping a personal biography.",
+          "content_type": "text",
+          "create_time": "2026-09-21T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-04-message-2",
+          "role": "assistant",
+          "content": "A personal vault can expose selected conversations and saved memories through MCP. Maple can read approved scopes and keep the resulting answer grounded in those records.",
+          "content_type": "text",
+          "create_time": "2026-09-21T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-04-message-3",
+          "role": "user",
+          "content": "That is the part I want to demonstrate: my context is portable but I still choose the app and the scope.",
+          "content_type": "text",
+          "create_time": "2026-09-21T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-04-message-4",
+          "role": "assistant",
+          "content": "Use a clear consent step and show the selected data categories before a read.",
+          "content_type": "text",
+          "create_time": "2026-09-21T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-05",
+      "title": "MCP permissions for a native app",
+      "create_time": "2026-09-22T16:00:00.000Z",
+      "update_time": "2026-09-22T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-05-message-1",
+          "role": "user",
+          "content": "How should the permission screen for my personal vault feel?",
+          "content_type": "text",
+          "create_time": "2026-09-22T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-05-message-2",
+          "role": "assistant",
+          "content": "Name the app, list the exact scopes, explain the purpose, and show whether the request is read-only. A user should be able to decline or revoke the grant.",
+          "content_type": "text",
+          "create_time": "2026-09-22T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-05-message-3",
+          "role": "user",
+          "content": "For the first demo I only need ChatGPT conversations and saved memories. Health metrics should stay outside that grant.",
+          "content_type": "text",
+          "create_time": "2026-09-22T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-05-message-4",
+          "role": "assistant",
+          "content": "Keep the first grant limited to chatgpt.conversations and chatgpt.memories. Add Oura only in a separate, deliberate request if the demo needs it.",
+          "content_type": "text",
+          "create_time": "2026-09-22T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-06",
+      "title": "Maple demo success criteria",
+      "create_time": "2026-09-23T16:00:00.000Z",
+      "update_time": "2026-09-23T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-06-message-1",
+          "role": "user",
+          "content": "What would prove the Maple and Vana integration actually works?",
+          "content_type": "text",
+          "create_time": "2026-09-23T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-06-message-2",
+          "role": "assistant",
+          "content": "A real MCP tool call should read a schema-valid block from the Personal Server, then Maple should answer using a fact available only in that block. A rejected ungranted scope is useful boundary evidence.",
+          "content_type": "text",
+          "create_time": "2026-09-23T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-06-message-3",
+          "role": "user",
+          "content": "Avoid calling a screenshot or a mocked answer a completed integration.",
+          "content_type": "text",
+          "create_time": "2026-09-23T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-06-message-4",
+          "role": "assistant",
+          "content": "Capture the tool call and the resulting answer separately, and label synthetic fixture content clearly.",
+          "content_type": "text",
+          "create_time": "2026-09-23T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-07",
+      "title": "The question for the live demo",
+      "create_time": "2026-09-24T16:00:00.000Z",
+      "update_time": "2026-09-24T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-07-message-1",
+          "role": "user",
+          "content": "I need a question that makes context portability obvious.",
+          "content_type": "text",
+          "create_time": "2026-09-24T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-07-message-2",
+          "role": "assistant",
+          "content": "Ask: Based on my previous chats, help me prepare my eight-minute DC privacy talk in two days. Give me three priorities and cite the relevant vault records.",
+          "content_type": "text",
+          "create_time": "2026-09-24T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-07-message-3",
+          "role": "user",
+          "content": "Add my preferred speaking style and the local-data caveat.",
+          "content_type": "text",
+          "create_time": "2026-09-24T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-07-message-4",
+          "role": "assistant",
+          "content": "The answer should reflect your preference for concrete examples, concise wording, and an honest statement that relay transport can still matter even when storage is local.",
+          "content_type": "text",
+          "create_time": "2026-09-24T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-08",
+      "title": "Privacy language without overclaiming",
+      "create_time": "2026-09-25T16:00:00.000Z",
+      "update_time": "2026-09-25T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-08-message-1",
+          "role": "user",
+          "content": "Can I say all data stays on device if the MCP endpoint is a public HTTPS relay?",
+          "content_type": "text",
+          "create_time": "2026-09-25T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-08-message-2",
+          "role": "assistant",
+          "content": "Be precise: local vault storage and network transport are separate claims. Describe the actual route and avoid promising that payloads never pass through a service until a direct local connection is verified.",
+          "content_type": "text",
+          "create_time": "2026-09-25T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-08-message-3",
+          "role": "user",
+          "content": "I would rather say less than oversell this.",
+          "content_type": "text",
+          "create_time": "2026-09-25T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-08-message-4",
+          "role": "assistant",
+          "content": "Use: Your vault is on your computer; you choose which context Maple may read. Then describe the demo transport accurately.",
+          "content_type": "text",
+          "create_time": "2026-09-25T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-09",
+      "title": "A short opening story",
+      "create_time": "2026-09-26T16:00:00.000Z",
+      "update_time": "2026-09-26T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-09-message-1",
+          "role": "user",
+          "content": "Draft a simple opening for my talk. I dislike sweeping claims and buzzwords.",
+          "content_type": "text",
+          "create_time": "2026-09-26T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-09-message-2",
+          "role": "assistant",
+          "content": "Every assistant starts by asking me who I am. But my past conversations already contain my preferences, projects, and deadlines. What if I could bring that context with me, and decide exactly what an app is allowed to see?",
+          "content_type": "text",
+          "create_time": "2026-09-26T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-09-message-3",
+          "role": "user",
+          "content": "That is close. End with a concrete promise.",
+          "content_type": "text",
+          "create_time": "2026-09-26T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-09-message-4",
+          "role": "assistant",
+          "content": "Today I will show one permissioned connection, one useful answer, and the records that answer came from.",
+          "content_type": "text",
+          "create_time": "2026-09-26T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-10",
+      "title": "The single slide architecture",
+      "create_time": "2026-09-27T16:00:00.000Z",
+      "update_time": "2026-09-27T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-10-message-1",
+          "role": "user",
+          "content": "I only want one architecture slide.",
+          "content_type": "text",
+          "create_time": "2026-09-27T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-10-message-2",
+          "role": "assistant",
+          "content": "Use three labeled boxes: Personal vault, approved MCP connection, Maple Agent. Put the permission decision at the connection and show context flowing into the answer.",
+          "content_type": "text",
+          "create_time": "2026-09-27T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-10-message-3",
+          "role": "user",
+          "content": "Keep the labels understandable to a policy audience.",
+          "content_type": "text",
+          "create_time": "2026-09-27T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-10-message-4",
+          "role": "assistant",
+          "content": "Call the scopes data categories on the slide, and show the precise scope names only in the product permission screen.",
+          "content_type": "text",
+          "create_time": "2026-09-27T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-11",
+      "title": "A local endpoint roadmap",
+      "create_time": "2026-09-28T16:00:00.000Z",
+      "update_time": "2026-09-28T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-11-message-1",
+          "role": "user",
+          "content": "My future preference is a direct localhost MCP connection so a desktop user can choose a local transport.",
+          "content_type": "text",
+          "create_time": "2026-09-28T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-11-message-2",
+          "role": "assistant",
+          "content": "Treat that as a separate product path to verify: endpoint binding, authorization, consent, metadata, token renewal, and revocation all need to work with the local origin.",
+          "content_type": "text",
+          "create_time": "2026-09-28T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-11-message-3",
+          "role": "user",
+          "content": "Do not imply changing a URL is all it takes.",
+          "content_type": "text",
+          "create_time": "2026-09-28T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-11-message-4",
+          "role": "assistant",
+          "content": "The demo can identify local transport as a next step while showing only the path actually tested.",
+          "content_type": "text",
+          "create_time": "2026-09-28T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-12",
+      "title": "Preparing the screen recording",
+      "create_time": "2026-09-29T16:00:00.000Z",
+      "update_time": "2026-09-29T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-12-message-1",
+          "role": "user",
+          "content": "What should my product recording show?",
+          "content_type": "text",
+          "create_time": "2026-09-29T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-12-message-2",
+          "role": "assistant",
+          "content": "Start with the vault contents, open Maple integrations, connect Vana with a clear permission choice, enable it for the chat, and ask a question that needs stored context.",
+          "content_type": "text",
+          "create_time": "2026-09-29T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-12-message-3",
+          "role": "user",
+          "content": "I want a real product flow, not a montage of terminal commands.",
+          "content_type": "text",
+          "create_time": "2026-09-29T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-12-message-4",
+          "role": "assistant",
+          "content": "Use clean framing and a few readable captions. Capture the actual app behavior and keep tokens or account keys out of the recording.",
+          "content_type": "text",
+          "create_time": "2026-09-29T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-13",
+      "title": "Synthetic data disclosure",
+      "create_time": "2026-09-30T16:00:00.000Z",
+      "update_time": "2026-09-30T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-13-message-1",
+          "role": "user",
+          "content": "How do I make the demo compelling while being honest about fake data?",
+          "content_type": "text",
+          "create_time": "2026-09-30T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-13-message-2",
+          "role": "assistant",
+          "content": "Use a cohesive fictional persona and a small visible Synthetic demo data label. The integration and tool calls can be real even when the imported records are fabricated.",
+          "content_type": "text",
+          "create_time": "2026-09-30T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-13-message-3",
+          "role": "user",
+          "content": "Keep that label visible at the start and in the closing.",
+          "content_type": "text",
+          "create_time": "2026-09-30T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-13-message-4",
+          "role": "assistant",
+          "content": "Then say: Synthetic history, live permissioned MCP reads. Avoid implying the fictional persona represents an actual account owner.",
+          "content_type": "text",
+          "create_time": "2026-09-30T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-14",
+      "title": "Talk draft: three ideas",
+      "create_time": "2026-10-01T16:00:00.000Z",
+      "update_time": "2026-10-01T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-14-message-1",
+          "role": "user",
+          "content": "My three ideas are user choice, context portability, and useful personalization. Is that enough?",
+          "content_type": "text",
+          "create_time": "2026-10-01T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-14-message-2",
+          "role": "assistant",
+          "content": "Yes. Map each idea to one action: choose scopes, bring prior chat context into a different assistant, and receive a preparation plan grounded in that context.",
+          "content_type": "text",
+          "create_time": "2026-10-01T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-14-message-3",
+          "role": "user",
+          "content": "My policy audience does not need token exchange details.",
+          "content_type": "text",
+          "create_time": "2026-10-01T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-14-message-4",
+          "role": "assistant",
+          "content": "Save protocol details for the appendix; use the live consent screen to make the boundary visible.",
+          "content_type": "text",
+          "create_time": "2026-10-01T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-15",
+      "title": "Questions I expect from the audience",
+      "create_time": "2026-10-02T16:00:00.000Z",
+      "update_time": "2026-10-02T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-15-message-1",
+          "role": "user",
+          "content": "What questions should I prepare for in DC?",
+          "content_type": "text",
+          "create_time": "2026-10-02T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-15-message-2",
+          "role": "assistant",
+          "content": "Expect: Can I revoke access? What leaves my device? Who operates the endpoint? Can an app ask for more data later? Is the answer based on real sources?",
+          "content_type": "text",
+          "create_time": "2026-10-02T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-15-message-3",
+          "role": "user",
+          "content": "For anything untested, I want to say we are still verifying it.",
+          "content_type": "text",
+          "create_time": "2026-10-02T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-15-message-4",
+          "role": "assistant",
+          "content": "Prepare a tested-versus-planned slide or note, and answer only with evidence from this build.",
+          "content_type": "text",
+          "create_time": "2026-10-02T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-16",
+      "title": "Source citations in the final answer",
+      "create_time": "2026-10-03T16:00:00.000Z",
+      "update_time": "2026-10-03T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-16-message-1",
+          "role": "user",
+          "content": "What should citations look like when Maple uses my own chats?",
+          "content_type": "text",
+          "create_time": "2026-10-03T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-16-message-2",
+          "role": "assistant",
+          "content": "Use the conversation title and scope, plus a record identifier when available. Make it clear that these are personal vault records rather than public research sources.",
+          "content_type": "text",
+          "create_time": "2026-10-03T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-16-message-3",
+          "role": "user",
+          "content": "Please avoid citation spam after every sentence.",
+          "content_type": "text",
+          "create_time": "2026-10-03T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-16-message-4",
+          "role": "assistant",
+          "content": "Group related claims and cite the supporting record once at the end of each short priority.",
+          "content_type": "text",
+          "create_time": "2026-10-03T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-17",
+      "title": "Protecting my rehearsal time",
+      "create_time": "2026-10-04T16:00:00.000Z",
+      "update_time": "2026-10-04T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-17-message-1",
+          "role": "user",
+          "content": "My strongest focus is around 9 to 11 AM. I prefer meetings after lunch. Please keep that in mind when planning my rehearsal.",
+          "content_type": "text",
+          "create_time": "2026-10-04T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-17-message-2",
+          "role": "assistant",
+          "content": "Reserve the morning for a full talk run-through and put logistics or review after lunch.",
+          "content_type": "text",
+          "create_time": "2026-10-04T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-17-message-3",
+          "role": "user",
+          "content": "I want one rehearsal out loud, not another evening rewriting slides.",
+          "content_type": "text",
+          "create_time": "2026-10-04T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-17-message-4",
+          "role": "assistant",
+          "content": "Put a complete spoken rehearsal before slide polishing, then set a stopping time for edits.",
+          "content_type": "text",
+          "create_time": "2026-10-04T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-18",
+      "title": "Travel to Washington",
+      "create_time": "2026-10-05T16:00:00.000Z",
+      "update_time": "2026-10-05T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-18-message-1",
+          "role": "user",
+          "content": "For the fictional schedule, I travel to Washington on October 14 and speak on October 15. I want the demo and the talk outline ready before I leave.",
+          "content_type": "text",
+          "create_time": "2026-10-05T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-18-message-2",
+          "role": "assistant",
+          "content": "Finish the core flow and a backup recording on October 13. Use October 14 for travel and one short rehearsal, then avoid making the live talk depend on a last-minute setup.",
+          "content_type": "text",
+          "create_time": "2026-10-05T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-18-message-3",
+          "role": "user",
+          "content": "Include a fallback for unstable venue Wi-Fi.",
+          "content_type": "text",
+          "create_time": "2026-10-05T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-18-message-4",
+          "role": "assistant",
+          "content": "Keep a local recording and screenshots of the tested flow, clearly identified as recorded evidence.",
+          "content_type": "text",
+          "create_time": "2026-10-05T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-19",
+      "title": "A recovery-aware work plan",
+      "create_time": "2026-10-06T16:00:00.000Z",
+      "update_time": "2026-10-06T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-19-message-1",
+          "role": "user",
+          "content": "I have been staying up late to polish the demo. If I choose to share wearable data, I only want a descriptive summary that helps me schedule work, not a diagnosis.",
+          "content_type": "text",
+          "create_time": "2026-10-06T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-19-message-2",
+          "role": "assistant",
+          "content": "A planning answer can summarize recorded sleep duration and your own stated preferences. It should avoid diagnoses, causal claims, or treatment advice.",
+          "content_type": "text",
+          "create_time": "2026-10-06T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-19-message-3",
+          "role": "user",
+          "content": "Please do not read health scopes by default.",
+          "content_type": "text",
+          "create_time": "2026-10-06T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-19-message-4",
+          "role": "assistant",
+          "content": "Use chat history first. Health records require a separate scope grant and a question that explicitly asks for them.",
+          "content_type": "text",
+          "create_time": "2026-10-06T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-20",
+      "title": "Less late-night slide polishing",
+      "create_time": "2026-10-07T16:00:00.000Z",
+      "update_time": "2026-10-07T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-20-message-1",
+          "role": "user",
+          "content": "Late-night polishing is rarely useful for me. My own goal is to stop work by 10 PM on the two nights before the talk.",
+          "content_type": "text",
+          "create_time": "2026-10-07T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-20-message-2",
+          "role": "assistant",
+          "content": "Put that goal in the preparation plan and make the final afternoon review small enough to finish before your stopping time.",
+          "content_type": "text",
+          "create_time": "2026-10-07T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-20-message-3",
+          "role": "user",
+          "content": "That is a preference, not a medical rule.",
+          "content_type": "text",
+          "create_time": "2026-10-07T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-20-message-4",
+          "role": "assistant",
+          "content": "I will present it as your stated working preference and avoid prescribing sleep targets from wearable data.",
+          "content_type": "text",
+          "create_time": "2026-10-07T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-21",
+      "title": "Read-only means read-only",
+      "create_time": "2026-10-08T16:00:00.000Z",
+      "update_time": "2026-10-08T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-21-message-1",
+          "role": "user",
+          "content": "The integration in this demo should read vault records. It should not post messages or modify my source accounts.",
+          "content_type": "text",
+          "create_time": "2026-10-08T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-21-message-2",
+          "role": "assistant",
+          "content": "Describe the demo as a read-only use of approved vault scopes. Check the tools available to the assistant and do not include external account actions in the recording.",
+          "content_type": "text",
+          "create_time": "2026-10-08T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-21-message-3",
+          "role": "user",
+          "content": "I also want health excluded from the initial ChatGPT demo.",
+          "content_type": "text",
+          "create_time": "2026-10-08T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-21-message-4",
+          "role": "assistant",
+          "content": "A denied Oura read under the chat-only grant can show that the boundary is real without sharing health data.",
+          "content_type": "text",
+          "create_time": "2026-10-08T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-22",
+      "title": "Permission revocation wording",
+      "create_time": "2026-10-09T16:00:00.000Z",
+      "update_time": "2026-10-09T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-22-message-1",
+          "role": "user",
+          "content": "Draft a line that explains revocation without promising untested behavior.",
+          "content_type": "text",
+          "create_time": "2026-10-09T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-22-message-2",
+          "role": "assistant",
+          "content": "You can choose the data categories this connection may read. Revocation is part of the permission model; the demo notes should identify which revocation behavior this build actually verifies.",
+          "content_type": "text",
+          "create_time": "2026-10-09T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-22-message-3",
+          "role": "user",
+          "content": "Good. I do not want the narration to get ahead of the proof of concept.",
+          "content_type": "text",
+          "create_time": "2026-10-09T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-22-message-4",
+          "role": "assistant",
+          "content": "Use the current tested grant checks as evidence and label further lifecycle checks as remaining work.",
+          "content_type": "text",
+          "create_time": "2026-10-09T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-23",
+      "title": "What goes into the backup recording",
+      "create_time": "2026-10-10T16:00:00.000Z",
+      "update_time": "2026-10-10T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-23-message-1",
+          "role": "user",
+          "content": "My backup recording should be no more than two minutes.",
+          "content_type": "text",
+          "create_time": "2026-10-10T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-23-message-2",
+          "role": "assistant",
+          "content": "Spend 20 seconds on the vault, 35 seconds on connection and permissions, 15 seconds enabling Vana in the chat, 40 seconds on a sourced answer, and 10 seconds on the closing disclosure.",
+          "content_type": "text",
+          "create_time": "2026-10-10T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-23-message-3",
+          "role": "user",
+          "content": "Use a gentle pace and keep each label readable.",
+          "content_type": "text",
+          "create_time": "2026-10-10T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-23-message-4",
+          "role": "assistant",
+          "content": "Leave a short pause when permissions and source citations appear so viewers can read them.",
+          "content_type": "text",
+          "create_time": "2026-10-10T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-24",
+      "title": "Final talk title",
+      "create_time": "2026-10-11T16:00:00.000Z",
+      "update_time": "2026-10-11T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-24-message-1",
+          "role": "user",
+          "content": "Pick a grounded title for the DC privacy talk.",
+          "content_type": "text",
+          "create_time": "2026-10-11T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-24-message-2",
+          "role": "assistant",
+          "content": "Your context, your choice: personal vaults meet useful AI.",
+          "content_type": "text",
+          "create_time": "2026-10-11T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-24-message-3",
+          "role": "user",
+          "content": "I like that. Do not use a futuristic title.",
+          "content_type": "text",
+          "create_time": "2026-10-11T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-24-message-4",
+          "role": "assistant",
+          "content": "Keep this title and use the live preparation plan as the concrete example under it.",
+          "content_type": "text",
+          "create_time": "2026-10-11T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-25",
+      "title": "Final demo priorities for October 13",
+      "create_time": "2026-10-12T16:00:00.000Z",
+      "update_time": "2026-10-12T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-25-message-1",
+          "role": "user",
+          "content": "It is October 13. My talk is in two days. What matters most today?",
+          "content_type": "text",
+          "create_time": "2026-10-12T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-25-message-2",
+          "role": "assistant",
+          "content": "Finish the live chat-only grant and sourced Maple answer; capture a readable backup recording; do one eight-minute rehearsal out loud. Leave cosmetic polish until those three work.",
+          "content_type": "text",
+          "create_time": "2026-10-12T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-25-message-3",
+          "role": "user",
+          "content": "Use my preference for a short prioritized answer when I ask Maple later.",
+          "content_type": "text",
+          "create_time": "2026-10-12T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-25-message-4",
+          "role": "assistant",
+          "content": "I will give three priorities with clear reasons and citations to the relevant saved conversations.",
+          "content_type": "text",
+          "create_time": "2026-10-12T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-alex-chat-26",
+      "title": "A health-aware variant, only after permission",
+      "create_time": "2026-10-13T16:00:00.000Z",
+      "update_time": "2026-10-13T16:09:00.000Z",
+      "message_count": 4,
+      "messages": [
+        {
+          "id": "synthetic-alex-chat-26-message-1",
+          "role": "user",
+          "content": "For an optional second demo, I might explicitly grant Oura sleep and readiness and ask for a descriptive summary alongside my talk schedule.",
+          "content_type": "text",
+          "create_time": "2026-10-13T16:00:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-26-message-2",
+          "role": "assistant",
+          "content": "Use the exact approved scopes, report the recorded date range and averages, and state that synthetic wearable records support planning rather than medical conclusions.",
+          "content_type": "text",
+          "create_time": "2026-10-13T16:03:00.000Z",
+          "model": "synthetic-demo-assistant"
+        },
+        {
+          "id": "synthetic-alex-chat-26-message-3",
+          "role": "user",
+          "content": "Keep the main video centered on portable ChatGPT context. The health variant is secondary.",
+          "content_type": "text",
+          "create_time": "2026-10-13T16:06:00.000Z",
+          "model": null
+        },
+        {
+          "id": "synthetic-alex-chat-26-message-4",
+          "role": "assistant",
+          "content": "The main story stays focused on your prior chats and memories, with Oura available only as an optional separately granted example.",
+          "content_type": "text",
+          "create_time": "2026-10-13T16:09:00.000Z",
+          "model": "synthetic-demo-assistant"
+        }
+      ]
+    }
+  ],
+  "total": 26
+}

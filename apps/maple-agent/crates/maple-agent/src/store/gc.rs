@@ -209,6 +209,7 @@ impl Store {
             if has_tasks { return Err(StoreError::Busy); }
 
             if let Some(progress) = delete_mcp_secret_batch(tx, account)? { return Ok(progress); }
+            if let Some(progress) = delete_mcp_oauth_batch(tx, account)? { return Ok(progress); }
             for (table, size) in [
                 ("account_settings", "length(CAST(value AS BLOB))+length(CAST(key AS BLOB))"),
                 ("projects", "length(CAST(root AS BLOB))+coalesce(length(CAST(display_name AS BLOB)),0)+length(CAST(mcp_defaults AS BLOB))"),
@@ -366,6 +367,50 @@ fn delete_mcp_secret_batch(
     let mut count = 0;
     for (server, kind, name) in keys {
         count += deletion.execute(params![server, kind, name])?;
+    }
+    Ok(Some(CollectionProgress::new(
+        CollectionStage::AccountMetadata,
+        count,
+        bytes,
+    )))
+}
+
+/// Precollect OAuth payloads before deleting their MCP server owners. Otherwise
+/// the server cascade could remove an unaccounted credential payload batch.
+fn delete_mcp_oauth_batch(
+    tx: &Transaction<'_>,
+    account: AccountId,
+) -> StoreResult<Option<CollectionProgress>> {
+    // Include both INTEGER fields as well as the variable-sized credential data.
+    let mut statement = tx.prepare_cached(
+        "SELECT c.server_id,
+        16+length(c.target)+length(CAST(c.generation AS BLOB))+coalesce(length(c.payload),0)
+        FROM mcp_oauth_credentials c JOIN mcp_servers m ON m.id=c.server_id
+        WHERE m.account_id=?1 ORDER BY c.server_id LIMIT ?2",
+    )?;
+    let mut candidates = statement.query(params![account.0, ROW_CAP as i64])?;
+    let mut ids = Vec::new();
+    let mut bytes = 0_u64;
+    while let Some(row) = candidates.next()? {
+        let size = u64::try_from(row.get::<_, i64>(1)?).map_err(|_| StoreError::InvalidData)?;
+        if !ids.is_empty() && bytes.saturating_add(size) > BYTE_CAP {
+            break;
+        }
+        ids.push(row.get::<_, i64>(0)?);
+        bytes = bytes.saturating_add(size);
+        if bytes > BYTE_CAP {
+            break;
+        }
+    }
+    drop(candidates);
+    drop(statement);
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let mut deletion = tx.prepare_cached("DELETE FROM mcp_oauth_credentials WHERE server_id=?1")?;
+    let mut count = 0;
+    for server in ids {
+        count += deletion.execute([server])?;
     }
     Ok(Some(CollectionProgress::new(
         CollectionStage::AccountMetadata,

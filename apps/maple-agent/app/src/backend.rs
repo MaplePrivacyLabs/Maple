@@ -454,6 +454,25 @@ impl AgentBackend {
         }
     }
 
+    /// Vana's loopback endpoint belongs to this computer, never the selected
+    /// remote execution host. This is presentation only; dispatch also enforces
+    /// the local transport boundary before decoding the request.
+    pub fn vana_local_available(&self) -> bool {
+        self.remote_host.is_none() && !self.retired_after_update.load(Ordering::Acquire)
+    }
+
+    pub async fn connect_vana_local(
+        &self,
+        user_id: &str,
+        endpoint: String,
+    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, String> {
+        self.ensure_active()?;
+        if self.remote_host.is_some() {
+            return Err("Connect Vana from This Computer, where Vana Desktop is running.".into());
+        }
+        self.call("connect_vana_local", (user_id, endpoint)).await
+    }
+
     pub async fn remote_setting<R: DeserializeOwned>(
         &self,
         method: &str,
@@ -650,6 +669,12 @@ async fn dispatch_special(
         serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
     }
     match request.method.as_str() {
+        "connect_vana_local" => {
+            let (user, endpoint): (String, String) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.connect_vana_local(&user, endpoint).await?)
+        }
         "save_mcp_servers" => {
             let (user, servers): (String, Vec<AgentMcpServer>) =
                 serde_json::from_value(request.params).map_err(invalid)?;
@@ -782,6 +807,11 @@ pub(crate) async fn dispatch_remote_inner(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    // An authenticated remote request must not open a browser or approve
+    // access to this computer's Personal Server, even with malformed params.
+    if request.method == "connect_vana_local" {
+        return Err("Vana connection setup requires the local desktop.".into());
+    }
     if paging::is_paging(&request.method) {
         return paging::dispatch(backend, request, maple_agent::store::PageTransport::Remote).await;
     }
@@ -800,6 +830,63 @@ mod tests {
 
     fn fixture() -> Arc<AgentBackend> {
         Arc::new(AgentBackend::for_test("http://127.0.0.1:1".into(), String::new()).unwrap())
+    }
+
+    #[test]
+    fn vana_local_setup_refuses_remote_and_retired_facades_before_dispatch() {
+        let controller = fixture();
+        assert!(controller.vana_local_available());
+        let runtime = controller.runtime_handle();
+        runtime.block_on(async {
+            let remote = controller
+                .with_remote_connection("fixture-peer".into(), || async {
+                    Ok(in_process_client(&controller))
+                })
+                .await
+                .unwrap();
+            assert!(!remote.vana_local_available());
+            assert_eq!(
+                remote
+                    .connect_vana_local("fixture-user", "http://127.0.0.1:12345/mcp".into())
+                    .await
+                    .err(),
+                Some("Connect Vana from This Computer, where Vana Desktop is running.".into())
+            );
+            controller.retire_after_update();
+            assert!(!controller.vana_local_available());
+            assert_eq!(
+                controller
+                    .connect_vana_local("fixture-user", "http://127.0.0.1:12345/mcp".into())
+                    .await
+                    .err(),
+                Some(RETIRED_AFTER_UPDATE.into())
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn vana_local_setup_refuses_remote_dispatch_before_parameter_decoding() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        for params in [
+            serde_json::Value::Null,
+            serde_json::json!(["fixture-user", "http://127.0.0.1:12345/mcp"]),
+        ] {
+            let result = dispatch_remote_inner(
+                &backend,
+                Request {
+                    id: 1,
+                    method: "connect_vana_local".into(),
+                    send_id: None,
+                    params,
+                },
+            )
+            .await;
+            assert_eq!(
+                result.err(),
+                Some("Vana connection setup requires the local desktop.".into())
+            );
+        }
     }
 
     fn in_process_client(controller: &AgentBackend) -> BackendClient {

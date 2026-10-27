@@ -419,6 +419,180 @@ fn candidate(source: &Connection) -> (Scan, Connection) {
     (scanned, destination)
 }
 
+#[test]
+fn salvage_catalog_covers_every_authoritative_owned_table() {
+    let mut reference = Connection::open_in_memory().unwrap();
+    reference
+        .pragma_update(None, "application_id", schema::APPLICATION_ID)
+        .unwrap();
+    schema::migrate(&mut reference, 1).unwrap();
+    let expected = reference
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<BTreeSet<_>>>()
+        .unwrap();
+    let mut actual = TABLES
+        .iter()
+        .map(|table| table.name().to_owned())
+        .collect::<BTreeSet<_>>();
+    // Timeline rows are deliberately derived from retained source entries;
+    // every other owned table must participate in review and recovery.
+    assert!(actual.insert(SalvageTable::TimelineRows.name().to_owned()));
+    assert_eq!(actual, expected);
+    assert_eq!(
+        serde_json::to_string(&SalvageTable::McpOAuthCredentials).unwrap(),
+        "\"mcp_oauth_credentials\""
+    );
+}
+
+fn oauth_rows(store: &Store, account: AccountId) -> i64 {
+    store
+        .write(Durability::Durable, |transaction| {
+            let mut active = 0;
+            for (position, name, revision, payload) in [
+                (
+                    0,
+                    "oauth-active",
+                    7,
+                    Some([PRIVATE_MARKER.as_bytes(), b"\x00\xff"].concat()),
+                ),
+                (1, "oauth-revoked", 11, None),
+            ] {
+                transaction.execute(
+                    "INSERT INTO mcp_servers(account_id,key,position,definition) VALUES (?1,?2,?3,'{}')",
+                    params![account.0, name, position],
+                )?;
+                let server = transaction.last_insert_rowid();
+                if position == 0 {
+                    active = server;
+                }
+                transaction.execute(
+                    "INSERT INTO mcp_oauth_credentials(server_id,target,generation,revision,payload) VALUES (?1,?2,?3,?4,?5)",
+                    params![server, [0xa5_u8; 32].as_slice(), "a".repeat(32), revision, payload],
+                )?;
+            }
+            Ok(active)
+        })
+        .unwrap()
+}
+
+#[test]
+fn oauth_credentials_and_revocation_tombstones_are_retained_plain_and_keyed() {
+    use crate::store::keys::{KdfParams, Password};
+
+    for encrypted in [false, true] {
+        let (_directory, store, account) = fixture();
+        let active = oauth_rows(&store, account);
+        if encrypted {
+            let password = Password::normalize("Z7jv!9qP#3nMx@8Ks^2dH").unwrap();
+            store
+                .set_store_password(&password, &[], KdfParams::floor())
+                .unwrap();
+        }
+        let fingerprint = store
+            .with_authenticated_store_key(|key| {
+                let source = super::super::open_readonly(store.paths(), key)?;
+                let (scanned, destination) = candidate(&source);
+                let rows = |connection: &Connection| -> rusqlite::Result<Vec<_>> {
+                    connection
+                        .prepare("SELECT server_id,target,generation,revision,payload FROM mcp_oauth_credentials ORDER BY server_id")?
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, Vec<u8>>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, i64>(3)?,
+                                row.get::<_, Option<Vec<u8>>>(4)?,
+                            ))
+                        })?
+                        .collect()
+                };
+                let original = rows(&source)?;
+                assert_eq!(original.len(), 2);
+                assert!(original[0].4.is_some());
+                assert!(original[1].4.is_none());
+                assert_eq!(rows(&destination)?, original);
+                assert!(scanned.preview.report.dropped_rows.is_empty());
+                assert!(
+                    !serde_json::to_string(&scanned.preview.report)
+                        .unwrap()
+                        .contains(PRIVATE_MARKER)
+                );
+                Ok(scanned.preview.fingerprint)
+            })
+            .unwrap();
+        store
+            .write(Durability::Durable, |transaction| {
+                transaction.execute(
+                    "UPDATE mcp_oauth_credentials SET revision=revision+1 WHERE server_id=?1",
+                    [active],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .with_authenticated_store_key(|key| {
+                let source = super::super::open_readonly(store.paths(), key)?;
+                assert_ne!(scan(&source)?.preview.fingerprint, fingerprint);
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn malformed_or_orphan_oauth_metadata_is_refused_plain_and_keyed() {
+    use crate::store::keys::{KdfParams, Password};
+
+    for encrypted in [false, true] {
+        for update in [
+            "target=zeroblob(31)",
+            "generation='too-short'",
+            "revision=-1",
+            "payload=zeroblob(0)",
+            "payload=zeroblob(65537)",
+            "server_id=999",
+        ] {
+            let (_directory, store, account) = fixture();
+            let active = oauth_rows(&store, account);
+            if encrypted {
+                let password = Password::normalize("Z7jv!9qP#3nMx@8Ks^2dH").unwrap();
+                store
+                    .set_store_password(&password, &[], KdfParams::floor())
+                    .unwrap();
+            }
+            {
+                let guard = store.writer.lock().unwrap();
+                let writer = guard.as_ref().unwrap();
+                writer.pragma_update(None, "foreign_keys", false).unwrap();
+                writer
+                    .pragma_update(None, "ignore_check_constraints", true)
+                    .unwrap();
+                writer
+                    .execute(
+                        &format!("UPDATE mcp_oauth_credentials SET {update} WHERE server_id=?1"),
+                        [active],
+                    )
+                    .unwrap();
+                writer
+                    .pragma_update(None, "ignore_check_constraints", false)
+                    .unwrap();
+                writer.pragma_update(None, "foreign_keys", true).unwrap();
+            }
+            store
+                .with_authenticated_store_key(|key| {
+                    let source = super::super::open_readonly(store.paths(), key)?;
+                    assert!(matches!(scan(&source), Err(StoreError::InvalidData)));
+                    Ok(())
+                })
+                .unwrap();
+            assert!(!store.paths().root().join("db.tmp").exists());
+        }
+    }
+}
+
 fn corrupt_fixture_root(store: &Store, object: &str) -> Vec<u8> {
     let root: i64 = store
         .read(|connection| {

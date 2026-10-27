@@ -188,6 +188,7 @@ struct Connection {
     progress: Progress,
     listing: Listing,
     stdio: Option<StdioProcess>,
+    oauth_generation: Option<String>,
 }
 
 /// One MCP server of a task.
@@ -199,6 +200,7 @@ pub(crate) struct McpServer {
     tools_changed: ToolsChanged,
     connection: tokio::sync::Mutex<Option<Connection>>,
     shutdown: CancellationToken,
+    oauth: Option<super::oauth::OAuthAccountContext>,
 }
 
 impl McpServer {
@@ -215,7 +217,16 @@ impl McpServer {
             tools_changed,
             connection: tokio::sync::Mutex::new(None),
             shutdown: CancellationToken::new(),
+            oauth: None,
         }
+    }
+
+    pub(crate) fn with_oauth_context(
+        mut self,
+        oauth: Option<super::oauth::OAuthAccountContext>,
+    ) -> Self {
+        self.oauth = oauth;
+        self
     }
 
     pub(crate) fn name(&self) -> &str {
@@ -258,9 +269,15 @@ impl McpServer {
         if self.shutdown.is_cancelled() {
             return Err("it was stopped".to_string());
         }
+        let generation = match (&self.oauth, &self.config.transport) {
+            (Some(context), AgentMcpTransport::StreamableHttp { url, .. }) => {
+                context.active_generation(&super::name_to_key(&self.config.name), url)?
+            }
+            _ => None,
+        };
         if connection
             .as_ref()
-            .is_some_and(|open| !open.service.is_closed())
+            .is_some_and(|open| !open.service.is_closed() && open.oauth_generation == generation)
         {
             return Ok(());
         }
@@ -315,6 +332,7 @@ impl McpServer {
                         progress,
                         listing,
                         stdio: Some(stdio),
+                        oauth_generation: None,
                     }),
                     Err(error) => Err(stdio.failed(error).await),
                 }
@@ -324,6 +342,33 @@ impl McpServer {
                 environment,
                 headers,
             } => {
+                if let Some(context) = &self.oauth
+                    && let Some(client) = super::oauth::runtime_client(
+                        context,
+                        &super::name_to_key(&self.config.name),
+                        url,
+                    )
+                    .await?
+                {
+                    if !environment.is_empty() || !headers.is_empty() {
+                        return Err(
+                            "OAuth MCP endpoints cannot also carry custom credentials".into()
+                        );
+                    }
+                    let oauth_generation = client.generation();
+                    let transport = StreamableHttpClientTransport::with_client(
+                        client,
+                        StreamableHttpClientTransportConfig::with_uri(url.as_str()),
+                    );
+                    let (service, listing) = self.handshake(transport, &progress).await?;
+                    return Ok(Connection {
+                        service,
+                        progress,
+                        listing,
+                        stdio: None,
+                        oauth_generation,
+                    });
+                }
                 let mut custom = HashMap::new();
                 for header in headers {
                     let key = HeaderName::try_from(header.key.as_str())
@@ -350,6 +395,7 @@ impl McpServer {
                     progress,
                     listing,
                     stdio: None,
+                    oauth_generation: None,
                 })
             }
         }
