@@ -44,6 +44,15 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(
+            command,
+            ChatCommand::Escape | ChatCommand::ApplicationVim(ApplicationVimCommand::Escape)
+        ) && self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.cancel_folder_drag(window, cx))
+        {
+            return;
+        }
         if let Some(dialog) = self.project_folder_dialog.clone() {
             if matches!(
                 command,
