@@ -307,7 +307,7 @@ jobs:
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['research-rust']
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

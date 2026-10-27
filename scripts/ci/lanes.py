@@ -264,7 +264,7 @@ LANES: Tuple[Lane, ...] = (
     # Windows is on the Agent feed, so its own packaging inputs select it too.
     Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
          job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
-         env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),), timeout=90, gate=False),
+         env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),) + FAST_RELEASE, timeout=90, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script
     # tests, the release gates, and release metadata (read from the version files).
     Lane("repo", (
@@ -310,7 +310,7 @@ LANES: Tuple[Lane, ...] = (
     Lane("research-rust", (TAURI + "**", "!" + TAURI + "gen/**", "scripts/ci/rust.sh",
                            "scripts/ci/verify-local-rust-deps.sh", "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
          also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",), events=PR_SIDE,
-         job="research-rust", flake=".#ci", timeout=20, hook="research_rust",
+         job="research-rust", flake=".#ci", timeout=45, hook="research_rust",
          run="(cd apps/maple-research/frontend/src-tauri && cargo fmt --check)"
              " && ./scripts/ci/verify-local-rust-deps.sh && ./scripts/ci/rust.sh"),
     # Unsigned platform builds for PRs that touch native inputs, or by label;
@@ -327,7 +327,7 @@ LANES: Tuple[Lane, ...] = (
     Lane("research-android", (TAURI + "gen/android/**", TAURI + "icons/android/**",
                               TAURI + "capabilities/mobile-android.json", TAURI + "scripts/*android*",
                               "scripts/ci/android-*.sh", "scripts/ci/_common.sh"),
-         labels=("ci:android", "ci:full"), flake=".#android", run="./scripts/ci/android-pr.sh", timeout=30,
+         labels=("ci:android", "ci:full"), flake=".#android", run="./scripts/ci/android-pr.sh", timeout=45,
          restore="research-rust", **PLATFORM),
     Lane("research-desktop-macos", DESKTOP + (TAURI + "tauri.macos.conf.json", TAURI + "Info.plist",
                                               TAURI + "Entitlements.plist", TAURI + "dmg/**", TAURI + "scripts/*macos*",
