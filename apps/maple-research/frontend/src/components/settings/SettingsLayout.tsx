@@ -5,7 +5,6 @@ import { useOpenSecret } from "@mapleai/sdk";
 import {
   ArrowLeft,
   BookOpen,
-  Cable,
   CreditCard,
   Database,
   KeyRound,
@@ -32,11 +31,6 @@ import {
   useSettingsNavigationLock,
   useSettingsNavigationLockState
 } from "@/contexts/SettingsNavigationLockContext";
-import {
-  clearMapleApiAuthForUser,
-  restoreMapleApiAuthForUser,
-  stopAgentRuntimeForUser
-} from "@/services/agentRuntimeService";
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
@@ -44,10 +38,6 @@ import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { cn } from "@/utils/utils";
-import {
-  AgentConnectionsAvailabilityProvider,
-  useAgentConnectionsAvailability
-} from "./useAgentConnectionsAvailability";
 
 type SettingsNavItem = {
   label: string;
@@ -58,7 +48,6 @@ type SettingsNavItem = {
     | "/settings/billing"
     | "/settings/team"
     | "/settings/api"
-    | "/settings/agent-connections"
     | "/settings/history"
     | "/settings/about";
   icon: ComponentType<{ className?: string }>;
@@ -233,9 +222,6 @@ function SettingsLayoutContent() {
     enabled: !!os.auth.user && isTeamPlan
   });
 
-  const agentConnectionsAvailability = useAgentConnectionsAvailability();
-  const supportsAgentConnections = agentConnectionsAvailability === "available";
-
   if (os.auth.loading || !os.auth.user) {
     return null;
   }
@@ -271,22 +257,11 @@ function SettingsLayoutContent() {
     },
     {
       label: "Developer",
-      items: [
-        { label: "API & credits", to: "/settings/api" as const, icon: KeyRound },
-        ...(supportsAgentConnections
-          ? [
-              {
-                label: "Agent connections",
-                to: "/settings/agent-connections" as const,
-                icon: Cable
-              }
-            ]
-          : [])
-      ]
+      items: [{ label: "API & credits", to: "/settings/api" as const, icon: KeyRound }]
     },
     {
       label: "Data",
-      items: [{ label: "Chat and task history", to: "/settings/history", icon: Database }]
+      items: [{ label: "Chat history", to: "/settings/history", icon: Database }]
     },
     {
       label: "Maple",
@@ -303,9 +278,7 @@ function SettingsLayoutContent() {
     // If logout fails, releasing this fence does not orphan an accepted server
     // response; committed account teardown still cancels the store itself.
     const releaseChatFence = beginAllChatRuntimeDeletionFence(runtimeStore);
-    let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
     let signedOut = false;
-    let nativeAuthCleared = false;
     const userId = os.auth.user?.user.id;
 
     try {
@@ -318,28 +291,13 @@ function SettingsLayoutContent() {
       return;
     }
 
-    // Never sign out while this account may still have Agent tools executing.
     const releaseAppleBilling = suspendAppleBillingForAccount(userId);
-    try {
-      operationBlock = await stopAgentRuntimeForUser(userId);
-    } catch (error) {
-      releaseAppleBilling();
-      console.error("Error stopping Agent Mode:", error);
-      releaseChatFence();
-      setSignOutError("Maple could not stop Agent Mode. Please try logging out again.");
-      setIsSigningOut(false);
-      return;
-    }
-
     try {
       assertChatAccountCredential(userId);
       // Credential reset is required before logout so the next account cannot
       // inherit this user's local proxy key.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(userId, (name) => {
-        assertChatAccountCredential(userId);
-        return os.deleteApiKey(name);
-      });
+      await proxyService.stopAndResetProxy();
 
       assertChatAccountCredential(userId);
       try {
@@ -349,8 +307,6 @@ function SettingsLayoutContent() {
         sessionStorage.removeItem("maple_billing_token");
       }
 
-      await clearMapleApiAuthForUser(userId);
-      nativeAuthCleared = true;
       assertChatAccountCredential(userId);
       await os.signOut();
       signedOut = true;
@@ -364,24 +320,12 @@ function SettingsLayoutContent() {
         window.location.href = "/";
         return;
       }
-      setSignOutError(
-        "Maple could not securely reset Agent Mode or finish logging out. Please try again."
-      );
+      setSignOutError("Maple could not finish logging out. Please try again.");
     } finally {
       releaseAppleBilling();
       if (!signedOut) {
         releaseChatFence();
-        if (nativeAuthCleared) {
-          try {
-            await restoreMapleApiAuthForUser(userId);
-          } catch (error) {
-            console.error("Error restoring Maple API authentication:", error);
-          }
-        }
-        operationBlock.release();
         setIsSigningOut(false);
-      } else {
-        operationBlock.retainUntilNextSession();
       }
     }
   };
@@ -538,13 +482,9 @@ function SettingsLayoutContent() {
 }
 
 export function SettingsLayout() {
-  const os = useOpenSecret();
-
   return (
     <SettingsNavigationLockProvider>
-      <AgentConnectionsAvailabilityProvider userId={os.auth.user?.user.id ?? null}>
-        <SettingsLayoutContent />
-      </AgentConnectionsAvailabilityProvider>
+      <SettingsLayoutContent />
     </SettingsNavigationLockProvider>
   );
 }

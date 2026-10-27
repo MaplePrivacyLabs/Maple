@@ -1,10 +1,10 @@
 # Maple
 
 Maple is a monorepo for the Maple applications, Maple SDKs, local proxy,
-OpenSecret backend, and updater service. The existing web, desktop, and mobile client lives under
-[`apps/maple-research/`](apps/maple-research/README.md), including Research chat
-and desktop Agent Mode. Its directory name does not change the shipped Maple
-application identity.
+OpenSecret backend, and updater service. The existing web, desktop, and mobile
+chat client, Maple Research, lives under
+[`apps/maple-research/`](apps/maple-research/README.md). Its directory name does
+not change the shipped Maple application identity.
 
 ## Components
 
@@ -42,7 +42,7 @@ nix develop --no-update-lock-file
 just install
 just                    # List recipes
 just dev                # Research web development
-just desktop-dev        # Research Tauri application, including Agent Mode
+just desktop-dev        # Research Tauri desktop application
 just agent-dev          # GPUI Agent app, using its own pinned component shell
 ```
 

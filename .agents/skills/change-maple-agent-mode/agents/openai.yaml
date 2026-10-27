@@ -1,4 +1,0 @@
-interface:
-  display_name: "Change Maple Agent Mode"
-  short_description: "Protect Agent Mode lifecycle invariants"
-  default_prompt: "Use $change-maple-agent-mode to implement or review this Agent Mode change."

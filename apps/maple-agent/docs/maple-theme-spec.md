@@ -1,13 +1,15 @@
 # Maple Theme Spec for the gpui Agent Chat UI
 
 This spec gives the exact values that the gpui rewrite must use for the agent
-chat UI. All values come from the Maple frontend sources:
+chat UI. Values for agent-only elements, such as sidebar task rows and the
+input-requested row, are defined in this spec. Shared values come from these
+Maple Research frontend sources:
 
 - `frontend/tailwind.config.cjs` (token names, radius scale)
 - `frontend/src/index.css` (HSL tokens for light and dark)
 - `frontend/src/chat.css` (chat typography and markdown sizes)
 - `frontend/src/components/UnifiedChat.tsx`, `chat/ChatTurn.tsx`,
-  `AgentMode.tsx`, `Sidebar.tsx` (class names that bind tokens to elements)
+  `Sidebar.tsx` (class names that bind tokens to elements)
 
 Maple defines the tokens as HSL. This document converts them to hex. Where
 the web app draws a translucent color over the page, the "composited" column

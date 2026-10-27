@@ -1,6 +1,6 @@
 ---
 name: develop-maple-agent
-description: Develop the GPUI Maple Agent desktop-v2 prototype, transport-neutral runtime, ACP/proxy modes, component Nix builds, and Agent-specific update discovery under apps/maple-agent. Use develop-maple or change-maple-agent-mode for the shipped Research Tauri app instead.
+description: Develop the GPUI Maple Agent desktop-v2 prototype, transport-neutral runtime, ACP/proxy modes, component Nix builds, and Agent-specific update discovery under apps/maple-agent. Use develop-maple for the shipped Research Tauri app instead.
 ---
 
 # Develop Maple Agent

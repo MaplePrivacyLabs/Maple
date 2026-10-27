@@ -46,59 +46,7 @@ describe("MarkdownContent images", () => {
   });
 });
 
-describe("ThinkingBlock labels", () => {
-  function renderThinkingBlock(isThinking: boolean, label?: string): string {
-    return renderToStaticMarkup(
-      React.createElement(ThinkingBlock, {
-        content: "Inspected the authentication flow.",
-        isThinking,
-        showDuration: false,
-        label
-      })
-    );
-  }
-
-  it("renders a completed description with fade transition styles", () => {
-    const completed = renderThinkingBlock(false, "Inspecting authentication flow");
-    const streaming = renderThinkingBlock(true, "Inspecting authentication flow");
-
-    expect(completed).toContain("Inspecting authentication flow");
-    expect(completed).not.toContain(">Thought<");
-    expect(completed).toContain("transition-opacity");
-    expect(completed).toContain("motion-reduce:transition-none");
-    expect(completed).toContain('aria-live="polite"');
-    expect(completed).toContain('aria-atomic="true"');
-    expect(completed).not.toContain("animate-bounce");
-    expect(streaming).toContain("Inspecting authentication flow");
-    expect(streaming).not.toContain(">Thinking<");
-    expect(streaming).toContain("transition-opacity");
-    expect(streaming).toContain("animate-bounce");
-  });
-
-  it("shows Thinking with animated dots before a provisional label arrives", () => {
-    const streaming = renderThinkingBlock(true);
-
-    expect(streaming).toContain(">Thinking<");
-    expect(streaming).toContain("animate-bounce");
-    expect(streaming).toContain("transition-opacity");
-  });
-
-  it("keeps Thought as the completed fallback", () => {
-    const completed = renderThinkingBlock(false);
-
-    expect(completed).toContain("Thought");
-    expect(completed).not.toContain("animate-bounce");
-  });
-
-  it("keeps Thinking and its dots visible while a completed phase awaits its generated label", () => {
-    const pending = renderThinkingBlock(false, "Thinking");
-
-    expect(pending).toContain(">Thinking<");
-    expect(pending).not.toContain(">Thought<");
-    expect(pending).toContain("transition-opacity");
-    expect(pending).toContain("animate-bounce");
-  });
-
+describe("ThinkingBlock", () => {
   it("renders an untimed shimmer while a main-chat thought is streaming", () => {
     const renderStreaming = (duration: number) =>
       renderToStaticMarkup(
@@ -118,7 +66,6 @@ describe("ThinkingBlock labels", () => {
     expect(afterSwitch).toContain('aria-hidden="true"');
     expect(afterSwitch).not.toContain("Thinking for");
     expect(afterSwitch).not.toContain("seconds");
-    expect(afterSwitch).not.toContain("animate-bounce");
   });
 
   it("keeps the completed main-chat thought duration", () => {

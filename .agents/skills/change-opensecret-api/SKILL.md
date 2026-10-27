@@ -103,9 +103,9 @@ follow each component's guide and applicable skills. If an affected consumer
 cannot be exercised, report compatibility as unverified rather than falling
 back to the retired standalone SDK repository or claiming there are no consumers.
 
-Maple's browser Research path uses Responses/Conversations through the
-TypeScript client, while native Agent Mode uses chat completions through the
-Rust client. A semantic change intended for both is two protocol integrations,
+Research uses Responses/Conversations through the TypeScript client, while
+Maple Agent (`apps/maple-agent/`) uses chat completions through the Rust
+client. A semantic change intended for both is two protocol integrations,
 not one shared wire-field edit. Trace request construction, provider handoff,
 persistence, and usage in each affected path.
 

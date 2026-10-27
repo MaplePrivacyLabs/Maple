@@ -51,10 +51,9 @@ untouched, with no import, fallback reads or cleanup. General Markdown
 instructions, skills and prompt resources retain their file-loading behavior.
 Password-setting controls remain debug-only pending native release qualification.
 
-The runtime began as a copy of Research’s Tauri agent (now
-`apps/maple-research/frontend/src-tauri/src`) with Tauri removed, and now runs
-tasks on the pi-* crates instead of an embedded Goose. Research keeps its own
-Goose, with an independent dependency graph.
+The runtime began as a copy of Research’s Tauri agent with Tauri removed, and
+now runs tasks on the pi-* crates instead of an embedded Goose. Research has no
+agent runtime; its desktop Agent page points users to Maple Work.
 
 ## Features
 

@@ -1,21 +1,11 @@
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
-#[cfg(desktop)]
-mod agent;
-#[cfg(desktop)]
-mod agent_acp;
-#[cfg(desktop)]
-mod agent_host;
-#[cfg(desktop)]
-mod agent_tauri;
 mod desktop_app_profile;
 #[cfg(test)]
 mod ios_app_variant;
 #[cfg(any(desktop, target_os = "ios"))]
 mod legacy_tts_cleanup;
-#[cfg(desktop)]
-mod maple_api;
 mod native_oauth;
 mod native_transport_root;
 mod onnxruntime;
@@ -39,8 +29,6 @@ async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> 
     let _install_guard = UPDATE_INSTALL_LOCK.lock().await;
     let version = update_ready_to_restart_version()?;
     log::info!("User requested restart to apply update version {version}");
-    let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
-    lifecycle.shutdown_for_update(&app_handle).await?;
     app_handle.request_restart();
     Ok(())
 }
@@ -141,17 +129,6 @@ async fn install_pending_update(
         pending.update.version
     );
 
-    // The Windows updater launches NSIS and exits the process directly, which
-    // bypasses Maple's async RunEvent cleanup. Drain Agent services first.
-    #[cfg(target_os = "windows")]
-    {
-        let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
-        if let Err(error) = lifecycle.shutdown_for_update(&app_handle).await {
-            emit_update_install_failed(&app_handle, &pending.update.version);
-            return Err(error);
-        }
-    }
-
     // Package installation may block on OS UI or filesystem work, so keep it
     // off the async runtime. The verified pending object stays in native state
     // until installation succeeds, including if this task fails to join.
@@ -162,30 +139,15 @@ async fn install_pending_update(
     })
     .await;
 
-    let result = match install_result {
-        Ok(result) => result,
+    match install_result {
+        Ok(result) => result.map(|()| PreparedUpdate::ReadyToRestart { version }),
         Err(error) => {
             let error = format!("Update install task failed: {error}");
             log::error!("{error}");
             emit_update_install_failed(&app_handle, &version);
-            #[cfg(target_os = "windows")]
-            app_handle
-                .state::<agent_host::AgentHostLifecycle>()
-                .reopen_after_failed_update_install(&app_handle)
-                .await;
-            return Err(error);
+            Err(error)
         }
-    };
-
-    #[cfg(target_os = "windows")]
-    if result.is_err() {
-        app_handle
-            .state::<agent_host::AgentHostLifecycle>()
-            .reopen_after_failed_update_install(&app_handle)
-            .await;
     }
-
-    result.map(|()| PreparedUpdate::ReadyToRestart { version })
 }
 
 #[cfg(desktop)]
@@ -213,29 +175,24 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
         return;
     };
 
-    // Update restart is explicitly drained by restart_for_update. Tauri does
-    // not allow restart ExitRequested events to be prevented.
-    if code == Some(tauri::RESTART_EXIT_CODE) || AGENT_EXIT_CLEANUP_COMPLETE.load(Ordering::SeqCst)
-    {
+    // restart_for_update holds the install lock before it requests a restart.
+    // Tauri does not allow restart ExitRequested events to be prevented.
+    if code == Some(tauri::RESTART_EXIT_CODE) || EXIT_WAIT_COMPLETE.load(Ordering::SeqCst) {
         return;
     }
 
     api.prevent_exit();
-    if AGENT_EXIT_CLEANUP_STARTED.swap(true, Ordering::SeqCst) {
+    if EXIT_WAIT_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
 
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         // A normal quit may race an explicit install. Let the native bundle
-        // replacement finish before stopping services and exiting, without
-        // making exit wait for an unrelated network update check/download.
+        // replacement finish before exiting, without making exit wait for an
+        // unrelated network update check/download.
         let _install_guard = UPDATE_INSTALL_LOCK.lock().await;
-        let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
-        if let Err(error) = lifecycle.shutdown_for_exit(&app_handle).await {
-            log::error!("Failed to stop Agent services during app exit: {error}");
-        }
-        AGENT_EXIT_CLEANUP_COMPLETE.store(true, Ordering::SeqCst);
+        EXIT_WAIT_COMPLETE.store(true, Ordering::SeqCst);
         app_handle.exit(code.unwrap_or_default());
     });
 }
@@ -275,55 +232,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init())
-        .manage(agent_acp::AgentAcpState::new())
-        .manage(agent_host::AgentHostLifecycle::new())
-        .manage(maple_api::MapleApiAuthState::new())
         .manage(native_oauth::NativeOAuthState::new())
         .manage(native_transport_root::TransportRootState::new())
         .manage(proxy::ProxyState::new())
         .invoke_handler(tauri::generate_handler![
-            agent_tauri::agent_get_runtime_status,
-            agent_tauri::agent_start_runtime,
-            agent_tauri::agent_stop_runtime,
-            agent_tauri::agent_restart_runtime,
-            agent_tauri::agent_load_config,
-            agent_tauri::agent_save_config,
-            agent_tauri::agent_list_mcp_servers,
-            agent_tauri::agent_save_mcp_servers,
-            agent_tauri::agent_list_recent_project_roots,
-            agent_tauri::agent_save_recent_project_root,
-            agent_tauri::agent_remove_project_root,
-            agent_tauri::agent_get_project_trust,
-            agent_tauri::agent_set_project_trust,
-            agent_tauri::agent_save_project_root_order,
-            agent_tauri::agent_create_session,
-            agent_tauri::agent_list_sessions,
-            agent_tauri::agent_load_session,
-            agent_tauri::agent_load_image_attachment,
-            agent_tauri::agent_rename_session,
-            agent_tauri::agent_list_session_mcp_servers,
-            agent_tauri::agent_set_session_mcp_server_enabled,
-            agent_tauri::agent_delete_session,
-            agent_tauri::agent_send_message,
-            agent_tauri::agent_cancel_queued_message,
-            agent_tauri::agent_unqueue_message_for_edit,
-            agent_tauri::agent_begin_queued_message_edit,
-            agent_tauri::agent_end_queued_message_edit,
-            agent_tauri::agent_update_queued_message,
-            agent_tauri::agent_cancel_run,
-            agent_tauri::agent_set_permission_mode,
-            agent_tauri::agent_permission_respond,
-            agent_tauri::agent_clear_user_history,
-            agent_tauri::agent_clear_user_data,
-            agent_acp::agent_acp_load_config,
-            agent_acp::agent_acp_save_config,
-            agent_acp::agent_acp_start,
-            agent_acp::agent_acp_restore_enabled,
-            agent_acp::agent_acp_stop,
-            agent_acp::agent_acp_get_status,
-            maple_api::maple_api_set_auth,
-            maple_api::maple_api_clear_auth,
             native_oauth::native_oauth_begin,
             native_oauth::native_oauth_redeem,
             native_oauth::native_oauth_cancel,
@@ -350,11 +262,6 @@ pub fn run() {
 
             if desktop_app_profile::legacy_cleanup_enabled(&app.config().identifier) {
                 legacy_tts_cleanup::schedule(app.handle());
-            }
-
-            let service = agent_host::build_service(app.handle())?;
-            if !app.manage(service) {
-                return Err("Maple Agent service was already initialized".into());
             }
 
             // Set up the deep link handler
@@ -644,11 +551,6 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-#[cfg(desktop)]
-pub fn run_acp_connector() -> Result<(), String> {
-    agent_acp::run_acp_connector()
-}
-
 // Create a global variable to track if an update is already prepared and notified
 #[cfg(desktop)]
 use once_cell::sync::Lazy;
@@ -658,9 +560,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(desktop)]
-static AGENT_EXIT_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
+static EXIT_WAIT_STARTED: AtomicBool = AtomicBool::new(false);
 #[cfg(desktop)]
-static AGENT_EXIT_CLEANUP_COMPLETE: AtomicBool = AtomicBool::new(false);
+static EXIT_WAIT_COMPLETE: AtomicBool = AtomicBool::new(false);
 #[cfg(desktop)]
 static UPDATE_CHECK_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 #[cfg(desktop)]

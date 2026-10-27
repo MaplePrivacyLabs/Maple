@@ -17,7 +17,6 @@ import {
   Gauge,
   MessageCircle,
   Coins,
-  Bot,
   AudioLines
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -28,7 +27,7 @@ import { isAndroid } from "@/utils/platform";
 interface UpgradePromptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  feature: "image" | "voice" | "tts" | "model" | "document" | "usage" | "tokens" | "agent";
+  feature: "image" | "voice" | "tts" | "model" | "document" | "usage" | "tokens";
   modelName?: string;
   onStartNewChat?: () => void;
 }
@@ -183,20 +182,6 @@ export function UpgradePromptDialog({
           "Continue conversations without interruption",
           "Process longer documents and code files",
           "Auto-compaction keeps conversations flowing"
-        ]
-      };
-    } else if (feature === "agent") {
-      return {
-        icon: <Bot className="h-8 w-8" />,
-        title: "Agent Mode",
-        description: "Use Maple as a coding agent for multi-step work across local projects",
-        requiredPlan: "Pro",
-        benefits: [
-          "Work through multi-step coding tasks",
-          "Read and edit files in projects you choose",
-          "Run commands and development tools",
-          "Keep separate tasks for each project",
-          "Use supported private AI models with API access"
         ]
       };
     } else {

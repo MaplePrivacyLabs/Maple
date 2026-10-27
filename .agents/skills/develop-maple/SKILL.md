@@ -1,14 +1,14 @@
 ---
 name: develop-maple
-description: Implement ordinary Research client features and fixes in React/Vite/Tauri, including its web, desktop, and mobile paths. Use for client setup, placement, focused development, and handoff; use the Agent Mode, SDK, proxy, validation, or release skills for those workflows.
+description: Implement Research client features and fixes in React/Vite/Tauri, including its web, desktop, and mobile paths. Use for client setup, placement, focused development, and handoff; use the SDK, proxy, validation, or release skills for those workflows.
 ---
 
 # Develop Maple Research
 
 Work from the monorepo root. Read root and Research `AGENTS.md`, affected
-source/tests, `justfile`, package manifests, flake and relevant CI. Research
-includes the existing desktop Agent Mode; the independent hosted Auth and
-GPUI Agent apps follow their own component guides.
+source/tests, `justfile`, package manifests, flake and relevant CI. The
+independent hosted Auth and Maple Agent (`apps/maple-agent/`) apps follow their
+own component guides; agent features belong in Maple Agent, not Research.
 
 ## Choose environment and runtime
 
@@ -30,7 +30,7 @@ test -e apps/maple-research/frontend/.env.local || cp apps/maple-research/fronte
 ```
 
 Choose the smallest runtime exercising the change: `just dev` for web;
-`just desktop-dev` for native/Agent Mode. These consume existing configuration;
+`just desktop-dev` for native desktop. These consume existing configuration;
 for hosted Dev browser work, use the
 [explicit Dev profile loop](../../../docs/development-environments.md#research-hosted-dev-browser-loop).
 For Research iOS, follow
@@ -56,7 +56,6 @@ substitute lockfiles/toolchains or unrelated upgrades.
 
 Load the matching workflow when the task crosses it:
 
-- `$change-maple-agent-mode`: embedded Goose/ACP/MCP, tools/permissions, subagents.
 - `$develop-opensecret-sdk` or `$develop-maple-proxy`: their owned source/contracts.
 - `$review-maple-security`: a trust-boundary change or security review.
 - `$validate-maple`: validation beyond the focused loop and before handoff.

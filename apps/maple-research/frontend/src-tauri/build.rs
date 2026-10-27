@@ -12,13 +12,6 @@ fn main() {
         println!("cargo:rustc-link-lib=c++");
     }
 
-    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    if target_os == "windows" && target_arch == "x86_64" && target_env == "msvc" {
-        const WINDOWS_STACK_RESERVE_BYTES: usize = 8 * 1024 * 1024;
-        println!("cargo:rustc-link-arg-bin=maple=/STACK:{WINDOWS_STACK_RESERVE_BYTES}");
-    }
-
     tauri_build::build();
 
     // The deep-link plugin's build.rs overwrites CFBundleURLTypes in Info.plist

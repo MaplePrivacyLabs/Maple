@@ -241,7 +241,7 @@ async fn start_proxy_inner(
     *state.config.lock().await = config.clone();
 
     // maple-proxy owns the OpenAI-compatible transport, including the shared
-    // 50 MiB request limit needed by Goose's image tool. Provider responses are
+    // 50 MiB request limit for image-bearing requests. Provider responses are
     // passed through unchanged.
     let app = apply_proxy_access_policy(proxy_config, config.enable_cors);
 
