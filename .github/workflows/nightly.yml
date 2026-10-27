@@ -1,0 +1,153 @@
+# Nightly checks of what drifts without a commit: advisories, pinned upstream
+# sources, the SQLCipher provider suite on every OS and the store benchmark.
+# One `ci-nightly` issue reports failures here and in ci.yml's scheduled run;
+# a green night closes it. Nothing here gates a pull request.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "47 5 * * *" # after ci.yml's 04:17 run, so the report includes it
+  workflow_dispatch: # a dry run: the report is printed, not written to the issue
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  advisories:
+    name: Advisories (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: research
+            manifest: apps/maple-research/frontend/src-tauri/Cargo.toml
+            config: apps/maple-research/deny.toml
+          - name: sdk
+            manifest: sdk/rust/Cargo.toml
+            config: sdk/deny.toml
+          - name: proxy
+            manifest: proxy/Cargo.toml
+            config: proxy/deny.toml
+          - name: opensecret
+            manifest: services/opensecret/Cargo.toml
+            config: services/opensecret/deny.toml
+            rust: 1.91.1
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Check RustSec advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          rust-version: ${{ matrix.rust }}
+          manifest-path: ${{ matrix.manifest }}
+          command: check advisories
+          arguments: --config ${{ matrix.config }} --all-features --locked
+
+  agent-supply-chain:
+    name: Agent advisories and SQLCipher sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Check advisories and bans per target, SQLCipher sources and notices
+        run: python3 scripts/ci/plan.py run agent-supply-chain
+
+  bun-audit:
+    name: Bun advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Audit every Bun lockfile
+        run: |
+          # shellcheck disable=SC2016 # The child shell expands its own variables.
+          nix develop --no-update-lock-file .#ci -c bash -uo pipefail -c '
+            status=0
+            for project in sdk apps/maple-research/frontend apps/maple-auth services/updates services/agent-updates; do
+              echo "::group::$project"
+              (cd "$project" && bun --no-env-file audit --audit-level=high) || status=1
+              echo "::endgroup::"
+            done
+            exit "$status"'
+
+  agent-provider:
+    name: Agent provider (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - if: runner.os != 'Windows'
+        uses: ./.github/actions/setup-nix
+      - name: Select pinned Xcode
+        if: runner.os == 'macOS'
+        run: python3 scripts/ci/select-xcode.py
+      - if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-agent-windows
+      - name: Test released rusqlite against the static provider
+        run: python3 scripts/ci/plan.py run agent-provider
+
+  store-bench:
+    name: Agent store benchmark
+    # The Linux reference was recorded on this runner class.
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Measure the durable store and compare the Linux reference
+        run: python3 scripts/ci/plan.py run agent-perf
+      - name: Save measurements and their digest
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: store-bench-linux-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/maple-agent/target/store-bench-ci.json
+            apps/maple-agent/target/store-bench-ci.json.sha256
+          if-no-files-found: warn
+          retention-days: 14
+
+  report:
+    name: Report
+    needs: [advisories, agent-supply-chain, bun-audit, agent-provider, store-bench]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # ci.yml's latest scheduled run
+      issues: write # the single ci-nightly issue
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Create, update or close the ci-nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+          DRY_RUN: ${{ github.event_name != 'schedule' }}
+        run: python3 scripts/ci/nightly_report.py

@@ -37,7 +37,11 @@ class WindowsUpdaterWorkflowTests(unittest.TestCase):
         self.assertNotIn("id-token", json.dumps(config))
 
     def test_native_toolchain_matches_existing_windows_pin_and_avoids_artifact_cache(self):
-        existing = next(step for step in workflow("agent-desktop-build.yml")["jobs"]["windows-build"]["steps"]
+        # agent-desktop-build.yml's windows-build takes its toolchain from this action.
+        setup = json.loads(subprocess.check_output(
+            ["yq", "-o=json", ".", str(ROOT / ".github/actions/setup-agent-windows/action.yml")], text=True,
+        ))
+        existing = next(step for step in setup["runs"]["steps"]
                         if step.get("uses", "").startswith("dtolnay/rust-toolchain@"))
         for job in workflow()["jobs"].values():
             steps = job["steps"]

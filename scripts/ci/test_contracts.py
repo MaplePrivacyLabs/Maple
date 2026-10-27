@@ -38,6 +38,9 @@ RESERVED_PREFIXES = (
     "maple-dev-xcode", "release-onnxruntime-ios-", "${{ runner.os }}-bun-", "${{ runner.os }}-gradle-",
 )
 ONNX_CACHE = "apps/maple-research/frontend/src-tauri/onnxruntime-ios"
+# The unsigned Agent builders that write the exact-key release cache; ci.yml's packaging lanes read it.
+AGENT_RELEASE_WRITERS = frozenset(("agent-desktop-build.yml", job) for job in ("macos-build", "windows-build", "linux"))
+AGENT_RELEASE_READERS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos", "windows"))
 # Jobs that may mint an OIDC token: attestation, signing identity, FlakeHub, registries.
 OIDC_JOBS = frozenset({
     ("agent-desktop-build.yml", "macos"), ("agent-desktop-build.yml", "windows"),
@@ -247,6 +250,22 @@ class ContractTests(unittest.TestCase):
                                  (release["key"], release["restore-keys"]))
                 if cache_writer(step):
                     self.assertIn(name, RELEASE_FEEDING)
+
+    def test_c4_agent_release_cache_is_exact_and_written_only_by_master_builders(self):
+        restores = [(name, job_id, step["with"]) for name, job_id, step in cache_steps()
+                    if step["with"].get("key", "").startswith("ci-v1-agent-release-")]
+        self.assertEqual({(name, job_id) for name, job_id, _ in restores},
+                         AGENT_RELEASE_WRITERS | AGENT_RELEASE_READERS)
+        self.assertEqual(len({(cache["key"], cache["path"]) for _, _, cache in restores}), 1)
+        self.assertFalse([cache for _, _, cache in restores if "restore-keys" in cache])  # exact keys only
+        writers = [(name, job_id, step) for name, job_id, step in cache_steps() if cache_writer(step)
+                   and (name, job_id) in AGENT_RELEASE_WRITERS | AGENT_RELEASE_READERS]
+        self.assertEqual({(name, job_id) for name, job_id, _ in writers}, AGENT_RELEASE_WRITERS)
+        for _, job_id, step in writers:
+            with self.subTest(job=job_id):
+                self.assertTrue(step["uses"].startswith("actions/cache/save@"))
+                self.assertEqual(step["with"]["path"], restores[0][2]["path"])
+                self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/master'", step["if"])
 
     def test_c4_dev_testflight_build_number_is_the_run_number(self):
         job = workflows()["ios-dev-testflight.yml"]["jobs"]["build-ios-dev"]

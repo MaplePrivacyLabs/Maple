@@ -3,20 +3,19 @@ name: Maple Agent Desktop Builds
 on:
   push:
     branches: [master]
-  pull_request:
-    # Run unprivileged validation for stacked PRs as well as master targets.
   workflow_dispatch:
 
-# Signing is confined to protected master jobs. PR packaging runs with a
-# read-only token and no environment credentials, including fork PRs.
+# Signing is confined to protected master jobs; builders have a read-only token
+# and no environment credentials. Pull requests rehearse unsigned Dev packages
+# in ci.yml (agent-package-*).
 permissions:
   contents: read
 
 concurrency:
-  # PR updates replace their previews. Each master run keeps its own group,
-  # so neither running nor pending packages are discarded by a later push.
-  group: maple-agent-desktop-builds-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Each run keeps its own group, so neither running nor pending packages are
+  # discarded by a later push.
+  group: maple-agent-desktop-builds-${{ github.run_id }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,66 +31,34 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
     outputs:
-      agent: ${{ steps.classify.outputs.agent }}
+      agent: ${{ steps.classify.outputs.selected }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - name: Select master packaging since last verified build
-        id: master
-        if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && github.event_name == 'push' }}
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci/agent_master_selection.py >> "$GITHUB_OUTPUT"
       - name: Select Agent packaging
         id: classify
         working-directory: .
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          MASTER_AGENT: ${{ steps.master.outputs.agent }}
-        run: |
-          set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            if [ "$GITHUB_EVENT_NAME" = push ] && [ "${MASTER_AGENT:-}" = false ]; then
-              echo 'agent=false' >> "$GITHUB_OUTPUT"
-            else
-              echo 'agent=true' >> "$GITHUB_OUTPUT"
-            fi
-            exit 0
-          fi
-          git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA"
-          paths="$(mktemp)"
-          trap 'rm -f "$paths"' EXIT
-          if ! git diff --no-renames --name-only -z "${BASE_SHA}...${HEAD_SHA}" > "$paths"; then
-            echo 'agent=true' >> "$GITHUB_OUTPUT"
-          elif ! python3 scripts/ci/agent_change_detection.py < "$paths" >> "$GITHUB_OUTPUT"; then
-            echo 'agent=true' >> "$GITHUB_OUTPUT"
-          fi
+        # Dispatch, an unusable push base and selector errors all build.
+        run: python3 scripts/ci/plan.py only agent-desktop >> "$GITHUB_OUTPUT"
 
   macos-build:
     name: Build macOS binary (${{ matrix.variant }})
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: blacksmith-6vcpu-macos-26
     permissions:
       contents: read
-      actions: read
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
+        variant: [dev, prod]
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
-      DEPENDENCY_CACHE_JOB: Build macOS binary (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -109,61 +76,18 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
-      - name: Fingerprint the actual release environment
-        id: environment
-        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache_scope.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
-      - name: Restore validated master dependency archive
-        id: dependency-archive
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 ../../scripts/ci/agent_dependency_archive.py restore \
-            --environment "$RUNNER_TEMP/agent-environment.json" --target "target" \
-            --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
-            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
-
-      - name: Cache Agent release dependencies
-        id: rust-cache
-        if: ${{ steps.dependency-archive.outputs.restored != 'true' }}
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Restore the exact-key Agent release cache
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "true"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
-          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: "false"
-      - name: Check whether Cargo targets were restored
-        id: restored-target
-        run: |
-          python3 - <<'PYTHON'
-          import os
-          from pathlib import Path
-          target = Path(os.environ["GITHUB_WORKSPACE"]) / "apps/maple-agent/target"
-          present = any(
-              any(fingerprint.iterdir()) and any(
-                  output.is_file() and output.stat().st_size > 0
-                  for pattern in ("*.rlib", "*.rmeta")
-                  for output in (fingerprint.parent / "deps").glob(pattern)
-              )
-              for fingerprint in target.rglob(".fingerprint") if fingerprint.is_dir()
-          )
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-              output.write(f"present={str(present).lower()}\n")
-          PYTHON
-
-      - name: Restore compatible legacy Cargo targets on a cache miss
-        if: ${{ steps.dependency-archive.outputs.restored != 'true' && steps.restored-target.outputs.present != 'true' }}
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "false"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.legacy_compatibility }}
-          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: "false"
-      - name: Record the current release environment after restore
-        run: |
-          mkdir -p target/ci-metrics
-          cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
+          # Lockfiles only, and no restore-keys: a master build never starts from
+          # another dependency graph's artifacts. ci.yml's agent-package-* read it.
+          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
       - name: Verify the canonical SDK and proxy dependency graph
         run: |
           metadata="$RUNNER_TEMP/agent-workspace-metadata.json"
@@ -172,7 +96,7 @@ jobs:
           python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
           nix develop --no-update-lock-file . -c python3 scripts/verify-sqlcipher-build.py "$metadata"
       - name: Build optimized Agent with embedded profile
-        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Upload prebuilt Agent binary and notices
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -184,40 +108,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Prepare trusted dependency archive after validation
-        id: dependency-seed
-        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        run: |
-          python3 ../../scripts/ci/agent_dependency_archive.py pack \
-            --environment "$RUNNER_TEMP/agent-environment.json" --metadata "$RUNNER_TEMP/agent-workspace-metadata.json" \
-            --target "target" --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
-            --output-dir "$RUNNER_TEMP/agent-dependency-seed" \
-            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
-
-      - name: Upload durable dependency archive
-        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.dependency-seed.outputs.needs-upload == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Save the Agent release cache (master pushes only)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          name: ${{ steps.dependency-seed.outputs.artifact-name }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
           path: |
-            ${{ runner.temp }}/agent-dependency-seed/manifest.json
-            ${{ runner.temp }}/agent-dependency-seed/dependencies.tar.gz
-          if-no-files-found: error
-          compression-level: 0
-          overwrite: true
-          retention-days: 3
-
-      - name: Summarize release phase timings and target size
-        if: always()
-        run: python3 ../../scripts/ci/agent_measure.py --summarize target
-      - name: Upload bounded release measurements
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: maple-agent-release-metrics-${{ matrix.variant }}-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/maple-agent/target/ci-metrics/
-          if-no-files-found: warn
-          retention-days: 7
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
 
   macos:
     name: Signed macOS (${{ matrix.variant }})
@@ -287,77 +187,20 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  macos-unsigned:
-    name: Unsigned macOS packaging (${{ matrix.variant }})
-    needs: [changes, macos-build]
-    if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') }}
-    runs-on: macos-26
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [dev]
-    env:
-      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Install pinned Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
-        with:
-          source-tag: v3.23.3
-          github-token: ""
-
-      - name: Verify pinned Nix runtime
-        working-directory: .
-        run: bash scripts/ci/verify-nix-runtime.sh
-      - name: Select pinned Xcode
-        working-directory: .
-        run: python3 scripts/ci/select-xcode.py
-      - name: Download exact prebuilt Agent binary and notices
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
-          path: apps/maple-agent/target
-      - name: Verify prebuilt profile and source
-        run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
-      - name: Build trusted installer archive scanner
-        if: ${{ matrix.variant == 'prod' }}
-        run: nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
-      - name: Package unsigned Agent preview
-        run: nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE" --unsigned
-      - name: Scan actual Prod updater archive with installer parser
-        if: ${{ matrix.variant == 'prod' }}
-        run: nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh "dist/$MAPLE_RELEASE_PROFILE" --unsigned
-      - name: Verify unsigned package profile and hashes
-        run: nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "dist/$MAPLE_RELEASE_PROFILE" --unsigned
-      - name: Upload Agent packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: maple-agent-${{ matrix.variant }}-macos-aarch64-unsigned-${{ github.run_id }}
-          overwrite: true
-          path: apps/maple-agent/dist/${{ matrix.variant }}/
-          if-no-files-found: error
-          retention-days: 30
-
   windows-build:
     name: Build Windows binary (${{ matrix.variant }})
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
-    runs-on: windows-2025
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    runs-on: blacksmith-8vcpu-windows-2025
     permissions:
       contents: read
-      actions: read
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
+        variant: [dev, prod]
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
-      DEPENDENCY_CACHE_JOB: Build Windows binary (${{ matrix.variant }})
       # Ship the CRT with the executable rather than requiring a machine-wide
       # redistributable. Native verification rejects non-system DLL imports.
       RUSTFLAGS: -D warnings -C target-feature=+crt-static
@@ -366,35 +209,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Install pinned Windows Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - name: Set up the pinned Windows toolchain, shader compiler and notice generator
+        uses: ./.github/actions/setup-agent-windows
         with:
-          toolchain: 1.98.0
-      - name: Select Windows MSVC and SDK
-        uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c
-        with:
-          arch: x64
-      - name: Select native Windows Perl for the static crypto build
-        run: |
-          native_perl=/c/Strawberry/perl/bin/perl.exe
-          if [ ! -x "$native_perl" ]; then
-            echo 'Native Windows Perl is missing from the runner' >&2
-            exit 1
-          fi
-          "$native_perl" -MLocale::Maketext::Simple -MIPC::Cmd -e 'die "OpenSSL requires native Windows Perl\n" unless $^O eq "MSWin32"; print "$^V\n"'
-          native_perl_windows="$(cygpath -m "$native_perl")"
-          printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
-      - name: Pin and smoke-test the selected Windows linker
-        run: python3 ../../scripts/ci/agent_windows.py
-      - name: Select the SDK shader compiler for release GPUI
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not $env:WindowsSdkVerBinPath) { throw 'Selected Windows SDK binary path is missing' }
-          $fxc = Join-Path $env:WindowsSdkVerBinPath 'x64/fxc.exe'
-          if (-not (Test-Path -LiteralPath $fxc -PathType Leaf)) { throw "Windows SDK shader compiler is missing: $fxc" }
-          Write-Host "Selected HLSL compiler: $fxc"
-          "GPUI_FXC_PATH=$fxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          release: "true"
       - name: Exercise Windows metadata parser and native linker retention
         run: python3 scripts/test_windows_build_info.py
       - name: Exercise Windows host launch in a restrictive job
@@ -403,84 +221,26 @@ jobs:
         run: |
           git_bash="$(cygpath -w "$BASH")"
           python3 -c 'import subprocess, sys; host = subprocess.check_output([sys.argv[1], "-c", "uname -s"], text=True).strip(); assert host.startswith(("MINGW", "MSYS")), host; print("Verified native Git Bash: " + host)' "$git_bash"
-      - name: Fingerprint the actual release environment
-        id: environment
-        run: python3 ../../scripts/ci/agent_cache_scope.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
-      - name: Restore validated master dependency archive
-        id: dependency-archive
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 ../../scripts/ci/agent_dependency_archive.py restore \
-            --environment "$RUNNER_TEMP/agent-environment.json" --target "target" \
-            --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
-            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
-
-      - name: Cache Agent release dependencies
-        id: rust-cache
-        if: ${{ steps.dependency-archive.outputs.restored != 'true' }}
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Restore the exact-key Agent release cache
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "true"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
-          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: "false"
-      - name: Check whether Cargo targets were restored
-        id: restored-target
-        run: |
-          python3 - <<'PYTHON'
-          import os
-          from pathlib import Path
-          target = Path(os.environ["GITHUB_WORKSPACE"]) / "apps/maple-agent/target"
-          present = any(
-              any(fingerprint.iterdir()) and any(
-                  output.is_file() and output.stat().st_size > 0
-                  for pattern in ("*.rlib", "*.rmeta")
-                  for output in (fingerprint.parent / "deps").glob(pattern)
-              )
-              for fingerprint in target.rglob(".fingerprint") if fingerprint.is_dir()
-          )
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-              output.write(f"present={str(present).lower()}\n")
-          PYTHON
-
-      - name: Restore compatible legacy Cargo targets on a cache miss
-        if: ${{ steps.dependency-archive.outputs.restored != 'true' && steps.restored-target.outputs.present != 'true' }}
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "false"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.legacy_compatibility }}
-          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: "false"
-      - name: Record the current build environment after restore
-        run: |
-          mkdir -p target/ci-metrics
-          cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
+          # Lockfiles only, and no restore-keys: a master build never starts from
+          # another dependency graph's artifacts. ci.yml's agent-package-* read it.
+          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
       - name: Verify the canonical SDK and proxy dependency graph
         run: |
           metadata="$RUNNER_TEMP/agent-workspace-metadata.json"
           cargo metadata --locked --format-version 1 > "$metadata"
           python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
           python3 scripts/verify-sqlcipher-build.py "$metadata"
-      - name: Install pinned Windows notice generator
-        run: |
-          set -euo pipefail
-          (
-            cd "$RUNNER_TEMP"
-            curl --fail --location --show-error --silent \
-              https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.0/cargo-about-0.9.0-x86_64-pc-windows-msvc.tar.gz \
-              --output cargo-about-0.9.0.tar.gz
-            printf '%s  %s\n' 87daca52ad79980b42b2de6acdec84e143be41e2d4bbebedba0d0c90c49b055a cargo-about-0.9.0.tar.gz | sha256sum --check -
-            tar -xzf cargo-about-0.9.0.tar.gz
-          )
-          printf '%s\n' "$RUNNER_TEMP/cargo-about-0.9.0-x86_64-pc-windows-msvc" >> "$GITHUB_PATH"
       - name: Build Windows release binary and notices without signing credentials
-        run: |
-          # Native Python otherwise finds System32's WSL bash launcher first.
-          git_bash="$(cygpath -w "$BASH")"
-          python3 ../../scripts/ci/agent_measure.py --phase windows-release-build --target target -- "$git_bash" ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+        run: ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Inspect immutable Windows profile and source
         run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE"
       - name: Upload prebuilt Windows binary and notices
@@ -494,40 +254,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Prepare trusted dependency archive after validation
-        id: dependency-seed
-        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        run: |
-          python3 ../../scripts/ci/agent_dependency_archive.py pack \
-            --environment "$RUNNER_TEMP/agent-environment.json" --metadata "$RUNNER_TEMP/agent-workspace-metadata.json" \
-            --target "target" --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
-            --output-dir "$RUNNER_TEMP/agent-dependency-seed" \
-            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
-
-      - name: Upload durable dependency archive
-        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.dependency-seed.outputs.needs-upload == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Save the Agent release cache (master pushes only)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          name: ${{ steps.dependency-seed.outputs.artifact-name }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
           path: |
-            ${{ runner.temp }}/agent-dependency-seed/manifest.json
-            ${{ runner.temp }}/agent-dependency-seed/dependencies.tar.gz
-          if-no-files-found: error
-          compression-level: 0
-          overwrite: true
-          retention-days: 3
-
-      - name: Summarize phase timings and target size
-        if: always()
-        run: python3 ../../scripts/ci/agent_measure.py --summarize target
-      - name: Upload bounded release measurements
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: maple-agent-release-metrics-${{ matrix.variant }}-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/maple-agent/target/ci-metrics/
-          if-no-files-found: warn
-          retention-days: 7
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
 
   windows:
     name: Signed Windows (${{ matrix.variant }})
@@ -587,44 +323,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  windows-unsigned:
-    name: Unsigned Windows packaging (${{ matrix.variant }})
-    needs: windows-build
-    if: ${{ always() && !cancelled() && needs.windows-build.result == 'success' && github.event_name == 'pull_request' }}
-    runs-on: windows-2025
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [dev]
-    env:
-      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
-      MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Download exact prebuilt Windows binary and notices
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: maple-agent-${{ matrix.variant }}-windows-x86_64-prebuilt-${{ github.run_id }}
-          path: apps/maple-agent/target
-      - name: Package unsigned Windows Agent preview
-        run: python3 scripts/windows-release.py package "$MAPLE_RELEASE_PROFILE" --unsigned
-      - name: Upload Agent packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: maple-agent-${{ matrix.variant }}-windows-x86_64-unsigned-${{ github.run_id }}
-          overwrite: true
-          path: apps/maple-agent/dist/${{ matrix.variant }}/
-          if-no-files-found: error
-          retention-days: 30
-
   verify-windows:
     name: Verify downloaded Windows (${{ matrix.variant }})
-    needs: [windows, windows-unsigned]
-    if: ${{ always() && !cancelled() && ((github.event_name == 'pull_request' && needs.windows-unsigned.result == 'success') || (needs.windows.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    needs: windows
+    if: ${{ always() && !cancelled() && needs.windows.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     permissions:
       contents: read
       attestations: read
@@ -633,7 +335,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
+        variant: [dev, prod]
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
       MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
@@ -645,10 +347,9 @@ jobs:
       - name: Download exact Windows packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: maple-agent-${{ matrix.variant }}-windows-x86_64${{ github.event_name == 'pull_request' && '-unsigned' || '' }}-${{ github.run_id }}
+          name: maple-agent-${{ matrix.variant }}-windows-x86_64-${{ github.run_id }}
           path: artifacts
       - name: Verify downloaded package provenance
-        if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
         working-directory: .
         run: |
           set -euo pipefail
@@ -669,26 +370,22 @@ jobs:
           # The stock image exports these Azure CLI tooling/cache paths.
           # Keep other Azure/signing variables visible to the fail-closed guard.
           unset AZURE_CONFIG_DIR AZURE_DEVOPS_CACHE_DIR AZURE_EXTENSION_DIR
-          args=()
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
-          python3 scripts/windows-release.py verify "$MAPLE_RELEASE_PROFILE" ../../artifacts "${args[@]}" --smoke
+          python3 scripts/windows-release.py verify "$MAPLE_RELEASE_PROFILE" ../../artifacts --smoke
 
   linux:
     name: Linux bundle (${{ matrix.variant }})
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
     permissions:
       contents: read
-      actions: read
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
+        variant: [dev, prod]
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
-      DEPENDENCY_CACHE_JOB: Linux bundle (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -703,61 +400,18 @@ jobs:
       - name: Verify pinned Nix runtime
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
-      - name: Fingerprint the actual release environment
-        id: environment
-        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache_scope.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
-      - name: Restore validated master dependency archive
-        id: dependency-archive
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 ../../scripts/ci/agent_dependency_archive.py restore \
-            --environment "$RUNNER_TEMP/agent-environment.json" --target "target" \
-            --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
-            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
-
-      - name: Cache Agent release dependencies
-        id: rust-cache
-        if: ${{ steps.dependency-archive.outputs.restored != 'true' }}
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Restore the exact-key Agent release cache
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "true"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
-          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: "false"
-      - name: Check whether Cargo targets were restored
-        id: restored-target
-        run: |
-          python3 - <<'PYTHON'
-          import os
-          from pathlib import Path
-          target = Path(os.environ["GITHUB_WORKSPACE"]) / "apps/maple-agent/target"
-          present = any(
-              any(fingerprint.iterdir()) and any(
-                  output.is_file() and output.stat().st_size > 0
-                  for pattern in ("*.rlib", "*.rmeta")
-                  for output in (fingerprint.parent / "deps").glob(pattern)
-              )
-              for fingerprint in target.rglob(".fingerprint") if fingerprint.is_dir()
-          )
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-              output.write(f"present={str(present).lower()}\n")
-          PYTHON
-
-      - name: Restore compatible legacy Cargo targets on a cache miss
-        if: ${{ steps.dependency-archive.outputs.restored != 'true' && steps.restored-target.outputs.present != 'true' }}
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "false"
-          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.legacy_compatibility }}
-          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
-          save-if: "false"
-      - name: Record the current release environment after restore
-        run: |
-          mkdir -p target/ci-metrics
-          cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
+          # Lockfiles only, and no restore-keys: a master build never starts from
+          # another dependency graph's artifacts. ci.yml's agent-package-* read it.
+          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
       - name: Verify the canonical SDK and proxy dependency graph
         run: |
           metadata="$RUNNER_TEMP/agent-workspace-metadata.json"
@@ -766,17 +420,11 @@ jobs:
           python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
           nix develop --no-update-lock-file . -c python3 scripts/verify-sqlcipher-build.py "$metadata"
       - name: Build optimized Agent with embedded profile
-        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Package Linux installed bundle
-        run: |
-          args=()
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
-          nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE" "${args[@]}"
+        run: nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Verify Linux package profile and hashes
-        run: |
-          args=()
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
-          nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "dist/$MAPLE_RELEASE_PROFILE" "${args[@]}" --platform linux-x86_64
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "dist/$MAPLE_RELEASE_PROFILE" --platform linux-x86_64
       - name: Upload Agent packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -786,40 +434,16 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Prepare trusted dependency archive after validation
-        id: dependency-seed
-        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        run: |
-          python3 ../../scripts/ci/agent_dependency_archive.py pack \
-            --environment "$RUNNER_TEMP/agent-environment.json" --metadata "$RUNNER_TEMP/agent-workspace-metadata.json" \
-            --target "target" --job-name "$DEPENDENCY_CACHE_JOB" --workflow agent-desktop-build.yml \
-            --output-dir "$RUNNER_TEMP/agent-dependency-seed" \
-            --receipt "$RUNNER_TEMP/agent-dependency-receipt.json"
-
-      - name: Upload durable dependency archive
-        if: ${{ success() && github.repository == 'MaplePrivacyLabs/Maple' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.dependency-seed.outputs.needs-upload == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Save the Agent release cache (master pushes only)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          name: ${{ steps.dependency-seed.outputs.artifact-name }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
           path: |
-            ${{ runner.temp }}/agent-dependency-seed/manifest.json
-            ${{ runner.temp }}/agent-dependency-seed/dependencies.tar.gz
-          if-no-files-found: error
-          compression-level: 0
-          overwrite: true
-          retention-days: 3
-
-      - name: Summarize release phase timings and target size
-        if: always()
-        run: python3 ../../scripts/ci/agent_measure.py --summarize target
-      - name: Upload bounded release measurements
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: maple-agent-release-metrics-${{ matrix.variant }}-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/maple-agent/target/ci-metrics/
-          if-no-files-found: warn
-          retention-days: 7
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
 
   attest-linux:
     name: Attest Linux packages (${{ matrix.variant }})
@@ -923,7 +547,7 @@ jobs:
   verify-linux:
     name: Verify downloaded Linux (${{ matrix.variant }})
     needs: [linux, attest-linux]
-    if: ${{ always() && !cancelled() && needs.linux.result == 'success' && (github.event_name == 'pull_request' || (needs.attest-linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    if: ${{ always() && !cancelled() && needs.linux.result == 'success' && needs.attest-linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     permissions:
       contents: read
       attestations: read
@@ -932,7 +556,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
+        variant: [dev, prod]
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -955,7 +579,6 @@ jobs:
           name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
           path: artifacts
       - name: Verify downloaded package provenance
-        if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
         working-directory: .
         run: |
           set -euo pipefail
@@ -974,41 +597,9 @@ jobs:
       - name: Build trusted installer archive scanner
         run: nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
       - name: Scan downloaded Linux bundle with installer parser
-        run: |
-          args=()
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
-          nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh "../../artifacts" --profile "$MAPLE_RELEASE_PROFILE" --platform linux-x86_64 "${args[@]}"
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh "../../artifacts" --profile "$MAPLE_RELEASE_PROFILE" --platform linux-x86_64
       - name: Verify downloaded hashes and profile
-        run: |
-          args=()
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
-          nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "../../artifacts" "${args[@]}" --platform linux-x86_64
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "../../artifacts" --platform linux-x86_64
       - name: Smoke downloaded Linux bundle without Nix
         working-directory: .
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          archives=(artifacts/*-linux-x86_64.tar.gz)
-          test "${#archives[@]}" -eq 1
-          test -d /etc/ssl/certs
-          docker run --rm --platform linux/amd64 --user 65534:65534 \
-            --network none --read-only --tmpfs /tmp:exec,mode=1777 \
-            --volume "$PWD/artifacts:/artifacts:ro" \
-            --volume "$PWD/apps/maple-agent/scripts/smoke-linux-bundle-host.sh:/checks/smoke-linux-bundle-host.sh:ro" \
-            --volume /etc/ssl/certs:/etc/ssl/certs:ro \
-            ubuntu@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b /bin/sh -ec '
-              cd /tmp
-              tar -xzpf /artifacts/*-linux-x86_64.tar.gz
-              ./maple-agent*.app/AppRun --version >&2
-              ./maple-agent*.app/AppRun --build-info
-              MAPLE_AGENT_SMOKE_DIAGNOSTICS=1 /bin/sh /checks/smoke-linux-bundle-host.sh ./maple-agent*.app/AppRun >&2
-            ' > "$RUNNER_TEMP/portable-build-info.json"
-          python3 - "$MAPLE_RELEASE_PROFILE" "$RUNNER_TEMP/portable-build-info.json" artifacts/build-info.json <<'PY'
-          import json
-          import sys
-          actual = json.load(open(sys.argv[2]))
-          expected = json.load(open(sys.argv[3]))
-          if actual != expected or actual.get("profile") != sys.argv[1]:
-              raise SystemExit("portable Linux bundle build profile differs from verified package")
-          print("Verified Agent launch and embedded profile without a Nix installation")
-          PY
+        run: bash apps/maple-agent/scripts/verify-linux-bundle-docker.sh "$MAPLE_RELEASE_PROFILE" artifacts

@@ -8,10 +8,16 @@ import sys
 import tempfile
 import unittest
 
-from agent_change_detection import affects_agent
 from change_detection import classify_path as research_routes
+from lanes import PUSH
 from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS, classify_paths
+from test_plan import AGENT_PUSH, selected
 from test_workflow_policy import ROOT, load
+
+
+def affects_agent(path):
+    """Whether a master push of `path` runs any Agent lane in ci.yml."""
+    return bool(selected([path], PUSH) & AGENT_PUSH)
 
 
 class OpenSecretChangeDetectionTests(unittest.TestCase):

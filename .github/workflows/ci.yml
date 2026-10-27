@@ -1,7 +1,7 @@
 # CI: the single required check (ci-ok) for every pull request, on any base.
 # Lane selection lives in scripts/ci/lanes.py and scripts/ci/plan.py. Generic
-# Nix lanes run in the `nix` matrix; a special job exists only where a step list
-# cannot be expressed generically (Windows toolchain, services, OIDC, artifacts).
+# lanes run in the `nix` and `windows` matrices; a special job exists only where
+# a step list cannot be expressed generically (services, OIDC, artifacts).
 # Never add `paths:` here: ci-ok must always report.
 name: CI
 
@@ -11,6 +11,9 @@ on:
     types: [checks_requested]
   push:
     branches: [master]
+  schedule:
+    # Every lane on the master tip: refreshes the caches and catches misroutes.
+    - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
       lanes:
@@ -45,6 +48,7 @@ jobs:
     outputs:
       lanes: ${{ steps.plan.outputs.lanes }}
       nix: ${{ steps.plan.outputs.nix }}
+      windows: ${{ steps.plan.outputs.windows }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -59,6 +63,7 @@ jobs:
           CI_LINUX_RUNNER: ${{ vars.CI_LINUX_RUNNER }}
           CI_LINUX_HEAVY_RUNNER: ${{ vars.CI_LINUX_HEAVY_RUNNER }}
           CI_MACOS_RUNNER: ${{ vars.CI_MACOS_RUNNER }}
+          CI_WINDOWS_RUNNER: ${{ vars.CI_WINDOWS_RUNNER }}
         run: python3 scripts/ci/plan.py github
 
   nix:
@@ -79,7 +84,7 @@ jobs:
       - name: Select pinned Xcode
         if: runner.os == 'macOS'
         run: python3 scripts/ci/select-xcode.py
-      - name: Rust cache (restore everywhere, save only on master)
+      - name: Rust cache (restore everywhere, save only on master and on Blacksmith)
         if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -91,74 +96,152 @@ jobs:
           add-rust-environment-hash-key: "false"
           # The action runs cargo from the workspace directory: use an absolute flake path.
           cmd-format: nix develop --no-update-lock-file ${{ github.workspace }}/${{ matrix.flake }} -c {0}
-          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') }}
+          # A failover to a GitHub-hosted runner must not fill GitHub's small cache store.
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(matrix.runner, 'blacksmith-') }}
       - name: Run lane
         env:
           LANE: ${{ matrix.id }}
         run: python3 scripts/ci/plan.py run "$LANE"
 
-  agent-windows:
-    name: agent-windows
+  windows:
+    name: ${{ matrix.id }}
     needs: plan
-    if: fromJSON(needs.plan.outputs.lanes)['agent-windows']
-    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
-    timeout-minutes: 45
+    if: needs.plan.outputs.windows != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.windows) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
     defaults:
       run:
         shell: bash
-        working-directory: apps/maple-agent
-    env:
-      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-
-      - name: Install pinned Windows Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable action, exact toolchain below
-        with:
-          # Equal to AGENT_WINDOWS_RUST in scripts/ci/lanes.py; agent-lint checks
-          # that the Agent flake's rustc still reports this version.
-          toolchain: 1.98.0
-          components: clippy
-
-      - name: Select Windows MSVC and SDK
-        uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
-        with:
-          arch: x64
-
-      - name: Select native Windows Perl for the static crypto build
-        run: |
-          native_perl=/c/Strawberry/perl/bin/perl.exe
-          if [ ! -x "$native_perl" ]; then
-            echo 'Native Windows Perl is missing from the runner' >&2
-            exit 1
-          fi
-          "$native_perl" -MLocale::Maketext::Simple -MIPC::Cmd -e 'die "OpenSSL requires native Windows Perl\n" unless $^O eq "MSWin32"; print "$^V\n"'
-          # Pin the native executable across later Git Bash steps and Rust's
-          # process resolver instead of depending on their PATH ordering.
-          native_perl_windows="$(cygpath -m "$native_perl")"
-          printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
-          # openssl-src uses NASM if available and otherwise selects no-asm.
-
-      - name: Pin and smoke-test the selected Windows linker
-        run: python3 ../../scripts/ci/agent_windows.py
-
-      - name: Rust cache (restore everywhere, save only on master)
+      - uses: ./.github/actions/setup-agent-windows
+      - name: Rust cache (restore everywhere, save only on master and on Blacksmith)
+        if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: ci-v1
-          shared-key: agent-windows
-          workspaces: apps/maple-agent -> target
-          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') }}
+          shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
+          workspaces: ${{ matrix.workspaces }}
+          add-rust-environment-hash-key: "false"
+          # A failover to a GitHub-hosted runner must not fill GitHub's small cache store.
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(matrix.runner, 'blacksmith-') }}
+      - name: Run lane
+        env:
+          LANE: ${{ matrix.id }}
+        run: python3 scripts/ci/plan.py run "$LANE"
 
-      - name: Clippy (Windows)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+  # Unsigned Dev packages built like agent-desktop-build.yml's master builds, from
+  # their master-written cache. Required when the packaging selector fires.
+  agent-package-linux:
+    name: agent-package-linux
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-package-linux']
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Restore master's Agent release cache (read-only)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Exactly agent-desktop-build.yml's builder key; it is the only writer.
+          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
+      - name: Build, package, verify and smoke-test an unsigned Dev bundle
+        run: python3 scripts/ci/plan.py run agent-package-linux
+      - name: Upload the unsigned package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-agent-dev-linux-x86_64-unsigned-${{ github.run_id }}
+          path: apps/maple-agent/dist/dev/
+          if-no-files-found: error
+          retention-days: 7
+
+  agent-package-macos:
+    name: agent-package-macos
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-package-macos']
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+      - name: Restore master's Agent release cache (read-only)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Exactly agent-desktop-build.yml's builder key; it is the only writer.
+          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
+      - name: Build, package and verify an unsigned Dev app
+        run: python3 scripts/ci/plan.py run agent-package-macos
+      - name: Upload the unsigned package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-agent-dev-macos-aarch64-unsigned-${{ github.run_id }}
+          path: apps/maple-agent/dist/dev/
+          if-no-files-found: error
+          retention-days: 7
+
+  agent-package-windows:
+    name: agent-package-windows
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-package-windows']
+    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-agent-windows
+        with:
+          release: "true"
+      - name: Restore master's Agent release cache (read-only)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Exactly agent-desktop-build.yml's builder key; it is the only writer.
+          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
+      - name: Build, package and verify an unsigned Dev installer
+        run: python3 scripts/ci/plan.py run agent-package-windows
+      - name: Upload the unsigned package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-agent-dev-windows-x86_64-unsigned-${{ github.run_id }}
+          path: apps/maple-agent/dist/dev/
+          if-no-files-found: error
+          retention-days: 7
 
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [plan, nix, agent-windows]
+    needs: [plan, nix, windows, agent-package-linux, agent-package-macos, agent-package-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -167,18 +250,19 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           LANES: ${{ needs.plan.outputs.lanes }}
           NIX: ${{ needs.plan.outputs.nix }}
+          WINDOWS: ${{ needs.plan.outputs.windows }}
         run: |
           set -euo pipefail
           if [ "$(jq -r '.plan.result' <<<"$NEEDS")" != success ]; then
             echo "::error::plan did not succeed"; exit 1
           fi
           # Selected => success; an unselected job may only be skipped (or succeed).
-          jq -n -e --argjson needs "$NEEDS" --argjson lanes "$LANES" --argjson nix "$NIX" '
+          jq -n -e --argjson needs "$NEEDS" --argjson lanes "$LANES" --argjson nix "$NIX" --argjson windows "$WINDOWS" '
             def ok($job; $selected):
               if $selected then $needs[$job].result == "success"
               else ($needs[$job].result | IN("skipped", "success")) end;
-            ok("nix"; ($nix | length) > 0)
-            and ([$needs | keys[] | select(. != "plan" and . != "nix")]
+            ok("nix"; ($nix | length) > 0) and ok("windows"; ($windows | length) > 0)
+            and ([$needs | keys[] | select(IN("plan", "nix", "windows") | not)]
                  | all(. as $job | ok($job; $lanes[$job] // false)))
           ' >/dev/null || { echo "::error::a selected lane did not succeed"; exit 1; }
           echo "ci-ok: every selected lane succeeded"

@@ -37,13 +37,11 @@ its table-driven tests when the dependency graph or component layout changes.
 The backend has its own root `opensecret-ci.yml` workflow and change selector;
 `sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
 same checkout. Backend changes do not imply Research or Agent packaging.
-Agent desktop packages compare master against the last successful ancestor run
-with all six Dev/Prod macOS/Linux/Windows download verifiers completed; selector-only
-and failed runs do not consume outstanding changes. Unrelated master pushes skip
-Agent packages. Manual master dispatch always builds both profiles. PR previews
-build and package only Dev on macOS, Linux and Windows, including the matching
-Linux and Windows downloaded-package verifiers; Prod packages remain covered by master builds.
-PRs keep their merge-base selection and signing stays confined to trusted master.
+Agent desktop packages build on master pushes whose own diff changes Agent
+inputs (`plan.py only agent-desktop`), and on every manual master dispatch.
+Packaging-input PRs rehearse unsigned Dev packages on Linux and macOS in
+`ci.yml` (Windows with the `ci:package` label); signing stays confined to
+trusted master.
 Research desktop, Android and iOS PR workflows group runs by workflow and PR.
 A new run cancels earlier runs for that same unsigned preview; unrelated PRs
 and signed, master and manual queues keep their existing behavior.
@@ -133,34 +131,27 @@ lives under `RUNNER_TEMP`, so separate Nix shells reach the same server despite
 their different `TMPDIR` values. Cache archive restoration and compiler hits
 remain separate measurements.
 
-## Agent compilation and cache measurements
+## Agent lanes and caches
 
-Agent PR checks run in `ci.yml` (`agent-lint`, `agent-test`, `agent-macos`;
-`agent-windows` on Windows paths or the `ci:windows` label), selected by
-`scripts/ci/lanes.py` and reported by its `ci-ok` job. Full macOS and Windows
-builds run on master: Agent CI (`agent-ci.yml`) runs on master pushes and
-dispatch only, one never-cancelled run per commit, with the three-platform
-workspace matrix, three-platform upstream SQLCipher provider suite, and plain
-Linux optimized binary as independent jobs. The final `Agent CI required jobs`
-check rejects failed or unexpectedly skipped selected jobs. The plain Linux
-binary and Desktop Dev/Prod packages have separate profiles and caches.
+Agent checks are `ci.yml` lanes in `scripts/ci/lanes.py`, reported by `ci-ok`.
+PRs run `agent-lint`, `agent-test` and `agent-macos`; `agent-windows` on Windows
+paths or the `ci:windows` label; `agent-supply-chain` and `agent-provider` when
+dependency inputs change; and `agent-package-linux`/`agent-package-macos` when
+packaging inputs change (`ci:package` adds Windows). Master pushes also run
+`agent-windows` and `agent-full-{linux,macos,windows}`, never cancelled;
+`ci:full` runs every lane on a PR and `ci:perf` the store benchmark.
+`nightly.yml` runs the advisories, SQLCipher sources, the provider suite on all
+three OSes and the store benchmark, and keeps one `ci-nightly` issue.
 
-Before restoring targets, `scripts/ci/agent_cache_scope.py` wraps the existing
-`agent_cache.py` identity without changing its legacy digest. It fingerprints
-Rust inside the component Nix shell, or the explicitly selected Windows MSVC
-environment, plus the native ABI/toolchain, flags, profile, Cargo configuration
-and provider inputs. For a known native target and modern Cargo resolver it
-omits only dependency declarations and feature edges proved inactive on that
-target. Unknown cfg expressions, target overrides and ambiguous feature edges
-stay conservative. Real compiler/native changes still invalidate; the original
-identity remains available for legacy bootstrap.
-
-The component shell pins Rustup proxies to its Nix toolchain so Cargo's external
-Clippy/rustfmt commands cannot silently select a host compiler. Windows setup
-pins Cargo's linker to the selected MSVC `link.exe` and compiles/runs an offline
-Cargo build-script fixture before restore. Cache probes use
-`agent_cache_command.py` to identify the selected compiler while excluding its
-optional incidental installed-Rustup inventory.
+Lane caches use `Swatinem/rust-cache` with exact keys (`ci-v1-<lane>-` plus a
+hash of the Agent `flake.lock` and `Cargo.lock`), written only by master pushes
+and the nightly `ci.yml` run, on Blacksmith only. Windows has no Nix:
+`.github/actions/setup-agent-windows` pins Rust (`agent-lint` checks it equals
+the flake's), MSVC, native Perl and the linker. The unsigned
+`agent-desktop-build.yml` builders restore and, on master pushes, save the
+exact key `ci-v1-agent-release-<os>-<hash of both lockfiles>` with no fallback;
+the PR packaging lanes only restore it, and signing, attestation and verifier
+jobs restore nothing.
 
 `agent-windows-updater-tests.yml` separately runs native updater, filesystem,
 Authenticode rejection and application bootstrap component tests on
@@ -190,69 +181,15 @@ expired references must be selected again explicitly. Its result proves only
 historical signature interoperability, not the new updater's installed upgrade
 or final-source release qualification.
 
-Agent workspace, provider, plain release and Desktop Dev/Prod builders first
-try `agent_dependency_archive.py` through the Actions artifact service. A
-consumer accepts only this repository's designated push/master workflow and
-its exact matching platform/profile job. GitHub run/attempt, source commit,
-artifact creation interval and completed-successful producer job/steps must
-agree with the manifest. This proves that dependency seed's producer job; it
-does not declare unrelated workflow jobs or product checks green. Actual
-compiler/native/profile compatibility must match, and providers additionally
-require their exact verified upstream test-only dependency fingerprint.
-Workspace/release archives record their dependency graph; Cargo still resolves
-the current locked graph and checks freshness after a compatible restore.
-
-The archive includes only crates.io and reviewed, pinned public Git dependencies,
-registry/index data and their permitted dependency build outputs. New Git
-repositories require public-source review before entering the helper's allowlist;
-unknown sources and colliding package/target names are excluded. Local/path
-crates, application/test executables, app bundles, notices, credentials and
-Git hooks are excluded. The helper verifies the API's artifact ZIP digest,
-manifest/archive digest, bounded sizes/file counts and safe dependency-only
-paths before extraction; it rejects links, special files, traversal and path
-aliases. Missing, incompatible or unproven artifacts fall back to native
-bootstrap or a cold build. These archives remain executable dependency build
-inputs, so trusted provenance is required in addition to checksums. PRs only
-read them and run with no signing or publication credentials.
-
-Native `rust-cache` and exact provider-cache lookups are now read-only bootstrap
-sources. The initial lookup retains the scoped compiler/dependency key; an
-older compatible namespace can be searched with the unchanged legacy identity
-only when actual dependency libraries/fingerprints were not restored. It does
-not rely on `CACHEDIR.TAG`, which can be absent from an otherwise usable archive.
-Provider bootstrap never falls back across verified test-only graphs.
-
-After its existing validation passes, only a successful master-push builder
-prepares/uploads a dependency seed. Preparation or required upload failure
-fails the job instead of becoming a cache-save warning. Uploads have three-day
-retention. A successful master builder can reuse its proven restore receipt
-without repacking only when the dependency graph still matches and the seed
-was created within the previous 24 hours; otherwise it refreshes the seed.
-This refresh occurs during selected master builds, not a new daily dispatch.
-Each builder preserves its platform/profile/job boundary; signed packages and
-publication artifacts are separate outputs.
-
-Agent CI also compares master cumulatively against the last successful
-ancestor whose three workspace jobs, three provider jobs and plain Linux
-release job actually passed. Desktop packaging retains its independent
-all-six-downloaded-verifier baseline. Selector-only, failed or cancelled runs
-cannot consume outstanding changes; lookup/history uncertainty selects a build.
-
-Unsigned builders upload seven-day `maple-agent-*-metrics-*` artifacts with
-actual environment identity, phase durations, logical target sizes, and bounded
-current Cargo timing HTML. Action logs report exact/restore keys and transferred
-cache bytes; logical target size is not compressed cache size. Windows build
-and test are separate phases. See [the Agent performance audit](agent-ci-performance.md)
-for the baseline, tradeoffs and cold/warm validation procedure.
-
 ## macOS runners and Apple toolchain
 
 Research desktop/iOS builds, Agent release-binary jobs
 and native proxy macOS archives use ARM64 `blacksmith-6vcpu-macos-26` runners.
-Artifact verifiers, TestFlight uploads, and Agent preview packaging/protected
-signing use standard GitHub `macos-26` runners. Research signed builders retain
-their existing `desktop-signing` or `apple-signing` environment, so their
-provider receives that environment's secret context. Existing master pushes
+Artifact verifiers, TestFlight uploads and Agent protected signing use standard
+GitHub `macos-26` runners; Agent PR packaging rehearsals use Blacksmith.
+Research signed builders retain their existing `desktop-signing` or
+`apple-signing` environment, so their provider receives that environment's
+secret context. Existing master pushes
 can build and upload independent Dev/Prod TestFlight artifacts after verification.
 The Agent's final signed-package provenance identifies its GitHub
 packaging/signing job; Blacksmith is trusted for prebuilt binary integrity.
@@ -280,14 +217,15 @@ independent; there is no separate ONNX cache warmer.
 
 ## Windows runner pilot
 
-Agent Windows x64 release binaries use standard GitHub `windows-2025`, pinned
-Rust/MSVC selection, static CRT linkage and the selected SDK's shader compiler.
-Credential-free builders upload the executable and third-party notices. A fresh
+Agent Windows x64 release binaries build on `blacksmith-8vcpu-windows-2025` with
+pinned Rust/MSVC selection, static CRT linkage and the selected SDK's shader
+compiler. Credential-free builders upload the executable and third-party notices. A fresh
 master job inspects embedded PE profile/source metadata without executing the
 artifact, then reuses `windows-signing` and the existing Azure Artifact Signing
 helpers for the app, NSIS uninstaller and installer. Separate native verifiers
 check downloaded provenance, payload identity, signatures and isolated
-install/uninstall. PRs build unsigned Dev installers without signing credentials.
+install/uninstall; signing and verification stay on GitHub's `windows-2025`.
+The `ci:package` PR label builds an unsigned Dev installer without credentials.
 These packages are Actions downloads; Windows automatic updates and built-in
 computer-use remain unsupported.
 

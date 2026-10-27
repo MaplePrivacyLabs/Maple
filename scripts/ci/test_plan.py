@@ -1,4 +1,4 @@
-"""Lane selection: the table, the planner's events, and the Agent selector it replaces."""
+"""Lane selection: the table, the planner's events, and the Agent selectors it replaced."""
 
 import contextlib
 import io
@@ -18,7 +18,13 @@ from lanes import DISPATCH, NIGHTLY, PR, PUSH, QUEUE
 
 ACTIVE = {lane.id for lane in lanes.LANES if lane.legacy is None}
 AGENT_PR = {"agent-lint", "agent-test", "agent-macos"}
+AGENT_PUSH = AGENT_PR | {"agent-windows", "agent-full-linux", "agent-full-macos", "agent-full-windows"}
+AGENT_PACKAGE = {"agent-package-linux", "agent-package-macos"}
 SHA_A, SHA_B = "a" * 40, "b" * 40
+
+
+def active(event):
+    return {lane.id for lane in plan.active(event)}
 
 
 def selected(paths, event=PR, labels=()):
@@ -52,15 +58,16 @@ class PortedAgentSelectorTests(unittest.TestCase):
             "apps/maple-agent/crates/maple-agent/resources/skills/advisor/SKILL.md",
         ):
             with self.subTest(path=path):
-                self.assertEqual(selected([path]), AGENT_PR)
+                # Dependency and packaging inputs add their own Agent lanes (AgentLaneTests).
+                self.assertLessEqual(AGENT_PR, selected([path]))
+                self.assertTrue(all(lane.startswith("agent-") for lane in selected([path])))
 
     def test_rust_sdk_and_proxy_runtime_inputs_select_agent(self):
         for path in ("proxy/Cargo.toml", "proxy/src/proxy.rs", "proxy/build.rs", "sdk/rust/Cargo.toml",
                      "sdk/rust/src/client.rs", "sdk/rust/build.rs", "sdk/rust/assets/aws_nitro_root.der"):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]) - {"repo"}, AGENT_PR)  # proxy/Cargo.toml feeds the release gates
-                self.assertEqual({lane for lane in selected([path], PUSH) if lane.startswith("agent-")},
-                                 {lane for lane in ACTIVE if lane.startswith("agent-")})
+                self.assertEqual({lane for lane in selected([path], PUSH) if lane.startswith("agent-")}, AGENT_PUSH)
 
     def test_research_typescript_and_independent_services_skip_agent(self):
         for path in (
@@ -98,12 +105,9 @@ class PortedAgentSelectorTests(unittest.TestCase):
         for path in (
             # The Agent flake has no root inputs.
             "flake.nix", "flake.lock",
-            # These drive agent-ci.yml and agent-desktop-build.yml, which still own them.
-            ".github/workflows/agent-ci.yml", ".github/workflows/agent-desktop-build.yml",
-            "scripts/ci/agent_change_detection.py", "scripts/ci/agent_master_selection.py",
-            "scripts/ci/agent_cache.py", "scripts/ci/agent_cache_scope.py", "scripts/ci/agent_cache_command.py",
-            "scripts/ci/agent_dependency_archive.py", "scripts/ci/agent_measure.py", "scripts/ci/change_detection.py",
-            # Signing scripts: no Agent PR lane signs anything.
+            # The Research selector; the Agent no longer imports it.
+            "scripts/ci/change_detection.py",
+            # Signing scripts: no ci.yml Agent lane signs anything (agent-desktop-build.yml does).
             "scripts/ci/windows-artifact-sign.ps1", "scripts/ci/install-windows-artifact-signing.ps1",
         ):
             with self.subTest(path=path):
@@ -114,8 +118,8 @@ class PortedAgentSelectorTests(unittest.TestCase):
         for path in ("new-build-config.toml", "newroot/x", "", "/tmp/file", "../file", "docs/../flake.nix",
                      "apps/maple-agent/../maple-research/frontend/src/main.tsx"):
             with self.subTest(path=path):
-                self.assertEqual(selected([path]), ACTIVE)
-                self.assertEqual(selected([path], PUSH), ACTIVE)
+                self.assertEqual(selected([path]), active(PR))
+                self.assertEqual(selected([path], PUSH), active(PUSH))
 
     def test_mixed_changes_and_empty_diff(self):
         self.assertEqual(selected([]), set())
@@ -156,7 +160,7 @@ class LaneTableTests(unittest.TestCase):
         self.assertNotIn("agent-windows", selected([other]))
         self.assertIn("agent-windows", selected([other], PUSH))
         self.assertIn("agent-windows", selected(["docs/x.md"], labels=["ci:windows"]))
-        self.assertEqual(selected(["docs/x.md"], labels=["ci:full"]), ACTIVE)
+        self.assertEqual(selected(["docs/x.md"], labels=["ci:full"]), active(PR))
         self.assertEqual(selected(["docs/x.md"], labels=["unrelated"]), set())
 
     def test_inert_paths_select_nothing(self):
@@ -186,6 +190,57 @@ class LaneTableTests(unittest.TestCase):
         self.assertIn("unclassified: newroot/x", plan.lint_problems(["newroot/x"]))
 
 
+class AgentLaneTests(unittest.TestCase):
+    """The lanes that replaced agent-ci.yml, the supply-chain and store workflows, and PR packaging."""
+
+    def test_dependency_inputs_select_supply_chain_and_the_provider_suite(self):
+        both = {"agent-supply-chain", "agent-provider"}
+        for path, lanes_ in (("apps/maple-agent/Cargo.lock", both),
+                             ("apps/maple-agent/dependencies/sqlcipher/provenance.json", both),
+                             ("apps/maple-agent/scripts/test_rusqlite_provider.py", {"agent-provider"}),
+                             ("apps/maple-agent/crates/maple-agent/Cargo.toml", {"agent-supply-chain"}),
+                             ("apps/maple-agent/app/assets/dict/LICENSE", {"agent-supply-chain"}),
+                             ("apps/maple-agent/app/src/main.rs", set())):
+            with self.subTest(path=path):
+                self.assertEqual(selected([path]) & both, lanes_)
+                self.assertEqual(selected([path], PUSH) & both, lanes_)
+                self.assertEqual(selected([path], NIGHTLY) & both, set())  # nightly.yml runs them
+
+    def test_packaging_rehearsal_runs_on_the_narrow_selector_or_a_label(self):
+        for path in ("apps/maple-agent/scripts/build-release.sh", "apps/maple-agent/flake.lock",
+                     "apps/maple-agent/app/packaging/macos-entitlements.plist",
+                     "apps/maple-agent/scripts/verify-linux-bundle-docker.sh",
+                     ".github/workflows/agent-desktop-build.yml"):
+            with self.subTest(path=path):
+                self.assertLessEqual(AGENT_PACKAGE, selected([path]))
+                self.assertFalse({lane for lane in selected([path], PUSH) if lane.startswith("agent-package")})
+        self.assertFalse(AGENT_PACKAGE & selected(["apps/maple-agent/app/src/main.rs"]))
+        self.assertFalse({"agent-package-windows"} & selected(["apps/maple-agent/scripts/build-release.sh"]))
+        self.assertEqual(selected(["docs/x.md"], labels=["ci:package"]), AGENT_PACKAGE | {"agent-package-windows"})
+        self.assertEqual(selected(["docs/x.md"], labels=["ci:perf"]), {"agent-perf"})
+
+    def test_full_suites_run_on_master_nightly_and_ci_full_only(self):
+        full = {"agent-full-linux", "agent-full-macos", "agent-full-windows"}
+        self.assertFalse(full & selected(["apps/maple-agent/app/src/main.rs"]))
+        self.assertLessEqual(full, selected(["apps/maple-agent/app/src/main.rs"], PUSH))
+        self.assertLessEqual(full, selected(["docs/x.md"], labels=["ci:full"]))
+        self.assertLessEqual(full | {"agent-windows"}, active(NIGHTLY))
+        self.assertFalse(({"agent-perf", "agent-supply-chain", "agent-provider"} | AGENT_PACKAGE) & active(NIGHTLY))
+        self.assertFalse(full & selected([".github/workflows/ci.yml"]))  # CI edits prove the gate lanes only
+
+    def test_agent_desktop_selector_covers_the_signed_builds_inputs(self):
+        for path in ("apps/maple-agent/app/src/main.rs", "sdk/rust/src/client.rs", "proxy/src/proxy.rs",
+                     ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/action.yml",
+                     "scripts/ci/select-xcode.py", "scripts/ci/agent_windows.py",
+                     "scripts/ci/windows-artifact-sign.ps1"):
+            with self.subTest(path=path):
+                self.assertTrue(plan.matches(path, lanes.AGENT_DESKTOP))
+        for path in ("flake.lock", "sdk/src/index.ts", "sdk/rust/tests/x.rs", "proxy/Dockerfile",
+                     ".github/workflows/ci.yml", "scripts/ci/plan.py"):
+            with self.subTest(path=path):
+                self.assertFalse(plan.matches(path, lanes.AGENT_DESKTOP))
+
+
 class PlannerTests(unittest.TestCase):
     def github(self, event, payload, **env):
         with tempfile.TemporaryDirectory() as temporary:
@@ -205,7 +260,7 @@ class PlannerTests(unittest.TestCase):
             with self.subTest(before=before):
                 code, outputs = self.github(PUSH, {"before": before, "after": SHA_B})
                 self.assertEqual(code, 0)
-                self.assertEqual({lane for lane, on in outputs["lanes"].items() if on}, ACTIVE)
+                self.assertEqual({lane for lane, on in outputs["lanes"].items() if on}, active(PUSH))
 
     def test_schedule_and_dispatch(self):
         _, outputs = self.github(NIGHTLY, {})
@@ -220,20 +275,25 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.github(QUEUE, {})[0], 1)
         code, outputs = self.github(PUSH, {})
         self.assertEqual(code, 0)
-        self.assertTrue(all(outputs["lanes"].values()))
+        self.assertEqual({lane for lane, on in outputs["lanes"].items() if on}, active(PUSH))
         code, outputs = self.github(DISPATCH, {}, LANES_INPUT="no-such-lane")
         self.assertEqual((code, all(outputs["lanes"].values())), (0, True))
 
     def test_outputs_empty_matrix_and_runner_overrides(self):
-        lanes_json, nix_json = plan.outputs({})
-        self.assertEqual(nix_json, "[]")
-        self.assertEqual(json.loads(lanes_json), dict.fromkeys(sorted(ACTIVE), False))
-        with mock.patch.dict(os.environ, {"CI_LINUX_HEAVY_RUNNER": "blacksmith-16vcpu-ubuntu-2404"}):
-            entries = json.loads(plan.outputs(dict.fromkeys(ACTIVE, ["x"]))[1])
-        runners = {entry["id"]: entry["runner"] for entry in entries}
-        self.assertEqual(runners, {"agent-lint": "blacksmith-8vcpu-ubuntu-2404",
-                                   "agent-test": "blacksmith-16vcpu-ubuntu-2404",
-                                   "agent-macos": "blacksmith-6vcpu-macos-26", "repo": "ubuntu-latest"})
+        empty = plan.outputs({})
+        self.assertEqual((empty["nix"], empty["windows"]), ("[]", "[]"))
+        self.assertEqual(json.loads(empty["lanes"]), dict.fromkeys(sorted(ACTIVE), False))
+        overrides = {"CI_LINUX_HEAVY_RUNNER": "blacksmith-16vcpu-ubuntu-2404", "CI_WINDOWS_RUNNER": "windows-2025"}
+        with mock.patch.dict(os.environ, overrides):
+            result = plan.outputs(dict.fromkeys(ACTIVE, ["x"]))
+        runners = {entry["id"]: entry["runner"] for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])}
+        linux, mac = "blacksmith-8vcpu-ubuntu-2404", "blacksmith-6vcpu-macos-26"
+        self.assertEqual(runners, {
+            "agent-lint": linux, "agent-test": "blacksmith-16vcpu-ubuntu-2404", "agent-macos": mac,
+            "agent-windows": "windows-2025", "agent-full-linux": linux, "agent-full-macos": mac,
+            "agent-full-windows": "windows-2025", "agent-supply-chain": linux, "agent-provider": linux,
+            "agent-perf": linux, "repo": "ubuntu-latest"})
+        entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
         self.assertEqual({len(entry["cache_key"]) for entry in entries if entry["cache"]}, {16})
 
     def test_run_executes_the_lane_command_in_its_flake(self):
@@ -241,10 +301,15 @@ class PlannerTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             run.return_value.returncode = 0
             self.assertEqual(plan.run("agent-test"), 0)
-            self.assertEqual(plan.run("agent-windows"), 2)  # a special ci.yml job
-        command, = run.call_args.args
+            command, = run.call_args.args
+            self.assertEqual(plan.run("no-such-lane"), 2)
+            # Windows has no Nix; Git Bash comes from PATH, never System32's WSL launcher.
+            with mock.patch.object(plan.platform, "system", return_value="Windows"), \
+                    mock.patch.object(plan.shutil, "which", return_value="C:/Git/usr/bin/bash.exe"):
+                self.assertEqual(plan.run("agent-provider"), 0)
         self.assertEqual(command, ["nix", "develop", "--no-update-lock-file", "./apps/maple-agent", "-c",
                                    "bash", "-euo", "pipefail", "-c", "cd apps/maple-agent && just ci-test"])
+        self.assertEqual(run.call_args.args[0][:2], ["C:/Git/usr/bin/bash.exe", "-euo"])
         self.assertEqual(run.call_args.kwargs["env"]["RUSTFLAGS"], "-D warnings")
 
     def test_check_rust_compares_the_flake_compiler_with_the_windows_pin(self):
@@ -297,6 +362,29 @@ class DiffTests(unittest.TestCase):
         for base in ("0" * 40, SHA_A, "HEAD", ""):
             with self.subTest(base=base):
                 self.assertIsNone(plan.changed_paths(base, self.base, merge_base=False))
+
+    def only(self, event, payload):
+        event_path = self.root / "event.json"
+        event_path.write_text(json.dumps(payload))
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": event, "GITHUB_EVENT_PATH": str(event_path)}), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(plan.only("agent-desktop"), 0)
+        return output.getvalue()
+
+    def test_only_selects_the_desktop_build_for_its_inputs_and_whenever_unsure(self):
+        docs = self.commit("apps/maple-agent/docs/design.md")
+        self.assertEqual(self.only(PUSH, {"before": self.base, "after": docs}), "selected=false\n")
+        typescript = self.commit("sdk/src/index.ts")
+        self.assertEqual(self.only(PUSH, {"before": docs, "after": typescript}), "selected=false\n")
+        runtime = self.commit("proxy/src/main.rs")
+        self.assertEqual(self.only(PUSH, {"before": typescript, "after": runtime}), "selected=true\n")
+        unknown = self.commit("newroot/x")
+        self.assertEqual(self.only(PUSH, {"before": runtime, "after": unknown}), "selected=true\n")
+        for event, payload in ((PUSH, {"before": "0" * 40, "after": docs}), (PUSH, {"before": SHA_A, "after": docs}),
+                               (PUSH, {}), (DISPATCH, {})):
+            with self.subTest(event=event, payload=payload):
+                self.assertEqual(self.only(event, payload), "selected=true\n")
 
 
 if __name__ == "__main__":

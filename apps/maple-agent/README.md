@@ -621,12 +621,13 @@ parent-pipe shutdown, and absence of application-state writes. It does not
 change the desktop theme. Parser, environment-scrubbing and palette precedence
 tests run in the ordinary app test suite.
 
-Root `.github/workflows/agent-ci.yml` selects this component when Agent or
-its shared Rust dependencies change. It builds and tests Linux, macOS, and
-Windows; Linux additionally runs the feature-matrix lint/headless checks and
-a release build. `just ci` is the full local format, lint, build and test gate;
-`just release` separately validates the optimized binary. PR jobs have no
-signing or publishing credentials. See the root agent guide for shared checks.
+The root `ci.yml` runs this component's lanes (`scripts/ci/lanes.py`) when
+Agent or its shared Rust dependencies change: format, lint and tests on Linux
+and clippy on macOS for every PR, and the full Linux, macOS and Windows suites
+on master. Root `just lane <id>` runs one lane as CI does. `just ci` is the full
+local format, lint, build and test gate; `just release` separately validates the
+optimized binary. PR jobs have no signing or publishing credentials. See the
+root agent guide for shared checks.
 
 Two by-hand checks complement the automated ones: the
 [scenario checklist](docs/scenario-checklist.md), one scenario per feature

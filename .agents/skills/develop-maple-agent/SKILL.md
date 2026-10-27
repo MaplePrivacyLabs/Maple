@@ -42,11 +42,15 @@ contracts when CI, Nix, or routing changes.
 Agent has its own Cargo and Nix lockfiles. CI selects Agent for proxy runtime
 changes and for Rust SDK build inputs, both path dependencies it builds from
 the tree, but not for TypeScript SDK changes. Component-only
-changes should not unnecessarily select Research packaging. Maintain the root
-selectors, their tests, `.github/workflows/agent-ci.yml`, and unsigned PR
-selection in `.github/workflows/agent-desktop-build.yml` together. The desktop
-workflow compares `master` with the last fully verified ancestor package run;
-unrelated pushes skip packages, while manual master dispatch forces both profiles.
+changes should not unnecessarily select Research packaging. Agent lanes live in
+`scripts/ci/lanes.py`, with fixtures in `scripts/ci/test_plan.py`; root
+`just lane <id>` runs one locally. PRs run `agent-lint`, `agent-test` and
+`agent-macos`, plus Windows clippy for Windows paths, `agent-supply-chain` and
+`agent-provider` for dependency inputs, and an unsigned Dev package rehearsal for
+packaging inputs. Labels `ci:windows`, `ci:package`, `ci:perf` and `ci:full` add
+lanes; master adds the full macOS and Windows suites. On master,
+`.github/workflows/agent-desktop-build.yml` builds signed packages for pushes
+that change `AGENT_DESKTOP` inputs and on every manual dispatch.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including
 the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency

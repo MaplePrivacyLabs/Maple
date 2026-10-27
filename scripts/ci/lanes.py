@@ -25,16 +25,20 @@ class Runner:
 LINUX = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_RUNNER")
 LINUX_HEAVY = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
 MACOS = Runner("blacksmith-6vcpu-macos-26", "CI_MACOS_RUNNER")
-WINDOWS = Runner("blacksmith-8vcpu-windows-2025", "CI_WINDOWS_RUNNER")  # read by ci.yml itself
+WINDOWS = Runner("blacksmith-8vcpu-windows-2025", "CI_WINDOWS_RUNNER")
 GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile nothing heavy
-# ci.yml pins this toolchain for agent-windows; agent-lint checks that the Agent
-# flake's rustc still reports it.
+# .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
+# agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"
 
 PR, QUEUE, PUSH, NIGHTLY, DISPATCH = (
     "pull_request", "merge_group", "push", "schedule", "workflow_dispatch")
 GATE: FrozenSet[str] = frozenset({PR, QUEUE, PUSH, NIGHTLY, DISPATCH})
 PR_EVENTS: FrozenSet[str] = frozenset({PR, QUEUE})  # events that use `pr_paths`
+NOT_NIGHTLY: FrozenSet[str] = GATE - {NIGHTLY}  # nightly.yml runs these every night instead
+PR_SIDE: FrozenSet[str] = frozenset({PR, QUEUE, DISPATCH})  # master and nightly run these elsewhere
+# ci.yml's generic matrix jobs; any other `job` is the id of a special ci.yml job.
+MATRIX_JOBS = ("nix", "windows")
 
 # Never selects anything: notes, docs and hooks at the root or a component root
 # (one or two levels down). Deeper files can be build inputs: the Agent compiles
@@ -71,6 +75,15 @@ AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/build-*", "scripts/package-*", "scripts/verify-*", "release-profiles.json",
     "release_profile.rs", "about.toml", "app/build.rs", "app/packaging/**", "flake.lock",
 )) + (".github/workflows/agent-desktop-build.yml",)
+# What agent-desktop-build.yml builds and signs on master (`plan.py only agent-desktop`).
+AGENT_DESKTOP = AGENT + RUST_SDK + PROXY_RUNTIME + (
+    ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/**",
+    "scripts/ci/verify-agent-rust-deps.py", "scripts/ci/select-xcode.py", "scripts/ci/apple-toolchain.json",
+    "scripts/ci/agent_windows.py", "scripts/ci/install-windows-artifact-signing.ps1",
+    "scripts/ci/windows-artifact-sign.ps1",
+)
+# Selectors for workflows outside ci.yml, read by `plan.py only NAME`.
+SELECTORS = {"agent-desktop": AGENT_DESKTOP}
 RESEARCH = "apps/maple-research/frontend/"
 TAURI = RESEARCH + "src-tauri/"
 
@@ -83,7 +96,7 @@ class Lane:
     pr_paths: Optional[Tuple[str, ...]] = None  # narrower selector for PRs and the merge queue
     labels: Tuple[str, ...] = ("ci:full",)      # PR labels that add the lane
     events: FrozenSet[str] = GATE
-    job: str = "nix"                            # the generic matrix, or a special ci.yml job id
+    job: str = "nix"                            # a MATRIX_JOBS job, or a special ci.yml job id
     runner: Runner = LINUX
     flake: Optional[str] = None                 # `nix develop` flake, from the repository root
     workdir: str = "."
@@ -97,10 +110,25 @@ class Lane:
     legacy: Optional[str] = None                # the workflow that still runs this lane
 
 
-AGENT_FLAKE = dict(
-    flake="./apps/maple-agent", workdir="apps/maple-agent", workspaces="apps/maple-agent -> target",
+AGENT_DIR = dict(
+    workdir="apps/maple-agent", workspaces="apps/maple-agent -> target",
     cache_files=("apps/maple-agent/flake.lock", "apps/maple-agent/Cargo.lock"),
     env=(("RUSTFLAGS", "-D warnings"),),
+)
+AGENT_FLAKE = dict(flake="./apps/maple-agent", **AGENT_DIR)
+AGENT_WIN = dict(job="windows", runner=WINDOWS, **AGENT_DIR)  # pinned rustup, no flake
+AGENT_DEPENDENCIES = tuple("apps/maple-agent/" + glob for glob in (
+    "Cargo.lock", "**/Cargo.toml", "deny.toml", "about.toml", "flake.nix", "flake.lock", "dependencies/**",
+    "scripts/*third*party*notices*", "scripts/audit-sqlcipher-dependencies.py", "scripts/verify-sqlcipher-build.py",
+    "app/assets/dict/LICENSE", "crates/maple-agent/src/store/keys/SOURCES.md",
+    "crates/maple-agent/src/store/keys/eff-large-wordlist.txt",
+))
+WINDOWS_PACKAGE = (
+    "./scripts/build-release.sh dev && python3 scripts/windows-release.py prepare dev"
+    " && python3 scripts/windows-release.py package dev --unsigned"
+    # The stock image exports Azure CLI paths that the fail-closed signing guard rejects.
+    " && env -u AZURE_CONFIG_DIR -u AZURE_DEVOPS_CACHE_DIR -u AZURE_EXTENSION_DIR"
+    " python3 scripts/windows-release.py verify dev dist/dev --unsigned --smoke"
 )
 
 LANES: Tuple[Lane, ...] = (
@@ -115,7 +143,40 @@ LANES: Tuple[Lane, ...] = (
          cache="agent-macos", timeout=25, **AGENT_FLAKE),
     # PRs get Windows clippy only for Windows-specific paths or the ci:windows label.
     Lane("agent-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=AGENT_WINDOWS,
-         labels=("ci:windows", "ci:full"), job="agent-windows", runner=WINDOWS, timeout=45),
+         labels=("ci:windows", "ci:full"), run="cargo clippy --workspace --all-targets --locked -- -D warnings",
+         cache="agent-windows", timeout=45, **AGENT_WIN),
+    # The rest of `just ci`, and the native macOS and Windows suites: master, nightly and ci:full.
+    Lane("agent-full-linux", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), run="just ci-extra",
+         cache="agent-full-linux", timeout=30, gate=False, **AGENT_FLAKE),
+    Lane("agent-full-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), runner=MACOS,
+         run="python3 scripts/test_git_metadata.py && cargo build --workspace --all-targets --locked"
+             " && ./scripts/macos-debug-app.sh && cargo test --workspace --locked",
+         cache="agent-full-macos", timeout=45, gate=False, **AGENT_FLAKE),
+    Lane("agent-full-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(),
+         run="python3 scripts/test_git_metadata.py && cargo build --workspace --all-targets --locked"
+             " && cargo test --workspace --locked",
+         cache="agent-full-windows", timeout=60, gate=False, **AGENT_WIN),
+    # Pinned SQLCipher sources, per-target advisories and bans, and notices.
+    Lane("agent-supply-chain", AGENT_DEPENDENCIES, events=NOT_NIGHTLY, run="just supply-chain", **AGENT_FLAKE),
+    # Released rusqlite's own tests against the static SQLCipher provider (nightly.yml: all three OSes).
+    Lane("agent-provider", tuple("apps/maple-agent/" + glob for glob in (
+        "Cargo.lock", "dependencies/sqlcipher/**", "scripts/test-rusqlite-provider.py",
+        "scripts/test_rusqlite_provider.py",
+    )), events=NOT_NIGHTLY, run="python3 scripts/test_rusqlite_provider.py && mkdir -p target"
+                              " && cargo metadata --locked --format-version 1 > target/provider-metadata.json"
+                              " && python3 scripts/test-rusqlite-provider.py target/provider-metadata.json",
+         timeout=20, **AGENT_FLAKE),
+    Lane("agent-perf", (), labels=("ci:perf", "ci:full"), events=PR_SIDE, run="just store-bench-ci",
+         timeout=30, gate=False, **AGENT_FLAKE),
+    # Unsigned Dev packages built the way agent-desktop-build.yml builds master's.
+    Lane("agent-package-linux", AGENT_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
+         job="agent-package-linux", run="just package-rehearsal", timeout=60, gate=False, **AGENT_FLAKE),
+    Lane("agent-package-macos", AGENT_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
+         job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60, gate=False,
+         **AGENT_FLAKE),
+    Lane("agent-package-windows", (), labels=("ci:package", "ci:full"), events=PR_SIDE,
+         job="agent-package-windows", runner=WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
+         env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),), timeout=60, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script
     # tests, the release gates, and release metadata (read from the version files).
     Lane("repo", (
@@ -125,20 +186,8 @@ LANES: Tuple[Lane, ...] = (
         RESEARCH + "package.json", TAURI + "Cargo.toml", TAURI + "tauri.conf.json",
     ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15),
 
-    # Legacy lanes. Lanes that differ only by OS (agent-package, research-desktop)
-    # are split when they move, and OpenSecret will route through
-    # opensecret_change_detection.py.
-    Lane("agent-full", AGENT, legacy="agent-ci.yml"),
-    Lane("agent-supply-chain", tuple("apps/maple-agent/" + glob for glob in (
-        "Cargo.lock", "**/Cargo.toml", "deny.toml", "about.toml", "flake.lock", "dependencies/**",
-        "scripts/generate-third-party-notices.py", "scripts/audit-sqlcipher-dependencies.py",
-    )), legacy="agent-sqlcipher-supply-chain.yml"),
-    Lane("agent-provider-linux", tuple("apps/maple-agent/" + glob for glob in (
-        "Cargo.lock", "dependencies/sqlcipher/**", "scripts/test-rusqlite-provider.py",
-        "scripts/test_rusqlite_provider.py",
-    )), legacy="agent-ci.yml"),
-    Lane("agent-package", AGENT_PACKAGING, labels=("ci:package", "ci:full"), legacy="agent-desktop-build.yml"),
-    Lane("agent-perf", (), labels=("ci:perf",), legacy="agent-store-performance.yml"),
+    # Legacy lanes. research-desktop is split by OS when it moves, and OpenSecret
+    # will route through opensecret_change_detection.py.
     Lane("agent-updates", ("services/agent-updates/**", "services/download-tracking/**", "scripts/ci/agent-updates.sh",
                            "apps/maple-agent/release-profiles.json", "apps/maple-agent/scripts/release-info.py"),
          legacy="agent-updates-tests.yml"),

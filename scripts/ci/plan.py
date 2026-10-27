@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Select and run the ci.yml lanes defined in scripts/ci/lanes.py.
 
-  github       ci.yml's plan job: write the `lanes` and `nix` outputs and a summary
+  github       ci.yml's plan job: write the `lanes` and matrix outputs and a summary
   run LANE     run one lane's command in its flake, as CI does (`just lane LANE`)
+  only NAME    another workflow's push selector: print selected=true|false
   explain      show what changed paths select (stdin, or --base/--head)
-  check-rust   the Agent flake's rustc must equal the agent-windows pin
+  check-rust   the Agent flake's rustc must equal the Windows rustup pin
   lint         the table classifies every tracked file and matches ci.yml
 """
 
@@ -16,17 +17,20 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from lanes import (AGENT_WINDOWS_RUST, CI_INFRA, DISPATCH, INERT, LANES, NIGHTLY, NOT_YET_TRACKED, PR,
-                   PR_EVENTS, PUSH, QUEUE, Lane)
+from lanes import (AGENT_WINDOWS_RUST, CI_INFRA, DISPATCH, INERT, LANES, MATRIX_JOBS, NIGHTLY, NOT_YET_TRACKED,
+                   PR, PR_EVENTS, PUSH, QUEUE, SELECTORS, Lane)
 
 ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
+WINDOWS_SETUP = ROOT / ".github/actions/setup-agent-windows/action.yml"
 Selection = Dict[str, List[str]]  # lane id -> why it was selected
 
 
@@ -155,18 +159,20 @@ def cache_key(lane: Lane) -> str:
     return digest.hexdigest()[:16]
 
 
-def outputs(selected: Selection) -> tuple:
-    lanes = {lane.id: lane.id in selected for lane in LANES if lane.legacy is None}
-    nix = [{
-        "id": lane.id,
-        "runner": os.environ.get(lane.runner.variable or "") or lane.runner.label,
-        "timeout": lane.timeout,
-        "flake": lane.flake or "",
-        "cache": lane.cache,
-        "cache_key": cache_key(lane) if lane.cache else "",
-        "workspaces": lane.workspaces,
-    } for lane in LANES if lane.id in selected and lane.job == "nix"]
-    return json.dumps(lanes, separators=(",", ":")), json.dumps(nix, separators=(",", ":"))
+def outputs(selected: Selection) -> Dict[str, str]:
+    """`lanes` maps every active lane to whether it runs; each matrix job gets its entries."""
+    result = {"lanes": {lane.id: lane.id in selected for lane in LANES if lane.legacy is None}}
+    for job in MATRIX_JOBS:
+        result[job] = [{
+            "id": lane.id,
+            "runner": os.environ.get(lane.runner.variable or "") or lane.runner.label,
+            "timeout": lane.timeout,
+            "flake": lane.flake or "",
+            "cache": lane.cache,
+            "cache_key": cache_key(lane) if lane.cache else "",
+            "workspaces": lane.workspaces,
+        } for lane in LANES if lane.id in selected and lane.job == job]
+    return {name: json.dumps(value, separators=(",", ":")) for name, value in result.items()}
 
 
 def summary(event: str, selected: Selection) -> str:
@@ -193,9 +199,8 @@ def github() -> int:
         # Master, nightly and dispatch runs verify everything rather than nothing.
         print(f"::warning::lane selection failed ({error!r}); selecting every lane")
         selected = everything(event, "selection failed")
-    lanes, nix = outputs(selected)
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-        output.write(f"lanes={lanes}\nnix={nix}\n")
+        output.writelines(f"{name}={value}\n" for name, value in outputs(selected).items())
     text = summary(event, selected)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
@@ -239,20 +244,44 @@ def run(name: str) -> int:
         print(f"{name}: no ci.yml command in scripts/ci/lanes.py", file=sys.stderr)
         return 2
     command = ["bash", "-euo", "pipefail", "-c", f"cd {shlex.quote(lane.workdir)} && {lane.run}"]
-    if lane.flake:
+    if platform.system() == "Windows":
+        # No Nix on Windows: setup-agent-windows pins the toolchain instead. Process
+        # creation searches System32 (WSL's bash.exe) before PATH, so take Git Bash from PATH.
+        command[0] = shutil.which("bash") or "bash"
+    elif lane.flake:
         command = ["nix", "develop", "--no-update-lock-file", lane.flake, "-c", *command]
     print("+ " + " ".join(shlex.quote(part) for part in command), flush=True)
     return subprocess.run(command, cwd=ROOT, env={**os.environ, **dict(lane.env)}).returncode
+
+
+def only(name: str) -> int:
+    """agent-desktop-build.yml's changes job: did this push change `name`'s inputs?
+
+    Anything but a push with a usable diff (dispatch, a new branch, a force-push,
+    an error) selects the build, as do unclassified paths."""
+    paths = None
+    try:
+        if os.environ.get("GITHUB_EVENT_NAME") == PUSH:
+            payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+            paths = changed_paths(payload["before"], payload["after"], merge_base=False)
+    except Exception as error:  # noqa: BLE001 - fail safe: build
+        print(f"::warning::{name} selection failed ({error!r}); building", file=sys.stderr)
+    selected = paths is None or any(
+        not inert(path) and (not classified(path) or matches(path, SELECTORS[name])) for path in paths)
+    print(f"{name}: {'no usable diff' if paths is None else f'{len(paths)} changed paths'}, "
+          f"selected={str(selected).lower()}", file=sys.stderr)
+    print(f"selected={str(selected).lower()}")
+    return 0
 
 
 def check_rust(expected: str = AGENT_WINDOWS_RUST) -> int:
     reported = subprocess.run(["rustc", "--version"], check=True, capture_output=True, text=True).stdout
     version = reported.split()[1]
     if version != expected:
-        print(f"::error::The Agent flake has rustc {version}, but ci.yml's agent-windows job pins {expected}. "
-              "Update AGENT_WINDOWS_RUST in scripts/ci/lanes.py and the ci.yml toolchain together.")
+        print(f"::error::The Agent flake has rustc {version}, but setup-agent-windows pins {expected}. Update "
+              "AGENT_WINDOWS_RUST in scripts/ci/lanes.py and .github/actions/setup-agent-windows together.")
         return 1
-    print(f"rustc {version} matches the agent-windows pin")
+    print(f"rustc {version} matches the Windows rustup pin")
     return 0
 
 
@@ -265,7 +294,8 @@ def tracked_files() -> List[str]:
 
 def lint_problems(files: Sequence[str]) -> List[str]:
     problems = []
-    globs = {g.lstrip("!") for g in INERT + CI_INFRA} | {g.lstrip("!") for lane in LANES for g in lane_globs(lane)}
+    globs = ({g.lstrip("!") for g in INERT + CI_INFRA + sum(SELECTORS.values(), ())}
+             | {g.lstrip("!") for lane in LANES for g in lane_globs(lane)})
     problems += [f"matches no tracked file: {g}" for g in sorted(globs - NOT_YET_TRACKED)
                  if not any(_pattern(g).fullmatch(f) for f in files)]
     problems += [f"unclassified: {f}" for f in files if not inert(f) and not classified(f)]
@@ -273,11 +303,11 @@ def lint_problems(files: Sequence[str]) -> List[str]:
     problems += [f"duplicate lane: {i}" for i in sorted({i for i in ids if ids.count(i) > 1})]
     workflow = CI_WORKFLOW.read_text()
     jobs = set(re.findall(r"^  ([A-Za-z0-9_-]+):", workflow.split("\njobs:\n", 1)[1], re.M))
-    special = {lane.job for lane in LANES if lane.legacy is None and lane.job != "nix"}
-    if jobs - {"plan", "nix", "ci-ok"} != special:
-        problems.append(f"ci.yml special jobs {sorted(jobs - {'plan', 'nix', 'ci-ok'})} != lanes {sorted(special)}")
-    if f"toolchain: {AGENT_WINDOWS_RUST}\n" not in workflow:
-        problems.append(f"ci.yml does not pin agent-windows to {AGENT_WINDOWS_RUST}")
+    expected = {"plan", "ci-ok", *MATRIX_JOBS} | {lane.job for lane in LANES if lane.legacy is None}
+    if jobs != expected:
+        problems.append(f"ci.yml jobs {sorted(jobs)} != plan, ci-ok, matrix and special lane jobs {sorted(expected)}")
+    if f"toolchain: {AGENT_WINDOWS_RUST}\n" not in WINDOWS_SETUP.read_text():
+        problems.append(f"setup-agent-windows does not pin Rust {AGENT_WINDOWS_RUST}")
     declared = set(re.findall(r"^\s+- (\S+)$", (ROOT / ".github/actionlint.yaml").read_text(), re.M))
     for lane in LANES:
         if lane.runner.label not in declared and not re.match(r"(ubuntu|macos|windows)-", lane.runner.label):
@@ -290,6 +320,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     modes = parser.add_subparsers(dest="mode", required=True)
     modes.add_parser("github")
     modes.add_parser("run").add_argument("lane")
+    modes.add_parser("only").add_argument("name", choices=sorted(SELECTORS))
     explain_parser = modes.add_parser("explain")
     explain_parser.add_argument("--event", default=PR, choices=(PR, QUEUE, PUSH))
     explain_parser.add_argument("--base")
@@ -301,6 +332,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return github()
     if args.mode == "run":
         return run(args.lane)
+    if args.mode == "only":
+        return only(args.name)
     if args.mode == "explain":
         return explain(args.event, args.base, args.head)
     if args.mode == "check-rust":

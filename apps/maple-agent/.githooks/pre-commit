@@ -1,6 +1,6 @@
 #!/bin/sh
 # GPUI Agent pre-commit checks. Runs from apps/maple-agent inside its own flake.
-# CI equivalent: agent-ci.yml (`just ci`). The default tier runs one clippy
+# CI equivalent: ci.yml's Agent lanes (`just ci`). The default tier runs one clippy
 # pass and the workspace tests; MAPLE_HOOK_FULL=1 runs the complete `just ci`
 # (every feature-set clippy plus the headless tests).
 

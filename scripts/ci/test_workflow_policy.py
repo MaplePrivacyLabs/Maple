@@ -148,8 +148,8 @@ def matrix_values(matrix, key: str) -> set:
 
 
 def runner_labels(name: str, job_id: str, job: dict) -> set:
-    if (name, job_id) == ("ci.yml", "nix"):  # the planner fills this matrix from lanes.py
-        return {lane.runner.label for lane in lanes.LANES}
+    if name == "ci.yml" and job_id in lanes.MATRIX_JOBS:  # the planner fills these matrices from lanes.py
+        return {lane.runner.label for lane in lanes.LANES if lane.job == job_id}
     values = job.get("runs-on", [])
     labels = set()
     for value in values if isinstance(values, list) else [values]:
@@ -250,7 +250,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_8_ci_always_reports_one_verdict(self):
         config = workflows()["ci.yml"]
         for event, settings in config["on"].items():
-            self.assertFalse({"paths", "paths-ignore"} & set(settings or {}), event)
+            self.assertFalse(isinstance(settings, dict) and {"paths", "paths-ignore"} & set(settings), event)
         verdict = config["jobs"]["ci-ok"]
         self.assertEqual(verdict["if"], "always()")
         self.assertEqual(set(verdict["needs"]), set(config["jobs"]) - {"ci-ok"})
