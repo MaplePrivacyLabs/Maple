@@ -430,6 +430,12 @@ struct SidebarMenuItem {
     on_click: MenuAction,
 }
 
+/// Destructive project actions are rendered in their own popup section.
+struct ProjectMenuItems {
+    actions: Vec<SidebarMenuItem>,
+    remove: Option<SidebarMenuItem>,
+}
+
 /// A project header and its actions: the root
 /// path, its display name, and the element ids its rows and menus use.
 /// Built when the sections rebuild, never per frame.
@@ -746,7 +752,7 @@ impl Sidebar {
                     || self.order.created_before_ms != order.created_before_ms);
             self.order = order;
             self.order_loaded = true;
-            self.rebuild_task_ranks();
+            self.rebuild_order_ranks();
         }
         let filter = state.search.trim().to_lowercase();
         let scope_changed = self.filter != filter
@@ -1317,8 +1323,11 @@ impl Sidebar {
 
     #[cfg(test)]
     pub(super) fn project_menu_labels_for_test(&self, target: &ProjectTarget) -> Vec<&'static str> {
-        self.project_menu_items(target)
+        let items = self.project_menu_items(target);
+        items
+            .actions
             .into_iter()
+            .chain(items.remove)
             .map(|item| item.label)
             .collect()
     }
@@ -2489,10 +2498,11 @@ impl Sidebar {
     }
 
     /// The actions of one project header, scoped to its execution computer.
-    fn project_menu_items(&self, target: &ProjectTarget) -> Vec<SidebarMenuItem> {
+    fn project_menu_items(&self, target: &ProjectTarget) -> ProjectMenuItems {
         let rename_target = target.clone();
+        let owns_project = target.computer.as_deref() == self.backend.remote_host();
         let root = &target.path;
-        let mut items = vec![SidebarMenuItem {
+        let mut actions = vec![SidebarMenuItem {
             id: target.element_id("rename-project"),
             icon: "pencil",
             label: "Rename project",
@@ -2500,6 +2510,39 @@ impl Sidebar {
                 this.begin_rename(RenameTarget::Project(rename_target.clone()), cx)
             }),
         }];
+        // Native folder/trust/removal actions belong to the execution computer.
+        if owns_project {
+            let open_root = root.clone();
+            actions.push(SidebarMenuItem {
+                id: target.element_id("open-project"),
+                icon: "folder-open",
+                label: "Open folder",
+                on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
+            });
+            if let Some(status) = self
+                .menu_trust
+                .as_ref()
+                .filter(|status| status.available && &status.path == root)
+            {
+                let trusted = status.decision == Some(true);
+                let path = root.clone();
+                actions.push(SidebarMenuItem {
+                    id: SharedString::from(format!("trust-project-{root}")),
+                    icon: if trusted { "shield-check" } else { "lock" },
+                    label: if trusted {
+                        "Untrust project"
+                    } else {
+                        "Trust project"
+                    },
+                    on_click: Box::new(move |_, cx| {
+                        cx.emit(SidebarEvent::SetTrust {
+                            path: path.clone(),
+                            trusted: !trusted,
+                        })
+                    }),
+                });
+            }
+        }
         if self.can_reorder() {
             for (forward, id, icon, label) in [
                 (false, "move-project-up", "arrow-up", "Move up"),
@@ -2507,7 +2550,7 @@ impl Sidebar {
             ] {
                 if self.project_move_available(target, forward) {
                     let target = target.clone();
-                    items.push(SidebarMenuItem {
+                    actions.push(SidebarMenuItem {
                         id: target.element_id(id),
                         icon,
                         label,
@@ -2516,51 +2559,16 @@ impl Sidebar {
                 }
             }
         }
-        // Other actions are still scoped to the active ChatScreen. Never offer
-        // them against a foreign folder or reveal its path on this computer.
-        if target.computer.as_deref() != self.backend.remote_host() {
-            return items;
-        }
-        let open_root = root.clone();
-        let remove_root = root.clone();
-        items.push(SidebarMenuItem {
-            id: target.element_id("open-project"),
-            icon: "folder-open",
-            label: "Open folder",
-            on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
+        let remove = owns_project.then(|| {
+            let root = root.clone();
+            SidebarMenuItem {
+                id: target.element_id("remove-project"),
+                icon: "trash-2",
+                label: "Remove project",
+                on_click: Box::new(move |_, cx| cx.emit(SidebarEvent::RemoveRoot(root.clone()))),
+            }
         });
-        if let Some(status) = self
-            .menu_trust
-            .as_ref()
-            .filter(|status| status.available && &status.path == root)
-        {
-            let trusted = status.decision == Some(true);
-            let path = status.path.clone();
-            items.push(SidebarMenuItem {
-                id: SharedString::from(format!("trust-project-{root}")),
-                icon: if trusted { "shield-check" } else { "lock" },
-                label: if trusted {
-                    "Untrust project"
-                } else {
-                    "Trust project"
-                },
-                on_click: Box::new(move |_, cx| {
-                    cx.emit(SidebarEvent::SetTrust {
-                        path: path.clone(),
-                        trusted: !trusted,
-                    });
-                }),
-            });
-        }
-        items.push(SidebarMenuItem {
-            id: SharedString::from(format!("remove-project-{root}")),
-            icon: "trash-2",
-            label: "Remove project",
-            on_click: Box::new(move |_, cx| {
-                cx.emit(SidebarEvent::RemoveRoot(remove_root.clone()));
-            }),
-        });
-        items
+        ProjectMenuItems { actions, remove }
     }
 
     /// The task entry whose overflow menu is open.
@@ -3571,14 +3579,14 @@ impl Sidebar {
     ) -> Div {
         let open = self.project_popup.is_open(&root.target);
         let menu = open.then(|| {
-            let menu = Menu::new(root.target.element_id("project-menu"), px(180.))
+            let items = self.project_menu_items(&root.target);
+            let mut menu = Menu::new(root.target.element_id("project-menu"), px(180.))
                 .label("Project options")
                 .application_vim(self.application_vim_enabled)
-                .items(
-                    self.project_menu_items(&root.target)
-                        .into_iter()
-                        .map(menu_item),
-                );
+                .items(items.actions.into_iter().map(menu_item));
+            if let Some(remove) = items.remove {
+                menu = menu.separator().item(menu_item(remove));
+            }
             let placement = self
                 .project_menu_at
                 .map_or(Placement::BelowEnd, Placement::At);

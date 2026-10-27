@@ -50,7 +50,7 @@ impl Sidebar {
                         this.order =
                             crate::settings::install_sidebar_order(this.user_id.clone(), order);
                         this.order_loaded = true;
-                        this.rebuild_task_ranks();
+                        this.rebuild_order_ranks();
                         this.rebuild_sections();
                         this.refresh_task_order(cx);
                     }
@@ -85,7 +85,7 @@ impl Sidebar {
         );
     }
 
-    pub(super) fn rebuild_task_ranks(&mut self) {
+    pub(super) fn rebuild_order_ranks(&mut self) {
         self.task_ranks.clear();
         for (rank, task) in self.order.tasks.iter().enumerate() {
             self.task_ranks
@@ -162,7 +162,7 @@ impl Sidebar {
                 self.order_query_dirty = true;
             }
             self.order = order;
-            self.rebuild_task_ranks();
+            self.rebuild_order_ranks();
         }
     }
 
@@ -215,7 +215,7 @@ impl Sidebar {
             }
         }
         if changed {
-            self.rebuild_task_ranks();
+            self.rebuild_order_ranks();
             // The settings writer owns retries and the Quit barrier, even if
             // this projection is replaced before its acknowledgement arrives.
             drop(crate::settings::save_sidebar_order(
@@ -243,7 +243,7 @@ impl Sidebar {
             self.seed_task_order();
             if !order_fits(&self.order) {
                 self.order = previous;
-                self.rebuild_task_ranks();
+                self.rebuild_order_ranks();
                 cx.emit(SidebarEvent::Notice(
                     "This sidebar order is too large to save".into(),
                 ));
@@ -578,7 +578,7 @@ impl Sidebar {
             .collect::<Vec<_>>();
         self.order.tasks = visible.into_iter().chain(remaining).collect();
         self.order.created_before_ms = crate::settings::timestamp_ms();
-        self.rebuild_task_ranks();
+        self.rebuild_order_ranks();
     }
 
     pub(super) fn commit_reorder(
@@ -635,19 +635,21 @@ impl Sidebar {
                 move_item(&mut desired, source, target, after);
                 self.order.tasks = merge_task_subset(&self.order.tasks, &desired);
                 self.view.sort = SidebarSort::Manual;
-                self.rebuild_task_ranks();
             }
             _ => return,
         }
         if !order_fits(&self.order) {
             self.order = previous_order;
             self.view = previous_view;
-            self.rebuild_task_ranks();
+            self.rebuild_order_ranks();
             cx.emit(SidebarEvent::Notice(
                 "This sidebar order is too large to save".into(),
             ));
             return;
         }
+        // Every accepted move refreshes the display indexes, including project
+        // moves invoked by menus and drag-and-drop.
+        self.rebuild_order_ranks();
         if self.view != previous_view {
             let view = self.view;
             crate::settings::update_settings_in_background(move |settings| {
