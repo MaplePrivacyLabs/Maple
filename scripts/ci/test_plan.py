@@ -214,6 +214,14 @@ class LaneTableTests(unittest.TestCase):
     def test_every_tracked_file_is_classified_and_ci_yml_matches(self):
         self.assertEqual(plan.lint_problems(plan.tracked_files()), [])
         self.assertIn("unclassified: newroot/x", plan.lint_problems(["newroot/x"]))
+        # Without the plan step's variable, the matrix would ignore the override.
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "ci.yml"
+            workflow.write_text(plan.CI_WORKFLOW.read_text().replace(
+                "CI_WINDOWS_GITHUB_RUNNER: ${{ vars.CI_WINDOWS_GITHUB_RUNNER }}\n", ""))
+            with mock.patch.object(plan, "CI_WORKFLOW", workflow):
+                self.assertIn("ci.yml plan: CI_WINDOWS_GITHUB_RUNNER is not passed to plan.py",
+                              plan.lint_problems(plan.tracked_files()))
 
 
 class HookTests(unittest.TestCase):

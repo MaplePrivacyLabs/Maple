@@ -72,6 +72,8 @@ GITHUB_STORE_WRITERS = frozenset({
     # agent-full-windows in the windows matrix, the updater tests and the packaging rehearsal.
     ("ci.yml", "windows"), ("ci.yml", "agent-windows-updater"), ("ci.yml", "agent-package-windows"),
 }) | BRANCH_SCOPED_NIX
+# The only cached matrix lanes whose home runner uses GitHub's store.
+GITHUB_STORE_LANES = frozenset({"agent-full-windows"})
 # A special job whose runner a repository variable overrides saves only on its home
 # runner's vendor; Blacksmith runner names start with "blacksmith".
 ON_BLACKSMITH = "startsWith(runner.name, 'blacksmith')"
@@ -267,6 +269,9 @@ class WorkflowPolicyTests(unittest.TestCase):
                         self.assertNotIn("id-token", json.dumps(job))
                     elif pr and cache_writer(step):
                         self.assertRegex(guard, r"refs/heads/master|github\.event_name == 'push'", (name, job_id))
+                        if name == "ci.yml":  # master's pushes and nightly save; dispatch and queue runs only restore
+                            events = set(re.findall(r"github\.event_name == '(\w+)'", guard))
+                            self.assertTrue(events and events <= {"push", "schedule"}, (job_id, guard))
         self.assertEqual(scoped, BRANCH_SCOPED_NIX)  # the exemption lapses with its job
 
     def test_only_listed_jobs_fill_githubs_cache_store_and_failovers_never_save(self):
@@ -291,6 +296,9 @@ class WorkflowPolicyTests(unittest.TestCase):
                 if any(GITHUB_HOSTED.fullmatch(label) for label in labels):
                     writers.add((name, job_id))
         self.assertEqual(writers, GITHUB_STORE_WRITERS)
+        # Within a matrix writer, pin the lanes themselves.
+        self.assertEqual({lane.id for lane in lanes.LANES if lane.job in lanes.MATRIX_JOBS and lane.cache
+                          and lanes.cache_store(lane.runner.label) == "github"}, GITHUB_STORE_LANES)
 
 if __name__ == "__main__":
     unittest.main()

@@ -440,6 +440,10 @@ def lint_problems(files: Sequence[str]) -> List[str]:
             problems.append(f"ci.yml {lane.job}: runs-on is not {runner}")
         if not re.search(rf"^    timeout-minutes: {lane.timeout}\b", blocks[lane.job], re.M):
             problems.append(f"ci.yml {lane.job}: timeout-minutes is not {lane.timeout}")
+    # The planner resolves matrix runners from the override variables the plan step passes.
+    for variable in sorted({lane.runner.variable for lane in LANES if lane.job in MATRIX_JOBS} - {None}):
+        if not re.search(rf"^ +{variable}: \$\{{\{{ vars\.{variable} \}}\}}$", blocks.get("plan", ""), re.M):
+            problems.append(f"ci.yml plan: {variable} is not passed to plan.py")
     if f"toolchain: {AGENT_WINDOWS_RUST}\n" not in WINDOWS_SETUP.read_text():
         problems.append(f"setup-agent-windows does not pin Rust {AGENT_WINDOWS_RUST}")
     declared = set(re.findall(r"^\s+- (\S+)$", (ROOT / ".github/actionlint.yaml").read_text(), re.M))

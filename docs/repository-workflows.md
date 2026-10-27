@@ -39,11 +39,11 @@ branches in step with the lane table.
   lockfile hashes) are saved by master pushes and the nightly run, into the
   store of the lane's own runner vendor; a runner from the other vendor (a
   failover) only restores. Heavy Rust caches therefore live in Blacksmith's
-  store. GitHub's holds what GitHub-hosted jobs need: the Agent lanes on
-  `windows-2025` (`agent-full-windows`, `agent-windows-updater` and
-  `agent-package-windows`), the Research Windows signed build, the release, the
-  Nix installer and that EIF check. `test_workflow_policy.py` lists these
-  writers.
+  store. GitHub's holds what GitHub-hosted jobs need: the lane caches of
+  `agent-full-windows` and `agent-windows-updater` on `windows-2025`, the
+  `agent-package-windows` packaging cache (below), the Research Windows signed
+  build, the release, the Nix installer and that EIF check.
+  `test_workflow_policy.py` lists these writers.
 - The signed master builds write the keys `release.yml` restores by prefix
   (`<os>-sccache-*`, `xcode-cache-*`, `release-onnxruntime-ios-*`,
   `<os>-bun-*`, `<os>-gradle-*`). No pull-request job writes these prefixes;
