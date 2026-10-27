@@ -2131,7 +2131,7 @@ impl Sidebar {
                     .mx_2()
                     .my(px(1.))
                     .mt_3()
-                    .px_2()
+                    .px(FOLDER_HEADER_PADDING - gpui::rems(0.5))
                     .py_2()
                     .rounded(ROW_RADIUS)
                     .flex()
@@ -2156,19 +2156,28 @@ impl Sidebar {
                             .w_full()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .when(collapsible, |row| {
-                                row.child(icon(
-                                    if expanded {
-                                        "chevron-down"
-                                    } else {
-                                        "chevron-right"
-                                    },
-                                    px(12.),
-                                    theme::text_muted(),
-                                ))
-                            })
-                            .child(icon("monitor", px(14.), theme::text_muted()))
+                            .gap(FOLDER_HEADER_GAP)
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(FOLDER_ICON_SIZE)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon(
+                                        if collapsible {
+                                            if expanded {
+                                                "chevron-down"
+                                            } else {
+                                                "chevron-right"
+                                            }
+                                        } else {
+                                            "monitor"
+                                        },
+                                        if collapsible { px(12.) } else { px(14.) },
+                                        theme::text_muted(),
+                                    )),
+                            )
                             .child(
                                 div()
                                     .flex_1()
