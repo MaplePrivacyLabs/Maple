@@ -712,6 +712,8 @@ mod tests {
         let unchanged = fs::metadata(&outside).unwrap().permissions().readonly();
         // Restore only the test-owned external fixture for TempDir cleanup.
         let mut permissions = fs::metadata(&outside).unwrap().permissions();
+        // Windows-only test: this clears the read-only attribute, not Unix mode bits.
+        #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         fs::set_permissions(&outside, permissions).unwrap();
         assert!(result.unwrap().done);
