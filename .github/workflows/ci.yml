@@ -153,6 +153,36 @@ jobs:
           LANE: ${{ matrix.id }}
         run: python3 scripts/ci/plan.py run "$LANE"
 
+  # Native Windows updater tests and the app typecheck, compiled from source with
+  # no cache, credential or environment. Their receipts and Cargo logs are kept
+  # as an artifact even when a script fails.
+  agent-windows-updater:
+    name: agent-windows-updater
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-windows-updater']
+    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-agent-windows
+      - name: Typecheck the Windows app and run the native updater tests
+        run: python3 scripts/ci/plan.py run agent-windows-updater
+      - name: Keep the receipts and Cargo logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-windows-updater-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/maple-windows-app-typecheck/
+            ${{ runner.temp }}/maple-windows-updater-tests/
+          if-no-files-found: error
+          retention-days: 14
+
   # Unsigned Dev packages built like agent-desktop-build.yml's master builds, from
   # their master-written cache. Required when the packaging selector fires.
   agent-package-linux:
@@ -626,9 +656,10 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [plan, nix, windows, agent-package-linux, agent-package-macos, agent-package-windows, research-rust,
-            research-ios, research-desktop-macos, research-desktop-linux, research-desktop-windows,
-            research-desktop-windows-verify, research-dev-macos, os-sdk-e2e, os-helpers, os-eif]
+    needs: [plan, nix, windows, agent-windows-updater, agent-package-linux, agent-package-macos,
+            agent-package-windows, research-rust, research-ios, research-desktop-macos, research-desktop-linux,
+            research-desktop-windows, research-desktop-windows-verify, research-dev-macos, os-sdk-e2e, os-helpers,
+            os-eif]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

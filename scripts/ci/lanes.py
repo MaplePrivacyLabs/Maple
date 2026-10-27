@@ -78,6 +78,16 @@ AGENT_WINDOWS = (
     STORE + "paths.rs", STORE + "keys.rs", STORE + "keys/**", STORE + "lifecycle.rs", STORE + "lifecycle/**",
     "scripts/ci/agent_windows.py",
 )
+# What the native Windows updater tests and the Windows app typecheck cover, on PRs and master alike.
+AGENT_WINDOWS_UPDATER = (
+    "scripts/ci/windows-updater-tests.ps1", "scripts/ci/windows-app-typecheck.ps1",
+    "scripts/ci/test_windows_updater_workflow.py", "scripts/ci/agent_windows.py",
+) + tuple("apps/maple-agent/" + glob for glob in (
+    "Cargo.toml", "Cargo.lock", "app/Cargo.toml", "crates/maple-agent-updater/**", "release_profile.rs",
+    "release-profiles.json", "app/src/main.rs", "app/src/profile.rs", "app/src/update.rs", "app/src/desktop.rs",
+    "app/src/desktop/**", "app/src/windows_bootstrap.rs", "scripts/windows-release.py",
+    "scripts/windows-installer.nsi", "scripts/release-info.py",
+))
 # The packaging scripts and what they call, and the toolchain that builds the bundles.
 AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/build-*", "scripts/package-*", "scripts/verify-*", "scripts/release-info.py",
@@ -203,6 +213,14 @@ LANES: Tuple[Lane, ...] = (
          run="python3 scripts/test_windows_build_info.py && python3 scripts/test_windows_host_spawn.py"
              " && cargo clippy --workspace --all-targets --locked -- -D warnings",
          cache="agent-windows", timeout=45, **AGENT_WIN),
+    # The Windows app typecheck and the native updater, filesystem, Authenticode and
+    # bootstrap tests, compiled without a cache. Both scripts always run; each needs the
+    # Actions context and leaves a receipt and its Cargo log, which the job keeps.
+    Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"),
+         job="agent-windows-updater", runner=WINDOWS,
+         run="status=0; pwsh -NoProfile -File scripts/ci/windows-app-typecheck.ps1 || status=1;"
+             " pwsh -NoProfile -File scripts/ci/windows-updater-tests.ps1 || status=1; exit $status",
+         env=(("RUSTFLAGS", "-D warnings"), ("CARGO_TERM_COLOR", "never")), timeout=60),
     # The rest of `just ci`, and the native macOS and Windows suites: master, nightly and ci:full.
     Lane("agent-full-linux", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), run="just ci-extra",
          cache="agent-full-linux", timeout=30, gate=False, **AGENT_FLAKE),

@@ -135,18 +135,21 @@ merging source.
 
 ## Agent Windows updater checks
 
-`agent-windows-updater-tests.yml` runs on `windows-2025` when the updater, the
-Windows bootstrap, the app's update and desktop code, the release profiles or
-the Windows packaging scripts change, with no signing credentials, protected
-environment or cache. `scripts/ci/windows-app-typecheck.ps1` typechecks
+The `agent-windows-updater` lane runs on pull requests and master pushes that
+change the updater, the Windows bootstrap, the app's update and desktop code,
+the release profiles or the Windows packaging scripts, and with `ci:windows` or
+`ci:full`. It compiles from source, with no cache, signing credential or
+protected environment. `scripts/ci/windows-app-typecheck.ps1` typechecks
 `maple-agent-app --all-targets` with `cargo check --locked`, Windows-only test
 fixtures included, without code generation. `scripts/ci/windows-updater-tests.ps1`
 refuses signing and publication credentials, then runs the native updater,
 filesystem, Authenticode-rejection and bootstrap tests; every listed native case
 must run, so a runner without the symlink privilege the reparse fixtures need
-fails. Each script writes a receipt and its Cargo log, kept as an artifact even
-on failure. Neither qualifies an official signature, a signed installed upgrade,
-the visible GUI or a paired remote upgrade.
+fails. Both scripts run even when the first fails, and both need the Actions
+context (`RUNNER_TEMP`, `GITHUB_SHA`, the run id and attempt). Their receipts
+and Cargo logs are kept as an artifact even on failure. Neither qualifies an
+official signature, a signed installed upgrade, the visible GUI or a paired
+remote upgrade.
 
 The manual `agent-windows-signature-probe.yml` takes an exact historical
 producer run, attempt and source and the artifact's ZIP and PE digests. It

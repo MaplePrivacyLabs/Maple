@@ -107,7 +107,7 @@ class AgentSelectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), {"agent-macos", "agent-package-macos", "research-ios",
                                                     "research-desktop-macos", "repo"})
-        self.assertEqual(selected(["scripts/ci/agent_windows.py"]), {"agent-windows", "repo"})
+        self.assertEqual(selected(["scripts/ci/agent_windows.py"]), {"agent-windows", "agent-windows-updater", "repo"})
 
     def test_intentional_differences_select_only_the_repo_lane(self):
         for path in (
@@ -175,6 +175,16 @@ class LaneTableTests(unittest.TestCase):
         # Every PR lane but the EIF candidate, which only its own inputs select.
         self.assertEqual(selected(["docs/x.md"], labels=["ci:full"]), active(PR) - {"os-eif"})
         self.assertEqual(selected(["docs/x.md"], labels=["unrelated"]), set())
+
+    def test_windows_updater_tests_follow_the_same_paths_on_prs_and_master(self):
+        # test_windows_updater_workflow.py lists every path; these show the shape.
+        updater = "apps/maple-agent/crates/maple-agent-updater/src/installer.rs"
+        for path in (updater, "apps/maple-agent/app/src/update.rs", "apps/maple-agent/scripts/windows-release.py"):
+            for event in (PR, QUEUE, PUSH):
+                with self.subTest(path=path, event=event):
+                    self.assertIn("agent-windows-updater", selected([path], event))
+        self.assertNotIn("agent-windows-updater", selected(["apps/maple-agent/app/src/ui/x.rs"], PUSH))
+        self.assertEqual(selected(["scripts/ci/windows-updater-tests.ps1"]), {"agent-windows-updater", "repo"})
 
     def test_inert_paths_select_nothing(self):
         for path in ("apps/maple-agent/docs/x.md", "docs/x.md", ".agents/skills/x/SKILL.md"):
@@ -443,7 +453,8 @@ class ClientLaneTests(unittest.TestCase):
                 self.assertEqual(selected([path]), lanes_)
                 self.assertFalse({lane for lane in selected([path], PUSH) if lane.startswith("research-")})
         self.assertEqual(selected(["docs/x.md"], labels=["ci:ios"]), {"research-ios"})
-        self.assertEqual(selected(["docs/x.md"], labels=["ci:windows"]), windows | {"agent-windows"})
+        self.assertEqual(selected(["docs/x.md"], labels=["ci:windows"]),
+                         windows | {"agent-windows", "agent-windows-updater"})
         self.assertLessEqual(desktop | windows | {"research-dev-macos"},
                              selected(["docs/x.md"], labels=["ci:package"]))
         self.assertFalse({lane for lane in selected([".github/workflows/ci.yml"]) if lane.startswith(

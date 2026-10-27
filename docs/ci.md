@@ -63,7 +63,7 @@ Add the label, then re-run the CI workflow (or push): `plan` reads labels when i
 | --- | --- |
 | `ci:full` | Every lane except the OpenSecret EIF candidate |
 | `ci:package` | Unsigned Agent and Research desktop packages on every OS |
-| `ci:windows` | Agent Windows tests and Clippy, and the Research Windows package |
+| `ci:windows` | Agent Windows tests and Clippy, the Windows updater tests, and the Research Windows package |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build |
 | `ci:research-dev-macos` | The unsigned Research Dev app |
 | `ci:eif` | The OpenSecret EIF candidate (same-repository PRs to `master` that edit no PCR approval) |
@@ -74,7 +74,8 @@ Add the label, then re-run the CI workflow (or push): `plan` reads labels when i
 lane's command in its pinned Nix shell, exactly as `ci.yml` does. macOS lanes
 need macOS and use its selected Xcode (CI pins it with
 `scripts/ci/select-xcode.py`), Windows lanes need Windows with the toolchain
-from `.github/actions/setup-agent-windows`, `os-sdk-e2e` needs a local PostgreSQL
+from `.github/actions/setup-agent-windows` (`agent-windows-updater` also needs
+the Actions variables its scripts check), `os-sdk-e2e` needs a local PostgreSQL
 and `os-eif` needs Linux on ARM64. Before pushing a workflow, CI-script or
 flake change, run `just lane repo` (every root flake check). The
 [pre-commit hook](repository-workflows.md#pre-commit-hook) runs the fast part

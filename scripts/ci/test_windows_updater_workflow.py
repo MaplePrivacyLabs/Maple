@@ -1,126 +1,162 @@
-"""Keep native Windows updater tests unprivileged and separate from releases."""
+"""Keep the native Windows updater tests unprivileged and separate from releases.
 
+They run as ci.yml's agent-windows-updater lane (scripts/ci/lanes.py): the
+Windows app typecheck and the native updater tests, from two scripts.
+"""
+
+import contextlib
 import functools
+import io
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+import tempfile
 import unittest
+from unittest import mock
+
+import lanes
+import plan
+from lanes import NIGHTLY, PR, PUSH, QUEUE
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = "agent-windows-updater-tests.yml"
+LANE = next(lane for lane in lanes.LANES if lane.id == "agent-windows-updater")
+SCRIPTS = ("scripts/ci/windows-app-typecheck.ps1", "scripts/ci/windows-updater-tests.ps1")
+REPORTS = ("maple-windows-app-typecheck", "maple-windows-updater-tests")
+RELEASE_TOOLS = r"(?:gh\s+(?:release|workflow)|wrangler|publisher\.py|windows-sign-file|artifact-sign|cargo\s+publish)"
 
 
-@functools.cache
-def workflow(name=WORKFLOW):
-    return json.loads(subprocess.check_output(
-        ["yq", "-o=json", ".", str(ROOT / ".github/workflows" / name)], text=True,
-    ))
+@functools.lru_cache(maxsize=None)
+def load(path):
+    return json.loads(subprocess.check_output(["yq", "-o=json", ".", str(ROOT / path)], text=True))
 
 
-class WindowsUpdaterWorkflowTests(unittest.TestCase):
+def job():
+    return load(".github/workflows/ci.yml")["jobs"][LANE.job]
+
+
+def script(name):
+    return (ROOT / "scripts/ci" / name).read_text()
+
+
+class WindowsUpdaterLaneTests(unittest.TestCase):
     def test_native_tests_have_no_release_or_signing_authority(self):
-        config = workflow()
+        config = load(".github/workflows/ci.yml")
         self.assertEqual(config["permissions"], {"contents": "read"})
-        self.assertEqual(set(config["on"]), {"pull_request", "push", "workflow_dispatch"})
-        self.assertEqual(config["on"]["push"]["branches"], ["master"])
-        self.assertEqual(set(config["jobs"]), {"native-updater", "app-typecheck"})
-        for name, job in config["jobs"].items():
-            self.assertEqual(job["runs-on"], "windows-2025")
-            for authority in ("environment", "secrets", "permissions", "strategy", "needs"):
-                self.assertNotIn(authority, job)
-            self.assertLessEqual(job["timeout-minutes"], 30 if name == "app-typecheck" else 35)
-            commands = "\n".join(step.get("run", "") for step in job["steps"])
-            self.assertNotRegex(commands, r"(?:gh\s+(?:release|workflow)|wrangler|publisher\.py|windows-sign-file|artifact-sign|cargo\s+publish)")
-        self.assertNotIn("secrets.", json.dumps(config))
-        self.assertNotIn("id-token", json.dumps(config))
+        for authority in ("environment", "secrets", "permissions", "strategy"):
+            self.assertNotIn(authority, job())
+        self.assertEqual(job()["needs"], "plan")
+        self.assertNotIn("secrets.", json.dumps(job()))
+        self.assertNotIn("id-token", json.dumps(job()))
+        commands = "\n".join([LANE.run] + [step.get("run", "") for step in job()["steps"]])
+        self.assertNotRegex(commands, RELEASE_TOOLS)
+        self.assertIn("windows", LANE.runner.label)
+        self.assertLessEqual(LANE.timeout, 60)
 
-    def test_native_toolchain_matches_existing_windows_pin_and_avoids_artifact_cache(self):
-        # agent-desktop-build.yml's windows-build takes its toolchain from this action.
-        setup = json.loads(subprocess.check_output(
-            ["yq", "-o=json", ".", str(ROOT / ".github/actions/setup-agent-windows/action.yml")], text=True,
-        ))
-        existing = next(step for step in setup["runs"]["steps"]
-                        if step.get("uses", "").startswith("dtolnay/rust-toolchain@"))
-        for job in workflow()["jobs"].values():
-            steps = job["steps"]
-            actions = [step["uses"] for step in steps if "uses" in step]
-            self.assertTrue(all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) for action in actions))
-            self.assertFalse(any("cache" in action or "download-artifact" in action for action in actions))
-            checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
-            self.assertIs(checkout["with"]["persist-credentials"], False)
-            rust = next(step for step in steps if step.get("uses", "").startswith("dtolnay/rust-toolchain@"))
-            self.assertEqual(rust["uses"], existing["uses"])
-            self.assertEqual(rust["with"]["toolchain"], existing["with"]["toolchain"])
-            linker = next(step for step in steps if "agent_windows.py" in step.get("run", ""))
-            self.assertEqual(linker["working-directory"], "apps/maple-agent")
-            self.assertEqual(linker["shell"], "pwsh")
-        steps = workflow()["jobs"]["native-updater"]["steps"]
-        test = next(step for step in steps if "windows-updater-tests.ps1" in step.get("run", ""))
-        self.assertEqual(test["shell"], "pwsh")
-        self.assertNotIn("continue-on-error", test)
+    def test_native_toolchain_matches_the_windows_pin_and_avoids_artifact_caches(self):
+        steps = job()["steps"]
+        self.assertIn("./.github/actions/setup-agent-windows", [step.get("uses") for step in steps])
+        setup = load(".github/actions/setup-agent-windows/action.yml")["runs"]["steps"]
+        rust = next(step for step in setup if step.get("uses", "").startswith("dtolnay/rust-toolchain@"))
+        self.assertEqual(rust["with"]["toolchain"], lanes.AGENT_WINDOWS_RUST)
+        # Both scripts refuse any other compiler than the pinned one.
+        for name in SCRIPTS:
+            self.assertIn("'(?m)^release: {}$'".format(re.escape(lanes.AGENT_WINDOWS_RUST)), script(Path(name).name))
+        # Native Perl for the static crypto build and the smoke-tested linker.
+        commands = "\n".join(step.get("run", "") for step in setup)
+        for needed in ("OPENSSL_SRC_PERL", "MSWin32", "agent_windows.py"):
+            self.assertIn(needed, commands)
+        # Compiled from source: no build cache or other run's artifact is restored.
+        actions = [step["uses"] for step in steps if "uses" in step]
+        self.assertFalse([action for action in actions if "cache" in action or "download-artifact" in action])
+        self.assertFalse(LANE.cache or LANE.restore)
+        self.assertEqual(dict(LANE.env).get("RUSTFLAGS"), "-D warnings")
 
     def test_relevant_contract_changes_select_native_tests_without_research_packaging(self):
-        required = {
-            ".github/workflows/agent-windows-updater-tests.yml",
-            "scripts/ci/windows-updater-tests.ps1",
-            "scripts/ci/windows-app-typecheck.ps1",
-            "scripts/ci/test_windows_updater_workflow.py",
-            "apps/maple-agent/crates/maple-agent-updater/**",
-            "apps/maple-agent/Cargo.toml", "apps/maple-agent/Cargo.lock",
-            "apps/maple-agent/app/Cargo.toml",
+        required = (
+            "scripts/ci/windows-updater-tests.ps1", "scripts/ci/windows-app-typecheck.ps1",
+            "scripts/ci/test_windows_updater_workflow.py", "scripts/ci/agent_windows.py",
+            "apps/maple-agent/crates/maple-agent-updater/src/installer/windows_bundle.rs",
+            "apps/maple-agent/crates/maple-agent-updater/tests/windows_bootstrap_native.rs",
+            "apps/maple-agent/Cargo.toml", "apps/maple-agent/Cargo.lock", "apps/maple-agent/app/Cargo.toml",
             "apps/maple-agent/release_profile.rs", "apps/maple-agent/release-profiles.json",
-            "apps/maple-agent/app/src/main.rs", "apps/maple-agent/app/src/update.rs",
-            "apps/maple-agent/app/src/windows_bootstrap.rs", "apps/maple-agent/app/src/desktop.rs",
-            "apps/maple-agent/app/src/desktop/**",
+            "apps/maple-agent/app/src/main.rs", "apps/maple-agent/app/src/profile.rs",
+            "apps/maple-agent/app/src/update.rs", "apps/maple-agent/app/src/windows_bootstrap.rs",
+            "apps/maple-agent/app/src/desktop.rs", "apps/maple-agent/app/src/desktop/remote_updates.rs",
             "apps/maple-agent/scripts/windows-release.py", "apps/maple-agent/scripts/windows-installer.nsi",
-        }
-        for event in ("push", "pull_request"):
-            paths = set(workflow()["on"][event]["paths"])
-            self.assertTrue(required <= paths)
-            self.assertFalse(any(path.startswith(("apps/maple-research/", "services/opensecret/")) for path in paths))
+            "apps/maple-agent/scripts/release-info.py",
+        )
+        for path in required:
+            for event in (PR, QUEUE, PUSH):
+                with self.subTest(path=path, event=event):
+                    chosen = set(plan.select(event, [path]))
+                    self.assertIn(LANE.id, chosen)
+                    self.assertFalse([lane for lane in chosen if lane.startswith(("research-", "os-"))])
+        for path in ("apps/maple-agent/app/src/ui/x.rs", "apps/maple-research/frontend/src/main.tsx",
+                     "services/opensecret/src/main.rs", "docs/x.md"):
+            with self.subTest(path=path):
+                self.assertNotIn(LANE.id, plan.select(PR, [path]))
+                self.assertNotIn(LANE.id, plan.select(PUSH, [path]))
+        for label in ("ci:windows", "ci:full"):
+            self.assertIn(LANE.id, plan.select(PR, ["docs/x.md"], [label]))
+        self.assertIn(LANE.id, {lane.id for lane in plan.active(NIGHTLY)})
+
+    def test_both_scripts_run_and_either_failure_fails_the_lane(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stub = Path(temporary) / "pwsh"
+            log = Path(temporary) / "calls"
+            stub.write_text('#!/bin/sh\nprintf "%s %s %s\\n" "$*" "$CARGO_TERM_COLOR" "$RUSTFLAGS" >> "$PWSH_LOG"\n'
+                            'case "$*" in *"$PWSH_FAIL"*) [ -n "$PWSH_FAIL" ] && exit 1 ;; esac\nexit 0\n')
+            stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+            for failing, expected in (("", 0), (SCRIPTS[0], 1), (SCRIPTS[1], 1)):
+                log.write_text("")
+                environment = {"PATH": f"{temporary}{os.pathsep}{os.environ['PATH']}",
+                               "PWSH_LOG": str(log), "PWSH_FAIL": failing}
+                with self.subTest(failing=failing), mock.patch.dict(os.environ, environment), \
+                        mock.patch.object(plan.platform, "system", return_value="Linux"), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(plan.run(LANE.id), expected)
+                    calls = log.read_text().splitlines()
+                    self.assertEqual([call.split()[:3] for call in calls],
+                                     [["-NoProfile", "-File", name] for name in SCRIPTS])
+                    self.assertTrue(all(call.endswith("never -D warnings") for call in calls))
 
     def test_app_typecheck_covers_windows_test_fixtures_without_release_codegen(self):
-        job = workflow()["jobs"]["app-typecheck"]
-        commands = "\n".join(step.get("run", "") for step in job["steps"])
-        self.assertIn("OPENSSL_SRC_PERL", commands)
-        self.assertIn("MSWin32", commands)
-        self.assertIn("GPUI_FXC_PATH", commands)
-        self.assertIn("x64/fxc.exe", commands)
-        check = next(step for step in job["steps"] if "windows-app-typecheck.ps1" in step.get("run", ""))
-        self.assertEqual(check["shell"], "pwsh")
-        self.assertNotIn("continue-on-error", check)
-        script = (ROOT / "scripts/ci/windows-app-typecheck.ps1").read_text()
-        self.assertIn("@('check', '-p', 'maple-agent-app', '--all-targets', '--locked')", script)
-        self.assertNotRegex(script, r"cargo\s+(?:build|test|run)|--release|--no-default-features")
-        self.assertIn("$receipt.cargo_exit_code -ne 0", script)
-        self.assertIn("$receipt.app_all_targets_typechecked = $true", script)
+        source = script("windows-app-typecheck.ps1")
+        self.assertIn("@('check', '-p', 'maple-agent-app', '--all-targets', '--locked')", source)
+        self.assertNotRegex(source, r"cargo\s+(?:build|test|run)|--release|--no-default-features")
+        self.assertIn("$receipt.cargo_exit_code -ne 0", source)
+        self.assertIn("$receipt.app_all_targets_typechecked = $true", source)
         for field in ("runtime_tests_executed", "app_code_generated", "release_package_qualified"):
-            self.assertRegex(script, rf"{field}\s*=\s*\$false")
-            self.assertNotRegex(script, rf"{field}\s*=\s*\$true")
+            self.assertRegex(source, rf"{field}\s*=\s*\$false")
+            self.assertNotRegex(source, rf"{field}\s*=\s*\$true")
         for binding in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
-            self.assertIn(binding, script)
-        upload = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
-        self.assertEqual(upload["if"], "always()")
-        self.assertEqual(upload["with"]["if-no-files-found"], "error")
-        self.assertIn("github.run_attempt", upload["with"]["name"])
+            self.assertIn(binding, source)
 
     def test_failures_retain_evidence_and_do_not_claim_signed_lifecycle_qualification(self):
-        upload = next(step for step in workflow()["jobs"]["native-updater"]["steps"]
-                      if step.get("uses", "").startswith("actions/upload-artifact@"))
+        upload = next(step for step in job()["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
         self.assertEqual(upload["if"], "always()")
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
         self.assertIn("github.run_attempt", upload["with"]["name"])
-        script = (ROOT / "scripts/ci/windows-updater-tests.ps1").read_text()
-        self.assertIn("[System.PlatformID]::Win32NT", script)
-        self.assertIn("'--locked'", script)
-        self.assertIn("'--test', 'windows_bootstrap_native'", script)
-        self.assertIn("'--test-threads=1'", script)
-        self.assertIn("'--locked', '--no-fail-fast', '--lib'", script)
-        self.assertIn("Get-AuthenticodeSignature -LiteralPath $unrelated", script)
-        self.assertIn("A required native Windows test group is missing", script)
-        self.assertIn("without skipped tests", script)
+        for report in REPORTS:
+            self.assertIn("${{ runner.temp }}/" + report + "/", upload["with"]["path"])
+            self.assertIn("Join-Path $env:RUNNER_TEMP '{}'".format(report), "\n".join(map(script, (
+                "windows-app-typecheck.ps1", "windows-updater-tests.ps1"))))
+        run = next(step for step in job()["steps"] if "plan.py run" in step.get("run", ""))
+        self.assertIn(LANE.id, run["run"])
+        self.assertNotIn("continue-on-error", run)
+        source = script("windows-updater-tests.ps1")
+        self.assertIn("[System.PlatformID]::Win32NT", source)
+        self.assertIn("'--locked'", source)
+        self.assertIn("'--test', 'windows_bootstrap_native'", source)
+        self.assertIn("'--test-threads=1'", source)
+        self.assertIn("'--locked', '--no-fail-fast', '--lib'", source)
+        self.assertIn("Get-AuthenticodeSignature -LiteralPath $unrelated", source)
+        self.assertIn("A required native Windows test group is missing", source)
+        self.assertIn("without skipped tests", source)
         for case in (
             "native_nsis_inherited_read_acl_accepts_files_but_rejects_directories",
             "native_foreign_file_mutation_rights_remain_rejected",
@@ -128,13 +164,13 @@ class WindowsUpdaterWorkflowTests(unittest.TestCase):
             "native_owner_rights_sid_is_not_a_trusted_storage_owner",
             "native_owner_rights_acl_still_rejects_foreign_writers",
         ):
-            self.assertIn("installer::windows_bundle::windows_fs::tests::" + case, script)
+            self.assertIn("installer::windows_bundle::windows_fs::tests::" + case, source)
         for field in (
             "official_maple_signature_qualified", "signed_installed_a_to_b_qualified",
             "visible_gui_upgrade_qualified", "paired_remote_upgrade_qualified",
         ):
-            self.assertRegex(script, rf"{field}\s*=\s*\$false")
-            self.assertNotRegex(script, rf"{field}\s*=\s*\$true")
+            self.assertRegex(source, rf"{field}\s*=\s*\$false")
+            self.assertNotRegex(source, rf"{field}\s*=\s*\$true")
 
 
 if __name__ == "__main__":
