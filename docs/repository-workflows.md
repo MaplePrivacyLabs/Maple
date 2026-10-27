@@ -74,7 +74,10 @@ the other side of each contract. A failure means the workflow change is wrong:
    repository, conclusion and event.
 2. `services/agent-updates/publisher/publisher.py` trusts
    `agent-desktop-build.yml` by path, job names, artifact names and signer, and
-   its run number is the Agent build number: never rename that file.
+   its run number is the Agent build number: never rename that file. The
+   Windows packaging and verification jobs set `MAPLE_PACKAGE_BUILD_NUMBER` to
+   that run number. `scripts/ci/windows_signature_reference.py` (the manual
+   signature probe) trusts the same file's Windows Prod jobs and their runners.
 3. The release preflight (`.agents/skills/release-maple/scripts/ci_evidence.py`)
    needs the evidence jobs of `frontend-tests`, `rust-tests`, `web-build`,
    `desktop-build`, `android-build` and `mobile-build` on master pushes, and

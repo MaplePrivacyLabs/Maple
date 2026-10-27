@@ -73,11 +73,19 @@ class WindowsSignatureReferenceTests(unittest.TestCase):
             lambda r, a, j: a.update(created_at="2026-10-27T00:03:00Z"),
             lambda r, a, j: j["jobs"][1].update(conclusion="failure"),
             lambda r, a, j: j["jobs"][2].update(conclusion="skipped"),
+            lambda r, a, j: j["jobs"][0].update(labels=["self-hosted", "windows"]),
+            lambda r, a, j: j["jobs"][1].update(labels=["blacksmith-8vcpu-windows-2025"]),
+            lambda r, a, j: j["jobs"][2].update(labels=["blacksmith-8vcpu-windows-2025"]),
         ):
             values = copy.deepcopy(metadata())
             mutate(*values)
             with self.assertRaises(ValueError):
                 probe.validate_producer(selected(), *values)
+
+    def test_the_unsigned_build_may_run_on_blacksmith(self):
+        run, artifact, jobs = metadata()
+        jobs["jobs"][0]["labels"] = ["blacksmith-8vcpu-windows-2025"]
+        self.assertEqual(len(probe.validate_producer(selected(), run, artifact, jobs)), 3)
 
     def test_selectors_cannot_be_paths_urls_or_unbounded_sizes(self):
         for key, value in (("RUN", "123/other"), ("ATTEMPT", "0"),

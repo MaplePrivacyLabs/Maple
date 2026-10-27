@@ -20,6 +20,7 @@ import unittest
 from unittest import mock
 
 import plan
+import windows_signature_reference as signature_probe
 from test_workflow_policy import (ENVIRONMENTS, GITHUB_HOSTED, LISTENERS, ROOT, cache_writer, environment, jobs,
                                   load, permissions, runner_labels, triggers, workflows)
 
@@ -107,6 +108,22 @@ def variants(job: dict) -> list:
     return sorted({value for array in re.findall(r"\[[^\]]*\]", matrix) for value in json.loads(array)})
 
 
+def desktop_run(config: dict, run_id: int):
+    """The job inventory (with runner labels) and artifacts of one successful agent-desktop-build.yml run."""
+    def expand(text, variant):
+        return text.replace("${{ matrix.variant }}", str(variant)).replace("${{ github.run_id }}", str(run_id))
+
+    inventory, artifacts = [], []
+    for job_id, job in config["jobs"].items():
+        for variant in variants(job):
+            inventory.append({"name": expand(job.get("name", job_id), variant), "status": "completed",
+                              "conclusion": "success", "labels": [job["runs-on"]]})
+            artifacts += [{"name": expand(step["with"]["name"], variant), "expired": False}
+                          for step in job.get("steps", [])
+                          if step.get("uses", "").startswith("actions/upload-artifact@")]
+    return inventory, artifacts
+
+
 def cache_steps():
     for name, job_id, job in jobs():
         for step in job.get("steps", []):
@@ -183,18 +200,8 @@ class ContractTests(unittest.TestCase):
         self.assertIn("master", config["on"]["push"]["branches"])
         self.assertIn("workflow_dispatch", config["on"])
         run_id = 4242
-
-        def expand(text, variant):
-            return text.replace("${{ matrix.variant }}", str(variant)).replace("${{ github.run_id }}", str(run_id))
-
-        inventory, artifacts = [], []
+        inventory, artifacts = desktop_run(config, run_id)
         for job_id, job in config["jobs"].items():
-            for variant in variants(job):
-                inventory.append({"name": expand(job.get("name", job_id), variant),
-                                  "status": "completed", "conclusion": "success"})
-                artifacts += [{"name": expand(step["with"]["name"], variant), "expired": False}
-                              for step in job.get("steps", [])
-                              if step.get("uses", "").startswith("actions/upload-artifact@")]
             attests = any(step.get("uses", "").startswith("actions/attest@") for step in job.get("steps", []))
             if attests:  # the publisher verifies with --deny-self-hosted-runners
                 self.assertTrue(GITHUB_HOSTED.fullmatch(job["runs-on"]), job_id)
@@ -209,8 +216,39 @@ class ContractTests(unittest.TestCase):
                      "artifacts": {"total_count": len(artifacts), "artifacts": artifacts}}
         with mock.patch.object(publisher, "gh_json",
                                lambda path: responses[re.sub(r".*/runs/\d+/?([a-z]*).*", r"\1", path)]):
-            proof = publisher.trust_run(run_id, linux=True)
+            proof = publisher.trust_run(run_id, linux=True, windows=True)
         self.assertEqual(proof["build"], "77")  # run_number is the Agent build number
+        # The publisher checks the Windows package's build against that run number.
+        windows = [job for job in config["jobs"].values()
+                   if re.search(r"windows-release\.py (?:package|verify)", json.dumps(job.get("steps", [])))]
+        self.assertTrue(windows)
+        for job in windows:
+            self.assertEqual(job.get("env", {}).get("MAPLE_PACKAGE_BUILD_NUMBER"), "${{ github.run_number }}",
+                             job.get("name"))
+
+    def test_c2_windows_signature_probe_accepts_this_workflows_prod_run(self):
+        self.assertEqual(signature_probe.PRODUCER, publisher.WORKFLOW)
+        self.assertEqual(signature_probe.REPOSITORY, publisher.REPOSITORY)
+        run_id, source = 4242, "a" * 40
+        inventory, artifacts = desktop_run(load(ROOT / publisher.WORKFLOW), run_id)
+        signed = f"maple-agent-prod-windows-x86_64-{run_id}"
+        self.assertIn(signed, [artifact["name"] for artifact in artifacts])
+        jobs_ = [dict(job, id=index, started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:10:00Z")
+                 for index, job in enumerate(inventory, 1)]
+        run = {"id": run_id, "run_attempt": 1, "head_sha": source, "head_branch": "master", "event": "push",
+               "path": publisher.WORKFLOW, "repository": {"full_name": publisher.REPOSITORY, "id": 1},
+               "head_repository": {"full_name": publisher.REPOSITORY}, "status": "completed",
+               "conclusion": "success"}
+        artifact = {"id": 7, "expired": False, "name": signed, "size_in_bytes": 1000, "digest": "sha256:" + "b" * 64,
+                    "created_at": "2026-01-01T00:05:00Z", "workflow_run": {
+                        "id": run_id, "head_sha": source, "repository_id": 1, "head_repository_id": 1}}
+        selected = signature_probe.selection({
+            "MAPLE_PROBE_RUN": str(run_id), "MAPLE_PROBE_ATTEMPT": "1", "MAPLE_PROBE_ARTIFACT": "7",
+            "MAPLE_PROBE_ZIP_BYTES": "1000", "MAPLE_PROBE_SOURCE": source, "MAPLE_PROBE_ZIP_SHA": "b" * 64,
+            "MAPLE_PROBE_PE_MEMBER": "setup.exe", "MAPLE_PROBE_PE_SHA": "c" * 64})
+        chosen = signature_probe.validate_producer(
+            selected, run, artifact, {"total_count": len(jobs_), "jobs": jobs_})
+        self.assertEqual([job["name"] for job in chosen], list(signature_probe.JOBS))
 
     def test_c3_release_preflight_finds_its_evidence_jobs_on_master_pushes(self):
         for name, required in ci_evidence.WORKFLOWS.items():

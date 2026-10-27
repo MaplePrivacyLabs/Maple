@@ -17,6 +17,9 @@ REPOSITORY = "MaplePrivacyLabs/Maple"
 PRODUCER = ".github/workflows/agent-desktop-build.yml"
 JOBS = ("Build Windows binary (prod)", "Signed Windows (prod)",
         "Verify downloaded Windows (prod)")
+# The runner each job may report. Signing and verification run on GitHub's
+# image; the unsigned build runs on Blacksmith's (on GitHub's before CI moved it).
+RUNNERS = ({"windows-2025", "blacksmith-8vcpu-windows-2025"}, {"windows-2025"}, {"windows-2025"})
 MAX_ZIP = 64 * 1024 * 1024
 
 
@@ -95,11 +98,11 @@ def validate_producer(selected, run, artifact, jobs):
     if jobs["total_count"] > 100:
         raise ValueError("Reference jobs exceed the bounded one-page inventory")
     chosen = []
-    for name in JOBS:
+    for name, runners in zip(JOBS, RUNNERS):
         matches = [job for job in jobs["jobs"] if job["name"] == name]
         if (len(matches) != 1 or matches[0]["status"] != "completed"
                 or matches[0]["conclusion"] != "success"
-                or "windows-2025" not in matches[0]["labels"]):
+                or not runners & set(matches[0]["labels"])):
             raise ValueError("Exact native Prod build/sign/download job did not pass")
         chosen.append(matches[0])
     signing = chosen[1]

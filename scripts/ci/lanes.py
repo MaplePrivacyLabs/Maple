@@ -140,7 +140,10 @@ AGENT_DEPENDENCIES = tuple("apps/maple-agent/" + glob for glob in (
     "crates/maple-agent/src/store/keys/eff-large-wordlist.txt",
 ))
 WINDOWS_PACKAGE = (
-    "./scripts/build-release.sh dev && python3 scripts/windows-release.py prepare dev"
+    # windows-release.py requires a build number; like package-release.sh, use the
+    # Actions run number, or 1 outside Actions.
+    'export MAPLE_PACKAGE_BUILD_NUMBER="${GITHUB_RUN_NUMBER:-1}"'
+    " && ./scripts/build-release.sh dev && python3 scripts/windows-release.py prepare dev"
     " && python3 scripts/windows-release.py package dev --unsigned"
     # The stock image exports Azure CLI paths that the fail-closed signing guard rejects.
     " && env -u AZURE_CONFIG_DIR -u AZURE_DEVOPS_CACHE_DIR -u AZURE_EXTENSION_DIR"
