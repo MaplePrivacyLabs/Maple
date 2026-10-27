@@ -351,6 +351,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             for package, version in (
                 ("libpcre2-8-0", "10.42-1+deb12u2"),
                 ("perl-base", "5.36.0-7+deb12u4"),
+                ("libssl3", "3.0.22-1~deb12u2"),
             ):
                 self.assertIn(f"{package}={version}", dockerfile)
                 self.assertIn(f"dpkg-query -W -f='${{Version}}' {package})\" = '{version}'", dockerfile)
