@@ -104,7 +104,9 @@ of the lanes your staged files select.
 - Never add `paths:` to `ci.yml`; `ci-ok` must report on every pull request.
 - Pull requests never save caches (one branch-scoped exception, outside
   `ci.yml`, is listed under [caches](repository-workflows.md#caches)). Master
-  and nightly runs save lane caches, on Blacksmith runners only.
+  and nightly runs save lane caches into the store of the lane's own runner
+  vendor: Blacksmith's, or GitHub's for the Agent lanes on GitHub's Windows
+  image.
 - Never cancel master, signed, evidence or nightly runs.
 - Never edit the release or publisher workflows, signing environments or
   OpenSecret approval gating to clear a check. A failing contract test means
@@ -118,4 +120,7 @@ Lanes use Blacksmith runners or free GitHub-hosted runners; the runner
 constants are at the top of `scripts/ci/lanes.py`. During an outage, set the
 repository variable `CI_LINUX_RUNNER`, `CI_LINUX_HEAVY_RUNNER`,
 `CI_MACOS_RUNNER` or `CI_WINDOWS_RUNNER` to another label; no pull request is
-needed, and a GitHub-hosted failover never saves a cache.
+needed. `CI_WINDOWS_GITHUB_RUNNER` moves the three Agent lanes on GitHub's
+`windows-2025` (`agent-full-windows`, `agent-windows-updater`,
+`agent-package-windows`), for example to a larger GitHub runner, which uses the
+same cache store. A runner from the other vendor never saves a cache.

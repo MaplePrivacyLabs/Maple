@@ -56,7 +56,7 @@ class WindowsUpdaterLaneTests(unittest.TestCase):
         self.assertIn("windows", LANE.runner.label)
         self.assertLessEqual(LANE.timeout, 60)
 
-    def test_native_toolchain_matches_the_windows_pin_and_avoids_artifact_caches(self):
+    def test_native_toolchain_matches_the_windows_pin_and_compiles_the_agent_from_source(self):
         steps = job()["steps"]
         self.assertIn("./.github/actions/setup-agent-windows", [step.get("uses") for step in steps])
         setup = load(".github/actions/setup-agent-windows/action.yml")["runs"]["steps"]
@@ -69,9 +69,16 @@ class WindowsUpdaterLaneTests(unittest.TestCase):
         commands = "\n".join(step.get("run", "") for step in setup)
         for needed in ("OPENSSL_SRC_PERL", "MSWin32", "agent_windows.py"):
             self.assertIn(needed, commands)
-        # Compiled from source: no build cache or other run's artifact is restored.
+        # No other run's artifact is restored, and the only cache is the lane's own
+        # dependency cache, which master saves: rust-cache drops the workspace's own
+        # crates before saving, so the Agent code under test always compiles from source.
         actions = [step["uses"] for step in steps if "uses" in step]
-        self.assertFalse([action for action in actions if "cache" in action or "download-artifact" in action])
+        self.assertFalse([action for action in actions if "download-artifact" in action])
+        caches = [step for step in steps if "cache" in step.get("uses", "")]
+        self.assertEqual([step["uses"].split("@")[0] for step in caches], ["Swatinem/rust-cache"])
+        self.assertTrue(caches[0]["with"]["shared-key"].startswith("agent-windows-updater-"))
+        self.assertNotIn("cache-workspace-crates", caches[0]["with"])
+        self.assertIn("github.ref == 'refs/heads/master'", caches[0]["with"]["save-if"])
         self.assertFalse(LANE.cache or LANE.restore)
         self.assertEqual(dict(LANE.env).get("RUSTFLAGS"), "-D warnings")
 

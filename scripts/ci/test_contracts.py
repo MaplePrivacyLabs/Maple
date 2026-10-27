@@ -46,9 +46,9 @@ ONNX_CACHE = "apps/maple-research/frontend/src-tauri/onnxruntime-ios"
 # The unsigned Agent builders that write the exact-key release cache; no ci.yml lane reads it.
 AGENT_RELEASE_WRITERS = frozenset(("agent-desktop-build.yml", job) for job in ("macos-build", "windows-build", "linux"))
 AGENT_RELEASE_READERS: frozenset = frozenset()
-# The Linux and macOS packaging rehearsals build thin LTO into their own cache, saved
-# only by ci.yml's nightly master run.
-AGENT_PACKAGE_JOBS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos"))
+# The packaging rehearsals build thin LTO into their own cache, saved only by
+# ci.yml's nightly master run.
+AGENT_PACKAGE_JOBS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos", "windows"))
 # Jobs that may mint an OIDC token: attestation, signing identity, FlakeHub, registries.
 OIDC_JOBS = frozenset({
     ("agent-desktop-build.yml", "macos"), ("agent-desktop-build.yml", "windows"),

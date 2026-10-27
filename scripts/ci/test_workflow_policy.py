@@ -64,6 +64,17 @@ CACHE_WRITERS = ("actions/cache@", "actions/cache/save@", "irgaly/xcode-cache@",
 # credentials, so its Nix store goes to the run's own branch-scoped Actions cache,
 # which master and other pull requests cannot read.
 BRANCH_SCOPED_NIX = frozenset({("opensecret-eif.yml", "eif")})
+# Jobs on GitHub-hosted runners that save caches into GitHub's store; every other
+# cache lives in Blacksmith's. The release and the Nix installer also use GitHub's.
+GITHUB_STORE_WRITERS = frozenset({
+    ("desktop-build.yml", "build-windows"),  # the signed Research Windows build
+    # The Agent lanes on GitHub's Windows image (scripts/ci/lanes.py GITHUB_WINDOWS):
+    # agent-full-windows in the windows matrix, the updater tests and the packaging rehearsal.
+    ("ci.yml", "windows"), ("ci.yml", "agent-windows-updater"), ("ci.yml", "agent-package-windows"),
+}) | BRANCH_SCOPED_NIX
+# A special job whose runner a repository variable overrides saves only on its home
+# runner's vendor; Blacksmith runner names start with "blacksmith".
+ON_BLACKSMITH = "startsWith(runner.name, 'blacksmith')"
 
 @functools.lru_cache(maxsize=None)
 def load(path: Path) -> dict:
@@ -258,17 +269,28 @@ class WorkflowPolicyTests(unittest.TestCase):
                         self.assertRegex(guard, r"refs/heads/master|github\.event_name == 'push'", (name, job_id))
         self.assertEqual(scoped, BRANCH_SCOPED_NIX)  # the exemption lapses with its job
 
-    def test_only_windows_signing_and_the_eif_check_fill_githubs_cache_store(self):
-        # GitHub's cache store is small; heavy caches live on Blacksmith, whose
-        # runners cannot read GitHub's. The release and the Nix installer are the other users.
+    def test_only_listed_jobs_fill_githubs_cache_store_and_failovers_never_save(self):
+        # Blacksmith runners cannot read GitHub's store, nor GitHub's runners Blacksmith's.
         writers = set()
         for name, job_id, job in jobs():
             for step in job.get("steps", []):
-                if (name not in SACRED and cache_writer(step)
-                        and "startsWith(matrix.runner, 'blacksmith-')" not in str(step["with"].get("save-if"))
-                        and any(GITHUB_HOSTED.fullmatch(label) for label in runner_labels(name, job_id, job))):
+                if name in SACRED or not cache_writer(step):
+                    continue
+                guard = " ".join(str(value) for value in (step.get("if", ""), step["with"].get("save-if", "")))
+                if name == "ci.yml" and job_id in lanes.MATRIX_JOBS:
+                    # The planner's cache_save is false when a failover leaves the lane's home vendor.
+                    self.assertIn("matrix.cache_save", guard, job_id)
+                    labels = {lane.runner.label for lane in lanes.LANES if lane.job == job_id and lane.cache}
+                else:
+                    labels = runner_labels(name, job_id, job)
+                    if "vars." in str(job.get("runs-on")):  # the default label is the home runner
+                        with self.subTest(workflow=name, job=job_id):
+                            self.assertIn(ON_BLACKSMITH, guard)
+                            self.assertEqual("!" + ON_BLACKSMITH in guard,
+                                             {lanes.cache_store(label) for label in labels} == {"github"})
+                if any(GITHUB_HOSTED.fullmatch(label) for label in labels):
                     writers.add((name, job_id))
-        self.assertEqual(writers, {("desktop-build.yml", "build-windows")} | BRANCH_SCOPED_NIX)
+        self.assertEqual(writers, GITHUB_STORE_WRITERS)
 
 if __name__ == "__main__":
     unittest.main()
