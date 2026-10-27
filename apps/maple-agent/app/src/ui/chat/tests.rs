@@ -5822,6 +5822,33 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn feedback_form_keeps_typing_out_of_chat_and_rejects_empty_submission(
+        cx: &mut TestAppContext,
+    ) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        let composer = chat.update(cx, |this, _| this.composer.clone().expect("composer"));
+        composer.update(cx, |input, cx| input.set_text("Unsent chat draft", cx));
+        press(cx, "send-feedback");
+        press(cx, "feedback-submit");
+        assert!(chat.update(cx, |this, _| this.feedback.is_some()));
+        cx.run_until_parked();
+        let input_focus = cx.update(|window, app| window.focused(app));
+        cx.simulate_keystrokes("tab tab tab tab tab tab");
+        assert_eq!(cx.update(|window, app| window.focused(app)), input_focus);
+        cx.simulate_input("Feedback draft, not a chat message");
+        assert_eq!(
+            composer.update(cx, |input, _| input.text()),
+            "Unsent chat draft"
+        );
+        cx.simulate_keystrokes("escape");
+        assert!(chat.update(cx, |this, _| this.feedback.is_none()));
+        assert_eq!(
+            composer.update(cx, |input, _| input.text()),
+            "Unsent chat draft"
+        );
+    }
+
+    #[gpui::test]
     fn unsaved_local_work_has_a_retry_beside_both_chat_composers(cx: &mut TestAppContext) {
         use crate::ui::store_gate::RetryStorePersistence;
         use maple_agent::store::{PersistenceFailure, PersistenceFailureReason};

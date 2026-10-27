@@ -11,6 +11,8 @@ mod billing;
 #[cfg(feature = "desktop")]
 mod desktop;
 mod env;
+#[cfg(feature = "desktop")]
+mod feedback;
 mod framing;
 mod host;
 mod hosted_oauth;

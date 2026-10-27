@@ -678,3 +678,15 @@ See [remote access](docs/remote-access.md) for pairing, host selection, recovery
 local-only account controls and the separate infrastructure/native trial gates.
 Remote access is off by default; the initial development configuration has no
 implicit public-relay fallback.
+
+### Feedback
+
+The quiet **Send feedback** button at the bottom of the expanded sidebar opens
+an anonymous form. It sends only the chosen category, message, app version,
+platform and build profile to the shared `/v1/feedback` service. Dev and Prod
+use the same endpoint. No account, conversation, logs or attachments are added.
+The Rust client is owned by this product (`app/src/feedback.rs`); it has no
+submission credential. Failed submissions retain the draft, and an unchanged
+retry reuses its random submission ID to avoid duplicate rows. Shift+Enter adds
+a line; Escape or Cancel closes the form when no submission is in flight.
+Feedback is conventional Cloudflare-hosted storage; avoid sensitive content.
