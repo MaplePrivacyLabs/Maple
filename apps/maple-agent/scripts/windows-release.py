@@ -555,6 +555,42 @@ def verification_scratch(prefix):
                 raise
 
 
+@contextmanager
+def pin_current_pointer(path):
+    # The exact-current repeat must not write or replace this pointer. Specify
+    # Windows sharing explicitly; Python's file mode does not define it.
+    import ctypes
+    from ctypes import wintypes
+
+    regular(path)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes, close.restype = (wintypes.HANDLE,), wintypes.BOOL
+    # GENERIC_READ, FILE_SHARE_READ only, NULL security (noninheritable),
+    # OPEN_EXISTING. Neither writes nor delete/rename access can be admitted.
+    handle = create(str(path), 0x80000000, 1, None, 3, 0, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    primary = None
+    try:
+        yield
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            if not close(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+        except Exception as error:
+            print("Windows pointer pin cleanup failure: " + type(error).__name__, file=sys.stderr)
+            if primary is None:
+                raise
+
+
 def smoke_failure_evidence(phase, error, installed, generation_name, registry, access, winreg):
     """Presence/type evidence only; no profile/store data or arbitrary walks."""
     def state(path):
@@ -685,9 +721,10 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             # and stable bootstrap rather than rewriting a running payload.
             bootstrap_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
             phase = "repeat-install"
-            run(command_as_windows_args(command), env=environment, timeout=120)
-            if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
-                raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
+            with pin_current_pointer(installed / "current.json"):
+                run(command_as_windows_args(command), env=environment, timeout=120)
+                if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
+                    raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
         except BaseException as error:
             primary = error
             smoke_failure_evidence(phase, error, installed, generation_name, registry, registry_access, winreg)

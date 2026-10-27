@@ -1106,7 +1106,7 @@ pub fn cleanup_current_windows_bundle(
     Ok(cleaned)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct ManualIntent {
     format: String,
@@ -1315,19 +1315,93 @@ fn recover_completed_manual_intent(root: &Path, current: &Bundle) -> Result<()> 
 
 #[cfg(windows)]
 fn generation_write_guards(root: &Path) -> Result<Vec<File>> {
+    generation_activation_guards(root, None)
+}
+
+#[cfg(windows)]
+fn generation_activation_guards(root: &Path, current: Option<&str>) -> Result<Vec<File>> {
     let mut guards = Vec::new();
+    let mut pinned_current = false;
     for entry in fs::read_dir(root.join("versions"))?.take(4096) {
         let entry = entry?;
         if !entry.file_name().to_str().is_some_and(valid_generation) {
             return Err(InstallError::Invalid("unknown Windows generation"));
         }
         known_partial_generation(&entry.path())?;
+        if current.is_some_and(|current| entry.file_name() == current) {
+            // The exact current generation needs no replacement. Pin all its
+            // bytes against writes/deletion while allowing its mapped image.
+            for name in FILES {
+                guards.push(windows_fs::open_readonly(&entry.path().join(name))?);
+            }
+            pinned_current = true;
+            continue;
+        }
         let executable = entry.path().join("maple-agent.exe");
         if executable.try_exists()? {
             guards.push(windows_fs::open_private(&executable, false)?);
         }
     }
+    if current.is_some() && !pinned_current {
+        return Err(InstallError::Invalid(
+            "Windows current generation disappeared",
+        ));
+    }
     Ok(guards)
+}
+
+/// Filesystem publication authority only. Full installer identity/admission
+/// runs before acquisition and again under the pins for an exact-current retry.
+#[cfg(windows)]
+struct ManualActivationGuards {
+    root: PathBuf,
+    current: Current,
+    repeat: bool,
+    _files: Vec<File>,
+}
+
+#[cfg(windows)]
+impl ManualActivationGuards {
+    fn acquire(root: &Path, current: Current) -> Result<Self> {
+        // Recovery can remove other payloads, so it must use the original
+        // exclusive path rather than an intent-only, no-mutation retry.
+        if !root.join(UNINSTALL_INTENT).try_exists()? {
+            match windows_fs::open_readonly(&root.join(POINTER)) {
+                Ok(mut pointer) => {
+                    let mut bytes = Vec::new();
+                    (&mut pointer).take(1025).read_to_end(&mut bytes)?;
+                    if Current::parse(&bytes).is_ok_and(|actual| actual == current) {
+                        let mut files = vec![pointer];
+                        files.extend(generation_activation_guards(
+                            root,
+                            Some(&current.generation),
+                        )?);
+                        return Ok(Self {
+                            root: root.to_owned(),
+                            current,
+                            repeat: true,
+                            _files: files,
+                        });
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(Self {
+            root: root.to_owned(),
+            current,
+            repeat: false,
+            _files: generation_write_guards(root)?,
+        })
+    }
+
+    fn commit(&self) -> Result<()> {
+        if !self.repeat {
+            write_private_json(&self.root.join(POINTER), &self.current)?;
+        }
+        Ok(())
+    }
 }
 
 // A partial generation is repairable only when every existing entry is one of
@@ -1816,6 +1890,46 @@ pub fn prepare_windows_installation(
     }
 }
 
+#[cfg(windows)]
+fn manual_activation_intent(
+    root: &Path,
+    profile: &str,
+    generation_name: &str,
+) -> Result<ManualIntent> {
+    let intent: ManualIntent =
+        serde_json::from_slice(&read_bounded(&root.join(MANUAL_INTENT), DESCRIPTOR_LIMIT)?)
+            .map_err(|_| InstallError::Invalid("Windows installer intent"))?;
+    if intent.format != "maple-agent-windows-installer-intent-v1"
+        || intent.profile != profile
+        || intent.generation != generation_name
+        || (intent.owner_pid, intent.owner_created) != installer_owner()?
+    {
+        return Err(InstallError::Invalid("Windows installer intent identity"));
+    }
+    Ok(intent)
+}
+
+#[cfg(windows)]
+fn manual_activation_bundle(
+    root: &Path,
+    profile: &str,
+    generation_name: &str,
+    intent: &ManualIntent,
+) -> Result<(PathBuf, Bundle)> {
+    let path = root.join("versions").join(generation_name);
+    let bundle = descriptor(&path, profile)?;
+    if bundle.generation() != generation_name
+        || bundle.version != intent.version
+        || bundle.source_sha != intent.source_sha
+        || exact_file_digest(&path.join("maple-agent.exe"))? != intent.executable_sha256
+    {
+        return Err(InstallError::Invalid(
+            "Windows installer activation identity",
+        ));
+    }
+    Ok((path, bundle))
+}
+
 /// Activation keeps the stable bootstrap and authenticates the exact new
 /// generation against the durable signed-checker intent before publication.
 pub fn activate_windows_installation(
@@ -1858,36 +1972,46 @@ pub fn activate_windows_installation(
                 }
             })?;
             stage = WindowsActivationStage::IntentIdentity;
-            let intent: ManualIntent =
-                serde_json::from_slice(&read_bounded(&root.join(MANUAL_INTENT), DESCRIPTOR_LIMIT)?)
-                    .map_err(|_| InstallError::Invalid("Windows installer intent"))?;
-            if intent.format != "maple-agent-windows-installer-intent-v1"
-                || intent.profile != profile
-                || intent.generation != generation_name
-                || (intent.owner_pid, intent.owner_created) != installer_owner()?
-            {
-                return Err(InstallError::Invalid("Windows installer intent identity"));
-            }
+            let intent = manual_activation_intent(root, profile, generation_name)?;
             stage = WindowsActivationStage::GenerationIdentity;
-            let path = root.join("versions").join(generation_name);
-            let bundle = descriptor(&path, profile)?;
-            if bundle.generation() != generation_name
-                || bundle.version != intent.version
-                || bundle.source_sha != intent.source_sha
-                || exact_file_digest(&path.join("maple-agent.exe"))? != intent.executable_sha256
-            {
-                return Err(InstallError::Invalid(
-                    "Windows installer activation identity",
-                ));
-            }
+            let (path, bundle) = manual_activation_bundle(root, profile, generation_name, &intent)?;
             stage = WindowsActivationStage::GenerationVerification;
             let _ = scan_generation(&path)?;
             verify_identity(&path, &bundle)?;
             stage = WindowsActivationStage::GenerationGuards;
-            let _generation_guards = generation_write_guards(root)?;
+            let generation_guards = ManualActivationGuards::acquire(root, Current::new(&bundle))?;
+            if generation_guards.repeat {
+                // A same-current retry publishes nothing. Authenticate again
+                // while the pointer and every current payload file are pinned
+                // read-only; a mapped host can safely keep using those bytes.
+                stage = WindowsActivationStage::Registration;
+                registered_root(root, profile)?;
+                stage = WindowsActivationStage::BootstrapIdentity;
+                let _ = trusted_installer(&executable, profile)?;
+                stage = WindowsActivationStage::IntentIdentity;
+                if manual_activation_intent(root, profile, generation_name)? != intent {
+                    return Err(InstallError::Invalid("Windows installer intent changed"));
+                }
+                stage = WindowsActivationStage::GenerationIdentity;
+                let (path, bundle) =
+                    manual_activation_bundle(root, profile, generation_name, &intent)?;
+                stage = WindowsActivationStage::GenerationVerification;
+                let _ = scan_generation(&path)?;
+                verify_identity(&path, &bundle)?;
+                if root.join(UNINSTALL_INTENT).try_exists()? {
+                    return Err(InstallError::Busy);
+                }
+                stage = WindowsActivationStage::PointerCommit;
+                generation_guards.commit()?;
+                // The already-committed pointer stays untouched. Complete only
+                // this matching live-owner intent, never old payload cleanup.
+                let _ = fs::remove_file(root.join(MANUAL_INTENT));
+                let _ = windows_sync_directory(root);
+                return Ok(());
+            }
             stage = WindowsActivationStage::PointerCommit;
-            write_private_json(&root.join(POINTER), &Current::new(&bundle))?;
-            drop(_generation_guards);
+            generation_guards.commit()?;
+            drop(generation_guards);
             // Publication committed. Cleanup cannot report an uncommitted failure
             // to NSIS, which would otherwise roll back valid registration. Startup
             // authenticates this exact generation and retries retained intent.
@@ -2075,6 +2199,45 @@ mod transaction_tests;
 mod manual_activation_tests {
     use super::*;
 
+    fn file_snapshot(path: &Path) -> (u64, String, [u32; 3]) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+
+        let mut file = File::open(path).unwrap();
+        let mut identity = BY_HANDLE_FILE_INFORMATION::default();
+        assert_ne!(
+            unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut identity) },
+            0
+        );
+        let size = file.metadata().unwrap().len();
+        (
+            size,
+            hex::encode(hash_reader(&mut file, size).unwrap()),
+            [
+                identity.dwVolumeSerialNumber,
+                identity.nFileIndexHigh,
+                identity.nFileIndexLow,
+            ],
+        )
+    }
+
+    fn installation_snapshot(root: &Path) -> BTreeMap<String, (u64, String, [u32; 3])> {
+        let mut snapshot = BTreeMap::new();
+        snapshot.insert(POINTER.into(), file_snapshot(&root.join(POINTER)));
+        for entry in fs::read_dir(root.join("versions")).unwrap() {
+            let entry = entry.unwrap();
+            for name in FILES {
+                snapshot.insert(
+                    format!("versions/{}/{name}", entry.file_name().to_string_lossy()),
+                    file_snapshot(&entry.path().join(name)),
+                );
+            }
+        }
+        snapshot
+    }
+
     fn generation_fixture(root: &Path, version: &str, build: &str) -> Bundle {
         let bundle = Bundle {
             format: "maple-agent-windows-bundle-v1".into(),
@@ -2135,6 +2298,117 @@ mod manual_activation_tests {
             );
             assert_eq!(scan_generation(&previous_path).unwrap(), previous_nodes);
             assert_eq!(scan_generation(&next_path).unwrap(), next_nodes);
+        }
+    }
+
+    #[test]
+    fn native_same_current_manual_activation_is_read_only_with_a_mapped_image() {
+        const TEST: &str = "installer::windows_bundle::manual_activation_tests::native_same_current_manual_activation_is_read_only_with_a_mapped_image";
+        const PROOF: &str = "MAPPED_CURRENT_MANUAL_REPEAT_OK";
+        let executable = std::env::current_exe().unwrap();
+        if executable
+            .file_name()
+            .is_some_and(|name| name == "maple-agent.exe")
+        {
+            let generation = executable.parent().unwrap();
+            let root = generation.parent().unwrap().parent().unwrap();
+            let current =
+                Current::parse(&read_bounded(&root.join(POINTER), 1024).unwrap()).unwrap();
+            assert_eq!(current.path(root), generation);
+            let before = installation_snapshot(root);
+            // This child really maps the copied PE. Ordinary write guards must
+            // refuse it; a read pin and an exact-current no-op must permit it.
+            assert!(generation_write_guards(root).is_err());
+            let external_pointer_pin = windows_fs::open_readonly(&root.join(POINTER)).unwrap();
+            let guards = ManualActivationGuards::acquire(root, current.clone()).unwrap();
+            assert!(guards.repeat);
+            // The mapped exe alone would be a vacuous write-denial test.
+            for path in [
+                root.join(POINTER),
+                generation.join("LICENSE.txt"),
+                generation.join("build-info.json"),
+            ] {
+                assert!(windows_fs::open_private(&path, false).is_err());
+            }
+            guards.commit().unwrap();
+            assert_eq!(installation_snapshot(root), before);
+            let sibling = root.join("versions/0.0.10-737/maple-agent.exe");
+            assert!(
+                windows_fs::open_readonly(&sibling).is_err(),
+                "sibling write guard was relaxed"
+            );
+            drop(guards);
+            drop(windows_fs::open_readonly(&sibling).unwrap());
+            // A held pointer pin would make even an identical republication
+            // fail. It remains open across the actual production no-op commit.
+            assert!(external_pointer_pin.metadata().unwrap().is_file());
+            drop(windows_fs::open_private(&generation.join("LICENSE.txt"), false).unwrap());
+
+            let different = Current {
+                format: POINTER_FORMAT.into(),
+                generation: "0.0.10-737".into(),
+            };
+            assert!(ManualActivationGuards::acquire(root, different).is_err());
+            fs::write(root.join(UNINSTALL_INTENT), b"pending recovery fixture").unwrap();
+            assert!(ManualActivationGuards::acquire(root, current.clone()).is_err());
+            fs::remove_file(root.join(UNINSTALL_INTENT)).unwrap();
+            let unknown = root.join("versions/unknown-generation");
+            fs::create_dir(&unknown).unwrap();
+            assert!(ManualActivationGuards::acquire(root, current.clone()).is_err());
+            fs::remove_dir(unknown).unwrap();
+            let foreign = root.join("versions/0.0.10-737/foreign-fixture");
+            fs::write(&foreign, b"unknown sibling file").unwrap();
+            assert!(ManualActivationGuards::acquire(root, current.clone()).is_err());
+            fs::remove_file(foreign).unwrap();
+            let license = generation.join("LICENSE.txt");
+            let saved_license = root.join("saved-license-fixture");
+            fs::rename(&license, &saved_license).unwrap();
+            assert!(ManualActivationGuards::acquire(root, current).is_err());
+            fs::rename(saved_license, license).unwrap();
+            assert_eq!(installation_snapshot(root), before);
+            drop(external_pointer_pin);
+            println!("{PROOF}");
+            return;
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("installation");
+        windows_fs::private_directory(&root.join("versions")).unwrap();
+        let current = generation_fixture(&root, "0.0.11", "738");
+        generation_fixture(&root, "0.0.10", "737");
+        let target = root
+            .join("versions")
+            .join(current.generation())
+            .join("maple-agent.exe");
+        let mut source = File::open(&executable).unwrap();
+        let mut copied = windows_fs::open_private(&target, true).unwrap();
+        io::copy(&mut source, &mut copied).unwrap();
+        copied.sync_all().unwrap();
+        drop(copied);
+        drop(source);
+        write_private_json(&root.join(POINTER), &Current::new(&current)).unwrap();
+        let before = installation_snapshot(&root);
+        // Only the shared filesystem helper is under test. The copied updater
+        // test binary is not presented as an admitted/signed Maple application.
+        let result = std::process::Command::new(&target)
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .output()
+            .expect("the copied private updater test image must load");
+        assert!(
+            result.status.success(),
+            "mapped repeat child failed: {result:?}"
+        );
+        assert_eq!(
+            String::from_utf8(result.stdout)
+                .unwrap()
+                .matches(PROOF)
+                .count(),
+            1,
+            "the exact mapped child must complete its assertions"
+        );
+        assert_eq!(file_snapshot(&root.join(POINTER)), before[POINTER]);
+        for (name, expected) in before {
+            assert_eq!(file_snapshot(&root.join(name)), expected);
         }
     }
 }

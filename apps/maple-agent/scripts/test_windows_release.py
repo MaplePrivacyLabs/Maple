@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Windows package identity, extraction and signing-boundary regressions."""
 
+import ast
+import ctypes
 import hashlib
 import gzip
 import importlib.util
@@ -14,7 +16,7 @@ import tarfile
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 
@@ -556,6 +558,75 @@ class PackageBoundaryTests(unittest.TestCase):
         mutation = re.compile(r'^(?:Delete(?:RegKey|RegValue)?|RMDir|Write\w*|CreateDirectory|CreateShortcut|SetOutPath|File)\b')
         remaining = [line.strip() for line in after.splitlines() if mutation.match(line.strip())]
         self.assertEqual(remaining, [])
+
+
+class PointerPinTests(unittest.TestCase):
+    def kernel(self, handle=123):
+        return types.SimpleNamespace(CreateFileW=Mock(return_value=handle), CloseHandle=Mock(return_value=1))
+
+    def test_pin_requests_explicit_read_sharing_and_closes_after_its_body(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "current.json"
+            path.write_bytes(b"fixed pointer fixture")
+            kernel = self.kernel()
+            with patch.object(ctypes, "WinDLL", return_value=kernel, create=True) as library:
+                with release.pin_current_pointer(path):
+                    library.assert_called_once_with("kernel32", use_last_error=True)
+                    kernel.CreateFileW.assert_called_once_with(str(path), 0x80000000, 1, None, 3, 0, None)
+                    self.assertEqual(len(kernel.CreateFileW.argtypes), 7)
+                    self.assertIsNotNone(kernel.CreateFileW.restype)
+                    self.assertEqual(path.read_bytes(), b"fixed pointer fixture")
+                    kernel.CloseHandle.assert_not_called()
+                kernel.CloseHandle.assert_called_once_with(123)
+
+    def test_pin_open_failure_does_not_run_the_body_or_close_an_invalid_handle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "current.json"
+            path.write_bytes(b"fixed pointer fixture")
+            kernel = self.kernel(ctypes.c_void_p(-1).value)
+            primary = OSError("fixed native open failure")
+            with patch.object(ctypes, "WinDLL", return_value=kernel, create=True), patch.object(ctypes, "get_last_error", return_value=5, create=True), patch.object(ctypes, "WinError", return_value=primary, create=True):
+                with self.assertRaises(OSError) as raised:
+                    with release.pin_current_pointer(path):
+                        self.fail("A failed pointer pin must not admit repeat installation")
+            self.assertIs(raised.exception, primary)
+            kernel.CloseHandle.assert_not_called()
+
+    def test_pin_close_failure_preserves_primary_installer_error_and_surfaces_without_one(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "current.json"
+            path.write_bytes(b"fixed pointer fixture")
+            kernel = self.kernel()
+            kernel.CloseHandle.return_value = 0
+            secondary = OSError("do not expose close details")
+            primary = subprocess.CalledProcessError(0x4D090020, "fixture installer")
+            diagnostics = io.StringIO()
+            with patch.object(ctypes, "WinDLL", return_value=kernel, create=True), patch.object(ctypes, "get_last_error", return_value=5, create=True), patch.object(ctypes, "WinError", return_value=secondary, create=True), patch.object(sys, "stderr", diagnostics):
+                with self.assertRaises(subprocess.CalledProcessError) as raised:
+                    with release.pin_current_pointer(path):
+                        raise primary
+                self.assertIs(raised.exception, primary)
+                with self.assertRaises(OSError) as raised:
+                    with release.pin_current_pointer(path):
+                        pass
+                self.assertIs(raised.exception, secondary)
+            self.assertEqual(kernel.CloseHandle.call_count, 2)
+            self.assertIn("Windows pointer pin cleanup failure: OSError", diagnostics.getvalue())
+            self.assertNotIn("do not expose", diagnostics.getvalue())
+
+    def test_actual_repeat_and_identity_assertions_are_the_only_pinned_smoke_operations(self):
+        # Portable scope contract; the actual sharing denial is Windows-only.
+        tree = ast.parse((SCRIPTS / "windows-release.py").read_text())
+        smoke = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "smoke_installer")
+        pinned = [node for node in ast.walk(smoke) if isinstance(node, ast.With) and
+                  any(isinstance(item.context_expr, ast.Call) and isinstance(item.context_expr.func, ast.Name) and
+                      item.context_expr.func.id == "pin_current_pointer" for item in node.items)]
+        self.assertEqual(len(pinned), 1)
+        self.assertEqual([type(node) for node in pinned[0].body], [ast.Expr, ast.If])
+        self.assertEqual(pinned[0].body[0].value.func.id, "run")
+        self.assertEqual(pinned[0].body[1].body[0].exc.func.id, "ValueError")
+        self.assertIn("current.json", ast.unparse(pinned[0]))
+        self.assertIn("bootstrap_hash", ast.unparse(pinned[0]))
 
 
 class SmokeDiagnosticsTests(unittest.TestCase):

@@ -144,6 +144,7 @@ try {
       'installer::windows_bundle::transaction_tests::native_retained_guard_removes_owned_generation_without_partial_pointer_change',
       'installer::windows_bundle::transaction_tests::native_dead_uninstall_journal_allows_only_owned_partial_repair',
       'installer::windows_bundle::manual_activation_tests::native_manual_pointer_republication_with_generation_guards_preserves_payloads',
+      'installer::windows_bundle::manual_activation_tests::native_same_current_manual_activation_is_read_only_with_a_mapped_image',
       'tests::downloads_and_reauthenticates_preparation_across_restart',
       'tests::rollback_clears_offer_without_lowering_persisted_high_watermark',
       'tests::resumes_only_exact_valid_ranges_and_final_digest',
