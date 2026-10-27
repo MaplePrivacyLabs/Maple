@@ -160,6 +160,13 @@ target does not replace the real Windows application build, official Maple
 signature verification, signed installed A-to-B upgrade, visible GUI or paired
 remote upgrade qualification.
 
+The same workflow independently typechecks `maple-agent-app --all-targets` on
+Windows with `cargo check --locked`, including Windows-only desktop fixtures.
+It runs in parallel with native updater tests and retains its own source/run
+receipt and complete compiler log. This catches app/test type errors without
+release code generation or waiting for release LTO. A successful typecheck does
+not claim test execution, packaging or installed-upgrade qualification.
+
 The separate manual-only `agent-windows-signature-probe.yml` accepts an exact
 historical producer run/attempt/source and artifact ZIP/PE digests. It validates
 successful trusted-master Windows Prod build, signing and downloaded-consumer
