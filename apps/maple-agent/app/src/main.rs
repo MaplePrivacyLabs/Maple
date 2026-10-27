@@ -16,6 +16,8 @@ mod host;
 mod hosted_oauth;
 #[cfg(feature = "desktop")]
 mod keymap;
+#[cfg(feature = "proxy")]
+mod local_api;
 #[cfg(feature = "desktop")]
 mod notify;
 #[cfg(feature = "desktop")]
@@ -381,10 +383,6 @@ fn host_error_summary(error: &str) -> &'static str {
 /// enclave, for tools that speak the OpenAI API. Runs until killed.
 #[cfg(feature = "proxy")]
 fn run_proxy(args: ProxyArgs) -> Result<(), String> {
-    use axum::http::{Method, StatusCode, header::ORIGIN};
-    use axum::response::IntoResponse;
-    use tower_http::cors::{AllowHeaders, Any, CorsLayer};
-
     let backend_url = maple_agent::maple_api::validate_api_url(&configured_api_url())?;
     let pcr0 = maple_agent::open_secret_config::configured_pcr0_environment()?;
     let mut config = maple_proxy::Config::new(args.host.clone(), args.port, backend_url)
@@ -400,31 +398,7 @@ fn run_proxy(args: ProxyArgs) -> Result<(), String> {
     let addr = config
         .socket_addr()
         .map_err(|error| format!("Invalid proxy address: {error}"))?;
-    let app = maple_proxy::create_app(config);
-    let app = if args.cors {
-        app.layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                // Authorization is not covered by `*` under Fetch; mirror
-                // the preflight list so bearer keys and SDK headers pass.
-                .allow_headers(AllowHeaders::mirror_request()),
-        )
-    } else {
-        // Disabling CORS alone only hides responses. A no-cors browser POST
-        // can still reach loopback and spend the saved key, so fail closed
-        // on browser-only headers before the body is read.
-        app.layer(axum::middleware::from_fn(
-            |request: axum::extract::Request, next: axum::middleware::Next| async move {
-                if request.headers().contains_key(ORIGIN)
-                    || request.headers().contains_key("sec-fetch-site")
-                {
-                    return StatusCode::FORBIDDEN.into_response();
-                }
-                next.run(request).await
-            },
-        ))
-    };
+    let app = local_api::apply_browser_policy(maple_proxy::create_app(config), args.cors);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

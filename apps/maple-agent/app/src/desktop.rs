@@ -137,6 +137,14 @@ struct MapleApp {
     password_settings_refreshing: bool,
     persistence_status: maple_agent::store::PersistenceStatus,
     persistence_retrying: bool,
+    #[cfg(feature = "proxy")]
+    local_api_revision: u64,
+    #[cfg(feature = "proxy")]
+    local_api_host_epoch: u64,
+    #[cfg(feature = "proxy")]
+    local_api_refreshing: bool,
+    #[cfg(feature = "proxy")]
+    local_api_refresh_again: bool,
     pending_store_attention: std::collections::VecDeque<StoreAttention>,
     store_attention_open: bool,
     restore_window_geometry: bool,
@@ -620,6 +628,14 @@ impl MapleApp {
     ) {
         let mut batch = Vec::new();
         for event in events {
+            #[cfg(feature = "proxy")]
+            if matches!(
+                event,
+                maple_agent::agent::AgentServiceEvent::LocalApiChanged
+            ) {
+                self.refresh_local_api(cx);
+                continue;
+            }
             if let maple_agent::agent::AgentServiceEvent::PersistenceFailureChanged { status } =
                 &event
             {
@@ -633,6 +649,17 @@ impl MapleApp {
             ) {
                 // A restarted host has a new in-memory revision baseline.
                 self.persistence_status.revision = 0;
+                #[cfg(feature = "proxy")]
+                {
+                    self.local_api_revision = 0;
+                    self.local_api_host_epoch = self.local_api_host_epoch.wrapping_add(1);
+                    self.local_api_refreshing = false;
+                    self.local_api_refresh_again = false;
+                    if let Screen::Settings(settings) = &self.screen {
+                        settings.update(cx, |settings, cx| settings.local_api_host_reconnected(cx));
+                    }
+                    self.refresh_local_api(cx);
+                }
                 self.verify_current_store_state(cx);
                 batch.push(event);
             } else if let maple_agent::agent::AgentServiceEvent::StoreStateChanged { state } =
@@ -911,6 +938,50 @@ impl MapleApp {
             .store(resident, std::sync::atomic::Ordering::Release);
         self.update_tray();
         cx.notify();
+    }
+
+    #[cfg(feature = "proxy")]
+    fn refresh_local_api(&mut self, cx: &mut Context<Self>) {
+        if self.local_api_refreshing {
+            self.local_api_refresh_again = true;
+            return;
+        }
+        self.local_api_refreshing = true;
+        let backend = self.backend.clone();
+        let epoch = self.store_load_epoch;
+        let host_epoch = self.local_api_host_epoch;
+        let bridge = ui::task::call(
+            &self.backend,
+            async move {
+                let status = backend.get_local_api_status().await?;
+                let store = backend
+                    .local_control::<DesktopStoreStatus>("store_status", ())
+                    .await?;
+                Ok((status, store))
+            },
+            cx,
+            move |app, result, cx| {
+                if app.local_api_host_epoch != host_epoch {
+                    return;
+                }
+                app.local_api_refreshing = false;
+                if app.store_load_epoch == epoch
+                    && let Ok((status, store)) = result
+                    && status.revision >= app.local_api_revision
+                {
+                    app.local_api_revision = status.revision;
+                    app.set_store_resident(store.keeps_resident(), cx);
+                    if let Screen::Settings(settings) = &app.screen {
+                        settings
+                            .update(cx, |settings, cx| settings.set_local_api_status(status, cx));
+                    }
+                }
+                if std::mem::take(&mut app.local_api_refresh_again) {
+                    app.refresh_local_api(cx);
+                }
+            },
+        );
+        ui::task::retain(&self.remote_bridges, bridge);
     }
 
     fn update_tray(&self) {
@@ -1935,6 +2006,8 @@ impl Render for MapleApp {
     }
 }
 
+#[cfg(all(test, feature = "proxy"))]
+mod local_api_tests;
 #[cfg(target_os = "macos")]
 mod native_quit;
 #[cfg(target_os = "macos")]
@@ -1963,6 +2036,8 @@ struct DesktopStoreStatus {
     mode_change_notice: Option<ModeChangeNotice>,
     #[serde(default)]
     persistence_status: maple_agent::store::PersistenceStatus,
+    #[serde(default)]
+    local_api_running: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -2065,7 +2140,8 @@ impl DesktopStoreStatus {
     }
 
     fn keeps_resident(&self) -> bool {
-        (self.mode == "password" && self.state == maple_agent::store::StoreState::Open)
+        self.local_api_running
+            || (self.mode == "password" && self.state == maple_agent::store::StoreState::Open)
             || self.state == maple_agent::store::StoreState::Maintenance
             || self.setup_operation_id.is_some()
     }
@@ -2078,6 +2154,10 @@ struct HostActivity {
     remote_controllers: usize,
     #[serde(default)]
     background_tasks: usize,
+    #[serde(default)]
+    local_api_running: bool,
+    #[serde(default)]
+    local_api_requests: usize,
 }
 impl HostActivity {
     fn needs_confirmation(&self) -> bool {
@@ -2085,6 +2165,8 @@ impl HostActivity {
             || self.running_tasks > 0
             || self.remote_controllers > 0
             || self.background_tasks > 0
+            || self.local_api_running
+            || self.local_api_requests > 0
     }
 }
 
@@ -2392,7 +2474,7 @@ impl Render for QuitPrompt {
         let (title, message, retry) = match &self.kind {
             QuitPromptKind::Confirm(activity) => (
                 "Stop this computer's Maple host?",
-                format!("Quitting stops {} running tasks, {} attached editors, {} remote controllers and {} background jobs. Maple waits for them to drain before closing.", activity.running_tasks, activity.acp_clients, activity.remote_controllers, activity.background_tasks),
+                format!("Quitting stops {} running tasks, {} attached editors, {} remote controllers and {} background jobs. It also stops this computer's local API and its {} active requests. Maple waits for them to drain before closing.", activity.running_tasks, activity.acp_clients, activity.remote_controllers, activity.background_tasks, activity.local_api_requests),
                 false,
             ),
             QuitPromptKind::Failed(message) => ("Maple is still open", message.clone(), true),
@@ -3178,6 +3260,14 @@ pub fn run() {
                         password_settings_refreshing: false,
                         persistence_status: maple_agent::store::PersistenceStatus::default(),
                         persistence_retrying: false,
+                        #[cfg(feature = "proxy")]
+                        local_api_revision: 0,
+                        #[cfg(feature = "proxy")]
+                        local_api_host_epoch: 0,
+                        #[cfg(feature = "proxy")]
+                        local_api_refreshing: false,
+                        #[cfg(feature = "proxy")]
+                        local_api_refresh_again: false,
                         pending_store_attention: Default::default(),
                         store_attention_open: false,
                         restore_window_geometry: true,
@@ -3568,6 +3658,7 @@ mod tests {
             completion_notice: None,
             mode_change_notice: None,
             persistence_status: maple_agent::store::PersistenceStatus::default(),
+            local_api_running: false,
         };
         assert!(status.keeps_resident());
         status.state = StoreState::Locked;
@@ -3905,6 +3996,14 @@ mod tests {
                 password_settings_refreshing: false,
                 persistence_status: Default::default(),
                 persistence_retrying: false,
+                #[cfg(feature = "proxy")]
+                local_api_revision: 0,
+                #[cfg(feature = "proxy")]
+                local_api_host_epoch: 0,
+                #[cfg(feature = "proxy")]
+                local_api_refreshing: false,
+                #[cfg(feature = "proxy")]
+                local_api_refresh_again: false,
                 pending_store_attention: Default::default(),
                 store_attention_open: false,
                 restore_window_geometry: false,

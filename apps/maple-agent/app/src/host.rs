@@ -5,6 +5,8 @@ pub(crate) mod hardening;
 pub(crate) mod ipc;
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(all(test, feature = "proxy"))]
+mod local_api_tests;
 mod passwords;
 pub mod protocol;
 pub(crate) mod receipts;
@@ -884,6 +886,8 @@ fn gate(state: &StoreState, method: &str) -> Result<(), String> {
         "store_status" | "host_status" | "detach" | "cancel_oauth"
     ) || (method == "erase_local_data"
         && !matches!(state, StoreState::Refused { .. }));
+    #[cfg(feature = "proxy")]
+    let control = control || matches!(method, "get_local_api_status" | "stop_local_api");
     let allowed = control
         || match state {
             StoreState::Locked => method == "unlock",
@@ -1020,6 +1024,10 @@ impl OwnerContext {
     }
 
     fn keeps_host(&self, backend: &LocalBackend) -> bool {
+        #[cfg(feature = "proxy")]
+        if backend.local_api.stays_running() {
+            return true;
+        }
         let state = self.state(backend);
         self.retained_failure.load(Ordering::Acquire)
             || self.busy.load(Ordering::Acquire)
@@ -1047,6 +1055,10 @@ impl OwnerContext {
         // Release exposure remains gated on native G3 evidence. Local debug
         // builds permit exact-app validation without shipping this capability.
         value["password_settings_available"] = serde_json::json!(cfg!(debug_assertions));
+        #[cfg(feature = "proxy")]
+        {
+            value["local_api_running"] = serde_json::json!(backend.local_api.stays_running());
+        }
         let persistence = serde_json::to_value(store.persistence_status())
             .map_err(|_| "Could not encode persistence status")?;
         value["persistence_failure"] = persistence
@@ -1086,6 +1098,26 @@ impl OwnerContext {
             running_tasks,
             remote_controllers,
             background_tasks,
+            local_api_running: {
+                #[cfg(feature = "proxy")]
+                {
+                    backend.local_api.stays_running()
+                }
+                #[cfg(not(feature = "proxy"))]
+                {
+                    false
+                }
+            },
+            local_api_requests: {
+                #[cfg(feature = "proxy")]
+                {
+                    backend.local_api.status().active_requests
+                }
+                #[cfg(not(feature = "proxy"))]
+                {
+                    0
+                }
+            },
         })
         .map_err(|_| "Could not encode host status".into())
     }
@@ -1105,6 +1137,10 @@ impl OwnerContext {
             return Err(error.to_owned());
         }
         gate(&self.state(backend), method)?; // Must precede remote_* routing.
+        #[cfg(feature = "proxy")]
+        if matches!(method, "get_local_api_status" | "stop_local_api") {
+            return backend::dispatch(backend, request.into_request()).await;
+        }
         if method == "store_status" {
             let mut status = self.status(backend)?;
             status["connection_rebind_required"] =
@@ -1113,6 +1149,15 @@ impl OwnerContext {
         }
         if method == "host_status" {
             return self.host_status(backend, remote).await;
+        }
+        #[cfg(feature = "proxy")]
+        if matches!(
+            method,
+            "login" | "logout_and_clear" | "oauth_wait_for_handoff" | "oauth_complete"
+        ) {
+            // Wake a pending proxy restore before waiting for admission. Its
+            // account validation must not hold up a local account transition.
+            backend.local_api.stop().await;
         }
         let store = backend
             .store()
@@ -1201,9 +1246,13 @@ impl OwnerContext {
                     .lock()
                     .map_err(|_| "Store notice is unavailable")? = None;
             }
+            #[cfg(feature = "proxy")]
+            let local_api_control_epoch = backend.local_api_control_epoch();
             let (_exclusive_admission, _shared_admission) = if drain_operation {
                 backend.begin_store_drain();
                 self.drain_acp();
+                #[cfg(feature = "proxy")]
+                backend.local_api.stop().await;
                 remote.shutdown().await;
                 (Some(self.exclusive_admission(backend).await), None)
             } else {
@@ -1231,6 +1280,8 @@ impl OwnerContext {
                 } else {
                     (None, Some(backend.account_gate.read().await))
                 };
+                #[cfg(feature = "proxy")]
+                if drain_operation { backend.local_api.stop().await; }
                 generation.check(backend, method)?;
                 gate(&store.state(), method)?;
                 if drain_operation && !destructive {
@@ -1363,6 +1414,19 @@ impl OwnerContext {
                 remote.shutdown().await;
                 if backend.saved_user_id().is_some() && store.state() == StoreState::Open {
                     remote.restore().await;
+                    #[cfg(feature = "proxy")]
+                    {
+                        let generation = backend.local_api.generation();
+                        let _account = backend.account_gate.read().await;
+                        if backend.local_api_control_epoch() == local_api_control_epoch {
+                            let _ = backend
+                                .local_api_while_current(generation, async {
+                                    Ok(backend.validate_persisted_auth().await)
+                                })
+                                .await;
+                            let _ = backend.resume_local_api(generation).await;
+                        }
+                    }
                 }
             }
             return result;
@@ -1553,6 +1617,8 @@ impl OwnerContext {
             // Administrative local Stop intentionally cancels local work while
             // waiting for its exclusive operation/admission guards.
             backend.cancel_oauth();
+            #[cfg(feature = "proxy")]
+            backend.local_api.stop().await;
             let operation = self.operation.lock();
             tokio::pin!(operation);
             loop {
@@ -1619,12 +1685,16 @@ impl OwnerContext {
         let restore_remote = remote.stays_running();
         backend.begin_store_drain();
         self.drain_acp();
+        #[cfg(feature = "proxy")]
+        backend.local_api.stop().await;
         remote.shutdown().await;
         let _admission = match remote_admission {
             Some(admission) => admission,
             None => self.exclusive_admission(backend).await,
         };
         let _account = backend.account_gate.write().await;
+        #[cfg(feature = "proxy")]
+        backend.local_api.stop().await;
         // An already-admitted account operation may have restored its remote
         // node while Stop waited for admission. Close that late node as well;
         // no account operation can publish another under these exclusive gates.
@@ -1844,6 +1914,38 @@ async fn serve_runtime(
         });
     }
     let owner = Arc::new(OwnerContext::new(backend.store()));
+    #[cfg(feature = "proxy")]
+    let local_api_pump = {
+        let mut updates = backend.local_api.subscribe();
+        let events = events.clone();
+        tokio::spawn(async move {
+            while updates.changed().await.is_ok() {
+                let _ = events.send(Arc::new(AgentServiceEvent::LocalApiChanged));
+            }
+        })
+    };
+    #[cfg(feature = "proxy")]
+    let local_api_restore = {
+        let backend = backend.clone();
+        let owner = owner.clone();
+        let generation = backend.local_api.generation();
+        tokio::spawn(async move {
+            let _admission = owner.admission.read().await;
+            let _account = backend.account_gate.read().await;
+            if owner.state(&backend) == StoreState::Open
+                && matches!(
+                    backend
+                        .local_api_while_current(generation, async {
+                            Ok(backend.validate_persisted_auth().await)
+                        })
+                        .await,
+                    Ok(backend::RestoreOutcome::Valid(_))
+                )
+            {
+                let _ = backend.resume_local_api(generation).await;
+            }
+        })
+    };
     let sink = events.clone();
     let account_remote = remote.clone();
     let pump = tokio::spawn(async move {
@@ -1932,6 +2034,11 @@ async fn serve_runtime(
     clients.abort_all();
     while clients.join_next().await.is_some() {}
     pump.abort();
+    #[cfg(feature = "proxy")]
+    {
+        local_api_pump.abort();
+        local_api_restore.abort();
+    }
     Ok(())
 }
 
@@ -2166,7 +2273,7 @@ async fn serve_client_inner(
                             continue;
                         }
                         let readable = (!stale && owner.state(&backend) == StoreState::Open)
-                            || matches!(&*event, AgentServiceEvent::StoreStateChanged { .. } | AgentServiceEvent::AccountChanged(None) | AgentServiceEvent::PersistenceFailureChanged { .. });
+                            || matches!(&*event, AgentServiceEvent::StoreStateChanged { .. } | AgentServiceEvent::AccountChanged(None) | AgentServiceEvent::PersistenceFailureChanged { .. } | AgentServiceEvent::LocalApiChanged);
                         if readable && task_subscription.allows(&event) {
                             write_event(&mut output, &event).await?;
                         }

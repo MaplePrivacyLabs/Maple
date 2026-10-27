@@ -322,6 +322,10 @@ pub struct HostStatus {
     pub running_tasks: usize,
     pub remote_controllers: usize,
     pub background_tasks: usize,
+    #[serde(default)]
+    pub local_api_running: bool,
+    #[serde(default)]
+    pub local_api_requests: usize,
 }
 
 pub struct SensitiveMessage(pub Message);

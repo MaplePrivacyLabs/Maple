@@ -35,6 +35,9 @@ use crate::hosted_oauth::{ATTEMPT_TIMEOUT, HandoffListener};
 mod deletion;
 pub use deletion::AccountDeletionStatus;
 
+#[cfg(feature = "proxy")]
+#[path = "local_api.rs"]
+mod local_api;
 #[path = "project_folders.rs"]
 mod project_folders;
 #[allow(unused_imports)]
@@ -107,6 +110,12 @@ pub struct DictionaryPage {
 }
 
 pub struct LocalBackend {
+    #[cfg(feature = "proxy")]
+    pub(crate) local_api: crate::local_api::LocalApiManager,
+    #[cfg(feature = "proxy")]
+    local_api_settings_gate: tokio::sync::Mutex<()>,
+    #[cfg(feature = "proxy")]
+    local_api_control: std::sync::Mutex<local_api::Control>,
     store: Option<Arc<maple_agent::store::Store>>,
     pub(crate) remote_updates: Arc<crate::remote_updates::Broker>,
     row_reader: Option<Arc<maple_agent::store::RowReader>>,
@@ -1053,6 +1062,8 @@ impl LocalBackend {
     }
 
     pub(crate) async fn forget_store_session(&self) -> Result<(), String> {
+        #[cfg(feature = "proxy")]
+        self.local_api.stop().await;
         self.service.finish_store_reset().await?;
         self.service.invalidate_store_session();
         if let Some(user) = self.persisted_auth.forget_owner() {
@@ -1138,6 +1149,12 @@ impl LocalBackend {
             .as_ref()
             .map(|store| Arc::new(maple_agent::store::RowReader::new(store.clone())));
         Ok(Self {
+            #[cfg(feature = "proxy")]
+            local_api: crate::local_api::LocalApiManager::new(api_url.clone())?,
+            #[cfg(feature = "proxy")]
+            local_api_settings_gate: tokio::sync::Mutex::new(()),
+            #[cfg(feature = "proxy")]
+            local_api_control: std::sync::Mutex::new(local_api::Control::default()),
             remote_updates: Arc::new(crate::remote_updates::Broker::new(store.clone())),
             store,
             row_reader,
@@ -1438,7 +1455,7 @@ impl LocalBackend {
 
     /// Validate the saved credentials with the server and install the
     /// session on success. Definitive rejections compare-clear the saved record.
-    pub(super) async fn validate_persisted_auth(&self) -> RestoreOutcome {
+    pub(crate) async fn validate_persisted_auth(&self) -> RestoreOutcome {
         let _restore = self.restore_lock.lock().await;
         if let Some(user_id) = self.saved_user_id()
             && self.auth.session_for(&user_id).await.is_ok()
@@ -1521,6 +1538,8 @@ impl LocalBackend {
     /// Drop the live session and the persisted record. `revoke` also sends
     /// `POST /logout`; a deleted account has no session left to report.
     async fn clear_session(&self, user_id: &str, revoke: bool) -> Result<(), String> {
+        #[cfg(feature = "proxy")]
+        self.local_api.stop().await;
         let _account = self.restore_lock.lock().await;
         let pending = self.pending_deletion_status()?;
         if let Some(pending) = pending.as_ref() {

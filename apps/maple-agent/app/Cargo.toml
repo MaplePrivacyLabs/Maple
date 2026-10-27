@@ -35,7 +35,7 @@ desktop = [
 # `maple-agent acp`: the Agent Client Protocol server on stdio.
 acp = ["maple-agent/acp"]
 # `maple-agent proxy`: the OpenAI-compatible HTTP endpoint.
-proxy = ["dep:maple-proxy", "dep:axum", "dep:tower-http"]
+proxy = ["dep:maple-proxy", "dep:axum", "dep:tower-http", "dep:hyper", "dep:hyper-util", "dep:futures-util"]
 
 [dependencies]
 dirs = "6"
@@ -86,6 +86,9 @@ pake-cpace = { git = "https://github.com/1Password/cpace", rev = "7e2e42c7d35996
 zeroize = { workspace = true }
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
+hyper = { version = "1", features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio", "service"], optional = true }
+futures-util = { workspace = true, optional = true }
 
 # Used only to ask the compositor whether it draws window decorations; see
 # `ui::decorations`. gpui cannot answer that question.

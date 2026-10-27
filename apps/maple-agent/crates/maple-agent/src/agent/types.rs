@@ -656,6 +656,9 @@ pub enum AgentRunEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentServiceEvent {
+    /// Content-free invalidation for this computer's optional API service.
+    /// The application fetches its local host snapshot; never sent remotely.
+    LocalApiChanged,
     /// Local store initialization, locking or maintenance changed. Never remote.
     StoreStateChanged {
         state: crate::store::StoreState,
