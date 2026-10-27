@@ -3859,7 +3859,7 @@ impl Sidebar {
         let rename_id = Arc::clone(&row.id);
         let rung = TaskRung::of(task);
         let step = rung.step();
-        let pin_id = row.pin_id.clone();
+        let pin_task_id = Arc::clone(&row.id);
         let rename_field = self.task_rename_field(&row.id, cx);
         let renaming = rename_field.is_some();
         let hover_bg = if is_selected {
@@ -3931,10 +3931,10 @@ impl Sidebar {
             .when_some(activity, |row_element, activity| {
                 row_element.child(activity_indicator(&row.spinner_id, activity))
             })
-            .when(is_pinned, |row| {
-                row.child(
+            .when(is_pinned, |row_element| {
+                row_element.child(
                     div()
-                        .id(pin_id.clone())
+                        .id(row.pin_id.clone())
                         .size_5()
                         .flex()
                         .items_center()
@@ -3948,7 +3948,7 @@ impl Sidebar {
                         .tooltip(widgets::tooltip("Unpin", None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
-                            this.toggle_task_pin(&pin_id, cx);
+                            this.toggle_task_pin(&pin_task_id, cx);
                         }))
                         .child(icon("pin", px(13.), theme::accent())),
                 )
