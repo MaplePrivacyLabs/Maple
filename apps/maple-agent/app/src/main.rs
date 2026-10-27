@@ -180,10 +180,19 @@ fn run_remote(command: RemoteCommand) -> Result<(), String> {
     let value: serde_json::Value = backend
         .runtime_handle()
         .block_on(backend.remote_setting(method, params))?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).map_err(|_| "Could not display remote status")?
-    );
+    write_remote_output(&mut std::io::stdout().lock(), &value)
+}
+
+fn write_remote_output(
+    output: &mut impl std::io::Write,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    // Mutation commands return null as an acknowledgement, not display data.
+    if !value.is_null() {
+        let json =
+            serde_json::to_string_pretty(value).map_err(|_| "Could not display remote response")?;
+        writeln!(output, "{json}").map_err(|_| "Could not write remote response")?;
+    }
     Ok(())
 }
 
@@ -733,6 +742,40 @@ mod tests {
     fn parse(args: &[&str]) -> Result<Option<Mode>, clap::Error> {
         Cli::try_parse_from(std::iter::once("maple-agent").chain(args.iter().copied()))
             .map(|cli| cli.mode)
+    }
+
+    #[test]
+    fn remote_output_is_silent_for_successful_acknowledgements() {
+        let mut output = Vec::new();
+        super::write_remote_output(&mut output, &serde_json::Value::Null).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn remote_output_preserves_json_data_and_trailing_newline() {
+        for value in [
+            serde_json::json!({"enabled": true, "ready": false, "error": null}),
+            serde_json::json!([]),
+            serde_json::json!([{"endpoint": "test-endpoint"}]),
+            serde_json::json!({"code": "TEST-CODE"}),
+        ] {
+            let mut output = Vec::new();
+            super::write_remote_output(&mut output, &value).unwrap();
+            assert_eq!(
+                String::from_utf8(output).unwrap(),
+                format!("{}\n", serde_json::to_string_pretty(&value).unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn remote_output_reports_write_errors() {
+        let error = super::write_remote_output(
+            &mut std::io::Cursor::new(&mut [][..]),
+            &serde_json::json!([]),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Could not write remote response");
     }
 
     #[test]
