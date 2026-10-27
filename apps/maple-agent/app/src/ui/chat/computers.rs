@@ -174,10 +174,12 @@ impl ChatScreen {
         if !visible {
             self.project_folder_dialog = None;
         }
-        if changed && visible {
+        if changed && visible && !self.computers.is_empty() {
             // Only the mounted sidebar projects every computer. Background
             // views keep their own summaries and the shared catalog handle;
             // they do not rebuild all foreign rows on every update.
+            // An empty list is provisional startup state; an authoritative
+            // inventory always includes This computer.
             let computers = self.computers.clone();
             self.sidebar
                 .update(cx, |sidebar, cx| sidebar.set_computers(computers, cx));

@@ -226,7 +226,12 @@ impl Sidebar {
 
     pub(super) fn set_view(&mut self, mut view: SidebarView, cx: &mut Context<Self>) {
         self.sync_cached_order();
-        if view.group == SidebarGroup::Connection && !self.connection_grouping_available() {
+        // Changing task order must preserve a saved Connection grouping while
+        // the desktop is still loading its paired-computer inventory.
+        if view.group != self.view.group
+            && view.group == SidebarGroup::Connection
+            && !self.connection_grouping_available()
+        {
             view.group = SidebarGroup::Project;
         }
         if self.view == view {

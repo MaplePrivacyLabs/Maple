@@ -91,6 +91,7 @@ impl ComputerHostPage {
 
     fn cursor_is_current(&self, kind: &ComputerPageKind, cursor: &Option<String>) -> bool {
         let expected = match kind {
+            ComputerPageKind::ArchiveCount => None,
             ComputerPageKind::Projects => self.next_projects.as_ref(),
             ComputerPageKind::Groups => self.next_groups.as_ref(),
             ComputerPageKind::Tasks { settled: false } => self.next_active.as_ref(),
@@ -125,6 +126,7 @@ struct ComputerMore {
 
 #[derive(Clone)]
 enum ComputerPageKind {
+    ArchiveCount,
     Projects,
     Groups,
     Tasks { settled: bool },
@@ -136,6 +138,7 @@ enum ComputerPageKind {
 impl ComputerPageKind {
     fn key(&self) -> String {
         match self {
+            Self::ArchiveCount => "archive-count".into(),
             Self::Projects => "projects".into(),
             Self::Groups => "groups".into(),
             Self::Tasks { settled } => format!("tasks:{settled}"),
@@ -147,6 +150,7 @@ impl ComputerPageKind {
 }
 
 enum ComputerPageReply {
+    ArchiveCount(u64),
     Projects(NavigationProjectPage),
     Groups(NavigationGroupPage),
     Tasks(NavigationTaskPage),
@@ -267,6 +271,7 @@ fn computer_revision(computers: &[Computer]) -> u64 {
         computer.host_epoch.hash(&mut hash);
         computer.loading.hash(&mut hash);
         computer.error.hash(&mut hash);
+        computer.pinned.hash(&mut hash);
         // Loading an older page adds summaries to the snapshot. Only a new
         // head or an update to the head invalidates these paging cursors.
         let newest = computer.sessions.iter().map(|task| task.updated_ms).max();
@@ -445,6 +450,119 @@ pub(super) struct OtherTask {
 }
 
 impl Sidebar {
+    fn computer_task_pin(&self, computer: &Computer, task: &TaskSummary) -> Option<i64> {
+        if computer.key.is_none() {
+            return task.pinned_ms;
+        }
+        // Remote pins belong to the viewer, independently of pins in the
+        // execution computer's store. Prefer this view's immediate edits.
+        let pins = if computer.key.as_deref() == self.backend.remote_host() {
+            &self.pinned_tasks
+        } else {
+            &computer.pinned
+        };
+        pins.iter()
+            .position(|id| id == &task.uuid)
+            .map(|rank| i64::MAX - i64::try_from(rank).unwrap_or(i64::MAX))
+    }
+
+    /// Saved pins are already hydrated by the owning sidebar's bounded GetTasks
+    /// batches. Keep those verified summaries visible beyond the first page.
+    fn computer_pinned_summaries(&self, computer: &Computer) -> Vec<TaskSummary> {
+        let own = computer.key.as_deref() == self.backend.remote_host();
+        let pins = if own {
+            &self.pinned_tasks
+        } else {
+            &computer.pinned
+        };
+        let ranks = pins
+            .iter()
+            .enumerate()
+            .map(|(rank, id)| (id.as_str(), rank))
+            .collect::<HashMap<_, _>>();
+        let mut tasks = HashMap::<String, TaskSummary>::new();
+        for session in computer
+            .sessions
+            .iter()
+            .chain(self.sessions.iter().filter(|_| own))
+        {
+            if self
+                .project_filter
+                .as_ref()
+                .is_some_and(|root| !own || root != &session.project_root)
+                || (own && self.removed_projects.contains(&session.project_root))
+            {
+                continue;
+            }
+            let Some(rank) = ranks.get(session.id.as_str()) else {
+                continue;
+            };
+            if tasks
+                .get(&session.id)
+                .is_some_and(|task| task.updated_ms >= session.updated_ms)
+            {
+                continue;
+            }
+            let project = computer
+                .projects
+                .iter()
+                .find(|project| project.path == session.project_root);
+            let task = TaskSummary {
+                uuid: session.id.clone(),
+                title: session.title.clone(),
+                project_root: session.project_root.clone(),
+                project_display_name: project.map(|project| project.label.to_string()),
+                state: match session.state {
+                    AgentTaskState::Active => "active",
+                    AgentTaskState::Settled => "settled",
+                    AgentTaskState::Archived => "archived",
+                }
+                .into(),
+                kind: if session.acp { "acp" } else { "desktop" }.into(),
+                pinned_ms: Some(i64::MAX - i64::try_from(*rank).unwrap_or(i64::MAX)),
+                web_enabled: session.web_enabled,
+                model: session.model.clone(),
+                message_count: u64::try_from(session.message_count).unwrap_or(u64::MAX),
+                created_ms: session.created_ms,
+                updated_ms: session.updated_ms,
+                truncated: false,
+            };
+            let task = self.current_computer_task(computer, &task);
+            if task.state != "archived"
+                && (task.message_count > 0
+                    || computer.running.contains(&task.uuid)
+                    || (own && self.running.contains(&task.uuid)))
+            {
+                tasks.insert(task.uuid.clone(), task);
+            }
+        }
+        tasks
+            .into_values()
+            .filter(|task| self.computer_task_matches(computer, task))
+            .collect()
+    }
+
+    fn computer_task_matches(&self, computer: &Computer, task: &TaskSummary) -> bool {
+        self.filter.is_empty()
+            || task.title.to_lowercase().contains(&self.filter)
+            || computer.label.to_lowercase().contains(&self.filter)
+            || self
+                .computer_project_name(
+                    computer,
+                    &ProjectSummary {
+                        root: task.project_root.clone(),
+                        display_name: task.project_display_name.clone(),
+                        position: None,
+                        last_used_ms: task.updated_ms,
+                        name_revision: 0,
+                        is_default_workspace: false,
+                        truncated: false,
+                    },
+                )
+                .to_lowercase()
+                .contains(&self.filter)
+    }
+
     pub(super) fn uses_computer_projection(&self) -> bool {
         self.computers.iter().any(|computer| computer.key.is_some())
     }
@@ -636,6 +754,23 @@ impl Sidebar {
             .collect::<Vec<_>>();
         for computer in hosts {
             let page = self.group_pages.hosts.entry(computer.clone()).or_default();
+            if !page.loaded.contains("archive-count")
+                && !page.loading.contains("archive-count")
+                && !page.errors.contains_key("archive-count")
+            {
+                self.load_computer_page(
+                    ComputerMore {
+                        computer: computer.clone(),
+                        generation: self.group_pages.generation,
+                        kind: ComputerPageKind::ArchiveCount,
+                        cursor: None,
+                        label: "Loading archived task count…".into(),
+                        loading: false,
+                    },
+                    cx,
+                );
+            }
+            let page = self.group_pages.hosts.entry(computer.clone()).or_default();
             if !page.loaded.contains("projects")
                 && !page.loading.contains("projects")
                 && !page.errors.contains_key("projects")
@@ -766,6 +901,17 @@ impl Sidebar {
         self.call(
             async move {
                 match &request.kind {
+                    ComputerPageKind::ArchiveCount => backend
+                        .list_project_groups(
+                            &user,
+                            NavigationGroupQuery {
+                                limit_groups: 1,
+                                per_project: 1,
+                                cursor: None,
+                            },
+                        )
+                        .await
+                        .map(|page| ComputerPageReply::ArchiveCount(page.archived_count)),
                     ComputerPageKind::Projects => backend
                         .list_projects(
                             &user,
@@ -891,6 +1037,7 @@ impl Sidebar {
         let mut own_tasks = Vec::new();
         let mut own_labels = Vec::new();
         match result {
+            ComputerPageReply::ArchiveCount(count) => page.archived_count = count,
             ComputerPageReply::Projects(reply) => {
                 if action.cursor.is_none() && !retain_head {
                     page.projects.clear();
@@ -910,7 +1057,9 @@ impl Sidebar {
                 if action.cursor.is_none() && !retain_head {
                     page.groups.clear();
                 }
-                page.archived_count = reply.archived_count;
+                if !page.loaded.contains("archive-count") {
+                    page.archived_count = reply.archived_count;
+                }
                 page.next_groups = reply.next_cursor;
                 for group in reply.groups {
                     // Group replies are authoritative project metadata too.
@@ -994,7 +1143,9 @@ impl Sidebar {
                             merge_tasks(&mut group.tasks, reply.tasks);
                         }
                     }
-                    ComputerPageKind::Groups | ComputerPageKind::Projects => {}
+                    ComputerPageKind::ArchiveCount
+                    | ComputerPageKind::Groups
+                    | ComputerPageKind::Projects => {}
                 }
             }
         }
@@ -1069,6 +1220,7 @@ impl Sidebar {
         if computer.running.contains(&task.uuid) || (own && self.running.contains(&task.uuid)) {
             task.state = "active".into();
         }
+        task.pinned_ms = self.computer_task_pin(computer, &task);
         task
     }
 
@@ -1142,6 +1294,39 @@ impl Sidebar {
                     .collect();
             }
         }
+        for task in self.computer_pinned_summaries(computer) {
+            if let Some(group) = groups
+                .iter_mut()
+                .find(|group| group.project.root == task.project_root)
+            {
+                if !group
+                    .tasks
+                    .iter()
+                    .any(|existing| existing.uuid == task.uuid)
+                {
+                    group.tasks.push(task);
+                }
+            } else {
+                groups.push(NavigationProjectGroup {
+                    project: page
+                        .projects
+                        .iter()
+                        .find(|project| project.root == task.project_root)
+                        .cloned()
+                        .unwrap_or_else(|| ProjectSummary {
+                            root: task.project_root.clone(),
+                            display_name: task.project_display_name.clone(),
+                            position: None,
+                            last_used_ms: task.updated_ms,
+                            name_revision: 0,
+                            is_default_workspace: false,
+                            truncated: false,
+                        }),
+                    tasks: vec![task],
+                    more: Default::default(),
+                });
+            }
+        }
         groups.retain(|group| {
             (!own || !self.removed_projects.contains(&group.project.root))
                 && self
@@ -1156,8 +1341,14 @@ impl Sidebar {
         tasks.sort_by(|(left, a), (right, b)| {
             let left = &self.computers[*left].key;
             let right = &self.computers[*right].key;
-            self.task_order_key(left, &a.uuid, a.created_ms, a.updated_ms)
-                .cmp(&self.task_order_key(right, &b.uuid, b.created_ms, b.updated_ms))
+            a.pinned_ms
+                .is_none()
+                .cmp(&b.pinned_ms.is_none())
+                .then_with(|| b.pinned_ms.cmp(&a.pinned_ms))
+                .then_with(|| {
+                    self.task_order_key(left, &a.uuid, a.created_ms, a.updated_ms)
+                        .cmp(&self.task_order_key(right, &b.uuid, b.created_ms, b.updated_ms))
+                })
                 .then_with(|| left.cmp(right))
                 .then_with(|| a.uuid.cmp(&b.uuid))
         });
@@ -1179,8 +1370,19 @@ impl Sidebar {
             return;
         }
         group.tasks.sort_by(|a, b| {
-            self.task_order_key(&computer.key, &a.uuid, a.created_ms, a.updated_ms)
-                .cmp(&self.task_order_key(&computer.key, &b.uuid, b.created_ms, b.updated_ms))
+            a.pinned_ms
+                .is_none()
+                .cmp(&b.pinned_ms.is_none())
+                .then_with(|| b.pinned_ms.cmp(&a.pinned_ms))
+                .then_with(|| {
+                    self.task_order_key(&computer.key, &a.uuid, a.created_ms, a.updated_ms)
+                        .cmp(&self.task_order_key(
+                            &computer.key,
+                            &b.uuid,
+                            b.created_ms,
+                            b.updated_ms,
+                        ))
+                })
                 .then_with(|| a.uuid.cmp(&b.uuid))
         });
         for task in &group.tasks {
@@ -1293,10 +1495,15 @@ impl Sidebar {
                 continue;
             }
             if flat {
+                let pins = self.computer_pinned_summaries(computer);
                 let source = if searching {
-                    page.search.iter().collect::<Vec<_>>()
+                    page.search.iter().chain(pins.iter()).collect::<Vec<_>>()
                 } else {
-                    page.active.iter().chain(&page.settled).collect::<Vec<_>>()
+                    page.active
+                        .iter()
+                        .chain(&page.settled)
+                        .chain(pins.iter())
+                        .collect::<Vec<_>>()
                 };
                 let mut seen = HashSet::new();
                 for summary in source {
@@ -1414,8 +1621,31 @@ impl Sidebar {
                 }
             }
         }
-        if self.computer_archived_count > 0 || !archived.is_empty() {
+        let count_failed = hosts.iter().any(|index| {
+            self.group_pages
+                .hosts
+                .get(&computers[*index].key)
+                .is_some_and(|page| page.errors.contains_key("archive-count"))
+        });
+        if self.computer_archived_count > 0 || !archived.is_empty() || count_failed {
             entries.push(SidebarEntry::ArchivedHeader);
+            for &index in &hosts {
+                let computer = &computers[index];
+                if self
+                    .group_pages
+                    .hosts
+                    .get(&computer.key)
+                    .is_some_and(|page| page.errors.contains_key("archive-count"))
+                {
+                    self.computer_more_entry(
+                        &mut entries,
+                        &computer.key,
+                        ComputerPageKind::ArchiveCount,
+                        None,
+                        &format!("archived task count from {}", computer.label),
+                    );
+                }
+            }
             if self.archived_expanded {
                 for (index, task) in archived {
                     self.push_computer_task(&mut entries, index, &computers[index], &task);
@@ -1537,7 +1767,7 @@ impl Sidebar {
                 }
                 entries.push(SidebarEntry::Task(SidebarTaskEntry {
                     session: index,
-                    pinned: task.pinned_ms.is_some(),
+                    pinned: self.computer_task_pin(computer, task).is_some(),
                     settled: state == AgentTaskState::Settled && !self.running.contains(&task.uuid),
                     archived: state == AgentTaskState::Archived,
                     gap_after: false,
@@ -1592,7 +1822,7 @@ impl Sidebar {
                 title: latest
                     .map_or_else(|| task.title.clone(), |session| session.title.clone())
                     .into(),
-                pinned: task.pinned_ms.is_some(),
+                pinned: self.computer_task_pin(computer, task).is_some(),
                 activity: if computer.running.contains(&task.uuid) {
                     Some(SessionActivity::Running)
                 } else if computer.unread.contains(&task.uuid) {

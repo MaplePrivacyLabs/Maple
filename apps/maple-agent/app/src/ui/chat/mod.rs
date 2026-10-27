@@ -1591,7 +1591,10 @@ impl ChatScreen {
                         );
                         this.runtime_error = None;
                         // Runtime root is only the fallback used at startup.
-                        if this.selected_session.is_none()
+                        // A draft may have selected its folder before this
+                        // start, including a catalog's first remote activation.
+                        if !this.draft
+                            && this.selected_session.is_none()
                             && this.selection_generation == generation
                         {
                             this.set_project_context(status.project_root, cx);
