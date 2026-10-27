@@ -18,6 +18,7 @@ use crate::store::records::{
 mod connection;
 #[cfg(test)]
 pub(super) mod fake_server;
+pub(crate) mod oauth;
 mod task;
 mod tool;
 

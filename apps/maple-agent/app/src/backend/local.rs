@@ -2571,6 +2571,25 @@ impl LocalBackend {
             .await
     }
 
+    /// The local host owns the entire OAuth attempt and its credentials. Only
+    /// public MCP metadata returns to the desktop after the approved setup is
+    /// installed by the account-bound runtime handle.
+    pub async fn connect_vana_local(
+        &self,
+        user_id: &str,
+        endpoint: String,
+    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, String> {
+        self.authorize_account(user_id)?;
+        let handle = self.service.handle_for_user(user_id).await?;
+        let browser_endpoint = endpoint.clone();
+        handle
+            .connect_vana_local(
+                endpoint,
+                Arc::new(move |url| open_vana_authorization(&browser_endpoint, &url)),
+            )
+            .await
+    }
+
     pub async fn list_project_mcp_servers(
         &self,
         user_id: &str,
@@ -3049,6 +3068,45 @@ pub fn open_in_browser(url: &str, what: &str) -> Result<(), String> {
     })
 }
 
+/// OAuth metadata is untrusted even when it comes from a user-selected local
+/// endpoint. The browser may only open its exact loopback origin; never launch
+/// arbitrary protocols or disclose the authorization query in an error/log.
+fn validate_vana_authorization(endpoint: &str, address: &str) -> Result<(), String> {
+    const INVALID: &str =
+        "Vana returned an unexpected sign-in address. Copy its Local MCP endpoint again.";
+    if endpoint.len() > 4096 || address.len() > 16 * 1024 {
+        return Err(INVALID.into());
+    }
+    let endpoint = reqwest::Url::parse(endpoint.trim()).map_err(|_| INVALID.to_string())?;
+    let address = reqwest::Url::parse(address).map_err(|_| INVALID.to_string())?;
+    if endpoint.scheme() != "http"
+        || endpoint.host_str() != Some("127.0.0.1")
+        || !endpoint.port().is_some_and(|port| port != 0)
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.path() != "/mcp"
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || address.origin() != endpoint.origin()
+        || !address.username().is_empty()
+        || address.password().is_some()
+        || address.fragment().is_some()
+    {
+        return Err(INVALID.into());
+    }
+    Ok(())
+}
+
+fn open_vana_authorization(endpoint: &str, address: &str) -> Result<(), String> {
+    validate_vana_authorization(endpoint, address)?;
+    // This runs in the local host's IPC worker, never the GPUI thread. A
+    // webbrowser error may contain the full URL; keep it out of logs and IPC.
+    webbrowser::open(address).map_err(|_| {
+        "Could not open your browser for Vana sign-in. Check your default browser and try again."
+            .to_string()
+    })
+}
+
 /// The server's API key name rule: 1 to 50 characters after trimming.
 pub const MAX_API_KEY_NAME_LENGTH: usize = 50;
 
@@ -3115,6 +3173,39 @@ mod project_names_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vana_local_browser_only_opens_the_requested_loopback_origin() {
+        let endpoint = "http://127.0.0.1:47321/mcp";
+        assert!(
+            validate_vana_authorization(
+                endpoint,
+                "http://127.0.0.1:47321/mcp/oauth/authorize?client_id=fixture&state=synthetic-state",
+            )
+            .is_ok()
+        );
+        for address in [
+            "https://example.com/authorize?state=synthetic-state",
+            "http://127.0.0.1:47322/mcp/oauth/authorize",
+            "http://localhost:47321/mcp/oauth/authorize",
+            "http://user:password@127.0.0.1:47321/mcp/oauth/authorize",
+            "http://127.0.0.1:47321/mcp/oauth/authorize#unexpected",
+            "vana://mcp-authorization?fixture=synthetic",
+        ] {
+            assert!(validate_vana_authorization(endpoint, address).is_err());
+        }
+        for endpoint in [
+            "https://example.com/mcp",
+            "http://127.0.0.1:0/mcp",
+            "http://127.0.0.1:47321/mcp?unexpected=true",
+            "http://127.0.0.1:47321/mcp#unexpected",
+            "http://127.0.0.1:47321/another-resource",
+        ] {
+            assert!(
+                validate_vana_authorization(endpoint, "http://127.0.0.1:47321/authorize").is_err()
+            );
+        }
+    }
 
     #[tokio::test]
     async fn remote_mcp_host_boundary_accepts_write_only_values_and_keeps_account_fences() {

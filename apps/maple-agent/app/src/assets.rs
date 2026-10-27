@@ -58,6 +58,8 @@ assets!(
     "icons/trash-2.svg",
     "icons/undo-2.svg",
     "icons/users.svg",
+    // Official wordmark from https://vana.org/ (2026-10-13), for the Vana MCP catalog card.
+    "icons/vana-mark.svg",
     "icons/volume-2.svg",
     "icons/x.svg",
     "icons/zap.svg",

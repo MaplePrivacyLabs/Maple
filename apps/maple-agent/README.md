@@ -205,8 +205,25 @@ A stdio server runs in the task's folder with the login shell's PATH, in its
 own process group; it is stopped by closing its input, then SIGTERM, then
 SIGKILL. For an HTTP server, `$NAME` and `${NAME}` in the URL and in header
 values are filled in from the server's environment variables, and redirects
-are not followed. Sign-in to servers (OAuth), and MCP resources and prompts,
-are not supported yet.
+are not followed. Generic remote-server OAuth, MCP resources and prompts are
+not supported yet.
+
+#### Vana on this computer
+
+The Vana card in Settings > Integrations connects to the **Local MCP endpoint**
+copied from Vana Desktop's Settings > Server > Connect apps. The port is chosen
+by Vana; Maple accepts its exact `http://127.0.0.1:<port>/mcp` URL and performs
+native OAuth with PKCE. Choose the shared data in Vana's approval screen, then
+select Vana in Maple's per-task integration menu. Setup requires This Computer;
+it cannot be forwarded through a remote execution computer.
+
+The local host keeps account- and endpoint-bound OAuth credentials and renews
+access tokens. No wallet key, developer controller, Node bridge, public MCP
+URL or remote tunnel is required for the MCP data connection. Vana Desktop must
+remain running. Disconnect the client in Vana to revoke access, then reconnect
+in Maple when you want to authorize it again. Local MCP does not imply offline
+Vana account/grant services or on-device model processing. See the
+[integration guide](scripts/vana-poc/README.md).
 
 #### Claude Code
 

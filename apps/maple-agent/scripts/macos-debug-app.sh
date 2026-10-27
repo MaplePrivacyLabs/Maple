@@ -66,8 +66,8 @@ python3 "$repo_root/scripts/stage-third-party-notices.py" "$contents_dir/Resourc
 # compatibility libraries in the app for older systems. Reversing these paths
 # can load two Swift runtimes when Apple frameworks select the system copy.
 load_commands="$(/usr/bin/otool -l "$binary_destination")"
-system_rpath_line="$(/usr/bin/awk '$1 == "path" && $2 == "/usr/lib/swift" { print NR; exit }' <<<"$load_commands")"
-bundle_rpath_line="$(/usr/bin/awk '$1 == "path" && $2 == "@executable_path/../Frameworks" { print NR; exit }' <<<"$load_commands")"
+system_rpath_line="$(printf '%s\n' "$load_commands" | /usr/bin/awk '$1 == "path" && $2 == "/usr/lib/swift" && !line { line = NR } END { if (line) print line }')"
+bundle_rpath_line="$(printf '%s\n' "$load_commands" | /usr/bin/awk '$1 == "path" && $2 == "@executable_path/../Frameworks" && !line { line = NR } END { if (line) print line }')"
 if [[ -z "$system_rpath_line" || -z "$bundle_rpath_line" ]]; then
     echo "debug binary is missing its Swift runtime paths; rebuild Maple before staging" >&2
     exit 1

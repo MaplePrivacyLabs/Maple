@@ -104,6 +104,8 @@ pub enum IntegrityTable {
     Projects,
     McpServers,
     McpServerSecrets,
+    #[serde(rename = "mcp_oauth_credentials")]
+    McpOAuthCredentials,
     Tasks,
     Entries,
     TimelineRows,
@@ -929,6 +931,7 @@ fn classify(message: &str, cipher: bool) -> IntegrityFinding {
         ("projects", IntegrityTable::Projects),
         ("mcp_servers", IntegrityTable::McpServers),
         ("mcp_server_secrets", IntegrityTable::McpServerSecrets),
+        ("mcp_oauth_credentials", IntegrityTable::McpOAuthCredentials),
         ("tasks", IntegrityTable::Tasks),
         ("entries", IntegrityTable::Entries),
         ("timeline_rows", IntegrityTable::TimelineRows),

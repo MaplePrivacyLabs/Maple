@@ -51,6 +51,10 @@ pub(super) enum SettingsTarget {
     PromptReset,
     Integration(String),
     IntegrationSetup(String),
+    VanaDetails,
+    VanaConnect,
+    VanaToggle,
+    VanaEndpoint,
     McpAdd,
     McpServer(String),
 }
@@ -84,7 +88,11 @@ impl SettingsScreen {
     }
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
+        let mut inputs = vec![
+            self.prompt_editor.clone(),
+            self.shortcut_search.clone(),
+            self.vana_endpoint.clone(),
+        ];
         inputs.extend(self.account.inputs());
         inputs.push(self.api_keys.name.clone());
         if let Some(editor) = &self.mcp_editor {
@@ -157,22 +165,37 @@ impl SettingsScreen {
                 SettingsTarget::PromptSave,
                 SettingsTarget::PromptReset,
             ],
-            Section::Integrations => self
-                .integrations
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .filter(|integration| integration_is_visible(integration))
-                .flat_map(|integration| {
-                    [
-                        integration_can_setup(integration)
-                            .then(|| SettingsTarget::IntegrationSetup(integration.id.clone())),
-                        integration_can_toggle(integration)
-                            .then(|| SettingsTarget::Integration(integration.id.clone())),
-                    ]
-                    .into_iter()
-                    .flatten()
-                })
+            Section::Integrations => std::iter::once(SettingsTarget::VanaDetails)
+                .chain(
+                    self.vana_details_open
+                        .then_some(SettingsTarget::VanaConnect),
+                )
+                .chain(
+                    (self.vana_details_open && self.vana_server().is_some())
+                        .then_some(SettingsTarget::VanaToggle),
+                )
+                .chain(
+                    (self.vana_details_open && self.vana_local_available)
+                        .then_some(SettingsTarget::VanaEndpoint),
+                )
+                .chain(
+                    self.integrations
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|integration| integration_is_visible(integration))
+                        .flat_map(|integration| {
+                            [
+                                integration_can_setup(integration).then(|| {
+                                    SettingsTarget::IntegrationSetup(integration.id.clone())
+                                }),
+                                integration_can_toggle(integration)
+                                    .then(|| SettingsTarget::Integration(integration.id.clone())),
+                            ]
+                            .into_iter()
+                            .flatten()
+                        }),
+                )
                 .chain(std::iter::once(SettingsTarget::McpAdd))
                 .chain(
                     self.mcp_servers
@@ -364,6 +387,17 @@ impl SettingsScreen {
             Some(SettingsTarget::PromptReset) => self.reset_prompt(cx),
             Some(SettingsTarget::Integration(id)) => self.toggle_integration(&id, cx),
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
+            Some(SettingsTarget::VanaDetails) => self.open_vana_details(cx),
+            Some(SettingsTarget::VanaConnect) => self.start_vana_connection(cx),
+            Some(SettingsTarget::VanaToggle) => {
+                if let Some(name) = self.vana_server().map(|server| server.name.clone()) {
+                    self.toggle_mcp_server(&name, cx);
+                }
+            }
+            Some(SettingsTarget::VanaEndpoint) => {
+                let handle = self.vana_endpoint.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
             None => {}
@@ -414,6 +448,10 @@ impl SettingsScreen {
             cx.notify();
             return;
         }
+        if self.vana_details_open {
+            self.open_vana_details(cx);
+            return;
+        }
         if self.shortcut_recorder.is_some() {
             self.stop_shortcut_recording();
             cx.notify();
@@ -424,7 +462,11 @@ impl SettingsScreen {
 
     fn application_text_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         let focused = window.focused(cx);
-        let mut inputs = vec![&self.prompt_editor, &self.shortcut_search];
+        let mut inputs = vec![
+            &self.prompt_editor,
+            &self.shortcut_search,
+            &self.vana_endpoint,
+        ];
         if let Some(editor) = &self.mcp_editor {
             inputs.extend([
                 &editor.name,
@@ -740,6 +782,7 @@ mod tests {
             assert_eq!(
                 this.visible_application_targets(),
                 vec![
+                    SettingsTarget::VanaDetails,
                     SettingsTarget::IntegrationSetup("cua-driver".to_string()),
                     SettingsTarget::Integration("cua-driver".to_string()),
                     SettingsTarget::McpAdd,

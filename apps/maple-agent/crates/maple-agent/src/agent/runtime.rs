@@ -744,6 +744,9 @@ impl AgentRuntime {
             search_path,
             Some(output_dir),
         );
+        mcp.set_oauth_context(super::mcp::oauth::OAuthAccountContext::new(
+            self.store.clone(),
+        ));
         options.extensions.push(mcp.extension());
         let task_cua = TaskCua::new(&self.account_scope, &row.id, self.models.clone());
         options.extensions.push(task_cua.extension());

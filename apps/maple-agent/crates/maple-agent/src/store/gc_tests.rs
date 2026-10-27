@@ -239,6 +239,7 @@ fn account_children(store: &Store, account: AccountId) -> i64 {
             (SELECT count(*) FROM projects WHERE account_id=?1) +
             (SELECT count(*) FROM mcp_servers WHERE account_id=?1) +
             (SELECT count(*) FROM mcp_server_secrets s JOIN mcp_servers m ON m.id=s.server_id WHERE m.account_id=?1) +
+            (SELECT count(*) FROM mcp_oauth_credentials c JOIN mcp_servers m ON m.id=c.server_id WHERE m.account_id=?1) +
             (SELECT count(*) FROM credentials WHERE account_id=?1) +
             (SELECT count(*) FROM send_receipts WHERE account_id=?1) +
             (SELECT count(*) FROM remote_identities WHERE account_id=?1)",
@@ -339,4 +340,111 @@ fn confirmed_account_collection_precollects_metadata_and_preserves_other_account
         Some(json!({"keep": true}))
     );
     assert!(store.confirmed_account_deletions(10).unwrap().is_empty());
+}
+
+#[test]
+fn confirmed_account_collection_precollects_oauth_with_byte_and_row_caps_in_plain_and_keyed_stores()
+{
+    use crate::store::keys::{KdfParams, Password};
+
+    const PAYLOAD_BYTES: usize = 65_536;
+    const FOREIGN_PAYLOAD: &[u8] = b"GC-OAUTH-FOREIGN-CANARY";
+    const GENERATION: &str = "0123456789abcdef0123456789abcdef";
+    for encrypted in [false, true] {
+        for (active, revoked) in [(32, 1), (0, ROW_CAP + 1)] {
+            let (_directory, store, alice, bob) = fixture();
+            store.write(Durability::Durable, |tx| {
+                for position in 0..active + revoked {
+                    tx.execute("INSERT INTO mcp_servers(account_id,key,position,definition) VALUES (?1,?2,?3,'{}')",
+                        params![alice.0,format!("oauth-{position}"),position as i64])?;
+                    let server = tx.last_insert_rowid();
+                    let payload = (position < active).then(|| vec![0_u8; PAYLOAD_BYTES]);
+                    tx.execute("INSERT INTO mcp_oauth_credentials(server_id,target,generation,revision,payload) VALUES (?1,zeroblob(32),?2,0,?3)",
+                        params![server,GENERATION,payload])?;
+                }
+                tx.execute("INSERT INTO mcp_servers(account_id,key,position,definition) VALUES (?1,'foreign-oauth',0,'{}')", [bob.0])?;
+                let server = tx.last_insert_rowid();
+                tx.execute("INSERT INTO mcp_oauth_credentials(server_id,target,generation,revision,payload) VALUES (?1,zeroblob(32),?2,7,?3)",
+                    params![server,GENERATION,FOREIGN_PAYLOAD])?;
+                Ok(())
+            }).unwrap();
+            if encrypted {
+                let password = Password::normalize("Z7jv!9qP#3nMx@8Ks^2dH").unwrap();
+                store
+                    .set_store_password(&password, &[], KdfParams::floor())
+                    .unwrap();
+            }
+            let oauth_state = |account: AccountId| {
+                store.read(|tx| {
+                    Ok(tx.query_row("SELECT count(*),coalesce(sum(16+length(c.target)+length(CAST(c.generation AS BLOB))+coalesce(length(c.payload),0)),0)
+                        FROM mcp_oauth_credentials c JOIN mcp_servers m ON m.id=c.server_id WHERE m.account_id=?1",
+                        [account.0], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?)))?)
+                }).unwrap()
+            };
+            let initial = oauth_state(alice);
+            assert_eq!(initial.0, (active + revoked) as i64);
+            let foreign = oauth_state(bob);
+            assert_eq!(store.collect_account_step(alice), Err(StoreError::Conflict));
+            store
+                .begin_account_deletion(alice, "oauth-delete", 2)
+                .unwrap();
+            assert_eq!(store.collect_account_step(alice), Err(StoreError::Conflict));
+            assert_eq!(oauth_state(alice), initial);
+            store
+                .confirm_account_deletion(alice, "oauth-delete")
+                .unwrap();
+
+            let mut batches = 0;
+            let mut deleted_bytes = 0;
+            while oauth_state(alice).0 != 0 {
+                let before = oauth_state(alice);
+                let progress = store.collect_account_step(alice).unwrap();
+                let after = oauth_state(alice);
+                assert_bounded(&progress);
+                assert_eq!(progress.stage, CollectionStage::AccountMetadata);
+                assert!(!progress.done);
+                assert_eq!(progress.rows as i64, before.0 - after.0);
+                assert_eq!(progress.bytes, u64::try_from(before.1 - after.1).unwrap());
+                if batches == 0 {
+                    let row_bytes = 80 + if active == 0 { 0 } else { PAYLOAD_BYTES };
+                    assert_eq!(progress.rows, ROW_CAP.min(BYTE_CAP as usize / row_bytes),);
+                }
+                let servers = store
+                    .read(|tx| {
+                        Ok(tx.query_row(
+                            "SELECT count(*) FROM mcp_servers WHERE account_id=?1",
+                            [alice.0],
+                            |row| row.get::<_, i64>(0),
+                        )?)
+                    })
+                    .unwrap();
+                assert_eq!(servers, (active + revoked) as i64);
+                assert_eq!(oauth_state(bob), foreign);
+                batches += 1;
+                deleted_bytes += progress.bytes;
+            }
+            assert!(batches >= 2);
+            assert_eq!(deleted_bytes, u64::try_from(initial.1).unwrap());
+            let mut completed = false;
+            for _ in 0..16 {
+                let before = account_children(&store, alice);
+                let progress = store.collect_account_step(alice).unwrap();
+                assert_bounded(&progress);
+                if progress.done {
+                    assert_eq!(before, 0);
+                    completed = true;
+                    break;
+                }
+            }
+            assert!(completed);
+            assert_eq!(store.account_id("alice").unwrap(), None);
+            assert_eq!(store.account_id("bob").unwrap(), Some(bob));
+            assert_eq!(oauth_state(bob), foreign);
+            store.read(|tx| {
+                assert_eq!(tx.query_row::<Vec<u8>,_,_>("SELECT c.payload FROM mcp_oauth_credentials c JOIN mcp_servers m ON m.id=c.server_id WHERE m.account_id=?1",
+                    [bob.0], |row| row.get(0))?, FOREIGN_PAYLOAD);
+                Ok(())
+            }).unwrap();
+        }
+    }
 }

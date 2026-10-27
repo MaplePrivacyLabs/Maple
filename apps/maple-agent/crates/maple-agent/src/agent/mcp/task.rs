@@ -238,6 +238,7 @@ pub(crate) struct TaskMcp {
     changed: Notify,
     last_used: Mutex<Option<Instant>>,
     weak: Weak<TaskMcp>,
+    oauth: OnceLock<super::oauth::OAuthAccountContext>,
 }
 
 impl TaskMcp {
@@ -261,7 +262,12 @@ impl TaskMcp {
             changed: Notify::new(),
             last_used: Mutex::new(None),
             weak: weak.clone(),
+            oauth: OnceLock::new(),
         })
+    }
+
+    pub(crate) fn set_oauth_context(&self, context: super::oauth::OAuthAccountContext) {
+        let _ = self.oauth.set(context);
     }
 
     /// The extension the task's session loads: it registers the servers'
@@ -331,6 +337,7 @@ impl TaskMcp {
                 }
             });
             McpServer::new(config, &self.cwd, self.search_path.clone(), tools_changed)
+                .with_oauth_context(self.oauth.get().cloned())
         })
     }
 

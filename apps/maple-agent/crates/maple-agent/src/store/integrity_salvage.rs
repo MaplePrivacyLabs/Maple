@@ -40,6 +40,8 @@ pub enum SalvageTable {
     Projects,
     McpServers,
     McpServerSecrets,
+    #[serde(rename = "mcp_oauth_credentials")]
+    McpOAuthCredentials,
     Tasks,
     Entries,
     TimelineRows,
@@ -61,6 +63,7 @@ impl SalvageTable {
             Self::Projects => "projects",
             Self::McpServers => "mcp_servers",
             Self::McpServerSecrets => "mcp_server_secrets",
+            Self::McpOAuthCredentials => "mcp_oauth_credentials",
             Self::Tasks => "tasks",
             Self::Entries => "entries",
             Self::TimelineRows => "timeline_rows",
@@ -91,6 +94,7 @@ impl SalvageTable {
             Self::AccountSettings => "account_settings NOT INDEXED",
             Self::Projects => "projects NOT INDEXED",
             Self::McpServers => "mcp_servers NOT INDEXED",
+            Self::McpOAuthCredentials => "mcp_oauth_credentials NOT INDEXED",
             Self::Tasks => "tasks NOT INDEXED",
             Self::Entries => "entries NOT INDEXED",
             Self::TimelineRows => "timeline_rows NOT INDEXED",
@@ -109,7 +113,7 @@ impl SalvageTable {
 }
 
 // Derived timeline rows never determine whether authoritative source is readable.
-const TABLES: [SalvageTable; 15] = [
+const TABLES: [SalvageTable; 16] = [
     SalvageTable::StoreMeta,
     SalvageTable::Accounts,
     SalvageTable::Credentials,
@@ -119,6 +123,7 @@ const TABLES: [SalvageTable; 15] = [
     SalvageTable::Projects,
     SalvageTable::McpServers,
     SalvageTable::McpServerSecrets,
+    SalvageTable::McpOAuthCredentials,
     SalvageTable::Tasks,
     SalvageTable::Entries,
     SalvageTable::ToolSummaries,
@@ -447,6 +452,7 @@ fn validate_metadata(source: &Connection) -> StoreResult<()> {
         "SELECT EXISTS(SELECT 1 FROM mcp_servers NOT INDEXED WHERE NOT json_valid(definition))",
         "SELECT EXISTS(SELECT 1 FROM remote_identities NOT INDEXED WHERE NOT json_valid(record) OR length(secret)!=32)",
         "SELECT EXISTS(SELECT 1 FROM mcp_server_secrets INDEXED BY sqlite_autoindex_mcp_server_secrets_1 WHERE length(target)!=32)",
+        "SELECT EXISTS(SELECT 1 FROM mcp_oauth_credentials NOT INDEXED WHERE length(target)!=32 OR length(generation)!=32 OR revision<0 OR (payload IS NOT NULL AND (length(payload)=0 OR length(payload)>65536)))",
         "SELECT EXISTS(SELECT 1 FROM send_receipts NOT INDEXED WHERE result IS NOT NULL AND NOT json_valid(result))",
         "SELECT EXISTS(SELECT 1 FROM store_meta WHERE key NOT IN ('store_id','created_ms','schema_epoch','last_integrity_ms','setup_operation_id','integrity_incomplete_attempts','integrity_retry_after_ms'))",
     ];
@@ -695,6 +701,7 @@ fn copy_rows(source: &Connection, destination: &mut Connection, scan: &Scan) -> 
         SalvageTable::Projects,
         SalvageTable::McpServers,
         SalvageTable::McpServerSecrets,
+        SalvageTable::McpOAuthCredentials,
         SalvageTable::Tasks,
         SalvageTable::Entries,
         SalvageTable::ToolSummaries,
