@@ -99,6 +99,11 @@ CLI equivalents: `remote status`, `remote enable`, `remote disable`,
 `remote discover`, `remote begin-pairing`, `remote cancel-pairing`,
 `remote pair <endpoint>` (hidden code prompt), and `remote revoke <endpoint>`.
 These administer only the local computer. Never put a pairing code in argv or logs.
+Successful `enable`, `disable`, `cancel-pairing`, `pair`, and `revoke` commands
+produce no stdout output. `status`, `discover`, and `begin-pairing` print JSON.
+Errors go to stderr with a nonzero exit status. Enabling saves the setting;
+network startup happens in the background. Use `remote status` to check `enabled`,
+`ready`, and `error`.
 
 A password-protected execution host starts locked and does not load remote
 credentials or its identity until a local unlock succeeds. Unlock in its desktop
