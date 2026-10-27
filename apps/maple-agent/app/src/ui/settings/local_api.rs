@@ -243,7 +243,7 @@ impl SettingsScreen {
 
     pub(super) fn local_api_targets(&self) -> Vec<SettingsTarget> {
         let target = SettingsTarget::LocalApi;
-        let mut targets = Vec::new();
+        let mut targets = vec![target(LocalApiTarget::LearnMore)];
         if self.local_api.can_configure() {
             targets.push(target(LocalApiTarget::Enabled));
         }
@@ -260,7 +260,6 @@ impl SettingsScreen {
             targets.push(target(LocalApiTarget::CopyUrl));
         }
         targets.push(target(LocalApiTarget::ApiKeys));
-        targets.push(target(LocalApiTarget::LearnMore));
         if !self.local_api.refreshing && !self.local_api.saving {
             targets.push(target(LocalApiTarget::Refresh));
         }
@@ -311,10 +310,33 @@ impl SettingsScreen {
             .flex_col()
             .gap_4()
             .child(section_title("Local API"))
-            .child(setting_copy(
-                "Connect AI applications on this computer",
-                "Expose Maple's inference APIs at a local address. Requests use Maple's secure backend and your API credits.",
-            ))
+            .child(
+                div().flex().flex_col().gap_2()
+                    .child(setting_copy(
+                        "Connect AI applications on this computer",
+                        "Expose Maple's inference APIs at a local address. Requests use Maple's secure backend and your API credits.",
+                    ))
+                    .child(self.application_target(
+                        || SettingsTarget::LocalApi(LocalApiTarget::LearnMore),
+                        div()
+                            .id("local-api-learn-more")
+                            .role(gpui::Role::Link)
+                            .aria_label("Learn more about the local API")
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::link()))
+                            .focus_visible(widgets::focus_ring)
+                            .hover(|style| style.underline().cursor_pointer())
+                            .tab_index(17)
+                            .on_click(|_, _, _| crate::ui::rich_text::open_link(PROXY_DOCS_URL))
+                            .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, _, cx| {
+                                if activates(event) {
+                                    cx.stop_propagation();
+                                    crate::ui::rich_text::open_link(PROXY_DOCS_URL);
+                                }
+                            }))
+                            .child("Learn more"),
+                    )),
+            )
             .child(
                 widgets::card_row()
                     .flex()
@@ -475,25 +497,6 @@ impl SettingsScreen {
                             }
                         }))
                         .child("Manage API keys"),
-                ))
-                .child(self.application_target(
-                    || SettingsTarget::LocalApi(LocalApiTarget::LearnMore),
-                    div()
-                        .id("local-api-learn-more")
-                        .role(gpui::Role::Link)
-                        .aria_label("Learn more about the local API")
-                        .text_color(gpui::rgb(theme::link()))
-                        .focus_visible(widgets::focus_ring)
-                        .hover(|style| style.underline().cursor_pointer())
-                        .tab_index(23)
-                        .on_click(|_, _, _| crate::ui::rich_text::open_link(PROXY_DOCS_URL))
-                        .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, _, cx| {
-                            if activates(event) {
-                                cx.stop_propagation();
-                                crate::ui::rich_text::open_link(PROXY_DOCS_URL);
-                            }
-                        }))
-                        .child("Learn more"),
                 )),
         ).child(
             widgets::card_row().flex().flex_col().gap_2()
@@ -682,9 +685,9 @@ mod tests {
             assert_eq!(
                 this.local_api_targets(),
                 vec![
+                    target(LocalApiTarget::LearnMore),
                     target(LocalApiTarget::CopyUrl),
                     target(LocalApiTarget::ApiKeys),
-                    target(LocalApiTarget::LearnMore),
                 ]
             );
         });
