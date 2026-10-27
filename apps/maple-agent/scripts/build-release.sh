@@ -41,6 +41,16 @@ if [[ ${#target_args[@]} != 0 ]]; then
 fi
 python3 "$component/scripts/generate-third-party-notices.py"
 binary="$component/target/release/maple-agent"
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) binary="${binary}.exe" ;; esac
-"$binary" --build-info |
-    python3 -c 'import json,sys; info=json.load(sys.stdin); expected=sys.argv[1]; assert info["profile"] == expected, "incorrect release profile"' "$1"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        # The unsigned prebuilt Windows bootstrap is not an installed app.
+        # Validate its immutable PE metadata without entering runtime trust or
+        # installation checks; signing and installed-app smoke happen later.
+        python3 "$component/scripts/windows-build-info.py" "${binary}.exe" \
+            --profile "$1" --source-sha "$(git rev-parse HEAD)" >/dev/null
+        ;;
+    *)
+        "$binary" --build-info |
+            python3 -c 'import json,sys; info=json.load(sys.stdin); expected=sys.argv[1]; assert info["profile"] == expected, "incorrect release profile"' "$1"
+        ;;
+esac
