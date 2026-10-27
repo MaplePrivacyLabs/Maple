@@ -5784,6 +5784,139 @@ mod state_tests {
         assert!(!sidebar.update(cx, |sidebar, _| sidebar.switcher_menu_open()));
     }
 
+    /// Every computer has its own Chat and sidebar, and the window swaps
+    /// them. Application Vim's row is window browsing: a task opened on
+    /// another computer stays the selected row there, also on a return
+    /// visit, and the keys reach the Chat swapped in.
+    #[gpui::test]
+    fn test_application_vim_row_follows_a_task_opened_on_another_computer(cx: &mut TestAppContext) {
+        use super::super::computers::{Destination, Navigate};
+        use super::super::navigation::{ChatRegion, SidebarTarget};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        struct Shell {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for Shell {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.clone())
+            }
+        }
+        cx.executor().allow_parking();
+        let (here, there) = {
+            let _guard = SETTINGS_LOCK.lock();
+            (
+                crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                    .expect("backend"),
+                crate::backend::AgentBackend::for_remote_test("peer").expect("backend"),
+            )
+        };
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        cx.update(crate::desktop::register_key_bindings);
+        let mut screen = |backend, task: &str, root: &str| {
+            let seen = requests.clone();
+            let chat = cx.new(|cx| {
+                let _guard = SETTINGS_LOCK.lock();
+                let mut chat = ChatScreen::new_without_start(Arc::new(backend), "user".into(), cx);
+                chat.booting = false;
+                chat.trust_prompts = false;
+                chat.sidebar
+                    .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+                chat.sessions = vec![summary_at(task, task, root)];
+                chat.sync_sidebar(cx);
+                chat.set_application_vim_enabled(true, cx);
+                chat
+            });
+            cx.update(|cx| {
+                cx.subscribe(&chat, move |_, request: &Navigate, _| {
+                    seen.borrow_mut().push(request.clone());
+                })
+                .detach();
+            });
+            chat
+        };
+        let local = screen(here, "here", "/a");
+        let peer = screen(there, "there", "/b");
+        let computers = Arc::new(vec![
+            local.read_with(cx, |chat, cx| {
+                chat.computer_snapshot("This computer".into(), cx)
+            }),
+            peer.read_with(cx, |chat, cx| chat.computer_snapshot("Peer".into(), cx)),
+        ]);
+        for chat in [&local, &peer] {
+            chat.update(cx, |chat, cx| chat.set_computers(computers.clone(), cx));
+        }
+        let (shell, cx) = cx.add_window_view(|_, _| Shell {
+            chat: local.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        // Put Application Vim on another computer's task row and press
+        // Enter, then swap Chats the way the desktop does.
+        let mut open = |from: &Entity<ChatScreen>, to: &Entity<ChatScreen>, row: Navigate| {
+            cx.update(|window, cx| {
+                from.update(cx, |chat, cx| {
+                    chat.select_sidebar_from_pointer(
+                        SidebarTarget::Computer(row.clone()),
+                        window,
+                        cx,
+                    )
+                })
+            });
+            cx.simulate_keystrokes("enter");
+            assert_eq!(
+                requests.borrow_mut().drain(..).collect::<Vec<_>>(),
+                std::slice::from_ref(&row)
+            );
+            let browse = from.update(cx, |chat, cx| chat.sidebar_browse_state(cx));
+            from.update(cx, |chat, cx| chat.set_visible(false, cx));
+            shell.update(cx, |shell, cx| {
+                shell.chat = to.clone();
+                cx.notify();
+            });
+            to.update(cx, |chat, cx| {
+                chat.set_visible(true, cx);
+                chat.restore_sidebar_browse_state(browse, cx);
+                chat.navigate(row.destination, cx);
+            });
+            cx.run_until_parked();
+        };
+        let task = |computer: Option<&str>, id: &str| Navigate {
+            computer: computer.map(str::to_owned),
+            destination: Destination::Task(id.into()),
+        };
+        open(&local, &peer, task(Some("peer"), "there"));
+        open(&peer, &local, task(None, "here"));
+        open(&local, &peer, task(Some("peer"), "there"));
+        let state = |cx: &mut gpui::VisualTestContext| {
+            peer.update(cx, |chat, cx| {
+                (
+                    chat.application_vim.region,
+                    chat.sidebar.read(cx).vim_selected().cloned(),
+                )
+            })
+        };
+        let opened = state(cx);
+        // The keys reach the Chat now on screen: k leaves the open task.
+        cx.simulate_keystrokes("k");
+        let moved = state(cx);
+        assert_eq!(
+            opened,
+            (
+                ChatRegion::Sidebar,
+                Some(SidebarTarget::Task("there".into()))
+            ),
+            "after k: {moved:?}"
+        );
+        assert_ne!(moved.1, opened.1, "k reaches the swapped-in Chat");
+    }
+
     /// What menu, if any, the chat and its sidebar show.
     fn open_menu(chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext) -> String {
         chat.update(cx, |this, cx| {

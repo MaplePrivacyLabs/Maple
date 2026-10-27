@@ -128,6 +128,9 @@ impl ChatScreen {
     ) {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.restore_browse_state(state, cx));
+        // The keyboard focus stayed on the computer this one replaced, which
+        // is no longer drawn.
+        self.screen_focus_pending = true;
     }
 
     /// Name updates are pushed. Refresh the small folder list periodically for
