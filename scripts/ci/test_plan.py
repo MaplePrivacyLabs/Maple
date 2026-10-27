@@ -567,8 +567,10 @@ class PlannerTests(unittest.TestCase):
         runners = {entry["id"]: entry["runner"] for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])}
         self.assertEqual(runners, {lane.id: overrides.get(lane.runner.variable or "", lane.runner.label)
                                    for lane in lanes.LANES if lane.job in lanes.MATRIX_JOBS})
-        self.assertEqual((runners["agent-test"], runners["agent-windows"], runners["agent-lint"]),
-                         ("blacksmith-16vcpu-ubuntu-2404", "windows-2025", lanes.LINUX.label))
+        self.assertEqual((runners["agent-test"], runners["agent-lint"], runners["agent-windows"],
+                          runners["agent-supply-chain"]),
+                         ("blacksmith-16vcpu-ubuntu-2404", "blacksmith-16vcpu-ubuntu-2404", "windows-2025",
+                          lanes.LINUX.label))
         entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
         self.assertEqual({len(entry["cache_key"]) for entry in entries if entry["cache"]}, {16})
 

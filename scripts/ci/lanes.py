@@ -183,10 +183,10 @@ EIF_BUILDER = Runner("blacksmith-8vcpu-ubuntu-2404-arm")
 
 LANES: Tuple[Lane, ...] = (
     Lane("agent-lint", AGENT, also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",),
-         run="just ci-lint && python3 ../../scripts/ci/plan.py check-rust",
-         cache="agent-lint", timeout=15, hook="agent", **AGENT_FLAKE),
+         run="just ci-lint && python3 ../../scripts/ci/plan.py check-rust", runner=LINUX_HEAVY,
+         cache="agent-lint", timeout=40, hook="agent", **AGENT_FLAKE),
     Lane("agent-test", AGENT, also=RUST_SDK + PROXY_RUNTIME, runner=LINUX_HEAVY,
-         run="just ci-test", cache="agent-test", timeout=20, hook="agent", **AGENT_FLAKE),
+         run="just ci-test", cache="agent-test", timeout=40, hook="agent", **AGENT_FLAKE),
     Lane("agent-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME + APPLE_TOOLCHAIN,
          runner=MACOS, run="cargo clippy --workspace --all-targets --locked -- -D warnings",
          cache="agent-macos", timeout=25, **AGENT_FLAKE),
@@ -208,7 +208,7 @@ LANES: Tuple[Lane, ...] = (
              " && cargo test --workspace --locked",
          cache="agent-full-windows", timeout=60, gate=False, **AGENT_WIN),
     # Pinned SQLCipher sources, per-target advisories and bans, and notices.
-    Lane("agent-supply-chain", AGENT_DEPENDENCIES, run="just supply-chain", **AGENT_FLAKE),
+    Lane("agent-supply-chain", AGENT_DEPENDENCIES, run="just supply-chain", timeout=30, **AGENT_FLAKE),
     # Released rusqlite's own tests against the static SQLCipher provider (nightly.yml: all three OSes).
     Lane("agent-provider", tuple("apps/maple-agent/" + glob for glob in (
         "Cargo.lock", "dependencies/sqlcipher/**", "scripts/test-rusqlite-provider.py",
