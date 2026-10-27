@@ -5842,12 +5842,19 @@ mod state_tests {
         };
         let local = screen(here, "here", "/a");
         let peer = screen(there, "there", "/b");
-        let computers = Arc::new(vec![
+        let mut computers = vec![
             local.read_with(cx, |chat, cx| {
                 chat.computer_snapshot("This computer".into(), cx)
             }),
             peer.read_with(cx, |chat, cx| chat.computer_snapshot("Peer".into(), cx)),
-        ]);
+        ];
+        // Rows come from these snapshots alone. With a backend, the sidebar
+        // also reads pages from the fixtures' empty stores, and those replies
+        // remove the rows whenever they happen to land.
+        for computer in &mut computers {
+            computer.backend = None;
+        }
+        let computers = Arc::new(computers);
         for chat in [&local, &peer] {
             chat.update(cx, |chat, cx| chat.set_computers(computers.clone(), cx));
         }
