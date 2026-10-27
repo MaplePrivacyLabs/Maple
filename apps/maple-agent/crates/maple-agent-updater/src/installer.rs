@@ -2459,8 +2459,12 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod portable_lock_tests {
+// This fixture exercises the Unix bundle path contract. Windows public lock
+// admission additionally requires a registered, signed versioned installation;
+// its native storage/locking primitive is exercised by the required Windows
+// native_install_lock_rejects_concurrent_writers test.
+#[cfg(all(test, unix))]
+mod unix_lock_tests {
     use super::*;
 
     #[test]

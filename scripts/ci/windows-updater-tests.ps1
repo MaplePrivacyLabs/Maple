@@ -129,6 +129,7 @@ try {
       'installer::windows_bundle::transaction_tests::native_transaction_interruption_before_pointer_keeps_previous',
       'installer::windows_bundle::transaction_tests::native_transaction_pointer_lock_failure_is_retryable',
       'installer::windows_bundle::transaction_tests::native_install_lock_rejects_concurrent_writers',
+      'installer::windows_bundle::transaction_tests::native_public_install_lock_refuses_unadmitted_root_without_pointer_or_lock',
       'installer::windows_bundle::transaction_tests::native_pending_manual_intent_preserves_current_generation',
       'installer::windows_bundle::transaction_tests::native_completed_manual_intent_recovers_after_pointer_commit',
       'installer::windows_bundle::transaction_tests::native_live_matching_manual_intent_is_never_cleared',
@@ -159,7 +160,7 @@ try {
     }
     $receipt.discovered_tests = $testNames.Count
     $runPath = Invoke-CargoStep 'native-tests.log' @(
-      'test', '-p', 'maple-agent-updater', '--locked', '--lib',
+      'test', '-p', 'maple-agent-updater', '--locked', '--no-fail-fast', '--lib',
       '--test', 'windows_bootstrap_native', '--', '--test-threads=1'
     )
     $summaries = @(Get-Content -LiteralPath $runPath | Where-Object { $_ -match '^test result:' })

@@ -86,6 +86,7 @@ class WindowsUpdaterWorkflowTests(unittest.TestCase):
         self.assertIn("'--locked'", script)
         self.assertIn("'--test', 'windows_bootstrap_native'", script)
         self.assertIn("'--test-threads=1'", script)
+        self.assertIn("'--locked', '--no-fail-fast', '--lib'", script)
         self.assertIn("Get-AuthenticodeSignature -LiteralPath $unrelated", script)
         self.assertIn("A required native Windows test group is missing", script)
         self.assertIn("without skipped tests", script)

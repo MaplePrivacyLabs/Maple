@@ -219,13 +219,47 @@ fn native_transaction_pointer_lock_failure_is_retryable() {
 }
 
 #[test]
+fn native_public_install_lock_refuses_unadmitted_root_without_pointer_or_lock() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("unadmitted-installation");
+    windows_fs::private_directory(&root).unwrap();
+    // No registry/profile/signature fixture is forged: this deliberately fails
+    // the public installed-product admission boundary before opening its lock.
+    assert!(acquire_install_lock(&root).is_err());
+    for name in [
+        POINTER,
+        ".install.lock",
+        "maple-agent.exe",
+        "uninstall.exe",
+        DESCRIPTOR,
+    ] {
+        assert!(!root.join(name).exists(), "admission created {name}");
+    }
+    // Admission may establish its private structural prefix, but must not
+    // stage or change payload bytes for an unadmitted installation.
+    for entry in fs::read_dir(&root).unwrap() {
+        let entry = entry.unwrap();
+        assert_eq!(entry.file_name(), "versions");
+        assert!(entry.file_type().unwrap().is_dir());
+        assert!(fs::read_dir(entry.path()).unwrap().next().is_none());
+    }
+}
+
+#[test]
 fn native_install_lock_rejects_concurrent_writers() {
     let fixture = TransactionFixture::new();
-    let path = fixture.root.join(".install.lock");
-    let first = windows_fs::open_private(&path, false).unwrap();
-    let second = windows_fs::open_private(&path, false).unwrap();
+    // Exercise the real Windows lock path and private-handle admission. The
+    // fixture supplies ordinary bytes, so it cannot satisfy the independent
+    // signed/registered public installation precondition.
+    let first = open_install_lock(&fixture.root).unwrap();
+    let second = open_install_lock(&fixture.root).unwrap();
     fs2::FileExt::try_lock_exclusive(&first).unwrap();
-    assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
+    let error = fs2::FileExt::try_lock_exclusive(&second).unwrap_err();
+    assert_eq!(
+        error.raw_os_error(),
+        fs2::lock_contended_error().raw_os_error(),
+        "production contention classification must recognize the native error"
+    );
     fs2::FileExt::unlock(&first).unwrap();
     fs2::FileExt::try_lock_exclusive(&second).unwrap();
     fs2::FileExt::unlock(&second).unwrap();
