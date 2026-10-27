@@ -2160,23 +2160,35 @@ impl Sidebar {
                             .child(
                                 div()
                                     .flex_none()
+                                    .relative()
                                     .w(FOLDER_ICON_SIZE)
+                                    .h(FOLDER_ICON_SIZE)
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(icon(
-                                        if collapsible {
-                                            if expanded {
-                                                "chevron-down"
-                                            } else {
-                                                "chevron-right"
-                                            }
-                                        } else {
-                                            "monitor"
-                                        },
-                                        if collapsible { px(12.) } else { px(14.) },
-                                        theme::text_muted(),
-                                    )),
+                                    .child(icon("monitor", FOLDER_ICON_SIZE, theme::text_muted()))
+                                    .when(collapsible, |slot| {
+                                        slot.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right(FOLDER_ICON_SIZE)
+                                                .w(FOLDER_HEADER_PADDING - gpui::rems(0.5))
+                                                .h(FOLDER_ICON_SIZE)
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon(
+                                                    if expanded {
+                                                        "chevron-down"
+                                                    } else {
+                                                        "chevron-right"
+                                                    },
+                                                    px(12.),
+                                                    theme::text_muted(),
+                                                )),
+                                        )
+                                    }),
                             )
                             .child(
                                 div()
