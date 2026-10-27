@@ -37,6 +37,7 @@ pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod attachments;
 mod dialogs;
+mod feedback;
 mod navigation;
 mod paging;
 mod project_folder;
@@ -576,6 +577,7 @@ pub struct ChatScreen {
     dialog_focus: Option<gpui::FocusHandle>,
     /// A dialog just opened; the next render moves focus into it.
     dialog_focus_pending: bool,
+    feedback: Option<feedback::FeedbackForm>,
     /// Whether the project-trust question may open its dialog. Tests that
     /// drive typing turn it off, since the dialog rightly takes focus.
     trust_prompts: bool,
@@ -1343,6 +1345,7 @@ impl ChatScreen {
             popup: Popup::new(|this| &mut this.popup, cx),
             dialog_focus: None,
             dialog_focus_pending: false,
+            feedback: None,
             trust_prompts: true,
             sidebar_collapsed: false,
             sidebar_transition: None,
@@ -4127,6 +4130,10 @@ impl ChatScreen {
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
+        if self.feedback.is_some() {
+            self.close_feedback(cx);
+            return;
+        }
         // A rename ends first. A project's rename field sits in the
         // switcher, which passes Escape on and stays open.
         if self
@@ -4235,7 +4242,7 @@ impl ChatScreen {
             return;
         }
         // A modal dialog owns the keyboard; nothing types past it.
-        if self.trust_prompt.is_some() || self.confirm.is_some() {
+        if self.trust_prompt.is_some() || self.confirm.is_some() || self.feedback.is_some() {
             return;
         }
         // A focused text field already receives typing: the composer, the
@@ -6558,6 +6565,8 @@ impl Render for ChatScreen {
                 window.focus(&handle, cx);
             }
         }
+        self.focus_feedback(window, cx);
+        let feedback = self.render_feedback(cx);
         let confirm = self
             .confirm
             .clone()
@@ -6773,6 +6782,7 @@ impl Render for ChatScreen {
                 ))
             })
             .children(confirm)
+            .children(feedback)
             .children(trust_prompt)
             .children(self.project_folder_dialog.clone().map(|dialog| {
                 dialog.cached(
@@ -6818,6 +6828,29 @@ impl ChatScreen {
                                     .h_full()
                                     .flex_none(),
                             ),
+                        ),
+                )
+            })
+            .when(expansion > 0.95, |column| {
+                column.child(
+                    widgets::ghost_button("send-feedback")
+                        .aria_label("Send feedback")
+                        .debug_selector(|| "send-feedback".to_string())
+                        .absolute()
+                        .bottom_2()
+                        .right_2()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .tab_index(7)
+                        .child("Send feedback")
+                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.open_feedback(window, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_feedback(window, cx)),
                         ),
                 )
             })
