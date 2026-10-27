@@ -30,7 +30,7 @@ impl ReorderRow {
 
 impl Sidebar {
     pub(super) fn connection_grouping_available(&self) -> bool {
-        self.computers.iter().any(|computer| computer.key.is_some())
+        self.uses_computer_projection()
     }
 
     pub(super) fn load_order(&mut self, cx: &mut Context<Self>) {
@@ -112,17 +112,14 @@ impl Sidebar {
         if self.view.sort == SidebarSort::Updated {
             return (0, updated.saturating_neg());
         }
-        if let Some(rank) = self
-            .task_ranks
-            .get(computer)
-            .and_then(|ranks| ranks.get(id))
-        {
-            (1, *rank as i64)
-        } else if created > self.order.created_before_ms {
-            (0, created.saturating_neg())
-        } else {
-            (2, created.saturating_neg())
-        }
+        catalog::manual_order_key(
+            self.task_ranks
+                .get(computer)
+                .and_then(|ranks| ranks.get(id))
+                .copied(),
+            created,
+            self.order.created_before_ms,
+        )
     }
 
     pub(super) fn local_manual_order(

@@ -19,7 +19,7 @@ mod ordering;
 #[path = "sidebar_paging.rs"]
 mod paging;
 use super::computers::{Computer, Destination, Navigate, ProjectRenameRequest, ProjectTarget};
-use computers::{ComputerPages, OtherTask, ProjectHeading};
+use computers::{ComputerPages, OtherTask};
 use paging::{PageKind, SidebarPages};
 
 pub(super) fn project_from_summary(
@@ -527,7 +527,7 @@ pub(super) struct Sidebar {
     pages: SidebarPages,
     group_pages: ComputerPages,
     computers: Arc<Vec<Computer>>,
-    computer_projects: Vec<ProjectHeading>,
+    computer_projects: Vec<ProjectRow>,
     other_tasks: Vec<OtherTask>,
     computer_archived_count: usize,
     backend: Arc<AgentBackend>,
@@ -2148,7 +2148,12 @@ impl Sidebar {
                 .find(|session| &session.id == id)
                 .map(|session| session.title.clone())
                 .unwrap_or_default(),
-            RenameTarget::Project(target) => self.project_name(target),
+            RenameTarget::Project(target) => self
+                .computer_projects
+                .iter()
+                .find(|row| &row.target == target)
+                .map(|row| row.name.to_string())
+                .unwrap_or_else(|| self.project_name(target)),
         };
         let chat = self.chat.clone();
         let sidebar = cx.entity().downgrade();
@@ -3713,8 +3718,7 @@ impl Sidebar {
             .children(menu)
     }
 
-    /// A task row's overflow button, with the task's menu under it while
-    /// open: rename, then where the task can go.
+    /// A task row's overflow button and its grouped task actions.
     fn task_menu_trigger(
         &self,
         row: &SidebarRow,

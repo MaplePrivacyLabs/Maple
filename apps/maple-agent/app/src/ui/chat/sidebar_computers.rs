@@ -430,14 +430,6 @@ fn snapshot_page(computer: &Computer, query: &str, archived_expanded: bool) -> C
     page
 }
 
-pub(super) struct ProjectHeading {
-    pub(super) request: Navigate,
-    pub(super) target: ProjectTarget,
-    pub(super) name: SharedString,
-    id: SharedString,
-    label: SharedString,
-    remote: bool,
-}
 pub(super) struct OtherTask {
     pub(super) request: Navigate,
     pub(super) archived: bool,
@@ -1337,27 +1329,39 @@ impl Sidebar {
         groups
     }
 
+    fn compare_computer_tasks(
+        &self,
+        left: &Option<String>,
+        a: &TaskSummary,
+        right: &Option<String>,
+        b: &TaskSummary,
+    ) -> std::cmp::Ordering {
+        a.pinned_ms
+            .is_none()
+            .cmp(&b.pinned_ms.is_none())
+            .then_with(|| b.pinned_ms.cmp(&a.pinned_ms))
+            .then_with(|| {
+                self.task_order_key(left, &a.uuid, a.created_ms, a.updated_ms)
+                    .cmp(&self.task_order_key(right, &b.uuid, b.created_ms, b.updated_ms))
+            })
+            .then_with(|| left.cmp(right))
+            .then_with(|| a.uuid.cmp(&b.uuid))
+    }
+
     fn sort_computer_tasks(&self, tasks: &mut [(usize, TaskSummary)]) {
         tasks.sort_by(|(left, a), (right, b)| {
-            let left = &self.computers[*left].key;
-            let right = &self.computers[*right].key;
-            a.pinned_ms
-                .is_none()
-                .cmp(&b.pinned_ms.is_none())
-                .then_with(|| b.pinned_ms.cmp(&a.pinned_ms))
-                .then_with(|| {
-                    self.task_order_key(left, &a.uuid, a.created_ms, a.updated_ms)
-                        .cmp(&self.task_order_key(right, &b.uuid, b.created_ms, b.updated_ms))
-                })
-                .then_with(|| left.cmp(right))
-                .then_with(|| a.uuid.cmp(&b.uuid))
+            self.compare_computer_tasks(
+                &self.computers[*left].key,
+                a,
+                &self.computers[*right].key,
+                b,
+            )
         });
     }
 
     fn push_computer_group(
         &mut self,
         entries: &mut Vec<SidebarEntry>,
-        computer_index: usize,
         computer: &Computer,
         mut group: NavigationProjectGroup,
     ) {
@@ -1365,28 +1369,15 @@ impl Sidebar {
             computer: computer.key.clone(),
             path: group.project.root.clone(),
         };
-        self.push_computer_heading(entries, computer_index, computer, &group.project);
+        self.push_computer_heading(entries, computer, &group.project);
         if self.collapsed_projects.contains(&target) {
             return;
         }
-        group.tasks.sort_by(|a, b| {
-            a.pinned_ms
-                .is_none()
-                .cmp(&b.pinned_ms.is_none())
-                .then_with(|| b.pinned_ms.cmp(&a.pinned_ms))
-                .then_with(|| {
-                    self.task_order_key(&computer.key, &a.uuid, a.created_ms, a.updated_ms)
-                        .cmp(&self.task_order_key(
-                            &computer.key,
-                            &b.uuid,
-                            b.created_ms,
-                            b.updated_ms,
-                        ))
-                })
-                .then_with(|| a.uuid.cmp(&b.uuid))
-        });
+        group
+            .tasks
+            .sort_by(|a, b| self.compare_computer_tasks(&computer.key, a, &computer.key, b));
         for task in &group.tasks {
-            self.push_computer_task(entries, computer_index, computer, task);
+            self.push_computer_task(entries, computer, task);
         }
         if self.filter.is_empty() {
             for (settled, cursor) in [(false, group.more.active), (true, group.more.settled)] {
@@ -1551,7 +1542,7 @@ impl Sidebar {
             match self.view.group {
                 SidebarGroup::Project => {
                     for (index, group) in groups {
-                        self.push_computer_group(&mut entries, index, &computers[index], group);
+                        self.push_computer_group(&mut entries, &computers[index], group);
                     }
                     for &index in &hosts {
                         self.push_computer_flat_more(&mut entries, index, None);
@@ -1567,7 +1558,6 @@ impl Sidebar {
                         for (owner, group) in groups.iter().filter(|(owner, _)| *owner == index) {
                             self.push_computer_group(
                                 &mut entries,
-                                *owner,
                                 &computers[*owner],
                                 group.clone(),
                             );
@@ -1590,7 +1580,7 @@ impl Sidebar {
                             continue;
                         }
                         for (index, task) in visible {
-                            self.push_computer_task(&mut entries, *index, &computers[*index], task);
+                            self.push_computer_task(&mut entries, &computers[*index], task);
                         }
                         if !searching {
                             for &index in &hosts {
@@ -1607,7 +1597,7 @@ impl Sidebar {
                 }
                 SidebarGroup::List => {
                     for (index, task) in &tasks {
-                        self.push_computer_task(&mut entries, *index, &computers[*index], task);
+                        self.push_computer_task(&mut entries, &computers[*index], task);
                     }
                     for &index in &hosts {
                         if searching {
@@ -1648,7 +1638,7 @@ impl Sidebar {
             }
             if self.archived_expanded {
                 for (index, task) in archived {
-                    self.push_computer_task(&mut entries, index, &computers[index], &task);
+                    self.push_computer_task(&mut entries, &computers[index], &task);
                 }
                 if !searching {
                     for &index in &hosts {
@@ -1692,7 +1682,6 @@ impl Sidebar {
     fn push_computer_heading(
         &mut self,
         entries: &mut Vec<SidebarEntry>,
-        _computer_index: usize,
         computer: &Computer,
         project: &ProjectSummary,
     ) {
@@ -1703,21 +1692,8 @@ impl Sidebar {
             computer: computer.key.clone(),
             path: root.clone(),
         };
-        self.computer_projects.push(ProjectHeading {
-            request: Navigate {
-                computer: computer.key.clone(),
-                destination: Destination::Project(root.clone()),
-            },
-            id: format!("computer-project-{:?}-{root}", computer.key).into(),
-            target,
-            name: label.clone().into(),
-            label: if self.view.group == SidebarGroup::Connection {
-                label.into()
-            } else {
-                format!("{} · {}", label, computer.label).into()
-            },
-            remote: computer.key.is_some(),
-        });
+        self.computer_projects
+            .push(ProjectRow::new(target, label.into()));
         entries.push(SidebarEntry::ComputerProject(heading));
     }
 
@@ -1754,7 +1730,6 @@ impl Sidebar {
     fn push_computer_task(
         &mut self,
         entries: &mut Vec<SidebarEntry>,
-        _computer_index: usize,
         computer: &Computer,
         task: &TaskSummary,
     ) {
@@ -1844,7 +1819,11 @@ impl Sidebar {
         }
         let request = match entry {
             SidebarEntry::ComputerProject(index) => {
-                self.computer_projects.get(index)?.request.clone()
+                let target = &self.computer_projects.get(index)?.target;
+                Navigate {
+                    computer: target.computer.clone(),
+                    destination: Destination::Project(target.path.clone()),
+                }
             }
             SidebarEntry::OtherTask(index) => self.other_tasks.get(index)?.request.clone(),
             SidebarEntry::Computer(index) => Navigate {
@@ -1967,69 +1946,7 @@ impl Sidebar {
                     .into_any_element()
             }
             SidebarEntry::ComputerProject(index) => {
-                let project = &self.computer_projects[index];
-                if let Some(root) = self
-                    .computer_project_roots
-                    .iter()
-                    .flatten()
-                    .find(|root| root.target == project.target)
-                {
-                    return self.render_project_header(root, window, cx);
-                }
-                let request = project.request.clone();
-                let expanded = !self.collapsed_projects.contains(&project.target);
-                div()
-                    .id(project.id.clone())
-                    .role(gpui::Role::Button)
-                    .aria_label(project.label.clone())
-                    .aria_expanded(expanded)
-                    .mx_2()
-                    .my(px(1.))
-                    .mt_3()
-                    .px_2()
-                    .py_1p5()
-                    .rounded(ROW_RADIUS)
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .when(selected, |row| {
-                        row.aria_active_descendant()
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    })
-                    .hover(move |s| {
-                        if dragging {
-                            s
-                        } else {
-                            s.bg(gpui::rgb(hover_bg)).cursor_pointer()
-                        }
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_computer_group(&request, cx);
-                    }))
-                    .child(icon(
-                        if expanded {
-                            "chevron-down"
-                        } else {
-                            "chevron-right"
-                        },
-                        px(12.),
-                        theme::text_muted(),
-                    ))
-                    .child(icon(
-                        if project.remote { "globe" } else { "folder" },
-                        px(14.),
-                        theme::text_muted(),
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(project.label.clone()),
-                    )
-                    .into_any_element()
+                self.render_project_header(&self.computer_projects[index], window, cx)
             }
             SidebarEntry::OtherTask(index) => {
                 let task = &self.other_tasks[index];

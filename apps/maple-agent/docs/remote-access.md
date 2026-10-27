@@ -28,9 +28,10 @@ The sidebar's **View options** menu groups tasks by **Project**, **Connection**,
 **Status**, or **In one list**. Connection becomes available after another
 computer is added, including while it is offline; enabling remote access on
 this computer alone does not add that choice. Project and Connection views keep
-known empty projects visible. A globe marks remote projects. Selecting a task or
-project also selects its execution computer; select a **This Computer** project
-to return to local work.
+known empty projects visible. Project view shows the computer name beside remote
+projects; Connection view places projects under their computer heading. Selecting
+a task or project also selects its execution computer; select a **This Computer**
+project to return to local work.
 
 **Sort tasks by** offers **Last updated** and **Manual order**, independently of
 grouping. Project and connection positions stay stable in either mode and can

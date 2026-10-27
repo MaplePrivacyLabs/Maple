@@ -27,6 +27,17 @@ const MAX_INVENTORY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHE_SCOPES: usize = 8;
 
+/// The paged catalog and loaded sidebar rows use the same manual order bands.
+pub(super) fn manual_order_key(rank: Option<usize>, created: i64, cutoff: i64) -> (u8, i64) {
+    if let Some(rank) = rank {
+        (1, rank as i64)
+    } else if created > cutoff {
+        (0, created.saturating_neg())
+    } else {
+        (2, created.saturating_neg())
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub(super) struct ManualOrder {
     pub(super) cutoff: i64,
@@ -234,13 +245,11 @@ impl<'a> Ranks<'a> {
     }
 
     fn position(&self, task: &TaskSummary) -> Position {
-        let (band, value) = if let Some(rank) = self.tasks.get(task.uuid.as_str()) {
-            (1, *rank as i64)
-        } else if task.created_ms > self.cutoff {
-            (0, task.created_ms.saturating_neg())
-        } else {
-            (2, task.created_ms.saturating_neg())
-        };
+        let (band, value) = manual_order_key(
+            self.tasks.get(task.uuid.as_str()).copied(),
+            task.created_ms,
+            self.cutoff,
+        );
         Position {
             band,
             value,
