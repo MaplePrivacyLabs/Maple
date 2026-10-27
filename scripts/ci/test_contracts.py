@@ -431,6 +431,10 @@ class ContractTests(unittest.TestCase):
                 ((*pr, heads["code"]), "dev", "pending"), ((*pr, heads["deleted dev"]), "dev", "fails"),
                 (("pull_request", "refs/pull/1/merge", "", heads["dev"]), "prod", "error"),
                 (("pull_request", "refs/pull/1/merge", "f" * 40, heads["dev"]), "prod", "error"),
+                # Only full commit ids: an option or an abbreviation would make a real edit look absent.
+                (("pull_request", "refs/pull/1/merge", f"--output={root / 'diff.out'}", heads["prod"]), "prod", "error"),
+                ((*pr[:2], master[:12], heads["prod"]), "prod", "error"),
+                ((*pr, f"--output={root / 'diff.out'}"), "prod", "error"),
             ]
             script = root / "step.sh"
             script.write_text(step["run"])
@@ -457,6 +461,7 @@ class ContractTests(unittest.TestCase):
                             self.assertIn(f"### EIF/PCR approval {'pending' if expected == 0 else 'mismatch'}"
                                           f" ({mode})", summary.read_text())
                             self.assertIn('{"PCR0": "built"}', summary.read_text())
+            self.assertEqual(list(root.glob("diff.out*")), [])  # git never read a SHA as an option
 
     def test_c5_oidc_and_flakehub_stay_in_their_jobs_on_one_builder_class(self):
         minted = {(name, job_id) for name, job_id, job in jobs()

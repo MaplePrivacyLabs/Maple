@@ -25,8 +25,11 @@ and timeout. `scripts/ci/plan.py` (the `plan` job) selects lanes from the diff:
   imported unchanged and asked about every changed path, docs included.
 - Dependency audits (`deps-*`, cargo-deny) run only when their manifest,
   lockfile or `deny.toml` changes, with `ci:full`, and nightly. CI edits never
-  select them, so a newly published advisory cannot turn an unrelated PR red;
-  the nightly run reports it.
+  select them, so a newly published advisory in those graphs reaches a PR only
+  through its own manifests; the nightly run reports it. Two gate lanes still
+  audit advisories whenever they are selected, CI edits included:
+  `agent-supply-chain` (cargo-deny for the Agent targets) and `sdk-ts`
+  (`bun audit` in the SDK publish build).
 
 The `plan` job summary lists each selected lane and why. To preview locally:
 
