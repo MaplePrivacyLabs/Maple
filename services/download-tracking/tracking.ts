@@ -6,6 +6,7 @@ type Artifact =
   | "macos-dmg"
   | "macos-updater"
   | "windows-installer"
+  | "windows-bundle"
   | "linux-bundle"
   | "linux-appimage"
   | "linux-deb"
@@ -89,6 +90,13 @@ function agentArtifact(path: string): Route | null {
   const file = match[2];
   if (file.length > 200 || file.includes("..")) return null;
   const base = { version: match[1], kind: "artifact" as const };
+  if (file.endsWith("-windows-x86_64.tar.gz"))
+    return { ...base, platform: "windows", artifact: "windows-bundle" };
+  if (file.endsWith("-windows-x86_64-setup.exe"))
+    return { ...base, platform: "windows", artifact: "windows-installer" };
+  // Wrong Windows profiles must not fall through to Linux's historical generic
+  // tar suffix. Classification does not authorize serving any artifact.
+  if (file.toLowerCase().includes("windows")) return null;
   if (file.endsWith(".app.tar.gz"))
     return { ...base, platform: "macos", artifact: "macos-updater" };
   if (file.endsWith(".dmg"))
@@ -103,6 +111,7 @@ function agentArtifact(path: string): Route | null {
 const AGENT_ALIASES: Record<string, Pick<Route, "platform" | "artifact">> = {
   macos: { platform: "macos", artifact: "macos-dmg" },
   linux: { platform: "linux", artifact: "linux-bundle" },
+  windows: { platform: "windows", artifact: "windows-installer" },
   "linux-appimage": { platform: "linux", artifact: "linux-appimage" },
 };
 const RESEARCH_ALIASES: Record<string, Pick<Route, "platform" | "artifact">> = {
@@ -167,23 +176,33 @@ function routeFor(
   if (product === "agent") {
     if (
       path === "/agent/stable/latest.json" ||
-      path === "/agent/stable/linux/latest.json"
+      path === "/agent/stable/linux/latest.json" ||
+      path === "/agent/stable/windows/latest.json"
     )
       return {
         kind: "metadata",
         version: null,
-        platform: path.includes("/linux/") ? "linux" : "macos",
+        platform: path.includes("/linux/")
+          ? "linux"
+          : path.includes("/windows/")
+            ? "windows"
+            : "macos",
         artifact: "latest",
       };
     const manifest =
-      /^\/agent\/stable\/releases\/([^/]+)\/(linux-manifest|manifest)\.json$/.exec(
+      /^\/agent\/stable\/releases\/([^/]+)\/(linux-manifest|windows-manifest|manifest)\.json$/.exec(
         path,
       );
     if (manifest && stableVersion(manifest[1]))
       return {
         kind: "metadata",
         version: manifest[1],
-        platform: manifest[2] === "linux-manifest" ? "linux" : "macos",
+        platform:
+          manifest[2] === "linux-manifest"
+            ? "linux"
+            : manifest[2] === "windows-manifest"
+              ? "windows"
+              : "macos",
         artifact: "manifest",
       };
     const artifact = agentArtifact(path);
@@ -363,6 +382,7 @@ export function isDownloadEvent(value: unknown): value is DownloadEvent {
       "macos-dmg",
       "macos-updater",
       "windows-installer",
+      "windows-bundle",
       "linux-bundle",
       "linux-appimage",
       "linux-deb",
@@ -399,13 +419,14 @@ export function isDownloadEvent(value: unknown): value is DownloadEvent {
     "macos-dmg": ["macos"],
     "macos-updater": ["macos"],
     "windows-installer": ["windows"],
+    "windows-bundle": ["windows"],
     "linux-bundle": ["linux"],
     "linux-appimage": ["linux"],
     "linux-deb": ["linux"],
     "linux-rpm": ["linux"],
     "android-apk": ["android"],
-    latest: ["all", "macos", "linux"],
-    manifest: ["macos", "linux"],
+    latest: ["all", "macos", "linux", "windows"],
+    manifest: ["macos", "linux", "windows"],
   };
   if (
     !artifactPlatform[event.artifact as Artifact].includes(
@@ -430,17 +451,17 @@ export function isDownloadEvent(value: unknown): value is DownloadEvent {
   if (event.product === "research")
     return (
       event.kind === "alias" &&
-      !["macos-updater", "linux-bundle"].includes(event.artifact as string)
+      !["macos-updater", "linux-bundle", "windows-bundle"].includes(
+        event.artifact as string,
+      )
     );
   if (
-    ["windows-installer", "linux-deb", "linux-rpm", "android-apk"].includes(
-      event.artifact as string,
-    )
+    ["linux-deb", "linux-rpm", "android-apk"].includes(event.artifact as string)
   )
     return false;
   return event.kind === "artifact"
     ? event.version !== null
-    : event.artifact !== "macos-updater";
+    : !["macos-updater", "windows-bundle"].includes(event.artifact as string);
 }
 
 const INSERT = `INSERT INTO download_events

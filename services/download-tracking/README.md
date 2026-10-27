@@ -30,6 +30,17 @@ be a full response after an `If-Range` mismatch. `206` is a partial response,
 `416` is an unsatisfied range, and `304` transfers no payload. HEAD and metadata
 polls are also recorded separately. Probe exclusion is the reporting default.
 
+Windows Agent v3 observations use platform `windows`. The native feed
+`/agent/stable/windows/latest.json` and immutable `windows-manifest.json` are
+metadata; `/download/agent/stable/windows` is redirect intent for the NSIS
+`*-windows-x86_64-setup.exe` installer. The updater's separate
+`*-windows-x86_64.tar.gz` payload is `windows-bundle`, while the `.exe` is
+`windows-installer`. Windows-like filenames with a different profile are rejected
+by the classifier rather than falling through to Linux's historical tar suffix.
+Research Windows installer redirects retain their existing product and kind.
+Tracking classifies observations only; it does not enable Windows publication or
+authorize serving an artifact.
+
 ## Availability and retry boundaries
 
 Capture runs under `waitUntil` after response construction and never awaits the
@@ -153,6 +164,61 @@ The query token need not have queue-mutation permission. Use the existing
 separately authorized operations credential for replay; never broaden reporting
 access merely to drain a DLQ.
 
+## Windows schema upgrade
+
+`0001_download_events.sql` is an immutable historical migration. The original
+production schema was installed through the SQL API, so its presence does not
+establish a Wrangler migration-history entry. The Windows change adds
+`0002_windows_download_events.sql`; it rebuilds the table to extend the artifact
+CHECK with `windows-bundle`, copies all fifteen columns, and recreates both
+existing indexes. It neither resets nor prunes history. Fresh databases apply
+both migrations in order. Existing production must apply **only 0002**.
+
+An authorized operator must perform the upgrade before activating Windows
+tracking producers:
+
+1. Confirm the intended account/database from the current binding and existing
+   operations credential. Inspect the current table and two index definitions,
+   verify the complete expected 0001 schema, and confirm whether a migration
+   history table exists. Record a restorable backup/checkpoint and a private
+   sorted all-column snapshot or digest, plus row count, distinct UUID count,
+   probe count, nullable-version count, and earliest/latest timestamps.
+2. Review the exact 0002 bytes. Execute its complete statements in **one D1
+   transactional batch** through the SQL API, a trusted `D1Database.batch`, or
+   the pinned Wrangler command below. Never issue each statement as a separate
+   request. D1 owns the transaction; the file deliberately has no explicit
+   `BEGIN`/`COMMIT`. This needs the existing authorized D1-write operations
+   context, not a broadened reporting token.
+
+   From the monorepo root, inside the pinned shell with that existing credential
+   environment already injected:
+
+   ```sh
+   cd services/agent-updates
+   bunx wrangler d1 execute maple-downloads --remote \
+     --command "$(cat migrations/0002_windows_download_events.sql)"
+   ```
+
+   The equivalent SQL API request is one `POST .../d1/database/ID/query` with
+   `batch: [{sql: statement1}, ...]` containing every statement from this reviewed
+   file, in order. Do not attach statement-wise retry logic.
+
+3. Verify exact preservation of every old row/UUID/probe/timestamp and both index
+   definitions. Confirm the new table CHECK includes `windows-bundle`, the
+   temporary `download_events_windows` table is absent, and all prior reports
+   still agree. Record the execution receipt and reviewed file hash privately.
+   If the response was ambiguous, inspect this state before any retry.
+4. Deploy the matching consumer/classifier only through the separately authorized
+   rollout. Check a marked Windows observation and the unchanged Mac, Linux and
+   Research counters. A source migration test is not a production upgrade.
+
+Do **not** run blanket `wrangler d1 migrations apply` on this manually initialized
+production database: without a baseline history entry it will try 0001 again.
+Do not edit 0001, delete/recreate the database, or stamp migration history merely
+to clear that error. This change preserves the existing history convention;
+adopting Wrangler migration history later requires a separately reviewed baseline
+after exact schema verification.
+
 ## Local verification
 
 ```sh
@@ -162,7 +228,9 @@ nix develop --no-update-lock-file .#ci -c python3 -m unittest discover -s servic
 Focused TypeScript tests cover response preservation, route privacy, queue/SQL
 outages, malformed events and real SQLite deduplication. The Agent service's
 runtime test exercises actual local workerd request → Queue → D1 delivery,
-duplicate events and a missing-table outage. These are separate from production
+duplicate events and a missing-table outage. It also applies the Windows table
+rebuild to populated D1 storage, checks exact old-row/index preservation, and
+injects a failure after the rebuild to prove whole-batch rollback. These are separate from production
 configuration, deployment and live collection verification.
 
 References: [D1 query API and accepted permissions](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/),
@@ -170,3 +238,5 @@ References: [D1 query API and accepted permissions](https://developers.cloudflar
 [configurable retention](https://developers.cloudflare.com/changelog/post/2025-02-14-customize-queue-retention-period/),
 [dead-letter queues](https://developers.cloudflare.com/queues/configuration/dead-letter-queues/),
 [authenticated pull and acknowledgement](https://developers.cloudflare.com/queues/configuration/pull-consumers/).
+Schema upgrade references: [D1 transactional batches](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch),
+[SQL import transaction compatibility](https://developers.cloudflare.com/d1/best-practices/import-export-data/#convert-sqlite-database-files).

@@ -221,6 +221,26 @@ const deliveryWorker = {
       return response(404, request.method);
     try {
       if (
+        path === "/agent/stable/windows/latest.json" ||
+        path === "/download/agent/stable/windows"
+      ) {
+        const current = await metadata(
+          env.AGENT_RELEASES,
+          "stable/windows/latest.json",
+          "maple-agent-update-v3",
+        );
+        if (!current) return response(404, request.method);
+        return path.startsWith("/download/")
+          ? new Response(null, {
+              status: 302,
+              headers: {
+                ...NO_STORE,
+                location: current.manifest.downloads.windows.path,
+              },
+            })
+          : metadataResponse(request, current.bytes);
+      }
+      if (
         path === "/agent/stable/linux/latest.json" ||
         path === "/download/agent/stable/linux"
       ) {
@@ -274,18 +294,26 @@ const deliveryWorker = {
       const release = releasePath(path);
       if (!release) return response(404, request.method);
       // Explicit metadata routes never fall back to their sibling feed. Other
-      // paths are authorized only by exact enumeration in these two fixed keys.
+      // paths are authorized only by exact enumeration in these fixed keys.
       const candidates =
         release.file === "manifest.json"
           ? (["maple-agent-update-v1"] as const)
           : release.file === "linux-manifest.json"
             ? (["maple-agent-update-v2"] as const)
-            : (["maple-agent-update-v1", "maple-agent-update-v2"] as const);
+            : release.file === "windows-manifest.json"
+              ? (["maple-agent-update-v3"] as const)
+              : ([
+                  "maple-agent-update-v1",
+                  "maple-agent-update-v2",
+                  "maple-agent-update-v3",
+                ] as const);
       for (const format of candidates) {
         const file =
           format === "maple-agent-update-v1"
             ? "manifest.json"
-            : "linux-manifest.json";
+            : format === "maple-agent-update-v2"
+              ? "linux-manifest.json"
+              : "windows-manifest.json";
         const published = await metadata(
           env.AGENT_RELEASES,
           `stable/releases/${release.version}/${file}`,
@@ -300,8 +328,9 @@ const deliveryWorker = {
           ...Object.values(published.manifest.artifacts),
           ...Object.values(published.manifest.downloads),
         ].find((value) => value.path === path);
-        // A v1 hit retains the shipped behavior without consulting Linux. A
-        // missing/nonmatching v1 permits v2; corrupt metadata never falls through.
+        // A hit retains shipped behavior without consulting later platform
+        // manifests. Missing/nonmatching earlier formats permit the next;
+        // corrupt consulted metadata never falls through.
         if (artifact)
           return await artifactResponse(
             request,

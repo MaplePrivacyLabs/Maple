@@ -29,6 +29,18 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt};
 
 mod linux_bundle;
+mod windows_bundle;
+
+pub use windows_bundle::{
+    activate_windows_installation, cleanup_current_windows_bundle, cleanup_windows_installation,
+    discover_windows_installation, preflight_windows_installation, prepare_windows_installation,
+    resolve_windows_launcher, validate_windows_bundle_archive,
+};
+#[cfg(windows)]
+pub(crate) use windows_bundle::{
+    windows_atomic_replace, windows_open_private, windows_open_readonly, windows_private_directory,
+    windows_read_bounded, windows_sync_directory,
+};
 
 pub use linux_bundle::{
     cleanup_current_linux_bundle, discover_linux_installation, validate_linux_bundle_archive,
@@ -151,6 +163,9 @@ pub fn discover_installation(executable: &Path, _appimage: Option<&Path>) -> Res
 /// stopping the host. This is a preflight, not authority: permissions may still
 /// change, and callers must handle a failed atomic replacement safely.
 pub fn preflight_installation(installed: &Path) -> Result<()> {
+    if cfg!(windows) {
+        return windows_bundle::preflight(installed);
+    }
     #[cfg(target_os = "linux")]
     if linux_bundle::is_bundle_path(installed) {
         return linux_bundle::preflight(installed);
@@ -203,7 +218,9 @@ fn replacement_access(path: &Path, rights: libc::c_int) -> Result<()> {
 }
 
 pub fn acquire_install_lock(installed: &Path) -> Result<InstallLock> {
-    if linux_bundle::is_bundle_path(installed) {
+    if cfg!(windows) {
+        windows_bundle::validate_destination(installed)?;
+    } else if linux_bundle::is_bundle_path(installed) {
         linux_bundle::validate_destination(installed)?;
     } else {
         validate_destination(installed)?;
@@ -223,9 +240,17 @@ pub fn acquire_install_lock(installed: &Path) -> Result<InstallLock> {
         }
     })?;
     validate_install_lock_path(installed, &file)?;
+    #[cfg(windows)]
+    windows_bundle::validate_destination(installed)?;
     Ok(InstallLock { _file: file })
 }
 
+#[cfg(windows)]
+fn install_lock_path(installed: &Path) -> Result<PathBuf> {
+    Ok(installed.join(".install.lock"))
+}
+
+#[cfg(not(windows))]
 fn install_lock_path(installed: &Path) -> Result<PathBuf> {
     let parent = installed
         .parent()
@@ -245,6 +270,14 @@ fn install_lock_path(installed: &Path) -> Result<PathBuf> {
     Ok(parent.join(format!(".maple-agent-install-{digest}.lock")))
 }
 
+#[cfg(windows)]
+fn open_install_lock(installed: &Path) -> Result<File> {
+    let file = windows_open_private(&install_lock_path(installed)?, false)?;
+    validate_install_lock_path(installed, &file)?;
+    Ok(file)
+}
+
+#[cfg(not(windows))]
 fn open_install_lock(installed: &Path) -> Result<File> {
     let path = install_lock_path(installed)?;
     let mut create = OpenOptions::new();
@@ -311,7 +344,9 @@ fn validate_install_lock_path(installed: &Path, file: &File) -> Result<()> {
 /// The caller retains the application lock for this preparation's entire
 /// lifetime, including while Ready, until it is installed or discarded.
 pub fn prepare(update: &PreparedUpdate) -> Result<InstallPreparation> {
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        windows_bundle::prepare(update)
+    } else if cfg!(target_os = "linux") {
         linux_bundle::prepare(update)
     } else {
         preflight_installation(&update.installed_path)?;
@@ -320,7 +355,9 @@ pub fn prepare(update: &PreparedUpdate) -> Result<InstallPreparation> {
 }
 
 pub fn revalidate(preparation: &InstallPreparation, update: &PreparedUpdate) -> Result<()> {
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        windows_bundle::revalidate(preparation, update)
+    } else if cfg!(target_os = "linux") {
         linux_bundle::revalidate(preparation, update)
     } else {
         preflight_installation(&update.installed_path)?;
@@ -338,6 +375,9 @@ pub fn validate_archive(payload: &Path) -> Result<()> {
 /// receipt exists the directory may contain the prior app, so only a verified
 /// new startup may clear it through checkpoint cleanup.
 pub fn discard_preparation(preparation: &InstallPreparation) -> Result<()> {
+    if cfg!(windows) {
+        return windows_bundle::discard(preparation);
+    }
     if linux_bundle::is_bundle_path(&preparation.installed_path) {
         return linux_bundle::discard(preparation);
     }
@@ -362,7 +402,9 @@ pub fn replace(
     preparation: &InstallPreparation,
     update: &PreparedUpdate,
 ) -> Result<InstalledUpdate> {
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        windows_bundle::replace(preparation, update)
+    } else if cfg!(target_os = "linux") {
         linux_bundle::replace(preparation, update)
     } else {
         ensure_supported()?;
@@ -410,7 +452,9 @@ fn replace_inner(
 impl InstalledUpdate {
     /// The installed directory remains state identity; Linux executes AppRun.
     pub fn restart_path(&self) -> PathBuf {
-        if linux_bundle::is_bundle_path(&self.installed_path) {
+        if cfg!(windows) {
+            self.installed_path.join("maple-agent.exe")
+        } else if linux_bundle::is_bundle_path(&self.installed_path) {
             self.installed_path.join("AppRun")
         } else {
             self.installed_path.clone()
@@ -737,6 +781,10 @@ fn validate_staging(installed: &Path, root: &Path) -> Result<()> {
 }
 
 fn open_regular(path: &Path, create: bool, exclusive: bool) -> Result<File> {
+    #[cfg(windows)]
+    if !create {
+        return windows_open_readonly(path);
+    }
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -964,7 +1012,11 @@ fn scan_archive_with_alias(
             if expanded > MAX_EXPANDED_BYTES {
                 return Err(InstallError::Invalid("archive expansion limit exceeded"));
             }
-            let digest = if app_name != APP_NAME && name == format!("{app_name}/bundle.json") {
+            let digest = if app_name != APP_NAME
+                && (name == format!("{app_name}/bundle.json")
+                    || (app_name == "maple-agent-windows"
+                        && name == format!("{app_name}/bundle-info.json")))
+            {
                 if size > 16 * 1024 {
                     return Err(InstallError::Invalid("bundle descriptor is too large"));
                 }
@@ -1459,9 +1511,16 @@ fn write_receipt(installed: &InstalledUpdate) -> Result<()> {
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
-    let file = File::open(path)?;
-    file.sync_all()?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        windows_sync_directory(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let file = File::open(path)?;
+        file.sync_all()?;
+        Ok(())
+    }
 }
 
 fn swap_bundles(installed: &Path, staged: &Path) -> Result<()> {
@@ -1619,6 +1678,7 @@ mod tests {
                         macos: Some(dmg),
                         linux_appimage: None,
                         linux_bundle: None,
+                        windows: None,
                     },
                 },
                 envelope: "test-only authenticated caller fixture".into(),
@@ -2399,8 +2459,12 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod portable_lock_tests {
+// This fixture exercises the Unix bundle path contract. Windows public lock
+// admission additionally requires a registered, signed versioned installation;
+// its native storage/locking primitive is exercised by the required Windows
+// native_install_lock_rejects_concurrent_writers test.
+#[cfg(all(test, unix))]
+mod unix_lock_tests {
     use super::*;
 
     #[test]

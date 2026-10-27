@@ -6,6 +6,7 @@ Only an explicit --smoke on a credential-free Windows verifier runs the app.
 """
 
 import argparse
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -16,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -53,6 +55,12 @@ NOTICE_FILES = (
 PAYLOAD_FILES = {"maple-agent.exe", "LICENSE.txt", "build-info.json"} | {
     f"notices/{name}" for name in NOTICE_FILES
 }
+BUNDLE_ROOT = "maple-agent-windows"
+BUNDLE_FORMAT = "maple-agent-windows-bundle-v1"
+BUNDLE_FILES = PAYLOAD_FILES | {"bundle-info.json"}
+BUNDLE_DIRECTORIES = {"", "notices", "notices/wordlists"}
+MAX_BUNDLE_BYTES = 768 * 1024 * 1024
+INSTALLER_CHECKER = "$PLUGINSDIR/maple-installer-check.exe"
 
 
 def module(name):
@@ -83,6 +91,29 @@ def regular(path):
     for parent in (path, *path.parents):
         if getattr(parent.lstat(), "st_file_attributes", 0) & 0x400:
             raise ValueError("Windows payload cannot traverse a reparse point")
+
+
+def bundle_payload_inventory(directory):
+    """Reject extra directories and link/reparse entries before archiving."""
+    files, directories = set(), {""}
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("Windows updater payload requires an ordinary directory")
+    for path in (directory, *directory.rglob("*")):
+        if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
+            raise ValueError("Windows updater payload cannot contain links or reparse points")
+        name = path.relative_to(directory).as_posix()
+        if path == directory:
+            continue
+        if path.is_dir():
+            directories.add(name)
+        elif path.is_file():
+            regular(path)
+            files.add(name)
+        else:
+            raise ValueError("Windows updater payload contains an unsupported entry")
+    if files != BUNDLE_FILES or directories != BUNDLE_DIRECTORIES:
+        raise ValueError("Updater bundle requires the exact standalone Windows installer payload")
+    return files
 
 
 def validate_imports(binary):
@@ -118,20 +149,22 @@ def nsis_literal(value):
     return value.replace("$", "$$").replace('"', '$\\"')
 
 
-def write_nsis_config(path, info, payload, installer, unsigned):
+def write_nsis_config(path, info, payload, installer, unsigned, build):
     values = {
         "DISPLAY_NAME": info["display_name"], "BUNDLE_ID": info["bundle_id"],
         "VERSION": info["version"], "NUMERIC_VERSION": info["version"].split("-", 1)[0],
         "PAYLOAD": payload, "INSTALLER": installer,
+        "BUILD": build, "GENERATION": info["version"] + "-" + build,
     }
-    if not unsigned:
-        signer = SCRIPTS / "windows-sign-file.ps1"
-        # !uninstfinalize is a compiler command string. Reject cmd.exe expansion
-        # syntax in the trusted script's filesystem path rather than quoting it
-        # as though a JSON string or argv list controlled cmd.exe parsing.
-        if any(char in str(signer) for char in '%&|<>^"\r\n'):
-            raise ValueError("Unsafe path for the native uninstaller signing command")
-        values["SIGNER"] = signer
+    signer = SCRIPTS / "windows-sign-file.ps1"
+    # !uninstfinalize is a compiler command string. Reject cmd.exe expansion
+    # syntax in the trusted script's filesystem path rather than quoting it
+    # as though a JSON string or argv list controlled cmd.exe parsing.
+    if any(char in str(signer) for char in '%&|<>^"\r\n'):
+        raise ValueError("Unsafe path for the native uninstaller signing command")
+    values["SIGNER"] = signer
+    if unsigned:
+        values["UNSIGNED_UNINSTALLER"] = "1"
     path.write_text("".join(f'!define {key} "{nsis_literal(value)}"\n' for key, value in values.items()), encoding="utf-8", newline="\n")
 
 
@@ -195,7 +228,7 @@ def extract_member(extractor, installer, name, destination, limit):
         process.stdout.close()
 
 
-def extract_installer(installer, destination, unsigned):
+def extract_installer(installer, destination, unsigned, info, build):
     extractor = seven_zip()
     listing = run([extractor, "l", "-slt", "-ba", installer], capture_output=True, text=True, encoding="utf-8").stdout
     if len(listing) > 256 * 1024:
@@ -210,14 +243,14 @@ def extract_installer(installer, destination, unsigned):
         if relative.is_absolute() or ".." in relative.parts or ":" in name or name in files:
             raise ValueError("Unsafe or duplicate Windows installer payload path")
         files[name] = fields
-    # Depending on the 7-Zip version, an unsigned NSIS uninstaller is either
-    # reconstructed as a PE or exposed as bytecode with a .nsis suffix. Signed
-    # builds must contain the actual signed standalone PE from !uninstfinalize.
-    extras = set(files) - PAYLOAD_FILES
-    allowed_uninstallers = {"uninstall.exe", "uninstall.exe.nsis"} if unsigned else {"uninstall.exe"}
-    if len(extras) != 1 or not extras <= allowed_uninstallers or not PAYLOAD_FILES <= set(files):
+    generation = info["version"] + "-" + build
+    payload_prefix = "versions/" + generation + "/"
+    expected = {payload_prefix + name for name in BUNDLE_FILES} | {"maple-agent.exe", "uninstall.exe", INSTALLER_CHECKER}
+    # !uninstfinalize emits the actual standalone PE for signed and preview
+    # installers. The root uninstaller is not part of versioned update payloads.
+    if set(files) != expected:
         raise ValueError("Windows installer has an unexpected payload inventory")
-    uninstaller = next(iter(extras))
+    uninstaller = "uninstall.exe"
     # 7-Zip cannot always report a reconstructed uninstaller's size before
     # extraction. Every member is streamed through a hard bound; only that one
     # NSIS-generated member may omit its size in the preliminary inventory.
@@ -241,6 +274,14 @@ def extract_installer(installer, destination, unsigned):
         raise ValueError("Extracted Windows installer differs from its inventory")
     for name in actual:
         regular(destination / name)
+    payload = destination / "versions" / generation
+    generation_executable = (payload / "maple-agent.exe").read_bytes()
+    for name in ("maple-agent.exe", INSTALLER_CHECKER):
+        if (destination / name).read_bytes() != generation_executable:
+            raise ValueError("Windows bootstrap or preflight checker differs from the signed generation executable")
+    descriptor = json.loads((payload / "bundle-info.json").read_bytes(), object_pairs_hook=pe.unique_object)
+    if descriptor != bundle_descriptor(info, build):
+        raise ValueError("Windows installer generation identity differs")
     return destination / uninstaller
 
 
@@ -258,8 +299,129 @@ def verify_payload(profile, directory, expected_info, unsigned, *, verify_signat
         signature(binary, unsigned)
 
 
+def build_number():
+    value = os.environ.get("MAPLE_PACKAGE_BUILD_NUMBER", "")
+    if not re.fullmatch(r"[1-9][0-9]{0,17}", value):
+        raise ValueError("MAPLE_PACKAGE_BUILD_NUMBER must be a positive decimal string")
+    return value
+
+
+def bundle_descriptor(info, build):
+    if not isinstance(build, str) or not re.fullmatch(r"[1-9][0-9]{0,17}", build):
+        raise ValueError("Windows bundle build must be a positive decimal string")
+    return {
+        "format": BUNDLE_FORMAT, "product": "maple-agent", "profile": info["profile"],
+        "version": info["version"], "build": build, "source_sha": info["source_sha"],
+        "bundle_id": info["bundle_id"], "entrypoint": "maple-agent.exe",
+    }
+
+
+def write_bundle(payload, archive_path, info, build):
+    """Package the exact extracted NSIS files, never execute a downloaded PE."""
+    bundle_payload_inventory(payload)
+    descriptor = json.dumps(bundle_descriptor(info, build), sort_keys=True, separators=(",", ":")) + "\n"
+    if (payload / "bundle-info.json").read_text(encoding="utf-8") != descriptor:
+        raise ValueError("Updater bundle descriptor differs from the verified installer")
+    total = sum((payload / name).stat().st_size for name in BUNDLE_FILES)
+    if total > MAX_BUNDLE_BYTES:
+        raise ValueError("Windows updater payload exceeds extraction bounds")
+    with archive_path.open("xb") as target:
+        with gzip.GzipFile(fileobj=target, mode="wb", filename="", mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+                for name in sorted(BUNDLE_DIRECTORIES):
+                    entry = tarfile.TarInfo(BUNDLE_ROOT + ("/" + name if name else ""))
+                    entry.type, entry.mode = tarfile.DIRTYPE, 0o755
+                    archive.addfile(entry)
+                for name in sorted(BUNDLE_FILES):
+                    file = payload / name
+                    entry = tarfile.TarInfo(BUNDLE_ROOT + "/" + name)
+                    entry.size, entry.mode = file.stat().st_size, 0o644
+                    with file.open("rb") as data:
+                        archive.addfile(entry, data)
+    inspect_bundle(archive_path, info, build)
+
+
+def preflight_bundle_headers(archive_path):
+    """Reject extensions before tarfile can consume attacker-controlled metadata."""
+    regular(archive_path)
+    if archive_path.stat().st_size > MAX_BUNDLE_BYTES:
+        raise ValueError("Windows updater archive exceeds bounds")
+    total, count = 0, 0
+    with gzip.open(archive_path, "rb") as stream:
+        while True:
+            header = stream.read(512)
+            if len(header) != 512:
+                raise ValueError("Windows updater archive is truncated")
+            if header == bytes(512):
+                if stream.read(512) != bytes(512):
+                    raise ValueError("Windows updater archive has an invalid end marker")
+                trailing = stream.read(10241)
+                if len(trailing) > 10240 or any(trailing):
+                    raise ValueError("Windows updater archive has trailing content")
+                return
+            count += 1
+            entry = tarfile.TarInfo.frombuf(header, "utf-8", "strict")
+            if count > 128 or entry.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE):
+                raise ValueError("Windows updater archive contains unsupported entries")
+            if not 0 <= entry.size <= MAX_BUNDLE_BYTES or (entry.isdir() and entry.size):
+                raise ValueError("Windows updater archive has an invalid member size")
+            total += entry.size
+            if total > MAX_BUNDLE_BYTES:
+                raise ValueError("Windows updater archive exceeds expanded bounds")
+            remaining = (entry.size + 511) // 512 * 512
+            while remaining:
+                block = stream.read(min(remaining, 1024 * 1024))
+                if not block:
+                    raise ValueError("Windows updater archive payload is truncated")
+                remaining -= len(block)
+
+
+def inspect_bundle(archive_path, info, build, extracted=None):
+    """Inspect fixed public contents and optionally compare the signed installer."""
+    preflight_bundle_headers(archive_path)
+    expected = {BUNDLE_ROOT + "/" + name for name in BUNDLE_FILES}
+    expected_dirs = {BUNDLE_ROOT + ("/" + name if name else "") for name in BUNDLE_DIRECTORIES}
+    seen, digests, descriptor = set(), {}, None
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for entry in archive:
+            name = entry.name
+            if name in seen or entry.linkname or entry.pax_headers or name not in expected | expected_dirs:
+                raise ValueError("Windows updater archive has an unexpected or duplicate path")
+            seen.add(name)
+            if name in expected_dirs:
+                if not entry.isdir() or entry.mode != 0o755:
+                    raise ValueError("Windows updater archive has an invalid directory")
+                continue
+            if not entry.isfile() or entry.mode != 0o644:
+                raise ValueError("Windows updater archive requires ordinary public files")
+            source = archive.extractfile(entry)
+            if source is None:
+                raise ValueError("Windows updater archive member is unavailable")
+            digest = hashlib.sha256()
+            data = bytearray()
+            while block := source.read(1024 * 1024):
+                digest.update(block)
+                if name.endswith("/bundle-info.json"):
+                    data.extend(block)
+                    if len(data) > 16 * 1024:
+                        raise ValueError("Windows updater descriptor exceeds bounds")
+            relative = name[len(BUNDLE_ROOT) + 1:]
+            digests[relative] = digest.hexdigest()
+            if relative == "bundle-info.json":
+                descriptor = json.loads(data, object_pairs_hook=pe.unique_object)
+            if extracted is not None:
+                original = extracted / relative
+                regular(original)
+                if digest.hexdigest() != hashlib.sha256(original.read_bytes()).hexdigest():
+                    raise ValueError("Windows updater bundle differs from the verified installer payload")
+    if seen != expected | expected_dirs or descriptor != bundle_descriptor(info, build):
+        raise ValueError("Windows updater archive identity or inventory differs")
+    return digests
+
+
 def package(profile, unsigned):
     binary, info = prepare(profile)
+    build = build_number()
     destination = COMPONENT / "dist" / profile
     if destination.exists():
         raise ValueError("Move the previous profile artifact directory before packaging")
@@ -275,16 +437,26 @@ def package(profile, unsigned):
         metadata = json.dumps(info, sort_keys=True, separators=(",", ":")) + "\n"
         (payload / "build-info.json").write_text(metadata, encoding="utf-8", newline="\n")
         notices.stage(COMPONENT, payload / "notices", TARGET)
+        (payload / "bundle-info.json").write_text(json.dumps(bundle_descriptor(info, build), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
         signature(payload / "maple-agent.exe", unsigned, sign=not unsigned)
         verify_payload(profile, payload, info, unsigned)
         installer = output / release_info.windows_package_name(info)
         configuration = scratch / "package.nsh"
-        write_nsis_config(configuration, info, payload, installer, unsigned)
+        write_nsis_config(configuration, info, payload, installer, unsigned, build)
         compiler = install_nsis(scratch)
         run([compiler, "/V3", f"/DMAPLE_CONFIG={configuration}", SCRIPTS / "windows-installer.nsi"], timeout=300)
         signature(installer, unsigned, sign=not unsigned)
+        extracted = scratch / "extracted"
+        extracted.mkdir()
+        uninstaller = extract_installer(installer, extracted, unsigned, info, build)
+        if uninstaller.name != "uninstall.exe":
+            raise ValueError("Windows updater requires a standalone PE uninstaller")
+        generation = extracted / "versions" / (info["version"] + "-" + build)
+        verify_payload(profile, generation, info, unsigned)
+        signature(uninstaller, unsigned)
+        write_bundle(generation, output / release_info.windows_archive_name(info), info, build)
         shutil.copyfile(payload / "build-info.json", output / "build-info.json")
-        release_info.write_manifest(info, output, PLATFORM, unsigned)
+        release_info.write_manifest(info, output, PLATFORM, unsigned, build)
         # Data-only parsing of the compressed final signed bytes; never execute
         # the app, generated uninstaller or installer on the signing worker.
         verify(profile, output, unsigned, smoke=False)
@@ -305,7 +477,7 @@ def smoke_environment(scratch):
     return environment
 
 
-def smoke_installer(installer, info, unsigned):
+def smoke_installer(installer, info, unsigned, build, expected_hashes):
     import winreg  # Only the explicit native smoke path loads the Windows API.
 
     registry = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + info["bundle_id"]
@@ -320,14 +492,40 @@ def smoke_installer(installer, info, unsigned):
         environment = smoke_environment(scratch)
         installed = scratch / "install with spaces"
         command = f'"{installer}" /S /D={installed}'
+        if unsigned and info["profile"] == "prod":
+            # Prod trust is never relaxed for a preview. The same native
+            # preflight must refuse before destination files or registration.
+            result = subprocess.run(command_as_windows_args(command), env=environment, timeout=120)
+            if result.returncode == 0 or installed.exists():
+                raise ValueError("Unsigned Prod installer did not refuse before destination changes")
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
+                    raise ValueError("Unsigned Prod installer changed installation registration")
+            except FileNotFoundError:
+                pass
+            print("Verified unsigned Prod refusal before installed files, pointer or registration changes; no positive GUI/install proof")
+            return
         run(command_as_windows_args(command), env=environment, timeout=120)
         executable = installed / "maple-agent.exe"
         uninstaller = installed / "uninstall.exe"
+        generation_name = info["version"] + "-" + build
+        generation = installed / "versions" / generation_name
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access) as key:
                 if winreg.QueryValueEx(key, "InstallLocation")[0] != str(installed):
                     raise ValueError("Installer did not register the exact per-user installation")
-            verify_payload(info["profile"], installed, info, unsigned)
+            pointer_bytes = (installed / "current.json").read_bytes()
+            if json.loads(pointer_bytes, object_pairs_hook=pe.unique_object) != {"format": "maple-agent-windows-current-v1", "generation": generation_name}:
+                raise ValueError("Installed Windows current generation pointer differs")
+            verify_payload(info["profile"], generation, info, unsigned)
+            bundle_payload_inventory(generation)
+            for name in BUNDLE_FILES:
+                regular(generation / name)
+                if hashlib.sha256((generation / name).read_bytes()).hexdigest() != expected_hashes[name]:
+                    raise ValueError("Installed Windows generation differs from the verified updater payload")
+            if executable.read_bytes() != (generation / "maple-agent.exe").read_bytes():
+                raise ValueError("Freshly installed Windows bootstrap differs from its generation")
+            signature(executable, unsigned)
             signature(uninstaller, unsigned)
             actual = run([executable, "--build-info"], env=environment, capture_output=True, text=True).stdout
             if json.loads(actual) != info:
@@ -341,7 +539,17 @@ def smoke_installer(installer, info, unsigned):
                 )):
                     bounded_diagnostics(result.stderr)
                     raise ValueError("Installed Windows ACP did not preserve the signed-out guard")
-            gui_smoke(executable, scratch, environment)
+            # Bootstrap CLI probes above exercise native argv/stdio/status
+            # forwarding. GUI bootstrap intentionally detaches, so observe
+            # the exact selected installed generation for render/lifetime and
+            # deterministic cleanup instead of the short-lived launcher PID.
+            gui_smoke(generation / "maple-agent.exe", scratch, environment)
+            # A repeated manual installer must retain the active generation
+            # and stable bootstrap rather than rewriting a running payload.
+            bootstrap_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
+            run(command_as_windows_args(command), env=environment, timeout=120)
+            if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
+                raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
         finally:
             if executable.is_file():
                 run([executable, "host", "stop"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
@@ -356,6 +564,8 @@ def smoke_installer(installer, info, unsigned):
                 run(command_as_windows_args(f'"{uninstaller}" /S _?={installed}'), env=environment, timeout=120)
                 if executable.exists() or sentinel.read_text(encoding="utf-8") != "preserve me" or state.read_text(encoding="utf-8") != "preserve state":
                     raise ValueError("Uninstall did not remove the app while preserving user files and state")
+                if any((installed / name).exists() for name in ("current.json", ".install.lock", ".installer-intent.json", ".uninstaller-intent.json", "versions")):
+                    raise ValueError("Uninstall left owned generation or transaction files behind")
                 try:
                     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
                         raise ValueError("Uninstall left the profile's registration behind")
@@ -410,19 +620,22 @@ def gui_smoke(executable, scratch, environment):
 def verify(profile, directory, unsigned, *, smoke):
     directory = directory.resolve()
     manifest = release_info.verify_artifacts(profile, directory, unsigned, source_sha(), PLATFORM)
+    if manifest["build"] != build_number():
+        raise ValueError("Windows package build differs from the selected producer build")
     info = release_info.read_info(profile, directory / "build-info.json", source_sha(), PLATFORM)
     installer = directory / manifest["package"]
     signature(installer, unsigned)
     with tempfile.TemporaryDirectory(prefix="maple-windows-extract-") as temporary:
         payload = Path(temporary)
-        uninstaller = extract_installer(installer, payload, unsigned)
-        verify_payload(profile, payload, info, unsigned)
-        if not unsigned:
-            signature(uninstaller, unsigned=False)
+        uninstaller = extract_installer(installer, payload, unsigned, info, manifest["build"])
+        generation = payload / "versions" / (info["version"] + "-" + manifest["build"])
+        verify_payload(profile, generation, info, unsigned)
+        signature(uninstaller, unsigned)
+        expected_hashes = inspect_bundle(directory / manifest["updater"], info, manifest["build"], generation)
     if smoke:
         if any(name.startswith(("AZURE_", "MAPLE_WINDOWS_ARTIFACT_SIGNING_")) for name in os.environ):
             raise ValueError("Installed Windows smoke requires a verifier without signing configuration")
-        smoke_installer(installer, info, unsigned)
+        smoke_installer(installer, info, unsigned, manifest["build"], expected_hashes)
     print(f"Verified {profile} Windows installer identity, exact inventory and signatures")
 
 
@@ -449,6 +662,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
+    except (ValueError, OSError, subprocess.SubprocessError, zipfile.BadZipFile, tarfile.TarError) as error:
         print(f"Windows package verification failed: {error}", file=sys.stderr)
         sys.exit(1)

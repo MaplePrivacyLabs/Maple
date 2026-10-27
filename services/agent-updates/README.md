@@ -34,16 +34,19 @@ successful packaged update.
 Only GET and HEAD are supported. Metadata and errors use `no-store` at both
 browser and CDN layers. No origin fetch is made on failure.
 
-| Path                                           | Behavior                                                                         |
-| ---------------------------------------------- | -------------------------------------------------------------------------------- |
-| `/agent/stable/latest.json`                    | Exact v1 signed envelope from `stable/latest.json`                               |
-| `/agent/stable/linux/latest.json`              | Exact Linux v2 signed envelope from `stable/linux/latest.json`                   |
-| `/agent/stable/releases/V/manifest.json`       | Immutable v1 signed envelope                                                     |
-| `/agent/stable/releases/V/linux-manifest.json` | Immutable Linux v2 signed envelope                                               |
-| `/agent/stable/releases/V/FILE`                | Signed, enumerated artifact; GET/HEAD, single byte ranges, ETag, immutable cache |
-| `/download/agent/stable/macos`                 | Uncached 302 to the current DMG                                                  |
-| `/download/agent/stable/linux-appimage`        | Uncached 302 only when Linux is present                                          |
-| `/download/agent/stable/linux`                 | Uncached 302 to the current v2 Linux tar bundle                                  |
+| Path                                             | Behavior                                                                         |
+| ------------------------------------------------ | -------------------------------------------------------------------------------- |
+| `/agent/stable/latest.json`                      | Exact v1 signed envelope from `stable/latest.json`                               |
+| `/agent/stable/linux/latest.json`                | Exact Linux v2 signed envelope from `stable/linux/latest.json`                   |
+| `/agent/stable/windows/latest.json`              | Exact Windows v3 signed envelope from `stable/windows/latest.json`               |
+| `/agent/stable/releases/V/manifest.json`         | Immutable v1 signed envelope                                                     |
+| `/agent/stable/releases/V/linux-manifest.json`   | Immutable Linux v2 signed envelope                                               |
+| `/agent/stable/releases/V/windows-manifest.json` | Immutable Windows v3 signed envelope                                             |
+| `/agent/stable/releases/V/FILE`                  | Signed, enumerated artifact; GET/HEAD, single byte ranges, ETag, immutable cache |
+| `/download/agent/stable/macos`                   | Uncached 302 to the current DMG                                                  |
+| `/download/agent/stable/linux-appimage`          | Uncached 302 only when Linux is present                                          |
+| `/download/agent/stable/linux`                   | Uncached 302 to the current v2 Linux tar bundle                                  |
+| `/download/agent/stable/windows`                 | Uncached 302 to the current v3 Windows installer                                 |
 
 Missing objects/targets return 404. Malformed metadata, mismatched stored sizes
 and bucket failures return bounded 503 responses. The Worker checks schema and
@@ -72,13 +75,23 @@ The original latest feed and immutable `manifest.json` require v1; Linux latest
 and `linux-manifest.json` require v2. The historical v1 schema and AppImage alias
 remain supported without reinterpreting stored signed bytes.
 
+The separate Windows feed uses `format: maple-agent-update-v3` with the same
+top-level fields and limits. Its `artifacts` contains only `windows-x86_64`, a
+`.tar.gz` updater bundle; its `downloads` contains only `windows`, a distinct
+`.exe` installer. Both files are bound to their own signed path, size and hash.
+Windows latest and immutable `windows-manifest.json` require v3. Windows fields
+are rejected by the historical v1/v2 schemas, including null fields, and a v3
+document cannot contain macOS, Linux or AppImage entries.
+
 Artifact lookup reads the requested version's fixed `manifest.json` first and
 serves an exact enumerated match without consulting Linux metadata. A missing
 or valid nonmatching v1 manifest permits an exact match from that version's
-`linux-manifest.json`. Every consulted manifest must have its required format
+`linux-manifest.json`, then `windows-manifest.json` when neither earlier
+manifest enumerates the path. An earlier exact match returns without consulting
+later platform manifests. Every consulted manifest must have its required format
 and requested version; corrupt metadata returns 503 without fallback. No latest
 pointer authorizes a release artifact, and no unsigned auxiliary object is
-exposed by either feed.
+exposed by any feed.
 
 Limits: 128 KiB envelope, 64 KiB manifest, 4 KiB minisign signature, 16 KiB notes.
 Signature format is prehashed minisign Ed25519 with exact trusted comment

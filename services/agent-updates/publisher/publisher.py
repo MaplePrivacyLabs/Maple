@@ -11,6 +11,7 @@ import argparse
 import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import gzip
 import hashlib
 import hmac
 import importlib.util
@@ -29,6 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from xml.parsers.expat import ExpatError
+import zlib
 
 
 REPOSITORY = "MaplePrivacyLabs/Maple"
@@ -47,9 +49,11 @@ DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 ROOT = Path(__file__).resolve().parents[3]
 FEED_URL = "https://updates.maple.ai/agent/stable/latest.json"
 LINUX_FEED_URL = "https://updates.maple.ai/agent/stable/linux/latest.json"
+WINDOWS_FEED_URL = "https://updates.maple.ai/agent/stable/windows/latest.json"
 MACOS_METADATA_NAMES = {"macos-" + name for name in ("build-info.json", "manifest.json", "SHA256SUMS", "notarization-log.json", "dmg-notarization-log.json")}
 LINUX_METADATA_NAMES = {"linux-" + name for name in ("build-info.json", "manifest.json", "SHA256SUMS")}
-METADATA_NAMES = {"provenance.json"} | MACOS_METADATA_NAMES | LINUX_METADATA_NAMES
+WINDOWS_METADATA_NAMES = {"windows-" + name for name in ("build-info.json", "manifest.json", "SHA256SUMS")}
+METADATA_NAMES = {"provenance.json"} | MACOS_METADATA_NAMES | LINUX_METADATA_NAMES | WINDOWS_METADATA_NAMES
 
 
 class PublishError(ValueError):
@@ -154,7 +158,7 @@ def validate_manifest(data):
     manifest = decode_json(data, MAX_MANIFEST)
     fields = {"format", "product", "channel", "version", "build", "source_sha", "pub_date", "notes", "artifacts", "downloads"}
     need(isinstance(manifest, dict) and set(manifest) == fields, "invalid manifest fields")
-    need(manifest["format"] in {"maple-agent-update-v1", "maple-agent-update-v2"} and manifest["product"] == "maple-agent" and manifest["channel"] == "stable", "wrong update identity")
+    need(manifest["format"] in {"maple-agent-update-v1", "maple-agent-update-v2", "maple-agent-update-v3"} and manifest["product"] == "maple-agent" and manifest["channel"] == "stable", "wrong update identity")
     version_tuple(manifest["version"])
     build = manifest["build"]
     need(isinstance(build, str) and re.fullmatch(r"[1-9][0-9]{0,17}", build), "invalid build number")
@@ -170,7 +174,11 @@ def validate_manifest(data):
     need(all(ord(char) >= 32 or char in "\n\t" for char in notes) and "\x7f" not in notes, "notes contain ASCII controls")
     artifacts, downloads = manifest["artifacts"], manifest["downloads"]
     linux_v2 = manifest["format"] == "maple-agent-update-v2"
-    if linux_v2:
+    windows_v3 = manifest["format"] == "maple-agent-update-v3"
+    if windows_v3:
+        need(isinstance(artifacts, dict) and set(artifacts) == {"windows-x86_64"}, "invalid Windows v3 update targets")
+        need(isinstance(downloads, dict) and set(downloads) == {"windows"}, "invalid Windows v3 downloads")
+    elif linux_v2:
         need(isinstance(artifacts, dict) and set(artifacts) == {"linux-x86_64"}, "invalid Linux v2 update targets")
         need(isinstance(downloads, dict) and set(downloads) == {"linux-bundle"}, "invalid Linux v2 downloads")
     else:
@@ -186,7 +194,7 @@ def validate_manifest(data):
             need(path.startswith(prefix), "artifact path has wrong release root")
             filename = path[len(prefix):]
             need(public_path(manifest["version"], filename) == path, "invalid artifact path")
-            suffix = ".tar.gz" if linux_v2 else ".app.tar.gz" if target == "darwin-aarch64" else ".dmg" if target == "macos" else ".AppImage"
+            suffix = (".tar.gz" if kind == "artifacts" else ".exe") if windows_v3 else ".tar.gz" if linux_v2 else ".app.tar.gz" if target == "darwin-aarch64" else ".dmg" if target == "macos" else ".AppImage"
             need(filename.endswith(suffix), "wrong artifact suffix")
             need(type(entry["size"]) is int and 0 < entry["size"] <= MAX_ARTIFACT, "invalid artifact size")
             need(isinstance(entry["sha256"], str) and DIGEST.fullmatch(entry["sha256"]), "invalid artifact digest")
@@ -237,7 +245,7 @@ def gh_json(path):
     return decode_json(result.stdout)
 
 
-def validate_run(run, jobs, linux=False):
+def validate_run(run, jobs, linux=False, windows=False):
     need(isinstance(run, dict) and run.get("repository", {}).get("full_name") == REPOSITORY and run.get("head_repository", {}).get("full_name") == REPOSITORY, "untrusted build repository")
     need(run.get("path") == WORKFLOW and run.get("head_branch") == "master" and run.get("event") in {"push", "workflow_dispatch"}, "untrusted build workflow or ref")
     need(run.get("status") == "completed", "build run has not completed")
@@ -248,6 +256,8 @@ def validate_run(run, jobs, linux=False):
     required = {"Signed macOS (prod)", "Verify downloaded macOS (prod)"}
     if linux:
         required |= {"Linux bundle (prod)", "Attest Linux packages (prod)", "Verify downloaded Linux (prod)"}
+    if windows:
+        required |= {"Build Windows binary (prod)", "Signed Windows (prod)", "Verify downloaded Windows (prod)"}
     for name in required:
         matches = [job for job in jobs["jobs"] if job.get("name") == name]
         need(len(matches) == 1 and matches[0].get("status") == "completed" and matches[0].get("conclusion") == "success", "required Prod package job did not succeed: " + name)
@@ -256,7 +266,7 @@ def validate_run(run, jobs, linux=False):
     return run
 
 
-def trust_run(run_id, linux=False):
+def trust_run(run_id, linux=False, windows=False):
     need(str(run_id).isdecimal() and int(run_id) > 0, "invalid run ID")
     run = gh_json(f"repos/{REPOSITORY}/actions/runs/{int(run_id)}")
     attempt = run.get("run_attempt")
@@ -265,13 +275,15 @@ def trust_run(run_id, linux=False):
     # only failed consumers were re-run. An attempt-only inventory would omit
     # those producers even though their exact artifacts remain authoritative.
     jobs = gh_json(f"repos/{REPOSITORY}/actions/runs/{int(run_id)}/jobs?filter=latest&per_page=100")
-    validate_run(run, jobs, linux)
+    validate_run(run, jobs, linux, windows)
     need(run["id"] == int(run_id), "build run ID differs")
     artifacts = gh_json(f"repos/{REPOSITORY}/actions/runs/{int(run_id)}/artifacts?per_page=100")
     need(artifacts.get("total_count") == len(artifacts.get("artifacts", [])), "incomplete artifact inventory")
     names = {"macos": f"maple-agent-prod-macos-aarch64-{int(run_id)}"}
     if linux:
         names["linux"] = f"maple-agent-prod-linux-x86_64-{int(run_id)}"
+    if windows:
+        names["windows"] = f"maple-agent-prod-windows-x86_64-{int(run_id)}"
     for name in names.values():
         matches = [item for item in artifacts["artifacts"] if item.get("name") == name]
         need(len(matches) == 1 and matches[0].get("expired") is False, "required package artifact missing, duplicated or expired")
@@ -296,18 +308,20 @@ def public_key_text(path):
     return lines[0]
 
 
-def validate_pins(key, local_profile, source_profile, linux=False):
+def validate_pins(key, local_profile, source_profile, linux=False, windows=False):
     for profile in (local_profile, source_profile):
         need(isinstance(profile, dict) and isinstance(profile.get("prod"), dict), "missing Prod release profile")
         prod = profile["prod"]
         need(prod.get("update_feed_url") == FEED_URL, "Prod update feed does not match the production feed")
         if linux:
             need(prod.get("linux_update_feed_url") == LINUX_FEED_URL, "Prod Linux update feed does not match the production feed")
+        if windows:
+            need(prod.get("windows_update_feed_url") == WINDOWS_FEED_URL, "Prod Windows update feed does not match the production feed")
         keys = prod.get("update_public_keys")
         need(isinstance(keys, list) and all(isinstance(item, str) for item in keys) and key in keys, "signing key is not pinned by the selected source and trusted publisher")
 
 
-def check_source_pins(public_key, source_sha, linux=False):
+def check_source_pins(public_key, source_sha, linux=False, windows=False):
     key = public_key_text(public_key)
     local = decode_json(read_bytes(ROOT / "apps/maple-agent/release-profiles.json", MAX_MANIFEST))
     response = gh_json(f"repos/{REPOSITORY}/contents/apps/maple-agent/release-profiles.json?ref={source_sha}")
@@ -316,7 +330,7 @@ def check_source_pins(public_key, source_sha, linux=False):
         source_bytes = base64.b64decode(response["content"].replace("\n", ""), validate=True)
     except ValueError as error:
         raise PublishError("selected source profile encoding is invalid") from error
-    validate_pins(key, local, decode_json(source_bytes, MAX_MANIFEST), linux)
+    validate_pins(key, local, decode_json(source_bytes, MAX_MANIFEST), linux, windows)
     return key
 
 
@@ -449,6 +463,98 @@ def validate_linux_archive_build(archive, version, build, source_sha, bundle_id)
     need(found == expected, "Linux bundle build, version, source or identity differs from selected run")
 
 
+class WindowsTarInfo(BoundedTarInfo):
+    def _proc_member(self, archive):
+        need(getattr(archive, "maple_headers", 0) < 32, "Windows archive exceeds bounded header inventory")
+        # The Windows bundle has a fixed ASCII layout and needs no extension,
+        # sparse, link, device or executable archive metadata interpretation.
+        need(self.type in {tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE},
+             "Windows archive contains unsupported member metadata")
+        return super()._proc_member(archive)
+
+
+def preflight_windows_archive(archive):
+    """Bound the raw tar stream, including bytes hidden after its end markers."""
+    expanded, count = 0, 0
+    with regular_file(archive) as compressed:
+        with gzip.GzipFile(fileobj=compressed, mode="rb") as stream:
+            while True:
+                header = stream.read(512)
+                need(len(header) == 512, "truncated Windows archive header")
+                if header == bytes(512):
+                    need(stream.read(512) == bytes(512), "invalid Windows archive end marker")
+                    trailing = stream.read(10241)
+                    need(len(trailing) <= 10240 and not any(trailing),
+                         "Windows archive has trailing content or excessive padding")
+                    return
+                count += 1
+                member = tarfile.TarInfo.frombuf(header, "utf-8", "strict")
+                need(count <= 32 and member.type in {tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE}
+                     and not member.linkname, "Windows archive contains unsupported member metadata")
+                expanded += member.size
+                need(0 <= member.size <= 2 * 1024**3 and expanded <= 4 * 1024**3
+                     and (not member.isdir() or member.size == 0),
+                     "Windows archive exceeds bounded inventory")
+                remaining = (member.size + 511) // 512 * 512
+                while remaining:
+                    block = stream.read(min(remaining, CHUNK))
+                    need(bool(block), "truncated Windows archive payload")
+                    remaining -= len(block)
+
+
+def validate_windows_archive_build(archive, version, build, source_sha, bundle_id, build_info):
+    """Validate the complete fixed Windows layout without extraction/execution.
+
+    Native signed-package consumers verify Authenticode on the generation executable. This
+    independent publisher check binds their attested archive to the selected
+    release and rejects every auxiliary or ambiguous archive member.
+    """
+    root = "maple-agent-windows"
+    files = {"bundle-info.json", "maple-agent.exe", "LICENSE.txt", "build-info.json",
+             "notices/THIRD_PARTY_NOTICES.txt", "notices/THIRD_PARTY_NOTICES.html", "notices/manifest.json",
+             "notices/wordlists/eff-large-wordlist.txt", "notices/wordlists/SOURCES.md"}
+    expected_files = {root + "/" + name for name in files}
+    expected_dirs = {root, root + "/notices", root + "/notices/wordlists"}
+    expected = {"format": "maple-agent-windows-bundle-v1", "product": "maple-agent", "profile": "prod",
+                "version": version, "build": build, "source_sha": source_sha,
+                "bundle_id": bundle_id, "entrypoint": "maple-agent.exe"}
+    need(isinstance(build, str) and re.fullmatch(r"[1-9][0-9]{0,17}", build),
+         "Windows package build must match the selected run")
+    seen, descriptor, embedded_info, expanded = set(), None, None, 0
+    try:
+        preflight_windows_archive(archive)
+        with regular_file(archive) as compressed:
+            with tarfile.open(fileobj=compressed, mode="r|gz", tarinfo=WindowsTarInfo) as source:
+                for member in source:
+                    name = member.name
+                    need(name not in seen and len(name.encode("utf-8")) <= 200,
+                         "duplicate or oversized Windows archive path")
+                    seen.add(name)
+                    expanded += member.size
+                    need(0 <= member.size <= 2 * 1024**3 and expanded <= 4 * 1024**3,
+                         "Windows archive exceeds bounded inventory")
+                    if member.isdir():
+                        need(name in expected_dirs and member.size == 0 and member.mode == 0o755,
+                             "invalid Windows archive directory")
+                        continue
+                    need(member.isfile() and name in expected_files and member.mode == 0o644 and member.size > 0,
+                         "invalid Windows archive file inventory")
+                    if name in {root + "/bundle-info.json", root + "/build-info.json"}:
+                        need(member.size <= MAX_MANIFEST, "oversized Windows bundle identity")
+                        with source.extractfile(member) as payload:
+                            data = payload.read(MAX_MANIFEST + 1)
+                        need(len(data) == member.size, "truncated Windows bundle identity")
+                        if name.endswith("/bundle-info.json"):
+                            descriptor = decode_json(data, MAX_MANIFEST)
+                        else:
+                            embedded_info = data
+    except (tarfile.TarError, EOFError, OSError, UnicodeError, RecursionError, zlib.error) as error:
+        raise PublishError("invalid Windows bundle archive") from error
+    need(seen == expected_files | expected_dirs, "Windows archive file inventory differs")
+    need(descriptor == expected, "Windows bundle build, version, source or identity differs from selected run")
+    need(embedded_info == build_info, "Windows archive build-info bytes differ from the attested sidecar")
+
+
 def validate_package(directory, platform, source_sha, version, attestor=attest, expected_build=None, metadata_records=None):
     directory = Path(directory)
     need(directory.is_dir() and not directory.is_symlink(), "package input must be a directory")
@@ -464,8 +570,8 @@ def validate_package(directory, platform, source_sha, version, attestor=attest, 
         raise PublishError("package does not match the Prod build identity") from error
     need(info["version"] == version, "package version differs from publication version")
     stem = f"maple-agent-prod-{version}-{info['git_revision']}-{platform}"
-    package = stem + (".dmg" if platform == "macos-aarch64" else ".tar.gz")
-    binaries = [package, stem + ".app.tar.gz"] if platform == "macos-aarch64" else [package]
+    package = stem + (".dmg" if platform == "macos-aarch64" else "-setup.exe" if platform == "windows-x86_64" else ".tar.gz")
+    binaries = [package, stem + ".app.tar.gz"] if platform == "macos-aarch64" else [package, stem + ".tar.gz"] if platform == "windows-x86_64" else [package]
     expected = {"build-info.json", "manifest.json", "SHA256SUMS", *binaries}
     if platform == "macos-aarch64":
         expected |= {"notarization-log.json", "dmg-notarization-log.json"}
@@ -479,6 +585,9 @@ def validate_package(directory, platform, source_sha, version, attestor=attest, 
     expected_metadata = {"schema_version": 1, "profile": "prod", "platform": platform, "source_sha": source_sha, "version": version, "package": package, "distribution": "master", "macos_signing": "developer-id-notarized" if platform == "macos-aarch64" else None}
     if platform == "linux-x86_64":
         expected_metadata["linux_integrity"] = "sha256"
+    if platform == "windows-x86_64":
+        need(isinstance(expected_build, str) and re.fullmatch(r"[1-9][0-9]{0,17}", expected_build), "Windows package build must match the selected run")
+        expected_metadata.update(windows_signing="authenticode", updater=stem + ".tar.gz", build=expected_build)
     need(isinstance(metadata, dict) and type(metadata.get("schema_version")) is int and metadata == expected_metadata, "invalid final package metadata")
     checked = set()
     for line in read_bytes(directory / "SHA256SUMS", 16 * 1024).decode("ascii").splitlines():
@@ -496,6 +605,8 @@ def validate_package(directory, platform, source_sha, version, attestor=attest, 
             validate_archive_build(directory / binaries[1], version, expected_build, info["bundle_id"])
     if platform == "linux-x86_64":
         validate_linux_archive_build(directory / binaries[0], version, expected_build, source_sha, info["bundle_id"])
+    if platform == "windows-x86_64":
+        validate_windows_archive_build(directory / binaries[1], version, expected_build, source_sha, info["bundle_id"], read_bytes(directory / "build-info.json", 16 * 1024))
     for name in sorted(expected):
         attestor(directory / name, source_sha)
     if metadata_records is not None:
@@ -503,15 +614,17 @@ def validate_package(directory, platform, source_sha, version, attestor=attest, 
     return [(directory / name, {"path": public_path(version, name), **records[name]}) for name in binaries]
 
 
-def prepare(run_id, version, build, macos, linux, notes_file, output, public_key, pub_date=None):
+def prepare(run_id, version, build, macos, linux, notes_file, output, public_key, pub_date=None, windows=None):
     version_tuple(version)
-    proof = trust_run(run_id, bool(linux))
+    options = {"windows": True} if windows else {}
+    proof = trust_run(run_id, bool(linux), **options)
     need(build == proof["build"], "build number must match the package run number")
-    key = check_source_pins(public_key, proof["source_sha"], bool(linux))
+    key = check_source_pins(public_key, proof["source_sha"], bool(linux), **options)
     notes = read_bytes(notes_file, MAX_NOTES).decode("utf-8")
-    mac_metadata, linux_metadata = {}, {}
+    mac_metadata, linux_metadata, windows_metadata = {}, {}, {}
     mac = validate_package(macos, "macos-aarch64", proof["source_sha"], version, expected_build=proof["build"], metadata_records=mac_metadata)
     lin = validate_package(linux, "linux-x86_64", proof["source_sha"], version, expected_build=proof["build"], metadata_records=linux_metadata) if linux else []
+    win = validate_package(windows, "windows-x86_64", proof["source_sha"], version, expected_build=proof["build"], metadata_records=windows_metadata) if windows else []
     manifest = {"format": "maple-agent-update-v1", "product": "maple-agent", "channel": "stable", "version": version, "build": build, "source_sha": proof["source_sha"], "pub_date": pub_date or proof["pub_date"], "notes": notes, "artifacts": {"darwin-aarch64": mac[1][1]}, "downloads": {"macos": mac[0][1]}}
     data = encode_json(manifest)
     validate_manifest(data)
@@ -526,13 +639,20 @@ def prepare(run_id, version, build, macos, linux, notes_file, output, public_key
         linux_data = encode_json(linux_manifest)
         validate_manifest(linux_data)
         write_once(output / "linux-manifest.json", linux_data)
+    if win:
+        windows_manifest = {**manifest, "format": "maple-agent-update-v3",
+                            "artifacts": {"windows-x86_64": win[1][1]},
+                            "downloads": {"windows": win[0][1]}}
+        windows_data = encode_json(windows_manifest)
+        validate_manifest(windows_data)
+        write_once(output / "windows-manifest.json", windows_data)
     write_once(output / "trust.json", encode_json(proof))
     write_once(output / "public-key.pub", ("untrusted comment: Maple Agent update key\n" + key + "\n").encode("ascii"))
     metadata = output / "metadata"
     metadata.mkdir(exist_ok=True)
     need(not metadata.is_symlink(), "metadata directory must not be a symlink")
     inventory = {}
-    for prefix, directory, source_records in (("macos", macos, mac_metadata), ("linux", linux, linux_metadata)):
+    for prefix, directory, source_records in (("macos", macos, mac_metadata), ("linux", linux, linux_metadata), ("windows", windows, windows_metadata)):
         for name, record in sorted(source_records.items()):
             data = read_bytes(Path(directory) / name, MAX_JSON)
             need((hashlib.sha256(data).hexdigest(), len(data)) == (record["sha256"], record["size"]), "package metadata changed after provenance verification")
@@ -549,7 +669,7 @@ def prepare(run_id, version, build, macos, linux, notes_file, output, public_key
     payloads = output / "payloads"
     payloads.mkdir(exist_ok=True)
     need(not payloads.is_symlink(), "payload directory must not be a symlink")
-    for source, record in mac + lin:
+    for source, record in mac + lin + win:
         destination = payloads / source.name
         if destination.exists() or destination.is_symlink():
             need(hash_file(destination) == (record["sha256"], record["size"]), "existing prepared artifact differs")
@@ -561,31 +681,33 @@ def prepare(run_id, version, build, macos, linux, notes_file, output, public_key
 
 
 def bundle_manifests(bundle):
-    """Both exact unsigned wire documents are prepared before reservation/signing.
+    """Every exact unsigned document is prepared before reservation/signing.
 
     The first document remains compatible with shipped v1 Mac clients. Linux v2
-    has a separate pointer, immutable envelope and reservation in the same bucket.
+    and Windows v3 each have their own pointer, envelope and reservation.
     """
     bundle = Path(bundle)
     publications = []
     for name, envelope, reservation, pointer in (
         ("manifest.json", "envelope.json", "publication-manifest.json", "stable/latest.json"),
         ("linux-manifest.json", "linux-envelope.json", "publication-linux-manifest.json", "stable/linux/latest.json"),
+        ("windows-manifest.json", "windows-envelope.json", "publication-windows-manifest.json", "stable/windows/latest.json"),
     ):
         path = bundle / name
-        if name == "linux-manifest.json" and not (path.exists() or path.is_symlink()):
-            need(not ((bundle / envelope).exists() or (bundle / envelope).is_symlink()), "Linux envelope has no prepared manifest")
+        if name != "manifest.json" and not (path.exists() or path.is_symlink()):
+            need(not ((bundle / envelope).exists() or (bundle / envelope).is_symlink()), "platform envelope has no prepared manifest")
             continue
         data = read_bytes(path, MAX_MANIFEST)
         manifest = validate_manifest(data)
         if not publications:
             need(manifest["format"] == "maple-agent-update-v1" and set(manifest["artifacts"]) == {"darwin-aarch64"}, "new Mac publication must remain mac-only v1")
         else:
-            need(manifest["format"] == "maple-agent-update-v2", "Linux publication must use v2")
+            expected_format = "maple-agent-update-v2" if name == "linux-manifest.json" else "maple-agent-update-v3"
+            need(manifest["format"] == expected_format, "platform publication has wrong format")
             primary = publications[0]["manifest"]
             need(all(manifest[field] == primary[field] for field in
                      ("product", "channel", "version", "build", "source_sha", "pub_date", "notes")),
-                 "Mac and Linux release identity differs")
+                 "platform release identity differs")
         publications.append({"name": name, "envelope_name": envelope, "reservation": reservation,
                              "pointer": pointer, "data": data, "manifest": manifest})
     return publications
@@ -596,8 +718,9 @@ def reservation_receipt(publications, metadata_inventory):
     receipt = {"manifest_sha256": hashlib.sha256(primary["data"]).hexdigest(),
                "metadata_inventory_sha256": hashlib.sha256(metadata_inventory).hexdigest(),
                "version": primary["manifest"]["version"]}
-    if len(publications) == 2:
-        receipt["linux_manifest_sha256"] = hashlib.sha256(publications[1]["data"]).hexdigest()
+    for publication in publications[1:]:
+        prefix = "linux" if publication["name"] == "linux-manifest.json" else "windows"
+        receipt[prefix + "_manifest_sha256"] = hashlib.sha256(publication["data"]).hexdigest()
     return receipt
 
 
@@ -626,8 +749,11 @@ def bundle_metadata(bundle, manifest):
     data = read_bytes(index, MAX_MANIFEST)
     inventory = decode_json(data, MAX_MANIFEST)
     expected = {"provenance.json"} | MACOS_METADATA_NAMES
-    if len(bundle_manifests(bundle)) == 2:
+    formats = {publication["manifest"]["format"] for publication in bundle_manifests(bundle)}
+    if "maple-agent-update-v2" in formats:
         expected |= LINUX_METADATA_NAMES
+    if "maple-agent-update-v3" in formats:
+        expected |= WINDOWS_METADATA_NAMES
     need(isinstance(inventory, dict) and set(inventory) == expected, "private metadata inventory must contain the exact sidecars for every included target")
     directory = bundle / "metadata"
     need(directory.is_dir() and not directory.is_symlink() and {path.name for path in directory.iterdir()} == set(inventory), "private metadata inventory differs")
@@ -774,7 +900,7 @@ def reserve(bundle, store, public_key=None):
     manifest = publications[0]["manifest"]
     bundle_records(bundle, manifest)
     metadata_inventory, _ = bundle_metadata(bundle, manifest)
-    # Bind both exact unsigned documents and the complete sidecar inventory
+    # Bind every exact unsigned document and the complete sidecar inventory
     # before the signing job can retrieve a key or use this release version.
     for publication in publications:
         key = release_key(manifest["version"], publication["reservation"])
@@ -842,8 +968,8 @@ def publish(bundle, store, public_key, verifier=minisign_verify, previous_verifi
         need(reserved is not None and reserved[0] == publication["data"], "version must be reserved before signing and publication")
     reserved_metadata = store.get(release_key(manifest["version"], "publication-metadata.json"), MAX_MANIFEST)
     need(reserved_metadata is not None and reserved_metadata[0] == metadata_inventory, "metadata must be reserved before signing and publication")
-    # Snapshot ALL selected feeds before uploading or promoting either. A later
-    # operator change wins its CAS. Partial dual promotion resumes by exact retry;
+    # Snapshot ALL selected feeds before uploading or promoting any. A later
+    # operator change wins its CAS. Partial promotion resumes by exact retry;
     # there is no unsafe multi-pointer rollback or unconditional replacement.
     for publication in publications:
         pointer = store.get(publication["pointer"], MAX_ENVELOPE)
@@ -900,8 +1026,9 @@ def verify_live(bundle, public_key, base_url):
     manifest = publications[0]["manifest"]
     bundle_records(bundle, manifest)
     opener = urllib.request.build_opener(NoRedirect)
-    # Match the native updater on every request, including separate full GETs.
-    opener.addheaders = [("User-Agent", "Maple-Agent-Updater/1"), ("Accept-Encoding", "identity")]
+    # Match native delivery while excluding release verification from analytics.
+    opener.addheaders = [("User-Agent", "Maple-Agent-Updater/1"), ("Accept-Encoding", "identity"),
+                         ("X-Maple-Download-Probe", "1")]
     for publication in publications:
         envelope = read_bytes(bundle / publication["envelope_name"], MAX_ENVELOPE)
         verified = minisign_verify(envelope, public_key)
@@ -934,6 +1061,7 @@ def main():
     trust = commands.add_parser("trust")
     trust.add_argument("--run-id", required=True)
     trust.add_argument("--linux", action="store_true")
+    trust.add_argument("--windows", action="store_true")
     trust.add_argument("--output", required=True)
     prep = commands.add_parser("prepare")
     prep.add_argument("--run-id", required=True)
@@ -941,6 +1069,7 @@ def main():
     prep.add_argument("--build", required=True)
     prep.add_argument("--macos", required=True)
     prep.add_argument("--linux")
+    prep.add_argument("--windows")
     prep.add_argument("--notes-file", required=True)
     prep.add_argument("--pub-date")
     prep.add_argument("--output", required=True)
@@ -958,11 +1087,11 @@ def main():
             command.add_argument("--base-url", required=True)
     args = parser.parse_args()
     if args.command == "trust":
-        proof = trust_run(args.run_id, args.linux)
+        proof = trust_run(args.run_id, args.linux, args.windows)
         write_once(args.output, encode_json(proof))
         print(json.dumps(proof, sort_keys=True))
     elif args.command == "prepare":
-        manifest = prepare(args.run_id, args.version, args.build, args.macos, args.linux, args.notes_file, args.output, args.public_key, args.pub_date)
+        manifest = prepare(args.run_id, args.version, args.build, args.macos, args.linux, args.notes_file, args.output, args.public_key, args.pub_date, args.windows)
         print(f"prepared Agent {manifest['version']} from {manifest['source_sha']}")
     elif args.command == "reserve":
         manifest = reserve(args.bundle, R2Store(args.endpoint, args.bucket), args.public_key)

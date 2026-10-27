@@ -19,6 +19,7 @@ pub struct ReleaseProfile {
     pub update_tag_prefix: String,
     pub update_feed_url: Option<String>,
     pub linux_update_feed_url: Option<String>,
+    pub windows_update_feed_url: Option<String>,
     pub update_public_keys: Vec<String>,
     pub prerelease: bool,
 }
@@ -30,6 +31,7 @@ impl ReleaseProfile {
         match target_os {
             "macos" => self.update_feed_url.as_deref(),
             "linux" => self.linux_update_feed_url.as_deref(),
+            "windows" => self.windows_update_feed_url.as_deref(),
             _ => None,
         }
     }
@@ -106,6 +108,12 @@ fn validate_profiles(profiles: &BTreeMap<String, ReleaseProfile>) -> Result<(), 
                 } else {
                     None
                 }
+            || profile.windows_update_feed_url.as_deref()
+                != if channel == "prod" {
+                    Some("https://updates.maple.ai/agent/stable/windows/latest.json")
+                } else {
+                    None
+                }
             || (channel == "dev" && !profile.update_public_keys.is_empty())
             || !matches!(profile.update_public_keys.len(), 0 | 2)
             || profile
@@ -161,6 +169,7 @@ pub fn select_profile(
         // even if the selected packaged profile gains signing keys later.
         profile.update_feed_url = None;
         profile.linux_update_feed_url = None;
+        profile.windows_update_feed_url = None;
         profile.update_public_keys.clear();
         // Local/MDE builds keep the existing explicit PCR override. Invalid
         // values still fail runtime validation rather than being normalized.
@@ -288,6 +297,8 @@ mod tests {
         assert!(dev.prerelease);
         assert!(!prod.prerelease);
         assert_eq!(dev.update_feed_url, None);
+        assert_eq!(dev.linux_update_feed_url, None);
+        assert_eq!(dev.windows_update_feed_url, None);
         assert!(dev.update_public_keys.is_empty());
         assert_eq!(
             prod.update_feed_url.as_deref(),
@@ -322,6 +333,8 @@ mod tests {
         assert_eq!(profile.bundle_id, "cloud.opensecret.maple.agent.debug");
         assert_eq!(profile.auth_origin, None);
         assert_eq!(profile.update_feed_url, None);
+        assert_eq!(profile.linux_update_feed_url, None);
+        assert_eq!(profile.windows_update_feed_url, None);
         assert!(profile.update_public_keys.is_empty());
     }
 
@@ -349,10 +362,17 @@ mod tests {
         legacy_macos.get_mut("prod").unwrap().update_feed_url =
             Some("https://updates.trymaple.ai/agent/stable/latest.json".into());
         assert!(validate_profiles(&legacy_macos).is_err());
-        let mut legacy_linux = original;
+        let mut legacy_linux = original.clone();
         legacy_linux.get_mut("prod").unwrap().linux_update_feed_url =
             Some("https://updates.trymaple.ai/agent/stable/linux/latest.json".into());
         assert!(validate_profiles(&legacy_linux).is_err());
+        let mut legacy_windows = original;
+        legacy_windows
+            .get_mut("prod")
+            .unwrap()
+            .windows_update_feed_url =
+            Some("https://updates.trymaple.ai/agent/stable/windows/latest.json".into());
+        assert!(validate_profiles(&legacy_windows).is_err());
     }
 
     #[test]
@@ -366,7 +386,11 @@ mod tests {
             prod.update_feed_for_target_os("linux"),
             Some("https://updates.maple.ai/agent/stable/linux/latest.json")
         );
-        for target_os in ["windows", "freebsd", ""] {
+        assert_eq!(
+            prod.update_feed_for_target_os("windows"),
+            Some("https://updates.maple.ai/agent/stable/windows/latest.json")
+        );
+        for target_os in ["freebsd", ""] {
             assert_eq!(prod.update_feed_for_target_os(target_os), None);
         }
         for channel in [None, Some("dev")] {
@@ -378,10 +402,16 @@ mod tests {
         for channel in ["dev", "prod"] {
             for feed in [None, Some("https://wrong.example/latest.json".into())] {
                 let mut configured = profiles().unwrap();
-                configured.get_mut(channel).unwrap().linux_update_feed_url = feed;
+                configured.get_mut(channel).unwrap().linux_update_feed_url = feed.clone();
                 assert_eq!(
                     validate_profiles(&configured).is_ok(),
                     channel == "dev" && configured["dev"].linux_update_feed_url.is_none()
+                );
+                let mut configured = profiles().unwrap();
+                configured.get_mut(channel).unwrap().windows_update_feed_url = feed;
+                assert_eq!(
+                    validate_profiles(&configured).is_ok(),
+                    channel == "dev" && configured["dev"].windows_update_feed_url.is_none()
                 );
             }
         }

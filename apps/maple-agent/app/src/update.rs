@@ -1003,12 +1003,17 @@ async fn discard_preparation(preparation: maple_agent_updater::installer::Instal
 
 async fn cleanup_installed_update(service: &Service) {
     let installed = service.installed_path.clone();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         if service.manual_only() {
             return;
         }
-        let Ok(origin) = compiled_feed_url(Target::LinuxX86_64) else {
+        let target = if cfg!(target_os = "windows") {
+            Target::WindowsX86_64
+        } else {
+            Target::LinuxX86_64
+        };
+        let Ok(origin) = compiled_feed_url(target) else {
             return;
         };
         let keys = crate::profile::UPDATE_PUBLIC_KEYS
@@ -1019,7 +1024,11 @@ async fn cleanup_installed_update(service: &Service) {
         // restore. Authenticate the install receipt against this running build
         // and the compiled feed/key pins before removing its retained backup.
         let _ = tokio::task::spawn_blocking(move || {
-            maple_agent_updater::installer::cleanup_current_linux_bundle(
+            #[cfg(target_os = "linux")]
+            let cleanup = maple_agent_updater::installer::cleanup_current_linux_bundle;
+            #[cfg(target_os = "windows")]
+            let cleanup = maple_agent_updater::installer::cleanup_current_windows_bundle;
+            cleanup(
                 &installed,
                 env!("CARGO_PKG_VERSION"),
                 env!("MAPLE_GIT_SOURCE_SHA"),
@@ -1029,7 +1038,7 @@ async fn cleanup_installed_update(service: &Service) {
         })
         .await;
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = tokio::task::spawn_blocking(move || {
             maple_agent_updater::installer::cleanup_current_installation(
@@ -1055,6 +1064,8 @@ async fn discard_preparation_with_lock(
 fn manual_download_url(release: &VerifiedRelease) -> Option<String> {
     let target = if cfg!(target_os = "linux") {
         Target::LinuxX86_64
+    } else if cfg!(target_os = "windows") {
+        Target::WindowsX86_64
     } else {
         Target::DarwinAarch64
     };
@@ -1065,6 +1076,7 @@ fn manual_download_url_for_target(release: &VerifiedRelease, target: Target) -> 
     let artifact = match target {
         Target::DarwinAarch64 => release.manifest.downloads.macos.as_ref()?,
         Target::LinuxX86_64 => release.manifest.downloads.linux_bundle.as_ref()?,
+        Target::WindowsX86_64 => release.manifest.downloads.windows.as_ref()?,
     };
     release
         .origin
@@ -1082,6 +1094,8 @@ fn build_service() -> Result<Service, String> {
         Target::DarwinAarch64
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Target::LinuxX86_64
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Target::WindowsX86_64
     } else {
         return Err("Updates are not supported on this platform".into());
     };
@@ -1170,7 +1184,23 @@ fn installation() -> Result<Installation, String> {
             maple_agent::self_launch::executable(),
         ))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        Ok(
+            match maple_agent_updater::installer::discover_windows_installation(
+                &exe,
+                env!("CARGO_PKG_VERSION"),
+                env!("MAPLE_GIT_SOURCE_SHA"),
+            ) {
+                Ok(installed_path) => Installation {
+                    installed_path,
+                    manual_only: false,
+                },
+                Err(_) => Installation::manual(&exe),
+            },
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         Ok(Installation::manual(&exe))
     }

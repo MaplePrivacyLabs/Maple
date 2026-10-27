@@ -28,7 +28,7 @@ embedded uninstaller and final installer. PRs produce unsigned Dev previews.
 | Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |
 | Dev | Maple Work Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Disabled; master Actions artifacts |
-| Prod | Maple Work | `cloud.opensecret.maple.agent` | `maple-agent-prod` | macOS/Linux signed Agent feed; Windows manual installer; publication separately gated |
+| Prod | Maple Work | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Platform-specific signed Agent feed; publication separately gated |
 
 The binary embeds its profile, hosted API/client/billing settings, and PCR
 environment. `--build-info` prints the public build identity as JSON without
@@ -94,12 +94,15 @@ They retain the same run/profile identity across retries, so a packaging-only
 retry can reuse a successful compilation while that internal artifact is retained.
 
 Final packages are retained for 30 days; internal prebuilt binaries for 7 days.
-Windows packages contain an `-windows-x86_64-setup.exe` installer, public
-build-info, package manifest and checksums. Run the installer as your desktop
+Windows packages contain an `-windows-x86_64-setup.exe` installer, an updater
+`.tar.gz`, public build-info, package manifest and checksums. Run the installer as your desktop
 user. Dev and Prod use distinct per-user installation directories, shortcuts and
 uninstall entries, separate from Research. Uninstall removes installed program
-files and integration while preserving account, settings and task data. Windows
-upgrades currently use a new installer download; automatic updates are disabled.
+files and integration while preserving account, settings and task data. Packaged
+Prod uses a separate signed Windows v3 feed. The per-user installation keeps a
+stable signed launcher and uninstaller; updates stage a new
+`versions/<version>-<build>/` generation and atomically select it with
+`current.json`, preserving the running generation. Dev has no production feed.
 macOS packages contain a DMG and application
 archive; drag the chosen Agent app into Applications. Both Agent profiles can
 coexist with Maple Research. Linux packages contain
@@ -208,6 +211,7 @@ From the component directory in Git Bash on Windows:
 
 ```sh
 ./scripts/build-release.sh dev
+export MAPLE_PACKAGE_BUILD_NUMBER=1 # Actions supplies its actual github.run_number
 python3 scripts/windows-release.py package dev --unsigned
 python3 scripts/windows-release.py verify dev dist/dev --unsigned --smoke
 ```
@@ -217,6 +221,14 @@ uses the same command without `--unsigned`, only in the trusted master job after
 Azure login and the existing pinned Artifact Signing module setup. The signing
 runner never executes downloaded app code. Install/uninstall smoke runs only on
 a separate credential-free verifier.
+The exact five final files, build number, source/profile and fixed tar inventory
+are checked before attestation and again after download. The tar is generated
+from the same extracted installer generation, so its signed executable and
+all public notice/descriptor bytes match. Native preflight checks destination
+and code trust before installed files or registration change; a durable manual
+install intent permits safe interrupted-install recovery. Unsigned Prod must
+refuse before modification; unsigned Dev remains a positive install/GUI/uninstall
+preview with no production feed or keys.
 
 For a produced Prod updater archive, compile the trusted data-only scanner and
 validate the exact package directory (add `--unsigned` for PR packages):
@@ -244,8 +256,9 @@ The independent Agent publisher promotes only verified Prod artifacts into the
 Agent R2 bucket. It creates no GitHub Release/tag and does not redeploy Research.
 The client accepts only its signed Agent product/channel/target manifest, with
 the primary and backup keys embedded in the Prod profile. Packaged Prod builds
-on macOS/Linux check their platform's feed. Windows has no updater feed or
-automatic update backend. Publication remains separately gated, and
+on macOS/Linux/Windows check their platform's feed. The Windows v3 feed binds
+its generation `.tar.gz` separately from the manual `.exe` download and does
+not change the installed macOS v1 or Linux v2 contracts. Publication remains separately gated, and
 invitations require a signed native update rehearsal on every required launch
 platform. An empty-key profile
 still disables updater traffic. See

@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -85,6 +84,7 @@ fn manifest(version: &str) -> Manifest {
             macos: Some(artifact(version, "Maple-Agent.dmg")),
             linux_appimage: None,
             linux_bundle: None,
+            windows: None,
         },
     }
 }
@@ -106,6 +106,24 @@ fn linux_manifest(version: &str) -> Manifest {
             macos: None,
             linux_appimage: None,
             linux_bundle: Some(linux),
+            windows: None,
+        },
+        ..manifest(version)
+    }
+}
+
+fn windows_manifest(version: &str) -> Manifest {
+    Manifest {
+        format: "maple-agent-update-v3".into(),
+        artifacts: BTreeMap::from([(
+            "windows-x86_64".into(),
+            artifact(version, "Maple-Agent-windows-x86_64.tar.gz"),
+        )]),
+        downloads: Downloads {
+            macos: None,
+            linux_appimage: None,
+            linux_bundle: None,
+            windows: Some(artifact(version, "Maple-Agent-windows-x86_64-setup.exe")),
         },
         ..manifest(version)
     }
@@ -174,6 +192,27 @@ fn static_linux_v2_fixture_uses_the_same_public_test_key() {
         include_bytes!("../tests/fixtures/linux-v2-manifest.json")
     );
     assert!(legacy_v1::verify_envelope(signed, &origin(), &[key(7)]).is_err());
+}
+
+#[test]
+fn static_windows_v3_fixture_uses_the_same_public_test_key() {
+    let signed = include_bytes!("../tests/fixtures/signed-windows-v3-envelope.json");
+    let release = verify_envelope(
+        signed,
+        &origin(),
+        &[include_str!("../tests/fixtures/public-test-key.pub").to_owned()],
+    )
+    .unwrap();
+    assert_eq!(release.manifest, windows_manifest("0.0.2"));
+    assert!(legacy_v1::verify_envelope(signed, &origin(), &[key(7)]).is_err());
+    assert!(release.artifact(Target::DarwinAarch64).is_err());
+    assert!(release.artifact(Target::LinuxX86_64).is_err());
+    assert!(release.artifact(Target::WindowsX86_64).is_ok());
+
+    for mut value in [manifest("0.0.4"), linux_manifest("0.0.4")] {
+        value.downloads.windows = Some(artifact("0.0.4", "Maple-Agent-setup.exe"));
+        assert!(verify_envelope(&envelope(&value), &origin(), &[key(7)]).is_err());
+    }
 }
 
 #[test]
@@ -306,7 +345,7 @@ fn linux_v2_payload_bounds_apply_even_when_the_download_matches() {
 }
 
 #[test]
-fn target_metadata_paths_keep_legacy_macos_and_separate_linux() {
+fn target_metadata_paths_keep_legacy_macos_and_separate_platforms() {
     assert_eq!(
         Target::DarwinAarch64.feed_path(),
         "/agent/stable/latest.json"
@@ -322,6 +361,14 @@ fn target_metadata_paths_keep_legacy_macos_and_separate_linux() {
     assert_eq!(
         Target::LinuxX86_64.manifest_path("0.0.4"),
         "/agent/stable/releases/0.0.4/linux-manifest.json"
+    );
+    assert_eq!(
+        Target::WindowsX86_64.feed_path(),
+        "/agent/stable/windows/latest.json"
+    );
+    assert_eq!(
+        Target::WindowsX86_64.manifest_path("0.0.4"),
+        "/agent/stable/releases/0.0.4/windows-manifest.json"
     );
 }
 
@@ -503,6 +550,12 @@ impl Fixture {
             Target::LinuxX86_64 => {
                 let path = temp.path().join("maple-agent");
                 std::fs::write(&path, b"old installed executable").unwrap();
+                path
+            }
+            Target::WindowsX86_64 => {
+                let path = temp.path().join("Maple Agent");
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::write(path.join("maple-agent.exe"), b"old installed executable").unwrap();
                 path
             }
         };
@@ -818,6 +871,10 @@ async fn wrong_target_feed_cannot_advance_rollback_memory_or_start_a_download() 
         (Target::LinuxX86_64, manifest("0.0.2")),
         (Target::LinuxX86_64, legacy_linux_manifest("0.0.2")),
         (Target::DarwinAarch64, linux_manifest("0.0.2")),
+        (Target::WindowsX86_64, manifest("0.0.2")),
+        (Target::WindowsX86_64, linux_manifest("0.0.2")),
+        (Target::DarwinAarch64, windows_manifest("0.0.2")),
+        (Target::LinuxX86_64, windows_manifest("0.0.2")),
     ] {
         let signed = envelope(&value);
         let server = Fixture::new(vec![ok(&signed)]).await;
@@ -837,34 +894,44 @@ async fn wrong_target_feed_cannot_advance_rollback_memory_or_start_a_download() 
 }
 
 #[tokio::test]
-async fn linux_v2_download_restore_revalidate_and_commit_use_the_linux_feed() {
-    let signed = envelope(&linux_manifest("0.0.2"));
-    let server = Fixture::new(vec![ok(&signed), ok(PAYLOAD), ok(&signed)]).await;
-    let temp = tempfile::tempdir().unwrap();
-    let updater = test_updater(server.config_for_target(&temp, Target::LinuxX86_64)).unwrap();
-    let release = available(&updater).await;
-    let prepared = updater.download(&release).await.unwrap();
-    assert_eq!(std::fs::read(&prepared.payload_path).unwrap(), PAYLOAD);
-    assert!(updater.restore_prepared().await.unwrap().is_some());
-    assert!(matches!(
-        updater.revalidate(&prepared).await.unwrap(),
-        Revalidation::Ready(_)
-    ));
-    let committed = std::cell::Cell::new(false);
-    updater
-        .with_commit_guard(&prepared, || {
-            committed.set(true);
-            Ok(())
-        })
-        .unwrap();
-    assert!(committed.get());
-    let requests = server.requests.lock().unwrap();
-    assert!(requests[0].starts_with("GET /agent/stable/linux/latest.json "));
-    assert!(
-        requests[1]
-            .starts_with("GET /agent/stable/releases/0.0.2/Maple-Agent-linux-x86_64.tar.gz ")
-    );
-    assert!(requests[2].starts_with("GET /agent/stable/linux/latest.json "));
+async fn platform_download_restore_revalidate_and_commit_use_their_exact_feed() {
+    for (target, value, filename) in [
+        (
+            Target::LinuxX86_64,
+            linux_manifest("0.0.2"),
+            "Maple-Agent-linux-x86_64.tar.gz",
+        ),
+        (
+            Target::WindowsX86_64,
+            windows_manifest("0.0.2"),
+            "Maple-Agent-windows-x86_64.tar.gz",
+        ),
+    ] {
+        let signed = envelope(&value);
+        let server = Fixture::new(vec![ok(&signed), ok(PAYLOAD), ok(&signed)]).await;
+        let temp = tempfile::tempdir().unwrap();
+        let updater = test_updater(server.config_for_target(&temp, target)).unwrap();
+        let release = available(&updater).await;
+        let prepared = updater.download(&release).await.unwrap();
+        assert_eq!(std::fs::read(&prepared.payload_path).unwrap(), PAYLOAD);
+        assert!(updater.restore_prepared().await.unwrap().is_some());
+        assert!(matches!(
+            updater.revalidate(&prepared).await.unwrap(),
+            Revalidation::Ready(_)
+        ));
+        let committed = std::cell::Cell::new(false);
+        updater
+            .with_commit_guard(&prepared, || {
+                committed.set(true);
+                Ok(())
+            })
+            .unwrap();
+        assert!(committed.get());
+        let requests = server.requests.lock().unwrap();
+        assert!(requests[0].starts_with(&format!("GET {} ", target.feed_path())));
+        assert!(requests[1].starts_with(&format!("GET /agent/stable/releases/0.0.2/{filename} ")));
+        assert!(requests[2].starts_with(&format!("GET {} ", target.feed_path())));
+    }
 }
 
 #[tokio::test]
@@ -1045,6 +1112,27 @@ async fn commit_guard_excludes_competing_advancement_without_blocking() {
 }
 
 #[tokio::test]
+async fn successful_commit_result_survives_loss_of_state_record_after_replacement() {
+    let server = Fixture::new(vec![ok(&envelope(&manifest("0.0.2"))), ok(PAYLOAD)]).await;
+    let temp = tempfile::tempdir().unwrap();
+    let updater = test_updater(server.config(&temp)).unwrap();
+    let prepared = updater.download(&available(&updater).await).await.unwrap();
+    let result = updater
+        .with_commit_guard(&prepared, || {
+            // Removing the record works even when the platform prevents unlink
+            // of the retained lock. No later state IO may turn this committed
+            // outcome into a failure or recreate the record.
+            std::fs::remove_file(temp.path().join("updates/state.json"))
+                .map_err(|e| e.to_string())?;
+            Ok("committed")
+        })
+        .unwrap();
+    assert_eq!(result, "committed");
+    assert!(!temp.path().join("updates/state.json").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn successful_commit_result_survives_loss_of_state_directory_after_replacement() {
     let server = Fixture::new(vec![ok(&envelope(&manifest("0.0.2"))), ok(PAYLOAD)]).await;
     let temp = tempfile::tempdir().unwrap();
@@ -1061,6 +1149,26 @@ async fn successful_commit_result_survives_loss_of_state_directory_after_replace
     assert_eq!(result, "committed");
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn commit_guard_retains_windows_state_lock_against_deletion() {
+    let server = Fixture::new(vec![ok(&envelope(&windows_manifest("0.0.2"))), ok(PAYLOAD)]).await;
+    let temp = tempfile::tempdir().unwrap();
+    let updater = test_updater(server.config_for_target(&temp, Target::WindowsX86_64)).unwrap();
+    let prepared = updater.download(&available(&updater).await).await.unwrap();
+    let lock_path = temp.path().join("updates/state.lock");
+    updater
+        .with_commit_guard(&prepared, || {
+            // Native private handles intentionally exclude FILE_SHARE_DELETE:
+            // deletion cannot detach this installation's active lock inode.
+            assert!(std::fs::remove_file(&lock_path).is_err());
+            assert!(lock_path.is_file());
+            Ok(())
+        })
+        .unwrap();
+    std::fs::remove_file(lock_path).unwrap();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn saved_payload_symlinks_are_never_followed() {
@@ -1069,7 +1177,7 @@ async fn saved_payload_symlinks_are_never_followed() {
     let temp = tempfile::tempdir().unwrap();
     let updater = test_updater(server.config(&temp)).unwrap();
     let prepared = updater.download(&available(&updater).await).await.unwrap();
-    let outside: PathBuf = temp.path().join("outside");
+    let outside = temp.path().join("outside");
     std::fs::write(&outside, PAYLOAD).unwrap();
     std::fs::remove_file(&prepared.payload_path).unwrap();
     symlink(&outside, &prepared.payload_path).unwrap();

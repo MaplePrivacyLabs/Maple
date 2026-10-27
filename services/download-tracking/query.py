@@ -19,7 +19,7 @@ MAX_REPLY_BYTES = 8 * 1024 * 1024
 CONFIG = Path(__file__).resolve().parents[1] / "agent-updates" / "wrangler.jsonc"
 UTC = timezone.utc
 ARTIFACTS = (
-    "macos-dmg", "macos-updater", "windows-installer", "linux-bundle",
+    "macos-dmg", "macos-updater", "windows-installer", "windows-bundle", "linux-bundle",
     "linux-appimage", "linux-deb", "linux-rpm", "android-apk", "latest", "manifest",
 )
 FILTERS = {

@@ -730,6 +730,8 @@ fn close_lifecycle(host: &FixtureHost) -> DesktopLifecycle {
         quit_completed: Default::default(),
         quit_requested: Default::default(),
         frontend_detached: Default::default(),
+        #[cfg(target_os = "windows")]
+        update_restart_pending: Default::default(),
     }
 }
 
@@ -784,6 +786,8 @@ fn pending_quit_cannot_finish_an_update_installation(cx: &mut gpui::TestAppConte
             quit_completed: Default::default(),
             quit_requested: Default::default(),
             frontend_detached: Default::default(),
+            #[cfg(target_os = "windows")]
+            update_restart_pending: Default::default(),
         });
         updater.set_test_state(crate::update::State::Ready);
         assert!(may_finish_quit(cx));

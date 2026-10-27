@@ -2099,6 +2099,8 @@ struct DesktopLifecycle {
     quit_completed: std::rc::Rc<std::cell::Cell<bool>>,
     quit_requested: std::rc::Rc<std::cell::Cell<bool>>,
     frontend_detached: std::rc::Rc<std::cell::Cell<bool>>,
+    #[cfg(target_os = "windows")]
+    update_restart_pending: std::rc::Rc<std::cell::Cell<bool>>,
 }
 impl gpui::Global for DesktopLifecycle {}
 
@@ -2111,7 +2113,7 @@ fn may_finish_quit(cx: &App) -> bool {
 }
 
 fn restart_installed_update(path: PathBuf, cx: &mut App) {
-    let Some(state) = cx.try_global::<DesktopLifecycle>() else {
+    let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
         return;
     };
     if state.updater.restart_path().as_ref() != Some(&path)
@@ -2119,13 +2121,47 @@ fn restart_installed_update(path: PathBuf, cx: &mut App) {
     {
         return;
     }
-    state.quit_completed.set(true);
-    #[cfg(target_os = "macos")]
-    native_quit::allow_update_restart();
-    cx.set_restart_path(path);
-    cx.restart();
-    #[cfg(target_os = "macos")]
-    native_quit::finish_update_restart();
+    #[cfg(target_os = "windows")]
+    {
+        if state.update_restart_pending.replace(true) {
+            return;
+        }
+        // Signature/tree verification can touch disk and trust services. Keep
+        // it off the UI thread; repeated clicks share this one restart attempt.
+        // Native argv and exact process waiting avoid shell path interpolation.
+        let restart_path = path.clone();
+        let restart = cx.background_executor().spawn(async move {
+            crate::windows_bootstrap::schedule_restart(&restart_path, crate::profile::PROFILE)
+        });
+        cx.spawn(async move |cx| {
+            let result = restart.await;
+            cx.update(|cx| {
+                if let Err(error) = result {
+                    state.update_restart_pending.set(false);
+                    log::error!("Windows update restart could not start: {error}");
+                    show_update_about(cx);
+                    return;
+                }
+                if state.updater.restart_path().as_ref() == Some(&path)
+                    && state.backend.is_retired_after_update()
+                {
+                    state.quit_completed.set(true);
+                    cx.quit();
+                }
+            });
+        })
+        .detach();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        state.quit_completed.set(true);
+        #[cfg(target_os = "macos")]
+        native_quit::allow_update_restart();
+        cx.set_restart_path(path);
+        cx.restart();
+        #[cfg(target_os = "macos")]
+        native_quit::finish_update_restart();
+    }
 }
 
 fn finish_quit(cx: &mut App) {
@@ -3078,6 +3114,8 @@ pub fn run() {
                 quit_completed: Default::default(),
                 quit_requested: Default::default(),
                 frontend_detached: Default::default(),
+                #[cfg(target_os = "windows")]
+                update_restart_pending: Default::default(),
             });
             #[cfg(target_os = "macos")]
             if let Err(error) = native_quit::install(cx) {

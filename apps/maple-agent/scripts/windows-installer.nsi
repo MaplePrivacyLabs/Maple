@@ -20,7 +20,13 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Maple Privacy Labs"
 !ifdef SIGNER
 ; NSIS generates a standalone uninstaller and signs it without running any
 ; downloaded executable. A signer error aborts the package build.
+!ifdef UNSIGNED_UNINSTALLER
+; Preview bundles need the same standalone PE inventory. Verification performs
+; no signing and requires the compiler output to remain unsigned.
+!uninstfinalize 'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "${SIGNER}" "%1" -VerifyOnly -Unsigned' = 0
+!else
 !uninstfinalize 'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "${SIGNER}" "%1"' = 0
+!endif
 !endif
 
 Page directory
@@ -50,39 +56,69 @@ unsupported:
 supported:
 FunctionEnd
 
+Var PreviousInstallLocation
+Var PreviousDisplayVersion
+Var HadRegistration
+
 Section "Install"
-  ; Fail before changing any installed files if the desktop or background host
-  ; still has the executable open. Append mode preserves the existing bytes;
-  ; opening for write fails while Windows maps the running executable.
-  IfFileExists "$INSTDIR\maple-agent.exe" 0 ready
+  ; The temporary copy is the same verified signed application PE. Its private
+  ; early command performs no GUI, account, store or backend initialization.
+  ; All destination/DACL/reparse checks happen before any installed file or
+  ; registry changes. Unsigned Prod previews deliberately stop here.
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=maple-installer-check.exe "${PAYLOAD}\maple-agent.exe"
   ClearErrors
-  FileOpen $0 "$INSTDIR\maple-agent.exe" a
-  IfErrors locked
-  FileClose $0
-  Goto ready
-locked:
-  MessageBox MB_OK|MB_ICONSTOP "Close ${DISPLAY_NAME} and its background host before installing." /SD IDOK
-  SetErrorLevel 1
-  Abort
-ready:
+  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-preflight "$INSTDIR"' $0
+  IfErrors refused
+  StrCmp $0 0 0 refused
+  ; The signed helper durably records the manual operation, creates a private
+  ; root, bootstraps only a fresh install and repairs incomplete non-current
+  ; generation files. A retry must never overwrite a live or valid rollback
+  ; generation, nor remain stuck with an interrupted NSIS file copy.
+  ClearErrors
+  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-prepare "$INSTDIR" ${GENERATION}' $0
+  IfErrors refused
+  StrCmp $0 0 0 refused
+
+  StrCpy $HadRegistration 0
+  ClearErrors
+  ReadRegStr $PreviousInstallLocation HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation"
+  IfErrors unregistered
+  StrCmp $PreviousInstallLocation "$INSTDIR" 0 refused
+  StrCpy $HadRegistration 1
+  ReadRegStr $PreviousDisplayVersion HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayVersion"
+unregistered:
+  ; Never overwrite the stable bootstrap or an existing generation. All new
+  ; generation bytes arrive before the native helper commits current.json.
   SetOutPath "$INSTDIR"
-  SetOverwrite on
+  IfFileExists "$INSTDIR\maple-agent.exe" bootstrap_ready
   ClearErrors
   File "${PAYLOAD}\maple-agent.exe"
   IfErrors failed
+bootstrap_ready:
+  SetOutPath "$INSTDIR\versions\${GENERATION}"
+  SetOverwrite off
+  ClearErrors
+  File "${PAYLOAD}\maple-agent.exe"
   File "${PAYLOAD}\LICENSE.txt"
   File "${PAYLOAD}\build-info.json"
-  SetOutPath "$INSTDIR\notices"
+  SetOutPath "$INSTDIR\versions\${GENERATION}\notices"
   File "${PAYLOAD}\notices\THIRD_PARTY_NOTICES.txt"
   File "${PAYLOAD}\notices\THIRD_PARTY_NOTICES.html"
   File "${PAYLOAD}\notices\manifest.json"
-  SetOutPath "$INSTDIR\notices\wordlists"
+  SetOutPath "$INSTDIR\versions\${GENERATION}\notices\wordlists"
   File "${PAYLOAD}\notices\wordlists\eff-large-wordlist.txt"
   File "${PAYLOAD}\notices\wordlists\SOURCES.md"
+  SetOutPath "$INSTDIR\versions\${GENERATION}"
+  File "${PAYLOAD}\bundle-info.json"
   IfErrors failed
+  SetOverwrite on
   SetOutPath "$INSTDIR"
+  IfFileExists "$INSTDIR\uninstall.exe" uninstaller_ready
   WriteUninstaller "$INSTDIR\uninstall.exe"
   IfErrors failed
+uninstaller_ready:
   CreateDirectory "$SMPROGRAMS\${DISPLAY_NAME}"
   CreateShortcut "$SMPROGRAMS\${DISPLAY_NAME}\${DISPLAY_NAME}.lnk" "$INSTDIR\maple-agent.exe"
   CreateShortcut "$SMPROGRAMS\${DISPLAY_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
@@ -96,10 +132,23 @@ ready:
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "NoRepair" 1
   IfErrors failed
+  ClearErrors
+  ExecWait '"$INSTDIR\maple-agent.exe" --internal-windows-installer-activate ${GENERATION}' $0
+  IfErrors failed
+  StrCmp $0 0 0 failed
   SetErrorLevel 0
   Goto done
 failed:
-  MessageBox MB_OK|MB_ICONSTOP "Installation could not replace every application file. Close the application and retry." /SD IDOK
+  ; The native activation failure leaves the old pointer unchanged. Restore
+  ; registration truth; user data and an earlier generation remain untouched.
+  StrCmp $HadRegistration 1 restore_registration
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}"
+  Goto refused
+restore_registration:
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation" "$PreviousInstallLocation"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayVersion" "$PreviousDisplayVersion"
+refused:
+  MessageBox MB_OK|MB_ICONSTOP "Installation could not be completed safely. Close the application and retry from a verified installer." /SD IDOK
   SetErrorLevel 1
   Abort
 done:
@@ -107,33 +156,43 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
-  ; A copied uninstaller must never remove files from an arbitrary directory.
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation"
   StrCmp $0 "$INSTDIR" 0 refuse
+  ; The trusted bootstrap derives its actual root and removes fixed owned
+  ; generation files only after signature, lock, DACL and reparse checks.
+  ; It preserves unknown user files, AppData and profile/database state.
   ClearErrors
+  ExecWait '"$INSTDIR\maple-agent.exe" --internal-windows-uninstall-cleanup' $0
+  IfErrors refuse
+  StrCmp $0 0 0 refuse
+  ClearErrors
+  Delete "$INSTDIR\current.json"
+  ; The helper has exited and released this exact private lock. Removing only
+  ; its fixed transaction files permits a later clean reinstall at this root.
+  IfFileExists "$INSTDIR\.install.lock" 0 lock_removed
+  Delete "$INSTDIR\.install.lock"
+lock_removed:
+  IfFileExists "$INSTDIR\.installer-intent.json" 0 intent_removed
+  Delete "$INSTDIR\.installer-intent.json"
+intent_removed:
   Delete "$INSTDIR\maple-agent.exe"
   IfErrors refuse
-  Delete "$INSTDIR\LICENSE.txt"
-  Delete "$INSTDIR\build-info.json"
-  Delete "$INSTDIR\notices\THIRD_PARTY_NOTICES.txt"
-  Delete "$INSTDIR\notices\THIRD_PARTY_NOTICES.html"
-  Delete "$INSTDIR\notices\manifest.json"
-  Delete "$INSTDIR\notices\wordlists\eff-large-wordlist.txt"
-  Delete "$INSTDIR\notices\wordlists\SOURCES.md"
   Delete "$INSTDIR\uninstall.exe"
-  RMDir "$INSTDIR\notices\wordlists"
-  RMDir "$INSTDIR\notices"
-  ; Remove empty application directories only; user-created files and all
-  ; configuration/data under AppData remain untouched.
-  RMDir "$INSTDIR"
+  RMDir "$INSTDIR\versions"
   Delete "$SMPROGRAMS\${DISPLAY_NAME}\${DISPLAY_NAME}.lnk"
   Delete "$SMPROGRAMS\${DISPLAY_NAME}\Uninstall.lnk"
   RMDir "$SMPROGRAMS\${DISPLAY_NAME}"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}"
+  ; The durable fence belongs to this NSIS process. Keep it while performing
+  ; all installed-file, shortcut and registration changes, after the native
+  ; helper releases its handles. No root/registration mutation may follow its
+  ; removal. Leave the empty root so a concurrently admitted reinstall cannot
+  ; lose its destination between directory creation and publishing its intent.
+  Delete "$INSTDIR\.uninstaller-intent.json"
   SetErrorLevel 0
   Goto done
 refuse:
-  MessageBox MB_OK|MB_ICONSTOP "Close ${DISPLAY_NAME} and its background host, then uninstall from its installed location." /SD IDOK
+  MessageBox MB_OK|MB_ICONSTOP "Close ${DISPLAY_NAME} and its background host, then uninstall from its registered installed location." /SD IDOK
   SetErrorLevel 1
   Abort
 done:

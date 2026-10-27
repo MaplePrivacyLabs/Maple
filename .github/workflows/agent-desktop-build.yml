@@ -546,6 +546,7 @@ jobs:
         variant: [dev, prod]
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -598,6 +599,7 @@ jobs:
         variant: [dev]
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -634,6 +636,7 @@ jobs:
         variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -661,7 +664,7 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Verify downloaded Windows package and install lifecycle
+      - name: Verify downloaded Windows package and profile-specific install policy
         run: |
           # The stock image exports these Azure CLI tooling/cache paths.
           # Keep other Azure/signing variables visible to the fail-closed guard.

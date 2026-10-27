@@ -67,13 +67,15 @@ function message(
   };
 }
 
+async function migration(name: string): Promise<string> {
+  return Bun.file(new URL(`../migrations/${name}`, import.meta.url)).text();
+}
+
 async function database() {
   const sqlite = new Database(":memory:");
-  sqlite.exec(
-    await Bun.file(
-      new URL("../migrations/0001_download_events.sql", import.meta.url),
-    ).text(),
-  );
+  sqlite.exec(await migration("0001_download_events.sql"));
+  const upgrade = await migration("0002_windows_download_events.sql");
+  sqlite.transaction(() => sqlite.exec(upgrade))();
   const db: EventDatabase = {
     prepare(sql) {
       return {
@@ -90,6 +92,63 @@ async function database() {
   };
   return { sqlite, db };
 }
+
+test("Windows routes distinguish v3 metadata, NSIS redirects and update bundles", async () => {
+  const prefix = "/agent/stable/releases/0.0.10/";
+  const stem = "maple-agent-prod-0.0.10-abcdef0-windows-x86_64";
+  for (const [file, kind] of [
+    [`${stem}.tar.gz`, "windows-bundle"],
+    [`${stem}-setup.exe`, "windows-installer"],
+  ] as const) {
+    const observation = capture(prefix + file);
+    await observation.done();
+    expect(observation.events[0]).toMatchObject({
+      product: "agent",
+      platform: "windows",
+      artifact: kind,
+      kind: "artifact",
+      version: "0.0.10",
+    });
+    expect(isDownloadEvent(observation.events[0])).toBe(true);
+    expect(
+      isDownloadEvent({ ...observation.events[0], platform: "linux" }),
+    ).toBe(false);
+    expect(
+      isDownloadEvent({ ...observation.events[0], product: "research" }),
+    ).toBe(false);
+    if (kind === "windows-bundle")
+      expect(isDownloadEvent({ ...observation.events[0], kind: "alias" })).toBe(
+        false,
+      );
+  }
+  const alias = capture(
+    "/download/agent/stable/windows",
+    new Response(null, {
+      status: 302,
+      headers: { location: prefix + stem + "-setup.exe" },
+    }),
+  );
+  await alias.done();
+  expect(alias.events[0]).toMatchObject({
+    kind: "alias",
+    platform: "windows",
+    artifact: "windows-installer",
+    version: "0.0.10",
+  });
+  expect(isDownloadEvent(alias.events[0])).toBe(true);
+  for (const file of [
+    "agent-windows-arm64.tar.gz",
+    "agent-windows-x86.tar.gz",
+    "agent-Windows-x86_64.tar.gz",
+    "agent-windows-x86_64-dev.tar.gz",
+    "agent-windows-x86_64.exe",
+    "agent-windows-x86_64.app.tar.gz",
+  ]) {
+    const observation = capture(prefix + file);
+    await observation.done();
+    expect(observation.events).toHaveLength(0);
+  }
+});
 
 test("captures original UTC timestamp and random observation ID without reading/replacing bytes or headers", async () => {
   const bytes = new Uint8Array([0, 255, 1, 128]);
@@ -345,6 +404,7 @@ test("metadata capture never parses or rewrites bodies and needs no version asse
     ["/latest.json", "research", "latest", null, "all"],
     ["/agent/stable/latest.json", "agent", "latest", null, "macos"],
     ["/agent/stable/linux/latest.json", "agent", "latest", null, "linux"],
+    ["/agent/stable/windows/latest.json", "agent", "latest", null, "windows"],
     [
       "/agent/stable/releases/0.0.9/manifest.json",
       "agent",
@@ -358,6 +418,13 @@ test("metadata capture never parses or rewrites bodies and needs no version asse
       "manifest",
       "0.0.9",
       "linux",
+    ],
+    [
+      "/agent/stable/releases/0.0.10/windows-manifest.json",
+      "agent",
+      "manifest",
+      "0.0.10",
+      "windows",
     ],
   ] as const) {
     const observation = capture(

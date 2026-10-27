@@ -30,8 +30,7 @@ SECTIONS = OPTIONAL + 240
 def public_info(profile="dev", source_sha=SOURCE_SHA):
     profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
     public = {field: profiles[profile][field] for field in release_info.PUBLIC_FIELDS}
-    # Windows has no automatic update feed in this preview.
-    return dict(public, update_feed_url=None, profile=profile, version="0.1.0",
+    return dict(public, update_feed_url=profiles[profile]["windows_update_feed_url"], profile=profile, version="0.1.0",
                 git_revision=source_sha[:8], source_sha=source_sha)
 
 
@@ -125,10 +124,17 @@ class StaticWindowsMetadataTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaisesRegex(ValueError, "full lowercase SHA"):
                 metadata.validated_build_info("dev", self.binary, source)
 
-    def test_both_profiles_use_windows_identity_without_update_feed(self):
+    def test_both_profiles_use_their_own_windows_update_feed(self):
         for profile in ("dev", "prod"):
             self.write(public_info(profile))
             self.assertEqual(metadata.validated_build_info(profile, self.binary, SOURCE_SHA), public_info(profile))
+            self.assertEqual(public_info(profile)["update_feed_url"],
+                             "https://updates.maple.ai/agent/stable/windows/latest.json" if profile == "prod" else None)
+        for url in ("https://updates.maple.ai/agent/stable/latest.json",
+                    "https://updates.maple.ai/agent/stable/linux/latest.json", None):
+            self.write({**public_info("prod"), "update_feed_url": url})
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, "update_feed_url"):
+                metadata.validated_build_info("prod", self.binary, SOURCE_SHA)
 
     def test_rejects_non_pe_architectures_dlls_and_bad_optional_headers(self):
         for options in ({"machine": 0x14C}, {"machine": 0xAA64}, {"characteristics": 0x2022}, {"characteristics": 0}):

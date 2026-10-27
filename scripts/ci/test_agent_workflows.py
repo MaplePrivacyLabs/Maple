@@ -542,6 +542,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
             "apps/maple-agent/target/third-party-notices",
         ])
         for name in ("windows-unsigned", "windows"):
+            self.assertEqual(jobs[name]["env"]["MAPLE_PACKAGE_BUILD_NUMBER"], "${{ github.run_number }}")
             download = next(step["with"] for step in jobs[name]["steps"]
                             if step.get("uses", "").startswith("actions/download-artifact@"))
             self.assertEqual(download, {"name": upload["name"], "path": "apps/maple-agent/target"})
@@ -552,6 +553,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         self.assertTrue(any('package "$MAPLE_RELEASE_PROFILE" --unsigned' in step.get("run", "")
                             for step in preview["steps"]))
         verify = jobs["verify-windows"]
+        self.assertEqual(verify["env"]["MAPLE_PACKAGE_BUILD_NUMBER"], "${{ github.run_number }}")
         self.assertEqual(verify["needs"], ["windows", "windows-unsigned"])
         self.assertIn("always() && !cancelled()", verify["if"])
         self.assertIn("needs.windows-unsigned.result == 'success'", verify["if"])

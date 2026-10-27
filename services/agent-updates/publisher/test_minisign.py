@@ -35,6 +35,13 @@ class MinisignTests(unittest.TestCase):
             key.write_text(publisher.public_key_text(self.key) + "\n")
             self.assertEqual(publisher.minisign_verify(self.data, key)["version"], "0.0.2")
 
+    def test_windows_native_client_shared_fixture_verifies_exact_v3_bytes(self):
+        shared = publisher.ROOT / "apps/maple-agent/crates/maple-agent-updater/tests/fixtures"
+        envelope = (shared / "signed-windows-v3-envelope.json").read_bytes()
+        manifest = publisher.minisign_verify(envelope, self.key)
+        self.assertEqual(manifest["format"], "maple-agent-update-v3")
+        self.assertEqual(json.loads(envelope)["manifest"].encode(), (shared / "windows-v3-manifest.json").read_bytes())
+
     def test_existing_signed_pointer_rotation_retry_and_missing_object_repair(self):
         class Store:
             def __init__(self):
@@ -118,24 +125,33 @@ class MinisignTests(unittest.TestCase):
             publisher.minisign_verify(publisher.encode_json(envelope), self.key)
 
     def test_dual_feed_real_signatures_share_key_and_retry_exactly(self):
+        self.check_multiplatform_signatures(windows=False)
+
+    def test_all_three_feed_real_signatures_share_key_and_retry_exactly(self):
+        self.check_multiplatform_signatures(windows=True)
+
+    def check_multiplatform_signatures(self, windows):
         from test_publisher import FakeStore, PublicationTests
         fixtures = PublicationTests()
         fixtures.setUp()
         self.addCleanup(fixtures.doCleanups)
-        bundle, _, _ = fixtures.make_bundle("1.2.3", "real-dual", linux=True)
+        bundle, _, _ = fixtures.make_bundle("1.2.3", "real-multiplatform", linux=True, windows=windows)
         key, secret = bundle / "public-key.pub", fixtures.root / "offline-dual-secret.key"
         key.unlink()
         result = subprocess.run(["minisign", "-G", "-W", "-p", str(key), "-s", str(secret)],
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, "offline temporary test key generation failed")
-        (bundle / "envelope.json").unlink()
-        (bundle / "linux-envelope.json").unlink()
+        names = ["envelope.json", "linux-envelope.json"] + (["windows-envelope.json"] if windows else [])
+        for name in names:
+            (bundle / name).unlink()
         store = FakeStore()
         publisher.reserve(bundle, store, key)
         publisher.sign(bundle, secret, key)
-        envelopes = {name: (bundle / name).read_bytes() for name in ("envelope.json", "linux-envelope.json")}
+        envelopes = {name: (bundle / name).read_bytes() for name in names}
         self.assertEqual(publisher.minisign_verify(envelopes["envelope.json"], key)["format"], "maple-agent-update-v1")
         self.assertEqual(publisher.minisign_verify(envelopes["linux-envelope.json"], key)["format"], "maple-agent-update-v2")
+        if windows:
+            self.assertEqual(publisher.minisign_verify(envelopes["windows-envelope.json"], key)["format"], "maple-agent-update-v3")
         publisher.sign(bundle, secret, key)
         self.assertEqual(envelopes, {name: (bundle / name).read_bytes() for name in envelopes})
         self.assertEqual(publisher.publish(bundle, store, key, previous_verifier=publisher.minisign_verify), "published")
@@ -143,6 +159,8 @@ class MinisignTests(unittest.TestCase):
         self.assertEqual(publisher.publish(bundle, store, key, previous_verifier=publisher.minisign_verify), "already-published")
         self.assertEqual(envelopes["envelope.json"], store.objects["stable/latest.json"])
         self.assertEqual(envelopes["linux-envelope.json"], store.objects["stable/linux/latest.json"])
+        if windows:
+            self.assertEqual(envelopes["windows-envelope.json"], store.objects["stable/windows/latest.json"])
 
     def test_real_temporary_key_reservation_signing_verification_and_retry(self):
         class ReservationStore:

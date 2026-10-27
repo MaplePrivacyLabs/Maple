@@ -52,6 +52,7 @@ test("real workerd queues persist Agent and Research request events once and ret
       `
       import agent from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
       import research from ${JSON.stringify(join(import.meta.dir, "../../updates/src/index.ts"))};
+      import { trackResponse } from ${JSON.stringify(join(import.meta.dir, "../../download-tracking/tracking.ts"))};
       export default {
         async queue(batch, env, ctx) {
           await agent.queue(batch, env, ctx);
@@ -61,9 +62,8 @@ test("real workerd queues persist Agent and Research request events once and ret
           const path = new URL(request.url).pathname;
           if (path === '/__seed' && request.method === 'POST') {
             const { metadata, payload, latest, catalog, migration } = await request.json();
-            for (const statement of migration.split(';')) {
-              if (statement.trim()) await env.DOWNLOAD_DB.prepare(statement).run();
-            }
+            const statements = migration.split(';').filter(statement => statement.trim());
+            await env.DOWNLOAD_DB.batch(statements.map(statement => env.DOWNLOAD_DB.prepare(statement)));
             await env.DOWNLOAD_DB.prepare('CREATE TABLE test_deliveries (message_count INTEGER NOT NULL)').run();
             await env.AGENT_RELEASES.put('stable/latest.json', Uint8Array.from(metadata));
             await env.AGENT_RELEASES.put('stable/releases/0.0.2/manifest.json', Uint8Array.from(metadata));
@@ -72,6 +72,29 @@ test("real workerd queues persist Agent and Research request events once and ret
             await env.AGENT_RELEASES.put('test/latest.json', Uint8Array.from(latest));
             await env.AGENT_RELEASES.put('test/installers.json', JSON.stringify(catalog));
             return new Response('seeded');
+          }
+          if (path === '/__upgrade' && request.method === 'POST') {
+            const { migration, fail } = await request.json();
+            const statements = migration.split(';').filter(statement => statement.trim());
+            if (fail) statements.push('SELECT * FROM injected_migration_failure');
+            try {
+              await env.DOWNLOAD_DB.batch(statements.map(statement => env.DOWNLOAD_DB.prepare(statement)));
+              return new Response('upgraded');
+            } catch {
+              return new Response('migration rolled back', { status: 503 });
+            }
+          }
+          if (path === '/__schema') {
+            const schema = await env.DOWNLOAD_DB.prepare("SELECT type, name, sql FROM sqlite_master WHERE name LIKE 'download_events%' ORDER BY type, name").all();
+            return Response.json(schema.results);
+          }
+          if (path === '/__windows' && request.method === 'POST') {
+            const payload = Uint8Array.from((await request.json()).payload);
+            const response = new Response(payload, { headers: { 'content-length': String(payload.length) } });
+            trackResponse(new Request('https://updates.maple.ai/agent/stable/releases/0.0.10/maple-agent-prod-0.0.10-abcdef0-windows-x86_64.tar.gz', {
+              headers: { 'x-maple-download-probe': '1' },
+            }), response, env, ctx, 'agent');
+            return response;
           }
           if (path === '/__rows') {
             const rows = await env.DOWNLOAD_DB.prepare('SELECT * FROM download_events ORDER BY observed_at, event_id').all();
@@ -230,14 +253,70 @@ test("real workerd queues persist Agent and Research request events once and ret
       ),
     ).toBe(true);
 
+    const upgrade = await Bun.file(
+      join(import.meta.dir, "../migrations/0002_windows_download_events.sql"),
+    ).text();
+    const schemaBefore = await fetch(`${origin}/__schema`).then((response) =>
+      response.json(),
+    );
+    expect(
+      (
+        await fetch(`${origin}/__upgrade`, {
+          method: "POST",
+          body: JSON.stringify({ migration: upgrade, fail: true }),
+        })
+      ).status,
+    ).toBe(503);
+    expect((await snapshot()).rows).toEqual(first.rows);
+    expect(
+      await fetch(`${origin}/__schema`).then((response) => response.json()),
+    ).toEqual(schemaBefore);
+    expect(
+      (
+        await fetch(`${origin}/__upgrade`, {
+          method: "POST",
+          body: JSON.stringify({ migration: upgrade, fail: false }),
+        })
+      ).status,
+    ).toBe(200);
+    expect((await snapshot()).rows).toEqual(first.rows);
+    const schemaAfter = (await fetch(`${origin}/__schema`).then((response) =>
+      response.json(),
+    )) as Array<{ type: string; name: string; sql: string }>;
+    expect(
+      schemaAfter.filter((row) => row.type === "index").map((row) => row.name),
+    ).toEqual(["download_events_observed_at", "download_events_trends"]);
+    expect(schemaAfter.find((row) => row.type === "table")?.sql).toContain(
+      "'windows-bundle'",
+    );
+    const windows = await fetch(`${origin}/__windows`, {
+      method: "POST",
+      body: JSON.stringify({ payload: Array.from(PAYLOAD) }),
+    });
+    expect(new Uint8Array(await windows.arrayBuffer())).toEqual(PAYLOAD);
+    const withWindows = await eventually(
+      snapshot,
+      (value) => value.rows.length === 8,
+    );
+    expect(
+      withWindows.rows.filter((row) => row.platform === "windows"),
+    ).toHaveLength(1);
+    expect(
+      withWindows.rows.find((row) => row.platform === "windows"),
+    ).toMatchObject({
+      artifact: "windows-bundle",
+      kind: "artifact",
+      is_probe: 1,
+    });
+
     expect((await fetch(`${origin}/__replay`, { method: "POST" })).status).toBe(
       200,
     );
     const replayed = await eventually(
       snapshot,
-      (value) => value.deliveries >= first.deliveries + 2,
+      (value) => value.deliveries >= withWindows.deliveries + 2,
     );
-    expect(replayed.rows).toEqual(first.rows);
+    expect(replayed.rows).toEqual(withWindows.rows);
 
     expect((await fetch(`${origin}/__outage`, { method: "POST" })).status).toBe(
       200,
@@ -257,11 +336,11 @@ test("real workerd queues persist Agent and Research request events once and ret
     ).toBe(200);
     const recovered = await eventually(
       snapshot,
-      (value) => value.rows.length === 8,
+      (value) => value.rows.length === 9,
     );
     expect(
       recovered.rows.filter((row) => row.kind === "artifact"),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   } finally {
     clearTimeout(timer);
     child?.kill("SIGTERM");

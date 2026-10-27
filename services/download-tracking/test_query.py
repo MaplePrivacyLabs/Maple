@@ -79,6 +79,7 @@ class QueryTests(unittest.TestCase):
         db = sqlite3.connect(":memory:")
         db.row_factory = sqlite3.Row
         db.executescript((Path(__file__).parents[1] / "agent-updates/migrations/0001_download_events.sql").read_text())
+        db.executescript((Path(__file__).parents[1] / "agent-updates/migrations/0002_windows_download_events.sql").read_text())
         base = ["2026-10-27T12:00:00.000Z", "agent", "updates.maple.ai", "0.0.9", "macos", "macos-dmg", "artifact", "GET", 200, "none", "success", 42, "cli", 0]
         for index, changes in enumerate(({}, {7: "HEAD"}, {8: 206, 9: "partial"},
                                          {6: "alias", 8: 302, 10: "redirect"}, {13: 1})):
@@ -98,6 +99,51 @@ class QueryTests(unittest.TestCase):
         health_sql, health_params, _ = query.query_spec(query.parse_args(["--health"]), NOW)
         health = dict(db.execute(health_sql, health_params).fetchone())
         self.assertEqual(health, {"latest_observed_at": base[0], "persisted_events": 4, "utc_day_events": 4})
+        db.close()
+
+    def test_windows_upgrade_preserves_every_existing_field_and_index(self):
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        migrations = Path(__file__).parents[1] / "agent-updates/migrations"
+        db.executescript((migrations / "0001_download_events.sql").read_text())
+        insert = "INSERT INTO download_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        mac = ["11111111-1111-4111-8111-111111111111", "2026-10-27T12:00:00.000Z", "agent", "updates.maple.ai", "0.0.9", "macos", "macos-dmg", "artifact", "GET", 200, "none", "success", 42, "cli", 0]
+        linux_probe = ["22222222-2222-4222-8222-222222222222", "2026-10-27T12:00:01.000Z", "agent", "updates.trymaple.ai", "0.0.9", "linux", "linux-bundle", "artifact", "GET", 206, "partial", "success", 12, "maple", 1]
+        research = ["33333333-3333-4333-8333-333333333333", "2026-10-27T12:00:02.000Z", "research", "updates.trymaple.ai", None, "all", "latest", "metadata", "HEAD", 200, "none", "success", None, "browser", 0]
+        for values in (mac, linux_probe, research):
+            db.execute(insert, values)
+        db.commit()
+        before = [tuple(item) for item in db.execute("SELECT * FROM download_events ORDER BY event_id")]
+        windows = ["44444444-4444-4444-8444-444444444444", "2026-10-27T12:00:03.000Z", "agent", "updates.maple.ai", "0.0.10", "windows", "windows-bundle", "artifact", "GET", 200, "none", "success", 84, "maple", 1]
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute(insert, windows)
+        db.rollback()
+        db.execute("BEGIN")
+        for statement in (migrations / "0002_windows_download_events.sql").read_text().split(";"):
+            if statement.strip():
+                db.execute(statement)
+        db.commit()
+        self.assertEqual([tuple(item) for item in db.execute("SELECT * FROM download_events ORDER BY event_id")], before)
+        indexes = {item["name"] for item in db.execute("PRAGMA index_list(download_events)")}
+        self.assertTrue({"download_events_observed_at", "download_events_trends"}.issubset(indexes))
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute(insert, mac)
+        db.rollback()
+        db.execute(insert, windows)
+        installer = windows.copy()
+        installer[0] = "55555555-5555-4555-8555-555555555555"
+        installer[6] = "windows-installer"
+        installer[7] = "alias"
+        installer[9] = 302
+        installer[11] = "redirect"
+        db.execute(insert, installer)
+        for artifact in ("windows-bundle", "windows-installer"):
+            sql, params, _ = query.query_spec(query.parse_args(["--platform", "windows", "--product", "agent", "--artifact", artifact, "--include-probes"]), NOW)
+            rows = [dict(item) for item in db.execute(sql, params)]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["artifact"], artifact)
+            self.assertEqual(rows[0]["events"], 1)
+            self.assertNotIn(artifact, sql)
         db.close()
 
     def test_environment_only_credentials_and_fixed_private_endpoint(self):
