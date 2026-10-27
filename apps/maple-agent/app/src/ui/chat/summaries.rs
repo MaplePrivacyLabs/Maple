@@ -174,7 +174,12 @@ impl ChatScreen {
         };
         let input = item.input.clone();
         let tool_name = item.title.clone().unwrap_or_else(|| item.item_type.clone());
-        log::debug!("Requesting summary for {item_id} ({tool_name})");
+        let from = match &ask {
+            SummaryAsk::Thinking(_) => "thinking",
+            SummaryAsk::ToolStart => "input",
+            SummaryAsk::ToolOutput(_) => "output",
+        };
+        log::debug!("Requesting summary for {item_id} ({tool_name}) from {from}");
         // The token names the request; `summary_inflight` maps it to the
         // row's current key, which a live row's alias may change.
         let token = self.next_summary_token;
@@ -245,6 +250,7 @@ impl ChatScreen {
                 log::debug!("Tool summary for {item_id} came back empty");
             }
             Ok(ToolStartSummary::NeedsOutput) => {
+                log::debug!("Summary for {item_id} waits for its output");
                 // The host does not summarize from input, or its support is
                 // unknown: this call is summarized from its output, now if it
                 // already finished, else on completion. The next call checks

@@ -945,8 +945,8 @@ mod tests {
 
     #[test]
     fn input_only_tool_summaries_need_the_capability_and_current_major() {
-        // A 7.0.0 host without input-only summaries (#1290) answers peer info
-        // without the capability; a viewer keeps the output-based summaries.
+        // Agent 0.0.9 (management 7.1.0) answers peer info without the
+        // capability; a viewer keeps the output-based summaries with it.
         let fixtures: serde_json::Value =
             serde_json::from_str(include_str!("tool_summary_compat.json")).unwrap();
         let without: PeerInfo =
@@ -959,7 +959,7 @@ mod tests {
             protocol: ProtocolInfo::current(),
             ..without
         };
-        for version in ["7.0.0", "7.1.0"] {
+        for version in ["7.0.0", "7.1.0", "7.2.0"] {
             info.protocol.version = version.into();
             assert!(info.supports_tool_summary_start(), "{version}");
         }

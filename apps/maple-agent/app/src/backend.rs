@@ -31,6 +31,10 @@ use tokio::{runtime::Runtime, sync::mpsc};
 
 const RETIRED_AFTER_UPDATE: &str = "Maple has been updated. Quit and reopen Maple to continue.";
 
+/// How long a remote viewer waits for the host's optional capabilities
+/// before summarizing that call from its output instead.
+const TOOL_SUMMARY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What a tool summary asked as the call starts came back with.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ToolStartSummary {
@@ -396,8 +400,8 @@ impl AgentBackend {
     }
 
     /// Summarize a tool call from its input as it starts. A remote host
-    /// must advertise the optional capability; for an older one the caller
-    /// keeps the output-based `summarize_tool_call` once the call completes.
+    /// must advertise the optional capability; otherwise the caller keeps
+    /// the output-based `summarize_tool_call` once the call completes.
     pub async fn summarize_starting_tool_call(
         &self,
         user_id: &str,
@@ -405,7 +409,7 @@ impl AgentBackend {
         tool_name: String,
         input: Option<serde_json::Value>,
     ) -> Result<ToolStartSummary, String> {
-        if !self.host_summarizes_tool_calls_at_start(user_id).await? {
+        if !self.host_summarizes_tool_calls_at_start().await {
             return Ok(ToolStartSummary::NeedsOutput);
         }
         self.summarize_tool_call_start(user_id, session_id, tool_name, input)
@@ -413,30 +417,43 @@ impl AgentBackend {
             .map(ToolStartSummary::Label)
     }
 
-    async fn host_summarizes_tool_calls_at_start(&self, user_id: &str) -> Result<bool, String> {
+    async fn host_summarizes_tool_calls_at_start(&self) -> bool {
         // The local host always runs this build.
-        let (Some(controller), Some(peer)) = (&self.controller, &self.remote_host) else {
-            return Ok(true);
-        };
-        if let Some(&known) = self.tool_summary_start.get() {
-            return Ok(known);
+        if self.remote_host.is_none() {
+            return true;
         }
-        // Only validated peer information is cached for the connection. A
-        // probe that fails once connected leaves this call on the
-        // output-based summary and the next call asks again.
-        let Some(info) = controller
-            .remote_setting::<Option<crate::remote::update::PeerInfo>>(
-                "remote_peer_info",
-                (user_id, peer),
-            )
-            .await?
-        else {
-            return Ok(false);
-        };
-        Ok(*self
-            .tool_summary_start
-            .get_or_init(|| info.supports_tool_summary_start()))
+        if let Some(&known) = self.tool_summary_start.get() {
+            return known;
+        }
+        // Read the host's optional capabilities over this task connection.
+        // The read changes no pairing or update state. Only a validated
+        // answer is cached, for this connection; a probe that fails or
+        // times out leaves this call on the output-based summary and the
+        // next call asks again.
+        let probe = tokio::time::timeout(
+            TOOL_SUMMARY_PROBE_TIMEOUT,
+            self.call::<crate::remote::update::PeerInfo>("peer_info", serde_json::json!({})),
+        )
+        .await;
+        match probe {
+            Ok(Ok(info)) if info.validate().is_ok() => *self
+                .tool_summary_start
+                .get_or_init(|| info.supports_tool_summary_start()),
+            Ok(Ok(_)) => {
+                log::debug!("Remote capabilities were invalid; summarizing from output");
+                false
+            }
+            Ok(Err(_)) => {
+                log::debug!("Remote capability probe failed; summarizing from output");
+                false
+            }
+            Err(_) => {
+                log::debug!("Remote capability probe timed out; summarizing from output");
+                false
+            }
+        }
     }
+
     pub async fn remote_setting<R: DeserializeOwned>(
         &self,
         method: &str,
@@ -831,6 +848,20 @@ mod tests {
                 .await;
             assert_eq!(start, Err("Invalid host request parameters".into()));
         });
+    }
+
+    #[test]
+    fn failed_tool_summary_capability_probe_is_not_remembered() {
+        let mut backend =
+            AgentBackend::for_test("http://127.0.0.1:1".into(), String::new()).unwrap();
+        // The local host is always this build.
+        let runtime = backend.runtime_handle();
+        assert!(runtime.block_on(backend.host_summarizes_tool_calls_at_start()));
+        // A remote host whose capabilities cannot be read keeps this call on
+        // the output-based summary, and the next call asks again.
+        backend.remote_host = Some("peer".into());
+        assert!(!runtime.block_on(backend.host_summarizes_tool_calls_at_start()));
+        assert!(backend.tool_summary_start.get().is_none());
     }
 
     #[test]

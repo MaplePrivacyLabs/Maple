@@ -84,7 +84,7 @@ const SUMMARY_MAX_TOKENS: u64 = 48;
 const SUMMARY_MAX_INPUT_CHARS: usize = 4000;
 const SUMMARY_MAX_CHARS: usize = 100;
 const TOOL_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a coding agent's activity feed. Reply with ONE short line of at most 12 words that says what the call did. No prefix, no quotes, no explanations.";
-const TOOL_START_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a coding agent's activity feed from the tool's name and input; it may still be running, so do not state its result. Reply with ONE short line of at most 12 words that says what the call does. No prefix, no quotes, no explanations.";
+const TOOL_START_SUMMARY_SYSTEM_PROMPT: &str = "You label one tool call for a coding agent's activity feed from the tool's name and input, before its result is known. Say what the call is for and what it acts on: the program, file, path, query or text that matters. Ignore incidental settings such as timeouts, sleeps, delays, retries and output limits. Never state or imply a result, success or failure. Reply with ONE short line of at most 12 words that starts with a present-tense verb, for example: Installs nitro_cli with cargo. No prefix, no quotes, no explanations.";
 const THINKING_SUMMARY_SYSTEM_PROMPT: &str = "You summarize a coding agent's reasoning for its activity feed. Reply with ONE short line of at most 12 words that says what the agent thought about or decided. No prefix, no quotes, no explanations.";
 
 const SIDE_QUESTION_TIMEOUT: Duration = Duration::from_secs(120);
