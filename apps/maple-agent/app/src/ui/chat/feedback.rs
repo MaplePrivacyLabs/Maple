@@ -5,7 +5,7 @@ use crate::ui::{text_input::TextInput, theme, widgets};
 use gpui::{Context, Div, Entity, Focusable, Window, div, prelude::*, px};
 
 pub(super) struct FeedbackForm {
-    input: Entity<TextInput>,
+    pub(super) input: Entity<TextInput>,
     category: &'static str,
     request: Option<Submission>,
     busy: bool,
@@ -22,8 +22,16 @@ impl ChatScreen {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.close_popups(cx));
         let owner = cx.entity().downgrade();
+        let escape = owner.clone();
         let input = cx.new(|cx| {
             TextInput::new("What would you like us to know?", cx)
+                .application_vim(self.application_vim_enabled)
+                .on_application_escape(move |window, cx| {
+                    let escape = escape.clone();
+                    window.defer(cx, move |_, cx| {
+                        escape.update(cx, |this, cx| this.close_feedback(cx)).ok();
+                    });
+                })
                 .multiline(8)
                 .with_tab_index(0)
                 .on_key(move |event, _, window, cx| {
@@ -60,6 +68,20 @@ impl ChatScreen {
             controls,
         });
         cx.notify();
+    }
+    pub(super) fn set_feedback_application_vim_enabled(
+        &mut self,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = self.feedback.as_mut() {
+            if self.application_vim_enabled != enabled {
+                form.focus_pending = true;
+            }
+            form.input.update(cx, |input, cx| {
+                input.set_application_vim_enabled(enabled, cx)
+            });
+        }
     }
     pub(super) fn close_feedback(&mut self, cx: &mut Context<Self>) {
         if self.feedback.as_ref().is_some_and(|f| f.busy) {
