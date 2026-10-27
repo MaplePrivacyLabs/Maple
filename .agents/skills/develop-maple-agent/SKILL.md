@@ -44,12 +44,14 @@ changes and for Rust SDK build inputs, both path dependencies it builds from
 the tree, but not for TypeScript SDK changes. Component-only
 changes should not unnecessarily select Research packaging. Agent lanes live in
 `scripts/ci/lanes.py`, with fixtures in `scripts/ci/test_plan.py`; root
-`just lane <id>` runs one locally. PRs run `agent-lint`, `agent-test` and
-`agent-macos`, plus Windows tests and clippy for Windows paths,
-`agent-supply-chain` and `agent-provider` for dependency inputs, and an unsigned
-Dev package rehearsal for packaging inputs. Labels `ci:windows`, `ci:package` and
-`ci:full` add lanes when a change carries Windows or packaging risk its paths do not
-show ([labels](../../../docs/ci.md#labels)); master adds the full macOS and Windows suites. On master,
+`just lane <id>` runs one locally. PRs run `agent-lint`, `agent-test`,
+`agent-macos` and Windows Clippy (`agent-windows`), plus the native Windows
+updater tests for updater paths, `agent-supply-chain` and `agent-provider` for
+dependency inputs, and an unsigned Dev package rehearsal for packaging inputs.
+Labels `ci:windows`, `ci:package` and `ci:full` add lanes when a change carries
+Windows or packaging risk its paths do not show
+([labels](../../../docs/ci.md#labels)); master adds the full Linux and macOS
+suites, and the full Windows suite runs nightly. On master,
 `.github/workflows/agent-desktop-build.yml` builds signed packages for pushes
 that change `AGENT_DESKTOP` inputs and on every manual dispatch.
 

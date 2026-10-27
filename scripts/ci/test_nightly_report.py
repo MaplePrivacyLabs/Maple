@@ -29,6 +29,10 @@ class NightlyReportTests(unittest.TestCase):
         for stale in (GREEN, None):
             self.assertEqual(nightly_report.failures({}, stale, "2026-10-27"),
                              ["- ci.yml: no scheduled run on master on 2026-10-27"])
+        # An active quarantine is listed every night until it is lifted.
+        self.assertEqual(nightly_report.failures({}, GREEN, DAY, " os-pcr,agent-test "),
+                         ["- `agent-test` is quarantined (`CI_QUARANTINE`): its failures do not fail `ci-ok`",
+                          "- `os-pcr` is quarantined (`CI_QUARANTINE`): its failures do not fail `ci-ok`"])
 
     def test_one_issue_is_created_commented_or_closed(self):
         self.assertEqual(nightly_report.decide(["- x"], None, "u")[0], "create")

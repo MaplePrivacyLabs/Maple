@@ -82,5 +82,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEEDS: ${{ toJSON(needs) }}
+          CI_QUARANTINE: ${{ vars.CI_QUARANTINE }}
           DRY_RUN: ${{ github.event_name != 'schedule' }}
         run: python3 scripts/ci/nightly_report.py
