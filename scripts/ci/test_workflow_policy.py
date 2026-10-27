@@ -74,7 +74,7 @@ BRANCH_SCOPED_NIX = frozenset({("opensecret-eif.yml", "eif")})
 # Jobs on GitHub-hosted runners that save caches into GitHub's store; every other
 # cache lives in Blacksmith's. The release and the Nix installer also use GitHub's.
 GITHUB_STORE_WRITERS = frozenset({
-    ("desktop-build.yml", "build-windows"),  # the signed Research Windows build
+    ("desktop-build.yml", "build-windows"),  # the signed Research Windows build (setup-bun's Bun binary)
     ("agent-desktop-build.yml", "windows-build"),  # the unsigned Agent Windows build (exact key)
     # The Agent lanes on GitHub's Windows image: the native suites in the windows
     # matrix and the packaging rehearsal.

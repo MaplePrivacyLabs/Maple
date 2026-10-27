@@ -2,8 +2,10 @@
 
 `Maple Agent Desktop Builds` builds both hosted profiles when a protected
 `master` push changes Agent inputs, and always on a manual dispatch from
-`master`. Its `changes` job runs `scripts/ci/plan.py only agent-desktop` on the
-push's own diff; an unusable diff or a selector error builds. No master run is
+`master`. Windows is the exception: a push builds, signs and verifies only Prod;
+Windows Dev packages come from a manual dispatch. Its `changes` job runs
+`scripts/ci/plan.py only agent-desktop` on the push's own diff; an unusable
+diff or a selector error builds. No master run is
 cancelled, so every Agent push gets its own packages. A later push without Agent
 changes does not retry a failed run: re-run its failed jobs, dispatch, or fix
 forward. Pull requests that change packaging inputs (the packaging and release
@@ -84,7 +86,7 @@ Its artifacts include the profile, platform, and run ID in their names:
 - `maple-agent-prod-macos-aarch64-RUN`
 - `maple-agent-dev-linux-x86_64-RUN`
 - `maple-agent-prod-linux-x86_64-RUN`
-- `maple-agent-dev-windows-x86_64-RUN`
+- `maple-agent-dev-windows-x86_64-RUN` (manual dispatch only)
 - `maple-agent-prod-windows-x86_64-RUN`
 
 Artifact names stay stable when failed jobs are retried, so verification can

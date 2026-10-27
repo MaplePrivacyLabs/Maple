@@ -167,8 +167,9 @@ run_finalize_phase() {
   verify_windows_authenticode_signatures "${setup_exe}"
 
   rm -f "${setup_exe}.sig"
+  # The Linux artifact verifiers and latest-json.sh check this signature with
+  # the pinned minisign before any updater manifest names it.
   sign_tauri_updater_artifacts "${setup_exe}"
-  verify_tauri_updater_signature_files "${setup_exe}.sig"
 
   repro_dir="${TAURI_DIR}/target/reproducibility"
   mkdir -p "${repro_dir}"

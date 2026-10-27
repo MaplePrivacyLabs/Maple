@@ -77,7 +77,6 @@ CI_SCRIPT_ROUTES = {
     "scripts/ci/dmg-settings.py": frozenset({"macos"}),
     "scripts/ci/frontend.sh": frozenset({"frontend"}),
     "scripts/ci/install-windows-artifact-signing.ps1": frozenset({"windows"}),
-    "scripts/ci/install-windows-minisign.ps1": frozenset({"windows"}),
     "scripts/ci/ios-onnxruntime.sh": frozenset({"ios"}),
     "scripts/ci/ios-build-profile.py": frozenset({"ios"}),
     "scripts/ci/ios-release.sh": frozenset({"ios"}),

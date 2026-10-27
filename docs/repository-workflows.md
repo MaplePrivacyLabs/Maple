@@ -42,12 +42,13 @@ branches in step with the lane table.
   store. GitHub's holds what GitHub-hosted jobs need: the lane caches of
   `agent-full-windows` and `agent-windows-updater` (both saved only by the
   nightly run), the `agent-package-windows` packaging cache (below), the
-  unsigned Agent and signed Research Windows builds, the release, the Nix
-  installer and that EIF check.
+  unsigned Agent Windows build, the signed Research Windows build's Bun binary,
+  the release, the Nix installer and that EIF check.
   `test_workflow_policy.py` lists these writers.
 - The signed master builds write the keys `release.yml` restores by prefix
-  (`<os>-sccache-*`, `xcode-cache-*`, `release-onnxruntime-ios-*`,
-  `<os>-bun-*`, `<os>-gradle-*`). No pull-request job writes these prefixes;
+  (`<os>-sccache-*` for macOS and Linux, `xcode-cache-*`,
+  `release-onnxruntime-ios-*`, `<os>-bun-*`, `<os>-gradle-*`). Research Windows
+  builds use no compiler cache. No pull-request job writes these prefixes;
   the Research platform lanes only restore them. The iOS ONNX key text is
   identical in every workflow that uses it. A release job reads only the store
   of its own runner vendor, so `release.yml`'s `build-web` (GitHub-hosted)
@@ -212,13 +213,17 @@ Research macOS, Linux, Android and iOS builds compile and sign on Blacksmith.
 Artifact verifiers, TestFlight submission, and the Agent's signing and
 attestation use GitHub-hosted runners. Windows builds that compile run on the
 org's 16-core GitHub-hosted runner `maple-windows-2025-16core`: the unsigned Agent
-build, the signed Research build, the release's `build-windows`, the Agent's
-native updater tests and packaging rehearsal, and the Research Windows PR
-package ([CI runners](ci.md#runners)). The short signing and verify jobs and
-the nightly `agent-full-windows` stay on GitHub's standard `windows-2025`. Rust,
-MSVC, Perl and the linker are pinned by `.github/actions/setup-agent-windows` for
-the Agent. Blacksmith's Windows workspace inherits a foreign write ACE that the
-updater's storage validation rejects, so only the Agent Windows Clippy lane uses
+build, the release's `build-windows`, the Agent's native updater tests and
+packaging rehearsal, and the Research Windows PR package
+([CI runners](ci.md#runners)). Two Windows compiles that nobody waits on, the
+signed Research master build and the nightly `agent-full-windows`, use GitHub's
+free standard `windows-2025`, like the short signing and verify jobs. Jobs that
+compile and sign install the pinned Artifact Signing module before compiling, so
+a failed download fails early; the installer retries the PowerShell Gallery and
+its CDN and accepts only the pinned SHA-256. Rust, MSVC, Perl and the linker are
+pinned by `.github/actions/setup-agent-windows` for the Agent. Blacksmith's
+Windows workspace inherits a foreign write ACE that the updater's storage
+validation rejects, so only the Agent Windows Clippy lane uses
 `blacksmith-8vcpu-windows-2025`.
 
 Research desktop and iOS builds select Xcode 26.5 (`17F42`) from

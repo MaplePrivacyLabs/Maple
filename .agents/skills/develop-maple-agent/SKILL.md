@@ -112,7 +112,8 @@ platform-specific signed installed-update rehearsal. Linux uses user-owned tar
 bundles and a separate v2 wire schema, preserving the shipped macOS v1 feed;
 one release may update both platforms to the same version.
 Windows x64 Dev/Prod installers are built by the same desktop workflow, with
-master Authenticode signing through the existing `windows-signing` environment.
+master Authenticode signing through the existing `windows-signing` environment;
+master pushes build only Prod, and a manual dispatch also builds Dev.
 Windows uses manual installer downloads; automatic updates and built-in CUA
 remain unsupported. Preserve that boundary when changing package metadata.
 Dev and unpackaged builds have no production updater. Empty-key profiles still

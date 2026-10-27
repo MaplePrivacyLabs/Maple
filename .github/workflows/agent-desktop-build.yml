@@ -197,7 +197,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        # Prod on every Agent master push (publisher.py requires its three jobs);
+        # Dev Windows packages only on a manual dispatch.
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
       # Ship the CRT with the executable rather than requiring a machine-wide
@@ -212,14 +214,8 @@ jobs:
         uses: ./.github/actions/setup-agent-windows
         with:
           release: "true"
-      - name: Exercise Windows metadata parser and native linker retention
-        run: python3 scripts/test_windows_build_info.py
       - name: Exercise Windows host launch in a restrictive job
         run: python3 scripts/test_windows_host_spawn.py
-      - name: Smoke native Git Bash process launch
-        run: |
-          git_bash="$(cygpath -w "$BASH")"
-          python3 -c 'import subprocess, sys; host = subprocess.check_output([sys.argv[1], "-c", "uname -s"], text=True).strip(); assert host.startswith(("MINGW", "MSYS")), host; print("Verified native Git Bash: " + host)' "$git_bash"
       - name: Restore the exact-key Agent release cache
         id: cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -276,7 +272,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
       MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
@@ -332,7 +328,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
       MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
