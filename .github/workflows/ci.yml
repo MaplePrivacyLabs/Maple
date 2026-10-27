@@ -65,6 +65,7 @@ jobs:
           CI_LINUX_HEAVY_RUNNER: ${{ vars.CI_LINUX_HEAVY_RUNNER }}
           CI_MACOS_RUNNER: ${{ vars.CI_MACOS_RUNNER }}
           CI_WINDOWS_RUNNER: ${{ vars.CI_WINDOWS_RUNNER }}
+          CI_WINDOWS_GITHUB_RUNNER: ${{ vars.CI_WINDOWS_GITHUB_RUNNER }}
         run: python3 scripts/ci/plan.py github
 
   nix:
@@ -101,7 +102,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-      - name: Rust cache (restore everywhere, save only on master and on Blacksmith)
+      - name: Rust cache (restore everywhere, save only on master and in the lane's home store)
         if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -113,8 +114,8 @@ jobs:
           add-rust-environment-hash-key: "false"
           # The action runs cargo from the workspace directory: use an absolute flake path.
           cmd-format: nix develop --no-update-lock-file ${{ github.workspace }}/${{ matrix.flake }} -c {0}
-          # A failover to a GitHub-hosted runner must not fill GitHub's small cache store.
-          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(matrix.runner, 'blacksmith-') }}
+          # cache_save (plan.py): a failover runner never saves into another vendor's store.
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && matrix.cache_save }}
       - name: Run lane
         env:
           LANE: ${{ matrix.id }}
@@ -138,7 +139,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-agent-windows
-      - name: Rust cache (restore everywhere, save only on master and on Blacksmith)
+      - name: Rust cache (restore everywhere, save only on master and in the lane's home store)
         if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -146,22 +147,22 @@ jobs:
           shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
           workspaces: ${{ matrix.workspaces }}
           add-rust-environment-hash-key: "false"
-          # A failover to a GitHub-hosted runner must not fill GitHub's small cache store.
-          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(matrix.runner, 'blacksmith-') }}
+          # cache_save (plan.py): a failover runner never saves into another vendor's store.
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && matrix.cache_save }}
       - name: Run lane
         env:
           LANE: ${{ matrix.id }}
         run: python3 scripts/ci/plan.py run "$LANE"
 
-  # Native Windows updater tests and the app typecheck, compiled from source with
-  # no cache, credential or environment. Their receipts and Cargo logs are kept
-  # as an artifact even when a script fails.
+  # Native Windows updater tests and the app typecheck, with no credential or
+  # environment. Their receipts and Cargo logs are kept as an artifact even when
+  # a script fails.
   agent-windows-updater:
     name: agent-windows-updater
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['agent-windows-updater']
     # GitHub's image, as the native updater tests require (scripts/ci/lanes.py GITHUB_WINDOWS).
-    runs-on: windows-2025
+    runs-on: ${{ vars.CI_WINDOWS_GITHUB_RUNNER || 'maple-windows-2025-16core' }}
     timeout-minutes: 60
     defaults:
       run:
@@ -171,6 +172,17 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-agent-windows
+      - name: Rust cache (restore everywhere, save only on master and on GitHub's runners)
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: ci-v1
+          # Its own key: these checks compile other units than agent-full-windows'
+          # workspace build (check-mode metadata, one package's features).
+          shared-key: agent-windows-updater-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          workspaces: apps/maple-agent -> target
+          add-rust-environment-hash-key: "false"
+          # A failover to a Blacksmith runner must not fill Blacksmith's store.
+          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && !startsWith(runner.name, 'blacksmith') }}
       - name: Typecheck the Windows app and run the native updater tests
         run: python3 scripts/ci/plan.py run agent-windows-updater
       - name: Keep the receipts and Cargo logs
@@ -279,7 +291,7 @@ jobs:
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['agent-package-windows']
     # GitHub's image, where master's install smoke runs (scripts/ci/lanes.py GITHUB_WINDOWS).
-    runs-on: windows-2025
+    runs-on: ${{ vars.CI_WINDOWS_GITHUB_RUNNER || 'maple-windows-2025-16core' }}
     timeout-minutes: 90
     defaults:
       run:
@@ -291,8 +303,30 @@ jobs:
       - uses: ./.github/actions/setup-agent-windows
         with:
           release: "true"
+      - name: Restore the packaging rehearsal cache
+        id: package-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
+          key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          restore-keys: ci-v1-agent-package-${{ runner.os }}-
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
       - name: Build, package and verify an unsigned Dev installer
         run: python3 scripts/ci/plan.py run agent-package-windows
+      - name: Save the packaging rehearsal cache (nightly, GitHub's runners only)
+        if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && !startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          key: ${{ steps.package-cache.outputs.cache-primary-key }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
       - name: Upload the unsigned package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

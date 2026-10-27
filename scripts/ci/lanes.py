@@ -28,6 +28,11 @@ class Runner:
     variable: Optional[str] = None  # repository variable that overrides the label
 
 
+def cache_store(label: str) -> str:
+    """Whose Actions cache a runner uses: Blacksmith runners have their own store, every other runner GitHub's."""
+    return "blacksmith" if label.startswith("blacksmith-") else "github"
+
+
 # The override variables are unset; set one to fail over during an outage.
 LINUX = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_RUNNER")
 LINUX_HEAVY = Runner("blacksmith-32vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
@@ -37,7 +42,9 @@ GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile no
 # The Agent updater's native Windows tests and the installer smoke test need GitHub's
 # runner: Blacksmith's workspace inherits a foreign write ACE the updater rejects, and
 # master's Windows install smoke (agent-desktop-build.yml verify-windows) runs there too.
-GITHUB_WINDOWS = Runner("windows-2025")
+# Its home is the org's 16-core GitHub-hosted Windows 2025 runner (the same image family,
+# GitHub's cache store); CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
+GITHUB_WINDOWS = Runner("maple-windows-2025-16core", "CI_WINDOWS_GITHUB_RUNNER")
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"
@@ -224,8 +231,8 @@ LANES: Tuple[Lane, ...] = (
              " && cargo clippy --workspace --all-targets --locked -- -D warnings",
          cache="agent-windows", timeout=45, **AGENT_WIN),
     # The Windows app typecheck and the native updater, filesystem, Authenticode and
-    # bootstrap tests, compiled without a cache. Both scripts always run; each needs the
-    # Actions context and leaves a receipt and its Cargo log, which the job keeps.
+    # bootstrap tests, from the job's own dependency cache. Both scripts always run; each
+    # needs the Actions context and leaves a receipt and its Cargo log, which the job keeps.
     Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"),
          job="agent-windows-updater", runner=GITHUB_WINDOWS,
          run="status=0; pwsh -NoProfile -File scripts/ci/windows-app-typecheck.ps1 || status=1;"
@@ -261,7 +268,7 @@ LANES: Tuple[Lane, ...] = (
          events=PACKAGE_EVENTS, job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60,
          gate=False, **AGENT_PACKAGE_FLAKE),
     # Windows is on the Agent feed, so its own packaging inputs select it too.
-    Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
+    Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, labels=("ci:package", "ci:full"), events=PACKAGE_EVENTS,
          job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),) + FAST_RELEASE, timeout=90, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script

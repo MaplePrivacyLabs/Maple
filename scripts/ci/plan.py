@@ -29,7 +29,7 @@ import sys
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from lanes import (AGENT_WINDOWS_RUST, CI_INFRA, DISPATCH, INERT, LANES, MATRIX_JOBS, NIGHTLY, NOT_YET_TRACKED,
-                   OPENSECRET, OPENSECRET_HOME, PR, PR_EVENTS, PUSH, QUEUE, SELECTORS, Lane)
+                   OPENSECRET, OPENSECRET_HOME, PR, PR_EVENTS, PUSH, QUEUE, SELECTORS, Lane, cache_store)
 
 ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
@@ -209,17 +209,25 @@ def cache_key(lane: Lane) -> str:
     return digest.hexdigest()[:16]
 
 
+def runner_label(lane: Lane) -> str:
+    """The lane's runner label, or the label in its override variable."""
+    return os.environ.get(lane.runner.variable or "") or lane.runner.label
+
+
 def outputs(selected: Selection) -> Dict[str, str]:
     """`lanes` maps every active lane to whether it runs; each matrix job gets its entries."""
     result = {"lanes": {lane.id: lane.id in selected for lane in LANES}}
     for job in MATRIX_JOBS:
         result[job] = [{
             "id": lane.id,
-            "runner": os.environ.get(lane.runner.variable or "") or lane.runner.label,
+            "runner": runner_label(lane),
             "timeout": lane.timeout,
             "flake": lane.flake or "",
             "cache": lane.cache,
             "cache_key": cache_key(lane) if lane.cache else "",
+            # Master and nightly runs may save the cache, unless a failover runner
+            # would write it into another vendor's store.
+            "cache_save": cache_store(runner_label(lane)) == cache_store(lane.runner.label),
             "workspaces": lane.workspaces,
             "submodules": "recursive" if lane.submodules else "false",
             "fetch_depth": 0 if lane.submodules else 1,
@@ -432,6 +440,10 @@ def lint_problems(files: Sequence[str]) -> List[str]:
             problems.append(f"ci.yml {lane.job}: runs-on is not {runner}")
         if not re.search(rf"^    timeout-minutes: {lane.timeout}\b", blocks[lane.job], re.M):
             problems.append(f"ci.yml {lane.job}: timeout-minutes is not {lane.timeout}")
+    # The planner resolves matrix runners from the override variables the plan step passes.
+    for variable in sorted({lane.runner.variable for lane in LANES if lane.job in MATRIX_JOBS} - {None}):
+        if not re.search(rf"^ +{variable}: \$\{{\{{ vars\.{variable} \}}\}}$", blocks.get("plan", ""), re.M):
+            problems.append(f"ci.yml plan: {variable} is not passed to plan.py")
     if f"toolchain: {AGENT_WINDOWS_RUST}\n" not in WINDOWS_SETUP.read_text():
         problems.append(f"setup-agent-windows does not pin Rust {AGENT_WINDOWS_RUST}")
     declared = set(re.findall(r"^\s+- (\S+)$", (ROOT / ".github/actionlint.yaml").read_text(), re.M))

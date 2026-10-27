@@ -214,6 +214,14 @@ class LaneTableTests(unittest.TestCase):
     def test_every_tracked_file_is_classified_and_ci_yml_matches(self):
         self.assertEqual(plan.lint_problems(plan.tracked_files()), [])
         self.assertIn("unclassified: newroot/x", plan.lint_problems(["newroot/x"]))
+        # Without the plan step's variable, the matrix would ignore the override.
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "ci.yml"
+            workflow.write_text(plan.CI_WORKFLOW.read_text().replace(
+                "CI_WINDOWS_GITHUB_RUNNER: ${{ vars.CI_WINDOWS_GITHUB_RUNNER }}\n", ""))
+            with mock.patch.object(plan, "CI_WORKFLOW", workflow):
+                self.assertIn("ci.yml plan: CI_WINDOWS_GITHUB_RUNNER is not passed to plan.py",
+                              plan.lint_problems(plan.tracked_files()))
 
 
 class HookTests(unittest.TestCase):
@@ -394,7 +402,8 @@ class AgentLaneTests(unittest.TestCase):
         self.assertLessEqual(full, selected(["docs/x.md"], labels=["ci:full"]))
         self.assertLessEqual(full | {"agent-windows"}, active(NIGHTLY))
         self.assertFalse({"agent-provider"} & active(NIGHTLY))  # nightly.yml runs it on three OSes
-        self.assertLessEqual(AGENT_PACKAGE, active(NIGHTLY))  # refreshes the rehearsal's own cache
+        # Nightly refreshes the rehearsals' own caches.
+        self.assertLessEqual(AGENT_PACKAGE | {"agent-package-windows"}, active(NIGHTLY))
         self.assertFalse(full & selected([".github/workflows/ci.yml"]))  # CI edits prove the gate lanes only
 
     def test_agent_desktop_selector_covers_the_signed_builds_inputs(self):
@@ -606,6 +615,30 @@ class PlannerTests(unittest.TestCase):
                           lanes.LINUX.label))
         entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
         self.assertEqual({len(entry["cache_key"]) for entry in entries if entry["cache"]}, {16})
+
+    def test_a_cache_is_saved_only_into_the_home_runners_store(self):
+        def saves(**overrides):
+            with mock.patch.dict(os.environ, overrides):
+                result = plan.outputs(dict.fromkeys(ACTIVE, ["x"]))
+            return {entry["id"]: entry["cache_save"] for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])}
+
+        cached = {"agent-test", "agent-windows", "agent-full-windows"}
+        self.assertTrue(cached <= {lane.id for lane in lanes.LANES if lane.cache})
+        with mock.patch.dict(os.environ):
+            for runner in lanes.LINUX, lanes.LINUX_HEAVY, lanes.MACOS, lanes.WINDOWS, lanes.GITHUB_WINDOWS:
+                os.environ.pop(runner.variable, None)
+            self.assertTrue(all(saves().values()))
+            # Another Blacksmith size, or a larger GitHub runner, keeps its vendor's store.
+            on = saves(CI_LINUX_HEAVY_RUNNER="blacksmith-16vcpu-ubuntu-2404",
+                       CI_WINDOWS_GITHUB_RUNNER="maple-windows-2025-16core")
+            self.assertEqual({lane: on[lane] for lane in cached}, dict.fromkeys(cached, True))
+            # A failover to the other vendor restores what it can and saves nothing.
+            off = saves(CI_LINUX_HEAVY_RUNNER="ubuntu-latest", CI_WINDOWS_RUNNER="windows-2025",
+                        CI_WINDOWS_GITHUB_RUNNER="blacksmith-8vcpu-windows-2025")
+            self.assertEqual({lane: off[lane] for lane in cached}, dict.fromkeys(cached, False))
+        self.assertEqual(lanes.GITHUB_WINDOWS.variable, "CI_WINDOWS_GITHUB_RUNNER")
+        self.assertEqual({lane.id for lane in lanes.LANES if lane.runner == lanes.GITHUB_WINDOWS},
+                         {"agent-windows-updater", "agent-full-windows", "agent-package-windows"})
 
     def test_run_executes_the_lane_command_in_its_flake(self):
         with mock.patch.object(plan.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()), \

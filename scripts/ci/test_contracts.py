@@ -46,9 +46,9 @@ ONNX_CACHE = "apps/maple-research/frontend/src-tauri/onnxruntime-ios"
 # The unsigned Agent builders that write the exact-key release cache; no ci.yml lane reads it.
 AGENT_RELEASE_WRITERS = frozenset(("agent-desktop-build.yml", job) for job in ("macos-build", "windows-build", "linux"))
 AGENT_RELEASE_READERS: frozenset = frozenset()
-# The Linux and macOS packaging rehearsals build thin LTO into their own cache, saved
-# only by ci.yml's nightly master run.
-AGENT_PACKAGE_JOBS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos"))
+# The packaging rehearsals build thin LTO into their own cache, saved only by
+# ci.yml's nightly master run.
+AGENT_PACKAGE_JOBS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos", "windows"))
 # Jobs that may mint an OIDC token: attestation, signing identity, FlakeHub, registries.
 OIDC_JOBS = frozenset({
     ("agent-desktop-build.yml", "macos"), ("agent-desktop-build.yml", "windows"),
@@ -391,6 +391,7 @@ class ContractTests(unittest.TestCase):
                         self.assertIn("refs/heads/master' && github.event_name == 'schedule'", step["if"])
                     else:
                         self.assertTrue(step["with"]["key"].startswith("ci-v1-agent-package-${{ runner.os }}-"))
+                        self.assertEqual(step["with"]["restore-keys"], "ci-v1-agent-package-${{ runner.os }}-")
             elif name == "ci.yml":
                 with self.subTest(job=job_id):
                     self.assertTrue(step["uses"].startswith("actions/cache/restore@"))
@@ -404,7 +405,12 @@ class ContractTests(unittest.TestCase):
                          AGENT_RELEASE_WRITERS | AGENT_RELEASE_READERS)
         self.assertEqual(len({(cache["key"], cache["path"]) for _, _, cache in restores}), 1)
         self.assertFalse([cache for _, _, cache in restores if "restore-keys" in cache])  # exact keys only
-        writers = [(name, job_id, step) for name, job_id, step in cache_steps() if cache_writer(step)
+        # No other job falls back into the family by prefix.
+        fallbacks = {(name, job_id) for name, job_id, step in cache_steps()
+                     for line in str(step["with"].get("restore-keys", "")).splitlines()
+                     if line.strip().startswith("ci-v1-agent-release-")}
+        self.assertEqual(fallbacks, set())
+        writers =[(name, job_id, step) for name, job_id, step in cache_steps() if cache_writer(step)
                    and (name, job_id) in AGENT_RELEASE_WRITERS | AGENT_RELEASE_READERS]
         self.assertEqual({(name, job_id) for name, job_id, _ in writers}, AGENT_RELEASE_WRITERS)
         for _, job_id, step in writers:
