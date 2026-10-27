@@ -77,8 +77,12 @@ every thirty seconds also discovers empty projects selected by another desktop.
 This is an in-memory navigation cache, not offline transcript replication. Search,
 sidebar position and each computer's composer remain intact when switching.
 
-**New project…** opens the operating system's folder picker for this computer.
-Remote computers use the built-in browser, starting at that computer's home.
+With another computer added, the sidebar's **New project** button first asks
+which computer should own the project, independently of the task being viewed.
+Choose **This computer** for the operating system's local folder picker, or a
+remote computer for its built-in folder browser. Without another computer added,
+the button opens the local picker directly. The remote browser starts at that
+computer's home.
 Browse folders, use the left arrow to go to the parent, enter an absolute path,
 or create one new folder, then choose **Use folder**. The built-in browser also
 serves as a fallback if the local platform picker is unavailable.

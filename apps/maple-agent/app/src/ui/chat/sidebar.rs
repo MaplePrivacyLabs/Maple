@@ -257,8 +257,10 @@ const FOLDER_ICON_SIZE: gpui::Pixels = px(16.);
 /// uses the project row's own popup (see `Sidebar::project_popup`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SidebarPopup {
-    /// The View options menu: grouping, order, what rows show.
+    /// The sidebar grouping and sorting menu.
     View,
+    /// Choose which computer owns a new project.
+    NewProject,
     /// A task row's overflow menu, by the row's shared id.
     Task(Arc<str>),
 }
@@ -3275,9 +3277,35 @@ impl Sidebar {
             self.popup
                 .render(self.view_menu(window, cx), Placement::BelowEnd, window, cx)
         });
-        let add = self.new_project_button().on_click(
-            cx.listener(|_this, _event, _window, cx| cx.emit(SidebarEvent::ChooseProject)),
-        );
+        let choose_computer = self.uses_computer_projection();
+        let add_open = choose_computer && self.popup.is_open(&SidebarPopup::NewProject);
+        let add_menu = add_open.then(|| {
+            self.popup.render(
+                self.new_project_computer_menu(),
+                Placement::BelowEnd,
+                window,
+                cx,
+            )
+        });
+        let add = if choose_computer {
+            div()
+                .relative()
+                .child(self.popup.trigger(
+                    SidebarPopup::NewProject,
+                    self.new_project_button(add_open),
+                    cx,
+                    |this, _, cx| {
+                        this.project_popup.close(cx);
+                        this.view_popup.close(cx);
+                        this.popup.toggle(SidebarPopup::NewProject, cx);
+                    },
+                ))
+                .children(add_menu)
+        } else {
+            div().child(self.new_project_button(false).on_click(
+                cx.listener(|_this, _event, _window, cx| cx.emit(SidebarEvent::ChooseProject)),
+            ))
+        };
         let expanded = self.projects_expanded;
         let label = match self.view.group {
             SidebarGroup::Project => "Projects",
@@ -3418,15 +3446,57 @@ impl Sidebar {
     }
 
     /// Add project stays visible until there is a project to browse.
-    fn new_project_button(&self) -> gpui::Stateful<Div> {
-        header_button("new-project", "folder-plus", "New project", false).when(
-            !self.project_roots.is_empty(),
+    fn new_project_button(&self, open: bool) -> gpui::Stateful<Div> {
+        header_button("new-project", "folder-plus", "New project", open).when(
+            !open && !self.project_roots.is_empty(),
             |button| {
                 button
                     .opacity(0.)
                     .group_hover("projects-header-actions", |style| style.opacity(1.))
             },
         )
+    }
+
+    fn new_project_computer_menu(&self) -> Menu<Self> {
+        let mut menu = Menu::new("new-project-computer-menu", px(260.))
+            .label("Create project on")
+            .max_height(px(360.))
+            .application_vim(self.application_vim_enabled)
+            .item(
+                MenuItem::new("new-project-local", "This computer", |_, _, cx| {
+                    cx.emit(SidebarEvent::Navigate(Navigate {
+                        computer: None,
+                        destination: Destination::NewProject,
+                    }));
+                })
+                .icon("monitor"),
+            );
+        for computer in self
+            .computers
+            .iter()
+            .filter(|computer| computer.key.is_some())
+        {
+            let request = Navigate {
+                computer: computer.key.clone(),
+                destination: Destination::NewProject,
+            };
+            let mut item = MenuItem::new(
+                SharedString::from(format!(
+                    "new-project-{}",
+                    computer.key.as_deref().expect("remote computer")
+                )),
+                computer.label.clone(),
+                move |_, _, cx| cx.emit(SidebarEvent::Navigate(request.clone())),
+            )
+            .icon("monitor");
+            if computer.loading {
+                item = item.note("Connecting…");
+            } else if computer.error.is_some() {
+                item = item.note("Offline");
+            }
+            menu = menu.item(item);
+        }
+        menu
     }
 
     /// A folder group's header: the project's name, which folds its tasks,
