@@ -102,8 +102,9 @@ of the lanes your staged files select.
 ## Rules
 
 - Never add `paths:` to `ci.yml`; `ci-ok` must report on every pull request.
-- Pull requests never save caches. Master and nightly runs save lane caches,
-  on Blacksmith runners only.
+- Pull requests never save caches (one branch-scoped exception, outside
+  `ci.yml`, is listed under [caches](repository-workflows.md#caches)). Master
+  and nightly runs save lane caches, on Blacksmith runners only.
 - Never cancel master, signed, evidence or nightly runs.
 - Never edit the release or publisher workflows, signing environments or
   OpenSecret approval gating to clear a check. A failing contract test means

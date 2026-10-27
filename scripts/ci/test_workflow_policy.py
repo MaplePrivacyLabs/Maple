@@ -55,9 +55,15 @@ ENVIRONMENTS = {
     "sdk-crates": frozenset({"CRATES_BOOTSTRAP_TOKEN"}),
 }
 # Actions-cache writers; a key under these prefixes feeds release.yml's fallbacks.
-# setup-bun's post step saves the Bun binary unless `no-cache` is set.
+# setup-bun's post step saves the Bun binary unless `no-cache` is set; magic-nix-cache
+# saves the Nix store to the Actions cache unless `use-gha-cache` is disabled.
 CACHE_WRITERS = ("actions/cache@", "actions/cache/save@", "irgaly/xcode-cache@", "Swatinem/rust-cache@",
-                 "oven-sh/setup-bun@")
+                 "oven-sh/setup-bun@", "DeterminateSystems/magic-nix-cache-action@")
+# The one pull-request job that saves a cache: the EIF approval check for fork PRs
+# that edit approvals and for manual runs outside master. It has no FlakeHub
+# credentials, so its Nix store goes to the run's own branch-scoped Actions cache,
+# which master and other pull requests cannot read.
+BRANCH_SCOPED_NIX = frozenset({("opensecret-eif.yml", "eif")})
 
 @functools.lru_cache(maxsize=None)
 def load(path: Path) -> dict:
@@ -129,7 +135,8 @@ def runner_labels(name: str, job_id: str, job: dict) -> set:
 def cache_writer(step: dict) -> bool:
     settings = step.get("with", {})
     return (step.get("uses", "").startswith(CACHE_WRITERS) and str(settings.get("save-if", "true")) != "false"
-            and str(settings.get("no-cache", "false")).lower() != "true")
+            and str(settings.get("no-cache", "false")).lower() != "true"
+            and str(settings.get("use-gha-cache", "enabled")).lower() != "disabled")
 
 
 class WorkflowPolicyTests(unittest.TestCase):
@@ -234,6 +241,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                     self.assertTrue(GITHUB_HOSTED.fullmatch(label) or label in declared, label)
 
     def test_pull_requests_never_save_caches_or_read_other_runs_artifacts(self):
+        scoped = set()
         for name, config in workflows().items():
             pr = bool({"pull_request", "merge_group"} & triggers(config))
             for job_id, job in config["jobs"].items():
@@ -241,10 +249,16 @@ class WorkflowPolicyTests(unittest.TestCase):
                     self.assertNotIn("run-id", step.get("with", {}), (name, job_id))
                     guard = " ".join(str(value) for value in (
                         job.get("if", ""), step.get("if", ""), step.get("with", {}).get("save-if", "")))
-                    if pr and cache_writer(step):
+                    if pr and cache_writer(step) and (name, job_id) in BRANCH_SCOPED_NIX:
+                        scoped.add((name, job_id))
+                        self.assertTrue(step["uses"].startswith("DeterminateSystems/magic-nix-cache-action@"))
+                        self.assertEqual(step["with"].get("use-flakehub"), "disabled")
+                        self.assertNotIn("id-token", json.dumps(job))
+                    elif pr and cache_writer(step):
                         self.assertRegex(guard, r"refs/heads/master|github\.event_name == 'push'", (name, job_id))
+        self.assertEqual(scoped, BRANCH_SCOPED_NIX)  # the exemption lapses with its job
 
-    def test_only_windows_signing_fills_githubs_cache_store(self):
+    def test_only_windows_signing_and_the_eif_check_fill_githubs_cache_store(self):
         # GitHub's cache store is small; heavy caches live on Blacksmith, whose
         # runners cannot read GitHub's. The release and the Nix installer are the other users.
         writers = set()
@@ -254,7 +268,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                         and "startsWith(matrix.runner, 'blacksmith-')" not in str(step["with"].get("save-if"))
                         and any(GITHUB_HOSTED.fullmatch(label) for label in runner_labels(name, job_id, job))):
                     writers.add((name, job_id))
-        self.assertEqual(writers, {("desktop-build.yml", "build-windows")})
+        self.assertEqual(writers, {("desktop-build.yml", "build-windows")} | BRANCH_SCOPED_NIX)
 
 if __name__ == "__main__":
     unittest.main()

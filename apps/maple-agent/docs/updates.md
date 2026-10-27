@@ -342,8 +342,8 @@ signature/notarization checks remain intact.
 They do not prove Developer ID distribution, deployed service behavior, or a
 successful real package update.
 
-The focused **Agent Windows Updater Tests** workflow runs the actual updater
-and bootstrap component tests on Windows with no signing or publication
+The `agent-windows-updater` lane in `ci.yml` runs the actual updater and
+bootstrap component tests on Windows with no signing or publication
 credentials. It requires the named native filesystem, trust rejection,
 transaction and recovery cases and rejects ignored or empty suites. These
 fixtures do not establish official Maple signatures, installed A-to-B updates,

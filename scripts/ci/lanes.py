@@ -95,6 +95,13 @@ AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/*third*party*notices*", "release-profiles.json", "release_profile.rs", "about.toml", "app/build.rs",
     "app/packaging/**", "flake.nix", "flake.lock",
 )) + (".github/workflows/agent-desktop-build.yml",)
+# The Windows packaging lane's Windows-specific inputs: the Windows packaging scripts,
+# the build script's Windows branch, the release identity the installer and the
+# Windows feed read, and the Windows toolchain.
+AGENT_WINDOWS_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
+    "scripts/windows-*", "scripts/build-release.sh", "scripts/release-info.py", "release-profiles.json",
+    "release_profile.rs",
+)) + (".github/actions/setup-agent-windows/**", "scripts/ci/agent_windows.py")
 APPLE_TOOLCHAIN = ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py")
 # What agent-desktop-build.yml builds and signs on master (`plan.py only agent-desktop`).
 AGENT_DESKTOP = AGENT + RUST_SDK + PROXY_RUNTIME + (
@@ -250,7 +257,8 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN, labels=("ci:package", "ci:full"),
          events=PACKAGE_EVENTS, job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60,
          gate=False, **AGENT_PACKAGE_FLAKE),
-    Lane("agent-package-windows", (), labels=("ci:package", "ci:full"), events=PR_SIDE,
+    # Windows is on the Agent feed, so its own packaging inputs select it too.
+    Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
          job="agent-package-windows", runner=WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),), timeout=60, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script

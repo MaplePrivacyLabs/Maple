@@ -8,8 +8,10 @@ cancelled, so every Agent push gets its own packages. A later push without Agent
 changes does not retry a failed run: re-run its failed jobs, dispatch, or fix
 forward. Pull requests that change packaging inputs (the packaging and release
 scripts, the Agent flake, and for macOS the Xcode pin) rehearse unsigned Dev
-packages in `ci.yml` (`agent-package-linux`, `agent-package-macos`); the
-`ci:package` label adds `agent-package-windows`.
+packages in `ci.yml` (`agent-package-linux`, `agent-package-macos`).
+`agent-package-windows` runs when the Windows packaging scripts,
+`build-release.sh`, the release profile files or the Windows toolchain change;
+the `ci:package` label adds all three.
 
 Unrelated master commits have no new Agent artifacts. Existing downloads keep
 their original source SHA and provenance; they are never relabeled as a newer
@@ -24,8 +26,9 @@ per-user NSIS installers requiring Windows 10 version 1703 (build 15063) or late
 imported by GPUI; see Microsoft's [Windows ICU version history](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
 Trusted master
 packages use the existing Azure publisher to Authenticode-sign the application,
-embedded uninstaller and final installer. The `ci:package` PR label rehearses an
-unsigned Dev installer.
+embedded uninstaller and final installer. Pull requests that change those
+Windows packaging inputs, or carry the `ci:package` label, build, install and
+smoke-test an unsigned Dev installer.
 
 | Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |

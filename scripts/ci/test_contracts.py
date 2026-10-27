@@ -108,19 +108,55 @@ def variants(job: dict) -> list:
     return sorted({value for array in re.findall(r"\[[^\]]*\]", matrix) for value in json.loads(array)})
 
 
-def desktop_run(config: dict, run_id: int):
-    """The job inventory (with runner labels) and artifacts of one successful agent-desktop-build.yml run."""
+def job_results(config: dict, event: str) -> dict:
+    """Which agent-desktop-build.yml jobs run on a master `event` that changes Agent
+    inputs, if every job that runs succeeds: each job's `if:` and `needs`, evaluated."""
+    results: dict = {}
+    pending = dict(config["jobs"])
+    while pending:
+        ready = [job_id for job_id, job in pending.items()
+                 if set(needs_of(job)) <= set(results)]
+        if not ready:
+            raise ValueError(f"unresolvable needs: {sorted(pending)}")
+        for job_id in ready:
+            job = pending.pop(job_id)
+            succeeded = all(results[need] == "success" for need in needs_of(job))
+            if "if" not in job:
+                runs = succeeded
+            else:
+                text = expression(job)
+                if not re.search(r"\b(?:always|cancelled|failure|success)\(\)", str(job["if"])):
+                    text = f"{succeeded} and ({text})"  # GitHub's implicit success()
+                context = {"NOT_CANCELLED": True, "github.repository": publisher.REPOSITORY,
+                           "github.ref": "refs/heads/master", "github.event_name": event,
+                           "needs.changes.outputs.agent": "true" if results.get("changes") == "success" else ""}
+                context.update({f"needs.{need}.result": results[need] for need in needs_of(job)})
+                runs = evaluate(text, dict(sorted(context.items(), key=lambda item: -len(item[0]))))
+            results[job_id] = "success" if runs else "skipped"
+    return results
+
+
+def needs_of(job: dict) -> list:
+    value = job.get("needs", [])
+    return [value] if isinstance(value, str) else list(value)
+
+
+def desktop_run(config: dict, run_id: int, event: str = "push"):
+    """The job inventory (with runner labels) and artifacts of one agent-desktop-build.yml
+    run on master in which every job that runs succeeds; a job its `if:` skips is skipped."""
     def expand(text, variant):
         return text.replace("${{ matrix.variant }}", str(variant)).replace("${{ github.run_id }}", str(run_id))
 
+    results = job_results(config, event)
     inventory, artifacts = [], []
     for job_id, job in config["jobs"].items():
         for variant in variants(job):
             inventory.append({"name": expand(job.get("name", job_id), variant), "status": "completed",
-                              "conclusion": "success", "labels": [job["runs-on"]]})
-            artifacts += [{"name": expand(step["with"]["name"], variant), "expired": False}
-                          for step in job.get("steps", [])
-                          if step.get("uses", "").startswith("actions/upload-artifact@")]
+                              "conclusion": results[job_id], "labels": [job["runs-on"]]})
+            if results[job_id] == "success":
+                artifacts += [{"name": expand(step["with"]["name"], variant), "expired": False}
+                              for step in job.get("steps", [])
+                              if step.get("uses", "").startswith("actions/upload-artifact@")]
     return inventory, artifacts
 
 
@@ -140,7 +176,8 @@ def expression(job: dict) -> str:
 def evaluate(text: str, context: dict) -> bool:
     for key, value in context.items():
         text = text.replace(key, repr(value))
-    return bool(eval(text, {"__builtins__": {}}, {}))  # noqa: S307 - fixed workflow text
+    literals = {"true": True, "false": False, "null": None}  # GitHub's literals; quoted strings are untouched
+    return bool(eval(text, {"__builtins__": {}}, literals))  # noqa: S307 - fixed workflow text
 
 
 def cancels(concurrency) -> bool:
@@ -200,7 +237,6 @@ class ContractTests(unittest.TestCase):
         self.assertIn("master", config["on"]["push"]["branches"])
         self.assertIn("workflow_dispatch", config["on"])
         run_id = 4242
-        inventory, artifacts = desktop_run(config, run_id)
         for job_id, job in config["jobs"].items():
             attests = any(step.get("uses", "").startswith("actions/attest@") for step in job.get("steps", []))
             if attests:  # the publisher verifies with --deny-self-hosted-runners
@@ -208,16 +244,19 @@ class ContractTests(unittest.TestCase):
             if attests or environment(job) or job.get("name", "").startswith("Verify"):
                 self.assertFalse([step for step in job.get("steps", []) if step.get("uses", "").startswith(
                     ("actions/cache", "Swatinem/rust-cache@"))], f"{job_id} must restore no cache")
-        run = {"id": run_id, "run_attempt": 1, "run_number": 77, "path": publisher.WORKFLOW,
-               "head_branch": "master", "event": "push", "status": "completed", "head_sha": "a" * 40,
-               "created_at": "2026-01-01T00:00:00Z", "repository": {"full_name": publisher.REPOSITORY},
-               "head_repository": {"full_name": publisher.REPOSITORY}}
-        responses = {"": run, "jobs": {"total_count": len(inventory), "jobs": inventory},
-                     "artifacts": {"total_count": len(artifacts), "artifacts": artifacts}}
-        with mock.patch.object(publisher, "gh_json",
-                               lambda path: responses[re.sub(r".*/runs/\d+/?([a-z]*).*", r"\1", path)]):
-            proof = publisher.trust_run(run_id, linux=True, windows=True)
-        self.assertEqual(proof["build"], "77")  # run_number is the Agent build number
+        # Each job's `if:` and `needs` decide whether it runs: a Prod job they skip fails the publisher.
+        for event in ("push", "workflow_dispatch"):
+            inventory, artifacts = desktop_run(config, run_id, event)
+            run = {"id": run_id, "run_attempt": 1, "run_number": 77, "path": publisher.WORKFLOW,
+                   "head_branch": "master", "event": event, "status": "completed", "head_sha": "a" * 40,
+                   "created_at": "2026-01-01T00:00:00Z", "repository": {"full_name": publisher.REPOSITORY},
+                   "head_repository": {"full_name": publisher.REPOSITORY}}
+            responses = {"": run, "jobs": {"total_count": len(inventory), "jobs": inventory},
+                         "artifacts": {"total_count": len(artifacts), "artifacts": artifacts}}
+            with self.subTest(event=event), mock.patch.object(
+                    publisher, "gh_json", lambda path: responses[re.sub(r".*/runs/\d+/?([a-z]*).*", r"\1", path)]):
+                proof = publisher.trust_run(run_id, linux=True, windows=True)
+                self.assertEqual(proof["build"], "77")  # run_number is the Agent build number
         # The publisher checks the Windows package's build against that run number.
         windows = [job for job in config["jobs"].values()
                    if re.search(r"windows-release\.py (?:package|verify)", json.dumps(job.get("steps", [])))]
@@ -225,6 +264,37 @@ class ContractTests(unittest.TestCase):
         for job in windows:
             self.assertEqual(job.get("env", {}).get("MAPLE_PACKAGE_BUILD_NUMBER"), "${{ github.run_number }}",
                              job.get("name"))
+
+    def test_c2_windows_packaging_lanes_pass_a_build_number(self):
+        # windows-release.py package and verify refuse to run without MAPLE_PACKAGE_BUILD_NUMBER.
+        # A lane passes the Actions run number, or 1 outside Actions. Run each such lane's
+        # command with stand-ins for the build script and Python, and read what they received.
+        packaging = [lane for lane in plan.LANES if re.search(r"windows-release\.py (?:package|verify)", lane.run)]
+        self.assertTrue(packaging)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stubs = {root / "scripts/build-release.sh": "exit 0\n",
+                     root / "bin/python3": 'printf "%s|%s\\n" "${MAPLE_PACKAGE_BUILD_NUMBER-unset}" "$*" >> "$CALLS"\n'}
+            for path, body in stubs.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("#!/bin/sh\n" + body)
+                path.chmod(0o755)
+            calls = root / "calls"
+            for lane, run_number in itertools.product(packaging, ("77", None)):
+                calls.write_text("")
+                env = {key: value for key, value in os.environ.items()
+                       if key not in ("GITHUB_RUN_NUMBER", "MAPLE_PACKAGE_BUILD_NUMBER")}
+                env.update(dict(lane.env), PATH=f"{root / 'bin'}{os.pathsep}{env['PATH']}", CALLS=str(calls))
+                if run_number:
+                    env["GITHUB_RUN_NUMBER"] = run_number
+                result = subprocess.run([shutil.which("bash"), "--noprofile", "--norc", "-euo", "pipefail", "-c",
+                                         lane.run], cwd=root, env=env, capture_output=True, text=True)
+                with self.subTest(lane=lane.id, run_number=run_number):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    received = [line.split("|")[0] for line in calls.read_text().splitlines()
+                                if re.search(r"windows-release\.py (?:package|verify) ", line)]
+                    self.assertGreaterEqual(len(received), 2)  # package, then verify
+                    self.assertEqual(set(received), {run_number or "1"})
 
     def test_c2_windows_signature_probe_accepts_this_workflows_prod_run(self):
         self.assertEqual(signature_probe.PRODUCER, publisher.WORKFLOW)
@@ -552,6 +622,7 @@ class ContractTests(unittest.TestCase):
     def test_c7_docs_name_only_existing_workflows_and_files(self):
         files = plan.tracked_files()
         names = {Path(path).name for path in files}
+        titles = {config.get("name") for config in workflows().values()}  # display names
         dangling = []
         for path in files:
             if not (path.endswith(".md") and plan.matches(path, DOCS)):
@@ -563,6 +634,11 @@ class ContractTests(unittest.TestCase):
                           else reference in names)
                 if not exists:
                     dangling.append(f"{path}: {reference}")
+            # A quoted or bold name before "workflow" is a display name, unless it is a path or file.
+            for match in re.finditer(r"(?:`([^`\n]+)`|\*\*([^*\n]+)\*\*)\s+workflows?\b", text):
+                title = match.group(1) or match.group(2)
+                if "/" not in title and not re.search(r"\.ya?ml$", title) and title not in titles:
+                    dangling.append(f"{path}: {title}")
         self.assertEqual(dangling, [])
 
 

@@ -30,12 +30,17 @@ branches in step with the lane table.
 
 ## Caches
 
-- Pull requests restore caches and never save one.
+- Pull requests restore caches and never save one. The one exception is
+  `opensecret-eif.yml`'s `eif` job (fork PRs that edit PCR approvals, and
+  manual runs outside `master`): without FlakeHub credentials, its Nix store
+  goes to the run's branch-scoped Actions cache, which `master` and other
+  pull requests cannot read.
 - Lane caches (`Swatinem/rust-cache`, prefix `ci-v1`, keyed by lane and
   lockfile hashes) are saved by master pushes and the nightly run on Blacksmith
   runners only. Heavy Rust caches therefore live in Blacksmith's store; GitHub's
   own store, which is small, holds only what GitHub-hosted jobs need (the
-  Research Windows signed build, the release and the Nix installer).
+  Research Windows signed build, the release, the Nix installer and that EIF
+  check).
 - The signed master builds write the keys `release.yml` restores by prefix
   (`<os>-sccache-*`, `xcode-cache-*`, `release-onnxruntime-ios-*`,
   `<os>-bun-*`, `<os>-gradle-*`). No pull-request job writes these prefixes;

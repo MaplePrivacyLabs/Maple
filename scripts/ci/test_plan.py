@@ -107,7 +107,8 @@ class AgentSelectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), {"agent-macos", "agent-package-macos", "research-ios",
                                                     "research-desktop-macos", "repo"})
-        self.assertEqual(selected(["scripts/ci/agent_windows.py"]), {"agent-windows", "agent-windows-updater", "repo"})
+        self.assertEqual(selected(["scripts/ci/agent_windows.py"]),
+                         {"agent-windows", "agent-windows-updater", "agent-package-windows", "repo"})
 
     def test_intentional_differences_select_only_the_repo_lane(self):
         for path in (
@@ -361,9 +362,30 @@ class AgentLaneTests(unittest.TestCase):
         for path in ("apps/maple-agent/app/src/main.rs", "apps/maple-agent/scripts/macos-debug-app.sh"):
             with self.subTest(path=path):
                 self.assertFalse(AGENT_PACKAGE & selected([path]))
-        self.assertFalse({"agent-package-windows"} & selected(["apps/maple-agent/scripts/build-release.sh"]))
         self.assertEqual(agent_lanes(selected(["docs/x.md"], labels=["ci:package"])),
                          AGENT_PACKAGE | {"agent-package-windows"})
+
+    def test_windows_packaging_runs_on_its_own_inputs_or_a_label(self):
+        # Windows is on the Agent feed: its installer, packaging scripts, release
+        # identity and toolchain get the native unsigned package and install smoke.
+        for path in ("apps/maple-agent/scripts/windows-installer.nsi", "apps/maple-agent/scripts/windows-release.py",
+                     "apps/maple-agent/scripts/windows-build-info.py", "apps/maple-agent/scripts/build-release.sh",
+                     "apps/maple-agent/scripts/release-info.py", "apps/maple-agent/release-profiles.json",
+                     "apps/maple-agent/release_profile.rs", ".github/actions/setup-agent-windows/action.yml",
+                     "scripts/ci/agent_windows.py"):
+            for event in (PR, QUEUE):
+                with self.subTest(path=path, event=event):
+                    self.assertIn("agent-package-windows", selected([path], event))
+            self.assertNotIn("agent-package-windows", selected([path], PUSH))  # master builds it signed
+        # Linux- and macOS-only packaging, Agent code and CI edits do not.
+        for path in ("apps/maple-agent/scripts/linux-release-bundle.py", "apps/maple-agent/scripts/macos-release-app.sh",
+                     "apps/maple-agent/flake.lock", "apps/maple-agent/app/packaging/macos-entitlements.plist",
+                     "apps/maple-agent/app/src/main.rs", "apps/maple-agent/crates/maple-agent-updater/src/installer.rs",
+                     ".github/workflows/ci.yml", "scripts/ci/plan.py"):
+            with self.subTest(path=path):
+                self.assertNotIn("agent-package-windows", selected([path]))
+        for label in ("ci:package", "ci:full"):
+            self.assertIn("agent-package-windows", selected(["docs/x.md"], labels=[label]))
 
     def test_full_suites_run_on_master_nightly_and_ci_full_only(self):
         full = {"agent-full-linux", "agent-full-macos", "agent-full-windows"}
