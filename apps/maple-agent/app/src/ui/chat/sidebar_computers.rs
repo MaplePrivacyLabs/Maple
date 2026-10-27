@@ -2114,6 +2114,7 @@ impl Sidebar {
                     computer: computer.key.clone(),
                     destination: Destination::Overview,
                 };
+                let disclosure_request = request.clone();
                 let action_group: SharedString =
                     format!("computer-header-actions-{:?}", computer.key).into();
                 let new_project = Navigate {
@@ -2170,14 +2171,22 @@ impl Sidebar {
                                     .when(collapsible, |slot| {
                                         slot.child(
                                             div()
+                                                .id("computer-disclosure")
                                                 .absolute()
                                                 .top_0()
-                                                .right(FOLDER_ICON_SIZE)
+                                                .right(FOLDER_ICON_SIZE + px(3.))
                                                 .w(FOLDER_HEADER_PADDING - gpui::rems(0.5))
                                                 .h(FOLDER_ICON_SIZE)
                                                 .flex()
                                                 .items_center()
                                                 .justify_center()
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.toggle_computer_group(
+                                                        &disclosure_request,
+                                                        cx,
+                                                    );
+                                                }))
                                                 .child(icon(
                                                     if expanded {
                                                         "chevron-down"
