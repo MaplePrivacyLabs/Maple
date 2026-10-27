@@ -253,9 +253,9 @@ the `sdk-ts` lane (`just lane sdk-ts` from the repository root).
 An unfiltered `bun test` also collects integration tests and requires the
 fixtures described below.
 
-Integration tests read the variables documented in `.env.example`. Monorepo
-[`sdk-integration.yml`](../.github/workflows/sdk-integration.yml) migrates
-disposable PostgreSQL, starts the in-tree `services/opensecret/` backend from
+Integration tests read the variables documented in `.env.example`. The monorepo
+`os-sdk-e2e` lane ([`opensecret-sdk-e2e.sh`](../scripts/ci/opensecret-sdk-e2e.sh))
+migrates disposable PostgreSQL, starts the in-tree `services/opensecret/` backend from
 the same checkout on loopback, and creates disposable SDK fixtures. It does
 not depend on the hosted development service or stored test-account credentials.
 
@@ -324,7 +324,7 @@ nix develop --no-update-lock-file -c bash -lc '
 These library checks do not require a backend or account credentials.
 Integration tests use explicit backend fixtures and are separate from this
 default validation path; see [Rust testing](rust/README.md#testing) and
-[`sdk-integration.yml`](../.github/workflows/sdk-integration.yml).
+[`opensecret-sdk-e2e.sh`](../scripts/ci/opensecret-sdk-e2e.sh).
 
 To dispatch validation from `sdk/`, replace `VERSION` with the exact Rust
 version committed in `rust/Cargo.toml` on `master`:

@@ -34,16 +34,22 @@ source its own manifest selects, so changing that manifest (a pin bump or a
 local link) is what selects its lanes. Tests, docs, container-only inputs, and
 standalone component lockfiles retain their independent lanes. Update the classifier and
 its table-driven tests when the dependency graph or component layout changes.
-The backend has its own root `opensecret-ci.yml` workflow and change selector;
-`sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
-same checkout. Backend changes do not imply Research or Agent packaging.
+OpenSecret's `ci.yml` lanes are selected by its own classifier,
+`scripts/ci/opensecret_change_detection.py`, which `plan.py` imports unchanged:
+`os-rust`, `os-flake-check`, `os-helpers` (the parent helper images),
+`deps-opensecret`, `os-pcr` (the root `pcr-compatibility` check, for PCR tooling
+and approval edits) and `os-sdk-e2e`, which tests both SDKs against
+`services/opensecret/` from the same checkout (`scripts/ci/opensecret-sdk-e2e.sh`).
+`nightly.yml` builds the x86_64 package. Backend changes do not imply Research
+or Agent packaging.
 Agent desktop packages build on master pushes whose own diff changes Agent
 inputs (`plan.py only agent-desktop`), and on every manual master dispatch.
 Packaging-input PRs rehearse unsigned Dev packages on Linux and macOS in
 `ci.yml` (Windows with the `ci:package` label); signing stays confined to
 trusted master.
-The separate `opensecret-eif.yml` builds dev/prod EIF candidates on
-same-repository PRs changing measured inputs without editing PCR approvals.
+The `os-eif` lane builds dev/prod EIF candidates on same-repository PRs
+changing measured inputs without editing PCR approvals, on the release builder's
+`blacksmith-8vcpu-ubuntu-2404-arm` class.
 Each diagnostic build explicitly realizes the user ramdisk selected by its EIF
 derivation, even when Nix substitutes a cached final EIF. The entrypoint's CA
 bundle must be present in that archive and omit the affected emSign roots. If
@@ -51,8 +57,9 @@ the source CA store path is also present, its bytes must match the archive.
 The check records whether retained Comodo AAA is excluded from ordinary TLS
 PEMs and explicitly rejected by OpenSSL for server trust. It records the
 archived bundle and EIF hashes with the PCRs in the job summary; it does not upload
-an artifact. The workflow compares measurements
-on PRs editing approved PCR JSON, relevant master changes, and manual runs.
+an artifact. `opensecret-eif.yml` compares measurements
+on PRs editing approved PCR JSON, relevant master changes, and manual runs; that
+approval status is not part of `ci-ok`.
 Preserve ordinary backend PRs without fresh approvals and meaningful master
 mismatches; these checks never change approvals, sign, release, or authorize
 deployment. Master and same-repository PR EIF builds receive OIDC for FlakeHub caching.

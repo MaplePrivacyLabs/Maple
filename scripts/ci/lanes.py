@@ -4,9 +4,9 @@ Read by scripts/ci/plan.py (the ci.yml plan job, `just lane`, and lint). Globs
 are repository-relative: `**` spans directories, `*` stays within one path
 segment, and a leading `!` excludes paths from the globs it is listed with.
 
-A lane with `legacy` set is still run by that workflow. Its paths are
-classified here, so they never count as unknown, but ci.yml selects nothing for
-it until its migration clears `legacy` and fills in how it runs.
+OpenSecret lanes have no globs: opensecret_change_detection.py, imported
+verbatim, selects them from each changed path that is not inert here
+(`opensecret` names its output).
 """
 
 from __future__ import annotations
@@ -107,7 +107,8 @@ class Lane:
     cache_files: Tuple[str, ...] = ()           # hashed into the cache key
     timeout: int = 15
     gate: bool = True                           # selected by CI_INFRA edits
-    legacy: Optional[str] = None                # the workflow that still runs this lane
+    opensecret: Optional[str] = None            # the opensecret_change_detection.py output that selects it
+    submodules: bool = False                    # check out submodules, with the full history Nix needs
 
 
 AGENT_DIR = dict(
@@ -158,6 +159,15 @@ DESKTOP = tuple(TAURI + glob for glob in ("tauri.conf.json", "build.rs", "script
 WINDOWS_DESKTOP = (TAURI + "tauri.windows.conf.json", TAURI + "resources/windows/**", TAURI + "scripts/*windows*",
                    "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py")
 WINDOWS_LABELS = ("ci:windows", "ci:package", "ci:full")
+
+# The paths only OpenSecret lanes consume; plan.py counts them as classified.
+OPENSECRET = ("services/opensecret/**", "sdk/test/**", ".gitmodules",
+              ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh")
+OPENSECRET_SHELL = "./services/opensecret?submodules=1#ci"
+OPENSECRET_ENV = (("OPENSECRET_DEV_POSTGRES", "0"), ("OPENSECRET_DEV_ENV", "0"), ("OPENSECRET_DEV_CONTAINERS", "0"),
+                  ("RUSTFLAGS", "-D warnings"))
+# Every EIF build runs on opensecret-eif-release.yml's runner class (test_contracts C5).
+EIF_BUILDER = Runner("blacksmith-8vcpu-ubuntu-2404-arm")
 
 LANES: Tuple[Lane, ...] = (
     Lane("agent-lint", AGENT, also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",),
@@ -303,13 +313,31 @@ LANES: Tuple[Lane, ...] = (
                            "flake.lock"),
          runner=GITHUB, flake=".#ci", run="./scripts/ci/agent-updates.sh"),
 
-    # Legacy lanes: OpenSecret will route through opensecret_change_detection.py.
-    Lane("deps-opensecret", ("services/opensecret/deny.toml", "services/opensecret/Cargo.*"),
-         legacy="opensecret-ci.yml"),
-    Lane("os-rust", ("services/opensecret/**", ".gitmodules"), legacy="opensecret-ci.yml"),
-    Lane("os-sdk-e2e", ("sdk/test/**", ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh"),
-         also=RUST_SDK + SDK_TS, legacy="sdk-integration.yml"),
-    Lane("os-eif", ("scripts/ci/build_opensecret_eif.sh", "scripts/ci/check_opensecret_eif.sh",
-                    "scripts/ci/verify_opensecret_eif_rootfs.py", "scripts/ci/fixtures/eif/**"),
-         legacy="opensecret-eif.yml"),
+    # OpenSecret, selected by its own selector (see the module docstring). The PR
+    # EIF candidate builds only for same-repository PRs that edit no approval, on
+    # the release builder's runner class; opensecret-eif.yml compares approvals.
+    Lane("os-rust", (), opensecret="rust", flake=OPENSECRET_SHELL, workdir="services/opensecret",
+         run="cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings"
+             " && cargo test --locked --all-features",
+         cache="os-rust", workspaces="services/opensecret -> target", cache_files=tuple(
+             "services/opensecret/" + name for name in ("Cargo.lock", "rust-toolchain.toml", "flake.lock")),
+         submodules=True, timeout=30, env=OPENSECRET_ENV),
+    Lane("os-sdk-e2e", (), opensecret="integration", job="os-sdk-e2e", run="./scripts/ci/opensecret-sdk-e2e.sh",
+         timeout=45),
+    Lane("os-flake-check", (), opensecret="nix", runner=GITHUB, workdir="services/opensecret",
+         run="nix flake check --no-update-lock-file --print-build-logs '.?submodules=1'", submodules=True,
+         timeout=30, env=OPENSECRET_ENV),
+    Lane("os-helpers", (), opensecret="helpers", job="os-helpers", runner=Runner("ubuntu-24.04-arm"),
+         run="./scripts/ci/opensecret-helpers.sh", timeout=30),
+    Lane("os-pcr", (), opensecret="pcr", runner=GITHUB, timeout=10,
+         run='nix build --no-update-lock-file --no-link'
+             ' ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).pcr-compatibility"'),
+    Lane("deps-opensecret", (), opensecret="audit", flake=OPENSECRET_SHELL, submodules=True, env=OPENSECRET_ENV,
+         run=deny("services/opensecret/Cargo.toml", "services/opensecret"), **DEPS),
+    Lane("os-eif", (), opensecret="eif", labels=(), events=frozenset({PR}), job="os-eif", runner=EIF_BUILDER,
+         # ci.yml runs the former opensecret-eif.yml candidate steps verbatim; this is that build.
+         run='mode="${EIF_MODE:?dev or prod}" && out="$(mktemp -d)/eif-candidate-$mode"'
+             ' && bash scripts/ci/build_opensecret_eif.sh "$mode" "$out"'
+             ' && python3 scripts/ci/verify_opensecret_eif_rootfs.py "$mode" "$out" "$(git rev-parse HEAD)"',
+         env=OPENSECRET_ENV, timeout=180, gate=False),
 )

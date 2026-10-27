@@ -1,5 +1,6 @@
 """Backend, client-compatibility, and application-packaging routing regressions."""
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -10,9 +11,9 @@ import unittest
 
 from change_detection import classify_path as research_routes
 from lanes import PUSH
-from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS, classify_paths
+from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS, classify_pcr, classify_paths
 from test_plan import AGENT_PUSH, selected
-from test_workflow_policy import ROOT, load
+from test_workflow_policy import ROOT
 
 
 def affects_agent(path):
@@ -181,9 +182,20 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
     def test_component_hook_scripts_select_nothing(self):
         self.assert_routes(["services/opensecret/.githooks/pre-commit"])
 
+    def test_pcr_tooling_and_approvals_select_the_offline_pcr_check(self):
+        for relative in ("pcrPreview.json", "pcrPreviewHistory.json", "pcr_sign.js", "pcr_verify.js",
+                         "scripts/pcr_compatibility.py", "scripts/test_pcr_compatibility.py",
+                         "pcrDev.json", "pcrDevHistory.json", "pcrProd.json", "pcrProdHistory.json"):
+            with self.subTest(path=relative):
+                self.assertTrue(classify_pcr("services/opensecret/" + relative))
+        for path in ("services/opensecret/src/main.rs", "services/opensecret/docs/pcr-compatibility.md",
+                     "services/opensecret/scripts/ci_sign_pcr.sh", "pcrDev.json", "sdk/pcrDev.json"):
+            with self.subTest(path=path):
+                self.assertFalse(classify_pcr(path))
+
 
 class OpenSecretDiffSelectionTests(unittest.TestCase):
-    """The opensecret-change-detection.yml classify step, run against fixture histories."""
+    """opensecret-eif.yml's changes job (`plan.py opensecret`), run against fixture histories."""
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -194,7 +206,8 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         self.git("config", "core.hooksPath", "/dev/null")
         scripts = self.root / "scripts/ci"
         scripts.mkdir(parents=True)
-        shutil.copyfile(ROOT / "scripts/ci/opensecret_change_detection.py", scripts / "opensecret_change_detection.py")
+        for name in ("plan.py", "lanes.py", "opensecret_change_detection.py"):
+            shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
         self.base = self.commit_file("README.md", "initial\n")
 
     def git(self, *arguments):
@@ -211,13 +224,13 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def select(self, event, base, head, *, succeeds=True):
-        step = next(step for step in load(ROOT / ".github/workflows/opensecret-change-detection.yml")
-                    ["jobs"]["detect"]["steps"] if step.get("id") == "classify")
-        output = self.root / "output"
+        output, payload = self.root / "output", self.root / "event.json"
         output.unlink(missing_ok=True)
-        env = {**os.environ, "GITHUB_EVENT_NAME": event, "BASE_SHA": base, "HEAD_SHA": head,
+        payload.write_text(json.dumps({"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
+                                      if event == "pull_request" else {"before": base, "after": head}))
+        env = {**os.environ, "GITHUB_EVENT_NAME": event, "GITHUB_EVENT_PATH": str(payload),
                "GITHUB_OUTPUT": str(output)}
-        result = subprocess.run(["bash", "-c", step["run"]], cwd=self.root, env=env,
+        result = subprocess.run([sys.executable, "scripts/ci/plan.py", "opensecret"], cwd=self.root, env=env,
                                 capture_output=True, text=True)
         if succeeds:
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -308,9 +321,6 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         )
         self.assertEqual(self.select("pull_request", self.base, self.base, succeeds=False), {})
         self.assertEqual(self.select("push", self.base, self.base), self.expected(*CHECK_OUTPUTS))
-
-    def test_schedule_selects_only_advisory_audit(self):
-        self.assertEqual(self.select("schedule", "", ""), self.expected("audit"))
 
 
 if __name__ == "__main__":

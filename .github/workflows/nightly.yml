@@ -1,5 +1,6 @@
 # Nightly checks of what drifts without a commit: advisories, pinned upstream
-# sources, the SQLCipher provider suite on every OS and the store benchmark.
+# sources, the SQLCipher provider suite on every OS and the store benchmark,
+# plus OpenSecret's x86_64 package, which no pull request builds.
 # One `ci-nightly` issue reports failures here and in ci.yml's scheduled run;
 # a green night closes it. Nothing here gates a pull request.
 name: Nightly
@@ -131,9 +132,25 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  opensecret-package:
+    name: OpenSecret x86_64 package
+    # The shipped EIF is aarch64 (ci.yml's os-eif); nothing consumes this build.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+          # Nix requires revCount for recursively fetched Git inputs.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-nix
+      - name: Build the application package
+        run: nix build --no-link --no-update-lock-file './services/opensecret?submodules=1#default'
+
   report:
     name: Report
-    needs: [advisories, agent-supply-chain, bun-audit, agent-provider, store-bench]
+    needs: [advisories, agent-supply-chain, bun-audit, agent-provider, store-bench, opensecret-package]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

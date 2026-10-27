@@ -115,6 +115,14 @@ def classify_paths(paths: Iterable[str]) -> dict[str, bool]:
     return {name: name in selected for name in OUTPUTS}
 
 
+def classify_pcr(path: str) -> bool:
+    """The `pcr` output for ci.yml's os-pcr lane: the offline PCR tooling and the
+    approvals it verifies. Kept out of OUTPUTS, so the approval workflow's outputs
+    and every classify_path route stay as they are."""
+    relative = path.removeprefix(BACKEND_PREFIX)
+    return path.startswith(BACKEND_PREFIX) and (relative in PCR_INPUTS or relative in APPROVED_PCR_FILES)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true", help="Select all checks without claiming approvals changed")

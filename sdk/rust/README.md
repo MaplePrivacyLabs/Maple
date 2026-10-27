@@ -385,8 +385,8 @@ Clippy, library-test, and rustdoc gates are in the
 (`just lane sdk-rust` from the repository root).
 
 Integration tests are a separate selection. Follow
-[`sdk-integration.yml`](../../.github/workflows/sdk-integration.yml) for its
-disposable database, same-checkout OpenSecret backend, and fixture setup. It
+[`opensecret-sdk-e2e.sh`](../../scripts/ci/opensecret-sdk-e2e.sh) (CI's
+`os-sdk-e2e` lane) for its disposable database, same-checkout OpenSecret backend, and fixture setup. It
 uses loopback and does not require hosted development accounts. Configure the
 actual test endpoint and port, project UUID, and test identities from that
 setup rather than assuming a backend is running on `localhost:3000`.

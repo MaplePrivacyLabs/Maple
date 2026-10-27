@@ -14,12 +14,15 @@ from unittest import mock
 import lanes
 import plan
 from lanes import DISPATCH, NIGHTLY, PR, PUSH, QUEUE
+from opensecret_change_detection import OUTPUTS
 
 
-ACTIVE = {lane.id for lane in lanes.LANES if lane.legacy is None}
+ACTIVE = {lane.id for lane in lanes.LANES}
 AGENT_PR = {"agent-lint", "agent-test", "agent-macos"}
 AGENT_PUSH = AGENT_PR | {"agent-windows", "agent-full-linux", "agent-full-macos", "agent-full-windows"}
 AGENT_PACKAGE = {"agent-package-linux", "agent-package-macos"}
+# What opensecret_change_detection.py's "all checks" selects in ci.yml.
+OPENSECRET_ALL = {"os-rust", "os-sdk-e2e", "os-flake-check", "os-helpers", "deps-opensecret", "os-eif"}
 SHA_A, SHA_B = "a" * 40, "b" * 40
 
 
@@ -29,10 +32,6 @@ def active(event):
 
 def selected(paths, event=PR, labels=()):
     return set(plan.select(event, paths, labels))
-
-
-def owners(path):
-    return {lane.id for lane in lanes.LANES if plan.matches(path, plan.lane_globs(lane))}
 
 
 def agent_lanes(lanes_):
@@ -143,9 +142,10 @@ class PortedAgentSelectorTests(unittest.TestCase):
 class LaneTableTests(unittest.TestCase):
     def test_typescript_sdk_never_selects_a_client_lane(self):
         for path in ("sdk/src/index.ts", "sdk/package.json", "sdk/bun.lock"):
-            with self.subTest(path=path):
-                self.assertIn("sdk-ts", selected([path], PUSH))
-                self.assertFalse({o for o in owners(path) if o.startswith(("agent-", "research-", "proxy"))})
+            for event in (PR, PUSH):
+                with self.subTest(path=path, event=event):
+                    # The SDK-to-backend suite is the only other consumer.
+                    self.assertEqual(selected([path], event), {"sdk-ts", "os-sdk-e2e"})
 
     def test_release_metadata_and_publisher_inputs_select_the_repo_lane(self):
         for path in ("apps/maple-research/frontend/package.json", "apps/maple-research/frontend/src-tauri/Cargo.toml",
@@ -155,7 +155,7 @@ class LaneTableTests(unittest.TestCase):
                 self.assertIn("repo", selected([path]))
 
     def test_rust_sdk_tests_and_proxy_container_select_no_agent_lane(self):
-        self.assertEqual(selected(["sdk/rust/tests/x.rs"], PUSH), {"sdk-rust"})
+        self.assertEqual(selected(["sdk/rust/tests/x.rs"], PUSH), {"sdk-rust", "os-sdk-e2e"})
         self.assertEqual(agent_lanes(selected(["proxy/src/main.rs"])), AGENT_PR)
         self.assertFalse(agent([".dockerignore", "proxy/Dockerfile"], PUSH))
 
@@ -167,7 +167,8 @@ class LaneTableTests(unittest.TestCase):
         self.assertNotIn("agent-windows", selected([other]))
         self.assertIn("agent-windows", selected([other], PUSH))
         self.assertIn("agent-windows", selected(["docs/x.md"], labels=["ci:windows"]))
-        self.assertEqual(selected(["docs/x.md"], labels=["ci:full"]), active(PR))
+        # Every PR lane but the EIF candidate, which only its own inputs select.
+        self.assertEqual(selected(["docs/x.md"], labels=["ci:full"]), active(PR) - {"os-eif"})
         self.assertEqual(selected(["docs/x.md"], labels=["unrelated"]), set())
 
     def test_inert_paths_select_nothing(self):
@@ -183,13 +184,7 @@ class LaneTableTests(unittest.TestCase):
         for path in (".github/workflows/ci.yml", ".github/actions/setup-nix/action.yml",
                      "scripts/ci/plan.py", "scripts/ci/lanes.py"):
             with self.subTest(path=path):
-                self.assertEqual(selected([path]), {lane.id for lane in lanes.LANES
-                                                    if lane.legacy is None and lane.gate})
-
-    def test_legacy_components_are_classified_but_select_nothing(self):
-        path = "services/opensecret/src/main.rs"
-        self.assertTrue(plan.classified(path))
-        self.assertEqual(selected([path], PUSH), set())
+                self.assertEqual(selected([path]), {lane.id for lane in lanes.LANES if lane.gate})
 
     def test_every_tracked_file_is_classified_and_ci_yml_matches(self):
         self.assertEqual(plan.lint_problems(plan.tracked_files()), [])
@@ -253,7 +248,7 @@ class ClientLaneTests(unittest.TestCase):
 
     def test_component_inputs_select_their_lanes(self):
         for path, pr, push in (
-            ("sdk/rust/tests/x.rs", {"sdk-rust"}, {"sdk-rust"}),
+            ("sdk/rust/tests/x.rs", {"sdk-rust", "os-sdk-e2e"}, {"sdk-rust", "os-sdk-e2e"}),
             ("proxy/tests/health.rs", {"proxy"}, {"proxy"}),
             ("proxy/Dockerfile", {"proxy-container"}, {"proxy-container", "proxy-container-arm64"}),
             ("proxy/Cargo.lock", {"proxy", "deps-proxy"}, {"proxy", "deps-proxy", "proxy-container",
@@ -263,7 +258,9 @@ class ClientLaneTests(unittest.TestCase):
             ("apps/maple-auth/src/main.tsx", {"auth"}, set()),
             ("services/download-tracking/tracking.ts", {"updates", "agent-updates"}, {"updates", "agent-updates"}),
             ("services/updates/src/index.ts", {"updates"}, {"updates"}),
-            ("services/agent-updates/src/index.ts", {"agent-updates"}, {"agent-updates"}),
+            # The OpenSecret selector (imported verbatim) treats this root as unknown: every check.
+            ("services/agent-updates/src/index.ts", {"agent-updates"} | OPENSECRET_ALL,
+             {"agent-updates"} | OPENSECRET_ALL - {"os-eif"}),
             # Master runs these in frontend-tests.yml, web-build.yml and rust-tests.yml.
             ("apps/maple-research/frontend/src/App.tsx", {"research-web"}, set()),
             ("apps/maple-research/frontend/src-tauri/src/lib.rs", {"research-rust"}, set()),
@@ -295,6 +292,49 @@ class ClientLaneTests(unittest.TestCase):
             ("research-ios", "research-android", "research-desktop", "research-dev"))})
 
 
+class OpenSecretLaneTests(unittest.TestCase):
+    """The lanes that replaced opensecret-ci.yml, sdk-integration.yml and the PR EIF candidate."""
+
+    def test_the_opensecret_selector_routes_each_lane(self):
+        backend = "services/opensecret/"
+        for path, pr, push in (
+            (backend + "src/main.rs", {"os-rust", "os-sdk-e2e", "os-flake-check", "os-eif"},
+             {"os-rust", "os-sdk-e2e", "os-flake-check"}),
+            (backend + "migrations/2026/up.sql", {"os-rust", "os-sdk-e2e"}, {"os-rust", "os-sdk-e2e"}),
+            (backend + "deny.toml", {"deps-opensecret"}, {"deps-opensecret"}),
+            (backend + "nitro-toolkit/logging/Dockerfile", {"os-helpers"}, {"os-helpers"}),
+            (backend + "nix/kernel-upstream.nix", {"os-flake-check", "os-eif"}, {"os-flake-check"}),
+            (backend + "scripts/pcr_compatibility.py", {"os-pcr"}, {"os-pcr"}),
+            # An approval edit is compared by opensecret-eif.yml, never built as a candidate.
+            (backend + "pcrDev.json", {"os-pcr"}, {"os-pcr"}),
+            (backend + "docs/nitro-deploy.md", set(), set()),
+            ("sdk/test/integration/bootstrap.sql", {"os-sdk-e2e"}, {"os-sdk-e2e"}),
+            ("scripts/ci/build_opensecret_eif.sh", {"os-eif", "repo"}, {"repo"}),
+            (".gitmodules", OPENSECRET_ALL, OPENSECRET_ALL - {"os-eif"}),
+            ("scripts/ci/opensecret_change_detection.py", OPENSECRET_ALL | {"repo"},
+             OPENSECRET_ALL - {"os-eif"} | {"repo"}),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(selected([path]), pr)
+                self.assertEqual(selected([path], PUSH), push)
+
+    def test_an_approval_edit_anywhere_in_the_diff_drops_the_candidate(self):
+        runtime, approval = "services/opensecret/src/main.rs", "services/opensecret/pcrProdHistory.json"
+        self.assertIn("os-eif", selected([runtime]))
+        self.assertNotIn("os-eif", selected([runtime, approval]))
+        self.assertNotIn("os-eif", selected(["docs/x.md"], labels=["ci:full"]))
+        self.assertNotIn("os-eif", selected([".github/workflows/ci.yml"]))
+        self.assertEqual({lane.id for lane in lanes.LANES if lane.events == {PR}}, {"os-eif"})
+        self.assertNotIn("deps-opensecret", active(NIGHTLY))  # nightly.yml checks advisories
+
+    def test_eif_builder_and_checkout(self):
+        entries = {e["id"]: e for e in json.loads(plan.outputs(dict.fromkeys(ACTIVE, ["x"]))["nix"])}
+        for lane in ("os-rust", "os-flake-check", "deps-opensecret"):
+            self.assertEqual((entries[lane]["submodules"], entries[lane]["fetch_depth"]), ("recursive", 0))
+        self.assertEqual((entries["os-pcr"]["submodules"], entries["os-pcr"]["fetch_depth"]), ("false", 1))
+        self.assertEqual(plan.OPENSECRET_OUTPUTS, OUTPUTS)
+
+
 class PlannerTests(unittest.TestCase):
     def github(self, event, payload, **env):
         with tempfile.TemporaryDirectory() as temporary:
@@ -319,10 +359,20 @@ class PlannerTests(unittest.TestCase):
     def test_schedule_and_dispatch(self):
         _, outputs = self.github(NIGHTLY, {})
         self.assertEqual({lane for lane, on in outputs["lanes"].items() if on},
-                         {lane.id for lane in lanes.LANES if lane.legacy is None and NIGHTLY in lane.events})
+                         {lane.id for lane in lanes.LANES if NIGHTLY in lane.events})
         _, outputs = self.github(DISPATCH, {}, LANES_INPUT="agent-test")
         self.assertEqual({lane for lane, on in outputs["lanes"].items() if on}, {"agent-test"})
         self.assertEqual([entry["id"] for entry in outputs["nix"]], ["agent-test"])
+
+    def test_pr_without_a_usable_diff_or_from_a_fork_never_builds_an_eif_candidate(self):
+        pull = {"number": 1, "base": {"sha": SHA_A}, "head": {"sha": SHA_B, "repo": {"full_name": "x/Maple"}}}
+        code, outputs = self.github(PR, {"pull_request": pull})
+        self.assertEqual((code, {lane for lane, on in outputs["lanes"].items() if on}), (0, active(PR) - {"os-eif"}))
+        with mock.patch.object(plan, "changed_paths", return_value=["services/opensecret/src/main.rs"]):
+            for head, built in (("MaplePrivacyLabs/Maple", True), ("contributor/Maple", False), (None, False)):
+                with self.subTest(head=head):
+                    pull["head"]["repo"] = head and {"full_name": head}
+                    self.assertIs(self.github(PR, {"pull_request": pull})[1]["lanes"]["os-eif"], built)
 
     def test_malformed_event_fails_a_pr_and_selects_everything_on_push(self):
         self.assertEqual(self.github(PR, {"pull_request": {}})[0], 1)
@@ -331,7 +381,7 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual({lane for lane, on in outputs["lanes"].items() if on}, active(PUSH))
         code, outputs = self.github(DISPATCH, {}, LANES_INPUT="no-such-lane")
-        self.assertEqual((code, all(outputs["lanes"].values())), (0, True))
+        self.assertEqual((code, {lane for lane, on in outputs["lanes"].items() if on}), (0, active(DISPATCH)))
 
     def test_outputs_empty_matrix_and_runner_overrides(self):
         empty = plan.outputs({})
@@ -349,7 +399,8 @@ class PlannerTests(unittest.TestCase):
             "agent-perf": linux, "repo": free, "sdk-ts": free, "sdk-rust": free, "proxy": free,
             "proxy-container": free, "proxy-container-arm64": "ubuntu-24.04-arm", "deps-research": free,
             "deps-sdk": free, "deps-proxy": free, "research-web": free, "research-android": linux, "auth": free,
-            "updates": free, "agent-updates": free})
+            "updates": free, "agent-updates": free, "os-rust": linux, "os-flake-check": free, "os-pcr": free,
+            "deps-opensecret": free})
         entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
         self.assertEqual({len(entry["cache_key"]) for entry in entries if entry["cache"]}, {16})
 

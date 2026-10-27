@@ -76,8 +76,6 @@ TEMPORARY = {
             "desktop-signing", "apple-signing", "android-signing", "windows-signing", "zapstore-publishing")),
     }),
     "permissions": frozenset({"desktop-build.yml", "android-build.yml"}),
-    # The OpenSecret lanes replace this workflow.
-    "github-cache": frozenset({("opensecret-ci.yml", "rust")}),
 }
 
 
@@ -273,7 +271,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                         and "startsWith(matrix.runner, 'blacksmith-')" not in str(step["with"].get("save-if"))
                         and any(GITHUB_HOSTED.fullmatch(label) for label in runner_labels(name, job_id, job))):
                     writers.add((name, job_id))
-        self.assertEqual(writers, {("desktop-build.yml", "build-windows")} | TEMPORARY["github-cache"])
+        self.assertEqual(writers, {("desktop-build.yml", "build-windows")})
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,9 +2,9 @@
 # OpenSecret backend pre-commit checks. Runs from services/opensecret inside
 # its own flake with OPENSECRET_DEV_POSTGRES/ENV/CONTAINERS=0 so the dev shell
 # does not start PostgreSQL, containers, or rewrite .env.
-# CI equivalent: the `rust` job of opensecret-ci.yml, plus the entrypoint flake
-# checks from its `nix` job when the entrypoint or its test is staged. The nix
-# package build, cargo-deny audit, EIF, and PCR checks stay in CI.
+# CI equivalent: ci.yml's os-rust lane, plus the entrypoint flake checks from
+# os-flake-check when the entrypoint or its test is staged. The nix package
+# build, cargo-deny audit, EIF, and PCR checks stay in CI.
 
 set -u
 . "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"

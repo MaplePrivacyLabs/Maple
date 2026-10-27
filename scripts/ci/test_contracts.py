@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import itertools
 import json
+import os
 from pathlib import Path
 import re
 import unittest
@@ -48,14 +49,14 @@ OIDC_JOBS = frozenset({
     ("desktop-build.yml", "build-macos"), ("desktop-build.yml", "build-linux"), ("desktop-build.yml", "build-windows"),
     ("dev-credential-requester-image.yml", "build"), ("ios-dev-testflight.yml", "build-ios-dev"),
     ("mobile-build.yml", "build-ios"), ("opensecret-eif-release.yml", "build"),
-    ("opensecret-eif.yml", "eif-candidate"), ("opensecret-eif.yml", "eif-trusted"),
+    ("ci.yml", "os-eif"), ("opensecret-eif.yml", "eif-trusted"),
     *(("release.yml", job) for job in ("build-tauri", "build-windows", "build-android", "build-ios", "build-web",
                                        "publish-proxy-release-artifacts", "update-latest-json",
                                        "publish-release-verification-guide")),
     ("sdk-publish-npm.yml", "publish"), ("sdk-publish-rust.yml", "publish"), ("web-build.yml", "build-web-master"),
 })
 # The EIF builders that warm FlakeHub for opensecret-eif-release.yml.
-FLAKEHUB_JOBS = frozenset({("opensecret-eif.yml", "eif-candidate"), ("opensecret-eif.yml", "eif-trusted"),
+FLAKEHUB_JOBS = frozenset({("ci.yml", "os-eif"), ("opensecret-eif.yml", "eif-trusted"),
                            ("opensecret-eif-release.yml", "build")})
 # Every job that holds a protected environment.
 CONSUMERS = {
@@ -114,6 +115,18 @@ def cache_steps():
         for step in job.get("steps", []):
             if step.get("uses", "").startswith(("actions/cache", "irgaly/xcode-cache@")):
                 yield name, job_id, step
+
+
+def expression(job: dict) -> str:
+    """A job's `if:` as a Python expression with equivalent semantics for these gates."""
+    text = job["if"].strip().removeprefix("${{").removesuffix("}}").replace("&&", " and ").replace("||", " or ")
+    return " ".join(text.replace("!cancelled()", "NOT_CANCELLED").replace("always()", "True").split())
+
+
+def evaluate(text: str, context: dict) -> bool:
+    for key, value in context.items():
+        text = text.replace(key, repr(value))
+    return bool(eval(text, {"__builtins__": {}}, {}))  # noqa: S307 - fixed workflow text
 
 
 def cancels(concurrency) -> bool:
@@ -278,13 +291,11 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(identity["env"]["RUN_NUMBER"], "${{ github.run_number }}")
 
     def test_c5_eif_event_gate_matches_the_approval_policy(self):
-        # Evaluate the real GitHub expressions with equivalent Python semantics.
-        expressions = {}
-        for job_id in ("eif-candidate", "eif", "eif-trusted"):
-            text = workflows()["opensecret-eif.yml"]["jobs"][job_id]["if"].strip()
-            text = text.removeprefix("${{").removesuffix("}}").replace("&&", " and ").replace("||", " or ")
-            expressions[job_id] = " ".join(text.replace("!cancelled()", "NOT_CANCELLED")
-                                           .replace("always()", "True").split())
+        # Evaluate the real GitHub expressions with equivalent Python semantics. The
+        # PR candidate is ci.yml's os-eif: the planner selects it, and its job repeats
+        # the event and head-repository checks. Its jobs need a successful plan.
+        approval = {job: expression(workflows()["opensecret-eif.yml"]["jobs"][job]) for job in ("eif", "eif-trusted")}
+        candidate = expression(workflows()["ci.yml"]["jobs"]["os-eif"])
         cases = (
             ("pull_request", "refs/pull/1/merge", "success", "true", "false", False),
             ("pull_request", "refs/pull/1/merge", "success", "true", "true", True),
@@ -302,6 +313,7 @@ class ContractTests(unittest.TestCase):
             ("push", "refs/heads/master", "success", "", "", True),
             ("push", "refs/heads/feature", "success", "true", "true", False),
             ("push", "refs/tags/master", "success", "true", "true", False),
+            ("merge_group", "refs/heads/gh-readonly-queue/master/pr-1", "success", "true", "false", False),
             ("workflow_dispatch", "refs/heads/master", "success", "true", "false", True),
             ("workflow_dispatch", "refs/heads/master", "failure", "", "", True),
             ("workflow_dispatch", "refs/heads/feature", "success", "true", "false", True),
@@ -322,21 +334,41 @@ class ContractTests(unittest.TestCase):
                 "needs.changes.outputs.eif": eif, "needs.changes.outputs.pcr_approvals": approvals,
                 "NOT_CANCELLED": not cancelled,
             }
+            # The diff the planner classifies: an EIF input, an approval edit (itself an EIF input), or neither.
+            paths = (["services/opensecret/src/main.rs"] if eif == "true" else []) + (
+                ["services/opensecret/pcrDev.json"] if approvals == "true" else [])
+            planned = "os-eif" in self.plan(event, head, paths)
+            # The job's own condition holds the event and fork boundary even if the planner erred.
+            self.assertEqual(evaluate(candidate, {"fromJSON(needs.plan.outputs.lanes)['os-eif']": True, **context}),
+                             event == "pull_request" and same_repo, (case, head))
             selected = []
-            for job_id, expression in expressions.items():
-                for key, value in context.items():
-                    expression = expression.replace(key, repr(value))
-                if eval(expression, {"__builtins__": {}}, {}):  # noqa: S307 - fixed workflow text
-                    selected.append(job_id)
+            if result == "success" and not cancelled and evaluate(candidate, {
+                    "fromJSON(needs.plan.outputs.lanes)['os-eif']": planned, **context}):
+                selected.append("os-eif")
+            selected += [job for job, text in approval.items() if evaluate(text, context)]
             trusted = ((event == "pull_request" and same_repo)
                        or (event in ("push", "workflow_dispatch") and ref == "refs/heads/master"))
             wanted = []
             if (not cancelled and event == "pull_request" and same_repo and result == "success"
                     and eif == "true" and approvals == "false"):
-                wanted.append("eif-candidate")
+                wanted.append("os-eif")
             if expected and not cancelled:
                 wanted.append("eif-trusted" if trusted else "eif")
             self.assertEqual(selected, wanted, (case, head, cancelled))
+
+    @staticmethod
+    def plan(event: str, head, paths: list) -> dict:
+        """ci.yml's plan job for this event, head repository and diff."""
+        payload = {"pull_request": {"number": 1, "base": {"sha": "a" * 40}, "head": {
+            "sha": "b" * 40, "repo": None if head is None else {"full_name": head}}},
+                   "merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}, "before": "a" * 40, "after": "b" * 40}
+        with mock.patch.object(plan, "changed_paths", return_value=paths), \
+                mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "MaplePrivacyLabs/Maple"}), \
+                mock.patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": ""}):
+            try:
+                return plan.plan_event(event, payload)
+            except ValueError:  # an event ci.yml does not run on
+                return {}
 
     def test_c5_oidc_and_flakehub_stay_in_their_jobs_on_one_builder_class(self):
         minted = {(name, job_id) for name, job_id, job in jobs()
@@ -346,8 +378,9 @@ class ContractTests(unittest.TestCase):
         flakehub = {(name, job_id) for name, job_id, job in jobs() for step in job.get("steps", [])
                     if "flakehub-cache-action@" in step.get("uses", "")}
         self.assertEqual(flakehub, FLAKEHUB_JOBS)
-        for name, job_id in flakehub:
+        for name, job_id in flakehub:  # every EIF builder, on the release builder's runner class
             self.assertEqual(workflows()[name]["jobs"][job_id]["runs-on"], builder, job_id)
+        self.assertEqual(next(lane for lane in plan.LANES if lane.id == "os-eif").runner.label, builder)
 
     def test_c5_eif_release_is_manual_reviewed_and_never_tags(self):
         config = workflows()["opensecret-eif-release.yml"]

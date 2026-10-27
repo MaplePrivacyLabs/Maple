@@ -132,8 +132,8 @@ Load `$validate-opensecret` and run the tiers reached by the diff. Report local,
 database, provider, client, build/artifact, and live evidence separately.
 
 Local artifact builds and read-only PCR comparison are validation when in
-scope. Root backend CI validates Rust, Nix checks/default binary, and SDK
-compatibility. A separate ARM64 workflow compares dev/prod EIF
+scope. Root backend CI validates Rust, Nix checks, and SDK compatibility; the
+nightly workflow builds the default binary. A separate ARM64 workflow compares dev/prod EIF
 measurements on explicit approved-PCR JSON edits in PRs, relevant master
 changes, and manual runs. Do not require ordinary backend PRs to update
 approvals, and do not suppress meaningful master mismatches. Master push/manual
