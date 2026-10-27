@@ -3828,10 +3828,22 @@ verify_linux_appimage_executable_metadata() {
   return "${status}"
 }
 
+verify_linux_rpm_package_dependencies() {
+  local package="$1"
+  local requires
+
+  requires="$(rpm -qp --requires "${package}")" || return 1
+  if ! grep -Fxq 'webkit2gtk4.1' <<< "${requires}"; then
+    echo "RPM is missing the required webkit2gtk4.1 dependency: ${package}" >&2
+    return 1
+  fi
+}
+
 verify_linux_rpm_package_executable_metadata() {
   local rpm="$1"
   local tmp status
 
+  verify_linux_rpm_package_dependencies "${rpm}" || return 1
   tmp="$(mktemp -d)"
   status=0
   (

@@ -276,6 +276,11 @@ macOS 13.4 and iOS 16.0.
 Research Linux packaging builds AppImage and DEB with Tauri, then the RPM from
 the normalized DEB payload. `scripts/ci/sccache-stats.sh` reports compiler-cache
 statistics with the build's own cache configuration.
+The RPM builder preserves explicit `bundle.linux.rpm.depends` from the Tauri
+configuration. WebKitGTK (`webkit2gtk4.1`) is required on Fedora, including KDE;
+package verification rejects RPMs missing that requirement. Install a downloaded
+RPM through Discover or `sudo dnf install ./Maple-<version>-1.x86_64.rpm` so the
+package manager resolves dependencies, rather than using `rpm --nodeps`.
 
 For a side-by-side hosted Dev installation, use
 `nix run --no-update-lock-file .#research-dev-desktop`, not an ordinary Research
