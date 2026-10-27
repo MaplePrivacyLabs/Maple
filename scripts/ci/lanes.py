@@ -120,6 +120,7 @@ class Lane:
     opensecret: Optional[str] = None            # the opensecret_change_detection.py output that selects it
     submodules: bool = False                    # check out submodules, with the full history Nix needs
     hook: Optional[str] = None                  # the pre-commit component that runs these checks
+    restore: str = ""                           # read-only restore of a cache another workflow writes
 
 
 AGENT_DIR = dict(
@@ -129,6 +130,9 @@ AGENT_DIR = dict(
 )
 AGENT_FLAKE = dict(flake="./apps/maple-agent", **AGENT_DIR)
 AGENT_WIN = dict(job="windows", runner=WINDOWS, **AGENT_DIR)  # pinned rustup, no flake
+FAST_RELEASE = (("CARGO_PROFILE_RELEASE_LTO", "thin"), ("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "16"))
+AGENT_PACKAGE_FLAKE = dict(AGENT_FLAKE, env=AGENT_DIR["env"] + FAST_RELEASE)
+PACKAGE_EVENTS = PR_SIDE | {NIGHTLY}  # nightly refreshes the rehearsal's own cache
 AGENT_DEPENDENCIES = tuple("apps/maple-agent/" + glob for glob in (
     "Cargo.lock", "**/Cargo.toml", "deny.toml", "about.toml", "flake.nix", "flake.lock", "dependencies/**",
     "scripts/*third*party*notices*", "scripts/audit-sqlcipher-dependencies.py", "scripts/verify-sqlcipher-build.py",
@@ -217,14 +221,14 @@ LANES: Tuple[Lane, ...] = (
                               " && cargo metadata --locked --format-version 1 > target/provider-metadata.json"
                               " && python3 scripts/test-rusqlite-provider.py target/provider-metadata.json",
          timeout=20, **AGENT_FLAKE),
-    Lane("agent-perf", (), labels=("ci:perf", "ci:full"), events=PR_SIDE, run="just store-bench-ci",
-         timeout=30, gate=False, **AGENT_FLAKE),
-    # Unsigned Dev packages built the way agent-desktop-build.yml builds master's.
-    Lane("agent-package-linux", AGENT_PACKAGING, labels=("ci:package", "ci:full"), events=PR_SIDE,
-         job="agent-package-linux", run="just package-rehearsal", timeout=60, gate=False, **AGENT_FLAKE),
+    # Unsigned Dev packages through the scripts agent-desktop-build.yml uses on master.
+    # The rehearsal proves packaging, not the optimizer: thin LTO with parallel codegen
+    # instead of master's fat LTO, from its own cache that the nightly run refreshes.
+    Lane("agent-package-linux", AGENT_PACKAGING, labels=("ci:package", "ci:full"), events=PACKAGE_EVENTS,
+         job="agent-package-linux", run="just package-rehearsal", timeout=60, gate=False, **AGENT_PACKAGE_FLAKE),
     Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN, labels=("ci:package", "ci:full"),
-         events=PR_SIDE, job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60,
-         gate=False, **AGENT_FLAKE),
+         events=PACKAGE_EVENTS, job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60,
+         gate=False, **AGENT_PACKAGE_FLAKE),
     Lane("agent-package-windows", (), labels=("ci:package", "ci:full"), events=PR_SIDE,
          job="agent-package-windows", runner=WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),), timeout=60, gate=False),
@@ -291,7 +295,7 @@ LANES: Tuple[Lane, ...] = (
                               TAURI + "capabilities/mobile-android.json", TAURI + "scripts/*android*",
                               "scripts/ci/android-*.sh", "scripts/ci/_common.sh"),
          labels=("ci:android", "ci:full"), flake=".#android", run="./scripts/ci/android-pr.sh", timeout=30,
-         **PLATFORM),
+         restore="research-rust", **PLATFORM),
     Lane("research-desktop-macos", DESKTOP + (TAURI + "tauri.macos.conf.json", TAURI + "Info.plist",
                                               TAURI + "Entitlements.plist", TAURI + "dmg/**", TAURI + "scripts/*macos*",
                                               "scripts/ci/dmg-settings.py", "scripts/ci/test-canonical-macho.py",

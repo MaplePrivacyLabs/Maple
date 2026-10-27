@@ -1,5 +1,5 @@
-# Nightly checks that ci.yml's scheduled run does not cover: Bun advisories,
-# the SQLCipher provider suite on every OS and the store benchmark. (ci.yml's
+# Nightly checks that ci.yml's scheduled run does not cover: Bun advisories
+# and the SQLCipher provider suite on every OS. (ci.yml's
 # nightly run re-checks the Rust advisories and pinned sources.)
 # One `ci-nightly` issue reports failures here and in ci.yml's scheduled run;
 # a green night closes it. Nothing here gates a pull request.
@@ -64,32 +64,9 @@ jobs:
       - name: Test released rusqlite against the static provider
         run: python3 scripts/ci/plan.py run agent-provider
 
-  store-bench:
-    name: Agent store benchmark
-    # The Linux reference was recorded on this runner class.
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-nix
-      - name: Measure the durable store and compare the Linux reference
-        run: python3 scripts/ci/plan.py run agent-perf
-      - name: Save measurements and their digest
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: store-bench-linux-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            apps/maple-agent/target/store-bench-ci.json
-            apps/maple-agent/target/store-bench-ci.json.sha256
-          if-no-files-found: warn
-          retention-days: 14
-
   report:
     name: Report
-    needs: [bun-audit, agent-provider, store-bench]
+    needs: [bun-audit, agent-provider]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

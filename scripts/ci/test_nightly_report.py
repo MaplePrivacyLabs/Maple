@@ -15,7 +15,7 @@ GREEN = {"status": "completed", "conclusion": "success", "created_at": DAY + "T0
 
 class NightlyReportTests(unittest.TestCase):
     def test_failures_list_failed_jobs_and_a_red_stale_running_or_missing_scheduled_ci_run(self):
-        needs = {"store-bench": {"result": "success"}, "agent-provider": {"result": "failure"},
+        needs = {"agent-provider": {"result": "failure"},
                  "bun-audit": {"result": "cancelled"}}
         self.assertEqual(nightly_report.failures(needs, GREEN, DAY),
                          ["- `agent-provider`: failure", "- `bun-audit`: cancelled"])

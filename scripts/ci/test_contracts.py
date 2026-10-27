@@ -42,9 +42,12 @@ RESERVED_PREFIXES = (
     "maple-dev-xcode", "release-onnxruntime-ios-", "${{ runner.os }}-bun-", "${{ runner.os }}-gradle-",
 )
 ONNX_CACHE = "apps/maple-research/frontend/src-tauri/onnxruntime-ios"
-# The unsigned Agent builders that write the exact-key release cache; ci.yml's packaging lanes read it.
+# The unsigned Agent builders that write the exact-key release cache; ci.yml's Windows packaging lane reads it.
 AGENT_RELEASE_WRITERS = frozenset(("agent-desktop-build.yml", job) for job in ("macos-build", "windows-build", "linux"))
-AGENT_RELEASE_READERS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos", "windows"))
+AGENT_RELEASE_READERS = frozenset({("ci.yml", "agent-package-windows")})
+# The Linux and macOS packaging rehearsals build thin LTO into their own cache, saved
+# only by ci.yml's nightly master run.
+AGENT_PACKAGE_JOBS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos"))
 # Jobs that may mint an OIDC token: attestation, signing identity, FlakeHub, registries.
 OIDC_JOBS = frozenset({
     ("agent-desktop-build.yml", "macos"), ("agent-desktop-build.yml", "windows"),
@@ -256,7 +259,13 @@ class ContractTests(unittest.TestCase):
         saved = {(step["with"]["key"], step["with"].get("path", "").strip()) for name, _, step in cache_steps()
                  if cache_writer(step) and triggers(workflows()[name]) <= {"push", "workflow_dispatch"}}
         for name, job_id, step in cache_steps():
-            if name == "ci.yml":
+            if (name, job_id) in AGENT_PACKAGE_JOBS:
+                with self.subTest(job=job_id):
+                    if step["uses"].startswith("actions/cache/save@"):
+                        self.assertIn("refs/heads/master' && github.event_name == 'schedule'", step["if"])
+                    else:
+                        self.assertTrue(step["with"]["key"].startswith("ci-v1-agent-package-${{ runner.os }}-"))
+            elif name == "ci.yml":
                 with self.subTest(job=job_id):
                     self.assertTrue(step["uses"].startswith("actions/cache/restore@"))
                     if not step["with"]["key"].startswith("ci-v1-agent-release-"):  # the next test

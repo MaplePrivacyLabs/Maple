@@ -354,7 +354,6 @@ class AgentLaneTests(unittest.TestCase):
         self.assertFalse({"agent-package-windows"} & selected(["apps/maple-agent/scripts/build-release.sh"]))
         self.assertEqual(agent_lanes(selected(["docs/x.md"], labels=["ci:package"])),
                          AGENT_PACKAGE | {"agent-package-windows"})
-        self.assertEqual(selected(["docs/x.md"], labels=["ci:perf"]), {"agent-perf"})
 
     def test_full_suites_run_on_master_nightly_and_ci_full_only(self):
         full = {"agent-full-linux", "agent-full-macos", "agent-full-windows"}
@@ -362,7 +361,8 @@ class AgentLaneTests(unittest.TestCase):
         self.assertLessEqual(full, selected(["apps/maple-agent/app/src/main.rs"], PUSH))
         self.assertLessEqual(full, selected(["docs/x.md"], labels=["ci:full"]))
         self.assertLessEqual(full | {"agent-windows"}, active(NIGHTLY))
-        self.assertFalse(({"agent-perf", "agent-provider"} | AGENT_PACKAGE) & active(NIGHTLY))  # nightly.yml runs these
+        self.assertFalse({"agent-provider"} & active(NIGHTLY))  # nightly.yml runs it on three OSes
+        self.assertLessEqual(AGENT_PACKAGE, active(NIGHTLY))  # refreshes the rehearsal's own cache
         self.assertFalse(full & selected([".github/workflows/ci.yml"]))  # CI edits prove the gate lanes only
 
     def test_agent_desktop_selector_covers_the_signed_builds_inputs(self):

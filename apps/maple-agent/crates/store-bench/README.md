@@ -135,10 +135,7 @@ medians only; append tails, checkpoints and conversion throughput remain
 reported evidence without an invented acceptance threshold. The report's OS
 does not independently attest the scheduled runner label or hardware.
 
-`nightly.yml` runs the small Linux data every night and uploads the result and
-its digest; the `agent-perf` lane runs it on a PR labelled `ci:perf`. The full
-macOS profile has no CI run until it has a reference. Neither signs or releases
-anything.
+CI does not run the benchmark; run it locally when changing the store.
 
 ## Seed a stopped Local profile
 

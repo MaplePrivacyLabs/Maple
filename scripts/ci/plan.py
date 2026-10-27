@@ -223,6 +223,7 @@ def outputs(selected: Selection) -> Dict[str, str]:
             "workspaces": lane.workspaces,
             "submodules": "recursive" if lane.submodules else "false",
             "fetch_depth": 0 if lane.submodules else 1,
+            "restore": lane.restore,
         } for lane in LANES if lane.id in selected and lane.job == job]
     return {name: json.dumps(value, separators=(",", ":")) for name, value in result.items()}
 

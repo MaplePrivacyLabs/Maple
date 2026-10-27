@@ -88,6 +88,19 @@ jobs:
       - name: Select pinned Xcode
         if: runner.os == 'macOS'
         run: python3 scripts/ci/select-xcode.py
+      - name: Restore master's Research Rust cache (read-only)
+        if: matrix.restore == 'research-rust'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Exactly rust-tests.yml's key and paths; it is the only writer. Its Cargo git
+          # database spares the Goose and PDFOxide fetches Cargo makes for every target.
+          key: ci-v1-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
+          restore-keys: ci-v1-research-rust-
+          path: |
+            ~/.cache/sccache
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
       - name: Rust cache (restore everywhere, save only on master and on Blacksmith)
         if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -153,11 +166,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-nix
-      - name: Restore master's Agent release cache (read-only)
+      - name: Restore the packaging rehearsal cache
+        id: package-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          # Exactly agent-desktop-build.yml's builder key; it is the only writer.
-          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
+          key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          restore-keys: ci-v1-agent-package-${{ runner.os }}-
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
@@ -165,6 +180,16 @@ jobs:
             apps/maple-agent/target
       - name: Build, package, verify and smoke-test an unsigned Dev bundle
         run: python3 scripts/ci/plan.py run agent-package-linux
+      - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
+        if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          key: ${{ steps.package-cache.outputs.cache-primary-key }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
       - name: Upload the unsigned package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -186,11 +211,13 @@ jobs:
       - uses: ./.github/actions/setup-nix
       - name: Select pinned Xcode
         run: python3 scripts/ci/select-xcode.py
-      - name: Restore master's Agent release cache (read-only)
+      - name: Restore the packaging rehearsal cache
+        id: package-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          # Exactly agent-desktop-build.yml's builder key; it is the only writer.
-          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
+          key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          restore-keys: ci-v1-agent-package-${{ runner.os }}-
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
@@ -198,6 +225,16 @@ jobs:
             apps/maple-agent/target
       - name: Build, package and verify an unsigned Dev app
         run: python3 scripts/ci/plan.py run agent-package-macos
+      - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
+        if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          key: ${{ steps.package-cache.outputs.cache-primary-key }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/maple-agent/target
       - name: Upload the unsigned package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

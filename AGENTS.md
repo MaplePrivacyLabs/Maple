@@ -89,6 +89,8 @@ and installed-client raw URLs. Never change approvals to clear ordinary PR check
 - Never edit release or publisher workflows, signing environments, or OpenSecret
   approval gating to clear a check; a failing contract test means fix the change.
 - Run `just lane <id>` for the lanes your change selects before pushing.
+- Defaults cover ordinary PRs. Add a `ci:*` label when the change carries
+  platform or packaging risk its paths do not show ([labels](docs/ci.md#labels)).
 
 ## Maintaining this guidance
 

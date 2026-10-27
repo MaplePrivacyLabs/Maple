@@ -43,12 +43,21 @@ python3 scripts/ci/plan.py explain --base origin/master --head HEAD
 | --- | --- |
 | Pull request, merge queue | Selected lanes, including unsigned platform and package rehearsals when their native inputs change. A new push cancels the superseded run. |
 | Master push | The selected lanes again (for Agent inputs, also the full Agent suites on Linux, macOS and Windows), the signed builds, the release-evidence workflows and CodeQL. Never cancelled. |
-| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories included, which also refreshes their caches. `nightly.yml` runs the Bun advisories, the SQLCipher provider suite on every OS and the store benchmark. Failures open or update one `ci-nightly` issue; a green night closes it. |
+| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures open or update one `ci-nightly` issue; a green night closes it. |
 | On demand | PR labels (below), or a `ci.yml` dispatch with comma-separated lane ids or `all`. |
 
 ## Labels
 
-Add the label, then re-run the CI workflow: `plan` reads labels when it runs.
+Most PRs need no label: `plan` already adds a platform or packaging lane when
+its own files change. Add a label when a change could break something those
+paths do not reveal, for example:
+
+- `ci:windows` for path, filesystem, process or terminal code that behaves differently on Windows;
+- `ci:package` for changes to what ships in the bundle (assets, resources, notices, entitlements, updater metadata) outside the packaging scripts;
+- `ci:ios` or `ci:android` for Research changes that reach native mobile code or mobile-only plugins;
+- `ci:full` for toolchain, lockfile-wide or other risky cross-cutting changes before merge.
+
+Add the label, then re-run the CI workflow (or push): `plan` reads labels when it runs.
 
 | Label | Adds |
 | --- | --- |
@@ -57,7 +66,6 @@ Add the label, then re-run the CI workflow: `plan` reads labels when it runs.
 | `ci:windows` | Agent Windows tests and Clippy, and the Research Windows package |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build |
 | `ci:research-dev-macos` | The unsigned Research Dev app |
-| `ci:perf` | The Agent store benchmark |
 | `ci:eif` | The OpenSecret EIF candidate (same-repository PRs to `master` that edit no PCR approval) |
 
 ## Run a lane locally
