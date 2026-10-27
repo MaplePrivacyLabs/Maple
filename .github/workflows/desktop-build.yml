@@ -2,9 +2,6 @@ name: Desktop App CI
 
 permissions:
   contents: read
-  id-token: write
-  attestations: write
-  artifact-metadata: write
 
 on:
   push:
@@ -19,6 +16,12 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.macos != 'false') }}
     runs-on: blacksmith-6vcpu-macos-26
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
@@ -95,6 +98,12 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.linux != 'false') }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
@@ -176,6 +185,7 @@ jobs:
     needs:
       - build-linux
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -205,6 +215,7 @@ jobs:
     needs:
       - build-macos
     runs-on: macos-26
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -234,7 +245,13 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.windows != 'false') }}
     runs-on: windows-2025
+    timeout-minutes: 150
     environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
       MAPLE_WINDOWS_ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
       MAPLE_WINDOWS_ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
@@ -358,6 +375,7 @@ jobs:
     needs:
       - build-windows
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -389,6 +407,7 @@ jobs:
       - verify-macos-desktop-artifacts
       - verify-windows-desktop-artifacts
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Verify desktop artifact checks completed
         run: echo "Desktop artifact verification completed for Linux, macOS, and Windows."

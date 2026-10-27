@@ -16,11 +16,25 @@ concurrency:
   queue: max
 
 jobs:
-  build-ios-dev:
+  # Pushes build only when they change Research web or iOS inputs, as in
+  # mobile-build.yml; a manual dispatch always builds. Every run takes a run
+  # number, built or not, so build numbers keep increasing. `changes` also runs
+  # on dispatch so that no ancestor of the upload job is ever skipped.
+  changes:
     if: >-
       github.repository == 'MaplePrivacyLabs/Maple' &&
       github.ref == 'refs/heads/master' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/app-change-detection.yml
+
+  build-ios-dev:
+    needs: changes
+    if: >-
+      always() && !cancelled() &&
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' &&
+        (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.ios != 'false')))
     environment: apple-signing
     runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 240

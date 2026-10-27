@@ -647,27 +647,6 @@
         pathShellHook = packages: ''
           export PATH="${lib.makeBinPath packages}:$PATH"
         '';
-
-        mkNixApp =
-          name: shell: script:
-          (flake-utils.lib.mkApp {
-            drv = pkgs.writeShellApplication {
-              inherit name;
-              text = ''
-                # Reuse the Nix that invoked this app. Adding pkgs.nix here would
-                # silently replace a patched host Nix with the nixpkgs-locked version.
-                if ! command -v nix >/dev/null 2>&1; then
-                  echo "error: nix must be available on PATH" >&2
-                  exit 127
-                fi
-                exec nix develop --no-update-lock-file ".#${shell}" -c ${script} "$@"
-              '';
-            };
-          }) // {
-            meta.description = "Run ${script} through nix develop --no-update-lock-file .#${shell}";
-          };
-
-        desktopCiShell = if pkgs.stdenv.isLinux then "desktop-linux" else "ci";
       in
       {
         devShells = {
@@ -819,27 +798,6 @@
             bash ./scripts/ci/test-release-gates.sh
             touch "$out"
           '';
-        };
-
-        apps = {
-          ci-frontend = mkNixApp "maple-ci-frontend" "ci" "./scripts/ci/frontend.sh";
-          ci-rust = mkNixApp "maple-ci-rust" "ci" "./scripts/ci/rust.sh";
-          ci-desktop-pr = mkNixApp "maple-ci-desktop-pr" desktopCiShell "./scripts/ci/desktop-pr.sh";
-          ci-desktop-release = mkNixApp "maple-ci-desktop-release" desktopCiShell "./scripts/ci/desktop-release.sh";
-          ci-signed-desktop-release-rehearsal = mkNixApp "maple-ci-signed-desktop-release-rehearsal" desktopCiShell "./scripts/ci/signed-release-rehearsal.sh desktop";
-          ci-latest-json = mkNixApp "maple-ci-latest-json" "ci" "./scripts/ci/latest-json.sh";
-          ci-verify-release-artifacts = mkNixApp "maple-ci-verify-release-artifacts" "ci" "./scripts/ci/verify-release-artifacts.sh";
-        }
-        // lib.optionalAttrs pkgs.stdenv.isLinux {
-          ci-android-pr = mkNixApp "maple-ci-android-pr" "android" "./scripts/ci/android-pr.sh";
-          ci-android-release = mkNixApp "maple-ci-android-release" "android" "./scripts/ci/android-release.sh";
-          ci-signed-android-release-rehearsal = mkNixApp "maple-ci-signed-android-release-rehearsal" "android" "./scripts/ci/signed-release-rehearsal.sh android";
-        }
-        // lib.optionalAttrs pkgs.stdenv.isDarwin {
-          ci-ios-onnxruntime = mkNixApp "maple-ci-ios-onnxruntime" "apple" "./scripts/ci/ios-onnxruntime.sh";
-          ci-ios-pr = mkNixApp "maple-ci-ios-pr" "apple" "./scripts/ci/ios-pr.sh";
-          ci-ios-release = mkNixApp "maple-ci-ios-release" "apple" "./scripts/ci/ios-release.sh";
-          ci-signed-ios-release-rehearsal = mkNixApp "maple-ci-signed-ios-release-rehearsal" "apple" "./scripts/ci/signed-release-rehearsal.sh ios";
         };
       }
     );

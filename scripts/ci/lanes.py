@@ -7,6 +7,11 @@ segment, and a leading `!` excludes paths from the globs it is listed with.
 OpenSecret lanes have no globs: opensecret_change_detection.py, imported
 verbatim, selects them from each changed path that is not inert here
 (`opensecret` names its output).
+
+`hook` names the .githooks/pre-commit component that runs a lane's checks
+locally. The hook selects it from the lane's own paths only, without the CI
+fan-out (`also`, CI_INFRA); an OpenSecret lane's own paths are its selector's
+routes under services/opensecret/.
 """
 
 from __future__ import annotations
@@ -109,6 +114,7 @@ class Lane:
     gate: bool = True                           # selected by CI_INFRA edits
     opensecret: Optional[str] = None            # the opensecret_change_detection.py output that selects it
     submodules: bool = False                    # check out submodules, with the full history Nix needs
+    hook: Optional[str] = None                  # the pre-commit component that runs these checks
 
 
 AGENT_DIR = dict(
@@ -161,7 +167,8 @@ WINDOWS_DESKTOP = (TAURI + "tauri.windows.conf.json", TAURI + "resources/windows
 WINDOWS_LABELS = ("ci:windows", "ci:package", "ci:full")
 
 # The paths only OpenSecret lanes consume; plan.py counts them as classified.
-OPENSECRET = ("services/opensecret/**", "sdk/test/**", ".gitmodules",
+OPENSECRET_HOME = "services/opensecret/**"
+OPENSECRET = (OPENSECRET_HOME, "sdk/test/**", ".gitmodules",
               ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh")
 OPENSECRET_SHELL = "./services/opensecret?submodules=1#ci"
 OPENSECRET_ENV = (("OPENSECRET_DEV_POSTGRES", "0"), ("OPENSECRET_DEV_ENV", "0"), ("OPENSECRET_DEV_CONTAINERS", "0"),
@@ -172,9 +179,9 @@ EIF_BUILDER = Runner("blacksmith-8vcpu-ubuntu-2404-arm")
 LANES: Tuple[Lane, ...] = (
     Lane("agent-lint", AGENT, also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",),
          run="just ci-lint && python3 ../../scripts/ci/plan.py check-rust",
-         cache="agent-lint", timeout=15, **AGENT_FLAKE),
+         cache="agent-lint", timeout=15, hook="agent", **AGENT_FLAKE),
     Lane("agent-test", AGENT, also=RUST_SDK + PROXY_RUNTIME, runner=LINUX_HEAVY,
-         run="just ci-test", cache="agent-test", timeout=20, **AGENT_FLAKE),
+         run="just ci-test", cache="agent-test", timeout=20, hook="agent", **AGENT_FLAKE),
     Lane("agent-macos", AGENT,
          also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/select-xcode.py", "scripts/ci/apple-toolchain.json"),
          runner=MACOS, run="cargo clippy --workspace --all-targets --locked -- -D warnings",
@@ -222,20 +229,20 @@ LANES: Tuple[Lane, ...] = (
         ".agents/skills/release-maple/scripts/**", "services/agent-updates/publisher/**",
         "scripts/update-version.py", "apps/maple-research/zapstore.yaml", "proxy/Cargo.toml", "proxy/justfile",
         RESEARCH + "package.json", TAURI + "Cargo.toml", TAURI + "tauri.conf.json",
-    ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15),
+    ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15, hook="repo"),
 
     # The SDKs, proxy and container. build-sdk-publish.sh is the publishers' own builder.
     Lane("sdk-ts", SDK_TS + ("sdk/.prettierrc.json", "sdk/eslint.config.js", "sdk/justfile", "sdk/.env.example",
                              "sdk/LICENSE.md", "scripts/ci/build-sdk-publish.sh",
                              "scripts/ci/check-sdk-package-consumers.py"),
-         runner=GITHUB, run='./scripts/ci/build-sdk-publish.sh npm "$(mktemp -d)"'),
+         runner=GITHUB, run='./scripts/ci/build-sdk-publish.sh npm "$(mktemp -d)"', hook="sdk_ts"),
     Lane("sdk-rust", ("sdk/rust/**", "sdk/rust-toolchain.toml", "sdk/flake.*", "scripts/ci/build-sdk-publish.sh",
                       "scripts/ci/sdk_crates_upload.py"),
-         runner=GITHUB, flake=".#pages", run=SDK_CRATE),  # .#pages: a Python with tomllib
+         runner=GITHUB, flake=".#pages", run=SDK_CRATE, hook="sdk_rust"),  # .#pages: a Python with tomllib
     Lane("proxy", ("proxy/**", "!proxy/Dockerfile"), also=RUST_SDK, runner=GITHUB, flake="./proxy",
          workdir="proxy", run='just check && RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features'
                              " && cargo machete",
-         env=(("RUSTFLAGS", "-D warnings"),)),
+         env=(("RUSTFLAGS", "-D warnings"),), hook="proxy"),
     # PRs build the image only when its recipe changes; master builds both architectures.
     Lane("proxy-container", PROXY_CONTAINER, pr_paths=("proxy/Dockerfile", ".dockerignore"), runner=GITHUB,
          run="docker build --platform linux/amd64 -f proxy/Dockerfile .", timeout=20),
@@ -256,11 +263,11 @@ LANES: Tuple[Lane, ...] = (
     Lane("research-web", (RESEARCH + "**", "!" + TAURI + "**", "scripts/prepare-*.sh", "scripts/ci/frontend.sh",
                           "scripts/ci/web.sh", "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
          events=PR_SIDE, runner=GITHUB, flake=".#ci",
-         run="./scripts/ci/frontend.sh && MAPLE_WEB_ENVIRONMENT=pr ./scripts/ci/web.sh"),
+         run="./scripts/ci/frontend.sh && MAPLE_WEB_ENVIRONMENT=pr ./scripts/ci/web.sh", hook="research_frontend"),
     Lane("research-rust", (TAURI + "**", "!" + TAURI + "gen/**", "scripts/ci/rust.sh",
                            "scripts/ci/verify-local-rust-deps.sh", "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
          also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",), events=PR_SIDE,
-         job="research-rust", flake=".#ci", timeout=20,
+         job="research-rust", flake=".#ci", timeout=20, hook="research_rust",
          run="(cd apps/maple-research/frontend/src-tauri && cargo fmt --check)"
              " && ./scripts/ci/verify-local-rust-deps.sh && ./scripts/ci/rust.sh"),
     # Unsigned platform builds for PRs that touch native inputs, or by label;
@@ -303,15 +310,15 @@ LANES: Tuple[Lane, ...] = (
     # Services and the hosted Auth app. auth-pages-ci.yml builds Auth on master.
     Lane("auth", ("apps/maple-auth/**", "scripts/ci/auth-*.sh", "scripts/ci/pages_auth_build.py", "flake.nix",
                   "flake.lock"),
-         events=PR_SIDE, runner=GITHUB, flake=".#ci", run="./scripts/ci/auth-ci.sh"),
+         events=PR_SIDE, runner=GITHUB, flake=".#ci", run="./scripts/ci/auth-ci.sh", hook="auth"),
     Lane("updates", ("services/updates/**", "services/download-tracking/**", "scripts/ci/updates.sh",
                      "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
-         runner=GITHUB, flake=".#ci", run="./scripts/ci/updates.sh"),
+         runner=GITHUB, flake=".#ci", run="./scripts/ci/updates.sh", hook="updates"),
     Lane("agent-updates", ("services/agent-updates/**", "services/download-tracking/**", "scripts/ci/agent-updates.sh",
                            "scripts/ci/test_agent_updates_workflows.py", "apps/maple-agent/release-profiles.json",
                            "apps/maple-agent/scripts/release-info.py", "scripts/ci/_common.sh", "flake.nix",
                            "flake.lock"),
-         runner=GITHUB, flake=".#ci", run="./scripts/ci/agent-updates.sh"),
+         runner=GITHUB, flake=".#ci", run="./scripts/ci/agent-updates.sh", hook="agent_updates"),
 
     # OpenSecret, selected by its own selector (see the module docstring). The PR
     # EIF candidate builds only for same-repository PRs that edit no approval, on
@@ -321,12 +328,12 @@ LANES: Tuple[Lane, ...] = (
              " && cargo test --locked --all-features",
          cache="os-rust", workspaces="services/opensecret -> target", cache_files=tuple(
              "services/opensecret/" + name for name in ("Cargo.lock", "rust-toolchain.toml", "flake.lock")),
-         submodules=True, timeout=30, env=OPENSECRET_ENV),
+         submodules=True, timeout=30, env=OPENSECRET_ENV, hook="opensecret"),
     Lane("os-sdk-e2e", (), opensecret="integration", job="os-sdk-e2e", run="./scripts/ci/opensecret-sdk-e2e.sh",
          timeout=45),
     Lane("os-flake-check", (), opensecret="nix", runner=GITHUB, workdir="services/opensecret",
          run="nix flake check --no-update-lock-file --print-build-logs '.?submodules=1'", submodules=True,
-         timeout=30, env=OPENSECRET_ENV),
+         timeout=30, env=OPENSECRET_ENV, hook="opensecret"),  # the hook runs its entrypoint checks
     Lane("os-helpers", (), opensecret="helpers", job="os-helpers", runner=Runner("ubuntu-24.04-arm"),
          run="./scripts/ci/opensecret-helpers.sh", timeout=30),
     Lane("os-pcr", (), opensecret="pcr", runner=GITHUB, timeout=10,

@@ -1,9 +1,4 @@
-"""Invariants every GitHub Actions workflow keeps (docs/repository-workflows.md).
-
-TEMPORARY lists the violations that later commits in this change remove. Each
-list must equal the current violations exactly, so an entry is deleted as soon
-as its violation is fixed and no new violation can hide behind it.
-"""
+"""Invariants every GitHub Actions workflow keeps (docs/ci.md)."""
 
 from __future__ import annotations
 
@@ -61,23 +56,6 @@ ENVIRONMENTS = {
 }
 # Actions-cache writers; a key under these prefixes feeds release.yml's fallbacks.
 CACHE_WRITERS = ("actions/cache@", "actions/cache/save@", "irgaly/xcode-cache@", "Swatinem/rust-cache@")
-
-TEMPORARY = {
-    # Signed-lane hygiene adds the timeouts and moves OIDC to the attesting jobs.
-    "timeout": frozenset({
-        ("android-build.yml", "build-android"), ("android-build.yml", "verify-android-artifacts"),
-        ("app-change-detection.yml", "detect"),
-        *(("desktop-build.yml", job) for job in (
-            "build-macos", "build-linux", "verify-linux-desktop-artifacts", "verify-macos-desktop-artifacts",
-            "build-windows", "verify-windows-desktop-artifacts", "verify-desktop-artifacts")),
-        ("mobile-build.yml", "build-ios"), ("mobile-build.yml", "verify-ios-artifacts"),
-        ("mobile-build.yml", "submit-ios-testflight"),
-        *(("signing-credentials-check.yml", job) for job in (
-            "desktop-signing", "apple-signing", "android-signing", "windows-signing", "zapstore-publishing")),
-    }),
-    "permissions": frozenset({"desktop-build.yml", "android-build.yml"}),
-}
-
 
 @functools.lru_cache(maxsize=None)
 def load(path: Path) -> dict:
@@ -178,16 +156,15 @@ class WorkflowPolicyTests(unittest.TestCase):
                         self.assertIs(step.get("with", {}).get("persist-credentials"), False)
 
     def test_4_workflow_permissions_are_read_only(self):
-        broad = set()
+        # Write scopes are granted per job, to the jobs that need them.
         for name, config in workflows().items():
             granted = config.get("permissions")
             with self.subTest(workflow=name):
                 self.assertIsInstance(granted, dict)
                 if name in SACRED:
                     self.assertNotIn("write", granted.values())
-                elif granted != {"contents": "read"}:
-                    broad.add(name)
-        self.assertEqual(broad, TEMPORARY["permissions"])
+                else:
+                    self.assertEqual(granted, {"contents": "read"})
 
     def test_5_secrets_are_used_only_inside_their_protected_environment(self):
         for name, config in workflows().items():
@@ -229,7 +206,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_7_every_job_has_a_timeout(self):
         missing = {(name, job_id) for name, job_id, job in jobs()
                    if name not in SACRED and "uses" not in job and "timeout-minutes" not in job}
-        self.assertEqual(missing, TEMPORARY["timeout"])
+        self.assertEqual(missing, set())
 
     def test_8_ci_always_reports_one_verdict(self):
         config = workflows()["ci.yml"]

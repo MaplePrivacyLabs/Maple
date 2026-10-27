@@ -1,10 +1,12 @@
-"""Lane selection: the table, the planner's events, and the Agent selectors it replaced."""
+"""Lane selection: the table, the planner's events and the pre-commit hook."""
 
 import contextlib
 import io
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +26,7 @@ AGENT_PACKAGE = {"agent-package-linux", "agent-package-macos"}
 # What opensecret_change_detection.py's "all checks" selects in ci.yml.
 OPENSECRET_ALL = {"os-rust", "os-sdk-e2e", "os-flake-check", "os-helpers", "deps-opensecret", "os-eif"}
 SHA_A, SHA_B = "a" * 40, "b" * 40
+HOOK = list(dict.fromkeys(lane.hook for lane in lanes.LANES if lane.hook))
 
 
 def active(event):
@@ -39,12 +42,12 @@ def agent_lanes(lanes_):
 
 
 def agent(paths, event=PR):
-    """The decision agent_change_detection.py made: does any Agent check run?"""
+    """Does any Agent check run?"""
     return bool(agent_lanes(selected(paths, event)))
 
 
-class PortedAgentSelectorTests(unittest.TestCase):
-    """Every case of test_agent_change_detection.py, as an Agent lane decision."""
+class AgentSelectionTests(unittest.TestCase):
+    """Which changes run Agent checks."""
 
     def test_agent_runtime_build_and_asset_inputs_select_agent(self):
         for path in (
@@ -191,8 +194,120 @@ class LaneTableTests(unittest.TestCase):
         self.assertIn("unclassified: newroot/x", plan.lint_problems(["newroot/x"]))
 
 
+class HookTests(unittest.TestCase):
+    """The pre-commit hook's components: a path selects those of the lanes that own it."""
+
+    def assert_selects(self, paths, *names):
+        self.assertEqual(plan.hook_components(paths), [n for n in HOOK if n in names])
+
+    def test_every_component_has_a_branch_in_the_hook(self):
+        hook = (Path(plan.ROOT) / ".githooks/pre-commit").read_text()
+        self.assertEqual(set(re.findall(r"hook_selected (\w+)", hook)), set(HOOK))
+
+    def test_documentation_and_component_hooks_select_nothing(self):
+        for path in (
+            "README.md", "AGENTS.md", "docs/sdk-publishing.md", ".agents/skills/develop-maple/SKILL.md",
+            "apps/maple-research/AGENTS.md", "apps/maple-research/.githooks/pre-commit",
+            "apps/maple-auth/AGENTS.md", "apps/maple-auth/.githooks/pre-commit", "apps/maple-agent/AGENTS.md",
+            "apps/maple-agent/.githooks/pre-commit", "sdk/README.md", "sdk/.githooks/pre-commit", "proxy/README.md",
+            "proxy/.githooks/pre-commit", "services/opensecret/AGENTS.md", "services/opensecret/.githooks/pre-commit",
+            "services/updates/.githooks/pre-commit", "services/agent-updates/.githooks/pre-commit",
+            "services/opensecret/docs/nitro-deploy.md", "services/opensecret/pcrProd.json",
+            "sdk/test/integration/bootstrap.sql", "apps/maple-research/deny.toml",
+        ):
+            with self.subTest(path=path):
+                self.assert_selects([path])
+
+    def test_component_inputs(self):
+        for paths, names in (
+            (["apps/maple-research/frontend/src/App.tsx"], ("research_frontend",)),
+            (["apps/maple-research/frontend/src-tauri/src/lib.rs"], ("research_rust",)),
+            (["apps/maple-research/frontend/src-tauri/Cargo.lock"], ("research_rust",)),
+            (["apps/maple-research/frontend/src/App.tsx", "apps/maple-research/frontend/src-tauri/src/lib.rs"],
+             ("research_frontend", "research_rust")),
+            (["apps/maple-auth/src/main.tsx"], ("auth",)), (["apps/maple-auth/bun.lock"], ("auth",)),
+            (["apps/maple-auth/src/main.tsx", "apps/maple-research/frontend/src/App.tsx"],
+             ("auth", "research_frontend")),
+            (["apps/maple-agent/crates/maple-agent/src/agent.rs"], ("agent",)),
+            (["apps/maple-agent/Cargo.lock"], ("agent",)), (["apps/maple-agent/flake.nix"], ("agent",)),
+            (["apps/maple-agent/scripts/release-info.py"], ("agent", "agent_updates")),
+            (["apps/maple-agent/release-profiles.json"], ("agent", "agent_updates")),
+            (["sdk/rust/src/client.rs"], ("sdk_rust",)), (["sdk/rust/tests/crypto.rs"], ("sdk_rust",)),
+            (["sdk/src/lib/main.tsx"], ("sdk_ts",)), (["sdk/src/lib/test/models.test.ts"], ("sdk_ts",)),
+            (["sdk/package.json"], ("sdk_ts",)), (["sdk/flake.lock"], ("sdk_ts", "sdk_rust")),
+            (["proxy/src/main.rs"], ("proxy",)),
+            (["services/opensecret/src/main.rs"], ("opensecret",)),
+            (["services/opensecret/migrations/0001/up.sql"], ("opensecret",)),
+            (["services/opensecret/entrypoint.sh"], ("opensecret",)),
+            (["services/opensecret/tests/entrypoint_entropy_preflight.sh"], ("opensecret",)),
+            (["services/updates/src/index.ts"], ("updates",)),
+            (["services/agent-updates/src/worker.ts"], ("agent_updates",)),
+            (["services/agent-updates/bun.lock"], ("agent_updates",)),
+            (["services/agent-updates/wrangler.jsonc"], ("agent_updates",)),
+            (["services/agent-updates/publisher/publisher.py"], ("agent_updates", "repo")),
+            (["services/download-tracking/tracking.ts"], ("updates", "agent_updates")),
+            ([".github/workflows/desktop-build.yml"], ("repo",)), (["scripts/ci/change_detection.py"], ("repo",)),
+            ([".github/workflows/ci.yml"], ("repo",)), (["scripts/ci/lanes.py"], ("repo",)),
+        ):
+            with self.subTest(paths=paths):
+                self.assert_selects(paths, *names)
+
+    def test_shared_crates_do_not_fan_out_to_their_consumers(self):
+        self.assert_selects(["proxy/src/proxy.rs", "sdk/rust/src/client.rs"], "proxy", "sdk_rust")
+        self.assert_selects(["proxy/src/proxy.rs", "apps/maple-agent/Cargo.toml"], "proxy", "agent")
+        # The OpenSecret selector's routes outside its own directory are CI fan-out too.
+        self.assert_selects(["scripts/ci/opensecret_change_detection.py"], "repo")
+
+    def test_shared_inputs_select_every_lane_that_owns_them(self):
+        # Where the former selector chose one component, the table's owners all run.
+        for paths, names in (
+            ([".githooks/pre-commit"], ("repo",)), (["setup-hooks.sh"], ("repo",)), (["justfile"], ("repo",)),
+            (["scripts/prepare-frontend-deps.sh"], ("research_frontend",)),
+            (["proxy/Cargo.toml"], ("proxy", "repo")), (["proxy/deny.toml"], ("proxy",)),
+            (["apps/maple-research/frontend/package.json"], ("research_frontend", "repo")),
+            (["flake.nix"], ("repo", "research_frontend", "research_rust", "auth", "updates", "agent_updates")),
+            (["services/opensecret/nix/eif.nix"], ("opensecret",)),
+        ):
+            with self.subTest(paths=paths):
+                self.assert_selects(paths, *names)
+
+    def test_unknown_roots_select_every_component(self):
+        for path in ("newservice/main.rs", "../x"):
+            with self.subTest(path=path):
+                self.assert_selects([path], *HOOK)
+
+    def test_the_hook_runs_the_selected_component_in_its_flake(self):
+        source = Path(plan.ROOT)
+        for use_nix in (True, False):
+            with self.subTest(nix=use_nix), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "repository with spaces"
+                for relative in (".githooks/pre-commit", ".githooks/lib/common.sh", "scripts/ci/plan.py",
+                                 "scripts/ci/lanes.py", "scripts/ci/opensecret_change_detection.py"):
+                    (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source / relative, root / relative)
+                (root / "scripts/ci/agent-updates.sh").write_text(
+                    '#!/usr/bin/env bash\nset -euo pipefail\nselected=("$MAPLE_HOOK_SELECTED")\n'
+                    'printf "%s\\n%s\\n%s\\n" "${selected[0]}" "$PWD" "$MAPLE_HOOK_IN_NIX" > hook-result\n')
+                nix = root / "tools/nix"
+                nix.parent.mkdir()
+                nix.write_text('#!/bin/sh\n[ "$1" = develop ] && [ "$2" = --no-update-lock-file ] '
+                               '&& [ "$3" = ".#ci" ] && [ "$4" = -c ] || exit 70\nshift 4\nexec "$@"\n')
+                nix.chmod(0o755)
+                changed = root / "services/agent-updates/src/worker.ts"
+                changed.parent.mkdir(parents=True)
+                changed.write_text("export default {};\n")
+                env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "MAPLE_HOOK_"))}
+                env.update(PATH=f"{nix.parent}{os.pathsep}{env['PATH']}", MAPLE_HOOK_NO_NIX="0" if use_nix else "1")
+                for command in (["git", "init", "-q"], ["git", "add", str(changed)], ["sh", ".githooks/pre-commit"]):
+                    subprocess.run(command, cwd=root, env=env, check=True, capture_output=True)
+                component, directory, in_nix = (root / "hook-result").read_text().splitlines()
+                self.assertEqual(component.strip(), "agent_updates")
+                self.assertEqual(Path(directory).resolve(), root.resolve())
+                self.assertEqual(in_nix, "1" if use_nix else "0")
+
+
 class AgentLaneTests(unittest.TestCase):
-    """The lanes that replaced agent-ci.yml, the supply-chain and store workflows, and PR packaging."""
+    """Agent supply-chain, full-suite, benchmark and packaging lanes."""
 
     def test_dependency_inputs_select_supply_chain_and_the_provider_suite(self):
         both = {"agent-supply-chain", "agent-provider"}

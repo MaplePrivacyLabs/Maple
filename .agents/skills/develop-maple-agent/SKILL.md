@@ -33,9 +33,9 @@ just ci
 and warning-denied workspace builds/tests. Use `just release` for optimized
 build and performance evidence. Root `just agent-check`, `agent-build`, and
 `agent-dev` enter this component environment. The repository pre-commit hook
-runs `cargo fmt`, one workspace Clippy pass, and the workspace tests in this
-shell when Agent files are staged; set `MAPLE_HOOK_FULL=1` for the complete
-`just ci`. Root `nix flake check
+runs `just ci-lint` and `just ci-test` (the `agent-lint` and `agent-test` CI
+lanes) in this shell when Agent files are staged; `MAPLE_HOOK_FULL=1` adds
+`just ci-extra`, the rest of `just ci`. Root `nix flake check
 --no-update-lock-file` additionally validates workflow selection and security
 contracts when CI, Nix, or routing changes.
 

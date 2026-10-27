@@ -6,6 +6,7 @@
   only NAME    another workflow's push selector: print selected=true|false
   opensecret   opensecret-eif.yml's changes job: the OpenSecret selector's outputs
   explain      show what changed paths select (stdin, or --base/--head)
+  hook         .githooks/pre-commit: the components whose checks the staged paths select
   check-rust   the Agent flake's rustc must equal the Windows rustup pin
   lint         the table classifies every tracked file and matches ci.yml
 """
@@ -27,7 +28,7 @@ import sys
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from lanes import (AGENT_WINDOWS_RUST, CI_INFRA, DISPATCH, INERT, LANES, MATRIX_JOBS, NIGHTLY, NOT_YET_TRACKED,
-                   OPENSECRET, PR, PR_EVENTS, PUSH, QUEUE, SELECTORS, Lane)
+                   OPENSECRET, OPENSECRET_HOME, PR, PR_EVENTS, PUSH, QUEUE, SELECTORS, Lane)
 
 ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
@@ -111,6 +112,23 @@ def select(event: str, paths: Iterable[str], labels: Sequence[str] = ()) -> Sele
     if approvals:  # opensecret-eif.yml compares the edited approvals instead
         chosen.pop("os-eif", None)
     return chosen
+
+
+def hook_components(paths: Iterable[str]) -> List[str]:
+    """The pre-commit components for staged paths: a lane's own paths select its
+    `hook`, without CI's fan-out. An unclassified path selects every component."""
+    components = list(dict.fromkeys(lane.hook for lane in LANES if lane.hook))
+    chosen = set()
+    for path in paths:
+        if inert(path):
+            continue
+        if not classified(path):
+            chosen.update(components)
+            continue
+        checks = opensecret_checks(path) if matches(path, (OPENSECRET_HOME,)) else frozenset()
+        chosen.update(lane.hook for lane in LANES
+                      if lane.hook and (lane.opensecret in checks or matches(path, lane.paths)))
+    return [name for name in components if name in chosen]
 
 
 def git(*args: str) -> str:
@@ -243,8 +261,7 @@ def explain(event: str, base: Optional[str], head: Optional[str]) -> int:
             print(f"no usable diff for {base}..{head}")
             return 1
     else:
-        data = sys.stdin.read()
-        paths = [p for p in re.split("\0" if "\0" in data else "\n", data) if p.strip()]
+        paths = stdin_paths()
     selected = select(event, paths)
     print(f"{event}: {len(paths)} changed paths")
     for lane in LANES:
@@ -257,6 +274,19 @@ def explain(event: str, base: Optional[str], head: Optional[str]) -> int:
         print("  unclassified, so every lane runs: " + ", ".join(unknown))
     if not selected:
         print("  no ci.yml lane")
+    return 0
+
+
+def stdin_paths() -> List[str]:
+    data = sys.stdin.read()
+    return [p for p in re.split("\0" if "\0" in data else "\n", data) if p.strip()]
+
+
+def hook(staged: bool) -> int:
+    # Inherits the hook's Git environment, so this reads the index being committed.
+    paths = (git("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR").split("\0") if staged
+             else stdin_paths())
+    sys.stdout.writelines(f"{name}\n" for name in hook_components(p for p in paths if p))
     return 0
 
 
@@ -382,6 +412,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     explain_parser.add_argument("--event", default=PR, choices=(PR, QUEUE, PUSH))
     explain_parser.add_argument("--base")
     explain_parser.add_argument("--head")
+    modes.add_parser("hook").add_argument("--staged", action="store_true", help="read the index, not stdin")
     modes.add_parser("check-rust")
     modes.add_parser("lint")
     args = parser.parse_args(argv)
@@ -395,6 +426,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return opensecret()
     if args.mode == "explain":
         return explain(args.event, args.base, args.head)
+    if args.mode == "hook":
+        return hook(args.staged)
     if args.mode == "check-rust":
         return check_rust()
     files = tracked_files()

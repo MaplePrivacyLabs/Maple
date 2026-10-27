@@ -90,15 +90,6 @@ CONSUMERS = {
 }
 DOCS = ("docs/**", "*/docs/**", "*/*/docs/**", ".agents/**", "**/README.md", "**/AGENTS.md", "**/CLAUDE.md")
 
-TEMPORARY = {
-    # Signed-lane hygiene: CodeQL runs on every master push, never cancelled.
-    "evidence": frozenset({"codeql.yml"}),
-    # Signed-lane hygiene moves id-token from the workflow level to the attesting jobs.
-    "oidc": frozenset({("android-build.yml", "changes"), ("desktop-build.yml", "changes"),
-                       ("desktop-build.yml", "verify-desktop-artifacts")}),
-}
-
-
 def condition(job: dict) -> str:
     return " ".join(str(job.get("if", "")).split())
 
@@ -216,19 +207,18 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(proof["build"], "77")  # run_number is the Agent build number
 
     def test_c3_release_preflight_finds_its_evidence_jobs_on_master_pushes(self):
-        broken = set()
         for name, required in ci_evidence.WORKFLOWS.items():
             config = workflows().get(name)
-            self.assertIsNotNone(config, name)
-            push = config["on"].get("push") if isinstance(config["on"], dict) else None
-            names = {job.get("name", job_id) for job_id, job in config["jobs"].items()}
-            found = set(required) <= names if required else any(n.startswith("Analyze (") for n in names)
-            self.assertTrue(found, name)
-            if (not isinstance(push, dict) or "master" not in push.get("branches", ["master"])
-                    or cancels(config.get("concurrency"))
-                    or any(cancels(job.get("concurrency")) for job in config["jobs"].values())):
-                broken.add(name)
-        self.assertEqual(broken, TEMPORARY["evidence"])
+            with self.subTest(workflow=name):
+                self.assertIsNotNone(config)
+                push = config["on"].get("push") if isinstance(config["on"], dict) else None
+                names = {job.get("name", job_id) for job_id, job in config["jobs"].items()}
+                found = set(required) <= names if required else any(n.startswith("Analyze (") for n in names)
+                self.assertTrue(found)
+                self.assertIsInstance(push, dict)
+                self.assertIn("master", push.get("branches", ["master"]))
+                self.assertFalse(cancels(config.get("concurrency")))
+                self.assertFalse(any(cancels(job.get("concurrency")) for job in config["jobs"].values()))
 
     def test_c4_signed_lanes_own_the_release_cache_keys(self):
         steps = list(cache_steps())
@@ -373,7 +363,7 @@ class ContractTests(unittest.TestCase):
     def test_c5_oidc_and_flakehub_stay_in_their_jobs_on_one_builder_class(self):
         minted = {(name, job_id) for name, job_id, job in jobs()
                   if permissions(workflows()[name], job).get("id-token") == "write"}
-        self.assertEqual(minted - OIDC_JOBS, TEMPORARY["oidc"])
+        self.assertEqual(minted, OIDC_JOBS)
         builder = workflows()["opensecret-eif-release.yml"]["jobs"]["build"]["runs-on"]
         flakehub = {(name, job_id) for name, job_id, job in jobs() for step in job.get("steps", [])
                     if "flakehub-cache-action@" in step.get("uses", "")}
