@@ -6834,6 +6834,7 @@ impl ChatScreen {
             .when(expansion > 0.95, |column| {
                 column.child(
                     widgets::ghost_button("send-feedback")
+                        .aria_label("Send feedback")
                         .debug_selector(|| "send-feedback".to_string())
                         .absolute()
                         .bottom_2()

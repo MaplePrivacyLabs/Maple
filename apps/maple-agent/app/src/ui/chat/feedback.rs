@@ -154,6 +154,7 @@ impl ChatScreen {
         {
             categories = categories.child(
                 widgets::secondary_button(value)
+                    .aria_label(label)
                     .track_focus(&form.controls[index + 1])
                     .text_sm()
                     .py_1()
@@ -206,11 +207,11 @@ impl ChatScreen {
                 .child(div().text_xs().text_color(gpui::rgb(theme::text_secondary())).child("Sent anonymously with app version, platform and build profile. No account or chat history is attached. Please avoid sharing sensitive information."))
                 .when_some(form.error.clone(), |card, error| card.child(widgets::banner(theme::status_error()).child(error)))
                 .child(div().flex().justify_end().gap_2()
-                    .child(widgets::secondary_button("feedback-cancel").track_focus(&form.controls[4]).child("Cancel")
+                    .child(widgets::secondary_button("feedback-cancel").aria_label("Cancel feedback").track_focus(&form.controls[4]).child("Cancel")
                         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { this.close_feedback(cx); cx.stop_propagation(); } }))
                         .when(busy, |b| b.opacity(0.5))
                         .on_click(cx.listener(|this, _, _, cx| this.close_feedback(cx))))
-                    .child(widgets::primary_button("feedback-submit").debug_selector(|| "feedback-submit".into()).track_focus(&form.controls[5])
+                    .child(widgets::primary_button("feedback-submit").aria_label("Send feedback").debug_selector(|| "feedback-submit".into()).track_focus(&form.controls[5])
                         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { this.submit_feedback(cx); cx.stop_propagation(); } }))
                         .when(busy, |b| b.opacity(0.5)).child(if busy { "Sending…" } else { "Send feedback" })
                         .on_click(cx.listener(|this, _, _, cx| this.submit_feedback(cx)))))
