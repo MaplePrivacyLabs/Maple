@@ -158,6 +158,8 @@ class WindowsUpdaterLaneTests(unittest.TestCase):
         self.assertIn("A required native Windows test group is missing", source)
         self.assertIn("without skipped tests", source)
         for case in (
+            "native_shared_read_validation_accepts_mapped_image_and_mutation_guard",
+            "native_mapped_private_image_reports_append_and_generic_write_admission",
             "native_nsis_inherited_read_acl_accepts_files_but_rejects_directories",
             "native_foreign_file_mutation_rights_remain_rejected",
             "native_python_owner_rights_acl_accepts_files_and_directories",
@@ -165,6 +167,16 @@ class WindowsUpdaterLaneTests(unittest.TestCase):
             "native_owner_rights_acl_still_rejects_foreign_writers",
         ):
             self.assertIn("installer::windows_bundle::windows_fs::tests::" + case, source)
+        self.assertIn(
+            "installer::windows_bundle::manual_activation_tests::"
+            "native_manual_pointer_republication_with_generation_guards_preserves_payloads",
+            source,
+        )
+        self.assertIn(
+            "installer::windows_bundle::manual_activation_tests::"
+            "native_same_current_manual_activation_is_read_only_with_a_mapped_image",
+            source,
+        )
         for field in (
             "official_maple_signature_qualified", "signed_installed_a_to_b_qualified",
             "visible_gui_upgrade_qualified", "paired_remote_upgrade_qualified",

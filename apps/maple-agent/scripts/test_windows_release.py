@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Windows package identity, extraction and signing-boundary regressions."""
 
+import ast
+import ctypes
 import hashlib
 import gzip
 import importlib.util
@@ -14,7 +16,7 @@ import tarfile
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 
@@ -557,11 +559,154 @@ class PackageBoundaryTests(unittest.TestCase):
         self.assertEqual(remaining, [])
 
 
+class PointerPinTests(unittest.TestCase):
+    def kernel(self, handle=123):
+        return types.SimpleNamespace(CreateFileW=Mock(return_value=handle), CloseHandle=Mock(return_value=1))
+
+    def test_pin_requests_explicit_read_sharing_and_closes_after_its_body(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "current.json"
+            path.write_bytes(b"fixed pointer fixture")
+            kernel = self.kernel()
+            with patch.object(ctypes, "WinDLL", return_value=kernel, create=True) as library:
+                with release.pin_current_pointer(path):
+                    library.assert_called_once_with("kernel32", use_last_error=True)
+                    kernel.CreateFileW.assert_called_once_with(str(path), 0x80000000, 1, None, 3, 0, None)
+                    self.assertEqual(len(kernel.CreateFileW.argtypes), 7)
+                    self.assertIsNotNone(kernel.CreateFileW.restype)
+                    self.assertEqual(path.read_bytes(), b"fixed pointer fixture")
+                    kernel.CloseHandle.assert_not_called()
+                kernel.CloseHandle.assert_called_once_with(123)
+
+    def test_pin_open_failure_does_not_run_the_body_or_close_an_invalid_handle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "current.json"
+            path.write_bytes(b"fixed pointer fixture")
+            kernel = self.kernel(ctypes.c_void_p(-1).value)
+            primary = OSError("fixed native open failure")
+            with patch.object(ctypes, "WinDLL", return_value=kernel, create=True), patch.object(ctypes, "get_last_error", return_value=5, create=True), patch.object(ctypes, "WinError", return_value=primary, create=True):
+                with self.assertRaises(OSError) as raised:
+                    with release.pin_current_pointer(path):
+                        self.fail("A failed pointer pin must not admit repeat installation")
+            self.assertIs(raised.exception, primary)
+            kernel.CloseHandle.assert_not_called()
+
+    def test_pin_close_failure_preserves_primary_installer_error_and_surfaces_without_one(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "current.json"
+            path.write_bytes(b"fixed pointer fixture")
+            kernel = self.kernel()
+            kernel.CloseHandle.return_value = 0
+            secondary = OSError("do not expose close details")
+            primary = subprocess.CalledProcessError(0x4D090020, "fixture installer")
+            diagnostics = io.StringIO()
+            with patch.object(ctypes, "WinDLL", return_value=kernel, create=True), patch.object(ctypes, "get_last_error", return_value=5, create=True), patch.object(ctypes, "WinError", return_value=secondary, create=True), patch.object(sys, "stderr", diagnostics):
+                with self.assertRaises(subprocess.CalledProcessError) as raised:
+                    with release.pin_current_pointer(path):
+                        raise primary
+                self.assertIs(raised.exception, primary)
+                with self.assertRaises(OSError) as raised:
+                    with release.pin_current_pointer(path):
+                        pass
+                self.assertIs(raised.exception, secondary)
+            self.assertEqual(kernel.CloseHandle.call_count, 2)
+            self.assertIn("Windows pointer pin cleanup failure: OSError", diagnostics.getvalue())
+            self.assertNotIn("do not expose", diagnostics.getvalue())
+
+    def test_actual_repeat_and_identity_assertions_are_the_only_pinned_smoke_operations(self):
+        # Portable scope contract; the actual sharing denial is Windows-only.
+        tree = ast.parse((SCRIPTS / "windows-release.py").read_text())
+        smoke = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "smoke_installer")
+        pinned = [node for node in ast.walk(smoke) if isinstance(node, ast.With) and
+                  any(isinstance(item.context_expr, ast.Call) and isinstance(item.context_expr.func, ast.Name) and
+                      item.context_expr.func.id == "pin_current_pointer" for item in node.items)]
+        self.assertEqual(len(pinned), 1)
+        self.assertEqual([type(node) for node in pinned[0].body], [ast.Expr, ast.If])
+        self.assertEqual(pinned[0].body[0].value.func.id, "run")
+        self.assertEqual(pinned[0].body[1].body[0].exc.func.id, "ValueError")
+        self.assertIn("current.json", ast.unparse(pinned[0]))
+        self.assertIn("bootstrap_hash", ast.unparse(pinned[0]))
+
+
 class SmokeDiagnosticsTests(unittest.TestCase):
     def registry(self):
         def missing(*_arguments):
             raise FileNotFoundError
         return types.SimpleNamespace(KEY_READ=1, KEY_WOW64_32KEY=2, HKEY_CURRENT_USER=3, OpenKey=missing)
+
+    def test_native_activation_status_is_bounded_to_known_stages_and_marker(self):
+        self.assertEqual(set(release.ACTIVATION_FAILURE_STAGES), set(range(1, 11)))
+        for stage, name in release.ACTIVATION_FAILURE_STAGES.items():
+            for raw in (0, 5, 32, 65535):
+                with self.subTest(stage=stage, raw=raw):
+                    code = 0x4D000000 | (stage << 16) | raw
+                    self.assertEqual(release.decode_activation_failure(code), {
+                        "native_stage": name, "native_win32_error": raw or None,
+                    })
+        for code in (None, True, "1292435488", -1, 0, 1, 40, 41, 0xC0000005,
+                     0x4D000005, 0x4D0B0005, 0x4DFF0005, 0x14D090005):
+            with self.subTest(code=code):
+                self.assertIsNone(release.decode_activation_failure(code))
+
+    def test_nsis_actual_numeric_branch_passes_only_known_activation_failures(self):
+        # Interpret only the wrapper's small numeric branch, not NSIS/runtime
+        # behavior. This catches decimal-vs-hex string comparisons and jumps
+        # that would lose or admit a native status before the Windows rehearsal.
+        source = (SCRIPTS / "windows-installer.nsi").read_text()
+        branch = source.split("\nfailed:\n", 1)[1].split("\nactivation_diagnostic_done:\n", 1)[0]
+        instructions = [line.strip() for line in branch.splitlines()
+                        if line.strip() and not line.lstrip().startswith(";")]
+        def propagated(phase, code):
+            registers = {"$FailureCode": str(phase), "$0": str(code)}
+            index = 0
+            def value(token):
+                return registers.get(token, token)
+            def number(token):
+                return int(value(token), 0)
+            while index < len(instructions):
+                operation, *args = instructions[index].split()
+                destination = "0"
+                if operation == "StrCmp":
+                    destination = args[2] if value(args[0]) == value(args[1]) else args[3]
+                elif operation == "IntCmp":
+                    left, right = number(args[0]), number(args[1])
+                    destination = args[2 if left == right else 3 if left < right else 4]
+                elif operation == "IntOp":
+                    left, right = number(args[1]), number(args[3])
+                    self.assertIn(args[2], ("&", ">>"))
+                    registers[args[0]] = str(left & right if args[2] == "&" else left >> right)
+                elif operation == "StrCpy":
+                    registers[args[0]] = value(args[1])
+                else:
+                    self.fail("Unexpected instruction in activation diagnostic branch: " + operation)
+                if destination != "0":
+                    self.assertEqual(destination, "activation_diagnostic_done")
+                    break
+                index += 1
+            return int(registers["$FailureCode"])
+        for stage in range(1, 11):
+            for raw in (0, 5, 32, 65535):
+                code = 0x4D000000 | (stage << 16) | raw
+                self.assertEqual(propagated(41, code), code)
+                self.assertEqual(propagated(40, code), 40)
+                self.assertEqual(propagated(30, code), 30)
+        for code in (0, 1, -1, 0xC0000005, 0x4D000005, 0x4D0B0005, 0x4DFF0005):
+            self.assertEqual(propagated(41, code), 41)
+
+    def test_actual_child_status_is_reported_without_replay_or_primary_error_change(self):
+        code = 0x4D090020
+        primary = subprocess.CalledProcessError(code, "fixture installer")
+        diagnostics = io.StringIO()
+        with patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")), patch.object(release, "run", side_effect=primary) as commands, patch.object(sys, "stderr", diagnostics):
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(commands.call_count, 1)
+        evidence = json.loads(diagnostics.getvalue().split("Windows installer failure evidence: ", 1)[1])
+        self.assertEqual(evidence["exit_code"], code)
+        self.assertEqual(evidence["installer_phase"], "activation-child")
+        self.assertEqual(evidence["native_stage"], "generation-guards")
+        self.assertEqual(evidence["native_win32_error"], 32)
 
     def test_direct_preflight_captures_both_streams_and_bounds_output(self):
         result = release.capture_preflight([sys.executable, "-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"], dict(release.os.environ))

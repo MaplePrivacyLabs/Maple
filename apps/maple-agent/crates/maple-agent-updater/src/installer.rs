@@ -60,6 +60,39 @@ const MAX_EXTENSION_BYTES: u64 = 16 * 1024;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 const CODESIGN_REQUIREMENT: &str = "=anchor apple generic and identifier \"cloud.opensecret.maple.agent\" and certificate leaf[subject.OU] = \"X773Y823TN\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
 
+/// Fixed public operation labels for the native Windows installer child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WindowsActivationStage {
+    Input = 1,
+    RootStorage = 2,
+    Registration = 3,
+    BootstrapIdentity = 4,
+    InstallLock = 5,
+    IntentIdentity = 6,
+    GenerationIdentity = 7,
+    GenerationVerification = 8,
+    GenerationGuards = 9,
+    PointerCommit = 10,
+}
+
+impl std::fmt::Display for WindowsActivationStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Input => "activation-input",
+            Self::RootStorage => "root-storage",
+            Self::Registration => "registration",
+            Self::BootstrapIdentity => "bootstrap-identity",
+            Self::InstallLock => "install-lock",
+            Self::IntentIdentity => "intent-identity",
+            Self::GenerationIdentity => "generation-identity",
+            Self::GenerationVerification => "generation-verification",
+            Self::GenerationGuards => "generation-guards",
+            Self::PointerCommit => "pointer-commit",
+        })
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum InstallError {
     #[error("This installation needs a manual download: {0}")]
@@ -72,6 +105,12 @@ pub enum InstallError {
     CodeSignature,
     #[error("The update could not be installed: {0}")]
     Io(#[from] io::Error),
+    #[error("Windows activation failed during {stage}: {source}")]
+    WindowsActivation {
+        stage: WindowsActivationStage,
+        #[source]
+        source: Box<InstallError>,
+    },
 }
 
 impl InstallError {
@@ -81,12 +120,105 @@ impl InstallError {
         match self {
             Self::NotifyOnly(_) => true,
             Self::Io(error) => permission_error(error),
+            Self::WindowsActivation { source, .. } => source.requires_manual_installation(),
             _ => false,
         }
+    }
+
+    /// Encode only an activation failure, without paths, SIDs or error text.
+    /// The original typed source remains available to direct callers.
+    pub fn windows_activation_exit_code(&self) -> Option<i32> {
+        let Self::WindowsActivation { stage, source } = self else {
+            return None;
+        };
+        let raw = match source.as_ref() {
+            Self::Io(error) => error
+                .raw_os_error()
+                .and_then(|code| u16::try_from(code).ok())
+                .unwrap_or(0),
+            _ => 0,
+        };
+        Some(0x4D00_0000 | ((*stage as i32) << 16) | i32::from(raw))
     }
 }
 
 type Result<T> = std::result::Result<T, InstallError>;
+
+#[cfg(test)]
+mod windows_activation_error_tests {
+    use super::*;
+
+    #[test]
+    fn activation_status_preserves_fixed_stage_and_original_native_error() {
+        for (stage, number, label) in [
+            (WindowsActivationStage::Input, 1, "activation-input"),
+            (WindowsActivationStage::RootStorage, 2, "root-storage"),
+            (WindowsActivationStage::Registration, 3, "registration"),
+            (
+                WindowsActivationStage::BootstrapIdentity,
+                4,
+                "bootstrap-identity",
+            ),
+            (WindowsActivationStage::InstallLock, 5, "install-lock"),
+            (WindowsActivationStage::IntentIdentity, 6, "intent-identity"),
+            (
+                WindowsActivationStage::GenerationIdentity,
+                7,
+                "generation-identity",
+            ),
+            (
+                WindowsActivationStage::GenerationVerification,
+                8,
+                "generation-verification",
+            ),
+            (
+                WindowsActivationStage::GenerationGuards,
+                9,
+                "generation-guards",
+            ),
+            (WindowsActivationStage::PointerCommit, 10, "pointer-commit"),
+        ] {
+            let error = InstallError::WindowsActivation {
+                stage,
+                source: Box::new(InstallError::Io(io::Error::from_raw_os_error(32))),
+            };
+            assert_eq!(
+                error.windows_activation_exit_code(),
+                Some(0x4D00_0020 | (number << 16))
+            );
+            assert!(error.to_string().contains(label));
+            let InstallError::WindowsActivation { source, .. } = error else {
+                unreachable!()
+            };
+            let InstallError::Io(source) = *source else {
+                unreachable!()
+            };
+            assert_eq!(source.raw_os_error(), Some(32));
+        }
+    }
+
+    #[test]
+    fn activation_status_keeps_error_policy_and_never_encodes_unrelated_errors() {
+        for source in [
+            InstallError::Busy,
+            InstallError::CodeSignature,
+            InstallError::Invalid("public fixture"),
+            InstallError::NotifyOnly("public fixture"),
+            InstallError::Io(io::Error::from(io::ErrorKind::PermissionDenied)),
+            InstallError::Io(io::Error::from_raw_os_error(-1)),
+            InstallError::Io(io::Error::from_raw_os_error(65536)),
+        ] {
+            assert_eq!(source.windows_activation_exit_code(), None);
+            let manual = source.requires_manual_installation();
+            let error = InstallError::WindowsActivation {
+                stage: WindowsActivationStage::Input,
+                source: Box::new(source),
+            };
+            assert_eq!(error.requires_manual_installation(), manual);
+            assert_eq!(error.windows_activation_exit_code(), Some(0x4D01_0000));
+        }
+    }
+}
 
 /// The on-disk values are untrusted on restoration. Keep the authenticated
 /// `PreparedUpdate` separately and pass it to every revalidation/replacement.

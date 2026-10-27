@@ -155,6 +155,18 @@ uninstaller_ready:
   SetErrorLevel 0
   Goto done
 failed:
+  ; Native activation diagnostics come from this exact ExecWait child. Keep
+  ; ordinary failures at 41; only the fixed marker and stages 1..10 can carry
+  ; an activation stage plus its bounded Win32 error to an unattended caller.
+  StrCmp $FailureCode 41 0 activation_diagnostic_done
+  IntOp $1 $0 & 0xFF000000
+  IntCmp $1 0x4D000000 0 activation_diagnostic_done activation_diagnostic_done
+  IntOp $1 $0 >> 16
+  IntOp $1 $1 & 0xFF
+  IntCmp $1 1 0 activation_diagnostic_done 0
+  IntCmp $1 10 0 0 activation_diagnostic_done
+  StrCpy $FailureCode $0
+activation_diagnostic_done:
   ; The native activation failure leaves the old pointer unchanged. Restore
   ; registration truth; user data and an earlier generation remain untouched.
   StrCmp $HadRegistration 1 restore_registration
