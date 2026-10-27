@@ -116,11 +116,6 @@ and are outside database encryption and application-data erasure. Newly
 generated delegation resources use the new `resources/` location; this does not
 authorize reading old application JSON or databases.
 
-Opening third-party notices reads the public HTML shipped beside the executable.
-An unpackaged developer binary instead writes its small embedded source and
-attribution page to a fresh random temporary file for the browser. Neither page
-contains account or task data; they are outside the encrypted store.
-
 ## History display and replay limits
 
 Desktop and ACP page through saved history rather than loading an entire task.

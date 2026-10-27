@@ -53,7 +53,7 @@ its own files change. Add a label when a change could break something those
 paths do not reveal, for example:
 
 - `ci:windows` for path, filesystem, process or terminal code that behaves differently on Windows;
-- `ci:package` for changes to what ships in the bundle (assets, resources, notices, entitlements, updater metadata) outside the packaging scripts;
+- `ci:package` for changes to what ships in the bundle (assets, resources, entitlements, updater metadata) outside the packaging scripts;
 - `ci:ios` or `ci:android` for Research changes that reach native mobile code or mobile-only plugins;
 - `ci:full` for toolchain, lockfile-wide or other risky cross-cutting changes before merge.
 

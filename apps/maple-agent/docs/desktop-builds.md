@@ -138,7 +138,7 @@ Initial installation leaves profile, SQL, authentication, and settings data
 untouched. Managed uninstall is not yet provided.
 The final Linux artifact contains exactly that tar archive, `build-info.json`,
 `manifest.json`, and `SHA256SUMS`. The archive has one application root,
-including `bundle.json`, the entrypoint, executable, runtime libraries, licenses,
+including `bundle.json`, the entrypoint, executable, runtime libraries,
 and installer helpers. Package verification extracts to temporary storage and
 does not install into your application directory.
 
@@ -283,3 +283,9 @@ No new app-signing environment or credential migration is needed. Keep the
 existing `desktop-signing` and `windows-signing` credentials and policies, Research updater key,
 publication workflow and compatibility URLs intact. No Research install is
 replaced, overwritten or migrated by Agent packaging or publication.
+
+Windows updater archives use `maple-agent-windows-bundle-v2` and contain only
+`bundle-info.json`, `maple-agent.exe`, `LICENSE.txt` and `build-info.json` under
+`maple-agent-windows/`. The updater and publisher require that exact inventory.
+The earlier, unpublished Windows bundle format is rejected. macOS and Linux
+retain their existing formats and signed-manifest compatibility.

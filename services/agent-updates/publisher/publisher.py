@@ -510,12 +510,10 @@ def validate_windows_archive_build(archive, version, build, source_sha, bundle_i
     release and rejects every auxiliary or ambiguous archive member.
     """
     root = "maple-agent-windows"
-    files = {"bundle-info.json", "maple-agent.exe", "LICENSE.txt", "build-info.json",
-             "notices/THIRD_PARTY_NOTICES.txt", "notices/THIRD_PARTY_NOTICES.html", "notices/manifest.json",
-             "notices/wordlists/eff-large-wordlist.txt", "notices/wordlists/SOURCES.md"}
+    files = {"bundle-info.json", "maple-agent.exe", "LICENSE.txt", "build-info.json"}
     expected_files = {root + "/" + name for name in files}
-    expected_dirs = {root, root + "/notices", root + "/notices/wordlists"}
-    expected = {"format": "maple-agent-windows-bundle-v1", "product": "maple-agent", "profile": "prod",
+    expected_dirs = {root}
+    expected = {"format": "maple-agent-windows-bundle-v2", "product": "maple-agent", "profile": "prod",
                 "version": version, "build": build, "source_sha": source_sha,
                 "bundle_id": bundle_id, "entrypoint": "maple-agent.exe"}
     need(isinstance(build, str) and re.fullmatch(r"[1-9][0-9]{0,17}", build),

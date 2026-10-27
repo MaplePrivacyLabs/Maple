@@ -265,6 +265,24 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(job.get("env", {}).get("MAPLE_PACKAGE_BUILD_NUMBER"), "${{ github.run_number }}",
                              job.get("name"))
 
+    def test_c2_prebuilt_binary_handoff_preserves_the_packagers_release_path(self):
+        config = load(ROOT / publisher.WORKFLOW)
+        for platform, binary in (("macos", "maple-agent"), ("windows", "maple-agent.exe")):
+            with self.subTest(platform=platform):
+                producer = config["jobs"][platform + "-build"]["steps"]
+                consumer = config["jobs"][platform]["steps"]
+                upload = next(step["with"] for step in producer
+                              if step.get("uses", "").startswith("actions/upload-artifact@")
+                              and "-prebuilt-" in step["with"]["name"])
+                download = next(step["with"] for step in consumer
+                                if step.get("uses", "").startswith("actions/download-artifact@"))
+                # A single uploaded file is stored at the artifact root. The
+                # consumer must place that basename back under target/release.
+                expected = Path("apps/maple-agent/target/release") / binary
+                self.assertEqual(upload["path"].splitlines(), [expected.as_posix()])
+                self.assertEqual(download["name"], upload["name"])
+                self.assertEqual(Path(download["path"]) / binary, expected)
+
     def test_c2_windows_packaging_lanes_pass_a_build_number(self):
         # windows-release.py package and verify refuse to run without MAPLE_PACKAGE_BUILD_NUMBER.
         # A lane passes the Actions run number, or 1 outside Actions. Run each such lane's

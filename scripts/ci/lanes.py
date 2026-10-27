@@ -53,7 +53,7 @@ MATRIX_JOBS = ("nix", "windows")
 
 # Never selects anything: notes, docs and hooks at the root or a component root
 # (one or two levels down). Deeper files can be build inputs: the Agent compiles
-# its bundled SKILL.md files and copies app/assets/dict/LICENSE into its notices.
+# its bundled SKILL.md files.
 INERT = (
     "README.md", "AGENTS.md", "LICENSE", ".gitignore", ".repo_ignore", "repo.meta.json", "docs/**",
     "*/README.md", "*/LICENSE", "*/.gitignore", "*/docs/**", "*/.githooks/**",
@@ -96,7 +96,7 @@ AGENT_WINDOWS_UPDATER = (
 AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/build-*", "scripts/package-*", "scripts/verify-*", "scripts/release-info.py",
     "scripts/macos-build-info.py", "scripts/macos-release-*", "scripts/linux-*", "scripts/smoke-*",
-    "scripts/*third*party*notices*", "release-profiles.json", "release_profile.rs", "about.toml", "app/build.rs",
+    "release-profiles.json", "release_profile.rs", "app/build.rs",
     "app/packaging/**", "flake.nix", "flake.lock",
 )) + (".github/workflows/agent-desktop-build.yml",)
 # The Windows packaging lane's Windows-specific inputs: the Windows packaging scripts,
@@ -155,9 +155,8 @@ FAST_RELEASE = (("CARGO_PROFILE_RELEASE_LTO", "thin"), ("CARGO_PROFILE_RELEASE_C
 AGENT_PACKAGE_FLAKE = dict(AGENT_FLAKE, env=AGENT_DIR["env"] + FAST_RELEASE)
 PACKAGE_EVENTS = PR_SIDE | {NIGHTLY}  # nightly refreshes the rehearsal's own cache
 AGENT_DEPENDENCIES = tuple("apps/maple-agent/" + glob for glob in (
-    "Cargo.lock", "**/Cargo.toml", "deny.toml", "about.toml", "flake.nix", "flake.lock", "dependencies/**",
-    "scripts/*third*party*notices*", "scripts/audit-sqlcipher-dependencies.py", "scripts/verify-sqlcipher-build.py",
-    "app/assets/dict/LICENSE", "crates/maple-agent/src/store/keys/SOURCES.md",
+    "Cargo.lock", "**/Cargo.toml", "deny.toml", "flake.nix", "flake.lock", "dependencies/**",
+    "scripts/audit-sqlcipher-dependencies.py", "scripts/verify-sqlcipher-build.py",
     "crates/maple-agent/src/store/keys/eff-large-wordlist.txt",
 ))
 WINDOWS_PACKAGE = (
@@ -243,7 +242,7 @@ LANES: Tuple[Lane, ...] = (
          run="python3 scripts/test_git_metadata.py && cargo build --workspace --all-targets --locked"
              " && cargo test --workspace --locked",
          cache="agent-full-windows", timeout=90, gate=False, **dict(AGENT_WIN, runner=GITHUB_WINDOWS)),
-    # Pinned SQLCipher sources, per-target advisories and bans, and notices.
+    # Pinned SQLCipher sources, per-target advisories and bans.
     Lane("agent-supply-chain", AGENT_DEPENDENCIES, run="just supply-chain", timeout=30, **AGENT_FLAKE),
     # Released rusqlite's own tests against the static SQLCipher provider (nightly.yml: all three OSes).
     Lane("agent-provider", tuple("apps/maple-agent/" + glob for glob in (

@@ -72,7 +72,7 @@ ordinary-file/directory layout and exact descriptor, including source, build and
 application identity; embedded build-info bytes must match the attested sidecar.
 Links, extensions, auxiliary entries, malformed end markers and trailing content
 are rejected without extracting or executing downloaded files. The generation
-archive contains the signed application executable and public notices; the
+archive contains the signed application executable and build metadata; the
 stable launcher and NSIS uninstaller remain outside each generation.
 
 The manifest build number is the selected build run's `run_number`, matching the

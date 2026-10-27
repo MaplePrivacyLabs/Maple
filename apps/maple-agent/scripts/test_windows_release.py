@@ -231,7 +231,8 @@ class BundleTests(unittest.TestCase):
             release.write_bundle(payload, second, info(), "12")
             self.assertEqual(first.read_bytes(), second.read_bytes())
             hashes = release.inspect_bundle(first, info(), "12", payload)
-            self.assertEqual(set(hashes), release.BUNDLE_FILES)
+            self.assertEqual(set(hashes), {"bundle-info.json", "maple-agent.exe", "LICENSE.txt", "build-info.json"})
+            self.assertEqual(release.BUNDLE_FORMAT, "maple-agent-windows-bundle-v2")
             self.assertNotIn("uninstall.exe", hashes)
             (payload / "maple-agent.exe").write_bytes(b"changed installer payload")
             with self.assertRaisesRegex(ValueError, "differs from"):
@@ -434,8 +435,6 @@ class PackageBoundaryTests(unittest.TestCase):
             binary.write_bytes(b"downloaded executable must not run")
             (component / "LICENSE").write_text("license fixture")
             calls = []
-            def stage(_component, directory, _target):
-                directory.mkdir(parents=True)
             def sign(file, unsigned, *, sign=False):
                 calls.append(("sign" if sign else "verify-signature", Path(file).name))
             def compiler(arguments, **_options):
@@ -450,7 +449,7 @@ class PackageBoundaryTests(unittest.TestCase):
             def bundle(_payload, archive, _info, _build):
                 calls.append(("bundle", Path(archive).name))
                 archive.write_bytes(b"bundle fixture")
-            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12"), patch.object(release, "COMPONENT", component), patch.object(release, "prepare", return_value=(binary, info())), patch.object(release.notices, "stage", side_effect=stage), patch.object(release, "signature", side_effect=sign), patch.object(release, "verify_payload"), patch.object(release, "install_nsis", return_value="trusted-makensis.exe"), patch.object(release, "run", side_effect=compiler), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "write_bundle", side_effect=bundle), patch.object(release, "verify") as verify:
+            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12"), patch.object(release, "COMPONENT", component), patch.object(release, "prepare", return_value=(binary, info())), patch.object(release, "signature", side_effect=sign), patch.object(release, "verify_payload"), patch.object(release, "install_nsis", return_value="trusted-makensis.exe"), patch.object(release, "run", side_effect=compiler), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "write_bundle", side_effect=bundle), patch.object(release, "verify") as verify:
                 release.package("dev", unsigned=False)
             app_signed = calls.index(("sign", "maple-agent.exe"))
             compiled = calls.index(("compiler", "trusted-makensis.exe"))

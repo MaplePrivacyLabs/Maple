@@ -122,7 +122,7 @@ try {
       'installer::windows_bundle::windows_fs::tests::native_owner_rights_acl_still_rejects_foreign_writers',
       'installer::windows_bundle::windows_fs::tests::native_owner_allowlist_rejects_unprivileged_sids',
       'installer::windows_bundle::windows_fs::tests::native_default_owner_storage_and_named_temp_atomic_replace',
-      'installer::windows_bundle::tests::exact_archive_round_trip_binds_all_nine_files_and_three_directories',
+      'installer::windows_bundle::tests::exact_archive_round_trip_binds_all_four_files_and_root_directory',
       'installer::windows_bundle::tests::rejected_archive_never_begins_extraction',
       'installer::windows_bundle::tests::descriptors_bind_profile_product_release_and_strict_json_fields',
       'installer::windows_bundle::tests::descriptor_comparison_rejects_changed_release_version_build_or_source',

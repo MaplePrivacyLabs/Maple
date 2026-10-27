@@ -123,13 +123,6 @@ bootstrap_ready:
   File "${PAYLOAD}\maple-agent.exe"
   File "${PAYLOAD}\LICENSE.txt"
   File "${PAYLOAD}\build-info.json"
-  SetOutPath "$INSTDIR\versions\${GENERATION}\notices"
-  File "${PAYLOAD}\notices\THIRD_PARTY_NOTICES.txt"
-  File "${PAYLOAD}\notices\THIRD_PARTY_NOTICES.html"
-  File "${PAYLOAD}\notices\manifest.json"
-  SetOutPath "$INSTDIR\versions\${GENERATION}\notices\wordlists"
-  File "${PAYLOAD}\notices\wordlists\eff-large-wordlist.txt"
-  File "${PAYLOAD}\notices\wordlists\SOURCES.md"
   SetOutPath "$INSTDIR\versions\${GENERATION}"
   File "${PAYLOAD}\bundle-info.json"
   IfErrors failed

@@ -28,13 +28,8 @@ const FILES: &[&str] = &[
     "LICENSE.txt",
     "build-info.json",
     DESCRIPTOR,
-    "notices/THIRD_PARTY_NOTICES.txt",
-    "notices/THIRD_PARTY_NOTICES.html",
-    "notices/manifest.json",
-    "notices/wordlists/eff-large-wordlist.txt",
-    "notices/wordlists/SOURCES.md",
 ];
-const DIRS: &[&str] = &["", "notices", "notices/wordlists"];
+const DIRS: &[&str] = &[""];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -64,7 +59,7 @@ impl Bundle {
         }
         let bundle: Self = serde_json::from_slice(bytes)
             .map_err(|_| InstallError::Invalid("invalid Windows bundle descriptor"))?;
-        if bundle.format != "maple-agent-windows-bundle-v1"
+        if bundle.format != "maple-agent-windows-bundle-v2"
             || bundle.product != "maple-agent"
             || bundle.profile != profile
             || bundle.bundle_id != profile_identity(profile)?
