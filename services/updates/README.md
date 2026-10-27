@@ -17,7 +17,11 @@ Both route families accept `GET` and `HEAD`; other methods return `405`.
 Unknown paths, including the private `/installers.json` bundle file, return `404`.
 The installer routes issue temporary `302` redirects to exact, versioned GitHub
 release assets with browser and CDN `no-store` headers. They require no browser
-JavaScript, API lookup, CORS configuration, R2, database, or visitor credentials.
+JavaScript, API lookup, CORS configuration, or R2.
+Optional private request metrics use the shared Queue binding described in
+[download tracking](../download-tracking/README.md). The database is not part of
+serving a response and visitors need no credentials.
+
 GitHub still hosts the installer bytes; these redirects do not remove that
 availability dependency.
 

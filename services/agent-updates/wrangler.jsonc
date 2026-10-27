@@ -13,4 +13,34 @@
       "bucket_name": "maple-agent-updates",
     },
   ],
+  "d1_databases": [
+    {
+      "binding": "DOWNLOAD_DB",
+      "database_name": "maple-downloads",
+      "database_id": "d47c0388-7e13-4474-a535-8f29dfd9138b",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "DOWNLOAD_EVENTS", "queue": "maple-download-events" },
+    ],
+    "consumers": [
+      {
+        "queue": "maple-download-events",
+        "max_batch_size": 25,
+        "max_batch_timeout": 5,
+        "max_retries": 10,
+        "retry_delay": 60,
+        "dead_letter_queue": "maple-download-events-dlq",
+      },
+    ],
+  },
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": false,
+    },
+  },
 }

@@ -10,4 +10,16 @@
     "binding": "ASSETS",
     "run_worker_first": true,
   },
+  "queues": {
+    "producers": [
+      { "binding": "DOWNLOAD_EVENTS", "queue": "maple-download-events" },
+    ],
+  },
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": false,
+    },
+  },
 }

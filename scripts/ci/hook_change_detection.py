@@ -165,6 +165,9 @@ def classify_path(path: str) -> frozenset[str]:
             return frozenset()
         return frozenset({"opensecret"})
 
+    if path.startswith("services/download-tracking/"):
+        return frozenset({"updates", "agent_updates"})
+
     if path.startswith(UPDATES_PREFIX + ".githooks/"):
         return frozenset()
     if path.startswith(UPDATES_PREFIX):

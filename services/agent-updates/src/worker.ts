@@ -1,4 +1,12 @@
 import {
+  trackResponse,
+  consumeEvents,
+  type TrackingEnv,
+  type TrackingContext,
+  type EventDatabase,
+  type EventBatch,
+} from "../../download-tracking/tracking";
+import {
   MAX_ENVELOPE_BYTES,
   parseEnvelope,
   releasePath,
@@ -18,8 +26,9 @@ export interface Bucket {
   ): Promise<StoredObject | null>;
   head(key: string): Promise<StoredObject | null>;
 }
-export interface Env {
+export interface Env extends TrackingEnv {
   AGENT_RELEASES: Bucket;
+  DOWNLOAD_DB?: EventDatabase;
 }
 
 const NO_STORE = {
@@ -191,7 +200,7 @@ async function artifactResponse(
   return new Response(full.body, { status, headers });
 }
 
-export default {
+const deliveryWorker = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -305,5 +314,22 @@ export default {
     } catch {
       return response(503, request.method);
     }
+  },
+};
+
+export default {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx?: TrackingContext,
+  ): Promise<Response> {
+    const result = await deliveryWorker.fetch(request, env);
+    if (ctx) trackResponse(request, result, env, ctx, "agent");
+    return result;
+  },
+  async queue(batch: EventBatch, env: Env): Promise<void> {
+    if (!env.DOWNLOAD_DB)
+      throw new Error("download tracking database binding missing");
+    await consumeEvents(batch, { DOWNLOAD_DB: env.DOWNLOAD_DB });
   },
 };
