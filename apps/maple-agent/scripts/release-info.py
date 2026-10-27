@@ -59,7 +59,7 @@ def validate_info(profile, info, source_sha=None, platform=None):
         raise ValueError("binary release profile does not match the requested package")
     for field in PUBLIC_FIELDS:
         if field == "update_feed_url" and platform == "windows-x86_64":
-            expected = None  # Windows distribution has no installed updater yet.
+            expected = profiles[profile]["windows_update_feed_url"]
         elif field == "update_feed_url" and platform == "linux-x86_64":
             expected = profiles[profile]["linux_update_feed_url"]
         else:
@@ -132,6 +132,10 @@ def windows_package_name(info):
     return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-windows-x86_64-setup.exe"
 
 
+def windows_archive_name(info):
+    return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-windows-x86_64.tar.gz"
+
+
 def public_files(directory):
     files = list(directory.iterdir())
     if any(path.is_symlink() or not path.is_file() for path in files):
@@ -139,7 +143,7 @@ def public_files(directory):
     return {path.name for path in files}
 
 
-def write_manifest(info, directory, platform, unsigned):
+def write_manifest(info, directory, platform, unsigned, build_number=None):
     directory = Path(directory)
     if platform not in ("macos-aarch64", "linux-x86_64", "windows-x86_64"):
         raise ValueError("unsupported artifact platform")
@@ -170,11 +174,15 @@ def write_manifest(info, directory, platform, unsigned):
         manifest["macos_signing"] = None
         manifest["linux_integrity"] = "sha256"
     if platform == "windows-x86_64":
-        expected = {"build-info.json", windows_package_name(info)}
+        if not isinstance(build_number, str) or not re.fullmatch(r"[1-9][0-9]{0,17}", build_number):
+            raise ValueError("Windows package build number must be a positive decimal string")
+        expected = {"build-info.json", windows_package_name(info), windows_archive_name(info)}
         if packages[0] != windows_package_name(info) or not expected <= files or files - expected - {"manifest.json", "SHA256SUMS"}:
-            raise ValueError("Windows artifact directory must contain only the expected installer and public metadata")
+            raise ValueError("Windows artifact directory must contain only the expected installer, updater bundle and public metadata")
         manifest["macos_signing"] = None
         manifest["windows_signing"] = "unsigned" if unsigned else "authenticode"
+        manifest["build"] = build_number
+        manifest["updater"] = windows_archive_name(info)
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     files = sorted(p for p in directory.iterdir() if p.is_file() and p.name != "SHA256SUMS")
     (directory / "SHA256SUMS").write_text("".join(
@@ -218,9 +226,15 @@ def verify_artifacts(profile, directory, unsigned, source_sha=None, platform=Non
         if manifest.get("macos_signing", "missing") is not None or manifest.get("windows_signing") != ("unsigned" if unsigned else "authenticode"):
             raise ValueError("unexpected Windows signing policy")
         if manifest.get("package") != windows_package_name(info) or files != {
-            "build-info.json", "manifest.json", "SHA256SUMS", windows_package_name(info),
+            "build-info.json", "manifest.json", "SHA256SUMS", windows_package_name(info), windows_archive_name(info),
         }:
-            raise ValueError("Windows artifact directory must contain exactly the expected installer and public metadata")
+            raise ValueError("Windows artifact directory must contain exactly the expected installer, updater bundle and public metadata")
+        if (manifest.get("updater") != windows_archive_name(info)
+                or not isinstance(manifest.get("build"), str)
+                or not re.fullmatch(r"[1-9][0-9]{0,17}", manifest["build"])):
+            raise ValueError("Windows manifest must bind its exact updater bundle and positive build number")
+        if set(manifest) != {"schema_version", "profile", "platform", "source_sha", "version", "package", "distribution", "macos_signing", "windows_signing", "build", "updater"}:
+            raise ValueError("Windows manifest has unexpected metadata fields")
     lines = (directory / "SHA256SUMS").read_text().splitlines()
     checked = set()
     for line in lines:
@@ -322,7 +336,7 @@ def main():
     parser.add_argument("path")
     parser.add_argument("--source-sha")
     parser.add_argument("--field")
-    parser.add_argument("--build-number", default="1")
+    parser.add_argument("--build-number")
     parser.add_argument("--output")
     parser.add_argument("--platform", choices=("macos-aarch64", "linux-x86_64", "windows-x86_64"))
     parser.add_argument("--unsigned", action="store_true")
@@ -344,9 +358,9 @@ def main():
             raise ValueError("field is not public release metadata")
         print(info[args.field])
     elif args.operation == "plist":
-        write_plist(info, args.output, args.build_number)
+        write_plist(info, args.output, args.build_number or "1")
     elif args.operation == "manifest":
-        write_manifest(info, args.output, args.platform, args.unsigned)
+        write_manifest(info, args.output, args.platform, args.unsigned, args.build_number)
 
 
 if __name__ == "__main__":

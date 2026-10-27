@@ -2,7 +2,8 @@
 
 Packaged Prod builds use the Agent-only signed update service at
 `https://updates.maple.ai/agent/stable/latest.json` on macOS and
-`https://updates.maple.ai/agent/stable/linux/latest.json` on Linux. Dev and unpackaged
+`https://updates.maple.ai/agent/stable/linux/latest.json` on Linux, and
+`https://updates.maple.ai/agent/stable/windows/latest.json` on Windows x86_64. Dev and unpackaged
 builds do not check that service. The Prod profile now pins the reviewed primary
 and backup public keys, so packaged Prod builds check the compiled feed after
 launch. Builds and production publication remain separate operations;
@@ -100,7 +101,7 @@ The installer holds the per-application lock while staging a verified bundle
 beside the installed application and while that update is ready. It checks the
 fresh signed offer again and holds the profile's existing startup and host ownership locks from host stop
 through replacement. It checks the payload and staged tree again before macOS's
-atomic bundle exchange or Linux directory exchange. A previous bundle remains in the staging directory until
+atomic bundle exchange, Linux directory exchange, or Windows generation-pointer commit. A previous bundle remains in the installation until
 the new installed version starts successfully and validates its receipt. This
 is crash recovery retention, not automatic rollback or permission to install an
 older signed version.
@@ -132,6 +133,48 @@ The bundled loader makes `current_exe()` refer to the loader. Detached hosts and
 reopen use the validated persistent `AppRun`; the bounded SQL integrity child
 executes the validated loader/payload directly to preserve parent ownership and
 private stdin. After replacement, restart targets the committed bundle's `AppRun`.
+
+### Windows installation and recovery
+
+Windows starts with a per-user NSIS installer, not a legacy-layout migration.
+The registered installation contains a stable signed `maple-agent.exe` bootstrap
+and `uninstall.exe`, `current.json`, and complete generations under
+`versions/<version>-<build>/`. Shortcuts and CLI invocations use the bootstrap;
+it authenticates the selected generation and forwards native arguments. CLI
+help, version, build information and ACP belong to that selected generation.
+The stable bootstrap and uninstaller are not replaced by in-app updates;
+changing their contract requires a separately qualified manual installer.
+
+An update verifies the signed v3 offer, archive hash, exact bounded generation
+inventory, embedded profile/version/source identity, and native Authenticode
+trust and timestamp for `Mutiny Wallet Inc. dba OpenSecret`. Prod never accepts
+unsigned preview code. The installer writes a complete new generation before
+atomically replacing `current.json` with a same-directory write-through rename.
+The running executable is not overwritten. The previous generation remains
+until the new application's successful store checkpoint authenticates its
+receipt and bytes. A missing or malformed pointer and newly launched inactive
+generations fail closed; there is no implicit launch of the older root binary.
+
+Manual installation uses a durable transaction intent tied to the actual
+installer process and creation time. A concurrent installer is refused; an
+interrupted installer can resume without deleting unknown files. An incomplete
+manual transaction does not prevent launch of the authenticated current
+generation. Native checks reject reparse points, hardlinks, unsupported paths
+and directories writable by another unprivileged account. The updater does not
+repair unsafe ownership or permissions.
+
+Restart uses native process arguments and waits for the retiring process's
+exact PID and creation time. It does not construct a PowerShell command from
+the installation path. If relaunch fails, reopen the registered launcher;
+the committed pointer and retained generation remain available. Windows uses
+the same desktop and host exclusion, remote update admission and manual
+controller policy described above.
+
+Normal launch verifies the installed code with local Windows trust data and no
+certificate-network retrieval. New payload admission retains chain/revocation
+verification. This keeps an already installed application independent of live
+certificate-service availability; it does not obtain fresh revocation knowledge
+at every launch. Local distrust, invalid signatures and changed code still fail.
 
 ## Maple Work filename bridge
 
@@ -179,7 +222,12 @@ Linux uses a separate `maple-agent-update-v2` envelope with only
 `artifacts["linux-x86_64"]` and `downloads["linux-bundle"]`, both describing the
 same `.tar.gz`. Its immutable envelope is `releases/<version>/linux-manifest.json`;
 macOS retains `releases/<version>/manifest.json`. Clients bind their target to the
-matching schema and compiled feed before advancing state. Each artifact has a
+matching schema and compiled feed before advancing state. Windows uses
+`maple-agent-update-v3` with exactly `artifacts["windows-x86_64"]` for its
+generation `.tar.gz` and `downloads["windows"]` for the separate signed NSIS
+`.exe`. Its immutable envelope is `releases/<version>/windows-manifest.json`.
+Older v1/v2 manifests retain their existing strict fields and bytes; they do
+not admit Windows fields. Each artifact has a
 signed path, byte size, and SHA-256.
 
 Paths stay under `/agent/stable/releases/<version>/<filename>`. Metadata is
@@ -285,6 +333,21 @@ explicitly omitted during creation; signed file contents and existing native
 signature/notarization checks remain intact.
 They do not prove Developer ID distribution, deployed service behavior, or a
 successful real package update.
+
+The focused **Agent Windows Updater Tests** workflow runs the actual updater
+and bootstrap component tests on Windows with no signing or publication
+credentials. It requires the named native filesystem, trust rejection,
+transaction and recovery cases and rejects ignored or empty suites. These
+fixtures do not establish official Maple signatures, installed A-to-B updates,
+visible GUI or paired remote-upgrade behavior. Record those qualifications
+separately from a green component job or an installer consumer.
+
+Windows publication is opt-in and additionally requires the repository variable
+`AGENT_WINDOWS_UPDATES_ENABLED=true`. Leave it disabled until signed installed
+upgrades, interruption recovery, native relaunch, GUI and paired remote checks
+are qualified. Before public Windows downloads, apply the reviewed download
+tracking `0002` migration as documented by that service; its existing database
+was initialized outside Wrangler's migration history.
 
 Before invites, publish two unadvertised signed increasing versions and run the
 actual installed application's check, download, confirmation, host stop, swap

@@ -488,21 +488,22 @@ class ReleaseMetadataTests(unittest.TestCase):
         profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
         self.info = {**profile_info("prod"), "profile": "prod", "version": "0.1.0",
                      "source_sha": "a" * 40, "git_revision": "a" * 8}
-        self.write_info()
-        release_info.read_info("prod", self.path)
-        release_info.read_info("prod", self.path, platform="macos-aarch64")
-        with self.assertRaisesRegex(ValueError, "update_feed_url"):
-            release_info.read_info("prod", self.path, platform="linux-x86_64")
-        self.info["update_feed_url"] = profiles["prod"]["linux_update_feed_url"]
-        self.write_info()
-        release_info.read_info("prod", self.path, platform="linux-x86_64")
-        for platform in (None, "macos-aarch64"):
-            with self.subTest(platform=platform), self.assertRaisesRegex(ValueError, "update_feed_url"):
-                release_info.read_info("prod", self.path, platform=platform)
-        self.info["update_feed_url"] = "https://wrong.invalid/agent/stable/linux/latest.json"
-        self.write_info()
-        with self.assertRaisesRegex(ValueError, "update_feed_url"):
-            release_info.read_info("prod", self.path, platform="linux-x86_64")
+        feeds = {
+            None: profiles["prod"]["update_feed_url"],
+            "macos-aarch64": profiles["prod"]["update_feed_url"],
+            "linux-x86_64": profiles["prod"]["linux_update_feed_url"],
+            "windows-x86_64": profiles["prod"]["windows_update_feed_url"],
+        }
+        for platform, expected in feeds.items():
+            for feed in {*feeds.values(), None, "https://wrong.invalid/agent/stable/latest.json"}:
+                with self.subTest(platform=platform, feed=feed):
+                    self.info["update_feed_url"] = feed
+                    self.write_info()
+                    if feed == expected:
+                        release_info.read_info("prod", self.path, platform=platform)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "update_feed_url"):
+                            release_info.read_info("prod", self.path, platform=platform)
 
     def test_backup_requires_a_distinct_public_key_not_a_changed_comment_or_id(self):
         def key(point, key_id=b"12345678", comment="fixture"):
@@ -529,6 +530,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_info.write_plist(self.info, output, "0")
 
+    def test_macos_plist_cli_preserves_its_default_build_number(self):
+        output = self.directory / "Info.plist"
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "release-info.py"), "plist", "dev", str(self.path),
+             "--output", str(output)], check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(plistlib.loads(output.read_bytes())["CFBundleVersion"], "1")
+
     def package(self, unsigned=True):
         (self.directory / "fixture.dmg").write_bytes(b"package")
         release_info.write_manifest(self.info, self.directory, "macos-aarch64", unsigned)
@@ -538,6 +547,15 @@ class ReleaseMetadataTests(unittest.TestCase):
         release_info.verify_artifacts("dev", self.directory, True)
         with self.assertRaises(ValueError):
             release_info.verify_artifacts("dev", self.directory, False)
+
+    def test_macos_manifest_keeps_its_existing_schema_without_windows_fields(self):
+        self.package(False)
+        manifest = release_info.verify_artifacts("dev", self.directory, False, platform="macos-aarch64")
+        self.assertEqual(set(manifest), {
+            "schema_version", "profile", "platform", "source_sha", "version",
+            "package", "distribution", "macos_signing",
+        })
+        self.assertEqual(manifest["macos_signing"], "developer-id-notarized")
 
     def test_final_downloaded_package_tamper_is_rejected(self):
         self.package(False)
@@ -593,6 +611,10 @@ class LinuxReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(manifest["package"], "maple-agent-dev-0.1.0-aaaaaaaa-linux-x86_64.tar.gz")
         self.assertIsNone(manifest["macos_signing"])
         self.assertEqual(manifest["linux_integrity"], "sha256")
+        self.assertEqual(set(manifest), {
+            "schema_version", "profile", "platform", "source_sha", "version",
+            "package", "distribution", "macos_signing", "linux_integrity",
+        })
         self.assertEqual({path.name for path in self.directory.iterdir()},
                          {"build-info.json", "manifest.json", "SHA256SUMS", package.name})
         self.assertTrue(all(path.stat().st_mode & 0o777 == 0o644 for path in self.directory.iterdir()))

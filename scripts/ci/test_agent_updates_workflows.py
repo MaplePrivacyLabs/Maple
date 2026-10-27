@@ -41,6 +41,7 @@ class AgentUpdatesWorkflows(unittest.TestCase):
         # Normal releases keep both platforms on one version. Historical
         # macOS-only runs remain available through an explicit override.
         self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["include_linux"]["default"], True)
+        self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["include_windows"]["default"], False)
         jobs = config["jobs"]
         self.assertEqual(set(jobs), {"verify", "reserve", "sign", "publish"})
         self.assertNotIn("environment", jobs["verify"])
@@ -126,6 +127,10 @@ class AgentUpdatesWorkflows(unittest.TestCase):
         self.assertIn("--version", source)
         self.assertIn("--run-id", source)
         self.assertIn("--linux", source)
+        self.assertIn("--windows", source)
+        self.assertIn("AGENT_WINDOWS_UPDATES_ENABLED", str(verify))
+        self.assertIn('"$WINDOWS_ACTIVATED" = true', source)
+        self.assertIn('"$(jq -er .artifacts.windows trust.json)"', source)
         self.assertNotIn("secrets.", str(verify))
         self.assertNotIn("--unsigned", source)
         self.assertNotIn("gh release", source)

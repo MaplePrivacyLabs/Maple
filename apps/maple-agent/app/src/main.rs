@@ -35,6 +35,8 @@ mod tray;
 mod ui;
 #[cfg(feature = "desktop")]
 mod update;
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+mod windows_bootstrap;
 
 use backend::AgentBackend;
 use clap::{Args, Parser, Subcommand};
@@ -75,6 +77,22 @@ struct Cli {
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args"])]
     internal_theme_watch: bool,
+    /// Credential-free native installer admission before any installed write.
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, value_name = "INSTALL_ROOT", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    internal_windows_installer_preflight: Option<std::path::PathBuf>,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_preflight", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    internal_windows_installer_prepare: Vec<std::ffi::OsString>,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, value_name = "GENERATION", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    internal_windows_installer_activate: Option<String>,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_restart"])]
+    internal_windows_uninstall_cleanup: bool,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, value_name = "PROCESS_IDENTITY", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args"])]
+    internal_windows_restart: Option<String>,
     #[command(subcommand)]
     mode: Option<Mode>,
     /// Arguments a desktop launcher may append (file paths, `%u` expansions).
@@ -232,7 +250,96 @@ pub(crate) fn startup_elapsed() -> u128 {
 }
 
 fn main() {
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    if profile::PACKAGED {
+        // Delegate before Clap so the immutable bootstrap does not freeze the
+        // selected generation's CLI grammar or report its own old version.
+        match windows_bootstrap::delegate_before_parse(profile::PROFILE) {
+            Ok(Some(code)) => std::process::exit(code),
+            Ok(None) => {}
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        }
+    }
     let cli = Cli::parse();
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    {
+        // The stable launcher and installer modes never open application data,
+        // credentials or a host. Their paths and code identities are checked
+        // by the updater's native installer before mutation or delegation.
+        let internal = if let Some(root) = &cli.internal_windows_installer_preflight {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows installer checker".to_owned())
+                    .and_then(|exe| {
+                        maple_agent_updater::installer::preflight_windows_installation(
+                            &exe,
+                            root,
+                            profile::PROFILE,
+                        )
+                        .map_err(|error| error.to_string())
+                    }),
+            )
+        } else if !cli.internal_windows_installer_prepare.is_empty() {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows installer checker".to_owned())
+                    .and_then(|exe| {
+                        let root =
+                            std::path::PathBuf::from(&cli.internal_windows_installer_prepare[0]);
+                        let generation = cli.internal_windows_installer_prepare[1]
+                            .to_str()
+                            .ok_or_else(|| "Invalid Windows generation".to_owned())?;
+                        maple_agent_updater::installer::prepare_windows_installation(
+                            &exe,
+                            &root,
+                            profile::PROFILE,
+                            generation,
+                        )
+                        .map_err(|error| error.to_string())
+                    }),
+            )
+        } else if let Some(generation) = &cli.internal_windows_installer_activate {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows bootstrap".to_owned())
+                    .and_then(|exe| {
+                        maple_agent_updater::installer::activate_windows_installation(
+                            &exe,
+                            profile::PROFILE,
+                            generation,
+                        )
+                        .map_err(|error| error.to_string())
+                    }),
+            )
+        } else if cli.internal_windows_uninstall_cleanup {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows bootstrap".to_owned())
+                    .and_then(|exe| {
+                        maple_agent_updater::installer::cleanup_windows_installation(
+                            &exe,
+                            profile::PROFILE,
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                    }),
+            )
+        } else {
+            cli.internal_windows_restart
+                .as_deref()
+                .map(|identity| windows_bootstrap::run_restart(identity, profile::PROFILE))
+        };
+        if let Some(result) = internal {
+            if let Err(error) = result {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
     if cli.build_info {
         println!(
             "{}",

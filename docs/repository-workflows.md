@@ -149,6 +149,27 @@ Cargo build-script fixture before restore. Cache probes use
 `agent_cache_command.py` to identify the selected compiler while excluding its
 optional incidental installed-Rustup inventory.
 
+`agent-windows-updater-tests.yml` separately runs native updater, filesystem,
+Authenticode rejection and application bootstrap component tests on
+`windows-2025` for the affected Agent paths. It uses the existing pinned Windows
+Rust and linker setup without signing credentials, release environments or
+dependency-artifact restoration. Required native cases must execute, including
+reparse fixtures; missing fixture privileges fail the job. Its source/run/attempt
+receipt and Cargo logs are retained even on failure. The lightweight bootstrap
+target does not replace the real Windows application build, official Maple
+signature verification, signed installed A-to-B upgrade, visible GUI or paired
+remote upgrade qualification.
+
+The separate manual-only `agent-windows-signature-probe.yml` accepts an exact
+historical producer run/attempt/source and artifact ZIP/PE digests. It validates
+successful trusted-master Windows Prod build, signing and downloaded-consumer
+jobs, bounded ZIP bytes and package identity before reading the selected PE with
+the real admission/startup Authenticode verifier. It never launches that PE.
+There is no default historical reference or dependency from ordinary PR tests;
+expired references must be selected again explicitly. Its result proves only
+historical signature interoperability, not the new updater's installed upgrade
+or final-source release qualification.
+
 Agent workspace, provider, plain release and Desktop Dev/Prod builders first
 try `agent_dependency_archive.py` through the Actions artifact service. A
 consumer accepts only this repository's designated push/master workflow and

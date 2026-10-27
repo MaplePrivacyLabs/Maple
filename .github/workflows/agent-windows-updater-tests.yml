@@ -1,0 +1,93 @@
+name: Agent Windows Updater Tests
+
+# Native component tests run without the signing/publishing environments. A
+# green result is not qualification of an official signed installed upgrade.
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/agent-windows-updater-tests.yml"
+      - "scripts/ci/windows-updater-tests.ps1"
+      - "scripts/ci/test_windows_updater_workflow.py"
+      - "scripts/ci/agent_windows.py"
+      - "apps/maple-agent/Cargo.toml"
+      - "apps/maple-agent/Cargo.lock"
+      - "apps/maple-agent/app/Cargo.toml"
+      - "apps/maple-agent/crates/maple-agent-updater/**"
+      - "apps/maple-agent/release_profile.rs"
+      - "apps/maple-agent/release-profiles.json"
+      - "apps/maple-agent/app/src/main.rs"
+      - "apps/maple-agent/app/src/profile.rs"
+      - "apps/maple-agent/app/src/update.rs"
+      - "apps/maple-agent/app/src/desktop.rs"
+      - "apps/maple-agent/app/src/windows_bootstrap.rs"
+      - "apps/maple-agent/scripts/windows-release.py"
+      - "apps/maple-agent/scripts/windows-installer.nsi"
+      - "apps/maple-agent/scripts/release-info.py"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/agent-windows-updater-tests.yml"
+      - "scripts/ci/windows-updater-tests.ps1"
+      - "scripts/ci/test_windows_updater_workflow.py"
+      - "scripts/ci/agent_windows.py"
+      - "apps/maple-agent/Cargo.toml"
+      - "apps/maple-agent/Cargo.lock"
+      - "apps/maple-agent/app/Cargo.toml"
+      - "apps/maple-agent/crates/maple-agent-updater/**"
+      - "apps/maple-agent/release_profile.rs"
+      - "apps/maple-agent/release-profiles.json"
+      - "apps/maple-agent/app/src/main.rs"
+      - "apps/maple-agent/app/src/profile.rs"
+      - "apps/maple-agent/app/src/update.rs"
+      - "apps/maple-agent/app/src/desktop.rs"
+      - "apps/maple-agent/app/src/windows_bootstrap.rs"
+      - "apps/maple-agent/scripts/windows-release.py"
+      - "apps/maple-agent/scripts/windows-installer.nsi"
+      - "apps/maple-agent/scripts/release-info.py"
+  workflow_dispatch:
+
+concurrency:
+  group: agent-windows-updater-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-updater:
+    name: Native Windows updater component tests
+    runs-on: windows-2025
+    timeout-minutes: 35
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      RUSTFLAGS: -D warnings
+    steps:
+      - name: Checkout the tested source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install the repository's pinned Windows Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.98.0
+      - name: Select Windows MSVC and SDK
+        uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c
+        with:
+          arch: x64
+      - name: Pin and smoke-test the selected Windows linker
+        working-directory: apps/maple-agent
+        shell: pwsh
+        run: python3 ../../scripts/ci/agent_windows.py
+      - name: Exercise the native updater and bootstrap
+        shell: pwsh
+        run: ./scripts/ci/windows-updater-tests.ps1
+      - name: Retain the native test receipt and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-updater-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/maple-windows-updater-tests/
+          if-no-files-found: error
+          retention-days: 14

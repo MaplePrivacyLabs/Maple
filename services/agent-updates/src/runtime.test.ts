@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { fixture, PAYLOAD } from "./fixtures";
 import { linuxFixture } from "./linux-fixtures";
+import { windowsFixture } from "./windows-fixtures";
 
 // Miniflare is Wrangler's exact locked runtime dependency. Node hosts the
 // harness; assertions make real requests through workerd and its R2 binding.
@@ -26,7 +27,7 @@ test("real workerd R2 binding serves separate feeds, immutable bytes, ranges, HE
       import worker from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
       export default { async fetch(request,env) {
         if (new URL(request.url).pathname === '/__seed' && request.method === 'POST') {
-          const {metadata,linuxMetadata,payload} = await request.json();
+          const {metadata,linuxMetadata,windowsMetadata,payload} = await request.json();
           const bytes = Uint8Array.from(metadata);
           await env.AGENT_RELEASES.put('stable/latest.json',bytes);
           await env.AGENT_RELEASES.put('stable/releases/0.0.2/manifest.json',bytes);
@@ -35,6 +36,10 @@ test("real workerd R2 binding serves separate feeds, immutable bytes, ranges, HE
           await env.AGENT_RELEASES.put('stable/linux/latest.json',Uint8Array.from(linuxMetadata));
           await env.AGENT_RELEASES.put('stable/releases/0.0.2/linux-manifest.json',Uint8Array.from(linuxMetadata));
           await env.AGENT_RELEASES.put('stable/releases/0.0.2/Maple-Agent-linux-x86_64.tar.gz',Uint8Array.from(payload));
+          await env.AGENT_RELEASES.put('stable/windows/latest.json',Uint8Array.from(windowsMetadata));
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/windows-manifest.json',Uint8Array.from(windowsMetadata));
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/Maple-Agent-windows-x86_64.tar.gz',Uint8Array.from(payload));
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/Maple-Agent-windows-x86_64-setup.exe',Uint8Array.from(payload));
           await env.AGENT_RELEASES.put('stable/releases/0.0.2/publication-manifest.json',Uint8Array.from(payload));
           return new Response('seeded');
         }
@@ -84,6 +89,7 @@ test("real workerd R2 binding serves separate feeds, immutable bytes, ranges, HE
       body: JSON.stringify({
         metadata: Array.from(fixture().bytes),
         linuxMetadata: Array.from(linuxFixture().bytes),
+        windowsMetadata: Array.from(windowsFixture().bytes),
         payload: Array.from(PAYLOAD),
       }),
     });
@@ -149,6 +155,50 @@ test("real workerd R2 binding serves separate feeds, immutable bytes, ranges, HE
     expect(new Uint8Array(await linuxManifest.arrayBuffer())).toEqual(
       linuxFixture().bytes,
     );
+    const windows = windowsFixture();
+    const windowsLatest = await fetch(
+      `${origin}/agent/stable/windows/latest.json`,
+    );
+    expect(windowsLatest.status).toBe(200);
+    expect(windowsLatest.headers.get("cdn-cache-control")).toBe("no-store");
+    expect(new Uint8Array(await windowsLatest.arrayBuffer())).toEqual(
+      windows.bytes,
+    );
+    const windowsRedirect = await fetch(
+      `${origin}/download/agent/stable/windows`,
+      { redirect: "manual" },
+    );
+    expect(windowsRedirect.status).toBe(302);
+    expect(windowsRedirect.headers.get("location")).toBe(
+      windows.manifest.downloads.windows.path,
+    );
+    expect(windowsRedirect.headers.get("cache-control")).toBe("no-store");
+    const windowsManifest = await fetch(
+      `${origin}/agent/stable/releases/0.0.2/windows-manifest.json`,
+    );
+    expect(windowsManifest.status).toBe(200);
+    expect(new Uint8Array(await windowsManifest.arrayBuffer())).toEqual(
+      windows.bytes,
+    );
+    for (const artifact of [
+      windows.manifest.artifacts["windows-x86_64"],
+      windows.manifest.downloads.windows,
+    ]) {
+      const full = await fetch(`${origin}${artifact.path}`);
+      expect(full.status).toBe(200);
+      expect(new Uint8Array(await full.arrayBuffer())).toEqual(PAYLOAD);
+      const partial = await fetch(`${origin}${artifact.path}`, {
+        headers: { range: "bytes=2-7" },
+      });
+      expect(partial.status).toBe(206);
+      expect(new Uint8Array(await partial.arrayBuffer())).toEqual(
+        PAYLOAD.slice(2, 8),
+      );
+      const head = await fetch(`${origin}${artifact.path}`, { method: "HEAD" });
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-length")).toBe(String(PAYLOAD.length));
+      expect(await head.text()).toBe("");
+    }
     expect(
       (
         await fetch(

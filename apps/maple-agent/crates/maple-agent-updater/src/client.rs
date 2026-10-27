@@ -336,8 +336,8 @@ impl Updater {
                 "unsafe prepared payload destination"
             );
         }
-        tokio::fs::rename(&partial_path, &payload_path).await?;
-        std::fs::File::open(self.state.root.join("payloads"))?.sync_all()?;
+        state::replace_file(&partial_path, &payload_path)?;
+        state::sync_directory(&self.state.root.join("payloads"))?;
         self.state.save_prepared(&release)?;
         Ok(PreparedUpdate {
             release,
@@ -544,16 +544,7 @@ fn validate_range(value: &str, offset: u64, total: u64) -> Result<()> {
 }
 
 pub(crate) async fn verify_payload(path: &Path, artifact: &Artifact) -> Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    }
-    let file = options
-        .open(path)
-        .context("prepared payload is missing or unsafe")?;
+    let file = state::open_readonly(path).context("prepared payload is missing or unsafe")?;
     ensure!(
         file.metadata()?.file_type().is_file() && file.metadata()?.len() == artifact.size,
         "update payload has incorrect size"
@@ -578,7 +569,7 @@ pub(crate) async fn verify_payload(path: &Path, artifact: &Artifact) -> Result<(
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn test_updater(config: Config) -> Result<Updater> {
     Updater::construct(config, true)
 }

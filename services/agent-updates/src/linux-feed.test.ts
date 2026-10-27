@@ -266,6 +266,7 @@ test("Linux discovery cannot authorize a release without its complete immutable 
   expect(bucket.calls).toEqual([
     "get:stable/releases/0.0.2/manifest.json",
     "get:stable/releases/0.0.2/linux-manifest.json",
+    "get:stable/releases/0.0.2/windows-manifest.json",
   ]);
 });
 

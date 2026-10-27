@@ -1,6 +1,8 @@
+#[cfg(not(windows))]
+use std::{fs::OpenOptions, io::Read};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::{self, File},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -220,10 +222,25 @@ impl StateStore {
             let mut temporary = tempfile::NamedTempFile::new_in(&self.root)?;
             temporary.write_all(&after)?;
             temporary.as_file().sync_all()?;
-            temporary
-                .persist(&path)
-                .context("cannot persist updater state")?;
-            File::open(&self.root)?.sync_all()?;
+            #[cfg(windows)]
+            {
+                let (file, temporary_path) = temporary
+                    .keep()
+                    .context("cannot retain updater state temporary")?;
+                drop(file);
+                if let Err(error) = crate::installer::windows_atomic_replace(&temporary_path, &path)
+                {
+                    let _ = fs::remove_file(&temporary_path);
+                    return Err(error).context("cannot persist updater state");
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                temporary
+                    .persist(&path)
+                    .context("cannot persist updater state")?;
+            }
+            sync_directory(&self.root)?;
         }
         FileExt::unlock(&lock)?;
         Ok(result)
@@ -231,67 +248,120 @@ impl StateStore {
 }
 
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)?;
-    ensure!(
-        fs::symlink_metadata(path)?.file_type().is_dir(),
-        "updater directory is not a real directory"
-    );
-    #[cfg(unix)]
+    #[cfg(windows)]
+    return crate::installer::windows_private_directory(path).map_err(Into::into);
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        fs::create_dir_all(path)?;
+        ensure!(
+            fs::symlink_metadata(path)?.file_type().is_dir(),
+            "updater directory is not a real directory"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 pub(crate) fn open_private(path: &Path, truncate: bool) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(truncate);
-    #[cfg(unix)]
+    #[cfg(windows)]
+    return crate::installer::windows_open_private(path, truncate).map_err(Into::into);
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = OpenOptions::new();
         options
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(truncate);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let file = options.open(path)?;
+        ensure!(
+            file.metadata()?.file_type().is_file(),
+            "updater file is not regular"
+        );
+        Ok(file)
     }
-    let file = options.open(path)?;
-    ensure!(
-        file.metadata()?.file_type().is_file(),
-        "updater file is not regular"
-    );
-    Ok(file)
+}
+
+pub(crate) fn open_readonly(path: &Path) -> Result<File> {
+    #[cfg(windows)]
+    return crate::installer::windows_open_readonly(path).map_err(Into::into);
+    #[cfg(not(windows))]
+    {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let file = options.open(path)?;
+        ensure!(file.metadata()?.is_file(), "updater file is not regular");
+        Ok(file)
+    }
+}
+
+pub(crate) fn sync_directory(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    return crate::installer::windows_sync_directory(path).map_err(Into::into);
+    #[cfg(not(windows))]
+    {
+        File::open(path)?.sync_all()?;
+        Ok(())
+    }
+}
+
+pub(crate) fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    #[cfg(windows)]
+    return crate::installer::windows_atomic_replace(source, destination).map_err(Into::into);
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination)?;
+        Ok(())
+    }
 }
 
 pub(crate) fn read_bounded(path: &Path, maximum: u64) -> Result<Option<Vec<u8>>> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
+    #[cfg(windows)]
+    return crate::installer::windows_read_bounded(path, maximum).map_err(Into::into);
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let file = match options.open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            file.metadata()?.is_file(),
+            "updater state is not a regular file"
+        );
+        ensure!(
+            file.metadata()?.len() <= maximum,
+            "updater state is too large"
+        );
+        let mut bytes = Vec::new();
+        file.take(maximum + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() <= maximum as usize,
+            "updater state is too large"
+        );
+        Ok(Some(bytes))
     }
-    let file = match options.open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    ensure!(
-        file.metadata()?.is_file(),
-        "updater state is not a regular file"
-    );
-    ensure!(
-        file.metadata()?.len() <= maximum,
-        "updater state is too large"
-    );
-    let mut bytes = Vec::new();
-    file.take(maximum + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= maximum as usize,
-        "updater state is too large"
-    );
-    Ok(Some(bytes))
 }

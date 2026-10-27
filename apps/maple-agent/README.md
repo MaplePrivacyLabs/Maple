@@ -626,8 +626,9 @@ check.
 
 ## Update and release boundary
 
-Automatic updates currently support macOS and Linux. Windows Dev/Prod installers
-are Actions downloads with manual upgrades; see [desktop builds](docs/desktop-builds.md).
+Packaged Prod updates support macOS, Linux and Windows through separate signed
+platform feeds. Windows also provides a signed per-user manual installer;
+see [desktop builds](docs/desktop-builds.md).
 
 Packaged Prod builds use the independent signed Agent update feed. Dev and
 unpackaged/MDE builds do not check a production updater. The Prod profile pins
