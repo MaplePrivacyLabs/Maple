@@ -185,9 +185,6 @@ mod notification_policy_tests {
     }
 }
 
-/// Recent projects the project menu lists above "New project…".
-pub(super) const ROOT_MENU_RECENTS: usize = 6;
-
 /// How long a notice stays before it clears itself.
 const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 

@@ -4,14 +4,14 @@
 use std::sync::Arc;
 
 use gpui::{Context, Div, IntoElement, SharedString, Window, div, prelude::*, px};
-use maple_agent::agent::{AgentSlashCommand, RecentProjectRoot, SideQuestionTurn};
+use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
-    ROOT_MENU_RECENTS, SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
+    SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
@@ -82,22 +82,6 @@ impl ComposerControl {
         Self::Attachments,
         Self::Dictate,
     ];
-}
-
-/// Recent projects for the header menu. The default Maple workspace stays
-/// listed even when it sits past the recent cap.
-fn header_project_paths(recent_roots: &[RecentProjectRoot]) -> Vec<String> {
-    let mut paths: Vec<String> = recent_roots
-        .iter()
-        .take(ROOT_MENU_RECENTS)
-        .map(|root| root.path.clone())
-        .collect();
-    if let Some(workspace) = recent_roots.iter().find(|root| root.is_default_workspace)
-        && !paths.iter().any(|path| path == &workspace.path)
-    {
-        paths.push(workspace.path.clone());
-    }
-    paths
 }
 
 impl ChatScreen {
@@ -515,19 +499,22 @@ impl ChatScreen {
             .into_any_element()
     }
 
-    /// The header chip's menu: recent projects, then the shared folder chooser.
+    /// The header chip's menu: every project, most recent first, then the
+    /// shared folder chooser. A long list scrolls.
     fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
         let mut menu = Menu::new("project-menu", px(480.))
             .label("Projects")
+            .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
         if self.computers.len() > 1 {
             return self.computers_project_menu();
         }
-        let projects = header_project_paths(&self.recent_roots)
-            .into_iter()
-            .map(|path| {
-                let label = self.sidebar.read(cx).root_name(&path);
-                (path, label)
+        let projects = self
+            .recent_roots
+            .iter()
+            .map(|root| {
+                let label = self.sidebar.read(cx).root_name(&root.path);
+                (root.path.clone(), label)
             })
             .collect::<Vec<_>>();
         for (path, label) in &projects {
@@ -1518,7 +1505,7 @@ fn chip(
 
 #[cfg(test)]
 mod tests {
-    use super::{RecentProjectRoot, catalog_model_labels, header_project_paths};
+    use super::catalog_model_labels;
 
     #[test]
     fn model_labels_follow_research_catalog_precedence() {
@@ -1545,40 +1532,5 @@ mod tests {
         assert_eq!(labels["alias-a"], "Alias");
         assert_eq!(labels["alias-b"], "Automatic");
         assert_eq!(labels["alias-c"], "alias-c");
-    }
-
-    #[test]
-    fn the_header_keeps_the_owners_default_workspace_past_the_recent_cap() {
-        // The owner can redirect Documents. Neither its name nor path shape
-        // tells a controller which project is the built-in workspace.
-        for path in ["/mnt/personal/Maple", r"D:\Documents Redirected\Maple"] {
-            let mut roots: Vec<RecentProjectRoot> = (0..8)
-                .map(|index| RecentProjectRoot {
-                    path: format!("/tmp/project-{index}"),
-                    name: format!("Project {index}"),
-                    last_used_ms: 0,
-                    is_default_workspace: false,
-                    name_revision: 0,
-                })
-                .collect();
-            roots.push(RecentProjectRoot {
-                path: path.into(),
-                name: "My workspace".into(),
-                last_used_ms: 0,
-                is_default_workspace: true,
-                name_revision: 4,
-            });
-            roots.push(RecentProjectRoot {
-                path: "/archive/Documents/Maple".into(),
-                name: "Maple".into(),
-                last_used_ms: 0,
-                is_default_workspace: false,
-                name_revision: 0,
-            });
-            let shown = header_project_paths(&roots);
-            assert!(shown.iter().any(|root| root == path));
-            assert!(!shown.iter().any(|root| root == "/archive/Documents/Maple"));
-            assert!(shown.len() > 6);
-        }
     }
 }
