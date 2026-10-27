@@ -3,6 +3,7 @@
 mod state_tests {
     use std::sync::Arc;
 
+    use crate::backend::ToolStartSummary;
     use crate::ui::chat::attachments::MAX_DRAFT_ATTACHMENTS;
     use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
@@ -10,7 +11,7 @@ mod state_tests {
     use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove};
     use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
     use crate::ui::chat::*;
-    use gpui::TestAppContext;
+    use gpui::{Context, TestAppContext};
     use maple_agent::agent::{
         AgentMcpServer, AgentMcpTransport, AgentSessionIntegrationKind, AgentTaskState,
         RecentProjectRoot,
@@ -2414,36 +2415,225 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
-            // Running tools are not summarized.
-            let index = this
-                .apply_timeline_item("s1", long_tool("tool-1", "running"))
-                .unwrap();
-            this.maybe_summarize_tool(index, cx);
+            // A call still streaming its arguments has no input yet.
+            let mut started = item("tool-1", "tool", None);
+            started.status = Some("running".to_string());
+            this.apply_incoming_item("s1", started, cx);
             assert!(this.summary_requests.is_empty());
-            // Completed tools with long output are queued once.
-            let index = this
-                .apply_timeline_item("s1", long_tool("tool-1", "completed"))
-                .unwrap();
-            this.maybe_summarize_tool(index, cx);
+            // Once the input is complete the call is summarized while it
+            // runs, without waiting for its output.
+            let mut running = long_tool("tool-1", "running");
+            running.output = None;
+            this.apply_incoming_item("s1", running, cx);
             assert!(this.summary_requests.contains("tool-1"));
-            assert_eq!(this.pending_summaries, 1);
-            this.maybe_summarize_tool(index, cx);
-            assert_eq!(this.pending_summaries, 1);
-            // Short outputs queue too; only empty output is skipped.
-            let mut short = item("tool-2", "tool", None);
-            short.status = Some("completed".to_string());
-            short.input = Some(serde_json::json!({"q": 1}));
-            short.output = Some(serde_json::json!({"stdout": "ok"}));
-            let index = this.apply_timeline_item("s1", short).unwrap();
+            assert_eq!(this.summary_inflight.len(), 1);
+            // Its completion does not ask again.
+            this.apply_incoming_item("s1", long_tool("tool-1", "completed"), cx);
+            assert_eq!(this.summary_inflight.len(), 1);
+            // A call with no output at all is still summarized.
+            let mut silent = item("tool-2", "tool", None);
+            silent.status = Some("completed".to_string());
+            silent.input = Some(serde_json::json!({"q": 1}));
+            silent.output = Some(serde_json::json!({"stdout": "  "}));
+            let index = this.apply_timeline_item("s1", silent).unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.contains("tool-2"));
-            let mut empty = item("tool-3", "tool", None);
-            empty.status = Some("completed".to_string());
-            empty.input = Some(serde_json::json!({"q": 1}));
-            empty.output = Some(serde_json::json!({"stdout": "  "}));
-            let index = this.apply_timeline_item("s1", empty).unwrap();
-            this.maybe_summarize_tool(index, cx);
+            // Off in settings: nothing is asked.
+            this.summaries_enabled = false;
+            this.apply_incoming_item("s1", long_tool("tool-3", "running"), cx);
             assert!(!this.summary_requests.contains("tool-3"));
+        });
+    }
+
+    /// A tool row as the live run streams it: occurrence `n` of run-1.
+    fn live_tool(n: u64, status: &str) -> AgentTimelineItem {
+        let mut tool = long_tool(&format!("tool-{n}"), status);
+        if status == "running" {
+            tool.output = None;
+        }
+        tool.live = Some(maple_agent::agent::AgentLiveRowIdentity {
+            run_id: "run-1".to_string(),
+            occurrence: n,
+        });
+        tool
+    }
+
+    /// The same row once committed, as durable row `row_seq` of task s1.
+    fn durable_tool(n: u64, row_seq: i64) -> AgentTimelineItem {
+        let mut tool = live_tool(n, "completed");
+        tool.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+            task_id: "s1".to_string(),
+            rows_epoch: 1,
+            row_seq,
+            update_seq: 1,
+        });
+        tool
+    }
+
+    fn probe_summaries(this: &mut ChatScreen) {
+        this.summaries_enabled = true;
+        this.summary_probe = Some(Default::default());
+    }
+
+    fn probe(this: &ChatScreen) -> &summaries::SummaryProbe {
+        this.summary_probe.as_ref().unwrap()
+    }
+
+    fn answer(this: &mut ChatScreen, token: u64, label: &str, cx: &mut Context<ChatScreen>) {
+        let generation = this.summary_generation;
+        this.finish_summary(
+            token,
+            generation,
+            Ok(ToolStartSummary::Label(Some(label.to_string()))),
+            cx,
+        );
+    }
+
+    /// No summary state is left under a live key once its row is durable.
+    fn assert_no_live_keys(this: &ChatScreen) {
+        assert!(
+            this.tool_summaries
+                .keys()
+                .all(|key| !key.starts_with("live:"))
+        );
+        assert!(
+            this.summary_requests
+                .iter()
+                .all(|key| !key.starts_with("live:"))
+        );
+        assert!(this.unsaved_summaries.is_empty());
+        assert!(this.summary_queue.is_empty());
+        assert!(this.summary_inflight.is_empty());
+    }
+
+    fn assert_saved_once(this: &ChatScreen, row_seq: i64, label: &str) {
+        let saves = &probe(this).saves;
+        assert_eq!(saves.len(), 1);
+        assert_eq!(
+            (
+                saves[0].task.as_str(),
+                saves[0].rows_epoch,
+                saves[0].row_seq
+            ),
+            ("s1", 1, row_seq)
+        );
+        assert_eq!(saves[0].summary, label);
+    }
+
+    #[gpui::test]
+    fn test_tool_summary_persisted_before_its_reply_lands_on_the_durable_row(
+        cx: &mut TestAppContext,
+    ) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            probe_summaries(this);
+            this.apply_incoming_item("s1", live_tool(1, "running"), cx);
+            let (token, key, ask) = probe(this).requests[0].clone();
+            assert_eq!(
+                (key.as_str(), ask),
+                ("live:run-1:1", summaries::SummaryAsk::ToolStart)
+            );
+            // The row commits while the model is still answering.
+            this.apply_incoming_item("s1", durable_tool(1, 3), cx);
+            assert_eq!(probe(this).requests.len(), 1);
+            answer(this, token, "Lists the files", cx);
+            assert_eq!(probe(this).requests.len(), 1);
+            assert_eq!(
+                this.tool_summaries.get("stored:s1:1:3").map(|s| s.as_ref()),
+                Some("Lists the files")
+            );
+            assert_saved_once(this, 3, "Lists the files");
+            assert_no_live_keys(this);
+        });
+    }
+
+    #[gpui::test]
+    fn test_tool_summary_reply_before_persistence_is_stored_once_durable(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            probe_summaries(this);
+            this.apply_incoming_item("s1", live_tool(1, "running"), cx);
+            let token = probe(this).requests[0].0;
+            answer(this, token, "Lists the files", cx);
+            // Live-only so far: shown, not stored.
+            assert!(this.tool_summaries.contains_key("live:run-1:1"));
+            assert!(probe(this).saves.is_empty());
+            this.apply_incoming_item("s1", durable_tool(1, 3), cx);
+            assert_eq!(probe(this).requests.len(), 1);
+            assert_eq!(
+                this.tool_summaries.get("stored:s1:1:3").map(|s| s.as_ref()),
+                Some("Lists the files")
+            );
+            assert_saved_once(this, 3, "Lists the files");
+            assert_no_live_keys(this);
+        });
+    }
+
+    #[gpui::test]
+    fn test_queued_tool_summary_follows_its_row_when_it_becomes_durable(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            probe_summaries(this);
+            for n in 1..=4 {
+                this.apply_incoming_item("s1", live_tool(n, "running"), cx);
+            }
+            // Three ride; the fourth waits for a slot.
+            assert_eq!(probe(this).requests.len(), 3);
+            assert_eq!(this.summary_queue.len(), 1);
+            this.apply_incoming_item("s1", durable_tool(4, 9), cx);
+            assert_eq!(probe(this).requests.len(), 3);
+            for token in [0, 1, 2] {
+                answer(this, token, &format!("Call {token}"), cx);
+            }
+            // The freed slot asks for the row under its durable key.
+            assert_eq!(probe(this).requests.len(), 4);
+            let (token, key, _) = probe(this).requests[3].clone();
+            assert_eq!(key, "stored:s1:1:9");
+            answer(this, token, "Fourth call", cx);
+            assert_eq!(probe(this).requests.len(), 4);
+            assert_eq!(
+                this.tool_summaries.get("stored:s1:1:9").map(|s| s.as_ref()),
+                Some("Fourth call")
+            );
+            assert!(!this.tool_summaries.contains_key("live:run-1:4"));
+            // Only the durable row is stored; the others are still live.
+            assert_saved_once(this, 9, "Fourth call");
+            assert_eq!(this.unsaved_summaries.len(), 3);
+        });
+    }
+
+    #[gpui::test]
+    fn test_host_without_input_summaries_summarizes_that_call_from_its_output(
+        cx: &mut TestAppContext,
+    ) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            probe_summaries(this);
+            this.apply_incoming_item("s1", live_tool(1, "running"), cx);
+            let generation = this.summary_generation;
+            this.finish_summary(0, generation, Ok(ToolStartSummary::NeedsOutput), cx);
+            // That call waits for its output; the next call checks support
+            // again instead of remembering the host as unsupported.
+            this.apply_incoming_item("s1", live_tool(2, "running"), cx);
+            assert_eq!(probe(this).requests.len(), 2);
+            assert_eq!(probe(this).requests[1].2, summaries::SummaryAsk::ToolStart);
+            // The waiting row commits, then completes: it is asked once, with
+            // its output, under its durable key.
+            this.apply_incoming_item("s1", durable_tool(1, 3), cx);
+            let (token, key, ask) = probe(this).requests[2].clone();
+            assert_eq!(key, "stored:s1:1:3");
+            assert!(
+                matches!(ask, summaries::SummaryAsk::ToolOutput(output) if output.contains("xxx"))
+            );
+            answer(this, token, "Listed the files", cx);
+            this.apply_incoming_item("s1", durable_tool(1, 3), cx);
+            assert_eq!(probe(this).requests.len(), 3);
+            assert_saved_once(this, 3, "Listed the files");
+            assert!(
+                this.output_summaries
+                    .iter()
+                    .all(|key| !key.starts_with("live:"))
+            );
         });
     }
 
@@ -2485,14 +2675,14 @@ mod state_tests {
                 this.maybe_summarize_tool(index, cx);
             }
             // Three ride at once; the rest wait instead of being dropped.
-            assert_eq!(this.pending_summaries, 3);
+            assert_eq!(this.summary_inflight.len(), 3);
             assert_eq!(this.summary_queue.len(), 2);
             assert_eq!(this.summary_requests.len(), 5);
             // A session switch restarts the slots and drops the queue.
             let before = this.summary_generation;
             this.set_active_session(summary("s2", "B"), Vec::new(), HashMap::new(), cx);
             assert_eq!(this.summary_generation, before + 1);
-            assert_eq!(this.pending_summaries, 0);
+            assert!(this.summary_inflight.is_empty());
             assert!(this.summary_queue.is_empty());
             assert!(this.summary_requests.is_empty());
         });

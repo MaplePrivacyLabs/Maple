@@ -168,6 +168,7 @@ pub enum Method {
     ListSlashCommands,
     ResolveSlashCommand,
     SummarizeToolCall,
+    SummarizeToolCallStart,
     SummarizeThinking,
     AskSideQuestion,
     ContextUsage,

@@ -11,6 +11,8 @@ pub const PEER_INFO_CAPABILITY: &str = "peer_info_v1";
 pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
 pub const REFRESH_CAPABILITY: &str = "remote_update_refresh_v1";
 pub const PROJECT_FOLDERS_CAPABILITY: &str = "project_folders_v1";
+/// The host summarizes a tool call from its input as the call starts.
+pub const TOOL_SUMMARY_START_CAPABILITY: &str = "tool_summary_start_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolInfo {
@@ -28,6 +30,7 @@ impl ProtocolInfo {
                 INSTALL_CAPABILITY.into(),
                 REFRESH_CAPABILITY.into(),
                 PROJECT_FOLDERS_CAPABILITY.into(),
+                TOOL_SUMMARY_START_CAPABILITY.into(),
             ],
         }
     }
@@ -238,6 +241,10 @@ impl PeerInfo {
 
     pub fn supports_project_folders(&self) -> bool {
         self.protocol.supports(PROJECT_FOLDERS_CAPABILITY)
+    }
+
+    pub fn supports_tool_summary_start(&self) -> bool {
+        self.protocol.supports(TOOL_SUMMARY_START_CAPABILITY)
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
@@ -934,6 +941,32 @@ mod tests {
             !info.supports_project_folders(),
             "a minor version alone is not a capability"
         );
+    }
+
+    #[test]
+    fn input_only_tool_summaries_need_the_capability_and_current_major() {
+        // Agent 0.0.9 (management 7.1.0) answers peer info without the
+        // capability; a viewer keeps the output-based summaries with it.
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("tool_summary_compat.json")).unwrap();
+        let without: PeerInfo =
+            serde_json::from_value(fixtures["peer_info_without_tool_summary_start"].clone())
+                .unwrap();
+        without.validate().unwrap();
+        assert!(without.supports_remote_updates());
+        assert!(!without.supports_tool_summary_start());
+        let mut info = PeerInfo {
+            protocol: ProtocolInfo::current(),
+            ..without
+        };
+        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+            info.protocol.version = version.into();
+            assert!(info.supports_tool_summary_start(), "{version}");
+        }
+        for version in ["6.2.0", "8.0.0", "invalid"] {
+            info.protocol.version = version.into();
+            assert!(!info.supports_tool_summary_start(), "{version}");
+        }
     }
 
     #[test]

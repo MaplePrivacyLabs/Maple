@@ -2816,6 +2816,22 @@ impl LocalBackend {
             .await
     }
 
+    /// One-line summary of a tool call from its name and input, asked as
+    /// the call starts.
+    pub async fn summarize_tool_call_start(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        tool_name: String,
+        input: Option<serde_json::Value>,
+    ) -> Result<Option<String>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .summarize_tool_call_start(session_id, &tool_name, input.as_ref())
+            .await
+    }
+
     /// One-line summary of a finished thinking block from the summary model.
     pub async fn summarize_thinking(
         &self,

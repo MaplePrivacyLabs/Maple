@@ -31,6 +31,19 @@ use tokio::{runtime::Runtime, sync::mpsc};
 
 const RETIRED_AFTER_UPDATE: &str = "Maple has been updated. Quit and reopen Maple to continue.";
 
+/// How long a remote viewer waits for the host's optional capabilities
+/// before summarizing that call from its output instead.
+const TOOL_SUMMARY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What a tool summary asked as the call starts came back with.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ToolStartSummary {
+    /// The label, or `None` when the model gave nothing usable.
+    Label(Option<String>),
+    /// The remote host predates input-only summaries.
+    NeedsOutput,
+}
+
 pub struct AgentBackend {
     runtime: tokio::runtime::Handle,
     owned_runtime: Option<Runtime>,
@@ -40,6 +53,9 @@ pub struct AgentBackend {
     remote_host: Option<String>,
     retired_after_update: Arc<AtomicBool>,
     subscription_sequence: AtomicU64,
+    /// Whether the remote host's validated peer information advertises
+    /// input-only tool summaries; failed discovery is not remembered.
+    tool_summary_start: std::sync::OnceLock<bool>,
 }
 
 impl Drop for AgentBackend {
@@ -254,6 +270,7 @@ operations! {
     list_slash_commands(user_id: (&str), working_dir: (Option<String>)) -> Vec<AgentSlashCommand>;
     resolve_slash_command(user_id: (&str), working_dir: (Option<String>), command: (String), args: (String)) -> Option<String>;
     summarize_tool_call(user_id: (&str), session_id: (&str), tool_name: (String), input: (Option<serde_json::Value>), output_text: (String)) -> Option<String>;
+    summarize_tool_call_start(user_id: (&str), session_id: (&str), tool_name: (String), input: (Option<serde_json::Value>)) -> Option<String>;
     summarize_thinking(user_id: (&str), session_id: (&str), thinking_text: (String)) -> Option<String>;
     ask_side_question(user_id: (&str), session_id: (&str), request_id: (String), prior: (Vec<maple_agent::agent::SideQuestionTurn>), question: (String)) -> ();
     context_usage(user_id: (&str), session_id: (&str), model: (Option<&str>)) -> Option<(i64, i64)>;
@@ -282,6 +299,7 @@ impl AgentBackend {
             remote_host: None,
             retired_after_update: Arc::new(AtomicBool::new(false)),
             subscription_sequence: AtomicU64::new(0),
+            tool_summary_start: std::sync::OnceLock::new(),
         })
     }
 
@@ -304,6 +322,7 @@ impl AgentBackend {
             remote_host: None,
             retired_after_update: Arc::new(AtomicBool::new(false)),
             subscription_sequence: AtomicU64::new(0),
+            tool_summary_start: std::sync::OnceLock::new(),
         }
     }
 
@@ -320,6 +339,7 @@ impl AgentBackend {
             remote_host: None,
             retired_after_update: Arc::new(AtomicBool::new(false)),
             subscription_sequence: AtomicU64::new(0),
+            tool_summary_start: std::sync::OnceLock::new(),
         })
     }
 
@@ -352,6 +372,7 @@ impl AgentBackend {
             remote_host: Some(peer),
             retired_after_update: self.retired_after_update.clone(),
             subscription_sequence: AtomicU64::new(0),
+            tool_summary_start: std::sync::OnceLock::new(),
         }))
     }
 
@@ -377,6 +398,62 @@ impl AgentBackend {
     pub fn remote_host(&self) -> Option<&str> {
         self.remote_host.as_deref()
     }
+
+    /// Summarize a tool call from its input as it starts. A remote host
+    /// must advertise the optional capability; otherwise the caller keeps
+    /// the output-based `summarize_tool_call` once the call completes.
+    pub async fn summarize_starting_tool_call(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        tool_name: String,
+        input: Option<serde_json::Value>,
+    ) -> Result<ToolStartSummary, String> {
+        if !self.host_summarizes_tool_calls_at_start().await {
+            return Ok(ToolStartSummary::NeedsOutput);
+        }
+        self.summarize_tool_call_start(user_id, session_id, tool_name, input)
+            .await
+            .map(ToolStartSummary::Label)
+    }
+
+    async fn host_summarizes_tool_calls_at_start(&self) -> bool {
+        // The local host always runs this build.
+        if self.remote_host.is_none() {
+            return true;
+        }
+        if let Some(&known) = self.tool_summary_start.get() {
+            return known;
+        }
+        // Read the host's optional capabilities over this task connection.
+        // The read changes no pairing or update state. Only a validated
+        // answer is cached, for this connection; a probe that fails or
+        // times out leaves this call on the output-based summary and the
+        // next call asks again.
+        let probe = tokio::time::timeout(
+            TOOL_SUMMARY_PROBE_TIMEOUT,
+            self.call::<crate::remote::update::PeerInfo>("peer_info", serde_json::json!({})),
+        )
+        .await;
+        match probe {
+            Ok(Ok(info)) if info.validate().is_ok() => *self
+                .tool_summary_start
+                .get_or_init(|| info.supports_tool_summary_start()),
+            Ok(Ok(_)) => {
+                log::debug!("Remote capabilities were invalid; summarizing from output");
+                false
+            }
+            Ok(Err(_)) => {
+                log::debug!("Remote capability probe failed; summarizing from output");
+                false
+            }
+            Err(_) => {
+                log::debug!("Remote capability probe timed out; summarizing from output");
+                false
+            }
+        }
+    }
+
     pub async fn remote_setting<R: DeserializeOwned>(
         &self,
         method: &str,
@@ -733,6 +810,61 @@ mod tests {
     }
 
     #[test]
+    fn legacy_tool_summary_call_keeps_its_wire_shape() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("remote/tool_summary_compat.json")).unwrap();
+        let shipped = &fixtures["legacy_summarize_command"];
+        // Old client → new host: the shipped five-argument command still
+        // decodes and reaches the output-based summary.
+        let command: crate::remote::wire::Command =
+            serde_json::from_value(shipped.clone()).unwrap();
+        assert_eq!(
+            command.method,
+            crate::remote::wire::Method::SummarizeToolCall
+        );
+        // New client → any host: a finished call on an older host sends
+        // exactly the shipped arguments.
+        assert_eq!(
+            serde_json::to_value((
+                "account",
+                "task",
+                "Terminal".to_string(),
+                Some(serde_json::json!({"command": "ls"})),
+                "main.rs".to_string(),
+            ))
+            .unwrap(),
+            shipped["params"]
+        );
+        let backend = fixture();
+        let runtime = backend.runtime_handle();
+        runtime.block_on(async {
+            let legacy = backend
+                .call::<Option<String>>("summarize_tool_call", command.params.clone())
+                .await;
+            assert_ne!(legacy, Err("Invalid host request parameters".into()));
+            // The input-only call is a separate operation with its own shape.
+            let start = backend
+                .call::<Option<String>>("summarize_tool_call_start", command.params)
+                .await;
+            assert_eq!(start, Err("Invalid host request parameters".into()));
+        });
+    }
+
+    #[test]
+    fn failed_tool_summary_capability_probe_is_not_remembered() {
+        let mut backend =
+            AgentBackend::for_test("http://127.0.0.1:1".into(), String::new()).unwrap();
+        // The local host is always this build.
+        let runtime = backend.runtime_handle();
+        assert!(runtime.block_on(backend.host_summarizes_tool_calls_at_start()));
+        // A remote host whose capabilities cannot be read keeps this call on
+        // the output-based summary, and the next call asks again.
+        backend.remote_host = Some("peer".into());
+        assert!(!runtime.block_on(backend.host_summarizes_tool_calls_at_start()));
+        assert!(backend.tool_summary_start.get().is_none());
+    }
+
+    #[test]
     fn retired_frontend_rejects_rpc_send_and_native_permissions_but_can_run_cleanup() {
         struct MustNotSerialize;
         impl Serialize for MustNotSerialize {
@@ -870,6 +1002,7 @@ mod tests {
                 remote_host: None,
                 retired_after_update: Arc::new(AtomicBool::new(false)),
                 subscription_sequence: AtomicU64::new(0),
+                tool_summary_start: std::sync::OnceLock::new(),
             }
         }
 
