@@ -28,7 +28,8 @@ NIX_INPUTS = {"source-tag": "v3.23.3", "github-token": ""}
 VERIFY_NIX = "bash scripts/ci/verify-nix-runtime.sh"
 SETUP_NIX = "./.github/actions/setup-nix"
 PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}")
-GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+")
+# Standard images, and the org's GitHub-hosted larger runners (named maple-*).
+GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|maple-(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+")
 CLOUDFLARE = frozenset({"CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"})
 # Every protected environment and the secrets configured in it.
 ENVIRONMENTS = {
@@ -68,6 +69,7 @@ BRANCH_SCOPED_NIX = frozenset({("opensecret-eif.yml", "eif")})
 # cache lives in Blacksmith's. The release and the Nix installer also use GitHub's.
 GITHUB_STORE_WRITERS = frozenset({
     ("desktop-build.yml", "build-windows"),  # the signed Research Windows build
+    ("agent-desktop-build.yml", "windows-build"),  # the unsigned Agent Windows build (exact key)
     # The Agent lanes on GitHub's Windows image (scripts/ci/lanes.py GITHUB_WINDOWS):
     # agent-full-windows in the windows matrix, the updater tests and the packaging rehearsal.
     ("ci.yml", "windows"), ("ci.yml", "agent-windows-updater"), ("ci.yml", "agent-package-windows"),

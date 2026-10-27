@@ -162,7 +162,7 @@ jobs:
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['agent-windows-updater']
     # GitHub's image, as the native updater tests require (scripts/ci/lanes.py GITHUB_WINDOWS).
-    runs-on: ${{ vars.CI_WINDOWS_GITHUB_RUNNER || 'windows-2025' }}
+    runs-on: ${{ vars.CI_WINDOWS_GITHUB_RUNNER || 'maple-windows-2025-16core' }}
     timeout-minutes: 60
     defaults:
       run:
@@ -291,7 +291,7 @@ jobs:
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['agent-package-windows']
     # GitHub's image, where master's install smoke runs (scripts/ci/lanes.py GITHUB_WINDOWS).
-    runs-on: ${{ vars.CI_WINDOWS_GITHUB_RUNNER || 'windows-2025' }}
+    runs-on: ${{ vars.CI_WINDOWS_GITHUB_RUNNER || 'maple-windows-2025-16core' }}
     timeout-minutes: 90
     defaults:
       run:

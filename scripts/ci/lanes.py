@@ -42,8 +42,9 @@ GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile no
 # The Agent updater's native Windows tests and the installer smoke test need GitHub's
 # runner: Blacksmith's workspace inherits a foreign write ACE the updater rejects, and
 # master's Windows install smoke (agent-desktop-build.yml verify-windows) runs there too.
-# Its variable may also name a larger GitHub runner, which shares GitHub's cache store.
-GITHUB_WINDOWS = Runner("windows-2025", "CI_WINDOWS_GITHUB_RUNNER")
+# Its home is the org's 16-core GitHub-hosted Windows 2025 runner (the same image family,
+# GitHub's cache store); CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
+GITHUB_WINDOWS = Runner("maple-windows-2025-16core", "CI_WINDOWS_GITHUB_RUNNER")
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"

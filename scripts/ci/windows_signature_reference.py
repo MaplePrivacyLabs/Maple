@@ -19,7 +19,7 @@ JOBS = ("Build Windows binary (prod)", "Signed Windows (prod)",
         "Verify downloaded Windows (prod)")
 # The runner each job may report. Signing and verification run on GitHub's
 # image; the unsigned build runs on Blacksmith's (on GitHub's before CI moved it).
-RUNNERS = ({"windows-2025", "blacksmith-8vcpu-windows-2025"}, {"windows-2025"}, {"windows-2025"})
+RUNNERS = ({"windows-2025", "blacksmith-8vcpu-windows-2025", "maple-windows-2025-16core"}, {"windows-2025"}, {"windows-2025"})
 MAX_ZIP = 64 * 1024 * 1024
 
 

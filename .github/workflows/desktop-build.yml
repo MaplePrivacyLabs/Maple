@@ -244,7 +244,7 @@ jobs:
   build-windows:
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.windows != 'false') }}
-    runs-on: windows-2025
+    runs-on: maple-windows-2025-16core
     timeout-minutes: 150
     environment: windows-signing
     permissions:

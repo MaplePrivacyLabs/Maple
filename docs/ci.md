@@ -120,8 +120,9 @@ Lanes use Blacksmith runners or GitHub-hosted runners; the runner
 constants are at the top of `scripts/ci/lanes.py`. During an outage, set the
 repository variable `CI_LINUX_RUNNER`, `CI_LINUX_HEAVY_RUNNER`,
 `CI_MACOS_RUNNER` or `CI_WINDOWS_RUNNER` to another label; no pull request is
-needed. `CI_WINDOWS_GITHUB_RUNNER` moves the three Agent lanes on GitHub's
-`windows-2025` (`agent-full-windows`, `agent-windows-updater`,
-`agent-package-windows`), for example to a larger GitHub runner (billed by the
-minute), which uses the same cache store. A runner from the other vendor never
+needed. The three Agent lanes that need GitHub's Windows image
+(`agent-full-windows`, `agent-windows-updater`, `agent-package-windows`) run on
+the org's 16-core GitHub-hosted runner `maple-windows-2025-16core` (billed by the
+minute); `CI_WINDOWS_GITHUB_RUNNER=windows-2025` moves them back to the standard
+runner, which uses the same cache store. A runner from the other vendor never
 saves a cache.

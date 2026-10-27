@@ -40,9 +40,9 @@ branches in step with the lane table.
   store of the lane's own runner vendor; a runner from the other vendor (a
   failover) only restores. Heavy Rust caches therefore live in Blacksmith's
   store. GitHub's holds what GitHub-hosted jobs need: the lane caches of
-  `agent-full-windows` and `agent-windows-updater` on `windows-2025`, the
-  `agent-package-windows` packaging cache (below), the Research Windows signed
-  build, the release, the Nix installer and that EIF check.
+  `agent-full-windows` and `agent-windows-updater`, the
+  `agent-package-windows` packaging cache (below), the unsigned Agent and signed
+  Research Windows builds, the release, the Nix installer and that EIF check.
   `test_workflow_policy.py` lists these writers.
 - The signed master builds write the keys `release.yml` restores by prefix
   (`<os>-sccache-*`, `xcode-cache-*`, `release-onnxruntime-ios-*`,
@@ -215,16 +215,15 @@ Compilation runs on Blacksmith runners (ARM64 `blacksmith-6vcpu-macos-26` for
 macOS); lane runners are the constants in `scripts/ci/lanes.py`. The signed
 Research macOS, Linux, Android and iOS builds compile and sign on Blacksmith.
 Artifact verifiers, TestFlight submission, and the Agent's signing and
-attestation use GitHub-hosted runners. Windows signing and the Windows release
-stay on GitHub's `windows-2025`; unsigned Agent and Research Windows builds use
-`blacksmith-8vcpu-windows-2025`, with Rust, MSVC, Perl and the linker pinned by
-`.github/actions/setup-agent-windows` for the Agent. The Agent's native Windows
-test lanes (`agent-windows-updater`, `agent-full-windows`) and the Windows
-packaging rehearsal also run on GitHub's `windows-2025`: Blacksmith's workspace
-inherits a foreign write ACE that the updater's storage validation rejects, and
-master's install smoke runs on GitHub's image. These three lanes keep their
-caches in GitHub's store; `CI_WINDOWS_GITHUB_RUNNER` can move them to a larger
-GitHub runner ([CI runners](ci.md#runners)). The Research Windows PR package
+attestation use GitHub-hosted runners. Windows builds that compile run on the
+org's 16-core GitHub-hosted runner `maple-windows-2025-16core`: the unsigned Agent
+build, the signed Research build, the release's `build-windows`, and the Agent's
+native Windows test lanes and packaging rehearsal ([CI runners](ci.md#runners)).
+The short signing and verify jobs stay on GitHub's standard `windows-2025`. Rust,
+MSVC, Perl and the linker are pinned by `.github/actions/setup-agent-windows` for
+the Agent. Blacksmith's Windows workspace inherits a foreign write ACE that the
+updater's storage validation rejects, so only the Agent Windows Clippy lane and
+the Research Windows PR package use `blacksmith-8vcpu-windows-2025`; the latter
 has no cache, because its signed build's cache lives in GitHub's store.
 
 Research desktop and iOS builds select Xcode 26.5 (`17F42`) from

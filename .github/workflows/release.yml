@@ -249,7 +249,7 @@ jobs:
 
   build-windows:
     needs: classify-app-release
-    runs-on: windows-2025
+    runs-on: maple-windows-2025-16core
     environment: windows-signing
     env:
       MAPLE_WINDOWS_ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
