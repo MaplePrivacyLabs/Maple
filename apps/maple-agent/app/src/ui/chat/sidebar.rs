@@ -430,6 +430,13 @@ struct SidebarMenuItem {
     on_click: MenuAction,
 }
 
+/// Ordinary task actions, workflow changes and deletion occupy separate groups.
+struct TaskMenuItems {
+    actions: Vec<SidebarMenuItem>,
+    workflow: Vec<SidebarMenuItem>,
+    delete: SidebarMenuItem,
+}
+
 /// Destructive project actions are rendered in their own popup section.
 struct ProjectMenuItems {
     actions: Vec<SidebarMenuItem>,
@@ -2350,33 +2357,33 @@ impl Sidebar {
         self.popup.toggle(SidebarPopup::Task(session_id), cx);
     }
 
-    /// The overflow menu of a task row: rename, then where the task can
-    /// go. Active tasks pin, settle, archive, or delete; settled tasks
-    /// reopen, archive, or delete; archived tasks reopen or delete.
-    fn task_menu_items(&self, task: SidebarTaskEntry) -> Vec<SidebarMenuItem> {
-        let Some(row) = self.rows.get(task.session) else {
-            return Vec::new();
-        };
+    /// Task actions are grouped by organization/editing, workflow, then deletion.
+    fn task_menu_items(&self, task: SidebarTaskEntry) -> Option<TaskMenuItems> {
+        let row = self.rows.get(task.session)?;
         let rung = TaskRung::of(task);
+        let mut actions = Vec::new();
+        if rung == TaskRung::Active {
+            let task_id = row.id.to_string();
+            actions.push(SidebarMenuItem {
+                id: row.menu_pin_id.clone(),
+                icon: "pin",
+                label: if task.pinned {
+                    "Unpin task"
+                } else {
+                    "Pin task"
+                },
+                on_click: Box::new(move |this, cx| this.toggle_task_pin(&task_id, cx)),
+            });
+        }
         let rename_id = row.id.to_string();
-        let mut items = vec![SidebarMenuItem {
+        actions.push(SidebarMenuItem {
             id: row.menu_rename_id.clone(),
             icon: "pencil",
             label: "Rename task",
             on_click: Box::new(move |this, cx| {
                 this.begin_rename(RenameTarget::Task(rename_id.clone()), cx)
             }),
-        }];
-        if rung == TaskRung::Active {
-            let pinned_id = row.id.to_string();
-            let pinned = task.pinned;
-            items.push(SidebarMenuItem {
-                id: row.menu_pin_id.clone(),
-                icon: "pin",
-                label: if pinned { "Unpin task" } else { "Pin task" },
-                on_click: Box::new(move |this, cx| this.toggle_task_pin(&pinned_id, cx)),
-            });
-        }
+        });
         let moves: &[(TaskMove, &SharedString, &'static str, &'static str)] = match rung {
             TaskRung::Active => &[
                 (
@@ -2390,12 +2397,6 @@ impl Sidebar {
                     &row.menu_archive_id,
                     "archive",
                     "Archive task",
-                ),
-                (
-                    TaskMove::Deleted,
-                    &row.menu_delete_id,
-                    "trash-2",
-                    "Delete task",
                 ),
             ],
             TaskRung::Settled => &[
@@ -2411,38 +2412,38 @@ impl Sidebar {
                     "archive",
                     "Archive task",
                 ),
-                (
-                    TaskMove::Deleted,
-                    &row.menu_delete_id,
-                    "trash-2",
-                    "Delete task",
-                ),
             ],
-            TaskRung::Archived => &[
-                (
-                    TaskMove::Active,
-                    &row.menu_reopen_id,
-                    "undo-2",
-                    "Reopen task",
-                ),
-                (
-                    TaskMove::Deleted,
-                    &row.menu_delete_id,
-                    "trash-2",
-                    "Delete task",
-                ),
-            ],
+            TaskRung::Archived => &[(
+                TaskMove::Active,
+                &row.menu_reopen_id,
+                "undo-2",
+                "Reopen task",
+            )],
         };
-        for &(to, id, icon, label) in moves {
-            let session_id = row.id.to_string();
-            items.push(SidebarMenuItem {
-                id: id.clone(),
-                icon,
-                label,
-                on_click: Box::new(move |this, cx| this.move_task(&session_id, to, cx)),
-            });
-        }
-        items
+        let workflow = moves
+            .iter()
+            .map(|&(to, id, icon, label)| {
+                let task_id = row.id.to_string();
+                SidebarMenuItem {
+                    id: id.clone(),
+                    icon,
+                    label,
+                    on_click: Box::new(move |this, cx| this.move_task(&task_id, to, cx)),
+                }
+            })
+            .collect();
+        let task_id = row.id.to_string();
+        let delete = SidebarMenuItem {
+            id: row.menu_delete_id.clone(),
+            icon: "trash-2",
+            label: "Delete task",
+            on_click: Box::new(move |this, cx| this.move_task(&task_id, TaskMove::Deleted, cx)),
+        };
+        Some(TaskMenuItems {
+            actions,
+            workflow,
+            delete,
+        })
     }
 
     /// Send a task to a rung. The runtime owns the state, so every move
@@ -2482,9 +2483,13 @@ impl Sidebar {
     #[cfg(test)]
     pub(super) fn task_menu_labels_for_test(&self, session_id: &str) -> Vec<&'static str> {
         self.task_menu_entry(session_id)
-            .map(|task| {
-                self.task_menu_items(task)
+            .and_then(|task| self.task_menu_items(task))
+            .map(|items| {
+                items
+                    .actions
                     .into_iter()
+                    .chain(items.workflow)
+                    .chain(std::iter::once(items.delete))
                     .map(|item| item.label)
                     .collect()
             })
@@ -3626,10 +3631,17 @@ impl Sidebar {
         let key = SidebarPopup::Task(row.id.clone());
         let open = self.popup.is_open(&key);
         let menu = open.then(|| {
-            let menu = Menu::new(row.menu_panel_id.clone(), px(180.))
+            let mut menu = Menu::new(row.menu_panel_id.clone(), px(180.))
                 .label("Task options")
-                .application_vim(self.application_vim_enabled)
-                .items(self.task_menu_items(task).into_iter().map(menu_item));
+                .application_vim(self.application_vim_enabled);
+            if let Some(items) = self.task_menu_items(task) {
+                menu = menu
+                    .items(items.actions.into_iter().map(menu_item))
+                    .separator()
+                    .items(items.workflow.into_iter().map(menu_item))
+                    .separator()
+                    .item(menu_item(items.delete));
+            }
             self.popup.render(menu, Placement::BelowEnd, window, cx)
         });
         let session = row.id.clone();

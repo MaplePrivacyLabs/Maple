@@ -5854,8 +5854,8 @@ mod state_tests {
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s1"),
                 vec![
-                    "Rename task",
                     "Pin task",
+                    "Rename task",
                     "Settle task",
                     "Archive task",
                     "Delete task"
@@ -6185,8 +6185,8 @@ mod state_tests {
         let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
         cx.run_until_parked();
-        // "Rename task" comes first.
-        cx.simulate_keystrokes("down enter");
+        // Pin comes first; Rename follows it.
+        cx.simulate_keystrokes("down down enter");
         assert!(matches!(
             sidebar.update(cx, |sidebar, _| sidebar.rename_target()),
             Some(RenameTarget::Task(ref target)) if target == "s1"
@@ -6202,12 +6202,12 @@ mod state_tests {
         cx.simulate_keystrokes("j j");
         assert_eq!(
             sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
-            Some("pin-task-s1".into())
+            Some("rename-task-s1".into())
         );
         cx.simulate_keystrokes("k");
         assert_eq!(
             sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
-            Some("rename-task-s1".into())
+            Some("pin-task-s1".into())
         );
     }
 
@@ -6226,13 +6226,13 @@ mod state_tests {
             cx.simulate_keystrokes(keys);
             assert!(sidebar.update(cx, |sidebar, _| sidebar.task_menu().is_none()));
         };
-        // Rows: Rename, Pin, Settle, Archive, Delete.
+        // Rows: Pin, Rename | Settle, Archive | Delete; separators are skipped.
         pick(cx, "down down down enter");
         // Rows: Rename, Reopen, Archive, Delete.
         chat.update(cx, |this, cx| this.settle_task("s1", cx));
         pick(cx, "down down enter");
         chat.update(cx, |this, cx| this.unsettle_task("s1", cx));
-        pick(cx, "down down enter");
+        pick(cx, "down enter");
         assert_eq!(chat.update(cx, |this, cx| this.sidebar_pinned(cx)), vec![0]);
     }
 
