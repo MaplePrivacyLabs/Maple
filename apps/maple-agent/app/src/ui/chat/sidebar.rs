@@ -3459,9 +3459,10 @@ impl Sidebar {
 
     fn new_project_computer_menu(&self) -> Menu<Self> {
         let mut menu = Menu::new("new-project-computer-menu", px(260.))
-            .label("Create project on")
+            .label("New project on")
             .max_height(px(360.))
             .application_vim(self.application_vim_enabled)
+            .header("New project on")
             .item(
                 MenuItem::new("new-project-local", "This computer", |_, _, cx| {
                     cx.emit(SidebarEvent::Navigate(Navigate {
