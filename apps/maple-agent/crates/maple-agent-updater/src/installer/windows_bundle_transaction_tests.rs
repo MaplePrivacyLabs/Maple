@@ -102,9 +102,9 @@ fn fixture_tree(path: &Path, version: &str, build: &str) {
     for directory in DIRS {
         windows_fs::private_directory(&path.join(directory)).unwrap();
     }
-    assert_eq!(FILES.len(), 9);
+    assert_eq!(FILES.len(), 4);
     let bundle = Bundle {
-        format: "maple-agent-windows-bundle-v1".into(),
+        format: "maple-agent-windows-bundle-v2".into(),
         product: "maple-agent".into(),
         profile: "prod".into(),
         version: version.into(),
@@ -438,7 +438,7 @@ fn native_uninstall_owner_fences_until_nsis_finishes() {
 fn native_partial_generation_removal_preserves_unknown_files() {
     let fixture = TransactionFixture::new();
     fs::remove_file(fixture.staged.join("LICENSE.txt")).unwrap();
-    fs::remove_file(fixture.staged.join("notices/THIRD_PARTY_NOTICES.html")).unwrap();
+    fs::remove_file(fixture.staged.join("build-info.json")).unwrap();
     let guard = windows_fs::open_executable_mutation_guard(&fixture.staged.join("maple-agent.exe"))
         .unwrap();
     remove_generation_files(&fixture.staged, Some(guard)).unwrap();

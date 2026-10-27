@@ -79,8 +79,6 @@ From the Agent's pinned Nix shell:
 
 ```sh
 python3 scripts/audit-sqlcipher-dependencies.py
-python3 scripts/generate-third-party-notices.py
-python3 scripts/generate-third-party-notices.py --check
 ```
 
 The dependency audit evaluates each supported target separately. Combining
@@ -172,16 +170,3 @@ mode** opt-in; the operating system can retain that text after Maple quits.
 Plain mode retains its existing detailed notifications. An unavailable verified
 store mode keeps notification details private. This policy belongs to the local
 computer even when a remote computer runs the task.
-
-## Notices
-
-The About pane opens the native package's third-party notices. Complete notices
-are generated offline into ignored build output for that application's target
-and features, then distributed alongside the binary and EFF wordlist. Ordinary
-unpackaged builds use a small source/attribution page without invoking a license
-generator during Cargo builds. Regeneration and provenance details are in
-`app/assets/licenses/README.md`. The inventory retains compiled C build
-dependencies and the existing upstream licensing distinctions. SQLCipher
-attribution comes from the exact compiled `sqlcipher-src` license, rather than
-only the fork's uncompiled older codec license; generation checks assert that
-compiled-source attribution is present.

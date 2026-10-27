@@ -50,7 +50,7 @@ ci-extra:
     RUSTFLAGS="-D warnings" cargo build --workspace --all-targets --locked
     RUSTFLAGS="-D warnings" cargo test -p maple-agent-app --locked {{headless}}
 
-# The ci.yml agent-supply-chain lane: SQLCipher sources, per-target advisories and bans, notices.
+# The ci.yml agent-supply-chain lane: SQLCipher sources, per-target advisories and bans.
 supply-chain:
     python3 -m unittest discover -s dependencies/sqlcipher -p 'test_*.py'
     metadata="$(mktemp)"; trap 'rm -f "$metadata"' EXIT; \
@@ -58,8 +58,6 @@ supply-chain:
       python3 dependencies/sqlcipher/verify_sources.py --metadata "$metadata"; \
       python3 dependencies/sqlcipher/verify_sqlcipher.py --metadata "$metadata"
     python3 scripts/audit-sqlcipher-dependencies.py
-    python3 scripts/generate-third-party-notices.py
-    python3 scripts/generate-third-party-notices.py --check
 
 # The ci.yml agent-package-linux/macos lanes: an unsigned Dev package, built and verified like master's.
 package-rehearsal:
@@ -125,10 +123,6 @@ release:
 build-release PROFILE:
     ./scripts/build-release.sh {{PROFILE}}
 
-# Generate target-specific package notices; Cargo has already fetched the graph.
-notices *ARGS:
-    python3 scripts/generate-third-party-notices.py {{ARGS}}
-
 # Restore downloaded execution permissions and check the exact profile/source.
 verify-prebuilt-release PROFILE:
     ./scripts/verify-prebuilt-release.sh {{PROFILE}}
@@ -143,7 +137,6 @@ verify-release PROFILE DIRECTORY *ARGS:
 
 # Hermetic public metadata and mocked native signing boundary regressions.
 packaging-test:
-    python3 ./scripts/test_third_party_notices.py
     python3 ./scripts/test_release_packaging.py
     python3 ./scripts/test_linux_release_appimage.py
     python3 ./scripts/test_linux_release_bundle.py

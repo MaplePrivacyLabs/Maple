@@ -57,8 +57,6 @@ cp "$repo_root/app/macos/Info.plist" "$contents_dir/Info.plist"
 python3 "$repo_root/scripts/macos-debug-plist.py" "$contents_dir/Info.plist"
 cp "$binary_source" "$binary_destination"
 chmod 0755 "$binary_destination"
-python3 "$repo_root/scripts/generate-third-party-notices.py"
-python3 "$repo_root/scripts/stage-third-party-notices.py" "$contents_dir/Resources/licenses"
 
 # Native dependencies may link Swift compatibility libraries using @rpath.
 # The final application binary owns its bundle layout. Prefer the operating

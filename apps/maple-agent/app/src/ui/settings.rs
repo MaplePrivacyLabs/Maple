@@ -35,7 +35,6 @@ mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
-mod licenses;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
@@ -188,7 +187,6 @@ pub struct SettingsScreen {
     application_reveal_pending: bool,
     pane_scroll: ScrollHandle,
     application_anchor: ScrollAnchor,
-    license_notice: Option<String>,
     advanced: advanced::AdvancedState,
     advanced_subscriptions: Vec<Subscription>,
 }
@@ -463,7 +461,6 @@ impl SettingsScreen {
             application_reveal_pending: false,
             pane_scroll,
             application_anchor,
-            license_notice: None,
             advanced: advanced::AdvancedState::new(cx),
             advanced_subscriptions: Vec::new(),
         };
@@ -1984,17 +1981,6 @@ impl SettingsScreen {
                                 .child("Later")
                         ))
                     )
-                    .child(
-                        widgets::secondary_button("third-party-notices")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.license_notice = licenses::open().err();
-                                cx.notify();
-                            }))
-                            .child("Third-party notices"),
-                    )
-                    .when_some(self.license_notice.clone(), |pane, notice| {
-                        pane.child(info_row("Notices", notice))
-                    })
                     .child(info_row("Backend", self.backend.api_url().to_string()))
                     .child(info_row(
                         "Instruction directory",

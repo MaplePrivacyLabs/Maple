@@ -2,10 +2,10 @@ name: Set up the Agent's Windows toolchain
 description: >-
   Windows has no Nix: pinned Rust and MSVC, native Perl for the static crypto
   build and a smoke-tested linker. Release builds also select the GPUI shader
-  compiler and install the pinned notice generator.
+  compiler.
 inputs:
   release:
-    description: Also select fxc and install cargo-about, for release packages
+    description: Also select fxc for release packages
     default: "false"
 runs:
   using: composite
@@ -53,18 +53,3 @@ runs:
         if (-not (Test-Path -LiteralPath $fxc -PathType Leaf)) { throw "Windows SDK shader compiler is missing: $fxc" }
         Write-Host "Selected HLSL compiler: $fxc"
         "GPUI_FXC_PATH=$fxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-    - name: Install pinned Windows notice generator
-      if: inputs.release == 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        (
-          cd "$RUNNER_TEMP"
-          curl --fail --location --show-error --silent \
-            https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.0/cargo-about-0.9.0-x86_64-pc-windows-msvc.tar.gz \
-            --output cargo-about-0.9.0.tar.gz
-          printf '%s  %s\n' 87daca52ad79980b42b2de6acdec84e143be41e2d4bbebedba0d0c90c49b055a cargo-about-0.9.0.tar.gz | sha256sum --check -
-          tar -xzf cargo-about-0.9.0.tar.gz
-        )
-        printf '%s\n' "$RUNNER_TEMP/cargo-about-0.9.0-x86_64-pc-windows-msvc" >> "$GITHUB_PATH"

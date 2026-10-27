@@ -337,7 +337,8 @@ class AgentLaneTests(unittest.TestCase):
                              ("apps/maple-agent/dependencies/sqlcipher/provenance.json", both),
                              ("apps/maple-agent/scripts/test_rusqlite_provider.py", {"agent-provider"}),
                              ("apps/maple-agent/crates/maple-agent/Cargo.toml", {"agent-supply-chain"}),
-                             ("apps/maple-agent/app/assets/dict/LICENSE", {"agent-supply-chain"}),
+                             ("apps/maple-agent/app/assets/dict/LICENSE", set()),
+                             ("apps/maple-agent/crates/maple-agent/src/store/keys/SOURCES.md", set()),
                              ("apps/maple-agent/app/src/main.rs", set())):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]) & both, lanes_)
@@ -353,7 +354,6 @@ class AgentLaneTests(unittest.TestCase):
                      "apps/maple-agent/scripts/macos-release-app.sh", "apps/maple-agent/scripts/release-info.py",
                      "apps/maple-agent/scripts/linux-release-bundle.py", "apps/maple-agent/scripts/linux-install.sh",
                      "apps/maple-agent/scripts/smoke-macos-release.py",
-                     "apps/maple-agent/scripts/stage-third-party-notices.py",
                      ".github/workflows/agent-desktop-build.yml"):
             with self.subTest(path=path):
                 self.assertLessEqual(AGENT_PACKAGE, selected([path]))

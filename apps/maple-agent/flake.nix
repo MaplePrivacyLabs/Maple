@@ -83,10 +83,8 @@
                 ./release_profile.rs
                 ./app
                 ./crates
-                ./about.toml
                 ./scripts
                 ./dependencies/sqlcipher
-                ./dependencies/licenses
                 ../../sdk/rust/Cargo.toml
                 ../../sdk/rust/src
                 ../../sdk/rust/assets
@@ -121,27 +119,11 @@
               pkg-config
               perl
               python3
-              cargo-about
             ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.makeWrapper ];
 
             buildInputs =
               [ pkgs.libiconv ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
-
-            preBuild = ''
-              component="$sourceRoot/apps/maple-agent"
-              [[ "$component" == /* ]] || component="$NIX_BUILD_TOP/$component"
-              python3 "$component/scripts/generate-third-party-notices.py" \
-                --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}
-            '';
-
-            postInstall = ''
-              component="$sourceRoot/apps/maple-agent"
-              [[ "$component" == /* ]] || component="$NIX_BUILD_TOP/$component"
-              python3 "$component/scripts/stage-third-party-notices.py" \
-                "$out/share/licenses/maple-agent" --component "$component" \
-                --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}
-            '';
 
             cargoBuildFlags = [
               "-p"
@@ -255,7 +237,6 @@
               tcl
               gnumake
               cargo-deny
-              cargo-about
             ]
             ++ pkgs.lib.optionals isDarwin [ xcrun ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [

@@ -28,7 +28,6 @@ import zipfile
 
 SCRIPTS = Path(__file__).resolve().parent
 COMPONENT = SCRIPTS.parent
-TARGET = "x86_64-pc-windows-msvc"
 PLATFORM = "windows-x86_64"
 NSIS_VERSION = "3.12"
 NSIS_URL = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12.zip"
@@ -49,17 +48,11 @@ SYSTEM_IMPORTS = frozenset("""
     uxtheme.dll version.dll wer.dll wevtapi.dll windowscodecs.dll winhttp.dll wininet.dll
     winmm.dll winspool.drv wintrust.dll winusb.dll wldap32.dll ws2_32.dll wtsapi32.dll
 """.split())
-NOTICE_FILES = (
-    "THIRD_PARTY_NOTICES.txt", "THIRD_PARTY_NOTICES.html", "manifest.json",
-    "wordlists/eff-large-wordlist.txt", "wordlists/SOURCES.md",
-)
-PAYLOAD_FILES = {"maple-agent.exe", "LICENSE.txt", "build-info.json"} | {
-    f"notices/{name}" for name in NOTICE_FILES
-}
+PAYLOAD_FILES = {"maple-agent.exe", "LICENSE.txt", "build-info.json"}
 BUNDLE_ROOT = "maple-agent-windows"
-BUNDLE_FORMAT = "maple-agent-windows-bundle-v1"
+BUNDLE_FORMAT = "maple-agent-windows-bundle-v2"
 BUNDLE_FILES = PAYLOAD_FILES | {"bundle-info.json"}
-BUNDLE_DIRECTORIES = {"", "notices", "notices/wordlists"}
+BUNDLE_DIRECTORIES = {""}
 MAX_BUNDLE_BYTES = 768 * 1024 * 1024
 INSTALLER_CHECKER = "$PLUGINSDIR/maple-installer-check.exe"
 DIAGNOSTIC_LIMIT = 8192
@@ -82,7 +75,6 @@ def module(name):
 
 release_info = module("release-info")
 pe = module("windows-build-info")
-notices = module("stage-third-party-notices")
 
 
 def run(arguments, **options):
@@ -138,8 +130,7 @@ def prepare(profile):
     regular(binary)
     info = pe.validated_build_info(profile, binary, source_sha())
     validate_imports(binary)
-    notices.validate(COMPONENT, notices.output_directory(COMPONENT, TARGET), TARGET)
-    print("Verified exact Windows binary profile, source, DLL closure and notice inputs")
+    print("Verified exact Windows binary profile, source, DLL closure")
     return binary, info
 
 
@@ -301,10 +292,8 @@ def verify_payload(profile, directory, expected_info, unsigned, *, verify_signat
     if info != expected_info or json.loads((directory / "build-info.json").read_text(encoding="utf-8")) != info:
         raise ValueError("Installer payload identity differs from its verified build")
     validate_imports(binary)
-    notices.validate(COMPONENT, directory / "notices", TARGET)
-    for name, original in (("LICENSE.txt", COMPONENT / "LICENSE"), ("notices/wordlists/eff-large-wordlist.txt", COMPONENT / "crates/maple-agent/src/store/keys/eff-large-wordlist.txt"), ("notices/wordlists/SOURCES.md", COMPONENT / "crates/maple-agent/src/store/keys/SOURCES.md")):
-        if (directory / name).read_bytes() != original.read_bytes():
-            raise ValueError("Installer license or wordlist differs from the reviewed source")
+    if (directory / "LICENSE.txt").read_bytes() != (COMPONENT / "LICENSE").read_bytes():
+        raise ValueError("Installer license differs from the reviewed source")
     if verify_signature:
         signature(binary, unsigned)
 
@@ -446,7 +435,6 @@ def package(profile, unsigned):
         shutil.copyfile(COMPONENT / "LICENSE", payload / "LICENSE.txt")
         metadata = json.dumps(info, sort_keys=True, separators=(",", ":")) + "\n"
         (payload / "build-info.json").write_text(metadata, encoding="utf-8", newline="\n")
-        notices.stage(COMPONENT, payload / "notices", TARGET)
         (payload / "bundle-info.json").write_text(json.dumps(bundle_descriptor(info, build), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
         signature(payload / "maple-agent.exe", unsigned, sign=not unsigned)
         verify_payload(profile, payload, info, unsigned)

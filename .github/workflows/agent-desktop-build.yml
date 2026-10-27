@@ -97,14 +97,12 @@ jobs:
           nix develop --no-update-lock-file . -c python3 scripts/verify-sqlcipher-build.py "$metadata"
       - name: Build optimized Agent with embedded profile
         run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
-      - name: Upload prebuilt Agent binary and notices
+      - name: Upload prebuilt Agent binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
           overwrite: true
-          path: |
-            apps/maple-agent/target/release/maple-agent
-            apps/maple-agent/target/third-party-notices
+          path: apps/maple-agent/target/release/maple-agent
           if-no-files-found: error
           retention-days: 7
 
@@ -153,11 +151,11 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
-      - name: Download exact prebuilt Agent binary and notices
+      - name: Download exact prebuilt Agent binary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
-          path: apps/maple-agent/target
+          path: apps/maple-agent/target/release
       - name: Verify prebuilt profile and source before signing
         run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Build trusted installer archive scanner
@@ -239,18 +237,16 @@ jobs:
           cargo metadata --locked --format-version 1 > "$metadata"
           python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
           python3 scripts/verify-sqlcipher-build.py "$metadata"
-      - name: Build Windows release binary and notices without signing credentials
+      - name: Build Windows release binary without signing credentials
         run: ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Inspect immutable Windows profile and source
         run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE"
-      - name: Upload prebuilt Windows binary and notices
+      - name: Upload prebuilt Windows binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: maple-agent-${{ matrix.variant }}-windows-x86_64-prebuilt-${{ github.run_id }}
           overwrite: true
-          path: |
-            apps/maple-agent/target/release/maple-agent.exe
-            apps/maple-agent/target/third-party-notices
+          path: apps/maple-agent/target/release/maple-agent.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -288,11 +284,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Download exact prebuilt Windows binary and notices
+      - name: Download exact prebuilt Windows binary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: maple-agent-${{ matrix.variant }}-windows-x86_64-prebuilt-${{ github.run_id }}
-          path: apps/maple-agent/target
+          path: apps/maple-agent/target/release
       - name: Inspect immutable Windows profile and source before signing
         run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE"
       - name: Azure login for Artifact Signing

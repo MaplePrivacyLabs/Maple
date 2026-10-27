@@ -13,7 +13,7 @@ struct Member {
 
 fn bundle(profile: &str) -> Bundle {
     Bundle {
-        format: "maple-agent-windows-bundle-v1".into(),
+        format: "maple-agent-windows-bundle-v2".into(),
         product: "maple-agent".into(),
         profile: profile.into(),
         version: "0.0.10".into(),
@@ -91,7 +91,7 @@ fn write_archive(path: &Path, members: &[Member]) {
 }
 
 #[test]
-fn exact_archive_round_trip_binds_all_nine_files_and_three_directories() {
+fn exact_archive_round_trip_binds_all_four_files_and_root_directory() {
     let directory = private_fixture();
     let payload = directory.path().join("update.tar.gz");
     let output = directory.path().join("extract");
@@ -102,20 +102,20 @@ fn exact_archive_round_trip_binds_all_nine_files_and_three_directories() {
     assert!(validate_windows_bundle_archive(&payload, "dev").is_err());
     let (expected, actual) = archive(&payload, Some(&output), "prod").unwrap();
     assert_eq!(actual, descriptor);
-    assert_eq!(expected.len(), 12);
+    assert_eq!(expected.len(), 5);
     assert_eq!(
         expected
             .values()
             .filter(|node| matches!(node, Node::File { .. }))
             .count(),
-        9
+        4
     );
     assert_eq!(
         expected
             .values()
             .filter(|node| matches!(node, Node::Directory))
             .count(),
-        3
+        1
     );
     assert_eq!(scan_generation(&output.join(ROOT)).unwrap(), expected);
     fs::write(output.join(ROOT).join("LICENSE.txt"), b"tampered").unwrap();
@@ -134,6 +134,9 @@ fn rejected_archive_never_begins_extraction() {
         .position(|entry| entry.name.ends_with("/maple-agent.exe"))
         .unwrap();
     let mut cases = Vec::new();
+    let mut legacy = bundle("prod");
+    legacy.format = "maple-agent-windows-bundle-v1".into();
+    cases.push(members(&legacy));
     let mut missing = valid.clone();
     missing.remove(executable_index);
     cases.push(missing);
@@ -151,10 +154,10 @@ fn rejected_archive_never_begins_extraction() {
     cases.push(extra);
     for name in [
         format!("{ROOT}/../outside"),
-        format!("{ROOT}/notices/../../outside"),
+        format!("{ROOT}/nested/../../outside"),
         format!("{ROOT}/Maple-Agent.exe"),
         format!("{ROOT}/maple-agent.exe:alternate"),
-        format!("{ROOT}/notices\\other"),
+        format!("{ROOT}/nested\\other"),
         format!("{ROOT}/maple-agent.exe."),
         "wrong-root/maple-agent.exe".into(),
         format!("/{ROOT}/maple-agent.exe"),
@@ -203,7 +206,7 @@ fn descriptors_bind_profile_product_release_and_strict_json_fields() {
     let development = bundle("dev");
     Bundle::parse(&serde_json::to_vec(&development).unwrap(), "dev").unwrap();
     for (field, value) in [
-        ("format", "maple-agent-windows-bundle-v2"),
+        ("format", "maple-agent-windows-bundle-v3"),
         ("product", "maple-research"),
         ("profile", "local"),
         ("bundle_id", "cloud.opensecret.maple.agent.dev"),

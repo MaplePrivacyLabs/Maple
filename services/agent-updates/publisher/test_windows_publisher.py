@@ -247,7 +247,7 @@ class WindowsPackageBoundaryTests(unittest.TestCase):
                          "source_sha": SOURCE_SHA, "version": "1.2.3", "package": self.stem + "-setup.exe",
                          "distribution": "master", "macos_signing": None, "windows_signing": "authenticode",
                          "updater": self.stem + ".tar.gz", "build": "42"}
-        self.descriptor = {"format": "maple-agent-windows-bundle-v1", "product": "maple-agent",
+        self.descriptor = {"format": "maple-agent-windows-bundle-v2", "product": "maple-agent",
                            "profile": "prod", "version": "1.2.3", "build": "42", "source_sha": SOURCE_SHA,
                            "bundle_id": self.info["bundle_id"], "entrypoint": "maple-agent.exe"}
         (self.directory / "build-info.json").write_bytes(self.info_bytes)
@@ -259,12 +259,9 @@ class WindowsPackageBoundaryTests(unittest.TestCase):
 
     def entries(self):
         root = "maple-agent-windows"
-        items = [(name, tarfile.DIRTYPE, b"") for name in (root, root + "/notices", root + "/notices/wordlists")]
+        items = [(name, tarfile.DIRTYPE, b"") for name in (root,)]
         files = {"bundle-info.json": publisher.encode_json(self.descriptor), "build-info.json": self.info_bytes,
-                 "maple-agent.exe": b"offline signed PE fixture; never execute", "LICENSE.txt": b"license",
-                 "notices/THIRD_PARTY_NOTICES.txt": b"notices", "notices/THIRD_PARTY_NOTICES.html": b"html",
-                 "notices/manifest.json": b"{}", "notices/wordlists/eff-large-wordlist.txt": b"word",
-                 "notices/wordlists/SOURCES.md": b"source"}
+                 "maple-agent.exe": b"offline signed PE fixture; never execute", "LICENSE.txt": b"license"}
         return items + [(root + "/" + name, tarfile.REGTYPE, data) for name, data in files.items()]
 
     def write_archive(self, entries=None):
@@ -297,7 +294,8 @@ class WindowsPackageBoundaryTests(unittest.TestCase):
 
     def test_archive_identity_mismatch_missing_extra_duplicate_links_and_sidecar_drift_fail_before_attestation(self):
         original = deepcopy(self.descriptor)
-        for field, value in (("build", "43"), ("source_sha", "b" * 40), ("profile", "dev"), ("extra", True)):
+        for field, value in (("build", "43"), ("source_sha", "b" * 40), ("profile", "dev"),
+                             ("format", "maple-agent-windows-bundle-v1"), ("extra", True)):
             with self.subTest(field=field):
                 self.descriptor = {**original, field: value}
                 self.write_archive()

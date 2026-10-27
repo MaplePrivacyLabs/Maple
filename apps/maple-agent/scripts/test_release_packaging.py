@@ -18,7 +18,6 @@ import tempfile
 import tarfile
 import unittest
 from test_macos_build_info import macho
-from test_third_party_notices import notice_fixture
 from test_windows_build_info import pe, public_info as windows_info
 
 
@@ -182,9 +181,6 @@ class BuildReleaseMetadataTests(unittest.TestCase):
         for name in ("build-release.sh", "windows-build-info.py", "release-info.py"):
             shutil.copy2(SCRIPTS / name, scripts / name)
         shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
-        (scripts / "generate-third-party-notices.py").write_text(
-            "from pathlib import Path\nPath('notices-generated').write_text('called')\n"
-        )
         self.env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         for arguments in (("init", "--quiet"), ("add", "."),
                           ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
@@ -208,8 +204,6 @@ from pathlib import Path
 arguments = sys.argv[1:]
 with Path(os.environ['FIXTURE_COMMANDS']).open('a') as log:
     log.write(json.dumps(arguments) + '\\n')
-if arguments == ['fetch', '--locked']:
-    sys.exit(0)
 windows = os.environ['FIXTURE_OS'].startswith(('MINGW', 'MSYS', 'CYGWIN'))
 expected = ['build', '--release', '-p', 'maple-agent-app', '--locked', '--timings']
 if windows:
@@ -232,7 +226,6 @@ target.chmod(0o644 if windows else 0o755)
         self.env["FIXTURE_OS"] = operating_system
         result = subprocess.run(["bash", str(self.component / "scripts/build-release.sh"), profile],
                                 env=self.env, capture_output=True, text=True)
-        self.assertEqual((self.component / "notices-generated").read_text(), "called")
         return result
 
     def test_windows_build_checks_the_staged_pe_without_executing_it(self):
@@ -252,8 +245,7 @@ target.chmod(0o644 if windows else 0o755)
                     self.assertEqual(staged.read_bytes(), expected)
                     self.assertEqual(staged.stat().st_mode & 0o777, 0o644)
         commands = [json.loads(line) for line in self.commands.read_text().splitlines()]
-        self.assertEqual(len(commands), 12)
-        self.assertEqual(commands[::2], [["fetch", "--locked"]] * 6)
+        self.assertEqual(len(commands), 6)
 
     def test_windows_build_rejects_wrong_profile_source_and_dirty_revision(self):
         for profile in ("dev", "prod"):
@@ -918,7 +910,8 @@ class NativeSigningBoundaryTests(unittest.TestCase):
 
     def run_packager(self, unsigned=False, failure="", signal=False, search_list=None):
         component = self.directory / "fixture-component"
-        notice_fixture(component, "aarch64-apple-darwin")
+        (component / "scripts").mkdir(parents=True, exist_ok=True)
+        (component / "app").mkdir(exist_ok=True)
         # Nix sources are read-only. Copy bytes into this mutable fixture rather
         # than preserving modes that would prevent a second packaging attempt.
         for name in ("macos-release-app.sh", "release-info.py", "macos-build-info.py"):
