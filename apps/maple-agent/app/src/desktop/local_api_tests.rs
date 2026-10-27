@@ -168,6 +168,20 @@ impl FixtureHost {
         self.status_holds.lock().unwrap().push_back(hold);
         release
     }
+
+    fn listener_task(&self) -> Option<tokio::task::AbortHandle> {
+        self.runtime
+            .as_ref()
+            .unwrap()
+            .block_on(self.manager.listener_task_for_test())
+    }
+
+    fn assert_api_stopped(&self) {
+        let status = self.manager.status();
+        assert_eq!(status.state, LocalApiState::Stopped);
+        assert_eq!(status.active_requests, 0);
+        assert!(self.listener_task().is_none());
+    }
 }
 
 impl Drop for FixtureHost {
@@ -228,12 +242,12 @@ fn toggle(cx: &mut gpui::VisualTestContext) {
     cx.simulate_click(bounds.center(), gpui::Modifiers::default());
 }
 
-fn assert_socket(port: u16, open: bool) {
+fn assert_socket_open(port: u16) {
     let result = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
         Duration::from_secs(1),
     );
-    assert_eq!(result.is_ok(), open, "port {port}");
+    assert!(result.is_ok(), "port {port}");
 }
 
 #[gpui::test]
@@ -242,16 +256,17 @@ fn selected_execution_computers_cannot_move_settings_listener_off_the_controller
 ) {
     let settings_lock = crate::settings::SETTINGS_IO_LOCK.lock();
     cx.executor().allow_parking();
-    // Reserve all three before releasing any, so a port cannot be reused by
-    // another fixture merely because the OS selected the same ephemeral port.
-    let reservations: Vec<_> = (0..3)
-        .map(|_| std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap())
-        .collect();
-    let ports: Vec<_> = reservations
-        .iter()
-        .map(|socket| socket.local_addr().unwrap().port())
-        .collect();
-    drop(reservations);
+    // Keep the never-started remote ports reserved throughout the test. Their
+    // manager ownership, rather than global port availability, proves no API
+    // started there. Only the controller needs its reservation released.
+    let reservations: [std::net::TcpListener; 3] = std::array::from_fn(|_| {
+        std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap()
+    });
+    let ports = reservations
+        .each_ref()
+        .map(|socket| socket.local_addr().unwrap().port());
+    let [local_reservation, _east_reservation, _west_reservation] = reservations;
+    drop(local_reservation);
     let local = FixtureHost::new("controller", ports[0]);
     let east = FixtureHost::new("east", ports[1]);
     let west = FixtureHost::new("west", ports[2]);
@@ -276,9 +291,11 @@ fn selected_execution_computers_cannot_move_settings_listener_off_the_controller
         local.manager.status().state == LocalApiState::Running
             && local.count("set_local_api_config") == 1
     });
-    assert_socket(ports[0], true);
-    assert_socket(ports[1], false);
-    assert_socket(ports[2], false);
+    assert_socket_open(ports[0]);
+    let listener_task = local.listener_task().expect("controller's listening task");
+    assert!(!listener_task.is_finished());
+    east.assert_api_stopped();
+    west.assert_api_stopped();
     assert_eq!(east.api_calls(), 0);
     assert_eq!(west.api_calls(), 0);
 
@@ -289,9 +306,12 @@ fn selected_execution_computers_cannot_move_settings_listener_off_the_controller
             && local.count("set_local_api_config") == 2
     });
     assert!(!local.manager.status().config.enabled);
-    assert_socket(ports[0], false);
-    assert_socket(ports[1], false);
-    assert_socket(ports[2], false);
+    // The original accept task owns its listener by value. Completion proves
+    // that socket was dropped even if another test has already reused its port.
+    assert!(listener_task.is_finished());
+    local.assert_api_stopped();
+    east.assert_api_stopped();
+    west.assert_api_stopped();
     assert!(local.count("get_local_api_status") >= 2);
     assert_eq!(east.api_calls(), 0);
     assert_eq!(west.api_calls(), 0);

@@ -219,6 +219,16 @@ impl LocalApiManager {
         self.inner.state.lock().unwrap().generation
     }
 
+    #[cfg(test)]
+    pub async fn listener_task_for_test(&self) -> Option<tokio::task::AbortHandle> {
+        self.inner
+            .running
+            .lock()
+            .await
+            .as_ref()
+            .map(|running| running.task.abort_handle())
+    }
+
     pub fn stays_running(&self) -> bool {
         matches!(
             self.status().state,
@@ -630,6 +640,15 @@ mod tests {
         format!("http://127.0.0.1:{}{path}", config.port)
     }
 
+    async fn listener_task(manager: &LocalApiManager) -> tokio::task::AbortHandle {
+        let task = manager
+            .listener_task_for_test()
+            .await
+            .expect("the running manager must own its accept task");
+        assert!(!task.is_finished());
+        task
+    }
+
     async fn start(
         manager: &LocalApiManager,
         config: LocalApiConfig,
@@ -703,6 +722,7 @@ mod tests {
         )
         .await;
         assert_eq!(running.state, LocalApiState::Running);
+        let task = listener_task(&manager).await;
         assert!(manager.stays_running());
         assert!(running.revision > status.revision);
         assert_eq!(
@@ -719,9 +739,7 @@ mod tests {
         assert_eq!(stopped.owner, None);
         assert_eq!(stopped.state, LocalApiState::Stopped);
         assert!(!manager.stays_running());
-        TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
-            .await
-            .unwrap();
+        assert!(task.is_finished());
     }
 
     #[tokio::test]
@@ -813,6 +831,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(String::from_utf8_lossy(&response[..read]).contains("503"));
+        let task = listener_task(&manager).await;
         let stopped = tokio::time::timeout(Duration::from_secs(3), manager.stop())
             .await
             .unwrap();
@@ -821,9 +840,7 @@ mod tests {
         while let Some(result) = callers.join_next().await {
             assert!(result.unwrap().is_err());
         }
-        TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
-            .await
-            .unwrap();
+        assert!(task.is_finished());
     }
 
     #[tokio::test]
@@ -861,6 +878,7 @@ mod tests {
             .unwrap();
         wait_for(&manager, |status| status.active_requests == 1).await;
         assert!(!dropped.load(Ordering::SeqCst));
+        let task = listener_task(&manager).await;
         // Do not consume the stream. Connection cancellation must interrupt a
         // peer whose receive window fills, not wait for another body poll.
         let stopped = tokio::time::timeout(Duration::from_secs(3), manager.stop())
@@ -869,9 +887,7 @@ mod tests {
         assert_eq!(stopped.active_requests, 0);
         assert!(dropped.load(Ordering::SeqCst));
         drop(response);
-        TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
-            .await
-            .unwrap();
+        assert!(task.is_finished());
     }
 
     #[tokio::test]
@@ -1034,9 +1050,7 @@ mod tests {
             .unwrap();
         assert_eq!(delayed.state, LocalApiState::Stopped);
         assert_eq!(delayed.owner, None);
-        TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
-            .await
-            .unwrap();
+        assert!(manager.listener_task_for_test().await.is_none());
         let disabled = LocalApiConfig {
             enabled: false,
             ..config
@@ -1060,11 +1074,16 @@ mod tests {
             .await
             .unwrap();
         stream.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+        let task = listener_task(&manager).await;
         drop(manager);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropping the manager must finish its owned accept task");
         assert_closed(stream).await;
-        TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
-            .await
-            .unwrap();
     }
 
     #[tokio::test]

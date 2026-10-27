@@ -5,6 +5,13 @@ use crate::local_api::{LocalApiConfig, LocalApiState, LocalApiStatus};
 use maple_agent::store::records::{CredentialTokens, SecretString};
 use maple_agent::store::{DamageReason, RefusalReason, StorePaths};
 use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+struct ListenerProbe {
+    port: u16,
+    task: tokio::task::AbortHandle,
+    connection: tokio::net::TcpStream,
+}
 
 #[test]
 fn unavailable_stores_keep_api_status_and_emergency_stop_but_reject_configuration() {
@@ -115,7 +122,7 @@ impl HostFixture {
         }
     }
 
-    async fn start_listener(&self) -> u16 {
+    async fn start_listener(&self) -> ListenerProbe {
         let reservation = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = reservation.local_addr().unwrap().port();
         drop(reservation);
@@ -149,7 +156,31 @@ impl HostFixture {
                 .status(),
             reqwest::StatusCode::UNAUTHORIZED
         );
-        port
+        let task = self
+            .backend
+            .local_api
+            .listener_task_for_test()
+            .await
+            .expect("the running API must own its accept task");
+        assert!(!task.is_finished());
+        let mut connection = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        connection
+            .write_all(format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut prefix = [0; 12];
+        tokio::time::timeout(Duration::from_secs(3), connection.read_exact(&mut prefix))
+            .await
+            .expect("the original listener must accept the probe connection")
+            .unwrap();
+        assert_eq!(&prefix, b"HTTP/1.1 200");
+        ListenerProbe {
+            port,
+            task,
+            connection,
+        }
     }
 
     async fn finish(self) {
@@ -163,13 +194,26 @@ impl HostFixture {
     }
 }
 
-async fn assert_closed(port: u16) {
+async fn assert_closed(listener: &mut ListenerProbe) {
+    // The accept task owns its TcpListener by value. Its completion proves
+    // that exact socket was dropped, even if another test now owns the port.
     assert!(
-        tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
-            .await
-            .is_err(),
-        "the listening socket must be gone when cleanup acknowledges success"
+        listener.task.is_finished(),
+        "the original accept task must finish before cleanup acknowledges success"
     );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut data = [0; 1024];
+        loop {
+            // Drain any health response bytes before observing EOF/reset on
+            // the connection accepted by the original server before Stop.
+            match listener.connection.read(&mut data).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    })
+    .await
+    .expect("cleanup must close the original accepted connection");
 }
 
 #[tokio::test]
@@ -178,7 +222,8 @@ async fn emergency_stop_over_ipc_closes_the_real_listener_and_preserves_requeste
     let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
     credentials(&backend);
     let fixture = HostFixture::new(root.path(), backend).await;
-    let port = fixture.start_listener().await;
+    let mut listener = fixture.start_listener().await;
+    let port = listener.port;
     let status: LocalApiStatus = fixture
         .client
         .call("get_local_api_status", ())
@@ -190,9 +235,10 @@ async fn emergency_stop_over_ipc_closes_the_real_listener_and_preserves_requeste
 
     let stopped: LocalApiStatus = fixture.client.call("stop_local_api", ()).await.unwrap();
     assert_eq!(stopped.state, LocalApiState::Stopped);
+    assert_eq!(stopped.active_requests, 0);
     assert!(stopped.config.enabled);
     assert_eq!(stopped.config.port, port);
-    assert_closed(port).await;
+    assert_closed(&mut listener).await;
 
     // The UI switch has a different contract from emergency Stop: Off is
     // durable and must not require a network request just to stop spending.
@@ -232,7 +278,6 @@ async fn saved_account_and_enabled_preference_do_not_start_before_authentication
     let account = store.account_id(USER).unwrap().unwrap();
     let reservation = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = reservation.local_addr().unwrap().port();
-    drop(reservation);
     store
         .set_account_setting(
             account,
@@ -251,7 +296,7 @@ async fn saved_account_and_enabled_preference_do_not_start_before_authentication
     .expect("resume must not try to validate a cached account implicitly")
     .unwrap();
     assert_eq!(backend.local_api.status().state, LocalApiState::Stopped);
-    assert_closed(port).await;
+    assert!(backend.local_api.listener_task_for_test().await.is_none());
     assert_eq!(
         store.account_setting(account, "local_api.config").unwrap(),
         Some(json!({"enabled":true,"port":port})),
@@ -335,14 +380,14 @@ async fn logout_closes_the_listener_without_relying_on_the_account_event_pump() 
     let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
     credentials(&backend);
     let fixture = HostFixture::new(root.path(), backend).await;
-    let port = fixture.start_listener().await;
+    let mut listener = fixture.start_listener().await;
     fixture
         .client
         .call::<()>("logout_and_clear", (USER,))
         .await
         .unwrap();
     assert!(fixture.backend.saved_user_id().is_none());
-    assert_closed(port).await;
+    assert_closed(&mut listener).await;
     let stopped: LocalApiStatus = fixture
         .client
         .call("get_local_api_status", ())
@@ -358,7 +403,7 @@ async fn emergency_stop_during_confirmed_erasure_survives_a_precommit_cleanup_re
     let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
     credentials(&backend);
     let fixture = HostFixture::new(root.path(), backend).await;
-    let port = fixture.start_listener().await;
+    let mut listener = fixture.start_listener().await;
     let generation = fixture.store.store_id().unwrap();
     let epoch = fixture.backend.local_api_control_epoch();
     let spills = maple_agent::store::spill::SpillRoot::new(fixture.store.paths()).unwrap();
@@ -390,7 +435,7 @@ async fn emergency_stop_during_confirmed_erasure_survives_a_precommit_cleanup_re
         .await
         .expect("maintenance must suspend the listener before waiting for readers");
         assert_eq!(fixture.backend.local_api_control_epoch(), epoch);
-        assert_closed(port).await;
+        assert_closed(&mut listener).await;
         let stopped: LocalApiStatus = tokio::time::timeout(
             Duration::from_secs(3),
             fixture.client.call("stop_local_api", ()),
@@ -407,7 +452,7 @@ async fn emergency_stop_during_confirmed_erasure_survives_a_precommit_cleanup_re
     assert_eq!(fixture.backend.local_api_control_epoch(), epoch + 1);
     assert_eq!(fixture.store.store_id().unwrap(), generation);
     assert_eq!(fixture.store.state(), StoreState::Open);
-    assert_closed(port).await;
+    assert_closed(&mut listener).await;
     let stopped: LocalApiStatus = fixture
         .client
         .call("get_local_api_status", ())
@@ -425,7 +470,7 @@ async fn emergency_stop_during_confirmed_erasure_survives_a_precommit_cleanup_re
         fixture.backend.local_api.status().state,
         LocalApiState::Stopped
     );
-    assert_closed(port).await;
+    assert_closed(&mut listener).await;
     std::fs::remove_file(spills.path()).unwrap();
     fixture.finish().await;
 }
@@ -435,7 +480,7 @@ async fn owner_shutdown_closes_the_listener_before_releasing_local_data() {
     let root = directory();
     let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
     let fixture = HostFixture::new(root.path(), backend).await;
-    let port = fixture.start_listener().await;
+    let mut listener = fixture.start_listener().await;
     tokio::time::timeout(
         Duration::from_secs(3),
         fixture
@@ -446,7 +491,7 @@ async fn owner_shutdown_closes_the_listener_before_releasing_local_data() {
     .expect("a local listener must not hold an account reader through shutdown")
     .unwrap();
     assert_ne!(fixture.store.state(), StoreState::Open);
-    assert_closed(port).await;
+    assert_closed(&mut listener).await;
     fixture.finish().await;
 }
 
