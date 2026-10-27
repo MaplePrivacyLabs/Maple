@@ -132,9 +132,9 @@ impl SidebarTransition {
 /// Height of the task header and the clear strip above the collapsed rail.
 const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
 /// Left inset for the header beside the rail: the traffic lights reach
-/// 30 px past it when the bar is transparent.
+/// 30 px past it, followed by an 8 px gap when the bar is transparent.
 const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = if titlebar::TRANSPARENT_TITLEBAR {
-    px(30.)
+    px(38.)
 } else {
     px(16.)
 };
