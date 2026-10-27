@@ -358,7 +358,7 @@ def main():
             raise ValueError("field is not public release metadata")
         print(info[args.field])
     elif args.operation == "plist":
-        write_plist(info, args.output, args.build_number or "1")
+        write_plist(info, args.output, "1" if args.build_number is None else args.build_number)
     elif args.operation == "manifest":
         write_manifest(info, args.output, args.platform, args.unsigned, args.build_number)
 

@@ -532,11 +532,24 @@ class ReleaseMetadataTests(unittest.TestCase):
 
     def test_macos_plist_cli_preserves_its_default_build_number(self):
         output = self.directory / "Info.plist"
-        subprocess.run(
+        for arguments, expected in (([], "1"), (["--build-number", "42"], "42")):
+            with self.subTest(arguments=arguments):
+                subprocess.run(
+                    [sys.executable, str(SCRIPTS / "release-info.py"), "plist", "dev", str(self.path),
+                     "--output", str(output), *arguments], check=True, capture_output=True, text=True,
+                )
+                self.assertEqual(plistlib.loads(output.read_bytes())["CFBundleVersion"], expected)
+
+    def test_macos_plist_cli_rejects_an_explicitly_empty_build_number(self):
+        output = self.directory / "Info.plist"
+        result = subprocess.run(
             [sys.executable, str(SCRIPTS / "release-info.py"), "plist", "dev", str(self.path),
-             "--output", str(output)], check=True, capture_output=True, text=True,
+             "--output", str(output), "--build-number", ""], capture_output=True, text=True,
         )
-        self.assertEqual(plistlib.loads(output.read_bytes())["CFBundleVersion"], "1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("package build number must be a positive integer", result.stderr)
+        self.assertFalse(output.exists())
+        self.assertFalse((self.directory / "Resources").exists())
 
     def package(self, unsigned=True):
         (self.directory / "fixture.dmg").write_bytes(b"package")
