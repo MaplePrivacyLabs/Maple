@@ -563,6 +563,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |
 | `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
+| `MAPLE_PREVIEW_UPDATE_BANNER` | `1` shows a safe, fake update banner in unpackaged debug builds. No download, installation, or restart. See [banner preview](docs/updates.md#preview-the-banner-in-a-development-build). | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
 ### File locations

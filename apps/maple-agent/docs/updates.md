@@ -30,9 +30,14 @@ latest Release.
 The desktop checks at startup and about hourly, with jitter. Automatic download
 is enabled by default and can be disabled in Settings. An authenticated update
 is downloaded in the background, but replacement requires **Restart to Update**
-and confirmation that active work will stop. **Later** hides the banner while
+and confirmation that active work will stop. The update banner appears below the
+title bar across screens, including existing tasks, remote tasks, and Settings;
+it always describes the update for this computer. **Later** hides the banner while
 keeping the prepared update available in Settings. About, the native application
 menu, and the tray provide update access.
+
+The banner keeps the message and actions on one compact row. Long status or error
+messages wrap without hiding the actions.
 
 Paired controllers can inspect a computer's version and prepared update through
 the optional [experimental remote update controls](remote-access.md#experimental-remote-updates).
@@ -211,6 +216,34 @@ collision, interruption, relaunch and recovery handling. This change neither
 renames existing installations nor changes feed/schema, release paths or data
 locations. Linux retains its existing `maple-agent.app` installation identity;
 its visible branding and updater guidance use Maple Work.
+
+## Preview the banner in a development build
+
+Unpackaged debug builds can show a presentation-only update banner:
+
+```sh
+cd apps/maple-agent
+nix develop --no-update-lock-file -c just build
+nix develop --no-update-lock-file -c env MAPLE_PREVIEW_UPDATE_BANNER=1 ./target/debug/maple-agent
+```
+
+Both building and launching must run inside the component Nix environment.
+On Linux, GPUI loads Wayland and Vulkan libraries at runtime; the unwrapped
+`target/debug/maple-agent` binary needs the shell's library paths. Launching it
+outside that shell can panic with `NoWaylandLib`. Alternatively, enter an
+interactive `nix develop --no-update-lock-file` shell first and run both commands
+there.
+
+Use your workspace's launcher instead of the binary command if it manages your
+environment and isolated state; pass the flag to that launcher. Keep your normal
+API/auth configuration and state roots. The flag does not select an environment.
+
+The banner is labelled **Preview only**. Navigate between a new task, an existing
+conversation, and Settings to check visibility. **Restart to Update** only shows
+an explanation; it never downloads, installs, or restarts. **Later** hides the
+preview until the next launch with the flag. Settings and remote update status
+continue to show the real updater state, not the fixture. Packaged Dev/Prod and
+release builds ignore the flag. This checks presentation, not signed updating.
 
 ## Wire and trust contract
 

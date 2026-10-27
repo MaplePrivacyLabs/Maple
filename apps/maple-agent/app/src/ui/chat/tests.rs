@@ -1010,6 +1010,21 @@ mod state_tests {
         }
     }
 
+    impl ChatScreen {
+        pub(crate) fn seed_conversation_for_test(&mut self, cx: &mut Context<Self>) {
+            self.selected_session = Some("fixture-task".into());
+            self.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "fixture-task".into(),
+                    run_id: None,
+                    item: user_item("fixture-message", "An existing conversation"),
+                },
+                cx,
+            );
+            assert!(!self.shows_empty_state());
+        }
+    }
+
     /// Serializes constructions that read the shared settings snapshot while
     /// another fixture installs its own host-backed settings cache.
     use crate::settings::SETTINGS_IO_LOCK as SETTINGS_LOCK;
@@ -9826,58 +9841,6 @@ mod state_tests {
              width before truncating (title {thinking_title:?}, card {card:?})"
         );
     }
-    #[gpui::test]
-    fn long_update_failure_wraps_without_hiding_download_or_later(cx: &mut TestAppContext) {
-        struct ChatHost {
-            chat: Entity<ChatScreen>,
-        }
-        impl Render for ChatHost {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div().size_full().flex().flex_col().child(self.chat.clone())
-            }
-        }
-        cx.executor().allow_parking();
-        let chat = cx.new(|cx| {
-            let _guard = SETTINGS_LOCK.lock();
-            let backend = Arc::new(crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
-            let mut chat = ChatScreen::new_without_start(backend, "user".into(), cx);
-            chat.update = crate::update::Snapshot {
-                state: crate::update::State::Error,
-                label: "Could not install the update: permission denied. Quit and reopen Maple, then retry. If this keeps happening, download the latest version manually.".into(),
-                version: Some("0.0.6".into()),
-                remote_candidate: None,
-                primary: Some(crate::update::UpdateAction::ManualDownload),
-                primary_label: "Download",
-                manual_download_url: Some("https://updates.maple.ai/download/agent/stable/macos".into()),
-                show_banner: true,
-            };
-            chat
-        });
-        let (_host, cx) = cx.add_window_view(|_, _| ChatHost { chat: chat.clone() });
-        for width in [1213., 900.] {
-            cx.simulate_resize(gpui::size(px(width), px(800.)));
-            let banner = cx.debug_bounds("update-banner").expect("update banner");
-            let label = cx
-                .debug_bounds("update-banner-label")
-                .expect("failure advice");
-            assert!(
-                label.size.height > px(25.),
-                "failure advice must wrap: {label:?}"
-            );
-            for selector in ["update-primary", "update-later"] {
-                let action = cx.debug_bounds(selector).expect("update action");
-                assert!(
-                    action.left() >= banner.left() && action.right() <= banner.right(),
-                    "{selector}: {action:?}, {banner:?}"
-                );
-                assert!(
-                    action.top() >= label.bottom() && action.bottom() <= banner.bottom(),
-                    "{selector}: {action:?}, {label:?}"
-                );
-            }
-        }
-    }
-
     #[gpui::test]
     fn receipt_completion_uncertainty_never_restores_or_replays_the_original_draft(
         cx: &mut TestAppContext,

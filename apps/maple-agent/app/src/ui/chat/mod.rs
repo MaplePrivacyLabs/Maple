@@ -721,7 +721,6 @@ pub struct ChatScreen {
     /// First line of each queued message, for the chips.
     queue_previews: Vec<SharedString>,
     /// A newer release, until the banner is dismissed.
-    update: crate::update::Snapshot,
     queue_busy: bool,
     queue_edit: Option<QueueEdit>,
     /// Slash commands from the installed skills of the current project root.
@@ -1415,7 +1414,6 @@ impl ChatScreen {
             queue_previews: Vec::new(),
             queue_busy: false,
             queue_edit: None,
-            update: crate::update::Snapshot::initial(),
             slash_commands: Vec::new(),
             slash_selected: None,
             question_focus_pending: false,
@@ -3749,99 +3747,6 @@ impl ChatScreen {
             composer.update(cx, |input, cx| input.set_fill_height(expanded, cx));
         }
         cx.notify();
-    }
-
-    pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
-        if self.update != snapshot {
-            self.update = snapshot;
-            cx.notify();
-        }
-    }
-
-    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let snapshot = &self.update;
-        if !snapshot.show_banner {
-            return None;
-        }
-        let action = snapshot.primary;
-        Some(
-            div()
-                .debug_selector(|| "update-banner".to_string())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .rounded(theme::RADIUS_SM)
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .border_1()
-                .border_color(gpui::rgb(theme::border()))
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_start()
-                        .gap_3()
-                        .child(div().flex_shrink_0().child(icon(
-                            "arrow-up",
-                            px(14.),
-                            theme::accent(),
-                        )))
-                        .child(
-                            div()
-                                .debug_selector(|| "update-banner-label".to_string())
-                                .flex_1()
-                                .min_w_0()
-                                .child(snapshot.label.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .justify_end()
-                        .gap_2()
-                        .when_some(action, |row, action| {
-                            row.child(
-                                div()
-                                    .id("update-primary")
-                                    .debug_selector(|| "update-primary".to_string())
-                                    .flex_shrink_0()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(theme::RADIUS_SM)
-                                    .text_color(gpui::rgb(theme::accent()))
-                                    .hover(|style| {
-                                        style.bg(theme::overlay_hover()).cursor_pointer()
-                                    })
-                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.emit(crate::update::UpdateRequested(action));
-                                    }))
-                                    .child(snapshot.primary_label),
-                            )
-                        })
-                        .child(
-                            div()
-                                .id("update-later")
-                                .debug_selector(|| "update-later".to_string())
-                                .flex_shrink_0()
-                                .px_2()
-                                .py_0p5()
-                                .rounded(theme::RADIUS_SM)
-                                .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                                .on_click(cx.listener(|_, _, _, cx| {
-                                    cx.emit(crate::update::UpdateRequested(
-                                        crate::update::UpdateAction::Later,
-                                    ));
-                                }))
-                                .child("Later"),
-                        ),
-                ),
-        )
     }
 
     /// Keep a sent prompt for Up/Down recall. Repeats move to the end.
@@ -6493,7 +6398,6 @@ impl ChatScreen {
     }
 }
 
-impl EventEmitter<crate::update::UpdateRequested> for ChatScreen {}
 impl EventEmitter<LoggedOut> for ChatScreen {}
 
 impl EventEmitter<OpenSettings> for ChatScreen {}
@@ -7108,7 +7012,6 @@ impl ChatScreen {
                         column.child(widgets::banner(theme::status_error()).child(error))
                     })
                     .children(self.render_persistence_failure(cx))
-                    .children(self.render_update_banner(cx))
                     .children(self.render_notice(cx)),
             );
         div()

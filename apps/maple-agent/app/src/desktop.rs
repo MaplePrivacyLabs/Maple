@@ -153,6 +153,9 @@ struct MapleApp {
     remote_bridges: std::cell::RefCell<Vec<gpui::Task<()>>>,
     settings: crate::settings::AppSettings,
     updater: crate::update::Controller,
+    update: crate::update::Snapshot,
+    #[cfg(debug_assertions)]
+    update_preview: Option<crate::update::Snapshot>,
     restart_prompt_pending: bool,
     #[cfg(target_os = "linux")]
     restart_confirmation: Option<Entity<ui::update_confirmation::UpdateConfirmation>>,
@@ -1007,18 +1010,132 @@ impl MapleApp {
     }
 
     fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
+        self.update = snapshot.clone();
+        cx.notify();
         if self.updater.restart_path().is_some() {
             // No old chat/settings controls remain actionable after the host
             // stop and replacement. Backend admission is retired independently.
             cx.notify();
             return;
         }
-        if let Some(chat) = &self.local_chat {
-            chat.update(cx, |chat, cx| chat.set_update(snapshot.clone(), cx));
-        }
         if let Screen::Settings(settings) = &self.screen {
             settings.update(cx, |settings, cx| settings.set_update(snapshot, cx));
         }
+    }
+
+    /// Application updates belong to this computer, not the selected task or remote host.
+    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        use ui::{icons::icon, theme, widgets};
+
+        let snapshot = &self.update;
+        #[cfg(debug_assertions)]
+        let snapshot = self.update_preview.as_ref().unwrap_or(snapshot);
+        if !snapshot.show_banner {
+            return None;
+        }
+        Some(
+            div().flex_none().px_6().py_2().child(
+                div()
+                    .debug_selector(|| "update-banner".to_string())
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .py_1()
+                    .rounded(theme::RADIUS_SM)
+                    .bg(gpui::rgb(theme::bg_elevated()))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border()))
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(div().flex_shrink_0().child(icon(
+                                "arrow-up",
+                                px(14.),
+                                theme::accent(),
+                            )))
+                            .child(
+                                div()
+                                    .debug_selector(|| "update-banner-label".to_string())
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(snapshot.label.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_shrink_0()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap_2()
+                            .when_some(snapshot.primary, |row, action| {
+                                row.child(
+                                    widgets::ghost_button("update-primary")
+                                        .debug_selector(|| "update-primary".to_string())
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded(theme::RADIUS_SM)
+                                        .text_color(gpui::rgb(theme::accent()))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.update_banner_action(action, window, cx);
+                                        }))
+                                        .child(snapshot.primary_label),
+                                )
+                            })
+                            .child(
+                                widgets::ghost_button("update-later")
+                                    .debug_selector(|| "update-later".to_string())
+                                    .flex_shrink_0()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(theme::RADIUS_SM)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.update_banner_action(
+                                            crate::update::UpdateAction::Later,
+                                            window,
+                                            cx,
+                                        );
+                                    }))
+                                    .child("Later"),
+                            ),
+                    ),
+            ),
+        )
+    }
+
+    fn update_banner_action(
+        &mut self,
+        action: crate::update::UpdateAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(debug_assertions)]
+        if let Some(preview) = &mut self.update_preview {
+            if action == crate::update::UpdateAction::Later {
+                preview.show_banner = false;
+                cx.notify();
+            } else {
+                drop(window.prompt(
+                    gpui::PromptLevel::Info,
+                    "Update banner preview",
+                    Some("This is a fake update for UI testing. Nothing will be downloaded, installed, or restarted."),
+                    &["OK"],
+                    cx,
+                ));
+            }
+            return;
+        }
+        self.update_action(action, window, cx);
     }
 
     fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1197,7 +1314,6 @@ impl MapleApp {
         self.settings.remote_sidebars.clear();
         let backend = self.backend.clone();
         let chat = cx.new(|cx| ChatScreen::new(backend, user_id.clone(), cx));
-        chat.update(cx, |chat, cx| chat.set_update(self.updater.snapshot(), cx));
         self.user_id = Some(user_id);
         self.parked_chat = None;
         self.screen = Screen::Chat(chat.clone());
@@ -1810,11 +1926,6 @@ impl MapleApp {
 
     /// Wire per-chat events: sign-out and the settings gear.
     fn subscribe_chat(&mut self, chat: &Entity<ChatScreen>, cx: &mut Context<Self>) {
-        cx.subscribe(chat, |_, _, event: &crate::update::UpdateRequested, cx| {
-            let action = event.0;
-            cx.defer(move |cx| dispatch_update_action(action, cx));
-        })
-        .detach();
         cx.subscribe(
             chat,
             |app, _, _: &ui::store_gate::RetryStorePersistence, cx| {
@@ -1958,6 +2069,9 @@ impl Render for MapleApp {
             // on transcript/composer via `typography::chat_reading`.
             .text_sm()
             .child(titlebar)
+            .when(self.updater.restart_path().is_none(), |root| {
+                root.children(self.render_update_banner(cx))
+            })
             .child(
                 div()
                     .flex_1()
@@ -2004,6 +2118,24 @@ impl Render for MapleApp {
         let root = root.children(self.restart_confirmation.clone());
         root
     }
+}
+
+/// Presentation-only fixture: never enters the real updater or remote status.
+#[cfg(debug_assertions)]
+fn update_banner_preview(profile: &str, enabled: bool) -> Option<crate::update::Snapshot> {
+    if profile != "unpackaged" || !enabled {
+        return None;
+    }
+    Some(crate::update::Snapshot {
+        state: crate::update::State::Ready,
+        label: "Preview only — v0.0.0 is ready to install".into(),
+        version: None,
+        remote_candidate: None,
+        primary: Some(crate::update::UpdateAction::Restart),
+        primary_label: "Restart to Update",
+        manual_download_url: None,
+        show_banner: true,
+    })
 }
 
 #[cfg(all(test, feature = "proxy"))]
@@ -3313,6 +3445,12 @@ pub fn run() {
                         tray,
                         remote_bridges: std::cell::RefCell::new(Vec::new()),
                         settings: root_settings,
+                        update: root_updater.snapshot(),
+                        #[cfg(debug_assertions)]
+                        update_preview: update_banner_preview(
+                            crate::profile::PROFILE,
+                            crate::env::env_flag("MAPLE_PREVIEW_UPDATE_BANNER"),
+                        ),
                         updater: root_updater,
                         restart_prompt_pending: false,
                         #[cfg(target_os = "linux")]
@@ -4050,6 +4188,9 @@ mod tests {
                 remote_bridges: Default::default(),
                 settings,
                 updater: crate::update::Controller::new(true),
+                update: crate::update::Snapshot::initial(),
+                #[cfg(debug_assertions)]
+                update_preview: None,
                 restart_prompt_pending: false,
                 #[cfg(target_os = "linux")]
                 restart_confirmation: None,
@@ -4291,6 +4432,199 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(cx.debug_bounds("maple-page"), Some(original));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn update_banner_preview_requires_explicit_unpackaged_opt_in() {
+        assert!(update_banner_preview("unpackaged", false).is_none());
+        for profile in ["dev", "prod"] {
+            assert!(update_banner_preview(profile, true).is_none());
+        }
+        let preview = update_banner_preview("unpackaged", true).unwrap();
+        assert!(preview.show_banner);
+        assert!(preview.label.contains("Preview only"));
+        assert!(preview.remote_candidate.is_none());
+        assert!(preview.manual_download_url.is_none());
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    fn update_banner_preview_buttons_never_reach_the_updater(cx: &mut gpui::TestAppContext) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        let original = app.read_with(cx, |app, _| app.updater.snapshot());
+        app.update(cx, |app, cx| {
+            app.update_preview = update_banner_preview("unpackaged", true);
+            // A real status notification must not erase the presentation-only preview.
+            app.set_update(original.clone(), cx);
+        });
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        let restart = cx.debug_bounds("update-primary").expect("preview action");
+        cx.simulate_click(restart.center(), gpui::Modifiers::default());
+        let (title, detail) = cx.pending_prompt().expect("preview explanation");
+        assert_eq!(title, "Update banner preview");
+        assert!(detail.contains("Nothing will be downloaded, installed, or restarted"));
+        cx.simulate_prompt_answer("OK");
+        let later = cx.debug_bounds("update-later").expect("preview dismissal");
+        cx.simulate_click(later.center(), gpui::Modifiers::default());
+        assert!(cx.debug_bounds("update-banner").is_none());
+        app.update(cx, |app, cx| {
+            assert_eq!(app.updater.snapshot(), original);
+            assert!(app.updater.restart_path().is_none());
+            assert!(!app.restart_prompt_pending);
+            app.set_update(original.clone(), cx);
+            app.screen = Screen::Restoring;
+            cx.notify();
+        });
+        assert!(cx.debug_bounds("update-banner").is_none());
+    }
+
+    fn offered_update() -> crate::update::Snapshot {
+        crate::update::Snapshot {
+            state: crate::update::State::Ready,
+            label: "v0.0.6 is ready to install".into(),
+            version: Some("0.0.6".into()),
+            remote_candidate: None,
+            primary: Some(crate::update::UpdateAction::Restart),
+            primary_label: "Restart to Update",
+            manual_download_url: None,
+            show_banner: true,
+        }
+    }
+
+    #[gpui::test]
+    fn update_banner_survives_screen_changes_and_dismissal(cx: &mut gpui::TestAppContext) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        assert!(cx.debug_bounds("update-banner").is_none());
+        app.update(cx, |app, cx| app.set_update(offered_update(), cx));
+        assert!(cx.debug_bounds("update-banner").is_some());
+
+        app.update(cx, |app, cx| {
+            app.local_chat.as_ref().unwrap().update(cx, |chat, cx| {
+                chat.seed_conversation_for_test(cx);
+            });
+        });
+        assert!(cx.debug_bounds("update-banner").is_some());
+
+        // The local application offer remains visible even while viewing another computer.
+        app.update(cx, |app, cx| {
+            app.selected_host = Some("east".into());
+            app.screen = Screen::Chat(app.remote_computers["east"].chat.clone().unwrap());
+            cx.notify();
+        });
+        assert!(cx.debug_bounds("update-banner").is_some());
+        app.update(cx, |app, cx| app.show_settings(Section::General, cx));
+        assert!(cx.debug_bounds("update-banner").is_some());
+        app.update(cx, |app, cx| app.show_login(cx));
+        assert!(cx.debug_bounds("update-banner").is_some());
+        app.update(cx, |app, cx| {
+            app.screen = Screen::Restoring;
+            cx.notify();
+        });
+        assert!(cx.debug_bounds("update-banner").is_some());
+
+        // Dismissal is delivered by the existing controller subscription.
+        app.update(cx, |app, cx| {
+            let mut snapshot = offered_update();
+            snapshot.show_banner = false;
+            app.set_update(snapshot, cx);
+        });
+        assert!(cx.debug_bounds("update-banner").is_none());
+    }
+
+    #[gpui::test]
+    fn update_banner_keeps_message_and_actions_on_one_compact_row(cx: &mut gpui::TestAppContext) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| app.set_update(offered_update(), cx));
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        for width in [1100., 600.] {
+            cx.simulate_resize(size(px(width), px(800.)));
+            let banner = cx.debug_bounds("update-banner").expect("update banner");
+            let label = cx
+                .debug_bounds("update-banner-label")
+                .expect("update message");
+            assert!(banner.size.height <= px(40.), "compact banner: {banner:?}");
+            assert!(label.size.height <= px(25.), "one-line message: {label:?}");
+            for selector in ["update-primary", "update-later"] {
+                let action = cx.debug_bounds(selector).expect("update action");
+                assert!(
+                    action.left() >= label.right(),
+                    "no text overlap: {action:?}, {label:?}"
+                );
+                assert!(
+                    action.top() < label.bottom() && action.bottom() > label.top(),
+                    "actions share the message row: {action:?}, {label:?}"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn long_update_failure_wraps_without_hiding_download_or_later(cx: &mut gpui::TestAppContext) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            let mut snapshot = offered_update();
+            snapshot.state = crate::update::State::Error;
+            snapshot.label = "Could not install the update: permission denied. Quit and reopen Maple, then retry. If this keeps happening, download the latest version manually.".into();
+            snapshot.primary = Some(crate::update::UpdateAction::ManualDownload);
+            snapshot.primary_label = "Download";
+            app.set_update(snapshot, cx);
+        });
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        for width in [900., 600.] {
+            cx.simulate_resize(size(px(width), px(800.)));
+            let banner = cx.debug_bounds("update-banner").expect("update banner");
+            let label = cx
+                .debug_bounds("update-banner-label")
+                .expect("failure advice");
+            assert!(
+                label.size.height > px(25.),
+                "failure advice must wrap: {label:?}"
+            );
+            for selector in ["update-primary", "update-later"] {
+                let action = cx.debug_bounds(selector).expect("update action");
+                assert!(
+                    action.left() >= banner.left() && action.right() <= banner.right(),
+                    "{selector}: {action:?}, {banner:?}"
+                );
+                assert!(
+                    action.top() >= banner.top() && action.bottom() <= banner.bottom(),
+                    "{selector}: {action:?}, {label:?}"
+                );
+                assert!(
+                    action.left() >= label.right(),
+                    "no text overlap: {action:?}, {label:?}"
+                );
+            }
+        }
     }
 
     #[gpui::test]
