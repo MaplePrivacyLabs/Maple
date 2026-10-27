@@ -5510,7 +5510,6 @@ mod state_tests {
                         pinned: session == 3,
                         settled: false,
                         archived: false,
-                        gap_after: session != 2,
                     })
                 };
                 assert_eq!(

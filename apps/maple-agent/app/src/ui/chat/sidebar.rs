@@ -253,6 +253,12 @@ const FOLDER_HEADER_PADDING: gpui::Rems = gpui::rems(1.);
 const FOLDER_HEADER_GAP: gpui::Rems = gpui::rems(0.5);
 const FOLDER_ICON_SIZE: gpui::Pixels = px(16.);
 
+/// Task titles share the project-name column, regardless of their computer or state.
+fn task_row_padding(window: &Window) -> gpui::Pixels {
+    (FOLDER_HEADER_PADDING + FOLDER_HEADER_GAP - gpui::rems(0.5)).to_pixels(window.rem_size())
+        + FOLDER_ICON_SIZE
+}
+
 /// The sidebar's popup menus. One is open at a time; a project's own menu
 /// uses the project row's own popup (see `Sidebar::project_popup`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -303,8 +309,13 @@ pub(super) struct SidebarTaskEntry {
     pub(super) pinned: bool,
     pub(super) settled: bool,
     pub(super) archived: bool,
-    /// Space after the last visible task in a section.
-    pub(super) gap_after: bool,
+}
+
+/// Section spacing belongs to the visible list, not to a task's active computer.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct RowSpacing {
+    before: bool,
+    after: bool,
 }
 
 /// Where a task sits on the ladder active, settled, archived, deleted.
@@ -552,7 +563,7 @@ pub(super) struct Sidebar {
     drag_ranges: HashMap<SidebarDragItem, (usize, usize)>,
     dragging: bool,
     drop_target: Option<SidebarDrop>,
-    heading_gaps: Vec<bool>,
+    row_spacing: Vec<RowSpacing>,
     entry_sections: Vec<Option<SidebarHoverSection>>,
     hovered_section: Option<SidebarHoverSection>,
     hovered_entry: Option<usize>,
@@ -880,7 +891,7 @@ impl Sidebar {
             drag_ranges: HashMap::new(),
             dragging: false,
             drop_target: None,
-            heading_gaps: Vec::new(),
+            row_spacing: Vec::new(),
             entry_sections: Vec::new(),
             hovered_section: None,
             hovered_entry: None,
@@ -1711,7 +1722,6 @@ impl Sidebar {
                         settled: section != SidebarSection::Pinned
                             && !self.session_is_active(&self.sessions[session]),
                         archived: false,
-                        gap_after: false,
                     })
                 }));
             }
@@ -1756,7 +1766,6 @@ impl Sidebar {
                         archived: true,
                         pinned: false,
                         settled: false,
-                        gap_after: false,
                     })
                 }));
             }
@@ -1787,18 +1796,11 @@ impl Sidebar {
         self.hovered_entry = None;
         self.hovered_section = None;
         self.drop_target = None;
-        let mut entries = if self.uses_computer_projection() {
+        let entries = if self.uses_computer_projection() {
             self.computer_entries()
         } else {
             self.local_entries()
         };
-        for ix in 0..entries.len() {
-            let last =
-                !matches!(entries.get(ix + 1), Some(SidebarEntry::Task(task)) if !task.archived);
-            if let SidebarEntry::Task(task) = &mut entries[ix] {
-                task.gap_after = !task.archived && last;
-            }
-        }
         let mut section = None;
         self.entry_sections = entries
             .iter()
@@ -1815,20 +1817,26 @@ impl Sidebar {
                 section
             })
             .collect();
-        let heading_gaps = entries
+        let unarchived_task = |entry: &SidebarEntry| match entry {
+            SidebarEntry::Task(task) => !task.archived,
+            SidebarEntry::OtherTask(index) => !self.other_tasks[*index].archived,
+            _ => false,
+        };
+        let row_spacing = entries
             .iter()
             .enumerate()
-            .map(|(ix, entry)| {
-                matches!(
+            .map(|(ix, entry)| RowSpacing {
+                before: matches!(
                     entry,
                     SidebarEntry::SectionLabel(_) | SidebarEntry::ArchivedHeader
                 ) && !matches!(
                     ix.checked_sub(1).and_then(|ix| entries.get(ix)),
                     Some(SidebarEntry::SectionLabel(_) | SidebarEntry::ArchivedHeader)
-                )
+                ),
+                after: unarchived_task(entry) && !entries.get(ix + 1).is_some_and(unarchived_task),
             })
             .collect();
-        let old_gaps = std::mem::replace(&mut self.heading_gaps, heading_gaps);
+        let old_spacing = std::mem::replace(&mut self.row_spacing, row_spacing);
         let old = std::mem::replace(&mut self.entries, entries);
         self.rebuild_reorder_rows();
         if self.application_vim_enabled {
@@ -1856,11 +1864,18 @@ impl Sidebar {
                 self.entries.len() - prefix - suffix,
             );
         }
-        // A retained heading can gain or lose its gap when its predecessor
-        // changes. Invalidate its cached height even when it is off screen.
-        if suffix > 0 {
-            let row = self.entries.len() - suffix;
-            if self.heading_gaps[row] != old_gaps[old.len() - suffix] {
+        // Retained rows can gain or lose a gap when a neighbor changes.
+        // Remeasure only those rows, preserving their scroll anchor.
+        for (old_row, row) in (0..prefix)
+            .map(|row| (row, row))
+            .chain((0..suffix).map(|offset| {
+                (
+                    old.len() - suffix + offset,
+                    self.entries.len() - suffix + offset,
+                )
+            }))
+        {
+            if self.row_spacing[row] != old_spacing[old_row] {
                 self.list.remeasure_items(row..row + 1);
             }
         }
@@ -2096,6 +2111,10 @@ impl Sidebar {
     /// Project context is supplied by a project header in grouped views.
     fn show_metadata(&self) -> bool {
         matches!(self.view.group, SidebarGroup::Status | SidebarGroup::List)
+    }
+
+    fn show_task_metadata(&self, pinned: bool, archived: bool) -> bool {
+        self.show_metadata() || pinned || archived
     }
 
     /// Open or close the Projects header's menu from its button.
@@ -2856,7 +2875,8 @@ impl Sidebar {
         let selected = self.selected.as_deref();
         let chat = self.chat.clone();
         // Adjacent folded headings keep only their pill margins.
-        let heading_gap = self.heading_gaps.get(ix).copied().unwrap_or(false);
+        let spacing = self.row_spacing.get(ix).copied().unwrap_or_default();
+        let heading_gap = spacing.before;
         let entry = match self.entries.get(ix).copied() {
             Some(
                 entry @ (SidebarEntry::ComputerProject(_)
@@ -2946,10 +2966,7 @@ impl Sidebar {
             }
             Some(SidebarEntry::Task(task)) => {
                 let application_selected = self.vim_selects_row(ix);
-                let row = self.render_task_row(task, selected, application_selected, window, cx);
-                div()
-                    .when(task.gap_after, |row| row.mb_2())
-                    .child(row)
+                self.render_task_row(task, selected, application_selected, window, cx)
                     .into_any_element()
             }
             Some(SidebarEntry::SectionLabel(SidebarSection::Project(index))) => {
@@ -3085,6 +3102,17 @@ impl Sidebar {
                     .into_any_element()
             }
             None => div().into_any_element(),
+        };
+        let entry = if matches!(
+            self.entries.get(ix),
+            Some(SidebarEntry::Task(_) | SidebarEntry::OtherTask(_))
+        ) {
+            div()
+                .when(spacing.after, |row| row.mb_2())
+                .child(entry)
+                .into_any_element()
+        } else {
+            entry
         };
         let entry = if matches!(
             self.entries.get(ix),
@@ -3821,11 +3849,6 @@ impl Sidebar {
             archived,
             ..
         } = task;
-        let folder_task = matches!(
-            self.view.group,
-            SidebarGroup::Project | SidebarGroup::Connection
-        ) && !is_pinned
-            && !archived;
         let row = &self.rows[index];
         let is_selected = selected == Some(&*row.id);
         let activity = (!archived)
@@ -3861,15 +3884,7 @@ impl Sidebar {
             .flex()
             .items_center()
             .gap_1p5()
-            .when(archived, |row| row.pl_4())
-            .when(!archived && !folder_task, |row| row.pl_6())
-            .when(folder_task, |row| {
-                row.pl(
-                    (FOLDER_HEADER_PADDING + FOLDER_HEADER_GAP - gpui::rems(0.5))
-                        .to_pixels(window.rem_size())
-                        + FOLDER_ICON_SIZE,
-                )
-            })
+            .pl(task_row_padding(window))
             .pr_4()
             .py_1()
             .rounded(ROW_RADIUS)
@@ -3898,7 +3913,7 @@ impl Sidebar {
                         None => column
                             .child(div().line_clamp(1).text_ellipsis().child(row.title.clone())),
                     })
-                    .when(self.show_metadata() || is_pinned || archived, |column| {
+                    .when(self.show_task_metadata(is_pinned, archived), |column| {
                         column.child(
                             div()
                                 .text_xs()

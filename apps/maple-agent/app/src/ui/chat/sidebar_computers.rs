@@ -1745,7 +1745,6 @@ impl Sidebar {
                     pinned: self.computer_task_pin(computer, task).is_some(),
                     settled: state == AgentTaskState::Settled && !self.running.contains(&task.uuid),
                     archived: state == AgentTaskState::Archived,
-                    gap_after: false,
                 }));
             }
         } else {
@@ -1762,9 +1761,8 @@ impl Sidebar {
             }
             let index = self.other_tasks.len();
             let session = session_from_summary(task);
-            let metadata = if matches!(self.view.group, SidebarGroup::Status | SidebarGroup::List)
-                || archived
-            {
+            let pinned = self.computer_task_pin(computer, task).is_some();
+            let metadata = if self.show_task_metadata(pinned, archived) {
                 format!(
                     "{} · {}",
                     self.computer_project_name(
@@ -1797,7 +1795,7 @@ impl Sidebar {
                 title: latest
                     .map_or_else(|| task.title.clone(), |session| session.title.clone())
                     .into(),
-                pinned: self.computer_task_pin(computer, task).is_some(),
+                pinned,
                 activity: if computer.running.contains(&task.uuid) {
                     Some(SessionActivity::Running)
                 } else if computer.unread.contains(&task.uuid) {
@@ -1958,11 +1956,11 @@ impl Sidebar {
                     .aria_selected(false)
                     .mx_2()
                     .my(px(1.))
-                    .pl_6()
+                    .pl(task_row_padding(window))
                     .pr_4()
                     .py_1()
                     .flex()
-                    .gap_2()
+                    .gap_1p5()
                     .items_center()
                     .rounded(ROW_RADIUS)
                     .text_sm()
