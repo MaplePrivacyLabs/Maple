@@ -1614,6 +1614,18 @@ impl Sidebar {
                         }
                     }
                 }
+                // Empty projects can use their saved registration/restoration
+                // time. For Created this is still an approximation, not a true
+                // project or filesystem creation timestamp.
+                for (index, (latest, earliest, _)) in folders.iter_mut().enumerate() {
+                    let fallback = self
+                        .project_metadata
+                        .get(&self.switcher_roots[index].root)
+                        .and_then(|project| i64::try_from(project.last_used_ms).ok())
+                        .filter(|timestamp| *timestamp > 0);
+                    *latest = (*latest).or(fallback);
+                    *earliest = (*earliest).or(fallback);
+                }
                 let mut folders: Vec<_> = folders
                     .into_iter()
                     .enumerate()
