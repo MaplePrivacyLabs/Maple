@@ -1336,14 +1336,8 @@ impl Sidebar {
         right: &Option<String>,
         b: &TaskSummary,
     ) -> std::cmp::Ordering {
-        a.pinned_ms
-            .is_none()
-            .cmp(&b.pinned_ms.is_none())
-            .then_with(|| b.pinned_ms.cmp(&a.pinned_ms))
-            .then_with(|| {
-                self.task_order_key(left, &a.uuid, a.created_ms, a.updated_ms)
-                    .cmp(&self.task_order_key(right, &b.uuid, b.created_ms, b.updated_ms))
-            })
+        self.task_order_key(left, &a.uuid, a.created_ms, a.updated_ms)
+            .cmp(&self.task_order_key(right, &b.uuid, b.created_ms, b.updated_ms))
             .then_with(|| left.cmp(right))
             .then_with(|| a.uuid.cmp(&b.uuid))
     }
@@ -1437,11 +1431,7 @@ impl Sidebar {
         self.other_tasks.clear();
         self.group_pages.more.clear();
         self.computer_archived_count = 0;
-        let mut entries = vec![
-            SidebarEntry::NewTask,
-            SidebarEntry::Search,
-            SidebarEntry::ProjectsHeader,
-        ];
+        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::Search];
         // A mounted view projects only bounded, owner-fenced summary pages.
         // Drafts, transcripts and execution remain in their owning ChatScreen.
         let computers = self.computers.clone();
@@ -1524,6 +1514,35 @@ impl Sidebar {
                 }
             }
         }
+        // Pins are a desktop view across computers, above every grouping.
+        // Keep the task's original project and saved order for unpinning.
+        let mut pinned = Vec::new();
+        let mut seen_pins = HashSet::new();
+        let mut take_pin = |index: usize, task: &TaskSummary| {
+            if task.pinned_ms.is_none() {
+                return true;
+            }
+            if seen_pins.insert((index, task.uuid.clone())) {
+                pinned.push((index, task.clone()));
+            }
+            false
+        };
+        for (index, group) in &mut groups {
+            group.tasks.retain(|task| take_pin(*index, task));
+        }
+        tasks.retain(|(index, task)| take_pin(*index, task));
+        self.sort_computer_tasks(&mut pinned);
+        let has_pins = !pinned.is_empty();
+        if has_pins {
+            entries.push(SidebarEntry::SectionLabel(SidebarSection::Pinned));
+            if self.section_expanded(SidebarSection::Pinned) {
+                for (index, task) in &pinned {
+                    self.push_computer_task(&mut entries, &computers[*index], task);
+                }
+            }
+        }
+        entries.push(SidebarEntry::ProjectsHeader);
+        let group_start = entries.len();
         groups.sort_by_cached_key(|(index, group)| {
             let target = ProjectTarget {
                 computer: computers[*index].key.clone(),
@@ -1659,22 +1678,12 @@ impl Sidebar {
                 }
             }
         }
-        if entries.len() == 3 && self.projects_expanded {
+        if entries.len() == group_start && !has_pins && self.projects_expanded {
             entries.push(SidebarEntry::Empty(if searching {
                 SidebarEmpty::NoMatches
             } else {
                 SidebarEmpty::NoTasks
             }));
-        }
-        if !self.projects_expanded {
-            let archived = entries
-                .iter()
-                .position(|entry| *entry == SidebarEntry::ArchivedHeader);
-            let mut folded = entries[..3].to_vec();
-            if let Some(start) = archived {
-                folded.extend_from_slice(&entries[start..]);
-            }
-            return folded;
         }
         entries
     }

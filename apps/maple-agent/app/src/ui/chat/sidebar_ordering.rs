@@ -276,10 +276,10 @@ impl Sidebar {
         state: AgentTaskState,
         pinned: bool,
     ) -> TaskGroup {
-        if pinned && !self.uses_computer_projection() {
-            TaskGroup::Pinned
-        } else if state == AgentTaskState::Archived {
+        if state == AgentTaskState::Archived {
             TaskGroup::Archived
+        } else if pinned {
+            TaskGroup::Pinned
         } else {
             match self.view.group {
                 SidebarGroup::Project | SidebarGroup::Connection => TaskGroup::Project(target),
@@ -343,6 +343,7 @@ impl Sidebar {
                             self.view.group,
                             SidebarGroup::Project | SidebarGroup::Connection
                         ) && !task.archived
+                            && !task.pinned
                         {
                             row.project = Some(target);
                         }
@@ -368,6 +369,7 @@ impl Sidebar {
                             self.view.group,
                             SidebarGroup::Project | SidebarGroup::Connection
                         ) && !task.archived
+                            && !task.pinned
                         {
                             row.project = Some(target);
                         }

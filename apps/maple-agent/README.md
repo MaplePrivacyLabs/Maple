@@ -132,8 +132,9 @@ Goose, with an independent dependency graph.
   known empty projects visible. Project and connection order stays stable;
   dragging rearranges the sidebar without changing a task's project, computer
   or status. Dragging a task silently selects Manual order, which persists
-  across grouping changes and restarts; new tasks appear at the top. Tasks also
-  support rename, archive, and restore.
+  across grouping changes and restarts; new tasks appear at the top. Pinned
+  tasks sit above the grouping header and return to their normal group when
+  unpinned. Tasks also support rename, archive, and restore.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
   speech voice and speed), Keyboard Shortcuts, System prompt, Integrations
