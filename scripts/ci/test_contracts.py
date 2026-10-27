@@ -409,7 +409,8 @@ class ContractTests(unittest.TestCase):
         names = {Path(path).name for path in files}
         dangling = []
         for path in files:
-            if not (path.endswith(".md") and plan.matches(path, DOCS)):
+            # CI changes never edit services/opensecret/ (PCR inputs); its docs move with OpenSecret PRs.
+            if not (path.endswith(".md") and plan.matches(path, DOCS)) or path.startswith("services/opensecret/"):
                 continue
             text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
             for match in re.finditer(r"(?<![\w./-])((?:\.github/workflows/)?[\w.-]+\.ya?ml)\b", text):

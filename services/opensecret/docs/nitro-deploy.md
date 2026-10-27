@@ -74,7 +74,7 @@ artifact's `pcr.json`; the deployment verifier rejects anything else.
 
 ## CI approval checks
 
-The root `ci.yml` `os-eif` lane builds dev/prod EIF candidates on Linux ARM64 for
+`opensecret-eif.yml` builds dev/prod EIF candidates on Linux ARM64 for
 same-repository PRs that change measured inputs without editing PCR approvals.
 The candidate job explicitly realizes and inspects the exact user initramfs
 passed to the EIF builder, including when the final EIF comes from cache,
