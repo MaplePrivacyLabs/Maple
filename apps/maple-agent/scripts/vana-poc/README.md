@@ -9,8 +9,10 @@ server port, or public MCP endpoint in the new connection path.
 
 1. Keep an up-to-date Vana Desktop running. In **Settings → Server → Connect
    apps**, copy **Local MCP endpoint**.
-2. In Maple Agent on **This Computer**, open **Settings → Integrations → Vana**.
-   Paste the endpoint and click **Connect Vana**.
+2. In Maple Agent on **This Computer**, open **Settings → Integrations →
+   Supported MCP integrations → Vana → Connect**. The card's **Get Vana** and
+   **Setup guide** links cover installing Vana Desktop and preparing the local
+   endpoint. Paste the endpoint and click **Connect Vana**.
 3. In Vana Desktop, select the scopes Maple may read and approve the request.
    The native Vana consent screen is the authority; Maple does not simulate it.
 4. Return to Maple and select Vana in the task's **Integrations** menu. The
@@ -32,6 +34,8 @@ late refreshes from silently restoring stale credentials.
 
 In Vana, **Settings → Server → Connected clients → Disconnect** revokes access.
 A revoked session must be connected again. Vana Desktop must stay running.
+The Vana card's **Manage → Remove from Maple** removes Maple's saved connection;
+revoke the grant in Vana separately if you no longer want Maple to have access.
 
 ## Privacy boundary
 

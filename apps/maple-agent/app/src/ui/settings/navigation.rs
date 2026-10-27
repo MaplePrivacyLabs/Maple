@@ -51,10 +51,14 @@ pub(super) enum SettingsTarget {
     PromptReset,
     Integration(String),
     IntegrationSetup(String),
+    VanaGetApp,
+    VanaSetupGuide,
     VanaDetails,
     VanaConnect,
     VanaToggle,
     VanaEndpoint,
+    VanaEdit,
+    VanaRemove,
     McpAdd,
     McpServer(String),
 }
@@ -165,45 +169,32 @@ impl SettingsScreen {
                 SettingsTarget::PromptSave,
                 SettingsTarget::PromptReset,
             ],
-            Section::Integrations => std::iter::once(SettingsTarget::VanaDetails)
-                .chain(
-                    self.vana_details_open
-                        .then_some(SettingsTarget::VanaConnect),
-                )
-                .chain(
-                    (self.vana_details_open && self.vana_server().is_some())
-                        .then_some(SettingsTarget::VanaToggle),
-                )
-                .chain(
-                    (self.vana_details_open && self.vana_local_available)
-                        .then_some(SettingsTarget::VanaEndpoint),
-                )
-                .chain(
-                    self.integrations
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter(|integration| integration_is_visible(integration))
-                        .flat_map(|integration| {
-                            [
-                                integration_can_setup(integration).then(|| {
-                                    SettingsTarget::IntegrationSetup(integration.id.clone())
-                                }),
-                                integration_can_toggle(integration)
-                                    .then(|| SettingsTarget::Integration(integration.id.clone())),
-                            ]
-                            .into_iter()
-                            .flatten()
-                        }),
-                )
+            Section::Integrations => self
+                .integrations
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|integration| integration_is_visible(integration))
+                .flat_map(|integration| {
+                    [
+                        integration_can_setup(integration)
+                            .then(|| SettingsTarget::IntegrationSetup(integration.id.clone())),
+                        integration_can_toggle(integration)
+                            .then(|| SettingsTarget::Integration(integration.id.clone())),
+                    ]
+                    .into_iter()
+                    .flatten()
+                })
                 .chain(std::iter::once(SettingsTarget::McpAdd))
                 .chain(
                     self.mcp_servers
                         .as_deref()
                         .unwrap_or_default()
                         .iter()
+                        .filter(|server| !server.name.eq_ignore_ascii_case("vana"))
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
                 )
+                .chain(self.vana_application_targets())
                 .collect(),
             Section::Remote | Section::Usage | Section::About | Section::Advanced => Vec::new(),
         }
@@ -387,6 +378,8 @@ impl SettingsScreen {
             Some(SettingsTarget::PromptReset) => self.reset_prompt(cx),
             Some(SettingsTarget::Integration(id)) => self.toggle_integration(&id, cx),
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
+            Some(SettingsTarget::VanaGetApp) => self.open_vana_app(),
+            Some(SettingsTarget::VanaSetupGuide) => self.open_vana_setup_guide(),
             Some(SettingsTarget::VanaDetails) => self.open_vana_details(cx),
             Some(SettingsTarget::VanaConnect) => self.start_vana_connection(cx),
             Some(SettingsTarget::VanaToggle) => {
@@ -397,6 +390,16 @@ impl SettingsScreen {
             Some(SettingsTarget::VanaEndpoint) => {
                 let handle = self.vana_endpoint.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
+            }
+            Some(SettingsTarget::VanaRemove) => {
+                if let Some(name) = self.vana_server().map(|server| server.name.clone()) {
+                    self.remove_mcp_server(&name, cx);
+                }
+            }
+            Some(SettingsTarget::VanaEdit) => {
+                if let Some(name) = self.vana_server().map(|server| server.name.clone()) {
+                    self.edit_mcp_server(&name, cx);
+                }
             }
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
@@ -728,7 +731,7 @@ mod tests {
             )
         });
 
-        settings.update(cx, |this, _cx| {
+        settings.update(cx, |this, cx| {
             this.integrations = Some(vec![
                 maple_agent::agent::AgentIntegration {
                     id: "cua-driver".to_string(),
@@ -782,12 +785,47 @@ mod tests {
             assert_eq!(
                 this.visible_application_targets(),
                 vec![
-                    SettingsTarget::VanaDetails,
                     SettingsTarget::IntegrationSetup("cua-driver".to_string()),
                     SettingsTarget::Integration("cua-driver".to_string()),
                     SettingsTarget::McpAdd,
                     SettingsTarget::McpServer("custom".to_string()),
+                    SettingsTarget::VanaGetApp,
+                    SettingsTarget::VanaSetupGuide,
+                    SettingsTarget::VanaDetails,
                 ]
+            );
+
+            // The supported card owns Vana's controls; its saved definition
+            // must not introduce a second custom-server navigation target.
+            let mut vana = this.mcp_servers.as_ref().unwrap()[0].clone();
+            vana.name = "VaNa".to_string();
+            this.mcp_servers.as_mut().unwrap().push(vana);
+            assert!(!this.visible_application_targets().iter().any(|target| {
+                matches!(target, SettingsTarget::McpServer(name) if name.eq_ignore_ascii_case("vana"))
+            }));
+
+            this.vana_details_open = true;
+            this.vana_local_available = true;
+            assert_eq!(
+                this.vana_application_targets(),
+                vec![
+                    SettingsTarget::VanaDetails,
+                    SettingsTarget::VanaGetApp,
+                    SettingsTarget::VanaSetupGuide,
+                    SettingsTarget::VanaEndpoint,
+                    SettingsTarget::VanaToggle,
+                    SettingsTarget::VanaConnect,
+                    SettingsTarget::VanaEdit,
+                    SettingsTarget::VanaRemove,
+                ]
+            );
+            this.vana_local_available = false;
+            assert!(!this.vana_application_targets().contains(&SettingsTarget::VanaEndpoint));
+            this.edit_mcp_server("VaNa", cx);
+            assert!(this.vana_editor_open());
+            assert_eq!(
+                this.mcp_editor.as_ref().unwrap().original_name.as_deref(),
+                Some("VaNa")
             );
         });
     }

@@ -2473,11 +2473,6 @@ impl SettingsScreen {
                     .child("Give Maple the tools and context you choose. Connect an integration here, then select it for each chat."),
             );
 
-        pane = pane.child(if self.vana_details_open {
-            self.render_vana_details(cx)
-        } else {
-            self.render_vana_catalog_card(cx)
-        });
         pane = pane.child(
             div()
                 .mt_2()
@@ -2553,10 +2548,14 @@ impl SettingsScreen {
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child("Connect additional tools over MCP."),
         );
-        if let Some(notice) = &self.mcp_notice {
+        if let Some(notice) = &self.mcp_notice
+            && !self.vana_editor_open()
+        {
             pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
         }
-        if let Some(editor) = &self.mcp_editor {
+        if let Some(editor) = &self.mcp_editor
+            && !self.vana_editor_open()
+        {
             pane = pane.child(self.render_mcp_editor(editor, cx));
         }
         match &self.mcp_servers {
@@ -2567,7 +2566,11 @@ impl SettingsScreen {
                         .child("Loading custom MCP servers…"),
                 );
             }
-            Some(servers) if servers.is_empty() => {
+            Some(servers)
+                if servers
+                    .iter()
+                    .all(|server| server.name.eq_ignore_ascii_case("vana")) =>
+            {
                 pane = pane.child(
                     div()
                         .text_sm()
@@ -2576,7 +2579,10 @@ impl SettingsScreen {
                 );
             }
             Some(servers) => {
-                pane = pane.children(servers.iter().map(|server| {
+                let custom_servers = servers
+                    .iter()
+                    .filter(|server| !server.name.eq_ignore_ascii_case("vana"));
+                pane = pane.children(custom_servers.map(|server| {
                     let name = server.name.clone();
                     let summary = match &server.target {
                         McpTarget::Stdio { command } => format!("STDIO · {command}"),
@@ -2665,7 +2671,19 @@ impl SettingsScreen {
                 }));
             }
         }
-        pane
+        pane = pane.child(
+            div()
+                .mt_2()
+                .pt_5()
+                .border_t_1()
+                .border_color(gpui::rgb(theme::border_subtle()))
+                .child(subsection_title("Supported MCP integrations")),
+        );
+        pane.child(if self.vana_details_open {
+            self.render_vana_details(cx)
+        } else {
+            self.render_vana_catalog_card(cx)
+        })
     }
 
     fn render_integration_card(

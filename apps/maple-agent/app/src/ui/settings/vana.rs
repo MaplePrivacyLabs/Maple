@@ -7,16 +7,8 @@ use super::{SettingsScreen, SettingsTarget};
 use crate::ui::{icons::icon, theme, widgets};
 use maple_agent::store::records::{McpDefinition, McpTarget};
 
-fn chip(label: &'static str) -> Div {
-    div()
-        .px_2()
-        .py_1()
-        .rounded_full()
-        .bg(gpui::rgb(theme::bg_sidebar_pill()))
-        .text_xs()
-        .text_color(gpui::rgb(theme::text_secondary()))
-        .child(label)
-}
+const VANA_APP_URL: &str = "https://vana.org/use";
+const VANA_SETUP_URL: &str = "https://docs.vana.org/applications/connect-a-local-agent";
 
 fn vana_wordmark() -> gpui::Svg {
     gpui::svg()
@@ -27,6 +19,39 @@ fn vana_wordmark() -> gpui::Svg {
 }
 
 impl SettingsScreen {
+    pub(super) fn vana_application_targets(&self) -> Vec<SettingsTarget> {
+        let links = [SettingsTarget::VanaGetApp, SettingsTarget::VanaSetupGuide];
+        if !self.vana_details_open {
+            return links
+                .into_iter()
+                .chain([SettingsTarget::VanaDetails])
+                .collect();
+        }
+        std::iter::once(SettingsTarget::VanaDetails)
+            .chain(links)
+            .chain(
+                self.vana_local_available
+                    .then_some(SettingsTarget::VanaEndpoint),
+            )
+            .chain(
+                self.vana_server()
+                    .is_some()
+                    .then_some(SettingsTarget::VanaToggle),
+            )
+            .chain([SettingsTarget::VanaConnect])
+            .chain(
+                self.vana_server()
+                    .is_some()
+                    .then_some(SettingsTarget::VanaEdit),
+            )
+            .chain(
+                self.vana_server()
+                    .is_some()
+                    .then_some(SettingsTarget::VanaRemove),
+            )
+            .collect()
+    }
+
     /// A curated card identifies the exact saved Vana MCP name. Other MCP
     /// servers, including user-provided lookalike descriptions, stay custom.
     pub(super) fn vana_server(&self) -> Option<&McpDefinition> {
@@ -67,110 +92,138 @@ impl SettingsScreen {
                 ("Default on for new chats", theme::status_success())
             }
             (_, Some(_)) => ("Configured · choose per chat", theme::text_muted()),
-            (_, None) => ("Not connected", theme::text_muted()),
+            (_, None) => ("Not configured", theme::text_muted()),
         };
-        div()
+        widgets::card_row()
             .flex()
-            .flex_col()
-            .gap_4()
-            .p_5()
-            .rounded(theme::RADIUS_LG)
-            .bg(gpui::rgb(theme::bg_sidebar_card()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
+            .items_start()
+            .gap_3()
             .child(
                 div()
+                    .size(px(44.))
+                    .flex_none()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(icon("puzzle", px(14.), theme::text_muted()))
-                            .child("FEATURED INTEGRATION"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .text_xs()
-                            .text_color(gpui::rgb(status_color))
-                            .child(div().size(px(6.)).rounded_full().bg(gpui::rgb(status_color)))
-                            .child(status),
-                    ),
+                    .justify_center()
+                    .rounded(theme::RADIUS_SM)
+                    .bg(gpui::rgb(theme::bg_sidebar_card()))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border_subtle()))
+                    .child(vana_wordmark().w(px(34.)).h(px(34. * 478. / 1716.))),
             )
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
-                    .items_center()
-                    .gap_5()
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(136.))
-                            .h(px(88.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(theme::RADIUS_MD)
-                            .bg(gpui::rgb(theme::bg_elevated()))
-                            .border_1()
-                            .border_color(gpui::rgb(theme::border_subtle()))
-                            .child(vana_wordmark()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(gpui::rgb(theme::text_heading()))
-                                    .child("Your context. Your permissions."),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(gpui::rgb(theme::text_secondary()))
-                                    .child("Bring context from your personal Vana vault into Maple. Get answers that understand your interests, goals, and routines."),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
+                    .flex_col()
+                    .gap_1p5()
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
-                            .gap_1p5()
-                            .child(chip("Local connection"))
-                            .child(chip("Vana permissions"))
-                            .child(chip("MCP")),
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(gpui::rgb(theme::text_primary()))
+                                    .child("Vana"),
+                            )
+                            .child(super::integration_status_badge(status, status_color)),
                     )
-                    .child(self.application_target(
-                        || SettingsTarget::VanaDetails,
-                        widgets::secondary_button("vana-catalog-details")
-                            .tab_index(0)
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.open_vana_details(cx);
-                            }))
-                            .child(if server.is_some() { "Manage Vana" } else { "Connect Vana" })
-                            .child(icon("chevron-right", px(14.), theme::text_primary())),
-                    )),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .child("Connect selected data from Vana Desktop on this computer."),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child("Requires Vana Desktop."),
+                    )
+                    .child(self.render_vana_links(cx)),
+            )
+            .child(
+                self.application_target(
+                    || SettingsTarget::VanaDetails,
+                    widgets::secondary_button("vana-catalog-details")
+                        .aria_label(if server.is_some() {
+                            "Manage Vana"
+                        } else {
+                            "Connect Vana"
+                        })
+                        .tab_index(0)
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.open_vana_details(cx);
+                        }))
+                        .child(if server.is_some() {
+                            "Manage"
+                        } else {
+                            "Connect"
+                        }),
+                ),
+            )
+    }
+
+    pub(super) fn open_vana_app(&self) {
+        crate::ui::rich_text::open_link(VANA_APP_URL);
+    }
+
+    pub(super) fn open_vana_setup_guide(&self) {
+        crate::ui::rich_text::open_link(VANA_SETUP_URL);
+    }
+
+    pub(super) fn vana_editor_open(&self) -> bool {
+        self.vana_details_open
+            && self.mcp_editor.as_ref().is_some_and(|editor| {
+                editor
+                    .original_name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("vana"))
+            })
+    }
+
+    fn render_vana_links(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_4()
+            .child(
+                self.application_target(
+                    || SettingsTarget::VanaGetApp,
+                    widgets::ghost_button("vana-get-app")
+                        .aria_label("Get Vana")
+                        .tab_index(0)
+                        .px_0()
+                        .py_0()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::link()))
+                        .on_click(cx.listener(|this, _event, _window, _cx| this.open_vana_app()))
+                        .child("Get Vana")
+                        .child(icon("external-link", px(12.), theme::link())),
+                ),
+            )
+            .child(
+                self.application_target(
+                    || SettingsTarget::VanaSetupGuide,
+                    widgets::ghost_button("vana-setup-guide")
+                        .aria_label("Vana setup guide")
+                        .tab_index(0)
+                        .px_0()
+                        .py_0()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::link()))
+                        .on_click(
+                            cx.listener(|this, _event, _window, _cx| this.open_vana_setup_guide()),
+                        )
+                        .child("Setup guide")
+                        .child(icon("external-link", px(12.), theme::link())),
+                ),
             )
     }
 
@@ -204,7 +257,8 @@ impl SettingsScreen {
                                     .child("Connect your local vault"),
                             ),
                     )
-                    .child(
+                    .child(self.application_target(
+                        || SettingsTarget::VanaDetails,
                         widgets::icon_button(
                             "vana-details-close",
                             "x",
@@ -217,14 +271,15 @@ impl SettingsScreen {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.open_vana_details(cx);
                         })),
-                    ),
+                    )),
             )
             .child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
                     .child("Keep Vana Desktop open on this computer. In Vana, go to Settings → Server → Connect apps and copy the Local MCP endpoint."),
-            );
+            )
+            .child(self.render_vana_links(cx));
         if self.vana_local_available {
             content = content.child(
                 self.application_target(
@@ -344,7 +399,54 @@ impl SettingsScreen {
                     }),
             ),
         );
-        content.child(actions)
+        content = content.child(actions);
+        if let Some(server) = server {
+            let name = server.name.clone();
+            let manage_actions = div().flex().flex_wrap().items_center().gap_2().child(
+                self.application_target(
+                    || SettingsTarget::VanaEdit,
+                    widgets::ghost_button("vana-advanced-settings")
+                        .aria_label("Vana advanced settings")
+                        .tab_index(0)
+                        .when(self.mcp_saving || self.vana_connecting, |button| {
+                            button.opacity(0.5)
+                        })
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.edit_mcp_server(&name, cx);
+                        }))
+                        .child("Advanced settings"),
+                ),
+            );
+            let name = server.name.clone();
+            content = content.child(
+                manage_actions.child(
+                    self.application_target(
+                        || SettingsTarget::VanaRemove,
+                        widgets::ghost_button("vana-remove")
+                            .aria_label("Remove Vana from Maple")
+                            .tab_index(0)
+                            .text_color(gpui::rgb(theme::status_error()))
+                            .when(self.mcp_saving || self.vana_connecting, |button| {
+                                button.opacity(0.5)
+                            })
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.remove_mcp_server(&name, cx);
+                            }))
+                            .child("Remove from Maple"),
+                    ),
+                ),
+            );
+        }
+        if self.vana_editor_open() {
+            if let Some(notice) = &self.mcp_notice {
+                content =
+                    content.child(widgets::banner(theme::status_warning()).child(notice.clone()));
+            }
+            if let Some(editor) = &self.mcp_editor {
+                content = content.child(self.render_mcp_editor(editor, cx));
+            }
+        }
+        content
     }
 
     pub(super) fn start_vana_connection(&mut self, cx: &mut Context<Self>) {
