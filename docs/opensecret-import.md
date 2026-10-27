@@ -60,7 +60,8 @@ backend dev-shell job. A separate
 ARM64 EIF workflow compares dev/prod measurements on PRs explicitly editing
 approved PCR JSON, relevant backend/TEE or approval changes to master, and manual runs.
 Ordinary backend PRs do not fail merely because approvals have not been
-updated; master mismatches are an intentional deployment-approval signal.
+updated. A master mismatch is reported as pending approval (a notice with the
+built PCRs), not a failure.
 Master and same-repository PR EIF checks receive OIDC for FlakeHub Cache and
 also populate GitHub's branch-scoped Nix cache. Fork PRs and non-master manual
 runs have no OIDC and use only GitHub caching; master runs warm the

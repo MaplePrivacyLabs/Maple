@@ -13,6 +13,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -365,6 +368,96 @@ class ContractTests(unittest.TestCase):
             except ValueError:  # an event ci.yml does not run on
                 return {}
 
+    def test_c5_eif_mismatch_fails_only_where_its_approval_is_edited(self):
+        # Both approval jobs' compare step, run with a stand-in for check_opensecret_eif.sh
+        # (exit 3 is a PCR mismatch). A mismatch fails a PR that edits that mode's
+        # approval files, or a manual run outside master; on master it is a notice. Every
+        # other failure fails.
+        jobs_ = workflows()["opensecret-eif.yml"]["jobs"]
+        name = "Build EIF and compare approved measurements"
+        step, trusted = (next(s for s in jobs_[job]["steps"] if s.get("name") == name) for job in ("eif", "eif-trusted"))
+        self.assertEqual(step, trusted)
+        self.assertEqual(step["env"], {"PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+                                       "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}"})
+        self.assertNotIn("${{", step["run"])  # event data reaches the script only through env
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+            env.update(HOME=str(root), RUNNER_TEMP=str(root), GIT_CONFIG_NOSYSTEM="1",
+                       GIT_CONFIG_GLOBAL=os.devnull)
+
+            def git(*arguments):
+                return subprocess.run(["git", "-c", "user.name=CI fixture", "-c", "user.email=ci@example.invalid",
+                                       "-c", "core.hooksPath=/dev/null", *arguments], cwd=root, env=env,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def commit(start, label, *edits):  # a distinct tree per label, so no two heads share a commit
+                git("checkout", "-q", "--detach", start)
+                for path in edits:
+                    (root / path).write_text(f"{label}\n")
+                git("add", "-A")
+                git("commit", "-qm", label)
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q")
+            component = root / "services/opensecret"
+            component.mkdir(parents=True)
+            for file in ("pcrDev.json", "pcrDevHistory.json", "pcrProd.json", "pcrProdHistory.json", "main.rs"):
+                (component / file).write_text("approved\n")
+            stub = root / "scripts/ci/check_opensecret_eif.sh"
+            stub.parent.mkdir(parents=True)
+            stub.write_text('echo "Built measurements ($1, pcr.json):"; echo \'{"PCR0": "built"}\'; exit "$STATUS"\n')
+            git("add", "-A")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            # Master moves on with its own prod approval; only the PR's own edits count.
+            master = commit(base, "master", "services/opensecret/pcrProd.json")
+            heads = {label: commit(base, label, path) for label, path in (
+                ("dev", "services/opensecret/pcrDevHistory.json"), ("prod", "services/opensecret/pcrProd.json"),
+                ("code", "services/opensecret/main.rs"))}
+            git("checkout", "-q", "--detach", base)
+            git("rm", "-q", "services/opensecret/pcrDev.json")
+            git("commit", "-qm", "delete")
+            heads["deleted dev"] = git("rev-parse", "HEAD")
+            self.assertEqual(len({master, *heads.values()}), 5)
+            master_push, pr = ("push", "refs/heads/master", "", ""), ("pull_request", "refs/pull/1/merge", master)
+            cases = [  # (event, ref, base, head), mode, outcome of a mismatch
+                (master_push, "dev", "pending"), (master_push, "prod", "pending"),
+                (("workflow_dispatch", "refs/heads/master", "", ""), "prod", "pending"),
+                (("workflow_dispatch", "refs/heads/feature", "", ""), "dev", "fails"),
+                (("workflow_dispatch", "refs/tags/v1", "", ""), "prod", "fails"),
+                ((*pr, heads["dev"]), "dev", "fails"), ((*pr, heads["dev"]), "prod", "pending"),
+                ((*pr, heads["prod"]), "prod", "fails"), ((*pr, heads["prod"]), "dev", "pending"),
+                ((*pr, heads["code"]), "dev", "pending"), ((*pr, heads["deleted dev"]), "dev", "fails"),
+                (("pull_request", "refs/pull/1/merge", "", heads["dev"]), "prod", "error"),
+                (("pull_request", "refs/pull/1/merge", "f" * 40, heads["dev"]), "prod", "error"),
+            ]
+            script = root / "step.sh"
+            script.write_text(step["run"])
+            for (event, ref, pr_base, pr_head), mode, outcome in cases:
+                for status in (0, 1, 2, 3, 42):
+                    summary = root / "summary.md"
+                    summary.write_text("")
+                    result = subprocess.run(
+                        [shutil.which("bash"), "--noprofile", "--norc", "-eo", "pipefail", str(script)], cwd=root,
+                        env={**env, "GITHUB_EVENT_NAME": event, "GITHUB_REF": ref, "PR_BASE_SHA": pr_base,
+                             "PR_HEAD_SHA": pr_head, "EIF_MODE": mode, "STATUS": str(status),
+                             "GITHUB_STEP_SUMMARY": str(summary)}, capture_output=True, text=True)
+                    with self.subTest(event=event, ref=ref, head=pr_head, mode=mode, status=status):
+                        self.assertIn('{"PCR0": "built"}', result.stdout)  # the check's output stays in the log
+                        if status != 3:
+                            self.assertEqual(result.returncode, status)
+                            self.assertEqual(summary.read_text(), "")
+                            continue
+                        expected = {"pending": 0, "fails": 3, "error": 1}[outcome]
+                        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                        self.assertEqual("::notice title=EIF/PCR approval pending" in result.stdout,
+                                         outcome == "pending")
+                        if outcome != "error":
+                            self.assertIn(f"### EIF/PCR approval {'pending' if expected == 0 else 'mismatch'}"
+                                          f" ({mode})", summary.read_text())
+                            self.assertIn('{"PCR0": "built"}', summary.read_text())
+
     def test_c5_oidc_and_flakehub_stay_in_their_jobs_on_one_builder_class(self):
         minted = {(name, job_id) for name, job_id, job in jobs()
                   if permissions(workflows()[name], job).get("id-token") == "write"}
@@ -409,8 +502,7 @@ class ContractTests(unittest.TestCase):
         names = {Path(path).name for path in files}
         dangling = []
         for path in files:
-            # CI changes never edit services/opensecret/ (PCR inputs); its docs move with OpenSecret PRs.
-            if not (path.endswith(".md") and plan.matches(path, DOCS)) or path.startswith("services/opensecret/"):
+            if not (path.endswith(".md") and plan.matches(path, DOCS)):
                 continue
             text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
             for match in re.finditer(r"(?<![\w./-])((?:\.github/workflows/)?[\w.-]+\.ya?ml)\b", text):

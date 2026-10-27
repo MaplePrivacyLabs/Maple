@@ -84,7 +84,9 @@ the other side of each contract. A failure means the workflow change is wrong:
    `ios-dev-testflight.yml`'s run number is the Maple Dev build number: never
    rename that file.
 5. OpenSecret EIF builds use the release builder's runner class, and only the
-   listed jobs receive `id-token: write` or use FlakeHub.
+   listed jobs receive `id-token: write` or use FlakeHub. An EIF approval
+   mismatch fails only where that environment's approval files are edited
+   (or a manual run outside `master`); on master it is a notice.
 6. Each protected environment has a fixed set of consumer jobs;
    `windows-signing` runs only on GitHub-hosted runners.
 7. Docs, guides and READMEs name only workflows that exist.
@@ -165,8 +167,11 @@ release builder's
 `blacksmith-8vcpu-ubuntu-2404-arm` class, and reports their PCRs.
 `opensecret-eif.yml` compares measurements on PRs that edit approved PCR JSON,
 on relevant master changes and on manual runs; that approval status is not
-part of `ci-ok`. These checks never change approvals, sign, release, or
-authorize deployment. Master and same-repository PR EIF builds receive OIDC for
+part of `ci-ok`. A mismatch fails a manual run outside `master`, and a PR only
+in an environment whose approval files it edits. On master it is pending
+approval: the job passes with a notice and the built PCRs in its summary. Build
+and comparison errors always fail. These checks never change approvals, sign,
+release, or authorize deployment. Master and same-repository PR EIF builds receive OIDC for
 FlakeHub caching; fork PRs and non-master manual runs never do. Verify cache
 changes on fresh hosted runners, not a warm local Nix store. Details:
 [CI approval checks](../services/opensecret/docs/nitro-deploy.md#ci-approval-checks)

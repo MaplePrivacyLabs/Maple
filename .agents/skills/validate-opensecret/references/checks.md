@@ -160,10 +160,13 @@ Root backend CI runs the component flake checks but does not build the
 default package. The separate root EIF approval workflow builds dev/prod
 and compares generated measurements on PRs that explicitly edit the four
 approved PCR JSON files, relevant backend/TEE or approval changes to master,
-and manual runs. Ordinary backend PRs do not require new PCR approvals; master
-mismatches intentionally signal that the revision does not match its current
-approvals. This repository's CI signs only in the reviewer-gated `OpenSecret EIF release`
-workflow, never creates GitHub Releases, and never deploys the TEE service.
+and manual runs. Ordinary backend PRs do not require new PCR approvals. A PR
+fails on a mismatch only in an environment whose approval files it edits; a
+master mismatch passes with a notice and the built PCRs, meaning the revision
+awaits approval. The check script exits 3 for a mismatch and with another
+non-zero status for a build failure. This repository's CI signs only in the
+reviewer-gated `OpenSecret EIF release` workflow, never creates GitHub
+Releases, and never deploys the TEE service.
 Ordinary pull-request completion does not update PCR references.
 Do not copy or sign values just to clear a validation failure; distinguish an
 EIF build failure from a PCR mismatch. Use `docs/pcr-compatibility.md` for the

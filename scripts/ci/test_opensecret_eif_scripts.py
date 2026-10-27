@@ -588,7 +588,7 @@ class EifComparisonCommandTests(unittest.TestCase):
         self.binaries.mkdir()
         self.scratch = self.root / "scratch"
         self.scratch.mkdir()
-        for tool in ("dirname", "mktemp", "rm", "diff"):
+        for tool in ("dirname", "mktemp", "rm", "diff", "cat"):
             (self.binaries / tool).symlink_to(shutil.which(tool))
         uname = self.binaries / "uname"
         uname.write_text(
@@ -605,7 +605,7 @@ class EifComparisonCommandTests(unittest.TestCase):
             "args = sys.argv[1:]\n"
             "Path(os.environ['TEST_TRACE']).write_text(json.dumps({'args': args, 'cwd': os.getcwd()}))\n"
             "if os.environ.get('TEST_FAIL_BUILD'):\n"
-            "    sys.exit(42)\n"
+            "    sys.exit(int(os.environ['TEST_FAIL_BUILD']))\n"
             "output = Path(args[args.index('--out-link') + 1])\n"
             "output.mkdir()\n"
             "if not os.environ.get('TEST_MISSING_IMAGE'):\n"
@@ -665,25 +665,42 @@ class EifComparisonCommandTests(unittest.TestCase):
                 ])
                 self.assertEqual(trace["args"][-1], f".?submodules=1#eif-{mode}")
 
-    def test_measurement_mismatch_fails_without_rewriting_approvals(self):
-        result = self.run_check(TEST_MEASUREMENTS='{"PCR0":"not approved"}\n')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("EIF/PCR approval mismatch", result.stderr)
+    def test_measurement_mismatch_exits_3_with_the_built_measurements(self):
+        built = '{"PCR0":"not approved"}\n'
+        for mode in ("dev", "prod"):
+            with self.subTest(mode=mode):
+                result = self.run_check(mode, TEST_MEASUREMENTS=built)
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertIn(f"EIF/PCR approval mismatch ({mode})", result.stderr)
+                self.assertTrue(result.stdout.endswith(f"Built measurements ({mode}, pcr.json):\n{built}"))
 
     def test_build_failure_and_missing_generated_measurements_fail(self):
-        result = self.run_check(TEST_FAIL_BUILD="1")
-        self.assertEqual(result.returncode, 42)
+        # Status 1, never the mismatch status 3, whatever Nix exits with.
+        for status in ("3", "42"):
+            with self.subTest(nix_status=status):
+                result = self.run_check(TEST_FAIL_BUILD=status)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("EIF build failed (dev)", result.stderr)
         for failure in ("TEST_MISSING_PCR", "TEST_MISSING_IMAGE", "TEST_PCR_DIRECTORY"):
             with self.subTest(failure=failure):
                 result = self.run_check(**{failure: "1"})
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, 1)
                 self.assertIn("did not produce", result.stderr)
 
+    def test_a_comparison_error_is_not_a_mismatch(self):
+        diff = self.binaries / "diff"
+        diff.unlink()
+        diff.write_text("#!/bin/sh\nexit 2\n")
+        diff.chmod(0o755)
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Could not compare pcrDev.json", result.stderr)
+
     def test_invalid_mode_and_wrong_architecture_do_not_build(self):
-        for mode, extra_env in (("preview", {}), ("dev", {"TEST_ARCH": "x86_64"})):
+        for mode, extra_env, status in (("preview", {}, 2), ("dev", {"TEST_ARCH": "x86_64"}, 1)):
             with self.subTest(mode=mode, extra_env=extra_env):
                 result = self.run_check(mode, **extra_env)
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, status)
                 self.assertFalse((self.root / "trace").exists())
 
     def test_missing_or_symlinked_approved_measurements_do_not_build(self):
