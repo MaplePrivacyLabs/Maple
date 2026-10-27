@@ -131,6 +131,34 @@ WINDOWS_PACKAGE = (
     " python3 scripts/windows-release.py verify dev dist/dev --unsigned --smoke"
 )
 
+PROXY_CONTAINER = ("proxy/Dockerfile", ".dockerignore", "proxy/Cargo.lock") + PROXY_RUNTIME + RUST_SDK
+SDK_CRATE = (
+    'crate="$(mktemp -d)" && ./scripts/ci/build-sdk-publish.sh rust "$crate"'
+    ' && python3 -I scripts/ci/sdk_crates_upload.py --directory "$crate" --validate-only --version'
+    ' "$(python3 -I -c \'import pathlib, tomllib; print(tomllib.loads('
+    'pathlib.Path("sdk/rust/Cargo.toml").read_text())["package"]["version"])\')"'
+)
+
+
+def deny(manifest: str, component: str) -> str:
+    """cargo-deny with the component's own toolchain. The Agent flake's nixpkgs pins
+    the cargo-deny that agent-supply-chain and nightly.yml's cargo-deny-action run."""
+    return ("nix shell --no-update-lock-file --inputs-from ./apps/maple-agent nixpkgs#cargo-deny -c cargo deny"
+            f" --manifest-path {manifest} --config {component}/deny.toml --all-features --locked"
+            " check advisories bans")
+
+
+DEPS = dict(events=NOT_NIGHTLY, runner=GITHUB, gate=False)
+# Research platform builds: PR side only, never on CI edits (ci:full runs them).
+PLATFORM = dict(events=PR_SIDE, gate=False)
+DESKTOP = tuple(TAURI + glob for glob in ("tauri.conf.json", "build.rs", "scripts/onnxruntime-pins.sh",
+                                          "scripts/run-with-desktop-onnxruntime.sh")) + tuple(
+    "scripts/ci/" + name for name in ("desktop-pr.sh", "desktop-release.sh", "_common.sh", "tauri_bundle_type.py",
+                                      "verify-release-artifacts.sh", "attestation-manifest.sh"))
+WINDOWS_DESKTOP = (TAURI + "tauri.windows.conf.json", TAURI + "resources/windows/**", TAURI + "scripts/*windows*",
+                   "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py")
+WINDOWS_LABELS = ("ci:windows", "ci:package", "ci:full")
+
 LANES: Tuple[Lane, ...] = (
     Lane("agent-lint", AGENT, also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",),
          run="just ci-lint && python3 ../../scripts/ci/plan.py check-rust",
@@ -186,52 +214,98 @@ LANES: Tuple[Lane, ...] = (
         RESEARCH + "package.json", TAURI + "Cargo.toml", TAURI + "tauri.conf.json",
     ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15),
 
-    # Legacy lanes. research-desktop is split by OS when it moves, and OpenSecret
-    # will route through opensecret_change_detection.py.
-    Lane("agent-updates", ("services/agent-updates/**", "services/download-tracking/**", "scripts/ci/agent-updates.sh",
-                           "apps/maple-agent/release-profiles.json", "apps/maple-agent/scripts/release-info.py"),
-         legacy="agent-updates-tests.yml"),
+    # The SDKs, proxy and container. build-sdk-publish.sh is the publishers' own builder.
     Lane("sdk-ts", SDK_TS + ("sdk/.prettierrc.json", "sdk/eslint.config.js", "sdk/justfile", "sdk/.env.example",
                              "sdk/LICENSE.md", "scripts/ci/build-sdk-publish.sh",
                              "scripts/ci/check-sdk-package-consumers.py"),
-         legacy="sdk-typescript.yml, sdk-publish-tests.yml"),
+         runner=GITHUB, run='./scripts/ci/build-sdk-publish.sh npm "$(mktemp -d)"'),
     Lane("sdk-rust", ("sdk/rust/**", "sdk/rust-toolchain.toml", "sdk/flake.*", "scripts/ci/build-sdk-publish.sh",
                       "scripts/ci/sdk_crates_upload.py"),
-         legacy="sdk-rust.yml, sdk-publish-tests.yml"),
-    Lane("proxy", ("proxy/**", "!proxy/Dockerfile"), also=RUST_SDK, legacy="proxy-rust.yml"),
-    Lane("proxy-container", ("proxy/Dockerfile", ".dockerignore"), legacy="proxy-container.yml"),
-    Lane("deps", ("apps/maple-research/deny.toml", TAURI + "Cargo.*", "sdk/deny.toml", "sdk/rust/Cargo.*",
-                  "proxy/deny.toml", "proxy/Cargo.*", "services/opensecret/deny.toml",
-                  "services/opensecret/Cargo.*"),
-         legacy="supply-chain.yml, sdk-supply-chain.yml, proxy-supply-chain.yml, opensecret-ci.yml"),
+         runner=GITHUB, flake=".#pages", run=SDK_CRATE),  # .#pages: a Python with tomllib
+    Lane("proxy", ("proxy/**", "!proxy/Dockerfile"), also=RUST_SDK, runner=GITHUB, flake="./proxy",
+         workdir="proxy", run='just check && RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features'
+                             " && cargo machete",
+         env=(("RUSTFLAGS", "-D warnings"),)),
+    # PRs build the image only when its recipe changes; master builds both architectures.
+    Lane("proxy-container", PROXY_CONTAINER, pr_paths=("proxy/Dockerfile", ".dockerignore"), runner=GITHUB,
+         run="docker build --platform linux/amd64 -f proxy/Dockerfile .", timeout=20),
+    Lane("proxy-container-arm64", PROXY_CONTAINER, pr_paths=(), runner=Runner("ubuntu-24.04-arm"),
+         run="docker build --platform linux/arm64 -f proxy/Dockerfile .", timeout=20, gate=False),
+    # Advisories and bans when a dependency graph changes. A new advisory is drift,
+    # not a CI change, so CI edits skip these; nightly.yml re-checks advisories.
+    Lane("deps-research", ("apps/maple-research/deny.toml", TAURI + "Cargo.toml", TAURI + "Cargo.lock",
+                           "proxy/Cargo.toml", "sdk/rust/Cargo.toml"),
+         run=deny(TAURI + "Cargo.toml", "apps/maple-research"), flake=".#ci", **DEPS),
+    Lane("deps-sdk", ("sdk/deny.toml", "sdk/rust/Cargo.toml", "sdk/rust/Cargo.lock"),
+         run=deny("sdk/rust/Cargo.toml", "sdk"), flake="./sdk", **DEPS),
+    Lane("deps-proxy", ("proxy/deny.toml", "proxy/Cargo.toml", "proxy/Cargo.lock", "sdk/rust/Cargo.toml"),
+         run=deny("proxy/Cargo.toml", "proxy"), flake="./proxy", **DEPS),
+
+    # Research web and Rust on PRs; frontend-tests.yml, web-build.yml and
+    # rust-tests.yml verify master (rust-tests.yml also writes research-rust's cache).
     Lane("research-web", (RESEARCH + "**", "!" + TAURI + "**", "scripts/prepare-*.sh", "scripts/ci/frontend.sh",
                           "scripts/ci/web.sh", "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
-         legacy="frontend-tests.yml, web-build.yml"),
+         events=PR_SIDE, runner=GITHUB, flake=".#ci",
+         run="./scripts/ci/frontend.sh && MAPLE_WEB_ENVIRONMENT=pr ./scripts/ci/web.sh"),
     Lane("research-rust", (TAURI + "**", "!" + TAURI + "gen/**", "scripts/ci/rust.sh",
                            "scripts/ci/verify-local-rust-deps.sh", "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
-         also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",), legacy="rust-tests.yml"),
+         also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",), events=PR_SIDE,
+         job="research-rust", flake=".#ci", timeout=20,
+         run="(cd apps/maple-research/frontend/src-tauri && cargo fmt --check)"
+             " && ./scripts/ci/verify-local-rust-deps.sh && ./scripts/ci/rust.sh"),
+    # Unsigned platform builds for PRs that touch native inputs, or by label;
+    # desktop-build.yml, mobile-build.yml and android-build.yml build master.
     Lane("research-ios", (TAURI + "gen/apple/**", TAURI + "icons/ios/**", TAURI + "capabilities/mobile-ios.json",
                           TAURI + "tauri.ios-dev.conf.json", TAURI + "Info.plist", TAURI + "Entitlements.plist",
                           TAURI + "scripts/*ios*", TAURI + "scripts/canonicalize-static-archive.py",
-                          TAURI + "scripts/onnxruntime-pins.sh", "scripts/ci/ios-*.sh",
+                          TAURI + "scripts/onnxruntime-pins.sh", "scripts/ci/ios-*.sh", "scripts/ci/ios-build-profile.py",
+                          "scripts/ci/canonical-ios-app-hash.py", "scripts/ci/_common.sh",
                           "scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"),
-         labels=("ci:ios", "ci:full"), legacy="mobile-pr-build.yml"),
+         labels=("ci:ios", "ci:full"), job="research-ios", runner=MACOS, flake=".#apple",
+         run="./scripts/ci/ios-onnxruntime.sh && ./scripts/ci/ios-pr.sh",
+         env=(("MAPLE_IOS_DOWNLOAD_SIMULATOR_RUNTIME", "1"),), timeout=120, **PLATFORM),
     Lane("research-android", (TAURI + "gen/android/**", TAURI + "icons/android/**",
                               TAURI + "capabilities/mobile-android.json", TAURI + "scripts/*android*",
-                              "scripts/ci/android-*.sh"),
-         labels=("ci:android", "ci:full"), legacy="android-pr-build.yml"),
-    Lane("research-desktop", (TAURI + "tauri*.conf.json", TAURI + "Info.plist", TAURI + "Entitlements.plist",
-                              TAURI + "build.rs", TAURI + "resources/windows/**", TAURI + "dmg/**",
-                              TAURI + "scripts/provide-*-onnxruntime.sh", "scripts/ci/desktop-*.sh",
-                              "scripts/ci/_common.sh", "scripts/ci/tauri_bundle_type.py", "scripts/ci/canonical-*.py",
-                              "scripts/ci/dmg-settings.py", "scripts/ci/verify-release-artifacts.sh",
-                              "scripts/ci/attestation-manifest.sh", "scripts/ci/*.ps1"),
-         labels=("ci:package", "ci:full"), legacy="desktop-pr-build.yml"),
-    Lane("auth", ("apps/maple-auth/**", "scripts/ci/auth-*.sh", "scripts/ci/pages_auth_build.py",
-                  "scripts/ci/pages_artifact.py", "flake.lock"),
-         legacy="auth-pages-ci.yml"),
-    Lane("updates", ("services/updates/**", "services/download-tracking/**", "scripts/ci/updates.sh"),
-         legacy="updates-tests.yml"),
+                              "scripts/ci/android-*.sh", "scripts/ci/_common.sh"),
+         labels=("ci:android", "ci:full"), flake=".#android", run="./scripts/ci/android-pr.sh", timeout=30,
+         **PLATFORM),
+    Lane("research-desktop-macos", DESKTOP + (TAURI + "tauri.macos.conf.json", TAURI + "Info.plist",
+                                              TAURI + "Entitlements.plist", TAURI + "dmg/**", TAURI + "scripts/*macos*",
+                                              "scripts/ci/dmg-settings.py", "scripts/ci/test-canonical-macho.py",
+                                              "scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"),
+         labels=("ci:package", "ci:full"), job="research-desktop-macos", runner=MACOS, flake=".#ci",
+         run="./scripts/ci/desktop-pr.sh", timeout=45, **PLATFORM),
+    Lane("research-desktop-linux", DESKTOP + (TAURI + "scripts/*linux*",), labels=("ci:package", "ci:full"),
+         job="research-desktop-linux", flake=".#desktop-linux", run="./scripts/ci/desktop-pr.sh",
+         env=(("MAPLE_TAURI_FAKE_UPDATER_SIGNING", "1"),), timeout=45, **PLATFORM),
+    # Windows runs on PRs only for Windows paths or a label; its proofs are verified on Linux.
+    Lane("research-desktop-windows", WINDOWS_DESKTOP, labels=WINDOWS_LABELS, job="research-desktop-windows",
+         runner=WINDOWS, run="./scripts/ci/desktop-windows-pr.sh", timeout=60, **PLATFORM),
+    Lane("research-desktop-windows-verify", WINDOWS_DESKTOP, labels=WINDOWS_LABELS,
+         job="research-desktop-windows-verify", runner=GITHUB, flake=".#ci",
+         run="./scripts/ci/verify-release-artifacts.sh artifacts windows", **PLATFORM),
+    # The unsigned Research Dev app for OAuth rehearsal (apps/maple-research/docs/research-dev-desktop.md).
+    Lane("research-dev-macos", (TAURI + "desktop-dev-profile.json", TAURI + "tauri.desktop-dev.conf.json",
+                                "scripts/ci/research-dev-desktop.sh", "scripts/ci/research-dev-profile.py"),
+         labels=("ci:research-dev-macos", "ci:package", "ci:full"), job="research-dev-macos", runner=MACOS,
+         flake=".#ci", run="./scripts/ci/research-dev-desktop.sh", timeout=45, **PLATFORM),
+
+    # Services and the hosted Auth app. auth-pages-ci.yml builds Auth on master.
+    Lane("auth", ("apps/maple-auth/**", "scripts/ci/auth-*.sh", "scripts/ci/pages_auth_build.py", "flake.nix",
+                  "flake.lock"),
+         events=PR_SIDE, runner=GITHUB, flake=".#ci", run="./scripts/ci/auth-ci.sh"),
+    Lane("updates", ("services/updates/**", "services/download-tracking/**", "scripts/ci/updates.sh",
+                     "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
+         runner=GITHUB, flake=".#ci", run="./scripts/ci/updates.sh"),
+    Lane("agent-updates", ("services/agent-updates/**", "services/download-tracking/**", "scripts/ci/agent-updates.sh",
+                           "scripts/ci/test_agent_updates_workflows.py", "apps/maple-agent/release-profiles.json",
+                           "apps/maple-agent/scripts/release-info.py", "scripts/ci/_common.sh", "flake.nix",
+                           "flake.lock"),
+         runner=GITHUB, flake=".#ci", run="./scripts/ci/agent-updates.sh"),
+
+    # Legacy lanes: OpenSecret will route through opensecret_change_detection.py.
+    Lane("deps-opensecret", ("services/opensecret/deny.toml", "services/opensecret/Cargo.*"),
+         legacy="opensecret-ci.yml"),
     Lane("os-rust", ("services/opensecret/**", ".gitmodules"), legacy="opensecret-ci.yml"),
     Lane("os-sdk-e2e", ("sdk/test/**", ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh"),
          also=RUST_SDK + SDK_TS, legacy="sdk-integration.yml"),

@@ -92,13 +92,6 @@ DOCS = ("docs/**", "*/docs/**", "*/*/docs/**", ".agents/**", "**/README.md", "**
 TEMPORARY = {
     # Signed-lane hygiene: CodeQL runs on every master push, never cancelled.
     "evidence": frozenset({"codeql.yml"}),
-    # The client lanes delete the PR builds and drop the evidence twins' caches.
-    "reserved": frozenset({
-        ("android-pr-build.yml", "build-android"), ("desktop-pr-build.yml", "build-macos"),
-        ("desktop-pr-build.yml", "build-research-dev-macos"), ("desktop-pr-build.yml", "build-linux"),
-        ("mobile-pr-build.yml", "build-ios"), ("frontend-tests.yml", "test-frontend"),
-        ("rust-tests.yml", "rust-tests"), ("web-build.yml", "build-web"), ("web-build.yml", "build-web-master"),
-    }),
     # Signed-lane hygiene moves id-token from the workflow level to the attesting jobs.
     "oidc": frozenset({("android-build.yml", "changes"), ("desktop-build.yml", "changes"),
                        ("desktop-build.yml", "verify-desktop-artifacts")}),
@@ -228,7 +221,7 @@ class ContractTests(unittest.TestCase):
         steps = list(cache_steps())
         writers = {(name, job_id) for name, job_id, step in steps if cache_writer(step)
                    and name not in RELEASE_FEEDING and step["with"].get("key", "").startswith(RESERVED_PREFIXES)}
-        self.assertEqual(writers, TEMPORARY["reserved"])
+        self.assertEqual(writers, set())
         feeders = [step["with"]["key"] for name, _, step in steps
                    if name in RELEASE_FEEDING - {"release.yml"} and cache_writer(step)]
         for job_id, job in workflows()["release.yml"]["jobs"].items():
@@ -242,7 +235,8 @@ class ContractTests(unittest.TestCase):
     def test_c4_onnx_cache_text_matches_release_and_only_signed_lanes_write_it(self):
         onnx = [(name, step) for name, _, step in cache_steps()
                 if step["with"].get("path", "").strip() == ONNX_CACHE]
-        self.assertLessEqual({"release.yml", "mobile-build.yml", "ios-dev-testflight.yml"}, {n for n, _ in onnx})
+        self.assertLessEqual({"release.yml", "mobile-build.yml", "ios-dev-testflight.yml", "ci.yml"},
+                             {n for n, _ in onnx})
         release = next(step["with"] for name, step in onnx if name == "release.yml")
         for name, step in onnx:
             with self.subTest(workflow=name):
@@ -250,6 +244,17 @@ class ContractTests(unittest.TestCase):
                                  (release["key"], release["restore-keys"]))
                 if cache_writer(step):
                     self.assertIn(name, RELEASE_FEEDING)
+
+    def test_c4_ci_restores_only_what_a_master_workflow_saves(self):
+        # Same key and paths as a writer that only master pushes run, so PR lanes start warm.
+        saved = {(step["with"]["key"], step["with"].get("path", "").strip()) for name, _, step in cache_steps()
+                 if cache_writer(step) and triggers(workflows()[name]) <= {"push", "workflow_dispatch"}}
+        for name, job_id, step in cache_steps():
+            if name == "ci.yml":
+                with self.subTest(job=job_id):
+                    self.assertTrue(step["uses"].startswith("actions/cache/restore@"))
+                    if not step["with"]["key"].startswith("ci-v1-agent-release-"):  # the next test
+                        self.assertIn((step["with"]["key"], step["with"]["path"].strip()), saved)
 
     def test_c4_agent_release_cache_is_exact_and_written_only_by_master_builders(self):
         restores = [(name, job_id, step["with"]) for name, job_id, step in cache_steps()

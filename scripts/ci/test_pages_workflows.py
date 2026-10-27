@@ -92,8 +92,9 @@ class PagesWorkflowTests(unittest.TestCase):
         job = build["jobs"]["build-preview"]
         self.assertNotIn("permissions", job)
         self.assertNotIn("environment", job)
-        # Fork PRs never produce a preview artifact.
+        # Fork PRs and PRs into other bases (stack layers) never produce a preview artifact.
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", normalized(job["if"]))
+        self.assertEqual(build["on"]["pull_request"]["branches"], ["master"])
         self.assertEqual(
             job["env"]["SOURCE_SHA"],
             "${{ github.event_name == 'pull_request' && "
@@ -139,12 +140,10 @@ class PagesWorkflowTests(unittest.TestCase):
             upload["name"],
             "maple-pages-preview-${{ github.run_id }}-${{ github.run_attempt }}",
         )
+        directory = "apps/maple-research/frontend/src-tauri/target/reproducibility"
         self.assertEqual(
             upload["path"].splitlines(),
-            [
-                "${{ steps.artifact.outputs.directory }}/maple-web-dist.tar.gz",
-                "${{ steps.artifact.outputs.directory }}/pages-artifact.json",
-            ],
+            [f"{directory}/maple-web-dist.tar.gz", f"{directory}/pages-artifact.json"],
         )
         self.assertEqual(upload["if-no-files-found"], "error")
         descriptions = [
@@ -158,7 +157,7 @@ class PagesWorkflowTests(unittest.TestCase):
             descriptions[0],
         )
         for argument in (
-            "--profile pr", '--sha "$SOURCE_SHA"',
+            f"artifact_dir={directory}", "--profile pr", '--sha "$SOURCE_SHA"',
             '--run-id "$GITHUB_RUN_ID"', '--run-attempt "$GITHUB_RUN_ATTEMPT"',
         ):
             self.assertIn(argument, descriptions[0])

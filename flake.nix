@@ -789,17 +789,6 @@
             touch "$out"
           '';
 
-          # Built by sdk-publish-tests.yml; ci-scripts runs the same tests.
-          sdk-publishing = pkgs.runCommand "maple-sdk-publishing-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash git python3 yq-go ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 -I -m unittest discover -s scripts/ci -p 'test_sdk_publish*.py'
-            python3 -I -m unittest discover -s scripts/ci -p 'test_sdk_crates_upload.py'
-            touch "$out"
-          '';
-
           release-metadata = pkgs.runCommand "maple-release-metadata-check" {
             nativeBuildInputs = commonPackages;
             src = ./.;

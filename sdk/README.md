@@ -17,8 +17,9 @@ and tests.
   platform client.
 - `rust/` — the `maple-sdk` crate, imported as `maple_sdk` by native clients.
 - `docs/PLATFORM.md` — internal developer/platform API notes.
-- repository-root `.github/workflows/sdk-*.yml` — path-scoped TypeScript, Rust,
-  and supply-chain validation for this directory.
+- the `sdk-ts`, `sdk-rust`, and `deps-sdk` lanes in the root
+  `scripts/ci/lanes.py` — TypeScript, Rust, and supply-chain validation for
+  this directory, run by the root `ci.yml` workflow.
 
 Maple's own Rust consumers (`proxy`, `apps/maple-agent`, the Research native
 shell) build the in-tree Rust SDK through `path` dependencies, so SDK changes
@@ -247,7 +248,8 @@ bun run build
 ```
 
 For tests without a configured backend, use the credential-free selection in
-the root [`sdk-typescript.yml`](../.github/workflows/sdk-typescript.yml) workflow.
+[`build-sdk-publish.sh`](../scripts/ci/build-sdk-publish.sh), which CI runs as
+the `sdk-ts` lane (`just lane sdk-ts` from the repository root).
 An unfiltered `bun test` also collects integration tests and requires the
 fixtures described below.
 

@@ -60,12 +60,9 @@ PROXY_INERT_FILES = frozenset(
 
 WORKFLOW_ROUTES = {
     ".github/workflows/android-build.yml": frozenset({"android"}),
-    ".github/workflows/android-pr-build.yml": frozenset({"android"}),
     ".github/workflows/app-change-detection.yml": NATIVE_PLATFORMS,
     ".github/workflows/desktop-build.yml": DESKTOP_PLATFORMS,
-    ".github/workflows/desktop-pr-build.yml": DESKTOP_PLATFORMS,
     ".github/workflows/mobile-build.yml": frozenset({"ios"}),
-    ".github/workflows/mobile-pr-build.yml": frozenset({"ios"}),
 }
 
 CI_SCRIPT_ROUTES = {

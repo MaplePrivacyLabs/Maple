@@ -381,8 +381,8 @@ nix develop --no-update-lock-file -c cargo test --locked \
 
 These tests need no existing backend or account credentials. The full format,
 Clippy, library-test, and rustdoc gates are in the
-[SDK development instructions](../README.md#rust-sdk) and
-[`sdk-rust.yml`](../../.github/workflows/sdk-rust.yml).
+[SDK development instructions](../README.md#rust-sdk) and CI's `sdk-rust` lane
+(`just lane sdk-rust` from the repository root).
 
 Integration tests are a separate selection. Follow
 [`sdk-integration.yml`](../../.github/workflows/sdk-integration.yml) for its

@@ -58,16 +58,19 @@ nix develop --no-update-lock-file .#ci -c \
   ./scripts/ci/verify-local-rust-deps.sh
 ```
 
-Root workflows own proxy Rust, daily supply-chain, non-publishing container,
-and native-release rehearsal checks. `proxy/src/**`, `proxy/Cargo.toml`, and
+The root `ci.yml` lanes `proxy`, `deps-proxy`, and `proxy-container` (both
+architectures on `master`) run these checks, cargo-deny, and a non-publishing
+container build; `just lane proxy` runs the first locally. `proxy-rust.yml`
+rehearses the native release builds, and `nightly.yml` re-checks advisories.
+`proxy/src/**`, `proxy/Cargo.toml`, and
 unknown proxy build inputs are desktop application inputs; tests, examples,
 docs, the standalone lockfile, and container-only files do not by themselves
 route expensive Maple app builds. Rust SDK build inputs (`sdk/rust/Cargo.toml`,
 `src/`, `build.rs`, `assets/`) select proxy and desktop checks too, because the
 proxy and both desktops build `sdk/rust` from the tree. When a new
 input changes either graph, update
-`scripts/ci/change_detection.py`, its table-driven tests, and workflow paths in
-the same change.
+`scripts/ci/change_detection.py`, `scripts/ci/lanes.py`, and their table-driven
+tests in the same change.
 
 ## Exercise the right runtime
 
@@ -115,7 +118,7 @@ cargo package --locked --manifest-path proxy/Cargo.toml
 
 If the proxy references a new `maple-sdk` version, publish that SDK crate
 first. Do not publish either crate from Maple's application Release workflow.
-Root proxy container CI builds without pushing. After a successful stable Maple
+CI's proxy container lanes build without pushing. After a successful stable Maple
 Release, `.github/workflows/proxy-publish.yml` independently compares that
 release's proxy version with the previous stable Maple Release. Unchanged
 versions skip, including the unbackfilled 0.3.3 baseline. A strictly newer,

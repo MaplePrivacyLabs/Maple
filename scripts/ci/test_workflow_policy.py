@@ -74,24 +74,10 @@ TEMPORARY = {
         ("mobile-build.yml", "submit-ios-testflight"),
         *(("signing-credentials-check.yml", job) for job in (
             "desktop-signing", "apple-signing", "android-signing", "windows-signing", "zapstore-publishing")),
-        ("web-build.yml", "build-web"), ("web-build.yml", "build-web-master"),
-        ("web-build.yml", "verify-web-master-artifact"),
-        # Deleted, or made push-only, by the client lanes.
-        ("android-pr-build.yml", "build-android"), ("mobile-pr-build.yml", "build-ios"),
-        *(("desktop-pr-build.yml", job) for job in (
-            "build-macos", "build-research-dev-macos", "build-linux", "build-windows", "verify-windows-artifacts")),
-        ("frontend-tests.yml", "test-frontend"), ("rust-tests.yml", "rust-tests"),
     }),
     "permissions": frozenset({"desktop-build.yml", "android-build.yml"}),
-    # The client lanes delete these PR workflows or make them push-only.
-    "pr-cache-writes": frozenset({
-        ("android-pr-build.yml", "build-android"), ("desktop-pr-build.yml", "build-macos"),
-        ("desktop-pr-build.yml", "build-research-dev-macos"), ("desktop-pr-build.yml", "build-linux"),
-        ("mobile-pr-build.yml", "build-ios"), ("frontend-tests.yml", "test-frontend"),
-        ("rust-tests.yml", "rust-tests"), ("web-build.yml", "build-web"), ("proxy-rust.yml", "proxy-rust"),
-        ("proxy-rust.yml", "proxy-native-release"), ("sdk-rust.yml", "sdk-rust"),
-        ("sdk-typescript.yml", "sdk-typescript"), ("updates-tests.yml", "test-updates-worker"),
-    }),
+    # The OpenSecret lanes replace this workflow.
+    "github-cache": frozenset({("opensecret-ci.yml", "rust")}),
 }
 
 
@@ -267,7 +253,6 @@ class WorkflowPolicyTests(unittest.TestCase):
                     self.assertTrue(GITHUB_HOSTED.fullmatch(label) or label in declared, label)
 
     def test_pull_requests_never_save_caches_or_read_other_runs_artifacts(self):
-        writers = set()
         for name, config in workflows().items():
             pr = bool({"pull_request", "merge_group"} & triggers(config))
             for job_id, job in config["jobs"].items():
@@ -275,11 +260,20 @@ class WorkflowPolicyTests(unittest.TestCase):
                     self.assertNotIn("run-id", step.get("with", {}), (name, job_id))
                     guard = " ".join(str(value) for value in (
                         job.get("if", ""), step.get("if", ""), step.get("with", {}).get("save-if", "")))
-                    if pr and cache_writer(step) and not re.search(
-                            r"refs/heads/master|github\.event_name == 'push'", guard):
-                        writers.add((name, job_id))
-        self.assertEqual(writers, TEMPORARY["pr-cache-writes"])
+                    if pr and cache_writer(step):
+                        self.assertRegex(guard, r"refs/heads/master|github\.event_name == 'push'", (name, job_id))
 
+    def test_only_windows_signing_fills_githubs_cache_store(self):
+        # GitHub's cache store is small; heavy caches live on Blacksmith, whose
+        # runners cannot read GitHub's. The release and the Nix installer are the other users.
+        writers = set()
+        for name, job_id, job in jobs():
+            for step in job.get("steps", []):
+                if (name not in SACRED and cache_writer(step)
+                        and "startsWith(matrix.runner, 'blacksmith-')" not in str(step["with"].get("save-if"))
+                        and any(GITHUB_HOSTED.fullmatch(label) for label in runner_labels(name, job_id, job))):
+                    writers.add((name, job_id))
+        self.assertEqual(writers, {("desktop-build.yml", "build-windows")} | TEMPORARY["github-cache"])
 
 if __name__ == "__main__":
     unittest.main()

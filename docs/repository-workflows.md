@@ -28,7 +28,7 @@ workflows when a lane changes.
 desktop builds for proxy runtime inputs and native builds for Rust SDK build
 inputs (`sdk/rust/Cargo.toml`, `src/`, `build.rs`, `assets/`), because the
 proxy, the Agent and the Research native shell build both from the tree as
-path dependencies; the proxy workflows' path filters list the same inputs.
+path dependencies; the proxy and Research lanes in `scripts/ci/lanes.py` list the same inputs.
 TypeScript SDK changes never select app builds: each frontend builds the SDK
 source its own manifest selects, so changing that manifest (a pin bump or a
 local link) is what selects its lanes. Tests, docs, container-only inputs, and
@@ -42,9 +42,6 @@ inputs (`plan.py only agent-desktop`), and on every manual master dispatch.
 Packaging-input PRs rehearse unsigned Dev packages on Linux and macOS in
 `ci.yml` (Windows with the `ci:package` label); signing stays confined to
 trusted master.
-Research desktop, Android and iOS PR workflows group runs by workflow and PR.
-A new run cancels earlier runs for that same unsigned preview; unrelated PRs
-and signed, master and manual queues keep their existing behavior.
 The separate `opensecret-eif.yml` builds dev/prod EIF candidates on
 same-repository PRs changing measured inputs without editing PCR approvals.
 Each diagnostic build explicitly realizes the user ramdisk selected by its EIF
@@ -116,7 +113,7 @@ runners. Signing jobs retain their protected environments. The desktop release
 build command only receives Apple environment variables on macOS, but that
 condition does not restrict the runner's job secret context: approving a signing
 job trusts its runner with the selected environment's secrets. PR builds have
-no signing credentials and retain their existing branch-scoped caches. No
+no signing credentials and only restore caches that master writes. No
 persistent vendor disks or Docker builders are configured by these workflows.
 
 Research Linux packaging builds AppImage and DEB through Tauri, then creates
@@ -181,6 +178,24 @@ expired references must be selected again explicitly. Its result proves only
 historical signature interoperability, not the new updater's installed upgrade
 or final-source release qualification.
 
+## Client and service lanes
+
+SDK, proxy, Research and service checks are `ci.yml` lanes too. `sdk-ts` and
+`sdk-rust` run the publishers' own builder (`scripts/ci/build-sdk-publish.sh`);
+`proxy` runs `just check`, rustdoc and `cargo machete`; `deps-research`,
+`deps-sdk` and `deps-proxy` run cargo-deny advisories and bans when that
+dependency graph changes; `proxy-container` builds the image when its recipe
+changes, and master builds both architectures. `research-web`, `research-rust`
+and `auth` run on PRs only: `frontend-tests.yml`, `web-build.yml`,
+`rust-tests.yml` and `auth-pages-ci.yml` cover master, and `rust-tests.yml`
+writes the `ci-v1-research-rust-` cache that `research-rust` restores. `updates`
+and `agent-updates` run on every event. The unsigned Research platform builds
+(`research-desktop-{macos,linux,windows}`, `research-ios`, `research-android`,
+`research-dev-macos`) run on PRs that touch their native inputs or carry
+`ci:package`, `ci:ios`, `ci:android`, `ci:windows` or `ci:research-dev-macos`.
+They restore the caches the signed master builds save and never save one.
+`proxy-rust.yml` rehearses the release's native proxy builds.
+
 ## macOS runners and Apple toolchain
 
 Research desktop/iOS builds, Agent release-binary jobs
@@ -229,12 +244,13 @@ The `ci:package` PR label builds an unsigned Dev installer without credentials.
 These packages are Actions downloads; Windows automatic updates and built-in
 computer-use remain unsupported.
 
-The Research unsigned Windows PR package uses
-`blacksmith-8vcpu-windows-2025` (Windows Server 2025, public beta). The job
-records its actual capacity and Visual Studio Build Tools installation before
-running the existing pinned Bun/Rust, ONNX Runtime, VC runtime DLL staging,
-and NSIS build. Its cache remains restore-only, and downloaded package proofs
-are checked independently on a standard GitHub runner. Signed Windows master
+The Research unsigned Windows PR package (`research-desktop-windows`, on
+Windows paths or the `ci:windows`/`ci:package` labels) uses
+`blacksmith-8vcpu-windows-2025` (Windows Server 2025, public beta) with the
+pinned Bun/Rust, ONNX Runtime, VC runtime DLL staging and NSIS build. It has no
+cache: the signed master build writes its cache to GitHub's store, which
+Blacksmith runners cannot read. Downloaded package proofs are checked
+independently on a standard GitHub runner. Signed Windows master
 and release builds remain on GitHub's `windows-2025`; this pilot does not
 validate Azure signing, updater signing, or installed application behavior.
 Windows master/release artifact verifiers also use standard `ubuntu-latest`

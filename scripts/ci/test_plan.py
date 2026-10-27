@@ -35,9 +35,13 @@ def owners(path):
     return {lane.id for lane in lanes.LANES if plan.matches(path, plan.lane_globs(lane))}
 
 
+def agent_lanes(lanes_):
+    return {lane for lane in lanes_ if lane.startswith("agent-") and lane != "agent-updates"}
+
+
 def agent(paths, event=PR):
     """The decision agent_change_detection.py made: does any Agent check run?"""
-    return any(lane.startswith("agent-") for lane in selected(paths, event))
+    return bool(agent_lanes(selected(paths, event)))
 
 
 class PortedAgentSelectorTests(unittest.TestCase):
@@ -60,14 +64,14 @@ class PortedAgentSelectorTests(unittest.TestCase):
             with self.subTest(path=path):
                 # Dependency and packaging inputs add their own Agent lanes (AgentLaneTests).
                 self.assertLessEqual(AGENT_PR, selected([path]))
-                self.assertTrue(all(lane.startswith("agent-") for lane in selected([path])))
+                self.assertTrue(all(lane.startswith("agent-") for lane in selected([path]) - {"agent-updates"}))
 
     def test_rust_sdk_and_proxy_runtime_inputs_select_agent(self):
         for path in ("proxy/Cargo.toml", "proxy/src/proxy.rs", "proxy/build.rs", "sdk/rust/Cargo.toml",
                      "sdk/rust/src/client.rs", "sdk/rust/build.rs", "sdk/rust/assets/aws_nitro_root.der"):
             with self.subTest(path=path):
-                self.assertEqual(selected([path]) - {"repo"}, AGENT_PR)  # proxy/Cargo.toml feeds the release gates
-                self.assertEqual({lane for lane in selected([path], PUSH) if lane.startswith("agent-")}, AGENT_PUSH)
+                self.assertEqual(agent_lanes(selected([path])), AGENT_PR)
+                self.assertEqual(agent_lanes(selected([path], PUSH)), AGENT_PUSH)
 
     def test_research_typescript_and_independent_services_skip_agent(self):
         for path in (
@@ -75,7 +79,7 @@ class PortedAgentSelectorTests(unittest.TestCase):
             "apps/maple-auth/vite.config.ts", "apps/maple-research/frontend/src/main.tsx",
             "apps/maple-research/frontend/src-tauri/src/lib.rs", "sdk/src/lib/index.ts", "sdk/package.json",
             "sdk/flake.nix", "services/updates/src/index.ts", "services/opensecret/src/main.rs",
-            ".github/workflows/desktop-pr-build.yml", "scripts/ci/desktop-pr.sh",
+            ".github/workflows/desktop-build.yml", "scripts/ci/desktop-pr.sh",
         ):
             with self.subTest(path=path):
                 self.assertTrue(plan.classified(path))
@@ -95,16 +99,14 @@ class PortedAgentSelectorTests(unittest.TestCase):
                 self.assertFalse(agent([path], PUSH))
 
     def test_shared_ci_tooling_selects_the_agent_lanes_that_use_it(self):
-        self.assertEqual(selected(["scripts/ci/verify-agent-rust-deps.py"]), {"agent-lint", "repo"})
+        self.assertEqual(selected(["scripts/ci/verify-agent-rust-deps.py"]), {"agent-lint", "research-rust", "repo"})
         for path in ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"):
             with self.subTest(path=path):
-                self.assertEqual(selected([path]), {"agent-macos", "repo"})
+                self.assertEqual(selected([path]), {"agent-macos", "research-ios", "research-desktop-macos", "repo"})
         self.assertEqual(selected(["scripts/ci/agent_windows.py"]), {"agent-windows", "repo"})
 
     def test_intentional_differences_select_only_the_repo_lane(self):
         for path in (
-            # The Agent flake has no root inputs.
-            "flake.nix", "flake.lock",
             # The Research selector; the Agent no longer imports it.
             "scripts/ci/change_detection.py",
             # Signing scripts: no ci.yml Agent lane signs anything (agent-desktop-build.yml does).
@@ -113,6 +115,9 @@ class PortedAgentSelectorTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), {"repo"})
                 self.assertEqual(selected([path], PUSH), {"repo"})
+        for path in ("flake.nix", "flake.lock"):  # the Agent flake has no root inputs
+            with self.subTest(path=path):
+                self.assertFalse(agent([path]) or agent([path], PUSH))
 
     def test_unknown_roots_and_malformed_paths_select_every_lane(self):
         for path in ("new-build-config.toml", "newroot/x", "", "/tmp/file", "../file", "docs/../flake.nix",
@@ -124,7 +129,7 @@ class PortedAgentSelectorTests(unittest.TestCase):
     def test_mixed_changes_and_empty_diff(self):
         self.assertEqual(selected([]), set())
         self.assertEqual(selected(["README.md", "sdk/rust/README.md"]), set())
-        self.assertEqual(selected(["README.md", "proxy/src/proxy.rs"]), AGENT_PR)
+        self.assertEqual(selected(["README.md", "proxy/src/proxy.rs"]), AGENT_PR | {"proxy", "research-rust"})
 
     def test_explain_reads_null_delimited_names(self):
         for data, expected in ((b"README.md\0apps/maple-agent/app/assets/a\nspace name\0", "agent-lint"),
@@ -137,8 +142,10 @@ class PortedAgentSelectorTests(unittest.TestCase):
 
 class LaneTableTests(unittest.TestCase):
     def test_typescript_sdk_never_selects_a_client_lane(self):
-        self.assertEqual(selected(["sdk/src/index.ts"], PUSH), set())
-        self.assertFalse({o for o in owners("sdk/src/index.ts") if o.startswith(("agent-", "research-"))})
+        for path in ("sdk/src/index.ts", "sdk/package.json", "sdk/bun.lock"):
+            with self.subTest(path=path):
+                self.assertIn("sdk-ts", selected([path], PUSH))
+                self.assertFalse({o for o in owners(path) if o.startswith(("agent-", "research-", "proxy"))})
 
     def test_release_metadata_and_publisher_inputs_select_the_repo_lane(self):
         for path in ("apps/maple-research/frontend/package.json", "apps/maple-research/frontend/src-tauri/Cargo.toml",
@@ -148,9 +155,9 @@ class LaneTableTests(unittest.TestCase):
                 self.assertIn("repo", selected([path]))
 
     def test_rust_sdk_tests_and_proxy_container_select_no_agent_lane(self):
-        self.assertEqual(selected(["sdk/rust/tests/x.rs"], PUSH), set())
-        self.assertEqual(selected(["proxy/src/main.rs"]), AGENT_PR)
-        self.assertEqual(selected(["proxy/Dockerfile"], PUSH), set())
+        self.assertEqual(selected(["sdk/rust/tests/x.rs"], PUSH), {"sdk-rust"})
+        self.assertEqual(agent_lanes(selected(["proxy/src/main.rs"])), AGENT_PR)
+        self.assertFalse(agent([".dockerignore", "proxy/Dockerfile"], PUSH))
 
     def test_windows_clippy_runs_on_prs_only_for_windows_paths_or_labels(self):
         windows = "apps/maple-agent/app/src/host/windows_spawn.rs"
@@ -180,10 +187,9 @@ class LaneTableTests(unittest.TestCase):
                                                     if lane.legacy is None and lane.gate})
 
     def test_legacy_components_are_classified_but_select_nothing(self):
-        for path in ("services/opensecret/src/main.rs", "apps/maple-research/frontend/src/App.tsx"):
-            with self.subTest(path=path):
-                self.assertTrue(plan.classified(path))
-                self.assertEqual(selected([path], PUSH), set())
+        path = "services/opensecret/src/main.rs"
+        self.assertTrue(plan.classified(path))
+        self.assertEqual(selected([path], PUSH), set())
 
     def test_every_tracked_file_is_classified_and_ci_yml_matches(self):
         self.assertEqual(plan.lint_problems(plan.tracked_files()), [])
@@ -216,7 +222,8 @@ class AgentLaneTests(unittest.TestCase):
                 self.assertFalse({lane for lane in selected([path], PUSH) if lane.startswith("agent-package")})
         self.assertFalse(AGENT_PACKAGE & selected(["apps/maple-agent/app/src/main.rs"]))
         self.assertFalse({"agent-package-windows"} & selected(["apps/maple-agent/scripts/build-release.sh"]))
-        self.assertEqual(selected(["docs/x.md"], labels=["ci:package"]), AGENT_PACKAGE | {"agent-package-windows"})
+        self.assertEqual(agent_lanes(selected(["docs/x.md"], labels=["ci:package"])),
+                         AGENT_PACKAGE | {"agent-package-windows"})
         self.assertEqual(selected(["docs/x.md"], labels=["ci:perf"]), {"agent-perf"})
 
     def test_full_suites_run_on_master_nightly_and_ci_full_only(self):
@@ -239,6 +246,53 @@ class AgentLaneTests(unittest.TestCase):
                      ".github/workflows/ci.yml", "scripts/ci/plan.py"):
             with self.subTest(path=path):
                 self.assertFalse(plan.matches(path, lanes.AGENT_DESKTOP))
+
+
+class ClientLaneTests(unittest.TestCase):
+    """The lanes that replaced the SDK, proxy, Research and service workflows."""
+
+    def test_component_inputs_select_their_lanes(self):
+        for path, pr, push in (
+            ("sdk/rust/tests/x.rs", {"sdk-rust"}, {"sdk-rust"}),
+            ("proxy/tests/health.rs", {"proxy"}, {"proxy"}),
+            ("proxy/Dockerfile", {"proxy-container"}, {"proxy-container", "proxy-container-arm64"}),
+            ("proxy/Cargo.lock", {"proxy", "deps-proxy"}, {"proxy", "deps-proxy", "proxy-container",
+                                                           "proxy-container-arm64"}),
+            ("sdk/deny.toml", {"deps-sdk"}, {"deps-sdk"}),
+            ("apps/maple-research/deny.toml", {"deps-research"}, {"deps-research"}),
+            ("apps/maple-auth/src/main.tsx", {"auth"}, set()),
+            ("services/download-tracking/tracking.ts", {"updates", "agent-updates"}, {"updates", "agent-updates"}),
+            ("services/updates/src/index.ts", {"updates"}, {"updates"}),
+            ("services/agent-updates/src/index.ts", {"agent-updates"}, {"agent-updates"}),
+            # Master runs these in frontend-tests.yml, web-build.yml and rust-tests.yml.
+            ("apps/maple-research/frontend/src/App.tsx", {"research-web"}, set()),
+            ("apps/maple-research/frontend/src-tauri/src/lib.rs", {"research-rust"}, set()),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(selected([path]), pr)
+                self.assertEqual(selected([path], PUSH), push)
+        self.assertFalse({"deps-research", "deps-sdk", "deps-proxy"} & active(NIGHTLY))  # nightly.yml checks advisories
+
+    def test_research_platform_builds_run_on_native_inputs_or_labels(self):
+        desktop = {"research-desktop-macos", "research-desktop-linux"}
+        windows = {"research-desktop-windows", "research-desktop-windows-verify"}
+        tauri = "apps/maple-research/frontend/src-tauri/"
+        for path, lanes_ in ((tauri + "gen/apple/project.yml", {"research-ios"}),
+                             (tauri + "gen/android/app/build.gradle.kts", {"research-android"}),
+                             (tauri + "dmg/background.tiff", {"research-desktop-macos", "research-rust"}),
+                             (tauri + "tauri.conf.json", desktop | {"research-rust", "repo"}),
+                             (tauri + "resources/windows/README.md", windows | {"research-rust"}),
+                             ("scripts/ci/desktop-windows-pr.sh", windows | {"repo"}),
+                             ("scripts/ci/research-dev-desktop.sh", {"research-dev-macos", "repo"})):
+            with self.subTest(path=path):
+                self.assertEqual(selected([path]), lanes_)
+                self.assertFalse({lane for lane in selected([path], PUSH) if lane.startswith("research-")})
+        self.assertEqual(selected(["docs/x.md"], labels=["ci:ios"]), {"research-ios"})
+        self.assertEqual(selected(["docs/x.md"], labels=["ci:windows"]), windows | {"agent-windows"})
+        self.assertLessEqual(desktop | windows | {"research-dev-macos"},
+                             selected(["docs/x.md"], labels=["ci:package"]))
+        self.assertFalse({lane for lane in selected([".github/workflows/ci.yml"]) if lane.startswith(
+            ("research-ios", "research-android", "research-desktop", "research-dev"))})
 
 
 class PlannerTests(unittest.TestCase):
@@ -287,12 +341,15 @@ class PlannerTests(unittest.TestCase):
         with mock.patch.dict(os.environ, overrides):
             result = plan.outputs(dict.fromkeys(ACTIVE, ["x"]))
         runners = {entry["id"]: entry["runner"] for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])}
-        linux, mac = "blacksmith-8vcpu-ubuntu-2404", "blacksmith-6vcpu-macos-26"
+        linux, mac, free = "blacksmith-8vcpu-ubuntu-2404", "blacksmith-6vcpu-macos-26", "ubuntu-latest"
         self.assertEqual(runners, {
             "agent-lint": linux, "agent-test": "blacksmith-16vcpu-ubuntu-2404", "agent-macos": mac,
             "agent-windows": "windows-2025", "agent-full-linux": linux, "agent-full-macos": mac,
             "agent-full-windows": "windows-2025", "agent-supply-chain": linux, "agent-provider": linux,
-            "agent-perf": linux, "repo": "ubuntu-latest"})
+            "agent-perf": linux, "repo": free, "sdk-ts": free, "sdk-rust": free, "proxy": free,
+            "proxy-container": free, "proxy-container-arm64": "ubuntu-24.04-arm", "deps-research": free,
+            "deps-sdk": free, "deps-proxy": free, "research-web": free, "research-android": linux, "auth": free,
+            "updates": free, "agent-updates": free})
         entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
         self.assertEqual({len(entry["cache_key"]) for entry in entries if entry["cache"]}, {16})
 

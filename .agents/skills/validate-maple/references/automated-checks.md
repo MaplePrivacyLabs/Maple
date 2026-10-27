@@ -122,7 +122,8 @@ Do not cite the pre-commit hook as complete proof: it runs only the format, lint
 
 ## Build the affected platform
 
-Use these commands to mirror PR artifact builds. Then launch and smoke the result separately.
+Use these commands to mirror PR artifact builds (the `research-desktop-*`, `research-android` and
+`research-ios` lanes; `just lane <id>` runs one). Then launch and smoke the result separately.
 
 These scripts deliberately hide local `.env*` files and compile fixed PR
 endpoint profiles. Their artifacts are PR packaging evidence; they do not prove
@@ -151,9 +152,11 @@ Run on real Windows from Git Bash/MSYS:
 
 ### Android
 
-Run on x86_64 Linux:
+Run on x86_64 Linux. The PR lane builds one ABI in debug; the second command
+rehearses the four-ABI release build that master runs signed:
 
 ```bash
+nix develop --no-update-lock-file .#android -c ./scripts/ci/android-pr.sh
 MAPLE_ANDROID_FAKE_SIGNING=1 MAPLE_ANDROID_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#android -c ./scripts/ci/android-release.sh
 ```
 
