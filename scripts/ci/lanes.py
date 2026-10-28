@@ -45,7 +45,7 @@ GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile no
 # PR lanes use the org's 16-core GitHub-hosted Windows 2025 runner (the same image family,
 # GitHub's cache store); CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
 GITHUB_WINDOWS = Runner("maple-windows-2025-16core", "CI_WINDOWS_GITHUB_RUNNER")
-GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the free standard runner, for the nightly full suite
+GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the free standard runner, for the native Windows test suites
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"
@@ -87,9 +87,11 @@ SDK_TS = ("sdk/src/**", "sdk/package.json", "sdk/bun.lock", "sdk/bunfig.toml",
 AGENT = ("apps/maple-agent/**",)
 WINDOWS_TOOLCHAIN = (".github/actions/setup-agent-windows/**", "scripts/ci/agent_windows.py")
 # What the native Windows updater tests compile: the updater crate (its library and
-# the bootstrap integration test, which includes the app's Windows bootstrap) and the toolchain.
+# the bootstrap integration test, which includes the app's Windows bootstrap), its locked
+# dependencies, the workspace's dependency features and profiles, and the toolchain.
 AGENT_WINDOWS_UPDATER = ("apps/maple-agent/crates/maple-agent-updater/**",
-                         "apps/maple-agent/app/src/windows_bootstrap.rs") + WINDOWS_TOOLCHAIN
+                         "apps/maple-agent/app/src/windows_bootstrap.rs",
+                         "apps/maple-agent/Cargo.lock", "apps/maple-agent/Cargo.toml") + WINDOWS_TOOLCHAIN
 # The packaging scripts and what they call, and the toolchain that builds the bundles.
 AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/build-*", "scripts/package-*", "scripts/verify-*", "scripts/release-info.py",
@@ -193,7 +195,7 @@ DESKTOP = tuple(TAURI + glob for glob in ("tauri.conf.json", "build.rs", "script
                                       "verify-release-artifacts.sh", "attestation-manifest.sh"))
 # The Windows PR lane is the only one that runs the scripts it shares with DESKTOP in Git Bash.
 WINDOWS_DESKTOP = (TAURI + "tauri.windows.conf.json", TAURI + "resources/windows/**", TAURI + "scripts/*windows*",
-                   "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py", "scripts/ci/_common.sh",
+                   TAURI + "scripts/onnxruntime-pins.sh", "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py", "scripts/ci/_common.sh",
                    "scripts/ci/verify-release-artifacts.sh")
 
 # The paths only OpenSecret lanes consume; plan.py counts them as classified.
@@ -222,10 +224,11 @@ LANES: Tuple[Lane, ...] = (
              " && cargo clippy --workspace --all-targets --locked -- -D warnings",
          cache="agent-windows", timeout=45, **AGENT_WIN),
     # The updater's native Windows filesystem, Authenticode, transaction and bootstrap
-    # tests, on GitHub's image; master runs them nightly, which also saves the cache.
+    # tests, on GitHub's free image (16 cores only add queueing to a 2 s suite); master
+    # runs them nightly. Serial and no-fail-fast, as the suite's fixtures were qualified.
     Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"), events=PR_AND_NIGHTLY,
-         run="cargo test -p maple-agent-updater --locked", cache="agent-windows-updater", timeout=30, gate=False,
-         **dict(AGENT_WIN, runner=GITHUB_WINDOWS)),
+         run="cargo test -p maple-agent-updater --locked --no-fail-fast -- --test-threads=1",
+         cache="agent-windows-updater", timeout=30, **dict(AGENT_WIN, runner=GITHUB_WINDOWS_FREE)),
     # The rest of `just ci` and the native macOS suite: master, nightly and ci:full.
     Lane("agent-full-linux", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), run="just ci-extra",
          cache="agent-full-linux", timeout=30, gate=False, **AGENT_FLAKE),
@@ -252,14 +255,15 @@ LANES: Tuple[Lane, ...] = (
     # Unsigned Dev packages through the scripts agent-desktop-build.yml uses on master.
     # The rehearsal proves packaging, not the optimizer: thin LTO with parallel codegen
     # instead of master's fat LTO, from its own cache that the nightly run refreshes.
-    Lane("agent-package-linux", AGENT_PACKAGING, labels=("ci:package", "ci:full"), events=PR_AND_NIGHTLY,
-         job="agent-package-linux", run="just package-rehearsal", timeout=60, gate=False, **AGENT_PACKAGE_FLAKE),
-    Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN, labels=("ci:package", "ci:full"),
+    # Packaging builds take 15-40 minutes, so no PR waits on them: ci:package, nightly,
+    # and master's real builds in agent-desktop-build.yml.
+    Lane("agent-package-linux", AGENT_PACKAGING, pr_paths=(), labels=("ci:package", "ci:full"),
+         events=PR_AND_NIGHTLY, job="agent-package-linux", run="just package-rehearsal", timeout=60, gate=False, **AGENT_PACKAGE_FLAKE),
+    Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60,
          gate=False, **AGENT_PACKAGE_FLAKE),
-    # Windows is on the Agent feed, so its own packaging inputs select it too.
-    Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, labels=("ci:package", "ci:full"), events=PR_AND_NIGHTLY,
-         job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
+    Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, pr_paths=(), labels=("ci:package", "ci:full"),
+         events=PR_AND_NIGHTLY, job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),) + FAST_RELEASE, timeout=90, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script
     # tests, the release gates, and release metadata (read from the version files).
@@ -309,7 +313,8 @@ LANES: Tuple[Lane, ...] = (
          job="research-rust", flake=".#ci", timeout=45, hook="research_rust",
          run="(cd apps/maple-research/frontend/src-tauri && cargo fmt --check)"
              " && ./scripts/ci/verify-local-rust-deps.sh && ./scripts/ci/rust.sh"),
-    # Unsigned platform builds for PRs that touch native inputs, or by label;
+    # Unsigned platform builds: iOS and Android for PRs that touch their native inputs;
+    # the desktop bundles (15-45 minutes) only by label, so no PR waits on them.
     # desktop-build.yml, mobile-build.yml and android-build.yml build master.
     Lane("research-ios", (TAURI + "gen/apple/**", TAURI + "icons/ios/**", TAURI + "capabilities/mobile-ios.json",
                           TAURI + "tauri.ios-dev.conf.json", TAURI + "Info.plist", TAURI + "Entitlements.plist",
@@ -328,20 +333,20 @@ LANES: Tuple[Lane, ...] = (
     Lane("research-desktop-macos", DESKTOP + (TAURI + "tauri.macos.conf.json", TAURI + "Info.plist",
                                               TAURI + "Entitlements.plist", TAURI + "dmg/**", TAURI + "scripts/*macos*",
                                               "scripts/ci/dmg-settings.py", "scripts/ci/test-canonical-macho.py",
-                                              "scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"),
+                                              "scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"), pr_paths=(),
          labels=("ci:package", "ci:full"), job="research-desktop-macos", runner=MACOS, flake=".#ci",
          run="./scripts/ci/desktop-pr.sh", timeout=45, **PLATFORM),
-    Lane("research-desktop-linux", DESKTOP + (TAURI + "scripts/*linux*",), labels=("ci:package", "ci:full"),
+    Lane("research-desktop-linux", DESKTOP + (TAURI + "scripts/*linux*",), pr_paths=(), labels=("ci:package", "ci:full"),
          job="research-desktop-linux", flake=".#desktop-linux", run="./scripts/ci/desktop-pr.sh",
          env=(("MAPLE_TAURI_FAKE_UPDATER_SIGNING", "1"),), timeout=45, **PLATFORM),
-    # Windows runs on PRs only for its packaging paths or a label, then verifies its own proofs.
-    Lane("research-desktop-windows", WINDOWS_DESKTOP, labels=("ci:package", "ci:full"), job="research-desktop-windows",
-         runner=GITHUB_WINDOWS, timeout=60, **PLATFORM,
+    # Windows verifies its own proofs after the build.
+    Lane("research-desktop-windows", WINDOWS_DESKTOP, pr_paths=(), labels=("ci:package", "ci:full"),
+         job="research-desktop-windows", runner=GITHUB_WINDOWS, timeout=60, **PLATFORM,
          run="./scripts/ci/desktop-windows-pr.sh"
              " && ./scripts/ci/verify-release-artifacts.sh ./apps/maple-research/frontend/src-tauri/target windows"),
     # The unsigned Research Dev app for OAuth rehearsal (apps/maple-research/docs/research-dev-desktop.md).
     Lane("research-dev-macos", (TAURI + "desktop-dev-profile.json", TAURI + "tauri.desktop-dev.conf.json",
-                                "scripts/ci/research-dev-desktop.sh", "scripts/ci/research-dev-profile.py"),
+                                "scripts/ci/research-dev-desktop.sh", "scripts/ci/research-dev-profile.py"), pr_paths=(),
          labels=("ci:research-dev-macos", "ci:package", "ci:full"), job="research-dev-macos", runner=MACOS,
          flake=".#ci", run="./scripts/ci/research-dev-desktop.sh", timeout=45, **PLATFORM),
 

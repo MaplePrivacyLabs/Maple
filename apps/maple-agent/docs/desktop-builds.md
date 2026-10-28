@@ -8,12 +8,10 @@ Windows Dev packages come from a manual dispatch. Its `changes` job runs
 diff or a selector error builds. No master run is
 cancelled, so every Agent push gets its own packages. A later push without Agent
 changes does not retry a failed run: re-run its failed jobs, dispatch, or fix
-forward. Pull requests that change packaging inputs (the packaging and release
-scripts, the Agent flake, and for macOS the Xcode pin) rehearse unsigned Dev
-packages in `ci.yml` (`agent-package-linux`, `agent-package-macos`).
-`agent-package-windows` runs when the Windows packaging scripts,
-`build-release.sh`, the release profile files or the Windows toolchain change;
-the `ci:package` label adds all three.
+forward. The unsigned Dev packaging rehearsals in `ci.yml`
+(`agent-package-linux`, `agent-package-macos`, `agent-package-windows`) run
+nightly and on pull requests with the `ci:package` label; add it when a PR
+changes packaging or release scripts, the Agent flake or the toolchains.
 
 Unrelated master commits have no new Agent artifacts. Existing downloads keep
 their original source SHA and provenance; they are never relabeled as a newer

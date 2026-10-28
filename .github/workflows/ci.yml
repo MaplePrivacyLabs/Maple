@@ -66,7 +66,6 @@ jobs:
           CI_LINUX_HEAVY_RUNNER: ${{ vars.CI_LINUX_HEAVY_RUNNER }}
           CI_MACOS_RUNNER: ${{ vars.CI_MACOS_RUNNER }}
           CI_WINDOWS_RUNNER: ${{ vars.CI_WINDOWS_RUNNER }}
-          CI_WINDOWS_GITHUB_RUNNER: ${{ vars.CI_WINDOWS_GITHUB_RUNNER }}
           CI_QUARANTINE: ${{ vars.CI_QUARANTINE }}
         run: python3 scripts/ci/plan.py github
 
@@ -157,7 +156,7 @@ jobs:
         run: python3 scripts/ci/plan.py run "$LANE"
 
   # Unsigned Dev packages built like agent-desktop-build.yml's master builds, from
-  # their master-written cache. Required when the packaging selector fires.
+  # their master-written cache. Run by ci:package, ci:full and the nightly run.
   agent-package-linux:
     name: agent-package-linux
     needs: plan

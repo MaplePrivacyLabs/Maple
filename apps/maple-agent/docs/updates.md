@@ -343,7 +343,7 @@ They do not prove Developer ID distribution, deployed service behavior, or a
 successful real package update.
 
 The `agent-windows-updater` lane in `ci.yml` runs `cargo test -p
-maple-agent-updater --locked` on Windows, with no signing or publication
+maple-agent-updater --locked --no-fail-fast -- --test-threads=1` on Windows, with no signing or publication
 credentials: the native filesystem, trust rejection, transaction and recovery
 tests and the bootstrap component test. These fixtures do not establish
 official Maple signatures, installed A-to-B updates, visible GUI or paired

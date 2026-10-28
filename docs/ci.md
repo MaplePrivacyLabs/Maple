@@ -41,19 +41,20 @@ python3 scripts/ci/plan.py explain --base origin/master --head HEAD
 
 | When | What runs |
 | --- | --- |
-| Pull request, merge queue | Selected lanes, including unsigned platform and package rehearsals when their native inputs change. A new push cancels the superseded run. |
+| Pull request, merge queue | Selected lanes, each a few minutes; the iOS and Android builds when their native inputs change. Desktop bundles and packaging rehearsals never block a PR; add `ci:package` to run them. A new push cancels the superseded run. |
 | Master push | The selected lanes again (for Agent inputs, also the full Agent suites on Linux and macOS), the signed builds, the release-evidence workflows and CodeQL. Never cancelled. |
 | Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories and the Agent's native Windows suites included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures and [quarantined lanes](#quarantine) open or update one `ci-nightly` issue; a green night closes it. |
 | On demand | PR labels (below), or a `ci.yml` dispatch with comma-separated lane ids or `all`. |
 
 ## Labels
 
-Most PRs need no label: `plan` already adds a platform or packaging lane when
-its own files change. Add a label when a change could break something those
-paths do not reveal, for example:
+Most PRs need no label. Every lane a PR waits on by default takes a few
+minutes; builds that take longer (desktop bundles, packaging rehearsals, the
+full native suites) run only by label, nightly, or on master. Add a label when
+a change could break something only those builds reveal, for example:
 
 - `ci:windows` for path, filesystem, process or terminal code that behaves differently on Windows;
-- `ci:package` for changes to what ships in the bundle (assets, resources, entitlements, updater metadata) outside the packaging scripts;
+- `ci:package` for changes to packaging or release scripts, the flakes or toolchains, or what ships in a bundle (assets, resources, entitlements, updater metadata);
 - `ci:ios` or `ci:android` for Research changes that reach native mobile code or mobile-only plugins;
 - `ci:full` for toolchain, lockfile-wide or other risky cross-cutting changes before merge.
 
@@ -132,11 +133,11 @@ Lanes use Blacksmith runners or GitHub-hosted runners; the runner
 constants are at the top of `scripts/ci/lanes.py`. During an outage, set the
 repository variable `CI_LINUX_RUNNER`, `CI_LINUX_HEAVY_RUNNER`,
 `CI_MACOS_RUNNER` or `CI_WINDOWS_RUNNER` to another label; no pull request is
-needed. The Agent Windows lanes that need GitHub's image
-(`agent-windows-updater`, `agent-package-windows`) and, for speed,
+needed. `agent-package-windows`, which needs GitHub's image, and, for speed,
 `research-desktop-windows` run on the org's 16-core GitHub-hosted runner
 `maple-windows-2025-16core` (billed by the minute);
 `CI_WINDOWS_GITHUB_RUNNER=windows-2025` moves them back to the standard runner,
-which uses the same cache store. `agent-full-windows` (nightly, or by label)
-uses the free standard `windows-2025`. A runner from the other vendor never
+which uses the same cache store. The native Windows test suites,
+`agent-windows-updater` and `agent-full-windows` (nightly, or by label), use
+the free standard `windows-2025`. A runner from the other vendor never
 saves a cache.
