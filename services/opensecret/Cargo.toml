@@ -73,7 +73,7 @@ subtle = "2.6.1"
 zeroize = { version = "1.8", features = ["derive", "serde"] }
 tiktoken-rs = "0.5"
 once_cell = "1.19"
-pulldown-cmark = { version = "0.13.0", default-features = false }
+pulldown-cmark = { version = "0.13.5", default-features = false }
 pulldown-cmark-to-cmark = "22.0.0"
 tinfoil = { git = "https://github.com/MaplePrivacyLabs/tinfoil-rs.git", rev = "f0fef79eec6a5a2c8592cf8aff4b90ab556acfbc" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
