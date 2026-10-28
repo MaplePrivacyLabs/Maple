@@ -3411,6 +3411,7 @@ mod tests {
         assert!(!owner_is_free(&endpoint).await.unwrap());
         // No listener exists: an unavailable endpoint is insufficient while
         // the authoritative host still holds this exact lock.
+        owner.unlock().unwrap();
         drop(owner);
         assert!(owner_is_free(&endpoint).await.unwrap());
         assert!(paths.owner_lock().exists());
