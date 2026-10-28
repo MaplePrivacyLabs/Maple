@@ -12,7 +12,7 @@ git config core.hooksPath .githooks
 echo "Git hooks configured (core.hooksPath = .githooks)."
 echo "The pre-commit hook classifies staged paths and runs the affected component"
 echo "checks inside that component's Nix flake (or from PATH without Nix):"
-echo "  apps/maple-research   prettier, eslint, tsc, bun test; cargo fmt/clippy/test for src-tauri"
+echo "  apps/maple-research   prettier, eslint, tsc, bun test; cargo fmt and test for src-tauri"
 echo "  apps/maple-agent      cargo fmt, clippy, test (MAPLE_HOOK_FULL=1 runs 'just ci')"
 echo "  sdk                   Rust fmt/clippy/test --lib/doc; TypeScript prettier, build, unit tests"
 echo "  proxy                 cargo fmt, clippy, test, doc, machete"

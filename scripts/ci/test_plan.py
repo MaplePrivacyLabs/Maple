@@ -344,7 +344,7 @@ class HookTests(unittest.TestCase):
 
 
 class AgentLaneTests(unittest.TestCase):
-    """Agent supply-chain, full-suite, benchmark and packaging lanes."""
+    """Agent supply-chain, provider, full-suite and packaging lanes."""
 
     def test_dependency_inputs_select_supply_chain_and_the_provider_suite(self):
         both = {"agent-supply-chain", "agent-provider"}

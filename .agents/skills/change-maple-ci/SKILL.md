@@ -194,6 +194,11 @@ jobs, runners, caches and guard tests. In short:
   run save. Never let an action save implicitly on a PR path.
 - **Timeouts.** Size them for a cold run on the home runner. The 10-minute
   rule decides PR exposure; it is not a timeout.
+- **Comments and docs move with behaviour.** When you change what a lane,
+  label, cache or workflow does, fix every comment and doc line that describes
+  it in the same PR: search for the lane, label and file names. A docs-only
+  follow-up cannot fix comments in workflows and scripts without running their
+  lanes, so stale ones linger.
 
 ## Validate before pushing
 
