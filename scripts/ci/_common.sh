@@ -3833,8 +3833,8 @@ verify_linux_rpm_package_dependencies() {
   local requires
 
   requires="$(rpm -qp --requires "${package}")" || return 1
-  if ! grep -Fxq 'webkit2gtk4.1' <<< "${requires}"; then
-    echo "RPM is missing the required webkit2gtk4.1 dependency: ${package}" >&2
+  if ! grep -Fxq 'libwebkit2gtk-4.1.so.0()(64bit)' <<< "${requires}"; then
+    echo "RPM is missing the required libwebkit2gtk-4.1.so.0()(64bit) capability: ${package}" >&2
     return 1
   fi
 }

@@ -169,16 +169,24 @@ build_rpm_package_from_payload "$TAURI_DIR/target/release/bundle/rpm/Maple-1.2.3
 
     def test_rpm_preserves_configured_runtime_dependencies(self):
         config = json.loads((ROOT / "apps/maple-research/frontend/src-tauri/tauri.conf.json").read_text())
-        self.assertIn("webkit2gtk4.1", config["bundle"]["linux"]["rpm"]["depends"])
+        self.assertIn("libwebkit2gtk-4.1.so.0()(64bit)", config["bundle"]["linux"]["rpm"]["depends"])
+        self.assertNotIn("webkit2gtk4.1", config["bundle"]["linux"]["rpm"]["depends"])
         (self.tauri / "tauri.conf.json").write_text(json.dumps(config))
         self.fake_rpmbuild(0)
         result = self.run_factory()
         self.assertEqual(result.returncode, 0, result.stderr)
         spec = (self.tauri / "maple.spec").read_text()
-        self.assertIn("Requires: webkit2gtk4.1\n", spec)
+        self.assertIn("Requires: libwebkit2gtk-4.1.so.0()(64bit)\n", spec)
 
     def test_rpm_dependency_verification(self):
-        for requires, expected in (("webkit2gtk4.1", 0), ("rpmlib(PayloadFilesHavePrefix) <= 4.0-1", 1), ("webkit2gtk4.0", 1)):
+        for requires, expected in (
+            ("libwebkit2gtk-4.1.so.0()(64bit)", 0),
+            ("rpmlib(PayloadFilesHavePrefix) <= 4.0-1", 1),
+            ("webkit2gtk4.1", 1),
+            ("libwebkit2gtk-4_1-0", 1),
+            ("libwebkit2gtk-4.0.so.0()(64bit)", 1),
+            ("libwebkit2gtk-4.1.so.0", 1),
+        ):
             with self.subTest(requires=requires):
                 result = self.run_shell(f'''
 rpm() {{ printf '%s\\n' '{requires}'; }}
@@ -197,7 +205,7 @@ verify_linux_rpm_package_dependencies fixture.rpm
             ["rpm", "-qp", "--requires", str(self.rpm)],
             capture_output=True, text=True, check=True,
         ).stdout.splitlines()
-        self.assertIn("webkit2gtk4.1", requires)
+        self.assertIn("libwebkit2gtk-4.1.so.0()(64bit)", requires)
         verified = self.run_shell(f'verify_linux_rpm_package_dependencies "{self.rpm}"')
         self.assertEqual(verified.returncode, 0, verified.stderr)
 

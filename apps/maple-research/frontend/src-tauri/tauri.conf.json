@@ -73,7 +73,7 @@
     ],
     "linux": {
       "rpm": {
-        "depends": ["webkit2gtk4.1"]
+        "depends": ["libwebkit2gtk-4.1.so.0()(64bit)"]
       },
       "appimage": {
         "bundleMediaFramework": true,
