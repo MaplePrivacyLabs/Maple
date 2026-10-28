@@ -7132,12 +7132,79 @@ mod state_tests {
         assert_eq!(cx.debug_bounds("sidebar-wordmark"), Some(wordmark));
     }
 
+    /// Draft project context stays with the composer in both pane layouts,
+    /// while the shared trigger keeps pointer and shortcut menu behavior.
+    #[gpui::test]
+    fn draft_project_picker_stays_above_composer(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = None;
+            this.project_label =
+                "A very long project name that should stay inside the composer context row".into();
+            this.branch_label = Some("(feature/draft-context)".into());
+        });
+        for has_history in [false, true] {
+            for collapsed in [false, true] {
+                for expanded in [false, true] {
+                    for pending_create in [false, true] {
+                        chat.update(cx, |this, cx| {
+                            this.session_setup_pending = pending_create;
+                            this.replace_timeline(if has_history {
+                                vec![user_item("u1", "hi")]
+                            } else {
+                                Vec::new()
+                            });
+                            this.composer_expanded = expanded;
+                            this.set_sidebar_collapsed(collapsed, cx);
+                            cx.notify();
+                        });
+                        cx.run_until_parked();
+                        let project = cx.debug_bounds("root-picker").expect("draft project");
+                        let branch = cx.debug_bounds("project-branch").expect("draft branch");
+                        let composer = cx.debug_bounds("composer-box").expect("composer");
+                        let header = cx.debug_bounds("chat-header").expect("header");
+                        assert!(
+                            project.top() >= header.bottom(),
+                            "history={has_history}, collapsed={collapsed}, expanded={expanded}, pending={pending_create}: project={project:?}, header={header:?}, composer={composer:?}"
+                        );
+                        assert_eq!(project.left(), composer.left());
+                        assert!(project.bottom() <= composer.top());
+                        assert!(composer.top() - project.bottom() <= px(12.));
+                        assert!(project.size.width <= px(260.));
+                        assert!(branch.right() <= composer.right());
+                        assert!((branch.center().y - project.center().y).abs() <= px(0.5));
+                        assert!(composer.size.height > px(0.));
+                        if expanded {
+                            assert!(
+                                composer.size.height > px(300.),
+                                "expanded composer: {composer:?}"
+                            );
+                        }
+
+                        press(cx, "root-picker");
+                        assert_eq!(open_menu(&chat, cx), "Project");
+                        let menu = cx.debug_bounds("project-menu").expect("project menu");
+                        assert!(!menu.contains(&project.center()));
+                        cx.simulate_keystrokes("escape");
+                        assert_eq!(open_menu(&chat, cx), "");
+                        cx.simulate_keystrokes("secondary-p");
+                        assert_eq!(open_menu(&chat, cx), "Project");
+                        cx.simulate_keystrokes("escape");
+                    }
+                }
+            }
+        }
+    }
+
     /// The collapsed header keeps its commands before the title in both
     /// pane layouts; expanding keeps only the same fixed toggle.
     #[gpui::test]
     fn collapsed_sidebar_header_toolbar(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
+            this.branch_label = Some("(main)".into());
+            this.selected_session = Some("s1".into());
+            this.selected_title = "One".into();
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
         });
@@ -7161,6 +7228,15 @@ mod state_tests {
             );
             assert_eq!(toggle.left(), SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET);
             assert!(toggle.right() < new_task.left());
+            assert!(
+                cx.debug_bounds("chat-header")
+                    .unwrap()
+                    .contains(&project.center())
+            );
+            assert!(
+                (cx.debug_bounds("project-branch").unwrap().center().y - project.center().y).abs()
+                    <= px(0.5)
+            );
             assert!(title.right() < project.left());
             assert_eq!(toggle.center().y, title.center().y);
 
