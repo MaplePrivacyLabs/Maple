@@ -2964,15 +2964,10 @@ impl Sidebar {
                     .gap_2()
                     .text_sm()
                     .text_color(gpui::rgb(color))
-                    .map(|element| {
-                        let rest: gpui::Hsla = gpui::transparent_black();
-                        crate::ui::motion::hover_background(
-                            element,
-                            rest,
-                            gpui::rgb(theme::bg_sidebar_row_hover()),
-                        )
+                    .hover(|style| {
+                        // Pointer feedback stays immediate while the background eases.
+                        style.cursor_pointer()
                     })
-                    .hover(|style| style.cursor_pointer())
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
                     .tooltip(widgets::tooltip_for_action(label, action))
                     .on_click(move |_event, window, cx| {
@@ -2984,6 +2979,13 @@ impl Sidebar {
                     })
                     .child(icon(name, px(16.), color))
                     .child(label)
+                    .map(|element| {
+                        crate::ui::motion::hover_background(
+                            element,
+                            gpui::transparent_black(),
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
+                    })
                     .into_any_element()
             }
             Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(window, cx),
