@@ -7240,7 +7240,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn sidebar_search_field_and_shortcut(cx: &mut TestAppContext) {
+    fn sidebar_search_button_and_shortcut(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = (0..80)
@@ -7252,7 +7252,7 @@ mod state_tests {
         let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
         let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
         for (trigger, collapsed) in [
-            ("sidebar-search", false),
+            ("sidebar-search-row", false),
             ("header-search", true),
             ("shortcut", false),
             ("shortcut", true),
@@ -7268,7 +7268,7 @@ mod state_tests {
                 });
                 cx.update(|window, _| window.refresh());
                 cx.run_until_parked();
-                assert!(cx.debug_bounds("sidebar-search").is_none());
+                assert!(cx.debug_bounds("sidebar-search-row").is_none());
                 cx.simulate_keystrokes(if cfg!(target_os = "macos") {
                     "cmd-f"
                 } else {
@@ -7283,7 +7283,7 @@ mod state_tests {
             assert!(cx.update(|window, _| focus.is_focused(window)));
             cx.simulate_keystrokes("escape");
             cx.run_until_parked();
-            assert!(cx.debug_bounds("sidebar-search").is_some());
+            assert!(cx.debug_bounds("sidebar-search-row").is_some());
             assert!(!cx.update(|window, _| focus.is_focused(window)));
             assert!(cx.update(|window, _| composer_focus.is_focused(window)));
         }
@@ -7304,7 +7304,7 @@ mod state_tests {
         assert!(cx.debug_bounds("sidebar-search").is_some());
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
-        assert!(cx.debug_bounds("sidebar-search").is_some());
+        assert!(cx.debug_bounds("sidebar-search").is_none());
         assert!(cx.update(|window, app| {
             chat.read(app)
                 .application_focus
@@ -7323,7 +7323,7 @@ mod state_tests {
         let input = cx.update(|_, app| chat.read(app).sidebar.read(app).inputs()[0].clone());
         let focus = cx.update(|_, app| input.read(app).focus_handle(app));
         for text in ["", "alpha"] {
-            press(cx, "sidebar-search");
+            press(cx, "sidebar-search-row");
             cx.update(|_, app| {
                 app.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
             });
@@ -7354,10 +7354,13 @@ mod state_tests {
             cx.simulate_click(gpui::point(px(40.), px(700.)), gpui::Modifiers::default());
             cx.run_until_parked();
             assert!(!cx.update(|window, _| focus.is_focused(window)));
-            assert!(cx.debug_bounds("sidebar-search").is_some());
+            assert_eq!(
+                cx.debug_bounds("sidebar-search").is_some(),
+                !text.is_empty()
+            );
         }
         press(cx, "search-clear");
-        assert!(cx.debug_bounds("sidebar-search").is_some());
+        assert!(cx.debug_bounds("sidebar-search").is_none());
         assert_eq!(
             chat.update(cx, |this, cx| this.sidebar_active(cx)),
             vec![0, 1]
@@ -7531,45 +7534,55 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn sidebar_search_field_keyboard(cx: &mut TestAppContext) {
+    fn sidebar_search_button_keyboard(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |_, _| {});
         let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
         let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
-        let search = cx.update(|_, app| chat.read(app).sidebar.read(app).inputs()[0].clone());
-        let search_focus = cx.update(|_, app| search.read(app).focus_handle(app));
-        composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
-        cx.update(|window, app| window.focus(&composer_focus, app));
-        cx.run_until_parked();
-        cx.simulate_keystrokes("tab");
-        assert!(cx.update(|window, _| search_focus.is_focused(window)));
-        // The visible field accepts typing directly, including a space.
-        cx.simulate_keystrokes("f i l t e r space j k l");
-        assert_eq!(search.read_with(cx, |input, _| input.text()), "filter jkl");
-        assert_eq!(
-            composer.read_with(cx, |input, _| input.text()),
-            "Unsent draft"
-        );
-        cx.simulate_keystrokes("escape");
-        cx.run_until_parked();
-        assert_eq!(search.read_with(cx, |input, _| input.text()), "");
-        assert!(cx.update(|window, _| search_focus.is_focused(window)));
-        assert!(cx.debug_bounds("sidebar-search").is_some());
-        cx.simulate_keystrokes("escape");
-        cx.run_until_parked();
-        assert!(cx.update(|window, _| composer_focus.is_focused(window)));
-        assert!(cx.debug_bounds("sidebar-search").is_some());
-        // Focus changes preserve a query; Escape still clears it on return.
-        press(cx, "sidebar-search");
+        let search_focus =
+            cx.update(|_, app| chat.read(app).sidebar.read(app).search_focus_handle(app));
+        for collapsed in [false, true] {
+            for key in ["enter", "space"] {
+                chat.update(cx, |this, cx| this.set_sidebar_collapsed(collapsed, cx));
+                composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
+                cx.update(|window, app| window.focus(&composer_focus, app));
+                cx.run_until_parked();
+                cx.simulate_keystrokes(if collapsed { "tab tab tab tab" } else { "tab" });
+                cx.simulate_keystrokes(key);
+                assert_eq!(composer.update(cx, |input, _| input.text()), "Unsent draft");
+                cx.update(|window, app| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                            keystroke: gpui::Keystroke::parse(key).unwrap(),
+                        }),
+                        app,
+                    );
+                });
+                cx.run_until_parked();
+                assert!(!cx.update(|_, app| chat.read(app).sidebar_collapsed));
+                assert!(cx.update(|window, _| search_focus.is_focused(window)));
+                cx.simulate_input("filter");
+                cx.simulate_keystrokes("escape");
+                cx.run_until_parked();
+                assert!(cx.debug_bounds("sidebar-search").is_some());
+                cx.simulate_keystrokes("escape");
+                cx.run_until_parked();
+                assert!(cx.debug_bounds("sidebar-search").is_none());
+            }
+        }
+        press(cx, "sidebar-search-row");
         cx.simulate_input("filter");
         cx.update(|window, app| window.focus(&composer_focus, app));
         cx.run_until_parked();
-        assert_eq!(search.read_with(cx, |input, _| input.text()), "filter");
+        assert!(cx.debug_bounds("sidebar-search").is_some());
         cx.update(|window, app| window.focus(&search_focus, app));
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
-        assert_eq!(search.read_with(cx, |input, _| input.text()), "");
         assert!(cx.debug_bounds("sidebar-search").is_some());
+        cx.update(|window, app| window.focus(&composer_focus, app));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("sidebar-search").is_none());
+        assert!(cx.debug_bounds("sidebar-search-row").is_some());
     }
 
     /// The header's New task button starts the same draft as the sidebar.
