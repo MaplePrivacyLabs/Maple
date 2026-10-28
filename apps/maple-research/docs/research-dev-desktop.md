@@ -72,8 +72,8 @@ under `target/research-dev/cargo` rather than replacing ordinary desktop outputs
 Only this explicit local command builds the Dev RPM; existing PR/release package
 jobs and production identities are unchanged.
 
-Older `ci-desktop-pr` RPMs use Dev services but retain the production `maple`
-package identity. They do **not** install beside production. Restore the website
+Ordinary Research PR package RPMs (the `research-desktop-linux` lane) use Dev
+services but retain the production `maple` package identity. They do **not** install beside production. Restore the website
 RPM to that slot separately; for equal versions use `sudo dnf reinstall ./<rpm>`,
 or `sudo dnf downgrade ./<rpm>` if the website version is older. Sign in again if
 needed; do not copy credentials between the two apps. No automatic data migration

@@ -153,8 +153,8 @@ nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
 # PR-configured web artifact
 MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
 
-# Nix/toolchain/workflow metadata; not application tests
-nix flake check --no-update-lock-file
+# Nix/toolchain/workflow metadata (every root flake check); not application tests
+just lane repo
 ```
 
 There is no general checked-in browser, packaged-app, or React-to-Tauri-command

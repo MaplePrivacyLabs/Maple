@@ -8,9 +8,9 @@ diff; an unusable diff or a selector error builds. No master run is
 cancelled, so every Agent push gets its own packages. A later push without Agent
 changes does not retry a failed run: re-run its failed jobs, dispatch, or fix
 forward. The unsigned Dev packaging rehearsals in `ci.yml`
-(`agent-package-linux`, `agent-package-macos`, `agent-package-windows`) run
-nightly and on pull requests with the `ci:package` label; add it when a PR
-changes packaging or release scripts, the Agent flake or the toolchains.
+(`agent-package-*`) run nightly and on pull requests with the `ci:package`
+label ([CI labels](../../../docs/ci.md#labels)); add it when a PR changes
+packaging or release scripts, the Agent flake or the toolchains.
 
 Unrelated master commits have no new Agent artifacts. Existing downloads keep
 their original source SHA and provenance; they are never relabeled as a newer
@@ -25,9 +25,8 @@ per-user NSIS installers requiring Windows 10 version 1703 (build 15063) or late
 imported by GPUI; see Microsoft's [Windows ICU version history](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
 Trusted master
 packages use the existing Azure publisher to Authenticode-sign the application,
-embedded uninstaller and final installer. Pull requests that change those
-Windows packaging inputs, or carry the `ci:package` label, build, install and
-smoke-test an unsigned Dev installer.
+embedded uninstaller and final installer. Pull requests with the
+`ci:package` label build, install and smoke-test an unsigned Dev installer.
 
 | Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |
@@ -192,7 +191,9 @@ return validation; package metadata alone does not prove those browser flows.
 
 ## Packaging commands
 
-From `apps/maple-agent`, using the pinned component shell:
+From `apps/maple-agent`, using the pinned component shell (`just
+package-rehearsal` runs the host platform's sequence, as the `agent-package-*`
+lanes do):
 
 ```sh
 nix develop --no-update-lock-file . -c ./scripts/build-release.sh dev
@@ -208,10 +209,12 @@ continues to use the macOS feed. Dev has no update feed on either platform.
 Both platforms retain one release version and source commit; separate feed
 paths preserve compatibility with existing macOS clients.
 
-Windows builds run on `blacksmith-8vcpu-windows-2025` with the pinned Rust/MSVC
-environment from `.github/actions/setup-agent-windows` and
-`RUSTFLAGS='-D warnings -C target-feature=+crt-static'`; signing stays on
-GitHub's `windows-2025`. `build-release.sh` selects the explicit x64 MSVC target
+Windows builds use the pinned Rust/MSVC environment from
+`.github/actions/setup-agent-windows` and
+`RUSTFLAGS='-D warnings -C target-feature=+crt-static'`. Master's unsigned
+build compiles on Blacksmith Windows; signing, verification and the
+`ci:package` rehearsal's install smoke run on GitHub's Windows image
+([CI runners](../../../docs/ci.md#runners)). `build-release.sh` selects the explicit x64 MSVC target
 so host build tools keep their normal linkage, then stages the exact resulting
 executable.
 From the component directory in Git Bash on Windows:
@@ -231,7 +234,7 @@ a separate credential-free verifier.
 The exact five final files, build number, source/profile and fixed tar inventory
 are checked before attestation and again after download. The tar is generated
 from the same extracted installer generation, so its signed executable and
-all public notice/descriptor bytes match. Native preflight checks destination
+all public license/descriptor bytes match. Native preflight checks destination
 and code trust before installed files or registration change; a durable manual
 install intent permits safe interrupted-install recovery. Unsigned Prod must
 refuse before modification; unsigned Dev remains a positive install/GUI/uninstall

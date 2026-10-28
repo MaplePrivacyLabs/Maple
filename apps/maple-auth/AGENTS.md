@@ -11,7 +11,7 @@ Use the root `.#ci` Nix shell (Bun and Node match CI). See [README.md](README.md
 for development, component checks and the fixed Dev/Prod build profiles. Run
 `scripts/ci/auth-ci.sh` for format, lint, type checking, and tests. The root hook
 routes this app to `.githooks/pre-commit`. Run the auth build when source,
-configuration or dependencies change, and root `nix flake check` for workflow
+configuration or dependencies change, and root `just lane repo` for workflow
 or shared CI changes. Do not overwrite ignored environment files.
 
 The required `VITE_AUTH_ENVIRONMENT` selector fixes the backend, project and PCR

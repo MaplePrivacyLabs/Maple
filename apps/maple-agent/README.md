@@ -347,9 +347,10 @@ user-local tar bundles.
 
 The root also offers `just agent-check`, `just agent-build`, and
 `just agent-dev`. Native development on macOS requires full Xcode at
-`/Applications/Xcode.app`; Linux libraries come from Nix. Windows CI uses the
-same Rust version resolved by the component’s pinned `flake.lock`, with
-Cargo commands from this directory. The statically linked SQLCipher/OpenSSL
+`/Applications/Xcode.app`; Linux libraries come from Nix. Windows has no Nix:
+`.github/actions/setup-agent-windows` pins the Rust version that the
+component's `flake.lock` resolves, and the `agent-lint` lane fails if the two
+differ. Cargo commands run from this directory. The statically linked SQLCipher/OpenSSL
 build needs Perl; Nix supplies it on macOS/Linux. Windows needs native Windows
 Perl (for example Strawberry Perl), rather than MSYS Perl. NASM enables the
 provider's assembly path when available; its build supports a no-assembly fallback.
@@ -633,10 +634,8 @@ change the desktop theme. Parser, environment-scrubbing and palette precedence
 tests run in the ordinary app test suite.
 
 The root `ci.yml` runs this component's lanes (`scripts/ci/lanes.py`) when
-Agent or its shared Rust dependencies change: format, lint and tests on Linux
-and clippy on macOS and Windows for every PR, the full Linux and macOS suites
-on master, and the full Windows suite nightly. Root `just lane <id>` runs one
-lane as CI does. `just ci` is the full local format, lint, build and test gate;
+Agent or its shared Rust dependencies change; [CI](../../docs/ci.md) lists the
+tiers and labels. Root `just lane <id>` runs one lane as CI does. `just ci` is the full local format, lint, build and test gate;
 `just release` separately validates the optimized binary. PR jobs have no signing or publishing credentials. See the
 root agent guide for shared checks.
 

@@ -92,11 +92,11 @@ and bucket remain independent; Research's workflow and configuration are unchang
 
 `apple-signing` remains automatic for now because Maple Dev and production iOS
 share its credentials. Gating this environment would also interrupt the
-automatic Maple Dev TestFlight lane, potentially at both its build and upload
+automatic Maple Dev TestFlight workflow, potentially at both its build and upload
 jobs. Production iOS therefore remains an explicit exception until the
 credentials are separated. A second GitHub environment containing a copy of
 the same production-capable key would not close that boundary: the automatic
-development lane must lose access to production-capable credentials first.
+development workflow must lose access to production-capable credentials first.
 Do not switch a workflow to a new environment before its credentials and
 policies are ready.
 
@@ -112,8 +112,8 @@ or incomplete migration must leave the working source credentials intact.
 Rerunning an old workflow revision that predates these environment declarations
 will no longer have signing access; use a current reviewed revision instead.
 
-`nix flake check --no-update-lock-file` checks workflow syntax and the signing
-job boundaries. The manual `Check app signing credentials` workflow checks
+`just lane repo` (the root `nix flake check`) checks workflow syntax and the
+signing job boundaries. The manual `Check app signing credentials` workflow checks
 credential availability without signing, building, or publishing anything. Only
 jobs using an environment with required reviewers, such as `zapstore-publishing`,
 pause for approval. Run it on `master`; a run from a feature branch should be

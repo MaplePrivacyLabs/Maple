@@ -95,9 +95,9 @@ The final Windows package artifact has exactly five files: the signed manual
 installer, its versioned updater `.tar.gz`, `build-info.json`, `manifest.json`
 and `SHA256SUMS`. The manifest binds the positive decimal Actions build number,
 source, profile, installer and updater names. The bundle's
-`maple-agent-windows/` root contains the signed application, public build and
-bundle descriptors, license and the fixed notice/wordlist inventory. It omits
-the uninstaller.
+`maple-agent-windows/` root contains exactly the signed application, the
+public build and bundle descriptors, and the license. It omits the
+uninstaller.
 
 Windows installations keep a stable signed root launcher and uninstaller, plus
 immutable generation payloads under `versions/<version>-<build>/`. A native

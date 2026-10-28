@@ -113,10 +113,10 @@ A component check or image build is not runtime evidence.
 ### Repository configuration checks
 
 ```bash
-nix flake check --no-update-lock-file
+just lane repo
 ```
 
-This validates pinned tool versions, GitHub Actions syntax, and release metadata. Run it for changes to `flake.nix`, `flake.lock`, workflows, CI scripts, or release configuration. It is not a substitute for product tests.
+This runs every root flake check (`nix flake check`): pinned tool versions, GitHub Actions syntax and policy, CI scripts, release contracts and metadata. Run it for changes to `flake.nix`, `flake.lock`, workflows, CI scripts, release configuration, or docs that name workflows. It is not a substitute for product tests.
 
 Do not cite the pre-commit hook as complete proof: it runs only the format, lint, type-check, and unit-test lanes for the components whose files are staged, and never the integration suites, cargo-deny, `nix flake check`, or packaging.
 
@@ -124,6 +124,8 @@ Do not cite the pre-commit hook as complete proof: it runs only the format, lint
 
 Use these commands to mirror PR artifact builds (the `research-desktop-*`, `research-android` and
 `research-ios` lanes; `just lane <id>` runs one). Then launch and smoke the result separately.
+iOS and Android lanes run on PRs that touch their native inputs; desktop bundles run only with
+the `ci:package` label ([CI labels](../../../../docs/ci.md#labels)).
 
 These scripts deliberately hide local `.env*` files and compile fixed PR
 endpoint profiles. Their artifacts are PR packaging evidence; they do not prove
@@ -144,10 +146,11 @@ MAPLE_TAURI_FAKE_UPDATER_SIGNING=1 nix develop --no-update-lock-file .#desktop-l
 
 ### Windows desktop
 
-Run on real Windows from Git Bash/MSYS:
+Run on real Windows from Git Bash/MSYS. The lane then verifies the build's proof manifests:
 
 ```bash
 ./scripts/ci/desktop-windows-pr.sh
+./scripts/ci/verify-release-artifacts.sh ./apps/maple-research/frontend/src-tauri/target windows
 ```
 
 ### Android

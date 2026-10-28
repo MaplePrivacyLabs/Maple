@@ -35,26 +35,21 @@ build and performance evidence. Root `just agent-check`, `agent-build`, and
 `agent-dev` enter this component environment. The repository pre-commit hook
 runs `just ci-lint` and `just ci-test` (the `agent-lint` and `agent-test` CI
 lanes) in this shell when Agent files are staged; `MAPLE_HOOK_FULL=1` adds
-`just ci-extra`, the rest of `just ci`. Root `nix flake check
---no-update-lock-file` additionally validates workflow selection and security
-contracts when CI, Nix, or routing changes.
+`just ci-extra`, the rest of `just ci`. Root `just lane repo` additionally
+validates workflow selection and security contracts when CI, Nix, or routing
+changes.
 
 Agent has its own Cargo and Nix lockfiles. CI selects Agent for proxy runtime
 changes and for Rust SDK build inputs, both path dependencies it builds from
-the tree, but not for TypeScript SDK changes. Component-only
-changes should not unnecessarily select Research packaging. Agent lanes live in
-`scripts/ci/lanes.py`, with fixtures in `scripts/ci/test_plan.py`; root
-`just lane <id>` runs one locally. PRs run `agent-lint`, `agent-test`,
-`agent-macos` and Windows Clippy (`agent-windows`), plus the native Windows
-updater tests for updater paths, `agent-supply-chain` and `agent-provider` for
-dependency inputs, and an unsigned Dev package rehearsal for packaging inputs.
-Labels `ci:windows`, `ci:package` and `ci:full` add lanes when a change carries
-Windows or packaging risk its paths do not show
-([labels](../../../docs/ci.md#labels)); master adds the full Linux and macOS
-suites, and the full Windows suite runs nightly. On master,
-`.github/workflows/agent-desktop-build.yml` builds signed Prod packages for
-pushes that change `AGENT_DESKTOP` inputs, Dev packages nightly, and both on
-every manual dispatch.
+the tree, but not for TypeScript SDK changes. Agent lanes live in
+`scripts/ci/lanes.py`; root `just lane <id>` runs one locally. Every Agent PR
+runs Linux lint and tests plus macOS and Windows Clippy; updater and
+dependency inputs add the native Windows updater tests and supply-chain
+checks. Packaging rehearsals and the full suites run by label (`ci:package`,
+`ci:windows`, `ci:full`), nightly, or on master. Load
+`$change-maple-ci` for what each label adds and how to trigger it, and
+[desktop builds](../../../apps/maple-agent/docs/desktop-builds.md) for the
+signed master packages.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including
 the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency
@@ -113,9 +108,7 @@ platform-specific signed installed-update rehearsal. Linux uses user-owned tar
 bundles and a separate v2 wire schema, preserving the shipped macOS v1 feed;
 one release may update both platforms to the same version.
 Windows x64 Dev/Prod installers are built by the same desktop workflow, with
-master Authenticode signing through the existing `windows-signing` environment;
-like macOS and Linux, master pushes build only Prod, the nightly run builds
-Dev, and a manual dispatch builds both.
+master Authenticode signing through the existing `windows-signing` environment.
 Windows Prod uses its signed v3 update feed and generation tar bundle; its
 signed NSIS setup remains the manual installation download. Normal publication
 includes Windows through the same protected publisher as macOS and Linux,
