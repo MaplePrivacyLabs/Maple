@@ -1520,9 +1520,50 @@ impl LocalBackend {
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
             .map_err(|_| "Maple API authentication failed".to_string())?;
         let response = client
-            .login(email.clone(), password, self.client_id)
+            .login(email, password, self.client_id)
             .await
             .map_err(|_| "Sign in failed. Check your email and password.".to_string())?;
+        self.install_login(response).await
+    }
+
+    /// Sign in to an anonymous account with its account id and password.
+    /// Anonymous accounts have no email; the server only accepts an id login
+    /// for a guest account in this project.
+    pub async fn login_guest(
+        &self,
+        account_id: String,
+        password: String,
+    ) -> Result<AuthSession, String> {
+        let _account = self.restore_lock.lock().await;
+        self.require_signed_out()?;
+        let account_id = Self::parse_account_id(&account_id)?;
+        if password.is_empty() {
+            return Err("Enter a password".to_string());
+        }
+        self.cancel_oauth();
+        let environment = configured_pcr0_environment()?;
+        let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
+            .map_err(|_| "Maple API authentication failed".to_string())?;
+        let response = client
+            .login_with_id(account_id, password, self.client_id)
+            .await
+            .map_err(|_| "Sign in failed. Check your account ID and password.".to_string())?;
+        self.install_login(response).await
+    }
+
+    fn parse_account_id(account_id: &str) -> Result<Uuid, String> {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return Err("Enter your account ID".to_string());
+        }
+        Uuid::parse_str(account_id).map_err(|_| "That is not a valid account ID".to_string())
+    }
+
+    /// Hand a validated login to the agent runtime and persist it.
+    async fn install_login(
+        &self,
+        response: maple_sdk::LoginResponse,
+    ) -> Result<AuthSession, String> {
         let user_id = response.id.to_string();
         let snapshot = self
             .auth
@@ -3875,6 +3916,24 @@ mod tests {
         let credentials =
             PersistedAuthStore::new(Some(database.clone()), "https://api.example".to_owned());
         (root, database, credentials)
+    }
+
+    #[test]
+    fn guest_account_ids_must_be_uuids() {
+        let id = Uuid::new_v4();
+        assert_eq!(LocalBackend::parse_account_id(&format!("  {id}\n")), Ok(id));
+        assert_eq!(
+            LocalBackend::parse_account_id(&id.to_string().to_uppercase()),
+            Ok(id)
+        );
+        assert_eq!(
+            LocalBackend::parse_account_id(" "),
+            Err("Enter your account ID".to_string())
+        );
+        assert_eq!(
+            LocalBackend::parse_account_id("someone@example.test"),
+            Err("That is not a valid account ID".to_string())
+        );
     }
 
     #[test]

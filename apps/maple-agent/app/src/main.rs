@@ -203,8 +203,11 @@ fn write_remote_output(
 #[derive(Debug, Clone, Default, PartialEq, Eq, Args)]
 struct LoginArgs {
     /// Account email; prompted for when omitted.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "account_id")]
     email: Option<String>,
+    /// Sign in to an anonymous account with its account ID instead.
+    #[arg(long)]
+    account_id: Option<String>,
 }
 
 /// Settings for `maple-agent proxy`, from flags with environment fallbacks.
@@ -572,15 +575,19 @@ fn run_login(args: LoginArgs) -> Result<(), String> {
         eprintln!("A Maple sign-in is already saved; signing in again replaces it.");
         log::info!("login replaces the saved session for account {user_id}");
     }
-    let email = match args.email {
-        Some(email) => email,
-        None => prompt_line("Email: ")?,
+    let login = match (args.account_id, args.email) {
+        (Some(account_id), _) => Err(account_id),
+        (None, Some(email)) => Ok(email),
+        (None, None) => Ok(prompt_line("Email: ")?),
     };
     let password = rpassword::prompt_password("Password: ")
         .map_err(|error| format!("Could not read the password: {error}"))?;
-    let session = backend
-        .runtime_handle()
-        .block_on(backend.login(email, password))?;
+    let session = backend.runtime_handle().block_on(async {
+        match login {
+            Ok(email) => backend.login(email, password).await,
+            Err(account_id) => backend.login_guest(account_id, password).await,
+        }
+    })?;
     let account = backend
         .runtime_handle()
         .block_on(backend.account(&session.user_id))
@@ -885,14 +892,23 @@ mod tests {
     fn login_takes_an_optional_email_and_never_a_password() {
         assert_eq!(
             parse(&["login"]).unwrap(),
-            Some(Mode::Login(LoginArgs { email: None }))
+            Some(Mode::Login(LoginArgs::default()))
         );
         assert_eq!(
             parse(&["login", "--email", "a@b.c"]).unwrap(),
             Some(Mode::Login(LoginArgs {
-                email: Some("a@b.c".into())
+                email: Some("a@b.c".into()),
+                account_id: None,
             }))
         );
+        assert_eq!(
+            parse(&["login", "--account-id", "id"]).unwrap(),
+            Some(Mode::Login(LoginArgs {
+                email: None,
+                account_id: Some("id".into()),
+            }))
+        );
+        assert!(parse(&["login", "--email", "a@b.c", "--account-id", "id"]).is_err());
         assert!(parse(&["login", "--password", "x"]).is_err());
     }
 
