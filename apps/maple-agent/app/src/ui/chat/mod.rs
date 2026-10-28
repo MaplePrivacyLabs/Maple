@@ -245,6 +245,7 @@ pub(super) enum ChatPopup {
     Model,
     Thinking,
     Integrations,
+    Settings,
     /// The transcript's right-click menu, at a window position.
     Transcript(gpui::Point<gpui::Pixels>),
 }
@@ -985,6 +986,9 @@ impl ChatScreen {
                 started: now,
                 duration: SIDEBAR_TRANSITION_DURATION.mul_f32(distance),
             });
+        if self.popup.is_open(&ChatPopup::Settings) {
+            self.popup.close(cx);
+        }
         if collapsed {
             self.sidebar.update(cx, |sidebar, cx| {
                 sidebar.close_popups(cx);
@@ -6782,7 +6786,7 @@ impl Render for ChatScreen {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .child(self.render_sidebar(sidebar_expansion, cx))
+                    .child(self.render_sidebar(sidebar_expansion, window, cx))
                     .child(
                         div()
                             .relative()
@@ -6872,7 +6876,12 @@ impl Render for ChatScreen {
 }
 
 impl ChatScreen {
-    fn render_sidebar(&self, expansion: f32, cx: &mut Context<Self>) -> Div {
+    fn render_sidebar(
+        &mut self,
+        expansion: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let width = SIDEBAR_RAIL_WIDTH + (SIDEBAR_WIDTH - SIDEBAR_RAIL_WIDTH) * expansion;
         div()
             .relative()
@@ -6882,7 +6891,9 @@ impl ChatScreen {
             .bg(gpui::rgb(theme::bg_sidebar()))
             // Clip only during motion: settled sidebar menus may extend
             // into the content pane as before.
-            .when(expansion < 1., |column| column.overflow_hidden())
+            .when(expansion > 0. && expansion < 1., |column| {
+                column.overflow_hidden()
+            })
             .when(expansion < 1., |column| {
                 column.child(self.render_sidebar_rail(cx))
             })
@@ -6907,65 +6918,181 @@ impl ChatScreen {
                         ),
                 )
             })
-            .when(expansion > 0.95, |column| {
-                column.child(
-                    widgets::ghost_button("send-feedback")
-                        .aria_label("Send feedback")
-                        .debug_selector(|| "send-feedback".to_string())
-                        .absolute()
-                        .bottom_2()
-                        .right_2()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .tab_index(7)
-                        .child("Send feedback")
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.open_feedback(window, cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.open_feedback(window, cx)),
-                        ),
-                )
+            .child(self.render_sidebar_settings(expansion, window, cx))
+    }
+
+    fn render_sidebar_settings(
+        &mut self,
+        expansion: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let expanded = expansion > 0.95;
+        let open = self.popup.is_open(&ChatPopup::Settings);
+        let button = widgets::ghost_button("open-settings")
+            .aria_label("Settings menu")
+            .a11y_synthetic_children(|tree| {
+                tree.parent_node()
+                    .set_has_popup(gpui::accesskit::HasPopup::Menu);
             })
-            // Keep one opaque Settings control outside the fading sidebar.
-            .child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .w(SIDEBAR_RAIL_WIDTH)
-                    .h_12()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgb(theme::bg_sidebar()))
+            .debug_selector(|| "open-settings".to_string())
+            .w_full()
+            .h(px(40.))
+            .px_2()
+            .rounded(theme::RADIUS_SM)
+            .tab_index(6)
+            .on_key_down(Self::sidebar_button_key_down)
+            .when(open, |button| {
+                button.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+            })
+            .child(icon("settings", px(16.), theme::text_secondary()))
+            .when(expanded, |button| {
+                button
+                    .justify_start()
+                    .gap_2()
+                    .child(div().flex_1().child("Settings"))
                     .child(
-                        widgets::icon_button_for_action(
-                            "open-settings",
-                            "settings",
-                            "Settings",
-                            px(16.),
-                            theme::text_secondary(),
-                            &OpenAppSettings,
+                        icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
+                            icon.with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                std::f32::consts::PI,
+                            )))
+                        }),
+                    )
+            });
+        let button = self
+            .popup
+            .trigger(ChatPopup::Settings, button, cx, |this, _, cx| {
+                this.popup.toggle(ChatPopup::Settings, cx);
+            });
+        let mut footer = div()
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .w(if expanded {
+                SIDEBAR_WIDTH
+            } else {
+                SIDEBAR_RAIL_WIDTH
+            })
+            .h(px(54.))
+            .px_2()
+            .py(px(6.))
+            .border_t_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            .child(button);
+        if open {
+            let usage_label = self.sidebar_plan.as_ref().map_or_else(
+                || "Usage unavailable. Open Usage settings".to_string(),
+                |plan| {
+                    format!(
+                        "Usage, {} percent used. {}, resets {}. Open Usage settings",
+                        plan.percent_used, plan.plan_label, plan.resets_label
+                    )
+                },
+            );
+            let usage = div()
+                .w_full()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child("Usage"),
                         )
-                        .debug_selector(|| "open-settings".to_string())
-                        .size(px(32.))
-                        .rounded_full()
-                        .tab_index(6)
-                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                            cx.stop_propagation();
-                        })
-                        .on_key_down(Self::sidebar_button_key_down)
-                        .on_click(cx.listener(
-                            |this, _event, window, cx| {
-                                this.execute_command(ChatCommand::OpenSettings, window, cx);
-                            },
-                        )),
-                    ),
-            )
+                        .children(self.sidebar_plan.as_ref().map(|plan| {
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(format!("{}% used", plan.percent_used))
+                        }))
+                        .child(icon("chevron-right", px(12.), theme::text_muted())),
+                )
+                .when_some(self.sidebar_plan.as_ref(), |usage, plan| {
+                    usage
+                        .child(
+                            div()
+                                .debug_selector(|| "settings-usage-meter".to_string())
+                                .h(px(6.))
+                                .w_full()
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::border()))
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(gpui::relative(
+                                            (f32::from(plan.percent_used) / 100.).clamp(0., 1.),
+                                        ))
+                                        .rounded_full()
+                                        .bg(gpui::rgb(theme::accent())),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .gap_2()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child(plan.plan_label.clone())
+                                .child(format!("Resets {}", plan.resets_label)),
+                        )
+                })
+                .when(self.sidebar_plan.is_none(), |usage| {
+                    usage.child(
+                        div()
+                            .debug_selector(|| "settings-usage-unavailable".to_string())
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child("Usage unavailable"),
+                    )
+                });
+            let menu = Menu::new("settings-menu", SIDEBAR_WIDTH - px(16.))
+                .label("Settings")
+                .application_vim(self.application_vim_enabled)
+                .item(
+                    MenuItem::new("settings-menu-usage", usage_label, |_: &mut Self, _, cx| {
+                        cx.emit(OpenSettingsSection(Section::Usage));
+                    })
+                    .content(usage),
+                )
+                .separator()
+                .item(
+                    MenuItem::new("settings-menu-account", "Account", |_: &mut Self, _, cx| {
+                        cx.emit(OpenSettingsSection(Section::Account));
+                    })
+                    .icon("user"),
+                )
+                .item(
+                    MenuItem::new(
+                        "settings-menu-all",
+                        "All settings",
+                        |this: &mut Self, window, cx| {
+                            this.execute_command(ChatCommand::OpenSettings, window, cx);
+                        },
+                    )
+                    .icon("settings"),
+                )
+                .item(
+                    MenuItem::new(
+                        "send-feedback",
+                        "Send feedback",
+                        |this: &mut Self, window, cx| {
+                            this.open_feedback(window, cx);
+                        },
+                    )
+                    .icon("message-square"),
+                );
+            footer = footer.child(self.popup.render(menu, Placement::AboveStart, window, cx));
+        }
+        footer
     }
 
     /// Keep unsaved-work feedback beside the composer that produced it.
@@ -7240,8 +7367,8 @@ impl ChatScreen {
         crate::notify::notify(cx, tag, title, &body, &[]);
     }
 
-    /// Load the plan card from the Maple billing API. Failures keep the
-    /// previous card; the token-total fallback covers the first load.
+    /// Load the usage preview from the Maple billing API. Failures keep
+    /// the previous value; without one, the menu shows usage as unavailable.
     fn refresh_sidebar_plan(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();

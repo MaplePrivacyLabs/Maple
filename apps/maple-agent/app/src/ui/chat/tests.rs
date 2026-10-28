@@ -6933,6 +6933,7 @@ mod state_tests {
                 input.set_text("Unsent chat draft", cx);
             });
         });
+        press(cx, "open-settings");
         press(cx, "send-feedback");
         let input = chat.update(cx, |this, _| this.feedback.as_ref().unwrap().input.clone());
         let composer = chat.update(cx, |this, _| this.composer.clone().unwrap());
@@ -6976,6 +6977,7 @@ mod state_tests {
         let (chat, cx) = chat_window(cx, |_, _| {});
         let composer = chat.update(cx, |this, _| this.composer.clone().expect("composer"));
         composer.update(cx, |input, cx| input.set_text("Unsent chat draft", cx));
+        press(cx, "open-settings");
         press(cx, "send-feedback");
         press(cx, "feedback-submit");
         assert!(chat.update(cx, |this, _| this.feedback.is_some()));
@@ -7238,7 +7240,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn sidebar_search_button_and_shortcut(cx: &mut TestAppContext) {
+    fn sidebar_search_field_and_shortcut(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = (0..80)
@@ -7250,7 +7252,7 @@ mod state_tests {
         let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
         let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
         for (trigger, collapsed) in [
-            ("sidebar-search-row", false),
+            ("sidebar-search", false),
             ("header-search", true),
             ("shortcut", false),
             ("shortcut", true),
@@ -7266,7 +7268,7 @@ mod state_tests {
                 });
                 cx.update(|window, _| window.refresh());
                 cx.run_until_parked();
-                assert!(cx.debug_bounds("sidebar-search-row").is_none());
+                assert!(cx.debug_bounds("sidebar-search").is_none());
                 cx.simulate_keystrokes(if cfg!(target_os = "macos") {
                     "cmd-f"
                 } else {
@@ -7281,7 +7283,7 @@ mod state_tests {
             assert!(cx.update(|window, _| focus.is_focused(window)));
             cx.simulate_keystrokes("escape");
             cx.run_until_parked();
-            assert!(cx.debug_bounds("sidebar-search-row").is_some());
+            assert!(cx.debug_bounds("sidebar-search").is_some());
             assert!(!cx.update(|window, _| focus.is_focused(window)));
             assert!(cx.update(|window, _| composer_focus.is_focused(window)));
         }
@@ -7302,7 +7304,7 @@ mod state_tests {
         assert!(cx.debug_bounds("sidebar-search").is_some());
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
-        assert!(cx.debug_bounds("sidebar-search").is_none());
+        assert!(cx.debug_bounds("sidebar-search").is_some());
         assert!(cx.update(|window, app| {
             chat.read(app)
                 .application_focus
@@ -7321,7 +7323,7 @@ mod state_tests {
         let input = cx.update(|_, app| chat.read(app).sidebar.read(app).inputs()[0].clone());
         let focus = cx.update(|_, app| input.read(app).focus_handle(app));
         for text in ["", "alpha"] {
-            press(cx, "sidebar-search-row");
+            press(cx, "sidebar-search");
             cx.update(|_, app| {
                 app.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
             });
@@ -7352,13 +7354,10 @@ mod state_tests {
             cx.simulate_click(gpui::point(px(40.), px(700.)), gpui::Modifiers::default());
             cx.run_until_parked();
             assert!(!cx.update(|window, _| focus.is_focused(window)));
-            assert_eq!(
-                cx.debug_bounds("sidebar-search").is_some(),
-                !text.is_empty()
-            );
+            assert!(cx.debug_bounds("sidebar-search").is_some());
         }
         press(cx, "search-clear");
-        assert!(cx.debug_bounds("sidebar-search").is_none());
+        assert!(cx.debug_bounds("sidebar-search").is_some());
         assert_eq!(
             chat.update(cx, |this, cx| this.sidebar_active(cx)),
             vec![0, 1]
@@ -7366,55 +7365,211 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn sidebar_search_button_keyboard(cx: &mut TestAppContext) {
+    fn empty_sidebar_has_full_width_guidance_below_projects(cx: &mut TestAppContext) {
+        let (_chat, cx) = chat_window(cx, |_, _| {});
+        let empty = cx
+            .debug_bounds("sidebar-empty")
+            .expect("empty task guidance");
+        let projects = cx
+            .debug_bounds("projects-header")
+            .expect("projects heading");
+        let settings = cx.debug_bounds("open-settings").expect("settings footer");
+        assert_eq!(empty.size.width, SIDEBAR_WIDTH);
+        assert!(empty.top() >= projects.bottom());
+        assert!(empty.bottom() < settings.top());
+    }
+
+    #[gpui::test]
+    fn projects_filter_opens_from_keyboard_and_restores_focus(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        for key in ["enter", "space"] {
+            cx.update(|window, app| window.focus(&composer_focus, app));
+            cx.simulate_keystrokes("tab tab tab");
+            let filter_focus = cx.update(|window, app| window.focused(app).unwrap());
+            assert_eq!(filter_focus.tab_index, 4);
+            cx.simulate_keystrokes(key);
+            cx.update(|window, app| {
+                window.dispatch_event(
+                    gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                        keystroke: gpui::Keystroke::parse(key).unwrap(),
+                    }),
+                    app,
+                );
+            });
+            cx.run_until_parked();
+            assert_eq!(open_menu(&chat, cx), "View");
+            assert!(cx.debug_bounds("sidebar-group").is_some());
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+            assert_eq!(open_menu(&chat, cx), "");
+            assert!(cx.update(|window, _| filter_focus.is_focused(window)));
+        }
+    }
+
+    #[gpui::test]
+    fn settings_menu_routes_usage_account_settings_and_feedback(cx: &mut TestAppContext) {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        let usage_requests = Rc::new(Cell::new(0));
+        let account_requests = Rc::new(Cell::new(0));
+        let settings_requests = Rc::new(Cell::new(0));
+        let usage_observed = usage_requests.clone();
+        let account_observed = account_requests.clone();
+        let settings_observed = settings_requests.clone();
+        let _usage = cx.update(|_, app| {
+            app.subscribe(
+                &chat,
+                move |_, request: &OpenSettingsSection, _| match request.0 {
+                    Section::Usage => usage_observed.set(usage_observed.get() + 1),
+                    Section::Account => account_observed.set(account_observed.get() + 1),
+                    section => panic!("unexpected settings section: {section:?}"),
+                },
+            )
+        });
+        let _settings = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, _: &OpenSettings, _| {
+                settings_observed.set(settings_observed.get() + 1);
+            })
+        });
+        // Both an unavailable meter and a loaded plan keep Usage reachable.
+        for plan in [
+            None,
+            Some(crate::billing::PlanUsage {
+                plan_label: "Pro".into(),
+                percent_used: 42,
+                resets_label: "tomorrow".into(),
+            }),
+        ] {
+            let available = plan.is_some();
+            chat.update(cx, |this, cx| {
+                this.sidebar_plan = plan;
+                cx.notify();
+            });
+            press(cx, "open-settings");
+            assert_eq!(cx.debug_bounds("settings-usage-meter").is_some(), available);
+            assert_eq!(
+                cx.debug_bounds("settings-usage-unavailable").is_some(),
+                !available
+            );
+            assert!(cx.debug_bounds("settings-menu").is_some());
+            assert!(cx.debug_bounds("settings-menu-usage").is_some());
+            press(cx, "settings-menu-usage");
+            assert!(cx.debug_bounds("settings-menu").is_none());
+        }
+        assert_eq!(usage_requests.get(), 2);
+        press(cx, "open-settings");
+        assert!(
+            cx.debug_bounds("settings-menu-account").unwrap().top()
+                < cx.debug_bounds("settings-menu-all").unwrap().top()
+        );
+        press(cx, "settings-menu-account");
+        assert_eq!(account_requests.get(), 1);
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        press(cx, "open-settings");
+        press(cx, "settings-menu-all");
+        assert_eq!(settings_requests.get(), 1);
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        press(cx, "open-settings");
+        press(cx, "send-feedback");
+        assert!(chat.read_with(cx, |this, _| this.feedback.is_some()));
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        cx.simulate_keystrokes("escape");
+        assert!(chat.read_with(cx, |this, _| this.feedback.is_none()));
+    }
+
+    #[gpui::test]
+    fn settings_menu_keyboard_works_in_expanded_and_collapsed_sidebar(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |_, _| {});
         let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
         let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
-        let search_focus =
-            cx.update(|_, app| chat.read(app).sidebar.read(app).search_focus_handle(app));
         for collapsed in [false, true] {
-            for key in ["enter", "space"] {
-                chat.update(cx, |this, cx| this.set_sidebar_collapsed(collapsed, cx));
-                composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
-                cx.update(|window, app| window.focus(&composer_focus, app));
-                cx.run_until_parked();
-                cx.simulate_keystrokes(if collapsed { "tab tab tab tab" } else { "tab" });
-                cx.simulate_keystrokes(key);
-                assert_eq!(composer.update(cx, |input, _| input.text()), "Unsent draft");
-                cx.update(|window, app| {
-                    window.dispatch_event(
-                        gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
-                            keystroke: gpui::Keystroke::parse(key).unwrap(),
-                        }),
-                        app,
-                    );
-                });
-                cx.run_until_parked();
-                assert!(!cx.update(|_, app| chat.read(app).sidebar_collapsed));
-                assert!(cx.update(|window, _| search_focus.is_focused(window)));
-                cx.simulate_input("filter");
-                cx.simulate_keystrokes("escape");
-                cx.run_until_parked();
-                assert!(cx.debug_bounds("sidebar-search").is_some());
-                cx.simulate_keystrokes("escape");
-                cx.run_until_parked();
-                assert!(cx.debug_bounds("sidebar-search").is_none());
+            chat.update(cx, |this, cx| this.set_sidebar_collapsed(collapsed, cx));
+            cx.update(|window, app| window.focus(&composer_focus, app));
+            cx.run_until_parked();
+            // Walk the real tab order rather than depending on hidden controls.
+            for _ in 0..8 {
+                cx.simulate_keystrokes("tab");
+                if cx.update(|window, app| {
+                    window
+                        .focused(app)
+                        .is_some_and(|focus| focus.tab_index == 6)
+                }) {
+                    break;
+                }
             }
+            let settings_focus = cx.update(|window, app| window.focused(app).unwrap());
+            assert_eq!(settings_focus.tab_index, 6);
+            cx.simulate_keystrokes("enter");
+            cx.update(|window, app| {
+                window.dispatch_event(
+                    gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                    }),
+                    app,
+                );
+            });
+            cx.run_until_parked();
+            let menu = cx.debug_bounds("settings-menu").expect("settings menu");
+            let trigger = cx.debug_bounds("open-settings").expect("settings trigger");
+            assert!(
+                menu.bottom() <= trigger.top(),
+                "menu opens above its footer"
+            );
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("settings-menu").is_none());
+            assert!(cx.update(|window, _| settings_focus.is_focused(window)));
+            assert_eq!(
+                chat.read_with(cx, |this, _| this.sidebar_collapsed),
+                collapsed
+            );
         }
-        press(cx, "sidebar-search-row");
+    }
+
+    #[gpui::test]
+    fn sidebar_search_field_keyboard(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        let search = cx.update(|_, app| chat.read(app).sidebar.read(app).inputs()[0].clone());
+        let search_focus = cx.update(|_, app| search.read(app).focus_handle(app));
+        composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
+        cx.update(|window, app| window.focus(&composer_focus, app));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("tab");
+        assert!(cx.update(|window, _| search_focus.is_focused(window)));
+        // The visible field accepts typing directly, including a space.
+        cx.simulate_keystrokes("f i l t e r space j k l");
+        assert_eq!(search.read_with(cx, |input, _| input.text()), "filter jkl");
+        assert_eq!(
+            composer.read_with(cx, |input, _| input.text()),
+            "Unsent draft"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(search.read_with(cx, |input, _| input.text()), "");
+        assert!(cx.update(|window, _| search_focus.is_focused(window)));
+        assert!(cx.debug_bounds("sidebar-search").is_some());
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| composer_focus.is_focused(window)));
+        assert!(cx.debug_bounds("sidebar-search").is_some());
+        // Focus changes preserve a query; Escape still clears it on return.
+        press(cx, "sidebar-search");
         cx.simulate_input("filter");
         cx.update(|window, app| window.focus(&composer_focus, app));
         cx.run_until_parked();
-        assert!(cx.debug_bounds("sidebar-search").is_some());
+        assert_eq!(search.read_with(cx, |input, _| input.text()), "filter");
         cx.update(|window, app| window.focus(&search_focus, app));
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
+        assert_eq!(search.read_with(cx, |input, _| input.text()), "");
         assert!(cx.debug_bounds("sidebar-search").is_some());
-        cx.update(|window, app| window.focus(&composer_focus, app));
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("sidebar-search").is_none());
-        assert!(cx.debug_bounds("sidebar-search-row").is_some());
     }
 
     /// The header's New task button starts the same draft as the sidebar.
