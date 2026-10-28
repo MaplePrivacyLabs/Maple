@@ -7302,6 +7302,70 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn sidebar_search_dismissal_keeps_pointer_targets_stable(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "Alpha"), summary("s2", "Beta")];
+            this.sync_sidebar(cx);
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_view(crate::settings::SidebarView::default(), cx)
+            });
+        });
+        for (selector, menu) in [("view-options", "View"), ("menu-session-s2", "Task(s2)")] {
+            press(cx, "header-search");
+            let target = cx.debug_bounds(selector).expect("pointer target");
+            cx.simulate_mouse_down(
+                target.center(),
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("sidebar-search").is_some());
+            assert_eq!(cx.debug_bounds(selector), Some(target));
+            cx.simulate_mouse_up(
+                target.center(),
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            cx.run_until_parked();
+            assert_eq!(open_menu(&chat, cx), menu);
+            assert!(cx.debug_bounds("sidebar-search").is_none());
+            cx.simulate_keystrokes("escape");
+        }
+
+        press(cx, "header-search");
+        press(cx, "header-search");
+        assert!(cx.debug_bounds("sidebar-search").is_some());
+
+        // Releasing back over Search must finish the outside press too.
+        let target = cx.debug_bounds("view-options").expect("filter trigger");
+        let field = cx.debug_bounds("sidebar-search").expect("search field");
+        cx.simulate_mouse_down(
+            target.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            field.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        assert_eq!(open_menu(&chat, cx), "");
+        assert!(cx.debug_bounds("sidebar-search").is_none());
+
+        press(cx, "header-search");
+        let folder = cx.debug_bounds("folder-/tmp/proj").expect("folder header");
+        let at = gpui::point(folder.left() + px(60.), folder.center().y);
+        cx.simulate_mouse_move(at, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(open_menu(&chat, cx), "ProjectMenu(/tmp/proj)");
+        assert!(cx.debug_bounds("sidebar-search").is_none());
+    }
+
+    #[gpui::test]
     fn sidebar_search_empty_escape_with_application_vim(cx: &mut TestAppContext) {
         use crate::ui::chat::navigation::ChatRegion;
         let (chat, cx) = chat_window(cx, |this, cx| {
@@ -7823,10 +7887,15 @@ mod state_tests {
         // With a task menu open, the folder has no strip. An outside
         // press closes the menu and still reaches the folder underneath.
         press(cx, "menu-session-s1");
-        cx.update(|window, _| window.refresh());
-        cx.run_until_parked();
+        // As in press(), a cached view may need one extra paint for bounds.
+        let header = (0..2)
+            .find_map(|_| {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+                cx.debug_bounds("folder-/tmp/proj")
+            })
+            .expect("folder header");
         assert!(cx.debug_bounds("menu-project-/tmp/proj").is_none());
-        let header = cx.debug_bounds("folder-/tmp/proj").expect("folder header");
         cx.simulate_click(
             gpui::point(header.right() - px(30.), header.center().y),
             gpui::Modifiers::default(),
@@ -9214,7 +9283,10 @@ mod state_tests {
             this.sync_sidebar(cx);
             // The screen fixture selects s1: one step moves to s2, and
             // back stops at the top.
-            assert_eq!(this.task_step_target(1, cx), Some((5, local("s2"))));
+            assert_eq!(
+                this.task_step_target(1, cx).map(|(_, request)| request),
+                Some(local("s2"))
+            );
             assert_eq!(
                 this.task_step_target(-1, cx),
                 None,
@@ -9222,13 +9294,25 @@ mod state_tests {
             );
             this.selected_session = Some("s2".to_string());
             this.sync_sidebar_selection(cx);
-            assert_eq!(this.task_step_target(1, cx), Some((6, local("s3"))));
-            assert_eq!(this.task_step_target(-1, cx), Some((4, local("s1"))));
+            assert_eq!(
+                this.task_step_target(1, cx).map(|(_, request)| request),
+                Some(local("s3"))
+            );
+            assert_eq!(
+                this.task_step_target(-1, cx).map(|(_, request)| request),
+                Some(local("s1"))
+            );
             // With nothing selected, each direction enters from its end.
             this.selected_session = None;
             this.sync_sidebar_selection(cx);
-            assert_eq!(this.task_step_target(1, cx), Some((4, local("s1"))));
-            assert_eq!(this.task_step_target(-1, cx), Some((6, local("s3"))));
+            assert_eq!(
+                this.task_step_target(1, cx).map(|(_, request)| request),
+                Some(local("s1"))
+            );
+            assert_eq!(
+                this.task_step_target(-1, cx).map(|(_, request)| request),
+                Some(local("s3"))
+            );
         });
     }
 

@@ -605,6 +605,7 @@ pub(super) struct Sidebar {
     filter: String,
     search_input: Entity<TextInput>,
     search_visible: bool,
+    search_pointer_dismissal_pending: bool,
     search_focus_out: Option<Subscription>,
     rename: Option<RenameTarget>,
     rename_input: Option<Entity<TextInput>>,
@@ -927,6 +928,7 @@ impl Sidebar {
             filter: String::new(),
             search_input,
             search_visible: false,
+            search_pointer_dismissal_pending: false,
             search_focus_out: None,
             rename: None,
             rename_input: None,
@@ -1514,6 +1516,7 @@ impl Sidebar {
     }
 
     pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_pointer_dismissal_pending = false;
         if !self.search_visible {
             self.search_visible = true;
             self.rebuild_entries();
@@ -1529,13 +1532,31 @@ impl Sidebar {
         handle.focus(window, cx);
         self.search_focus_out = Some(cx.on_focus_out(&handle, window, |_this, _, window, cx| {
             cx.defer_in(window, |this, window, cx| {
-                if !this.search_input.read(cx).menu_open() && !this.search_input_focused(window, cx)
+                if !this.search_pointer_dismissal_pending
+                    && !this.search_input.read(cx).menu_open()
+                    && !this.search_input_focused(window, cx)
                 {
                     this.hide_empty_search(cx);
                 }
             });
         }));
         cx.notify();
+    }
+
+    fn finish_search_pointer_dismissal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search_pointer_dismissal_pending {
+            return;
+        }
+        // Keep rows in place until the release has activated its original target.
+        cx.defer_in(window, |this, window, cx| {
+            if !this.search_pointer_dismissal_pending {
+                return;
+            }
+            this.search_pointer_dismissal_pending = false;
+            if !this.search_input.read(cx).menu_open() && !this.search_input_focused(window, cx) {
+                this.hide_empty_search(cx);
+            }
+        });
     }
 
     pub(super) fn search_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
@@ -2841,16 +2862,16 @@ impl Sidebar {
         let active = !self.filter.is_empty();
         div()
             .debug_selector(|| "sidebar-search".to_string())
-            // Most of the sidebar takes no focus, so a press anywhere else
-            // must drop the cursor and hide the field when nothing was typed.
+            // Most rows take no focus. Blur on press, but keep the field in
+            // place until release so the row under the pointer cannot shift.
             .on_mouse_down_out(cx.listener(|this, _event, window, cx| {
                 if this.search_input.read(cx).menu_open() {
                     return;
                 }
+                this.search_pointer_dismissal_pending = true;
                 if this.search_input_focused(window, cx) {
                     window.blur();
                 }
-                this.hide_empty_search(cx);
             }))
             .flex()
             .items_center()
@@ -4068,6 +4089,23 @@ impl Render for Sidebar {
         })
         .size_full();
         div()
+            // The search row is virtualized; keep release handling on the root
+            // so scrolling it out of view during a press cannot strand dismissal.
+            .capture_any_mouse_up(cx.listener(|this, _, window, cx| {
+                this.finish_search_pointer_dismissal(window, cx);
+            }))
+            .map(|root| {
+                gpui::MouseButton::all()
+                    .into_iter()
+                    .fold(root, |root, button| {
+                        root.on_mouse_up_out(
+                            button,
+                            cx.listener(|this, _, window, cx| {
+                                this.finish_search_pointer_dismissal(window, cx);
+                            }),
+                        )
+                    })
+            })
             .size_full()
             .flex()
             .flex_col()
