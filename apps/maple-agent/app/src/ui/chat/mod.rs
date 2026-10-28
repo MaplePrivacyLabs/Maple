@@ -135,7 +135,7 @@ impl SidebarTransition {
     }
 }
 /// Height of the task header and the clear strip above the collapsed rail.
-const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
+const CHAT_HEADER_HEIGHT: gpui::Pixels = px(36.);
 /// Left inset for the header beside the rail: the traffic lights reach
 /// 30 px past it, followed by an 8 px gap when the bar is transparent.
 const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = if titlebar::TRANSPARENT_TITLEBAR {
@@ -6791,7 +6791,7 @@ impl Render for ChatScreen {
                             .flex_1()
                             .h_full()
                             .min_w_0()
-                            .bg(gpui::rgb(theme::bg_sidebar()))
+                            .bg(gpui::rgb(theme::bg_app()))
                             .child(
                                 // The header is the window's title bar; a wheel
                                 // over it scrolls nothing.
@@ -6804,7 +6804,6 @@ impl Render for ChatScreen {
                                     .flex_col()
                                     .flex_1()
                                     .min_h_0()
-                                    .rounded_tl(theme::RADIUS_LG)
                                     .bg(gpui::rgb(theme::bg_app()))
                                     .child(main),
                             ),
