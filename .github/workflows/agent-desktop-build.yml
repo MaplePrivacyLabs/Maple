@@ -13,7 +13,7 @@ on:
 
 # Signing is confined to protected master jobs; builders have a read-only token
 # and no environment credentials. Pull requests rehearse unsigned Dev packages
-# in ci.yml (agent-package-*).
+# in ci.yml (agent-package-*) only with the ci:package or ci:full label.
 permissions:
   contents: read
 
