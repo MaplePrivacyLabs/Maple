@@ -2422,8 +2422,15 @@ impl Sidebar {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .when(!loading, |row| {
-                        row.hover(|s| s.cursor_pointer().bg(gpui::rgb(hover_bg)))
+                    .map(|row| {
+                        let rest = if selected {
+                            gpui::rgb(theme::bg_sidebar_row_hover()).into()
+                        } else {
+                            gpui::transparent_black()
+                        };
+                        crate::ui::motion::hover_background(row, rest, gpui::rgb(hover_bg))
+                            .when(loading, |row| row.highlighted(false))
+                            .when(!loading, |row| row.hover(|style| style.cursor_pointer()))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !loading {
@@ -2472,12 +2479,16 @@ impl Sidebar {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .hover(move |s| {
-                        if dragging || renaming {
-                            s
+                    .map(|row| {
+                        let rest = if selected {
+                            gpui::rgb(theme::bg_sidebar_row_hover()).into()
                         } else {
-                            s.bg(gpui::rgb(hover_bg)).cursor_pointer()
-                        }
+                            gpui::transparent_black()
+                        };
+                        let still = dragging || renaming;
+                        crate::ui::motion::hover_background(row, rest, gpui::rgb(hover_bg))
+                            .when(still, |row| row.highlighted(false))
+                            .when(!still, |row| row.hover(|style| style.cursor_pointer()))
                     })
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(SidebarEvent::Navigate(request.clone()))
@@ -2584,12 +2595,11 @@ impl Sidebar {
                     .gap_1()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .hover(move |s| {
-                        if dragging {
-                            s
-                        } else {
-                            s.bg(gpui::rgb(hover_bg)).cursor_pointer()
-                        }
+                    .map(|row| {
+                        let rest = gpui::transparent_black();
+                        crate::ui::motion::hover_background(row, rest, gpui::rgb(hover_bg))
+                            .when(dragging, |row| row.highlighted(false))
+                            .when(!dragging, |row| row.hover(|style| style.cursor_pointer()))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.toggle_computer_group(&request, cx) {

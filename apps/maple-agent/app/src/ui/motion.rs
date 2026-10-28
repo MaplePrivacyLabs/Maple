@@ -11,8 +11,8 @@
 //!   gpui's oneshot `with_animation`: it requests frames only until the
 //!   animation ends, then the window goes idle again.
 //!
-//! Nothing here animates hover or press: gpui has no style transitions,
-//! and a stepped scale change on hover reads as flicker.
+//! Hover plates use a short, reversible color transition. Press feedback
+//! remains immediate; no control scales or changes layout on hover.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -209,4 +209,427 @@ where
 pub fn pulse(phase: f32, shift: f32, low: f32, high: f32) -> f32 {
     let wave = ((phase + shift) * std::f32::consts::TAU).sin() * 0.5 + 0.5;
     low + (high - low) * wave
+}
+
+/// A short, symmetric transition for hover plates. Press and focus styles
+/// remain native GPUI refinements, applied after this background.
+pub const HOVER: Duration = Duration::from_millis(120);
+
+#[derive(Clone, Copy)]
+struct HoverTransition {
+    from: f32,
+    target: f32,
+    started: Instant,
+}
+
+impl HoverTransition {
+    fn new(now: Instant) -> Self {
+        Self {
+            from: 0.,
+            target: 0.,
+            started: now,
+        }
+    }
+
+    fn value(&self, now: Instant) -> f32 {
+        let t = (now.saturating_duration_since(self.started).as_secs_f32() / HOVER.as_secs_f32())
+            .min(1.);
+        let eased = t * t * (3. - 2. * t);
+        self.from + (self.target - self.from) * eased
+    }
+
+    fn update(&mut self, hovered: bool, now: Instant, reduced: bool) -> (f32, bool) {
+        let target = if hovered { 1. } else { 0. };
+        if reduced {
+            self.from = target;
+            self.target = target;
+        } else if self.target != target {
+            self.from = self.value(now);
+            self.target = target;
+            self.started = now;
+        }
+        let value = self.value(now);
+        (value, value != self.target)
+    }
+}
+
+// Premultiplied RGB avoids a dark flash when fading from transparent.
+fn hover_color(rest: gpui::Hsla, hover: gpui::Hsla, amount: f32) -> gpui::Hsla {
+    if amount == 0. {
+        return rest;
+    }
+    if amount == 1. {
+        return hover;
+    }
+    let rest = gpui::Rgba::from(rest);
+    let hover = gpui::Rgba::from(hover);
+    let alpha = rest.a + (hover.a - rest.a) * amount;
+    let channel = |a: f32, b: f32| {
+        if alpha == 0. {
+            0.
+        } else {
+            (a * rest.a * (1. - amount) + b * hover.a * amount) / alpha
+        }
+    };
+    gpui::Rgba {
+        r: channel(rest.r, hover.r),
+        g: channel(rest.g, hover.g),
+        b: channel(rest.b, hover.b),
+        a: alpha,
+    }
+    .into()
+}
+
+/// Animate a control's background without changing its layout, identity,
+/// handlers, tooltip, or accessibility node. Keep native `.hover()` for
+/// non-background styles and native `.active()` for immediate press feedback.
+pub fn hover_background(
+    element: gpui::Stateful<gpui::Div>,
+    rest: impl Into<gpui::Hsla>,
+    hover: impl Into<gpui::Hsla>,
+) -> HoverBackground {
+    HoverBackground {
+        element,
+        rest: rest.into(),
+        hover: hover.into(),
+        highlighted: None,
+        #[cfg(test)]
+        observed: None,
+    }
+}
+
+pub struct HoverBackground {
+    element: gpui::Stateful<gpui::Div>,
+    rest: gpui::Hsla,
+    hover: gpui::Hsla,
+    highlighted: Option<bool>,
+    #[cfg(test)]
+    observed: Option<std::rc::Rc<RefCell<gpui::Fill>>>,
+}
+
+impl HoverBackground {
+    /// Override the resting background, including selected or open states.
+    pub fn bg(mut self, color: impl Into<gpui::Hsla>) -> Self {
+        self.rest = color.into();
+        self.element.style().background = Some(self.rest.into());
+        self
+    }
+
+    /// Menus share one highlight between pointer and keyboard navigation.
+    /// Use that existing state instead of maintaining a second hover target.
+    pub fn highlighted(mut self, highlighted: bool) -> Self {
+        self.highlighted = Some(highlighted);
+        self
+    }
+}
+
+impl Styled for HoverBackground {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        self.element.style()
+    }
+}
+impl gpui::InteractiveElement for HoverBackground {
+    fn interactivity(&mut self) -> &mut gpui::Interactivity {
+        gpui::InteractiveElement::interactivity(&mut self.element)
+    }
+}
+impl gpui::StatefulInteractiveElement for HoverBackground {}
+impl gpui::ParentElement for HoverBackground {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        gpui::ParentElement::extend(&mut self.element, elements);
+    }
+}
+impl IntoElement for HoverBackground {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for HoverBackground {
+    type RequestLayoutState = <gpui::Stateful<gpui::Div> as Element>::RequestLayoutState;
+    type PrepaintState = <gpui::Stateful<gpui::Div> as Element>::PrepaintState;
+    fn id(&self) -> Option<ElementId> {
+        self.element.id()
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        self.element.source_location()
+    }
+    fn a11y_role(&self) -> Option<gpui::accesskit::Role> {
+        self.element.a11y_role()
+    }
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.element.write_a11y_info(node);
+    }
+    fn a11y_synthetic_children(
+        &mut self,
+        state: &mut Self::PrepaintState,
+        builder: &mut gpui::A11ySubtreeBuilder,
+    ) {
+        self.element.a11y_synthetic_children(state, builder);
+    }
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.element.request_layout(id, inspector, window, cx)
+    }
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.element
+            .prepaint(id, inspector, bounds, layout, window, cx)
+    }
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        hitbox: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let hovered = self.highlighted.unwrap_or_else(|| {
+            hitbox
+                .as_ref()
+                .is_some_and(|hitbox| hitbox.is_hovered(window))
+                && !cx.has_active_drag()
+        });
+        let now = Instant::now();
+        let (amount, animating) = window.with_element_state(
+            id.expect("hover controls have an id"),
+            |state: Option<HoverTransition>, _| {
+                let mut state = state.unwrap_or_else(|| HoverTransition::new(now));
+                let frame = state.update(hovered, now, cx.reduce_motion());
+                (frame, state)
+            },
+        );
+        self.element.style().background = Some(hover_color(self.rest, self.hover, amount).into());
+        if animating {
+            window.request_animation_frame();
+        }
+        if self.highlighted.is_none()
+            && let Some(hitbox) = hitbox.clone()
+        {
+            let view = window.current_view();
+            window.on_mouse_event(move |_: &gpui::MouseMoveEvent, phase, window, cx| {
+                if phase == gpui::DispatchPhase::Capture && hitbox.is_hovered(window) != hovered {
+                    cx.notify(view);
+                }
+            });
+        }
+        self.element
+            .paint(id, inspector, bounds, layout, hitbox, window, cx);
+        #[cfg(test)]
+        if let Some(observed) = &self.observed {
+            use gpui::InteractiveElement;
+            *observed.borrow_mut() = self
+                .element
+                .interactivity()
+                .compute_style(id, hitbox.as_ref(), window, cx)
+                .background
+                .unwrap_or_default();
+        }
+    }
+}
+
+#[cfg(test)]
+mod hover_tests {
+    use super::*;
+    #[test]
+    fn hover_reverses_from_the_displayed_value_and_settles() {
+        let now = Instant::now();
+        let mut transition = HoverTransition::new(now);
+        assert_eq!(transition.update(false, now, false), (0., false));
+        assert_eq!(transition.update(true, now, false), (0., true));
+        let halfway = now + HOVER / 2;
+        assert_eq!(transition.update(true, halfway, false), (0.5, true));
+        assert_eq!(transition.update(false, halfway, false), (0.5, true));
+        assert_eq!(
+            transition.update(false, halfway + HOVER, false),
+            (0., false)
+        );
+        assert_eq!(
+            transition.update(false, halfway + HOVER * 2, false),
+            (0., false)
+        );
+    }
+    #[test]
+    fn reduced_motion_settles_an_interrupted_hover_immediately() {
+        let now = Instant::now();
+        let mut transition = HoverTransition::new(now);
+        transition.update(true, now, false);
+        assert_eq!(transition.update(true, now + HOVER / 4, true), (1., false));
+        assert_eq!(transition.update(false, now + HOVER / 2, true), (0., false));
+    }
+
+    #[test]
+    fn hover_eases_symmetrically_without_darkening_transparent_colors() {
+        let now = Instant::now();
+        let mut transition = HoverTransition::new(now);
+        transition.update(true, now, false);
+        let early = transition.value(now + HOVER / 4);
+        let late = transition.value(now + HOVER * 3 / 4);
+        assert!(early < 0.25 && late > 0.75);
+        assert!((early + late - 1.).abs() <= 2. * f32::EPSILON);
+        let white = gpui::hsla(0., 0., 1., 1.);
+        let middle = gpui::Rgba::from(hover_color(gpui::transparent_black(), white, 0.5));
+        assert_eq!(middle.r, 1.);
+        assert_eq!(middle.g, 1.);
+        assert_eq!(middle.b, 1.);
+        assert_eq!(middle.a, 0.5);
+    }
+
+    #[gpui::test]
+    fn shared_button_preserves_hover_click_and_pressed_feedback(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, div, prelude::*, px};
+        use std::rc::Rc;
+        struct Host {
+            observed: Rc<RefCell<gpui::Fill>>,
+            clicks: Rc<std::cell::Cell<usize>>,
+            hovered: Rc<std::cell::Cell<bool>>,
+        }
+        impl gpui::Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                let hovered = self.hovered.clone();
+                let mut button = super::super::widgets::secondary_button("hover-test")
+                    .debug_selector(|| "hover-test".into())
+                    .on_hover(move |value, _, _| hovered.set(*value))
+                    .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+                    .child("Action");
+                button.observed = Some(self.observed.clone());
+                div().size_full().child(button)
+            }
+        }
+        let observed = Rc::new(RefCell::new(gpui::Fill::default()));
+        let clicks = Rc::new(std::cell::Cell::new(0));
+        let hovered = Rc::new(std::cell::Cell::new(false));
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (_, cx) = cx.add_window_view(|_, _| Host {
+            observed: observed.clone(),
+            clicks: clicks.clone(),
+            hovered: hovered.clone(),
+        });
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("hover-test").unwrap();
+        cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        assert!(hovered.get());
+        assert_eq!(
+            *observed.borrow(),
+            gpui::Fill::from(gpui::rgb(super::super::theme::bg_sidebar_row_selected()))
+        );
+        cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        assert_eq!(
+            *observed.borrow(),
+            gpui::Fill::from(gpui::rgb(super::super::theme::border()))
+        );
+        cx.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+        assert_eq!(clicks.get(), 1);
+        cx.simulate_mouse_move(
+            gpui::point(bounds.right() + px(20.), bounds.bottom() + px(20.)),
+            None,
+            Modifiers::default(),
+        );
+        assert!(!hovered.get());
+        assert_eq!(
+            *observed.borrow(),
+            gpui::Fill::from(gpui::rgb(super::super::theme::bg_sidebar_pill()))
+        );
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    #[gpui::test]
+    fn cached_child_hover_animates_reverses_and_goes_idle(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, div, prelude::*};
+        use std::{cell::Cell, rc::Rc};
+        struct Control {
+            observed: Rc<RefCell<gpui::Fill>>,
+            renders: Rc<Cell<usize>>,
+        }
+        impl gpui::Render for Control {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                self.renders.set(self.renders.get() + 1);
+                let mut button = super::super::widgets::secondary_button("cached-hover")
+                    .debug_selector(|| "cached-hover".into())
+                    .child("Action");
+                button.observed = Some(self.observed.clone());
+                div().size_full().child(button)
+            }
+        }
+        struct Host {
+            control: gpui::Entity<Control>,
+        }
+        impl gpui::Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    self.control.clone().cached(
+                        gpui::StyleRefinement::default()
+                            .w(gpui::px(200.))
+                            .h(gpui::px(80.)),
+                    ),
+                )
+            }
+        }
+        let observed = Rc::new(RefCell::new(gpui::Fill::default()));
+        let child_renders = Rc::new(Cell::new(0));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (_, cx) = cx.add_window_view(|_, cx| Host {
+            control: cx.new(|_| Control {
+                observed: observed.clone(),
+                renders: child_renders.clone(),
+            }),
+        });
+        cx.run_until_parked();
+        let rest = gpui::Fill::from(gpui::rgb(super::super::theme::bg_sidebar_pill()));
+        let hover = gpui::Fill::from(gpui::rgb(super::super::theme::bg_sidebar_row_selected()));
+        let bounds = cx.debug_bounds("cached-hover").unwrap();
+        let outside = gpui::point(
+            bounds.right() + gpui::px(20.),
+            bounds.bottom() + gpui::px(20.),
+        );
+        cx.simulate_mouse_move(outside, None, Modifiers::default());
+        let child_count = child_renders.get();
+        cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        assert!(cx.update(|window, cx| window.simulate_next_frame(cx)) > 0);
+        cx.run_until_parked();
+        // The primitive uses real monotonic time; the test executor's clock
+        // does not advance Instant. One bounded wait samples an in-flight fade.
+        std::thread::sleep(HOVER / 4);
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        assert_ne!(*observed.borrow(), rest);
+        cx.simulate_mouse_move(outside, None, Modifiers::default());
+        assert_ne!(*observed.borrow(), rest, "leaving must not snap to rest");
+        assert!(cx.update(|window, cx| window.simulate_next_frame(cx)) > 0);
+        cx.run_until_parked();
+        std::thread::sleep(HOVER + Duration::from_millis(20));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(*observed.borrow(), rest);
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        std::thread::sleep(HOVER + Duration::from_millis(20));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(*observed.borrow(), hover);
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        assert!(child_renders.get() > child_count);
+    }
 }

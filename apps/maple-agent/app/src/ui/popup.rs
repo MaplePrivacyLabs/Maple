@@ -429,13 +429,13 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
     /// closed trigger stays an ordinary button: it shows its pressed state,
     /// and any other open popup still sees the press and closes. Commands
     /// and keys that open a menu call [`Self::open`] instead.
-    pub(crate) fn trigger(
+    pub(crate) fn trigger<E: StatefulInteractiveElement + FluentBuilder>(
         &self,
         key: K,
-        button: Stateful<Div>,
+        button: E,
         cx: &mut Context<V>,
         toggle: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
-    ) -> Stateful<Div> {
+    ) -> E {
         let open = self.is_open(&key);
         let get = self.get;
         button
@@ -1249,10 +1249,7 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
             };
             row.aria_toggled(if on { Toggled::True } else { Toggled::False })
         })
-        .when(highlighted, |row| {
-            row.aria_active_descendant()
-                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-        })
+        .when(highlighted, |row| row.aria_active_descendant())
         .flex()
         .items_center()
         .gap_2()
@@ -1387,10 +1384,17 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
             .children(submenu.panel)
         })
         .relative();
-    match style {
-        Some(style) => style(row_element).into_any_element(),
-        None => row_element.into_any_element(),
-    }
+    let row_element = match style {
+        Some(style) => style(row_element),
+        None => row_element,
+    };
+    crate::ui::motion::hover_background(
+        row_element,
+        gpui::transparent_black(),
+        gpui::rgb(theme::bg_sidebar_row_hover()),
+    )
+    .highlighted(highlighted)
+    .into_any_element()
 }
 
 #[derive(Clone, Copy)]
