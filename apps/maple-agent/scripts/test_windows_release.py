@@ -832,11 +832,12 @@ class NativeShortcutProbeTests(unittest.TestCase):
             for changed in ({}, {"target": "C:/other.exe"}, {"arguments": "--custom"}):
                 with self.subTest(changed=changed):
                     native = self.native({"target": str(target), "arguments": "", **changed})
-                    if changed:
-                        with self.assertRaisesRegex(ValueError, "not owned"):
+                    with patch.object(release, "windows_shortcut_target_equal", side_effect=release.windows_path_equal):
+                        if changed:
+                            with self.assertRaisesRegex(ValueError, "not owned"):
+                                native.probe(path, target, seed=True, working_directory=Path(temporary))
+                        else:
                             native.probe(path, target, seed=True, working_directory=Path(temporary))
-                    else:
-                        native.probe(path, target, seed=True, working_directory=Path(temporary))
                     slots = [call.args[1] for call in native.call.call_args_list]
                     self.assertEqual(slots, [0, 5] if changed else [0, 5, 17, 9, 7, 6])
                     self.assertEqual(native.call.call_args_list[1].args[2:], (str(path), 0))
@@ -847,7 +848,8 @@ class NativeShortcutProbeTests(unittest.TestCase):
             path = Path(temporary) / "owned.lnk"
             path.write_bytes(b"native link fixture")
             native = self.native({"target": "C:/owned.exe", "arguments": ""})
-            native.probe(path, Path("C:/owned.exe"))
+            with patch.object(release, "windows_shortcut_target_equal", return_value=True):
+                native.probe(path, Path("C:/owned.exe"))
             self.assertEqual([call.args[1] for call in native.call.call_args_list], [0, 5])
             primary = OSError("fixed native read failure")
             native.metadata.side_effect = primary
@@ -904,6 +906,101 @@ class NativeShortcutProbeTests(unittest.TestCase):
                 release.windows_programs_directory()
         self.assertIs(raised.exception, primary)
         self.assertEqual(native.ole.CoTaskMemFree.call_args.args[0].value, 987)
+
+
+class ShortcutTargetIdentityTests(unittest.TestCase):
+    def test_short_and_long_spellings_match_only_after_strict_canonical_paths_match(self):
+        short = r"C:\Users\RUNNER~1\Temp\private\maple-agent.exe"
+        long = r"C:\Users\runneradmin\Temp\private\maple-agent.exe"
+        final = Path(r"\\?\C:\Users\runneradmin\Temp\private\maple-agent.exe")
+        with patch.object(release, "_canonical_shortcut_targets", return_value=(final, Path(long))) as canonical:
+            self.assertTrue(release.windows_shortcut_target_equal(short, long))
+            canonical.assert_called_once_with(Path(short), Path(long))
+        with patch.object(release, "_canonical_shortcut_targets", return_value=(final, Path(long.replace("private", "foreign")))):
+            self.assertFalse(release.windows_shortcut_target_equal(short, long))
+
+    def test_nonlocal_device_stream_and_ambiguous_paths_are_refused_before_filesystem_access(self):
+        bad = (r"\\server\share\maple-agent.exe", r"\\.\C:\maple-agent.exe",
+               r"\\?\UNC\server\share\maple-agent.exe", r"C:maple-agent.exe", r"relative\maple-agent.exe",
+               r"C:\private\maple-agent.exe:alternate", r"C:\private\..\maple-agent.exe",
+               "C:\\private.\\maple-agent.exe", "C:\\private \\maple-agent.exe", r"C:\private\NUL.exe")
+        with patch.object(release, "_canonical_shortcut_targets") as canonical:
+            for value in bad:
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    release.windows_shortcut_target_equal(value, r"C:\private\maple-agent.exe")
+            canonical.assert_not_called()
+
+    def test_canonicalization_refuses_leaf_links_and_checks_both_regular_paths_first(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "maple-agent.exe"
+            target.write_bytes(b"ordinary fixture")
+            linked = root / "linked.exe"
+            linked.symlink_to(target)
+            with patch.object(Path, "resolve") as resolve:
+                for actual, expected in ((linked, target), (target, linked), (target, root / "missing.exe")):
+                    with self.subTest(actual=actual, expected=expected), self.assertRaises(ValueError):
+                        release._canonical_shortcut_targets(actual, expected)
+                resolve.assert_not_called()
+
+    def test_regular_reparse_ancestor_is_refused_before_strict_canonicalization(self):
+        actual, expected = Path("C:/private/maple-agent.exe"), Path("C:/expected/maple-agent.exe")
+        guarded = []
+        def regular(path):
+            guarded.append(path)
+            if path == expected:
+                raise ValueError("fixed reparse ancestor refusal")
+        with patch.object(release, "regular", side_effect=regular), patch.object(Path, "resolve") as resolve:
+            with self.assertRaisesRegex(ValueError, "reparse ancestor"):
+                release._canonical_shortcut_targets(actual, expected)
+        self.assertEqual(guarded, [actual, expected])
+        resolve.assert_not_called()
+
+    def test_foreign_hardlink_name_is_not_the_same_canonical_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = root / "maple-agent.exe"
+            expected.write_bytes(b"same bytes and inode do not grant target ownership")
+            foreign = root / "foreign.exe"
+            foreign.hardlink_to(expected)
+            self.assertTrue(expected.samefile(foreign))
+            left, right = release._canonical_shortcut_targets(foreign, expected)
+            self.assertNotEqual(left, right)
+            left, right = release._canonical_shortcut_targets(expected, expected)
+            self.assertEqual(left, right)
+
+    def test_canonicalization_is_strict_and_does_not_rewrite_raw_shortcut_metadata(self):
+        actual, expected = Mock(), Mock()
+        actual.resolve.return_value, expected.resolve.return_value = Path("same"), Path("same")
+        with patch.object(release, "regular") as regular:
+            self.assertEqual(release._canonical_shortcut_targets(actual, expected), (Path("same"), Path("same")))
+        self.assertEqual(regular.call_args_list, [unittest.mock.call(actual), unittest.mock.call(expected)])
+        actual.resolve.assert_called_once_with(strict=True)
+        expected.resolve.assert_called_once_with(strict=True)
+        metadata = {"target": r"C:\Users\RUNNER~1\private\maple-agent.exe", "arguments": ""}
+        native = NativeShortcutProbeTests().native(metadata)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "owned.lnk"
+            path.write_bytes(b"fixture")
+            with patch.object(release, "windows_shortcut_target_equal", return_value=True):
+                result = native.probe(path, Path(r"C:\Users\runneradmin\private\maple-agent.exe"))
+        self.assertIs(result, metadata)
+        self.assertIn("RUNNER~1", result["target"])
+
+    def test_ownership_mismatch_reports_bounded_raw_and_expected_targets_without_argument_contents(self):
+        native = NativeShortcutProbeTests().native({"target": "C:/" + "a" * 2000, "arguments": "private argument fixture"})
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "owned.lnk"
+            path.write_bytes(b"fixture")
+            expected = Path("C:/expected/maple-agent.exe")
+            with self.assertRaises(ValueError) as raised:
+                native.probe(path, expected, seed=True)
+        message = str(raised.exception)
+        self.assertIn("target=", message)
+        self.assertIn("expected=" + repr(str(expected)), message)
+        self.assertIn("arguments_empty=False", message)
+        self.assertNotIn("private argument fixture", message)
+        self.assertLess(len(message), 750)
 
 
 class WindowsIntegrationProbeTests(unittest.TestCase):

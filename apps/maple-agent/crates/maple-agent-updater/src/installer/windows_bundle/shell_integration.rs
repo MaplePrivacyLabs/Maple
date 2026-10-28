@@ -565,6 +565,27 @@ mod tests {
             })
         }
 
+        fn expected_aliases(target: &Path) -> serde_json::Value {
+            use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+            let canonical = target.canonicalize().unwrap();
+            let mut short = vec![0; MAX_WIDE];
+            let length = unsafe {
+                GetShortPathNameW(
+                    wide_path(&canonical).unwrap().as_ptr(),
+                    short.as_mut_ptr(),
+                    short.len() as u32,
+                )
+            };
+            assert!(length > 0 && (length as usize) < short.len());
+            // With 8.3 naming disabled Windows returns the ordinary spelling.
+            // All aliases still run; none of this test is skipped or retried.
+            serde_json::json!([
+                target.to_string_lossy(),
+                canonical.to_string_lossy(),
+                from_wide(&short).unwrap().to_string_lossy(),
+            ])
+        }
+
         fn probe(root: &Path, mode: &str) -> serde_json::Value {
             let stdout_path = root.join(format!("probe-{mode}.json"));
             let stderr_path = root.join(format!("probe-{mode}.log"));
@@ -612,8 +633,11 @@ mod tests {
             let phases = read_bounded(&stderr_path, 64 * 1024).unwrap();
             assert!(
                 status.success(),
-                "Python shortcut probe failed ({status}): {}",
-                String::from_utf8_lossy(&phases)
+                "Python shortcut probe failed ({status}): {}\nOwned fixture expected paths and typed COM metadata: {}",
+                String::from_utf8_lossy(&phases),
+                String::from_utf8_lossy(
+                    &read_bounded(&root.join("fixtures.json"), 64 * 1024).unwrap()
+                )
             );
             serde_json::from_slice(&read_bounded(&stdout_path, 64 * 1024).unwrap()).unwrap()
         }
@@ -622,6 +646,7 @@ mod tests {
         let _apartment = Apartment::new().unwrap();
         let artwork = icon(&root);
         let mut before = serde_json::Map::new();
+        let mut fixtures = serde_json::Map::new();
         for (name, target) in [("main", "maple-agent.exe"), ("uninstall", "uninstall.exe")] {
             let target = root.join(target);
             write(&target, b"ordinary path fixture; never executed");
@@ -632,7 +657,18 @@ mod tests {
             let persist: IPersistFile = link.cast().unwrap();
             unsafe { persist.Save(&wide_path(&path).unwrap(), false) }.unwrap();
             before.insert(name.to_owned(), snapshot(&path));
+            fixtures.insert(
+                name.to_owned(),
+                serde_json::json!({
+                    "expected_aliases": expected_aliases(&target),
+                    "typed_metadata": before[name],
+                }),
+            );
         }
+        write(
+            &root.join("fixtures.json"),
+            &serde_json::to_vec(&fixtures).unwrap(),
+        );
         let foreign = root.join("another.exe");
         write(&foreign, b"unrelated path fixture");
         link(&root.join("foreign.lnk"), &foreign, "", &root);
@@ -642,9 +678,17 @@ mod tests {
             "--custom-argument",
             &root,
         );
+        let hardlink_target = root.join("same-file-alias.exe");
+        fs::hard_link(root.join("maple-agent.exe"), &hardlink_target).unwrap();
+        link(&root.join("hardlink.lnk"), &hardlink_target, "", &root);
         write(&root.join("malformed.lnk"), b"not a shell link");
-        let rejected = ["foreign.lnk", "arguments.lnk", "malformed.lnk"]
-            .map(|name| (name, fs::read(root.join(name)).unwrap()));
+        let rejected = [
+            "foreign.lnk",
+            "arguments.lnk",
+            "hardlink.lnk",
+            "malformed.lnk",
+        ]
+        .map(|name| (name, fs::read(root.join(name)).unwrap()));
         write(
             &root.join("probe.py"),
             br#"import importlib.util, json, sys
@@ -653,12 +697,15 @@ spec = importlib.util.spec_from_file_location("windows_release_native_probe", sy
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 root, mode = Path(sys.argv[2]), sys.argv[3]
+fixtures = json.loads((root / "fixtures.json").read_text(encoding="utf-8"))
 def phase(value):
     print(value, file=sys.stderr, flush=True)
 result = {}
 for name, shortcut, filename in (("main", "Maple Agent Dev.lnk", "maple-agent.exe"), ("uninstall", "Uninstall.lnk", "uninstall.exe")):
     path, target = root / shortcut, root / filename
     before = module.probe_windows_shortcut(path, target, phase=phase)
+    for alias in fixtures[name]["expected_aliases"]:
+        assert module.probe_windows_shortcut(path, Path(alias), phase=phase) == before
     if mode == "seed":
         seeded = module.probe_windows_shortcut(path, target, seed=True,
             working_directory=root, description=before["description"], phase=phase)
@@ -668,7 +715,7 @@ for name, shortcut, filename in (("main", "Maple Agent Dev.lnk", "maple-agent.ex
         assert after == seeded
     result[name] = {"before": before, "after": after}
 if mode == "seed":
-    for name in ("foreign.lnk", "arguments.lnk", "malformed.lnk"):
+    for name in ("foreign.lnk", "arguments.lnk", "hardlink.lnk", "malformed.lnk"):
         path = root / name
         before = path.read_bytes()
         try:
@@ -683,6 +730,9 @@ print(json.dumps(result), flush=True)
 "#,
         );
         let seeded = probe(&root, "seed");
+        // The negative fixture is a same-file alias, not a legitimate path
+        // spelling. Remove that owned hard link before product DACL/link checks.
+        fs::remove_file(&hardlink_target).unwrap();
         for (name, target) in [("main", "maple-agent.exe"), ("uninstall", "uninstall.exe")] {
             let path = shortcut(&root, name);
             assert_eq!(seeded[name]["before"], before[name]);

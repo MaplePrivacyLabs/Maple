@@ -621,8 +621,15 @@ class WindowsShortcutCOM:
             self.call(persist, 5, str(path), 0, types=(c.c_wchar_p, c.c_uint32), operation="load")
             self.phase("link-read")
             metadata = self.metadata(link)
-            if not windows_path_equal(metadata["target"], expected_target) or metadata["arguments"] != "":
-                raise ValueError("Shortcut is not owned by this smoke install")
+            mismatch = ("Shortcut is not owned by this smoke install "
+                        f"(target={repr(metadata['target'])[:512]}, expected={repr(str(expected_target))[:512]}, "
+                        f"arguments_empty={metadata['arguments'] == ''})")
+            try:
+                owned = metadata["arguments"] == "" and windows_shortcut_target_equal(metadata["target"], expected_target)
+            except (OSError, ValueError) as error:
+                raise ValueError(mismatch) from error
+            if not owned:
+                raise ValueError(mismatch)
             if seed:
                 self.phase("link-seed")
                 self.call(link, 17, str(expected_target), 0, types=(c.c_wchar_p, c.c_int32), operation="set fixture icon")
@@ -791,6 +798,39 @@ class WindowsIntegrationProbe:
 
 def windows_path_equal(left, right):
     return isinstance(left, str) and ntpath.normcase(ntpath.normpath(left)) == ntpath.normcase(ntpath.normpath(str(right)))
+
+
+def _local_windows_shortcut_target(value):
+    text = str(value).replace("/", "\\")
+    plain = text[4:] if text.startswith("\\\\?\\") else text
+    if not re.match(r"^[A-Za-z]:\\", plain):
+        raise ValueError("Windows shortcut target is not an absolute local drive path")
+    for name in plain[3:].split("\\"):
+        if (not name or name in (".", "..") or name.endswith((".", " "))
+                or re.search(r'[\x00-\x1f<>:"|?*]', name)
+                or re.fullmatch(r"(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9¹²³]|LPT[0-9¹²³])", name.split(".", 1)[0], re.I)):
+            raise ValueError("Windows shortcut target contains an ambiguous path component")
+    return Path(text)
+
+
+def _canonical_shortcut_targets(actual, expected):
+    # Check BOTH ordinary paths/ancestors before canonicalization can follow
+    # anything. Distinct hardlink names remain distinct canonical paths.
+    regular(actual)
+    regular(expected)
+    return actual.resolve(strict=True), expected.resolve(strict=True)
+
+
+def windows_shortcut_target_equal(actual, expected):
+    paths = (_local_windows_shortcut_target(actual), _local_windows_shortcut_target(expected))
+    canonical = _canonical_shortcut_targets(*paths)
+    # GetFinalPathNameByHandle-backed strict resolution expands 8.3 aliases.
+    # Admit only local DOS forms again, including canonical verbatim DOS paths.
+    names = []
+    for path in canonical:
+        text = str(_local_windows_shortcut_target(path))
+        names.append(text[4:] if text.startswith("\\\\?\\") else text)
+    return windows_path_equal(*names)
 
 
 def windows_icon_equal(value, expected):
