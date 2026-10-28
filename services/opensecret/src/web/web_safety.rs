@@ -306,6 +306,16 @@ mod tests {
     }
 
     #[test]
+    fn image_sanitizer_bounds_wikilink_event_growth() {
+        // A short series of empty-display wikilinks used to expand parser events
+        // exponentially before the output truncation could run.
+        let markdown = "[[a|]] ".repeat(16);
+        let sanitized = strip_image_embeds(&markdown);
+
+        assert!(sanitized.len() < 1_024);
+    }
+
+    #[test]
     fn truncation_does_not_reactivate_image_syntax() {
         let image_url = "https://images.example/reactivated.png";
         let sanitized = strip_image_embeds(&format!("`![image]({image_url})` trailing"));
