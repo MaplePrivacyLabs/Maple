@@ -114,6 +114,7 @@ jobs:
           # a version bump hits exactly, any other lockfile change restores by prefix.
           shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
           workspaces: ${{ matrix.workspaces }}
+          cache-targets: ${{ matrix.cache_targets }}
           add-rust-environment-hash-key: "true"
           # The action runs cargo from the workspace directory: use an absolute flake path.
           cmd-format: nix develop --no-update-lock-file ${{ github.workspace }}/${{ matrix.flake }} -c {0}
@@ -150,6 +151,7 @@ jobs:
           prefix-key: ci-v2
           shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
           workspaces: ${{ matrix.workspaces }}
+          cache-targets: ${{ matrix.cache_targets }}
           add-rust-environment-hash-key: "true"
           # cache_save (plan.py): a failover runner never saves into another vendor's store.
           save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && matrix.cache_save }}

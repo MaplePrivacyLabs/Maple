@@ -42,6 +42,9 @@ branches in step with the lane table.
   newest cache of the same lane and toolchain. The restore key also hashes the
   runner's rustc versions and `CARGO*`/`RUST*` variables, so a runner image
   with a new preinstalled Rust starts cold once, until master saves again.
+  `agent-supply-chain` and `agent-provider`, which only resolve the Agent's
+  dependency graph, share `agent-cargo-home`: the Cargo registry and git
+  sources (zed and cua among them) without a target directory.
   Master pushes and the nightly run save them, into the store of the lane's
   own runner vendor; a runner from the other vendor (a failover) only
   restores. Heavy Rust caches therefore live in Blacksmith's store. GitHub's

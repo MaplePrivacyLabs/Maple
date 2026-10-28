@@ -243,6 +243,7 @@ def outputs(selected: Selection, quarantine: Sequence[str] = ()) -> Dict[str, st
             # would write it into another vendor's store.
             "cache_save": cache_store(runner_label(lane)) == cache_store(lane.runner.label),
             "workspaces": lane.workspaces,
+            "cache_targets": lane.cache_targets,
             "submodules": "recursive" if lane.submodules else "false",
             "fetch_depth": 0 if lane.submodules else 1,
             "restore": lane.restore,

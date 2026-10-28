@@ -623,6 +623,14 @@ class PlannerTests(unittest.TestCase):
                     self.assertIn(f"{workspace}/flake.lock", pins)
                     self.assertEqual(set(lane.cache_files), pins)
 
+    def test_the_dependency_lanes_share_a_cargo_home_cache_without_targets(self):
+        # They only resolve the Agent's graph; master's cache spares their git dependency clones.
+        result = plan.outputs(dict.fromkeys(ACTIVE, ["x"]))
+        entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
+        homes = {entry["id"]: entry["cache"] for entry in entries if entry["cache"] and not entry["cache_targets"]}
+        self.assertEqual(homes, dict.fromkeys(("agent-supply-chain", "agent-provider"), "agent-cargo-home"))
+        self.assertTrue(all(entry["cache_targets"] for entry in entries if entry["id"] not in homes))
+
     def test_a_cache_is_saved_only_into_the_home_runners_store(self):
         def saves(**overrides):
             with mock.patch.dict(os.environ, overrides):
