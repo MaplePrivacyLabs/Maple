@@ -799,6 +799,18 @@
             touch "$out"
           '';
         };
+        apps.research-dev-desktop = flake-utils.lib.mkApp {
+          drv = pkgs.writeShellApplication {
+            name = "maple-research-dev-desktop";
+            text = ''
+              if ! command -v nix >/dev/null 2>&1; then
+                echo "error: nix must be available on PATH" >&2
+                exit 127
+              fi
+              exec nix develop --no-update-lock-file ".#${if pkgs.stdenv.isLinux then "desktop-linux" else "ci"}" -c ./scripts/ci/research-dev-desktop.sh "$@"
+            '';
+          };
+        };
       }
     );
 }

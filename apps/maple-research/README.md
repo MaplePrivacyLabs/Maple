@@ -77,8 +77,9 @@ just desktop-dev  # Tauri desktop and native features
 pinned ONNX Runtime and applies a local Tauri configuration overlay when one is
 present.
 
-For a separately installed macOS package targeting the standalone Auth Dev site,
-use the [Research Dev desktop package](docs/research-dev-desktop.md). It has its
+For a separately installed desktop package targeting the standalone Auth Dev site,
+use the [Research Dev desktop package](docs/research-dev-desktop.md), built with
+`nix run --no-update-lock-file .#research-dev-desktop` on Linux or macOS. It has its
 own bundle identity, callback scheme, storage, and disabled updater; the ordinary
 Local workflow and iOS Dev TestFlight profile remain separate.
 

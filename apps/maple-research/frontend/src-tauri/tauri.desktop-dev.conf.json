@@ -25,7 +25,8 @@
             "main"
           ],
           "platforms": [
-            "macOS"
+            "macOS",
+            "linux"
           ],
           "permissions": [
             "core:default",

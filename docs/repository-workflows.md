@@ -240,6 +240,15 @@ Research Linux packaging builds AppImage and DEB with Tauri, then the RPM from
 the normalized DEB payload. `scripts/ci/sccache-stats.sh` reports compiler-cache
 statistics with the build's own cache configuration.
 
+For a side-by-side hosted Dev installation, use
+`nix run --no-update-lock-file .#research-dev-desktop`, not an ordinary Research
+PR package. The Linux Dev command stages its own DEB payload and normalizes it
+into the separately named `maple-research-dev` RPM under `target/research-dev`.
+It uses the fixed Dev native identity and callback scheme, disables updates,
+and verifies the final package contains only Dev-owned executable, launcher,
+icon, and runtime paths. See the
+[Research Dev package guide](../apps/maple-research/docs/research-dev-desktop.md).
+
 ## SDK consumption
 
 Follow the [consumer version policy](sdk-publishing.md#consumer-version-policy).
