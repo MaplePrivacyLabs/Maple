@@ -46,8 +46,9 @@ supplies both. All included packages must come from that same selected producer
 run, with the same source, version and build.
 
 `trust` returns the source SHA, selected artifact names, exact run attempt,
-publication date and build number as JSON. Only completed trusted master runs of
-`agent-desktop-build.yml` qualify. The selected Prod signing/package and downloaded
+publication date and build number as JSON. Only completed trusted master push or
+dispatched runs of `agent-desktop-build.yml` qualify, never the nightly Dev run.
+The selected Prod signing/package and downloaded
 consumer validation jobs must have succeeded; an aggregate success or skipped job
 is insufficient, while an unrelated Dev failure does not block a qualified Prod
 package. The latest job inventory retains successful producer jobs when only

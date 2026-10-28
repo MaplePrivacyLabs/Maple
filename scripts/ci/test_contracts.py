@@ -272,6 +272,12 @@ class ContractTests(unittest.TestCase):
                 if "prod" not in expected:
                     with self.assertRaises(publisher.PublishError):
                         publisher.trust_run(run_id, linux=True, windows=True)
+                    # Even a nightly run with every Prod job and artifact is never published.
+                    inventory, artifacts = desktop_run(config, run_id, "push")
+                    responses.update(jobs={"total_count": len(inventory), "jobs": inventory},
+                                     artifacts={"total_count": len(artifacts), "artifacts": artifacts})
+                    with self.assertRaisesRegex(publisher.PublishError, "untrusted build workflow or ref"):
+                        publisher.trust_run(run_id, linux=True, windows=True)
                     continue
                 proof = publisher.trust_run(run_id, linux=True, windows=True)
                 self.assertEqual(proof["build"], "77")  # run_number is the Agent build number
