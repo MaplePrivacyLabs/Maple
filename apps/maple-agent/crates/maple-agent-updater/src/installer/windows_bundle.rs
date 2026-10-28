@@ -11,7 +11,11 @@ use std::io::{Seek, SeekFrom};
 #[cfg(windows)]
 mod authenticode;
 #[cfg(windows)]
+mod shell_integration;
+#[cfg(windows)]
 mod windows_fs;
+#[cfg(windows)]
+pub use shell_integration::refresh_windows_shell_integration;
 
 const ROOT: &str = "maple-agent-windows";
 const DESCRIPTOR: &str = "bundle-info.json";

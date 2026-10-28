@@ -31,6 +31,8 @@ use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt};
 mod linux_bundle;
 mod windows_bundle;
 
+#[cfg(windows)]
+pub use windows_bundle::refresh_windows_shell_integration;
 pub use windows_bundle::{
     activate_windows_installation, cleanup_current_windows_bundle, cleanup_windows_installation,
     discover_windows_installation, preflight_windows_installation, prepare_windows_installation,

@@ -56,6 +56,18 @@ fn main() {
     )
     .expect("write public build metadata");
 
+    if target_os == "windows" {
+        println!("cargo:rerun-if-changed=packaging/windows.rc");
+        println!("cargo:rerun-if-changed=packaging/maple-agent.ico");
+        println!("cargo:rerun-if-changed=packaging/maple-agent-dev.ico");
+        let defines = (channel == "dev").then_some("MAPLE_AGENT_DEV");
+        // GPUI loads resource ID 1 from the main executable for its native
+        // window class. The same resource supplies Explorer and shortcut icons.
+        embed_resource::compile_for("packaging/windows.rc", ["maple-agent"], defines)
+            .manifest_required()
+            .expect("compile Maple Windows icon resource");
+    }
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         // Retain the dedicated metadata symbol even with release LTO and
         // linker dead stripping. __TEXT keeps it read-only in the final app.

@@ -120,5 +120,6 @@ parking_lot = "0.12"
 gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1", features = ["test-support"] }
 
 [build-dependencies]
+embed-resource = "=3.0.11"
 serde = { workspace = true }
 serde_json = { workspace = true }

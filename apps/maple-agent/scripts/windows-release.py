@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import ntpath
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -23,6 +24,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import uuid
 import zipfile
 
 
@@ -174,6 +176,7 @@ def write_nsis_config(path, info, payload, installer, unsigned, build):
         "DISPLAY_NAME": info["display_name"], "BUNDLE_ID": info["bundle_id"],
         "VERSION": info["version"], "NUMERIC_VERSION": info["version"].split("-", 1)[0],
         "PAYLOAD": payload, "INSTALLER": installer,
+        "ICON": COMPONENT / "app/packaging" / ("maple-agent-dev.ico" if info["profile"] == "dev" else "maple-agent.ico"),
         "BUILD": build, "GENERATION": info["version"] + "-" + build,
     }
     signer = SCRIPTS / "windows-sign-file.ps1"
@@ -311,6 +314,7 @@ def verify_payload(profile, directory, expected_info, unsigned, *, verify_signat
     if info != expected_info or json.loads((directory / "build-info.json").read_text(encoding="utf-8")) != info:
         raise ValueError("Installer payload identity differs from its verified build")
     validate_imports(binary)
+    pe.verify_icon(binary, COMPONENT / "app/packaging" / ("maple-agent-dev.ico" if profile == "dev" else "maple-agent.ico"))
     if (directory / "LICENSE.txt").read_bytes() != (COMPONENT / "LICENSE").read_bytes():
         raise ValueError("Installer license differs from the reviewed source")
     if verify_signature:
@@ -495,7 +499,7 @@ def smoke_environment(scratch):
 
 
 def capture_preflight(arguments, environment, timeout=120):
-    """Read-only checker only: bound combined output before retaining it."""
+    """Bound exact-child output for preflight and isolated metadata fixture tools."""
     command = [str(value) for value in arguments]
     process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -523,6 +527,320 @@ def capture_preflight(arguments, environment, timeout=120):
             process.kill()
         process.wait(timeout=5)
         process.stdout.close()
+
+
+class WindowsShortcutCOM:
+    """Narrow IShellLinkW/IPersistFile ABI; no automation server or Resolve."""
+
+    def __init__(self, phase=None):
+        import ctypes
+
+        self.ctypes, self.phase = ctypes, phase or (lambda _name: None)
+        self.hresult = ctypes.c_int32
+        class GUID(ctypes.Structure):
+            _fields_ = [("data1", ctypes.c_uint32), ("data2", ctypes.c_uint16),
+                        ("data3", ctypes.c_uint16), ("data4", ctypes.c_ubyte * 8)]
+        self.guid_type = GUID
+        self.ole = ctypes.WinDLL("ole32", use_last_error=True)
+        self.ole.CoInitializeEx.argtypes, self.ole.CoInitializeEx.restype = (ctypes.c_void_p, ctypes.c_uint32), self.hresult
+        self.ole.CoUninitialize.argtypes, self.ole.CoUninitialize.restype = (), None
+        self.ole.CoCreateInstance.argtypes = (ctypes.POINTER(GUID), ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p))
+        self.ole.CoCreateInstance.restype = self.hresult
+        self.ole.CoTaskMemFree.argtypes, self.ole.CoTaskMemFree.restype = (ctypes.c_void_p,), None
+
+    def guid(self, value):
+        return self.guid_type.from_buffer_copy(uuid.UUID(value).bytes_le)
+
+    def check(self, result, operation):
+        if self.hresult(result).value < 0:
+            raise OSError(f"Windows shortcut {operation} failed (HRESULT 0x{result & 0xFFFFFFFF:08x})")
+
+    def __enter__(self):
+        self.phase("com-init")
+        self.check(self.ole.CoInitializeEx(None, 2), "STA initialization")
+        return self
+
+    def __exit__(self, *_error):
+        try:
+            self.phase("com-release")
+        finally:
+            self.ole.CoUninitialize()
+
+    def method(self, interface, slot, result, *arguments):
+        c = self.ctypes
+        table = c.cast(interface, c.POINTER(c.POINTER(c.c_void_p))).contents
+        return c.WINFUNCTYPE(result, c.c_void_p, *arguments)(table[slot])
+
+    def call(self, interface, slot, *arguments, types=(), operation):
+        self.check(self.method(interface, slot, self.hresult, *types)(interface, *arguments), operation)
+
+    def release(self, interface):
+        if interface.value:
+            self.method(interface, 2, self.ctypes.c_uint32)(interface)
+            interface.value = None
+
+    def string(self, interface, slot, *, path=False, icon_index=None):
+        c = self.ctypes
+        buffer = c.create_unicode_buffer(32768)
+        types, arguments = (c.c_wchar_p, c.c_int32), (buffer, len(buffer))
+        if path:
+            types, arguments = (*types, c.c_void_p, c.c_uint32), (*arguments, None, 4)  # SLGP_RAWPATH.
+        if icon_index is not None:
+            types, arguments = (*types, c.POINTER(c.c_int32)), (*arguments, c.byref(icon_index))
+        self.call(interface, slot, *arguments, types=types, operation="read string")
+        if len(buffer.value) >= len(buffer) - 1:
+            raise ValueError("Windows shortcut field exceeds its Unicode bound")
+        return buffer.value
+
+    def metadata(self, link):
+        c = self.ctypes
+        hotkey, show, index = c.c_uint16(), c.c_int32(), c.c_int32()
+        self.call(link, 12, c.byref(hotkey), types=(c.POINTER(c.c_uint16),), operation="read hotkey")
+        self.call(link, 14, c.byref(show), types=(c.POINTER(c.c_int32),), operation="read show command")
+        icon = self.string(link, 16, icon_index=index)
+        return {"target": self.string(link, 3, path=True), "arguments": self.string(link, 10),
+                "working_directory": self.string(link, 8), "description": self.string(link, 6),
+                "hotkey": hotkey.value, "window_style": show.value, "icon_location": f"{icon},{index.value}"}
+
+    def probe(self, path, expected_target, *, seed=False, working_directory=None, description="Maple icon migration smoke fixture"):
+        c = self.ctypes
+        link, persist = c.c_void_p(), c.c_void_p()
+        try:
+            self.phase("shell-create")
+            clsid = self.guid("00021401-0000-0000-c000-000000000046")
+            iid = self.guid("000214f9-0000-0000-c000-000000000046")
+            self.check(self.ole.CoCreateInstance(c.byref(clsid), None, 1, c.byref(iid), c.byref(link)), "create ShellLinkW")
+            if not link.value:
+                raise ValueError("Windows shortcut returned a null ShellLinkW")
+            self.phase("persist-query")
+            iid = self.guid("0000010b-0000-0000-c000-000000000046")
+            self.call(link, 0, c.byref(iid), c.byref(persist), types=(c.POINTER(self.guid_type), c.POINTER(c.c_void_p)), operation="query IPersistFile")
+            if not persist.value:
+                raise ValueError("Windows shortcut returned a null IPersistFile")
+            self.phase("link-load")
+            self.call(persist, 5, str(path), 0, types=(c.c_wchar_p, c.c_uint32), operation="load")
+            self.phase("link-read")
+            metadata = self.metadata(link)
+            mismatch = ("Shortcut is not owned by this smoke install "
+                        f"(target={repr(metadata['target'])[:512]}, expected={repr(str(expected_target))[:512]}, "
+                        f"arguments_empty={metadata['arguments'] == ''})")
+            try:
+                owned = metadata["arguments"] == "" and windows_shortcut_target_equal(metadata["target"], expected_target)
+            except (OSError, ValueError) as error:
+                raise ValueError(mismatch) from error
+            if not owned:
+                raise ValueError(mismatch)
+            if seed:
+                self.phase("link-seed")
+                self.call(link, 17, str(expected_target), 0, types=(c.c_wchar_p, c.c_int32), operation="set fixture icon")
+                for slot, value in ((9, working_directory), (7, description)):
+                    if value is not None:
+                        self.call(link, slot, str(value), types=(c.c_wchar_p,), operation="set fixture property")
+                regular(path)
+                self.phase("link-save")
+                self.call(persist, 6, str(path), 1, types=(c.c_wchar_p, c.c_int32), operation="save fixture")
+                metadata = self.metadata(link)
+            return metadata
+        finally:
+            try:
+                self.phase("link-release")
+            finally:
+                try:
+                    self.release(persist)
+                finally:
+                    self.release(link)
+
+
+def probe_windows_shortcut(path, expected_target, *, seed=False, working_directory=None,
+                           description="Maple icon migration smoke fixture", phase=None):
+    """Read/seed one explicit owned link; also used by the fast native fixture."""
+    path, expected_target = Path(path), Path(expected_target)
+    regular(path)
+    for value in (path, expected_target, working_directory, description):
+        if value is not None and ("\0" in str(value) or len(str(value)) >= 32767):
+            raise ValueError("Windows shortcut input exceeds its Unicode bound")
+    with WindowsShortcutCOM(phase) as native:
+        return native.probe(path, expected_target, seed=seed, working_directory=working_directory, description=description)
+
+
+def windows_programs_directory():
+    with WindowsShortcutCOM() as native:
+        c = native.ctypes
+        shell = c.WinDLL("shell32", use_last_error=True)
+        shell.SHGetKnownFolderPath.argtypes = (c.POINTER(native.guid_type), c.c_uint32, c.c_void_p, c.POINTER(c.c_void_p))
+        shell.SHGetKnownFolderPath.restype = native.hresult
+        folder = native.guid("a77f5d77-2e2b-44c3-a6a2-aba601054a51")  # FOLDERID_Programs.
+        pointer = c.c_void_p()
+        try:
+            native.check(shell.SHGetKnownFolderPath(c.byref(folder), 0, None, c.byref(pointer)), "locate Programs")
+            if not pointer.value:
+                raise ValueError("Windows Programs folder returned a null path")
+            characters = c.cast(pointer, c.POINTER(c.c_wchar))
+            value = []
+            for index in range(32768):
+                if characters[index] == "\0":
+                    return Path("".join(value))
+                value.append(characters[index])
+            raise ValueError("Windows Programs folder exceeds its Unicode bound")
+        finally:
+            native.ole.CoTaskMemFree(pointer)
+
+
+SHORTCUT_PROBE_CHILD = r'''
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("windows_release_probe", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+display_name, installed, working, mode, checkpoint = sys.argv[2:]
+installed, working, checkpoint = Path(installed), Path(working), Path(checkpoint)
+def phase(name):
+    checkpoint.write_text(name, encoding="ascii")
+phase("known-folder")
+directory = module.windows_programs_directory() / display_name
+if mode not in ("seed", "read"):
+    raise ValueError("Invalid shortcut probe operation")
+metadata = {}
+for name, filename, target in (("main", display_name + ".lnk", "maple-agent.exe"), ("uninstall", "Uninstall.lnk", "uninstall.exe")):
+    metadata[name] = module.probe_windows_shortcut(directory / filename, installed / target,
+        seed=mode == "seed", working_directory=working, phase=phase)
+print(json.dumps(metadata, sort_keys=True, separators=(",", ":")), flush=True)
+'''
+
+
+class WindowsIntegrationProbe:
+    """Seed only this smoke install's legacy links; inspect real Shell metadata."""
+
+    def __init__(self, info, installed, scratch, environment, winreg):
+        self.info, self.installed, self.environment, self.winreg = info, installed, environment, winreg
+        canonical = COMPONENT / "app/packaging" / ("maple-agent-dev.ico" if info["profile"] == "dev" else "maple-agent.ico")
+        regular(canonical)
+        self.artwork = canonical.read_bytes()
+        self.icon = scratch / "data" / info["data_namespace"] / "windows-integration" / (hashlib.sha256(self.artwork).hexdigest() + ".ico")
+        self.registry = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + info["bundle_id"]
+        self.scratch, self.before = scratch, None
+        self.checkpoint = scratch / "shortcut-probe-phase.txt"
+        self.probe_module = Path(__file__).resolve()
+
+    def shortcuts(self, *, seed=False, timeout=20):
+        # Keep the existing exact-child deadline/output bounds around native
+        # COM too. The child uses this same direct API as the fast Rust fixture,
+        # without PowerShell, Windows Script Host, Resolve or shell automation.
+        self.checkpoint.write_text("python-start", encoding="ascii")
+        arguments = [sys.executable, "-I", "-c", SHORTCUT_PROBE_CHILD, self.probe_module,
+                     self.info["display_name"], self.installed, self.scratch,
+                     "seed" if seed else "read", self.checkpoint]
+        try:
+            result = capture_preflight(arguments, self.environment, timeout=min(20, timeout))
+        except subprocess.SubprocessError:
+            self.report_phase()
+            raise
+        if result.returncode:
+            self.report_phase()
+            bounded_diagnostics(result.stdout)
+            raise subprocess.CalledProcessError(result.returncode, result.args)
+        metadata = json.loads(result.stdout.decode("utf-8-sig"), object_pairs_hook=pe.unique_object)
+        fields = {"target", "arguments", "working_directory", "description", "hotkey", "window_style", "icon_location"}
+        if type(metadata) is not dict or set(metadata) != {"main", "uninstall"} or any(type(value) is not dict or set(value) != fields for value in metadata.values()):
+            raise ValueError("Windows shortcut probe returned an invalid inventory")
+        return metadata
+
+    def report_phase(self):
+        try:
+            regular(self.checkpoint)
+            with self.checkpoint.open("rb") as checkpoint:
+                value = checkpoint.read(64)
+            if value in {name.encode("ascii") for name in ("python-start", "known-folder", "com-init", "shell-create", "persist-query", "link-load", "link-read", "link-seed", "link-save", "link-release", "com-release")}:
+                print("Windows shortcut probe stopped at: " + value.decode("ascii"), file=sys.stderr)
+        except (OSError, ValueError):
+            pass  # Diagnostic failure cannot replace the actual child failure.
+
+    def registration(self, *, write=False):
+        access = self.winreg.KEY_READ | self.winreg.KEY_WOW64_32KEY
+        if write:
+            access |= self.winreg.KEY_SET_VALUE
+        return self.winreg.OpenKey(self.winreg.HKEY_CURRENT_USER, self.registry, 0, access)
+
+    def registered_root(self, key):
+        if not windows_path_equal(self.winreg.QueryValueEx(key, "InstallLocation")[0], self.installed):
+            raise ValueError("Windows icon probe registration changed installation root")
+
+    def seed(self, timeout=20):
+        # Both the icon reference and non-icon properties have the same legacy
+        # shape as old installers. Known marker properties prove that refresh
+        # changes only the icon, rather than recreating the shortcut.
+        with self.registration(write=True) as key:
+            self.registered_root(key)
+            self.before = self.shortcuts(seed=True, timeout=timeout)
+            self.winreg.SetValueEx(key, "DisplayIcon", 0, self.winreg.REG_SZ, f'"{self.installed / "maple-agent.exe"}",0')
+
+    def ready(self, timeout=20):
+        if self.before is None:
+            raise ValueError("Windows icon probe requires a legacy metadata fixture")
+        with self.registration() as key:
+            self.registered_root(key)
+            value = self.winreg.QueryValueEx(key, "DisplayIcon")[0]
+        # This is the worker's final actual metadata mutation. Old metadata is
+        # ordinary asynchronous work in progress, not a failed test to retry.
+        if not windows_icon_equal(value, self.icon):
+            return False
+        regular(self.icon)
+        if self.icon.read_bytes() != self.artwork:
+            raise ValueError("Windows integration icon differs from canonical profile artwork")
+        actual = self.shortcuts(timeout=timeout)
+        for name in ("main", "uninstall"):
+            if not windows_icon_equal(actual[name]["icon_location"], self.icon):
+                raise ValueError("Windows shortcut icon did not migrate to its persistent profile asset")
+            if {key: value for key, value in actual[name].items() if key != "icon_location"} != {key: value for key, value in self.before[name].items() if key != "icon_location"}:
+                raise ValueError("Windows icon refresh changed a non-icon shortcut property")
+        return True
+
+
+def windows_path_equal(left, right):
+    return isinstance(left, str) and ntpath.normcase(ntpath.normpath(left)) == ntpath.normcase(ntpath.normpath(str(right)))
+
+
+def _local_windows_shortcut_target(value):
+    text = str(value).replace("/", "\\")
+    plain = text[4:] if text.startswith("\\\\?\\") else text
+    if not re.match(r"^[A-Za-z]:\\", plain):
+        raise ValueError("Windows shortcut target is not an absolute local drive path")
+    for name in plain[3:].split("\\"):
+        if (not name or name in (".", "..") or name.endswith((".", " "))
+                or re.search(r'[\x00-\x1f<>:"|?*]', name)
+                or re.fullmatch(r"(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9¹²³]|LPT[0-9¹²³])", name.split(".", 1)[0], re.I)):
+            raise ValueError("Windows shortcut target contains an ambiguous path component")
+    return Path(text)
+
+
+def _canonical_shortcut_targets(actual, expected):
+    # Check BOTH ordinary paths/ancestors before canonicalization can follow
+    # anything. Distinct hardlink names remain distinct canonical paths.
+    regular(actual)
+    regular(expected)
+    return actual.resolve(strict=True), expected.resolve(strict=True)
+
+
+def windows_shortcut_target_equal(actual, expected):
+    paths = (_local_windows_shortcut_target(actual), _local_windows_shortcut_target(expected))
+    canonical = _canonical_shortcut_targets(*paths)
+    # GetFinalPathNameByHandle-backed strict resolution expands 8.3 aliases.
+    # Admit only local DOS forms again, including canonical verbatim DOS paths.
+    names = []
+    for path in canonical:
+        text = str(_local_windows_shortcut_target(path))
+        names.append(text[4:] if text.startswith("\\\\?\\") else text)
+    return windows_path_equal(*names)
+
+
+def windows_icon_equal(value, expected):
+    if not isinstance(value, str) or "," not in value:
+        return False
+    location, index = value.rsplit(",", 1)
+    location = location.strip()
+    if location.startswith('"') and location.endswith('"'):
+        location = location[1:-1]
+    return index.strip() == "0" and windows_path_equal(location, expected)
 
 
 @contextmanager
@@ -611,8 +929,8 @@ def smoke_failure_evidence(phase, error, installed, generation_name, registry, a
         except OSError:
             registration = "unavailable"
         code = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
-        native = decode_activation_failure(code) if phase in ("install", "repeat-install") else None
-        installer_phase = NSIS_FAILURE_PHASES.get(code, "unknown") if phase in ("install", "repeat-install", "uninstall") else None
+        native = decode_activation_failure(code) if phase in ("install", "repeat-install", "interactive-install") else None
+        installer_phase = NSIS_FAILURE_PHASES.get(code, "unknown") if phase in ("install", "repeat-install", "interactive-install", "uninstall") else None
         if native:
             installer_phase = "activation-child"
         evidence = {"phase": phase, "error": type(error).__name__, "exit_code": code,
@@ -686,6 +1004,8 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                 raise ValueError("Freshly installed Windows bootstrap differs from its generation")
             signature(executable, unsigned)
             signature(uninstaller, unsigned)
+            # A fresh silent install must not start any app/host process.
+            quiet_installer_smoke(generation / "maple-agent.exe")
             phase = "installed-cli"
             actual = run([executable, "--build-info"], env=environment, capture_output=True, text=True).stdout
             if json.loads(actual) != info:
@@ -704,15 +1024,27 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             # the exact selected installed generation for render/lifetime and
             # deterministic cleanup instead of the short-lived launcher PID.
             phase = "gui"
-            gui_smoke(generation / "maple-agent.exe", scratch, environment)
+            integration = WindowsIntegrationProbe(info, installed, scratch, environment, winreg)
+            integration.seed()
+            gui_smoke(generation / "maple-agent.exe", scratch, environment, integration_ready=integration.ready)
             # A repeated manual installer must retain the active generation
             # and stable bootstrap rather than rewriting a running payload.
             bootstrap_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
-            phase = "repeat-install"
-            with pin_current_pointer(installed / "current.json"):
-                run(command_as_windows_args(command), env=environment, timeout=120)
-                if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
-                    raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
+            # ACP/GUI probes can leave their legitimate background host using
+            # the same PE. Retain its exact identity so it is never mistaken
+            # for an installer-launched GUI or stopped by UI-smoke cleanup.
+            with smoke_application_baseline(generation / "maple-agent.exe") as (ui, existing):
+                phase = "repeat-install"
+                with pin_current_pointer(installed / "current.json"):
+                    run(command_as_windows_args(command), env=environment, timeout=120)
+                    if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
+                        raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
+                quiet_installer_smoke(generation / "maple-agent.exe", ui=ui, existing=existing)
+                phase = "interactive-install"
+                interactive_installer_smoke(installer, installed, generation / "maple-agent.exe", scratch, environment, ui=ui, existing=existing,
+                                           before_close=integration.seed, integration_ready=integration.ready)
+            if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
+                raise ValueError("Interactive repeat changed stable bootstrap or active pointer")
         except BaseException as error:
             primary = error
             smoke_failure_evidence(phase, error, installed, generation_name, registry, registry_access, winreg)
@@ -746,7 +1078,7 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                     smoke_failure_evidence(cleanup_phase, error, installed, generation_name, registry, registry_access, winreg)
                     if primary is None:
                         raise
-    print("Verified Windows install, identity, signed-out ACP, GUI first render, host stop and state-preserving uninstall")
+    print("Verified Windows install, identity, signed-out ACP, GUI first render, silent/repeat install, interactive auto-launch, persistent shell icons, host stop and state-preserving uninstall")
 
 
 def command_as_windows_args(command):
@@ -764,13 +1096,283 @@ def bounded_diagnostics(data):
     print("Isolated Windows startup diagnostics:\n" + safe.decode("ascii"), file=sys.stderr)
 
 
-def gui_smoke(executable, scratch, environment):
+class WindowsSmokeUI:
+    """Native UI driver; inspect all PIDs, operate only the owned installer/app."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        self.ctypes, self.types = ctypes, wintypes
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.user = ctypes.WinDLL("user32", use_last_error=True)
+        self.psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        self.callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        declarations = (
+            (self.kernel.OpenProcess, (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD), wintypes.HANDLE),
+            (self.kernel.QueryFullProcessImageNameW, (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)), wintypes.BOOL),
+            (self.kernel.GetProcessTimes, (wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)), wintypes.BOOL),
+            (self.kernel.CloseHandle, (wintypes.HANDLE,), wintypes.BOOL),
+            (self.kernel.WaitForSingleObject, (wintypes.HANDLE, wintypes.DWORD), wintypes.DWORD),
+            (self.kernel.TerminateProcess, (wintypes.HANDLE, wintypes.UINT), wintypes.BOOL),
+            (self.psapi.EnumProcesses, (ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)), wintypes.BOOL),
+            (self.user.EnumWindows, (self.callback, wintypes.LPARAM), wintypes.BOOL),
+            (self.user.GetWindowThreadProcessId, (wintypes.HWND, ctypes.POINTER(wintypes.DWORD)), wintypes.DWORD),
+            (self.user.IsWindowVisible, (wintypes.HWND,), wintypes.BOOL),
+            (self.user.IsWindowEnabled, (wintypes.HWND,), wintypes.BOOL),
+            (self.user.GetDlgItem, (wintypes.HWND, ctypes.c_int), wintypes.HWND),
+            (self.user.GetWindowTextW, (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int), ctypes.c_int),
+            (self.user.PostMessageW, (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM), wintypes.BOOL),
+        )
+        for function, arguments, result in declarations:
+            function.argtypes, function.restype = arguments, result
+
+    def windows(self, pid):
+        windows = []
+        @self.callback
+        def collect(window, _data):
+            owner = self.types.DWORD()
+            self.user.GetWindowThreadProcessId(window, self.ctypes.byref(owner))
+            if owner.value == pid:
+                windows.append(window)
+            return True
+        if not self.user.EnumWindows(collect, 0):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+        return windows
+
+    def button(self, pid, caption):
+        for window in self.windows(pid):
+            button = self.user.GetDlgItem(window, 1)  # Stock NSIS Next/Install/Close.
+            text = self.ctypes.create_unicode_buffer(128)
+            if button and self.user.IsWindowEnabled(window) and self.user.IsWindowEnabled(button):
+                self.user.GetWindowTextW(button, text, len(text))
+                if text.value.replace("&", "") == caption:
+                    return window, button
+        return None
+
+    def click(self, button):
+        # WM_COMMAND / BN_CLICKED to this owned dialog; no global input or focus.
+        if not self.user.PostMessageW(button[0], 0x111, 1, button[1]):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+
+    def applications(self, executable):
+        pids = (self.types.DWORD * 4096)()
+        used = self.types.DWORD()
+        if not self.psapi.EnumProcesses(pids, self.ctypes.sizeof(pids), self.ctypes.byref(used)):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+        if used.value >= self.ctypes.sizeof(pids):
+            raise ValueError("Windows smoke process inventory exceeded its bounds")
+        expected = os.path.normcase(os.path.normpath(str(executable)))
+        matches = []
+        for pid in pids[:used.value // self.ctypes.sizeof(self.types.DWORD)]:
+            # Query + synchronize + terminate. A retained native handle prevents
+            # cleanup from targeting a different process after PID reuse.
+            handle = self.kernel.OpenProcess(0x1000 | 0x100000 | 1, False, pid)
+            if not handle:
+                continue  # Other users/system processes are outside this smoke.
+            image = self.ctypes.create_unicode_buffer(32768)
+            size = self.types.DWORD(len(image))
+            matched = self.kernel.QueryFullProcessImageNameW(handle, 0, image, self.ctypes.byref(size)) and os.path.normcase(os.path.normpath(image.value)) == expected
+            if matched:
+                try:
+                    matches.append(WindowsSmokeApplication(self, handle, pid))
+                except BaseException:
+                    for process in matches:
+                        process.release()
+                    raise
+            else:
+                self.kernel.CloseHandle(handle)
+        return matches
+
+    def application(self, executable, *, existing=(), visible_only=False):
+        selected = None
+        candidates = self.applications(executable)
+        try:
+            for candidate in candidates:
+                if selected is None and candidate.identity not in existing and (not visible_only or candidate.visible()):
+                    selected = candidate
+            return selected
+        finally:
+            for candidate in candidates:
+                if candidate is not selected:
+                    candidate.release()
+
+
+class WindowsSmokeApplication:
+    def __init__(self, ui, handle, pid):
+        self.ui, self.handle, self.pid = ui, handle, pid
+        created, exited, kernel, user = (ui.types.FILETIME() for _ in range(4))
+        if not ui.kernel.GetProcessTimes(handle, *(ui.ctypes.byref(value) for value in (created, exited, kernel, user))):
+            error = ui.ctypes.WinError(ui.ctypes.get_last_error())
+            self.release()
+            raise error
+        self.identity = pid, (created.dwHighDateTime << 32) | created.dwLowDateTime
+
+    def alive(self):
+        result = self.ui.kernel.WaitForSingleObject(self.handle, 0)
+        if result not in (0, 258):
+            raise self.ui.ctypes.WinError(self.ui.ctypes.get_last_error())
+        return result == 258  # WAIT_TIMEOUT means this exact process is live.
+
+    def visible(self):
+        return any(self.ui.user.IsWindowVisible(window) for window in self.ui.windows(self.pid))
+
+    def close(self):
+        try:
+            if self.alive():
+                if not self.ui.kernel.TerminateProcess(self.handle, 1):
+                    error = self.ui.ctypes.WinError(self.ui.ctypes.get_last_error())
+                    # A natural exit between the liveness probe and terminate
+                    # is harmless only when this same handle is signalled.
+                    if self.ui.kernel.WaitForSingleObject(self.handle, 0) != 0:
+                        raise error
+                if self.ui.kernel.WaitForSingleObject(self.handle, 10000) != 0:
+                    raise ValueError("Owned Windows smoke application did not stop")
+        finally:
+            self.release()
+
+    def release(self):
+        self.ui.kernel.CloseHandle(self.handle)
+
+
+@contextmanager
+def smoke_application_baseline(executable):
+    ui = WindowsSmokeUI()
+    processes = ui.applications(executable)
+    try:
+        yield ui, {process.identity for process in processes}
+    finally:
+        for process in processes:
+            process.release()  # Existing hosts remain owned by host-stop below.
+
+
+def quiet_installer_smoke(executable, *, ui=None, existing=()):
+    ui = ui or WindowsSmokeUI()
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        unexpected, cleanup_error = False, None
+        for application in ui.applications(executable):
+            try:
+                if application.identity in existing:
+                    application.release()
+                else:
+                    unexpected = True
+                    application.close()
+            except Exception as error:
+                cleanup_error = cleanup_error or error
+        if unexpected:
+            if cleanup_error:
+                print("Windows silent smoke cleanup failure: " + type(cleanup_error).__name__, file=sys.stderr)
+            raise ValueError("Silent Windows installer launched the application")
+        if cleanup_error:
+            raise cleanup_error
+        time.sleep(0.05)
+
+
+def interactive_installer_smoke(installer, installed, executable, scratch, environment, *, ui=None, existing=(), before_close=None, integration_ready=None):
+    ui = ui or WindowsSmokeUI()
+    command = command_as_windows_args(f'"{installer}" /D={installed}')
+    process = subprocess.Popen(command, cwd=scratch, env=environment, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    application, primary = None, None
+    try:
+        deadline = time.monotonic() + 120
+        for caption in ("Install", "Close"):
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    if process.returncode:
+                        raise subprocess.CalledProcessError(process.returncode, command)
+                    raise ValueError("Interactive Windows installer exited before completion")
+                button = ui.button(process.pid, caption)
+                if button:
+                    if caption == "Close":
+                        application = ui.application(executable, existing=existing)
+                        if application:
+                            raise ValueError("Interactive Windows installer launched before it closed")
+                        if before_close:
+                            before_close(max(0.1, deadline - time.monotonic()))
+                    ui.click(button)
+                    break
+                time.sleep(0.05)
+            else:
+                raise ValueError("Interactive Windows installer did not reach " + caption)
+        code = process.wait(timeout=max(1, deadline - time.monotonic()))
+        if code:
+            raise subprocess.CalledProcessError(code, command)
+        # Observe the process launched by NSIS through the verified bootstrap,
+        # rather than launching the generation ourselves or trusting its PID.
+        deadline, ready_at = time.monotonic() + 45, None
+        integration_pending = False
+        while time.monotonic() < deadline:
+            application = application or ui.application(executable, existing=existing, visible_only=True)
+            if application:
+                if not application.alive():
+                    raise ValueError("Auto-launched Windows application exited early")
+                if application.visible():
+                    ready_at = ready_at or time.monotonic()
+                    if time.monotonic() - ready_at >= 1:
+                        if integration_ready is None:
+                            return
+                        if integration_ready(max(0.1, deadline - time.monotonic())):
+                            if not application.alive() or not application.visible():
+                                raise ValueError("Auto-launched Windows GUI exited or closed during icon verification")
+                            return
+                        integration_pending = True
+            time.sleep(0.05)
+        if integration_pending:
+            raise ValueError("Windows shell icon refresh did not finish before the GUI smoke deadline")
+        raise ValueError("Interactive Windows installer did not open the installed application")
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        # An installer cleanup failure must not prevent exact-app cleanup, or
+        # replace the original failure from the interactive proof.
+        cleanup_error = None
+        try:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
+        except Exception as error:
+            cleanup_error = error
+        attempted = set()
+        try:
+            if application:
+                attempted.add(application.identity)
+                application.close()
+        except Exception as error:
+            cleanup_error = cleanup_error or error
+        if primary is not None:
+            # A failed/hidden launch can leave more than one new process. On
+            # failure collect all of this isolated generation's new processes;
+            # success leaves its legitimate host for the host-stop proof.
+            try:
+                candidates = ui.applications(executable)
+            except Exception as error:
+                candidates = []
+                cleanup_error = cleanup_error or error
+            for candidate in candidates:
+                try:
+                    if candidate.identity in existing or candidate.identity in attempted:
+                        candidate.release()
+                    else:
+                        candidate.close()
+                except Exception as error:
+                    cleanup_error = cleanup_error or error
+        if cleanup_error:
+            print("Windows interactive smoke cleanup failure: " + type(cleanup_error).__name__, file=sys.stderr)
+            if primary is None:
+                raise cleanup_error
+
+
+def gui_smoke(executable, scratch, environment, *, integration_ready=None):
     output = scratch / "gui.log"
     with output.open("wb") as stream:
         process = subprocess.Popen([str(executable)], cwd=scratch, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stream)
         try:
             deadline = time.monotonic() + 45
             ready_at = None
+            integration_pending = False
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     raise ValueError("Installed Windows GUI exited before first render")
@@ -780,8 +1382,16 @@ def gui_smoke(executable, scratch, environment):
                 if b"startup: window open at " in diagnostics and b"startup: first render at " in diagnostics:
                     ready_at = ready_at or time.monotonic()
                     if time.monotonic() - ready_at >= 1:
-                        return
+                        if integration_ready is None:
+                            return
+                        if integration_ready(max(0.1, deadline - time.monotonic())):
+                            if process.poll() is not None:
+                                raise ValueError("Installed Windows GUI exited during icon verification")
+                            return
+                        integration_pending = True
                 time.sleep(0.05)
+            if integration_pending:
+                raise ValueError("Windows shell icon refresh did not finish before the GUI smoke deadline")
             raise ValueError("Installed Windows GUI did not create and render its window")
         except (ValueError, OSError, subprocess.SubprocessError):
             bounded_diagnostics(output.read_bytes()[-8192:])

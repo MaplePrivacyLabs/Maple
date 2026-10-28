@@ -22,6 +22,7 @@ MAX_HEADER_BYTES = 1024 * 1024
 MAX_METADATA_BYTES = 16 * 1024
 MAX_IMPORT_BYTES = 128 * 1024
 MAX_DLL_BYTES = 256
+MAX_ICON_BYTES = 1024 * 1024
 MACHINE_AMD64 = 0x8664
 IMAGE_FILE_EXECUTABLE_IMAGE = 0x0002
 IMAGE_FILE_DLL = 0x2000
@@ -188,6 +189,84 @@ class PEImage:
             raise ValueError("PE build-info alignment padding must be zero")
         return json.loads(data[:length].decode("utf-8"), object_pairs_hook=unique_object)
 
+    def verify_icon(self, icon):
+        """Match numeric ICON1 and its images without loading executable code."""
+        if len(self.directories) <= 2:
+            raise ValueError("PE icon resource directory is missing")
+        address, size = self.directories[2]
+        if not address or not 16 <= size <= MAX_ICON_BYTES:
+            raise ValueError("invalid or oversized PE icon resource directory")
+        resources = self.rva(address, size)
+
+        def read(offset, length):
+            if offset < 0 or offset + length > size:
+                raise ValueError("PE icon resource is outside its directory")
+            return resources[offset:offset + length]
+
+        def table(pointer):
+            if not pointer & 0x80000000:
+                raise ValueError("PE icon resource must use a directory")
+            offset = pointer & 0x7FFFFFFF
+            named, count = struct.unpack_from("<HH", read(offset, 16), 12)
+            if not 1 <= named + count <= 256:
+                raise ValueError("invalid PE icon resource entry count")
+            entries = struct.iter_unpack("<II", read(offset + 16, 8 * (named + count)))
+            result = {}
+            previous = -1
+            for index, (key, value) in enumerate(entries):
+                if bool(key & 0x80000000) != (index < named) or (index >= named and key <= previous):
+                    raise ValueError("invalid PE icon resource identifier order")
+                if key in result:
+                    raise ValueError("duplicate PE icon resource identifier")
+                result[key] = value
+                previous = key if index >= named else -1
+            return result
+
+        root = table(0x80000000)
+
+        def images(kind, identifier):
+            try:
+                languages = table(table(root[kind])[identifier])
+            except KeyError as error:
+                raise ValueError("PE icon resource identifier is missing") from error
+            result = {}
+            for language, pointer in languages.items():
+                if language > 0xFFFF or pointer & 0x80000000:
+                    raise ValueError("invalid PE icon resource language or data entry")
+                rva, length, _, reserved = struct.unpack("<IIII", read(pointer, 16))
+                if reserved or not 0 < length <= MAX_ICON_BYTES:
+                    raise ValueError("invalid PE icon resource data size")
+                read(rva - address, length)
+                result[language] = self.rva(rva, length)
+            return result
+
+        if not 6 <= len(icon) <= MAX_ICON_BYTES:
+            raise ValueError("invalid canonical Windows icon")
+        reserved, kind, count = struct.unpack_from("<HHH", icon)
+        if reserved or kind != 1 or not 1 <= count <= 16 or len(icon) < 6 + 16 * count:
+            raise ValueError("invalid canonical Windows icon directory")
+        expected = {}
+        for index in range(count):
+            width, height, colors, zero, planes, bits, length, offset = struct.unpack_from("<BBBBHHII", icon, 6 + 16 * index)
+            if zero or planes not in (0, 1) or not length or offset < 6 + 16 * count or offset + length > len(icon):
+                raise ValueError("invalid canonical Windows icon image")
+            key = (width, height, colors, bits, length)
+            if key in expected:
+                raise ValueError("duplicate canonical Windows icon image")
+            expected[key] = icon[offset:offset + length]
+        for language, group in images(14, 1).items():
+            if len(group) != 6 + 14 * count or struct.unpack_from("<HHH", group) != (0, 1, count):
+                raise ValueError("PE ICON1 differs from its canonical profile icon")
+            actual = {}
+            for index in range(count):
+                width, height, colors, zero, planes, bits, length, identifier = struct.unpack_from("<BBBBHHIH", group, 6 + 14 * index)
+                key = (width, height, colors, bits, length)
+                if zero or planes not in (0, 1) or not identifier or key in actual:
+                    raise ValueError("invalid PE ICON1 image descriptor")
+                actual[key] = images(3, identifier).get(language)
+            if actual != expected:
+                raise ValueError("PE ICON1 differs from its canonical profile icon")
+
 
 def inspect_pe(path):
     """Return native architecture, subsystem and all regular/delay DLL imports."""
@@ -198,6 +277,11 @@ def inspect_pe(path):
 def read_build_info(path):
     with open_artifact(path) as image:
         return image.build_info()
+
+
+def verify_icon(path, icon_path):
+    with open_artifact(path) as image:
+        image.verify_icon(Path(icon_path).read_bytes())
 
 
 def validated_build_info(profile, path, source_sha):

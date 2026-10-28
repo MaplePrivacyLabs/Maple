@@ -39,6 +39,8 @@ mod ui;
 mod update;
 #[cfg(all(feature = "desktop", target_os = "windows"))]
 mod windows_bootstrap;
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+mod windows_integration;
 
 use backend::AgentBackend;
 use clap::{Args, Parser, Subcommand};
@@ -460,6 +462,8 @@ fn main() {
             }
         }
         None => {
+            #[cfg(all(feature = "desktop", target_os = "windows"))]
+            windows_integration::start();
             #[cfg(feature = "desktop")]
             desktop::run();
             #[cfg(not(feature = "desktop"))]
