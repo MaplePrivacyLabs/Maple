@@ -42,6 +42,7 @@ assets!(
     "icons/maple-mark.svg",
     "icons/maple-wordmark.svg",
     "icons/maximize-2.svg",
+    "icons/message-square.svg",
     "icons/minimize-2.svg",
     "icons/monitor.svg",
     // OpenAI mark (simple-icons, CC0) for the Codex integration card.
@@ -60,6 +61,7 @@ assets!(
     "icons/square.svg",
     "icons/trash-2.svg",
     "icons/undo-2.svg",
+    "icons/user.svg",
     "icons/users.svg",
     "icons/volume-2.svg",
     "icons/x.svg",
