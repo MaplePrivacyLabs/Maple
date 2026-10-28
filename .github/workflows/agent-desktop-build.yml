@@ -1,8 +1,14 @@
 name: Maple Agent Desktop Builds
 
+# A push builds Prod (publisher.py requires its jobs), the nightly run Dev, and
+# a manual dispatch both; every job's `variant` matrix says so (test_contracts C2).
 on:
   push:
     branches: [master]
+  schedule:
+    # Dev packages, when few master pushes land and after ci.yml's 04:17
+    # nightly, so they rarely compete with a Prod build for runners.
+    - cron: "37 10 * * *"
   workflow_dispatch:
 
 # Signing is confined to protected master jobs; builders have a read-only token
@@ -42,13 +48,13 @@ jobs:
       - name: Select Agent packaging
         id: classify
         working-directory: .
-        # Dispatch, an unusable push base and selector errors all build.
+        # Dispatch, the nightly run, an unusable push base and selector errors all build.
         run: python3 scripts/ci/plan.py only agent-desktop >> "$GITHUB_OUTPUT"
 
   macos-build:
     name: Build macOS binary (${{ matrix.variant }})
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: blacksmith-6vcpu-macos-26
     permissions:
       contents: read
@@ -56,7 +62,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -81,7 +87,8 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # Lockfiles only, and no restore-keys: a master build never starts from
-          # another dependency graph's artifacts. ci.yml's agent-package-* read it.
+          # another dependency graph's artifacts. Prod pushes save it; Dev builds
+          # only restore it (Cargo rebuilds what the profile changes).
           key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
           path: |
             ~/.cargo/registry/index
@@ -120,7 +127,7 @@ jobs:
   macos:
     name: Signed macOS (${{ matrix.variant }})
     needs: [changes, macos-build]
-    if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     environment: desktop-signing
     permissions:
       contents: read
@@ -131,7 +138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -188,7 +195,7 @@ jobs:
   windows-build:
     name: Build Windows binary (${{ matrix.variant }})
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     # GitHub-hosted, like the signing and verify jobs that consume its binary.
     runs-on: maple-windows-2025-16core
     permissions:
@@ -197,9 +204,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Prod on every Agent master push (publisher.py requires its three jobs);
-        # Dev Windows packages only on a manual dispatch.
-        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || '["prod"]') }}
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
       # Ship the CRT with the executable rather than requiring a machine-wide
@@ -223,7 +228,8 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # Lockfiles only, and no restore-keys: a master build never starts from
-          # another dependency graph's artifacts. ci.yml's agent-package-* read it.
+          # another dependency graph's artifacts. Prod pushes save it; Dev builds
+          # only restore it (Cargo rebuilds what the profile changes).
           key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
           path: |
             ~/.cargo/registry/index
@@ -263,7 +269,7 @@ jobs:
   windows:
     name: Signed Windows (${{ matrix.variant }})
     needs: windows-build
-    if: ${{ always() && !cancelled() && needs.windows-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && !cancelled() && needs.windows-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     environment: windows-signing
     permissions:
       contents: read
@@ -274,7 +280,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || '["prod"]') }}
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
       MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
@@ -321,7 +327,7 @@ jobs:
   verify-windows:
     name: Verify downloaded Windows (${{ matrix.variant }})
     needs: windows
-    if: ${{ always() && !cancelled() && needs.windows.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && !cancelled() && needs.windows.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     permissions:
       contents: read
       attestations: read
@@ -330,7 +336,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || '["prod"]') }}
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
       MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
@@ -370,7 +376,7 @@ jobs:
   linux:
     name: Linux bundle (${{ matrix.variant }})
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
     permissions:
       contents: read
@@ -378,7 +384,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -400,7 +406,8 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # Lockfiles only, and no restore-keys: a master build never starts from
-          # another dependency graph's artifacts. ci.yml's agent-package-* read it.
+          # another dependency graph's artifacts. Prod pushes save it; Dev builds
+          # only restore it (Cargo rebuilds what the profile changes).
           key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
           path: |
             ~/.cargo/registry/index
@@ -443,7 +450,7 @@ jobs:
   attest-linux:
     name: Attest Linux packages (${{ matrix.variant }})
     needs: linux
-    if: ${{ needs.linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ needs.linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     permissions:
       contents: read
       id-token: write
@@ -453,7 +460,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -495,7 +502,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -542,7 +549,7 @@ jobs:
   verify-linux:
     name: Verify downloaded Linux (${{ matrix.variant }})
     needs: [linux, attest-linux]
-    if: ${{ always() && !cancelled() && needs.linux.result == 'success' && needs.attest-linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && !cancelled() && needs.linux.result == 'success' && needs.attest-linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     permissions:
       contents: read
       attestations: read
@@ -551,7 +558,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:

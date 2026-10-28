@@ -42,8 +42,8 @@ python3 scripts/ci/plan.py explain --base origin/master --head HEAD
 | When | What runs |
 | --- | --- |
 | Pull request, merge queue | Selected lanes, each a few minutes; the iOS and Android builds when their native inputs change. Desktop bundles and packaging rehearsals never block a PR; add `ci:package` to run them. A new push cancels the superseded run. |
-| Master push | The selected lanes again (for Agent inputs, also the full Agent suites on Linux and macOS), the signed builds, the release-evidence workflows and CodeQL. Never cancelled. |
-| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories and the Agent's native Windows suites included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures and [quarantined lanes](#quarantine) open or update one `ci-nightly` issue; a green night closes it. |
+| Master push | The selected lanes again (for Agent inputs, also the full Agent suites on Linux and macOS), the signed builds (Agent: Prod only), the release-evidence workflows and CodeQL. Never cancelled. |
+| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories and the Agent's native Windows suites included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures and [quarantined lanes](#quarantine) open or update one `ci-nightly` issue; a green night closes it. Separately, at 10:37 UTC, `agent-desktop-build.yml` builds, signs and verifies the Agent Dev packages; the `ci-nightly` issue does not cover it. |
 | On demand | PR labels (below), or a `ci.yml` dispatch with comma-separated lane ids or `all`. |
 
 ## Labels

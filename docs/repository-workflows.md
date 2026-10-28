@@ -55,10 +55,12 @@ branches in step with the lane table.
   starts with a cold Bun cache; Bun installs in seconds.
 - `agent-desktop-build.yml`'s unsigned builders save the exact key
   `ci-v1-agent-release-<os>-<hash of both lockfiles>` on master pushes, with
-  no fallback keys; no `ci.yml` lane reads it. The Agent packaging lanes build
-  thin LTO into their own `ci-v1-agent-package-<os>-*` caches, which only the
-  nightly master run saves. Signing, attestation and verification jobs restore
-  nothing.
+  no fallback keys. Pushes build only Prod; the nightly Dev and dispatched
+  builds restore the same key without saving (the profile changes only Agent
+  workspace crates, which Cargo rebuilds). No `ci.yml` lane reads it. The
+  Agent packaging lanes build thin LTO into their own
+  `ci-v1-agent-package-<os>-*` caches, which only the nightly master run
+  saves. Signing, attestation and verification jobs restore nothing.
 
 ## Concurrency
 
@@ -125,10 +127,11 @@ scripts only `ci.yml`'s unsigned lanes run select none. Only `mobile-build` and
 Android release evidence comes only from master pushes. The selector routes
 proxy runtime and Rust SDK build inputs to the native builds, because the
 Research shell builds both from the tree. TypeScript SDK changes never select
-app builds: each frontend builds the SDK its own manifest selects. Agent desktop
-packages build on master pushes that change Agent inputs (`plan.py only
-agent-desktop`) and on every manual dispatch. Signing jobs keep their protected
-environments; approving one trusts its runner with that environment's secrets.
+app builds: each frontend builds the SDK its own manifest selects. Agent Prod
+desktop packages build on master pushes that change Agent inputs (`plan.py only
+agent-desktop`), Agent Dev packages nightly, and both on every manual dispatch.
+Signing jobs keep their protected environments; approving one trusts its
+runner with that environment's secrets.
 To rehearse the signed Research release scripts outside CI, run
 `scripts/ci/signed-release-rehearsal.sh <desktop|ios|android|all>` in the root
 Nix shell that builds the platform (`.#apple`, `.#android`, and

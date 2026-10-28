@@ -391,8 +391,8 @@ def run(name: str) -> int:
 def only(name: str) -> int:
     """agent-desktop-build.yml's changes job: did this push change `name`'s inputs?
 
-    Anything but a push with a usable diff (dispatch, a new branch, a force-push,
-    an error) selects the build, as do unclassified paths."""
+    Anything but a push with a usable diff (dispatch, the nightly run, a new
+    branch, a force-push, an error) selects the build, as do unclassified paths."""
     paths = None
     try:
         if os.environ.get("GITHUB_EVENT_NAME") == PUSH:
