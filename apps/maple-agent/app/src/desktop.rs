@@ -16,7 +16,7 @@ use crate::ui;
 use crate::ui::chat::computers::{
     Computer, Destination, Navigate, NavigationChanged, ProjectRenameRequest, ProjectTarget,
 };
-use crate::ui::chat::{ChatScreen, LoggedOut};
+use crate::ui::chat::{ChatScreen, LoggedOut, SignOutFailed};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
     AccountDeleted, Section, SettingsClosed, SettingsScreen, ShortcutSettingsChange,
@@ -119,6 +119,9 @@ struct MapleApp {
     local_chat: Option<Entity<ChatScreen>>,
     selected_host: Option<String>,
     remote_computers: std::collections::BTreeMap<String, RemoteComputer>,
+    /// An empty startup projection is provisional until this account's first
+    /// paired-computer status arrives. It must not replace saved grouping.
+    remote_inventory_loaded: bool,
     next_connection_attempt: u64,
     requested_navigation: Option<PendingNavigation>,
     computers_sync_pending: bool,
@@ -719,6 +722,7 @@ impl MapleApp {
         self.parked_chat = None;
         self.local_chat = None;
         self.remote_computers.clear();
+        self.remote_inventory_loaded = false;
         self.requested_navigation = None;
         self.selected_host = None;
         self.user_id = None;
@@ -1159,12 +1163,15 @@ impl MapleApp {
     /// is reported twice (Settings button, then the backend) keeps the
     /// form the user may already be typing in.
     fn show_login(&mut self, cx: &mut Context<Self>) {
-        self.user_id = None;
+        if let Some(user_id) = self.user_id.take() {
+            crate::settings::retire_sidebar_account(&user_id);
+        }
         self.settings.remote_sidebars.clear();
         self.set_remote_enabled(false, cx);
         self.parked_chat = None;
         self.local_chat = None;
         self.remote_computers.clear();
+        self.remote_inventory_loaded = false;
         self.requested_navigation = None;
         self.selected_host = None;
         if matches!(self.screen, Screen::Login(_)) {
@@ -1190,6 +1197,11 @@ impl MapleApp {
 
     /// Show the chat screen for a signed-in account and wire its events.
     fn open_chat(&mut self, user_id: String, cx: &mut Context<Self>) {
+        if self.user_id.as_deref() != Some(user_id.as_str())
+            && let Some(previous) = self.user_id.as_deref()
+        {
+            crate::settings::retire_sidebar_account(previous);
+        }
         log::debug!(
             "startup: chat screen open at {} ms",
             crate::startup_elapsed()
@@ -1203,6 +1215,7 @@ impl MapleApp {
         self.screen = Screen::Chat(chat.clone());
         self.local_chat = Some(chat.clone());
         self.remote_computers.clear();
+        self.remote_inventory_loaded = false;
         self.requested_navigation = None;
         self.selected_host = None;
         self.subscribe_chat(&chat, cx);
@@ -1293,7 +1306,9 @@ impl MapleApp {
                 (key, (label, peer.grant))
             })
             .collect::<std::collections::BTreeMap<_, _>>();
-        let mut changed = self.remote_computers.len() != computers.len();
+        let mut changed =
+            !self.remote_inventory_loaded || self.remote_computers.len() != computers.len();
+        self.remote_inventory_loaded = true;
         let mut selected_grant_changed = false;
         self.remote_computers
             .retain(|key, _| computers.contains_key(key));
@@ -1361,10 +1376,13 @@ impl MapleApp {
     }
 
     fn sync_computers(&mut self, cx: &mut Context<Self>) {
+        if !self.remote_inventory_loaded {
+            return;
+        }
         let Some(local) = &self.local_chat else {
             return;
         };
-        let mut computers = vec![local.read(cx).computer_snapshot("This computer".into(), cx)];
+        let mut computers = vec![local.read(cx).computer_snapshot("This Computer".into(), cx)];
         for (key, computer) in &self.remote_computers {
             computers.push(match &computer.chat {
                 Some(chat) => chat
@@ -1709,8 +1727,10 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             &screen,
-            |app, _, event: &ui::remote::ComputersChanged, cx| {
-                app.update_computers(event.0.clone(), cx);
+            |app, emitter, event: &ui::remote::ComputersChanged, cx| {
+                if app.is_current_settings_screen(&emitter) {
+                    app.update_computers(event.0.clone(), cx);
+                }
             },
         )
         .detach();
@@ -1785,17 +1805,22 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             &screen,
-            |app: &mut MapleApp, _emitter, _event: &SignOutRequested, cx| {
-                if let Some(chat) = app.local_chat.take() {
+            |app: &mut MapleApp, emitter, _event: &SignOutRequested, cx| {
+                if !app.is_current_settings_screen(&emitter) {
+                    return;
+                }
+                if let Some(chat) = app.local_chat.clone() {
                     chat.update(cx, |chat, cx| chat.sign_out(cx));
                 }
-                app.show_login(cx);
             },
         )
         .detach();
         cx.subscribe(
             &screen,
-            |app: &mut MapleApp, _emitter, _event: &AccountDeleted, cx| {
+            |app: &mut MapleApp, emitter, _event: &AccountDeleted, cx| {
+                if !app.is_current_settings_screen(&emitter) {
+                    return;
+                }
                 // The runtime stopped and the credentials went before the
                 // event; the parked chat has nothing left to sign out of.
                 app.parked_chat = None;
@@ -1836,8 +1861,33 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             chat,
-            |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
-                app.show_login(cx);
+            |app: &mut MapleApp, emitter, _event: &LoggedOut, cx| {
+                if app
+                    .local_chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.entity_id() == emitter.entity_id())
+                {
+                    app.show_login(cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe(
+            chat,
+            |app: &mut MapleApp, emitter, event: &SignOutFailed, cx| {
+                if app.user_id.as_deref() == Some(event.user_id.as_str())
+                    && app
+                        .local_chat
+                        .as_ref()
+                        .is_some_and(|chat| chat.entity_id() == emitter.entity_id())
+                {
+                    app.present_store_attention(
+                        event.message.clone(),
+                        StoreAttentionKind::Persistence,
+                        true,
+                        cx,
+                    );
+                }
             },
         )
         .detach();
@@ -3280,6 +3330,7 @@ pub fn run() {
                         local_chat: None,
                         selected_host: None,
                         remote_computers: Default::default(),
+                        remote_inventory_loaded: false,
                         next_connection_attempt: 0,
                         requested_navigation: None,
                         computers_sync_pending: false,
@@ -3370,7 +3421,13 @@ pub fn run() {
             let update_bridge = remote_updates::Bridge::default();
             cx.spawn(async move |cx| {
                 loop {
-                    let account = status_root.update(cx, |app, _| app.user_id.clone());
+                    let (account, epoch, owner) = status_root.update(cx, |app, _| {
+                        (
+                            app.user_id.clone(),
+                            app.store_load_epoch,
+                            app.local_chat.as_ref().map(Entity::entity_id),
+                        )
+                    });
                     let backend = status_backend.clone();
                     let expected_account = account.clone();
                     let bridge = update_bridge.clone();
@@ -3407,7 +3464,13 @@ pub fn run() {
                                 app.begin_remote_install(command, cx);
                             }
                             let Ok(status) = remote else { return };
-                            if app.user_id == account && account.is_some() {
+                            if app.user_id == account
+                                && account.is_some()
+                                && app.store_load_epoch == epoch
+                                && app.local_chat.as_ref().map(Entity::entity_id) == owner
+                                && app.store_ready
+                                && app.backend.store_state() == maple_agent::store::StoreState::Open
+                            {
                                 if let Screen::Settings(settings) = &app.screen {
                                     settings.update(cx, |settings, cx| {
                                         settings.update_remote_status(status.clone(), cx)
@@ -4016,6 +4079,7 @@ mod tests {
                     ),
                 ]
                 .into(),
+                remote_inventory_loaded: true,
                 next_connection_attempt: 0,
                 requested_navigation: None,
                 computers_sync_pending: false,

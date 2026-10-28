@@ -24,15 +24,38 @@ attempt. A failed attempt requires a new, locally opened window. Leaving Setting
 keeps the current window alive; returning shows the same code and remaining time,
 with Cancel available. Navigation never renews its deadline or attempt.
 
-Paired computers appear alongside local projects in the sidebar and project
-menus. Each group is **computer · folder**, with its tasks beneath it; a globe
-marks remote folders. The sidebar only shows folders with visible tasks; empty
-folders remain available in the project menus. Selecting a task or project also
-selects its execution computer. Select a **This computer** project to return to
-local work. Local-only installations retain the existing sidebar layout.
+The sidebar's **View options** menu groups tasks by **Project**, **Connection**,
+**Status**, or **In one list**. Connection becomes available after another
+computer is added, including while it is offline; enabling remote access on
+this computer alone does not add that choice. Project and Connection views keep
+known empty projects visible. Project view shows the computer name beside remote
+projects; Connection view places projects under their computer heading. Selecting
+a task or project also selects its execution computer; select a **This Computer**
+project to return to local work.
+
+**Sort tasks by** offers **Last updated** and **Manual order**, independently of
+grouping. Project and connection positions stay stable in either mode and can
+be rearranged by dragging. Dragging a task silently selects Manual order; this
+changes only presentation order, preserving its project, execution computer and
+status. The manual task order carries across grouping changes and restarts on
+the viewing desktop. New tasks appear at the top; activity on existing tasks
+does not reshuffle their manual order. Manual ranks and personal pins belong
+to the viewing desktop's signed-in account; grouping and sorting choices are
+saved on that desktop.
+
+Pinned tasks have their own presentation order, so dragging them does not
+change where they return when unpinned. Dragging in Status or In one list
+moves only that task; the relative order of other tasks stays intact. The
+initial Manual order includes loaded tasks in folded groups too.
+
+Manual refreshes coalesce repeated activity into one trailing reload, and
+replacing a reload cancels its stale scans. Pagination exposes a complete
+sorted prefix across Active and Settled; loading more extends that prefix
+instead of inserting older-state pages into gaps above existing rows. These
+are viewing-desktop behaviors and do not require a different remote protocol.
 
 Project display names belong to the execution computer and the signed-in account.
-**Rename project** in the sidebar project switcher updates that one name from
+**Rename project** in a sidebar project's menu updates that one name from
 either its desktop or a paired controller. Every computer's folders have this
 action, so renaming does not switch the current conversation or draft. Every
 connected desktop receives the change, including computers whose projects are
@@ -67,8 +90,15 @@ every thirty seconds also discovers empty projects selected by another desktop.
 This is an in-memory navigation cache, not offline transcript replication. Search,
 sidebar position and each computer's composer remain intact when switching.
 
-**New project…** opens the operating system's folder picker for this computer.
-Remote computers use the built-in browser, starting at that computer's home.
+With another computer added, the sidebar's **New project** button first asks
+which computer should own the project, independently of the task being viewed.
+Choose **This Computer** for the operating system's local folder picker, or a
+remote computer for its built-in folder browser. Without another computer added,
+the button opens the local picker directly. The remote browser starts at that
+computer's home.
+
+In Connection view, hover a computer heading and choose its **New project**
+folder-plus button to open that computer's folder selector directly.
 Browse folders, use the left arrow to go to the parent, enter an absolute path,
 or create one new folder, then choose **Use folder**. The built-in browser also
 serves as a fallback if the local platform picker is unavailable.
@@ -193,11 +223,15 @@ Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
 Version 6 and earlier peers receive an explicit version refusal. Bounded frames
 and an explicit task-operation allowlist apply.
+The viewing desktop applies sidebar grouping and manual ordering to summaries
+received through the existing navigation and project APIs. These preferences
+stay on that desktop; no ordering parameters, commands, or capabilities are
+added to the remote protocol.
 Account operations and arbitrary whole-host administration cannot be forwarded.
 The narrow experimental update capability uses the host's own signed updater;
 it does not expose the ordinary host-stop command.
 
-Optional discovery reports protocol version `7.0.0` and explicit capabilities
+Optional discovery reports protocol version `7.1.0` and explicit capabilities
 over separate request streams. The acknowledgement shape and ALPN remain
 readable across the required version transition. Bounded folder browsing and single-folder creation require
 the `project_folders_v1` capability. The controller checks support before sending
@@ -205,7 +239,7 @@ either folder command. A compatible host without that capability keeps ordinary
 project/task access and its existing remote-update support; only the folder
 browser reports that support is unavailable or an update is needed.
 
-Wire 7 requires attachment-reference sends. Images, ordinary files and archives
+Since wire 7, task sends require attachment references. Images, ordinary files and archives
 are copied into the execution daemon's session-owned plaintext file store;
 SQLite contains metadata. Local imports use a controller-local staged path.
 Remote imports send bounded metadata followed by raw bytes on a dedicated

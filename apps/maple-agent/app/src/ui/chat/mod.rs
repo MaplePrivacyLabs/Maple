@@ -94,6 +94,11 @@ pub struct PickQuestionOption {
 
 pub struct LoggedOut;
 
+pub(crate) struct SignOutFailed {
+    pub(crate) user_id: String,
+    pub(crate) message: String,
+}
+
 /// Emitted when the user opens app settings from the chat header.
 pub struct OpenSettings;
 
@@ -132,9 +137,9 @@ impl SidebarTransition {
 /// Height of the task header and the clear strip above the collapsed rail.
 const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
 /// Left inset for the header beside the rail: the traffic lights reach
-/// 30 px past it when the bar is transparent.
+/// 30 px past it, followed by an 8 px gap when the bar is transparent.
 const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = if titlebar::TRANSPARENT_TITLEBAR {
-    px(30.)
+    px(38.)
 } else {
     px(16.)
 };
@@ -603,6 +608,7 @@ pub struct ChatScreen {
     unresolved_sends: HashMap<String, UnresolvedSend>,
     attachment_uploads: HashMap<String, uploads::PendingUpload>,
     accept_send_results: bool,
+    sign_out_pending: bool,
     discarded_sends: HashSet<String>,
     checking_sends: bool,
     /// Source of `DraftAttachment::id`.
@@ -1044,10 +1050,10 @@ impl ChatScreen {
     }
 
     #[cfg(test)]
-    fn switcher_root_paths(&self, cx: &gpui::App) -> Vec<String> {
+    fn project_root_paths(&self, cx: &gpui::App) -> Vec<String> {
         self.sidebar
             .read(cx)
-            .switcher_root_paths()
+            .project_root_paths()
             .into_iter()
             .map(str::to_owned)
             .collect()
@@ -1360,6 +1366,7 @@ impl ChatScreen {
             unresolved_sends: HashMap::new(),
             attachment_uploads: HashMap::new(),
             accept_send_results: true,
+            sign_out_pending: false,
             discarded_sends: HashSet::new(),
             checking_sends: false,
             draft_counter: 0,
@@ -1581,7 +1588,10 @@ impl ChatScreen {
                         );
                         this.runtime_error = None;
                         // Runtime root is only the fallback used at startup.
-                        if this.selected_session.is_none()
+                        // A draft may have selected its folder before this
+                        // start, including a catalog's first remote activation.
+                        if !this.draft
+                            && this.selected_session.is_none()
                             && this.selection_generation == generation
                         {
                             this.set_project_context(status.project_root, cx);
@@ -1952,7 +1962,7 @@ impl ChatScreen {
                 if self.backend.remote_host().is_some() {
                     "Remote computer".into()
                 } else {
-                    "This computer".into()
+                    "This Computer".into()
                 }
             });
         let dialog = cx.new(|cx| {
@@ -4103,7 +4113,8 @@ impl ChatScreen {
         let Some((row, request)) = self.task_step_target(delta, cx) else {
             return;
         };
-        self.sidebar.read(cx).reveal_row(row);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.reveal_row(row, cx));
         if request.computer.as_deref() == self.backend.remote_host() {
             if let Destination::Task(id) = request.destination {
                 self.select_session(&id, cx);
@@ -5392,6 +5403,47 @@ impl ChatScreen {
     }
 
     pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
+        if self.sign_out_pending {
+            return;
+        }
+        self.sign_out_pending = true;
+        // Pending upload completions cannot admit a prompt while saving the
+        // account's final presentation edits before sign-out. Those edits are
+        // best effort: a failed flush must never keep an account signed in.
+        self.accept_send_results = false;
+        self.call(
+            async {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    crate::settings::flush_pending(),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        log::warn!("Could not save UI preferences before sign-out: {error}")
+                    }
+                    Err(_) => log::warn!("Saving UI preferences before sign-out timed out"),
+                }
+                Ok(())
+            },
+            cx,
+            |this, _, cx| this.sign_out_after_settings_flush(cx),
+        );
+    }
+
+    fn sign_out_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.sign_out_pending = false;
+        self.accept_send_results = true;
+        self.notice = Some(message.clone().into());
+        cx.emit(SignOutFailed {
+            user_id: self.user_id.clone(),
+            message,
+        });
+        cx.notify();
+    }
+
+    fn sign_out_after_settings_flush(&mut self, cx: &mut Context<Self>) {
         // A logout during upload must win before prompt admission, even while
         // the host is still shutting down an earlier run.
         self.accept_send_results = false;
@@ -5416,8 +5468,13 @@ impl ChatScreen {
                 backend.logout_and_clear(&user_id).await
             },
             cx,
-            |_this, _result, cx| {
-                cx.emit(LoggedOut);
+            |this, result, cx| match result {
+                Ok(()) => {
+                    this.sign_out_pending = false;
+                    crate::settings::retire_sidebar_account(&this.user_id);
+                    cx.emit(LoggedOut);
+                }
+                Err(message) => this.sign_out_failed(message, cx),
             },
         );
     }
@@ -6492,6 +6549,7 @@ impl ChatScreen {
 
 impl EventEmitter<crate::update::UpdateRequested> for ChatScreen {}
 impl EventEmitter<LoggedOut> for ChatScreen {}
+impl EventEmitter<SignOutFailed> for ChatScreen {}
 
 impl EventEmitter<OpenSettings> for ChatScreen {}
 impl EventEmitter<OpenSettingsSection> for ChatScreen {}
@@ -7020,7 +7078,7 @@ impl ChatScreen {
                     this.execute_command(ChatCommand::ToggleSidebar, window, cx);
                 }))
                 .child(
-                    crate::ui::icons::wordmark(sidebar::WORDMARK_HEIGHT, theme::text_primary())
+                    crate::ui::icons::wordmark(sidebar::WORDMARK_HEIGHT, theme::text_sidebar())
                         .path("icons/maple-mark.svg")
                         .debug_selector(|| "sidebar-rail-mark".to_string()),
                 ),
@@ -7260,12 +7318,10 @@ fn head_change_event(event: &notify::Event) -> bool {
         .any(|path| path.file_name().is_some_and(|name| name == "HEAD"))
 }
 
-/// Last path component of a project root, for chips and the sidebar.
-/// Upper-case section heading in the sidebar.
+/// Section heading in the sidebar.
 fn section_label(text: &'static str) -> Div {
     div()
-        .text_xs()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_sm()
         .text_color(gpui::rgb(theme::text_muted()))
         .child(text)
 }

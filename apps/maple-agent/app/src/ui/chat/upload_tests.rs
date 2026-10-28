@@ -64,11 +64,11 @@ impl UploadHost {
                                 send_id: request.send_id,
                                 params: request.params,
                             });
-                            if matches!(request.method.as_str(), "import_attachment" | "attachment_upload_status" | "send_message" | "send_outcome") {
+                            if matches!(request.method.as_str(), "import_attachment" | "attachment_upload_status" | "send_message" | "send_outcome" | "stop_runtime") {
                                 continue;
                             }
                             let result = match request.method.as_str() {
-                                "cancel_run" | "cancel_attachment_upload" | "set_ui_settings" | "set_remote_sidebar" | "flush_ui_settings" | "detach" => Ok(Value::Null),
+                                "cancel_run" | "cancel_attachment_upload" | "set_ui_settings" | "set_remote_sidebar" | "flush_ui_settings" | "logout_and_clear" | "detach" => Ok(Value::Null),
                                 "get_ui_settings" => Ok(serde_json::to_value(crate::settings::AppSettings::default()).unwrap()),
                                 "get_remote_sidebars" => Ok(json!({})),
                                 "list_slash_commands" => Ok(json!([])),
@@ -470,4 +470,58 @@ fn uploaded_prompt_waits_for_history_recovery_before_admission(cx: &mut TestAppC
         chat.update(cx, |chat, _| !chat.send_pending())
     });
     assert_eq!(host.requests("send_message").len(), 1);
+}
+
+#[gpui::test]
+fn sign_out_ignores_preference_failure_but_preserves_runtime_failure(cx: &mut TestAppContext) {
+    let host = UploadHost::new();
+    let (chat, cx) = chat_window(&host, cx);
+    let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+    crate::settings::install_test_settings(crate::settings::AppSettings::default());
+    // No settings sink exists, so the queued presentation edit cannot flush.
+    crate::settings::update_settings_and_wait(|settings| settings.theme = "dark".into());
+
+    chat.update(cx, |chat, cx| chat.sign_out(cx));
+    wait_for(cx, "runtime shutdown despite failed preferences", |_| {
+        host.requests("stop_runtime").len() == 1
+    });
+    host.reply(
+        &host.requests("stop_runtime")[0],
+        Err("Synthetic runtime shutdown failure".into()),
+    );
+    wait_for(cx, "authoritative shutdown failure", |cx| {
+        chat.update(cx, |chat, _| !chat.sign_out_pending)
+    });
+    chat.update(cx, |chat, _| {
+        assert!(chat.accept_send_results);
+        assert_eq!(
+            chat.notice.as_deref(),
+            Some("Synthetic runtime shutdown failure")
+        );
+        chat.notice = None;
+    });
+    assert!(host.requests("logout_and_clear").is_empty());
+
+    chat.update(cx, |chat, cx| chat.sign_out(cx));
+    wait_for(cx, "second runtime shutdown", |_| {
+        host.requests("stop_runtime").len() == 2
+    });
+    host.reply(
+        &host.requests("stop_runtime")[1],
+        Ok(json!({
+            "running": false,
+            "projectRoot": null,
+            "model": null,
+            "activeRuns": {}
+        })),
+    );
+    wait_for(cx, "logout despite failed preferences", |cx| {
+        host.requests("logout_and_clear").len() == 1
+            && chat.update(cx, |chat, _| !chat.sign_out_pending)
+    });
+    chat.update(cx, |chat, _| {
+        assert!(!chat.accept_send_results);
+        assert!(chat.notice.is_none());
+    });
+    crate::settings::install_test_settings(crate::settings::AppSettings::default());
 }

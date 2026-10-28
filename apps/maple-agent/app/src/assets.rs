@@ -16,6 +16,7 @@ macro_rules! assets {
 assets!(
     "icons/archive-restore.svg",
     "icons/archive.svg",
+    "icons/arrow-down.svg",
     "icons/arrow-left.svg",
     "icons/arrow-up.svg",
     "icons/brain.svg",
@@ -34,6 +35,7 @@ assets!(
     "icons/folder.svg",
     "icons/globe.svg",
     "icons/image.svg",
+    "icons/list-filter.svg",
     "icons/loader-circle.svg",
     "icons/lock.svg",
     "icons/mic.svg",
@@ -41,6 +43,7 @@ assets!(
     "icons/maple-wordmark.svg",
     "icons/maximize-2.svg",
     "icons/minimize-2.svg",
+    "icons/monitor.svg",
     // OpenAI mark (simple-icons, CC0) for the Codex integration card.
     "icons/openai-mark.svg",
     "icons/paperclip.svg",

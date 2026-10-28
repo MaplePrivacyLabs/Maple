@@ -52,6 +52,8 @@ bridge. Update the execution computer first while both still use wire 6, then
 update the controller through its local updater. During the expected mismatch,
 retain the original install operation rather than resubmitting it; verify the
 running identity and its receipt after both computers reconnect on wire 7.
+Sidebar grouping and manual ordering use those existing APIs and apply only on
+the viewing desktop; they require no remote protocol upgrade or capability.
 Updating the controller first requires updating the execution computer directly.
 A remote mismatch does not disable the controller's local update controls.
 Definite install refusals are shown as declined requests and require a new check

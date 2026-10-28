@@ -203,6 +203,8 @@ tokens! {
     // Dark body is Pebble 200 (~12:1 on the well), not Pebble 50, so
     // Regular and SemiBold stay distinct. Headings sit one step brighter.
     text_primary: 0xd1d2dc, 0x171717;
+    /// Sidebar text stays softer than body text in both themes.
+    text_sidebar: 0xbcbdc8, 0x45454b;
     text_heading: 0xe8e8ed, 0x171717;
     text_secondary: 0xbabccb, 0x525252;
     /// Captions. Light sits between neutral-500 and 600: neutral-400 was
@@ -242,6 +244,7 @@ tokens! {
     bg_sidebar_chrome: 0x1e1e24, 0xffffff;
     bg_sidebar_row_hover: 0x32323a, 0xe8e8ed;
     bg_sidebar_row_selected: 0x3a3a44, 0xd1d2dc;
+    bg_sidebar_row_selected_hover: 0x43434e, 0xc5c6d1;
 
     /// Display headings (Array face): pebble-300 on dark, pebble-800 on
     /// light, as the brand kit sets its section titles.
