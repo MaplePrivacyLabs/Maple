@@ -92,9 +92,10 @@ the other side of each contract. A failure means the workflow change is wrong:
    signature probe) trusts the same file's Windows Prod jobs and their runners.
 3. The release preflight (`.agents/skills/release-maple/scripts/ci_evidence.py`)
    needs the evidence jobs of `frontend-tests`, `rust-tests`, `web-build`,
-   `desktop-build`, `android-build` and `mobile-build` on master pushes, and
-   CodeQL on the exact commit. These run on every relevant master push and are
-   never cancelled.
+   `desktop-build`, `android-build` and `mobile-build` on master pushes, and a
+   CodeQL that is not red: the newest finished scan of the release commit or an
+   ancestor succeeded (a scan still running does not block). These run on every
+   relevant master push and are never cancelled.
 4. The signed master builds write the release cache keys above, and
    `ios-dev-testflight.yml`'s run number is the Maple Dev build number: never
    rename that file.

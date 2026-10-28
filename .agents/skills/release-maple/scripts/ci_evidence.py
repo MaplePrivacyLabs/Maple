@@ -19,7 +19,7 @@ WORKFLOWS = {
     ),
     "android-build.yml": ("build-android", "verify-android-artifacts"),
     "mobile-build.yml": ("build-ios", "verify-ios-artifacts", "submit-ios-testflight"),
-    # CodeQL is unfiltered and must execute on the exact release commit.
+    # CodeQL must not be red on the release commit or its ancestors (select_codeql).
     "codeql.yml": (),
 }
 
@@ -71,13 +71,11 @@ def eligible_runs(runs, repo, workflow):
                   key=lambda run: (run["created_at"], run["id"]), reverse=True)
 
 
-def select_evidence(runs, head, required, get_jobs, compatible, exact_only=False):
+def select_evidence(runs, head, required, get_jobs, compatible):
     for run in runs:
         sha = run["head_sha"]
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise EvidenceError("invalid run commit")
-        if exact_only and sha != head:
-            continue
         # Never choose an older green run over a newer failure or pending run.
         if run.get("status") != "completed" or run.get("conclusion") != "success":
             raise EvidenceError(f"run {run['id']} is {run.get('status')}/{run.get('conclusion')}")
@@ -88,6 +86,28 @@ def select_evidence(runs, head, required, get_jobs, compatible, exact_only=False
         return {"run_id": run["id"], "url": run["html_url"], "head_sha": sha,
                 "reused": sha != head}
     raise EvidenceError("no successful executed master run found in the bounded run history")
+
+
+def select_codeql(runs, head, get_jobs, ancestor):
+    """The newest finished CodeQL scan of the release commit or an ancestor must be green.
+
+    A release does not wait for the scan of its own commit: a scan still running,
+    or cancelled, neither helps nor blocks. A red scan blocks."""
+    for run in runs:
+        sha = run["head_sha"]
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise EvidenceError("invalid run commit")
+        if run.get("status") != "completed" or run.get("conclusion") in ("cancelled", "skipped"):
+            continue
+        if not ancestor(sha):
+            continue
+        if run.get("conclusion") != "success":
+            raise EvidenceError(f"run {run['id']} is red ({run.get('conclusion')})")
+        if not jobs_executed(get_jobs(run["id"]), ()):
+            continue
+        return {"run_id": run["id"], "url": run["html_url"], "head_sha": sha,
+                "reused": sha != head}
+    raise EvidenceError("no finished scan of the release commit or an ancestor in the bounded run history")
 
 
 def trees_compatible(before, after):
@@ -126,6 +146,13 @@ def collect(repo, head):
                     compatibility[sha] = trees_compatible(tree(sha), tree(head))
         return compatibility[sha]
 
+    ancestry = {head: True}
+
+    def ancestor(sha):
+        if sha not in ancestry:
+            ancestry[sha] = api(repo, f"compare/{sha}...{head}")["status"] in ("ahead", "identical")
+        return ancestry[sha]
+
     evidence = {}
     for workflow, required in WORKFLOWS.items():
         # Filter locally: require the canonical workflow, master source and permitted event.
@@ -138,9 +165,12 @@ def collect(repo, head):
             return data["jobs"]
 
         try:
-            evidence[workflow] = select_evidence(
-                eligible_runs(runs, repo, workflow), head, required, get_jobs,
-                compatible, exact_only=workflow == "codeql.yml")
+            if workflow == "codeql.yml":
+                evidence[workflow] = select_codeql(
+                    eligible_runs(runs, repo, workflow), head, get_jobs, ancestor)
+            else:
+                evidence[workflow] = select_evidence(
+                    eligible_runs(runs, repo, workflow), head, required, get_jobs, compatible)
         except EvidenceError as error:
             raise EvidenceError(f"{workflow}: {error}") from error
     return evidence
