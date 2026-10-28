@@ -679,6 +679,10 @@ fn mid_capture_cancellation_drains_the_worker_before_releasing_scratch() {
             }
         }
     }
+    #[cfg(windows)]
+    super::super::keys::write_windows_key_test_summary().unwrap_or_else(|error| {
+        panic!("Windows key resource summary failed: {:?}", error.kind());
+    });
 }
 
 #[test]
