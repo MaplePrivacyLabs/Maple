@@ -1047,6 +1047,34 @@ impl ChatScreen {
         Some(card)
     }
 
+    /// The composer's controls, held back while the runtime boots or the
+    /// first model load is in flight with no model chosen, then faded in
+    /// once. Held controls keep their layout and take no clicks.
+    fn reveal_composer_controls(
+        &mut self,
+        controls: Vec<gpui::AnyElement>,
+    ) -> (gpui::AnyElement, bool) {
+        let row = div().flex().items_center().gap_1().children(controls);
+        if self.selected_model.is_none() && (self.booting || self.models_loading) {
+            self.controls_held = true;
+            return (row.invisible().into_any_element(), true);
+        }
+        if std::mem::take(&mut self.controls_held) {
+            let generation = self
+                .controls_revealed
+                .map_or(0, |(_, generation)| generation + 1);
+            self.controls_revealed = Some((std::time::Instant::now(), generation));
+        }
+        let row = match self.controls_revealed {
+            Some((at, generation)) if at.elapsed() < motion::REVEAL * 2 => {
+                motion::fade_in(row, ("composer-controls-reveal", generation as usize))
+                    .into_any_element()
+            }
+            _ => row.into_any_element(),
+        };
+        (row, false)
+    }
+
     pub(super) fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
         // The first send's create keeps the composer's text on show and
@@ -1121,6 +1149,7 @@ impl ChatScreen {
                 self.render_composer_control(control, selected_control == Some(control), window, cx)
             })
             .collect::<Vec<_>>();
+        let (controls, controls_held) = self.reveal_composer_controls(controls);
         let drafts = &self.draft_attachments;
         let upload = self
             .selected_upload()
@@ -1315,12 +1344,15 @@ impl ChatScreen {
                     .pb_2()
                     .pt_1()
                     .debug_selector(|| "composer-chips".to_string())
-                    .children(controls)
+                    .relative()
+                    .child(controls)
                     .children(vim_badge)
                     .when(disabled, |row| {
                         row.child(
                             div()
                                 .debug_selector(|| "composer-status".to_string())
+                                // Over the held-back controls rather than after their space.
+                                .when(controls_held, |status| status.absolute().left_2())
                                 .flex()
                                 .items_center()
                                 .gap_1p5()

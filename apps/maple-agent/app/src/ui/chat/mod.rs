@@ -621,6 +621,16 @@ pub struct ChatScreen {
     model_catalog: HashMap<String, CatalogEntry>,
     /// Friendly labels from the advanced catalog; selection always uses IDs.
     model_labels: HashMap<String, String>,
+    /// The first model load is in flight. Until it lands with no model
+    /// chosen, the composer controls are laid out but not shown, so the
+    /// row appears once in its final shape instead of shifting.
+    models_loading: bool,
+    /// The controls were held back on the last frame; the next frame that
+    /// shows them fades them in.
+    controls_held: bool,
+    /// When the held-back controls were revealed, and a counter that gives
+    /// each reveal its own animation.
+    controls_revealed: Option<(std::time::Instant, u32)>,
     /// MCP servers with their enabled state for the selected task.
     session_mcp: Vec<AgentSessionMcpServer>,
     /// Count of enabled servers in `session_mcp`, for the composer chip.
@@ -1377,6 +1387,9 @@ impl ChatScreen {
             attachment_picking: false,
             model_catalog: HashMap::new(),
             model_labels: HashMap::new(),
+            models_loading: false,
+            controls_held: false,
+            controls_revealed: None,
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
             composer_expanded: false,
@@ -2136,42 +2149,42 @@ impl ChatScreen {
             .unwrap_or_else(|| "Choose folder".to_string())
     }
 
-    fn refresh_model_labels(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.model_catalog(&user_id).await },
-            cx,
-            |this, result, cx| {
-                if let Ok(catalog) = result {
-                    this.model_labels = composer::catalog_model_labels(&catalog);
-                    cx.notify();
-                }
-            },
-        );
-    }
-
-    fn refresh_models(&self, cx: &mut Context<Self>) {
-        // Presentation metadata loads independently so failure or latency does
-        // not affect the existing model list or default selection.
-        self.refresh_model_labels(cx);
+    fn refresh_models(&mut self, cx: &mut Context<Self>) {
+        self.models_loading = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let env_model = backend.configured_model();
         self.call(
             async move {
+                // Ids, labels and the saved pick land in one update, so the
+                // chip never shows a raw id before its label.
+                let catalog = backend.model_catalog(&user_id).await.ok();
                 let saved = backend.saved_model(&user_id).await;
                 let models = backend.available_model_ids(&user_id).await?;
-                Ok((models, saved))
+                Ok((models, saved, catalog))
             },
             cx,
             move |this, result, cx| {
-                if let Ok((models, saved)) = result {
+                this.models_loading = false;
+                if let Ok((mut models, saved, catalog)) = result {
+                    if let Some(catalog) = &catalog {
+                        this.model_labels = composer::catalog_model_labels(catalog);
+                        // An older execution computer lists every API model;
+                        // offer only what the catalog describes.
+                        let described =
+                            |model: &String| catalog.data.iter().any(|entry| &entry.id == model);
+                        if models.iter().any(described) {
+                            models.retain(described);
+                        }
+                    }
                     if this.default_model.is_none() {
-                        // Env override wins, then the account's saved
-                        // default, then the first catalog entry.
-                        this.default_model =
-                            env_model.or(saved).or_else(|| models.first().cloned());
+                        // Env override wins, then the user's last pick while
+                        // it is still offered, then the host's default, which
+                        // it lists first.
+                        let offered = |model: &String| models.is_empty() || models.contains(model);
+                        this.default_model = env_model
+                            .or(saved.filter(offered))
+                            .or_else(|| models.first().cloned());
                     }
                     if !this.model_locked && this.selected_model.is_none() {
                         this.selected_model = this.default_model.clone();

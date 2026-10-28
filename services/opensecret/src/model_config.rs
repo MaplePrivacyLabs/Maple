@@ -494,6 +494,17 @@ const PAID_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
     powerful: POWERFUL_MODEL_ID,
 };
 
+/// The concrete model Maple Work suggests for a new task when the user has
+/// not picked one. The agent runs locally and cannot follow a server-side
+/// model switch mid-task, so this is a suggestion for new tasks, not an alias.
+/// Clients that predate it ignore the field.
+const fn agent_default_model(plan: ModelPlan) -> &'static str {
+    match plan {
+        ModelPlan::Free => QUICK_MODEL_ID,
+        ModelPlan::Paid => DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    }
+}
+
 /// Models outside the catalog send no sampling and replay no reasoning.
 const UNCATALOGED_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig {
     sampling: None,
@@ -1253,7 +1264,8 @@ pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
         "aliases": aliases,
         "defaults": {
             "quick": AUTO_QUICK_MODEL_ID,
-            "powerful": AUTO_POWERFUL_MODEL_ID
+            "powerful": AUTO_POWERFUL_MODEL_ID,
+            "agent": agent_default_model(plan)
         },
         "audio": {
             "transcription": {
@@ -1660,6 +1672,22 @@ mod tests {
             assert!(!has_model(&catalog, "glm-5-2"));
             assert!(!has_model(&catalog, "deepseek-v4-flash"));
             assert!(has_model(&catalog, GLM_5_3_MODEL_ID));
+        }
+    }
+
+    #[test]
+    fn test_catalog_suggests_a_listed_agent_default_the_plan_can_use() {
+        for (plan, expected) in [
+            (ModelPlan::Free, QUICK_MODEL_ID),
+            (ModelPlan::Paid, DEEPSEEK_V4_1_FLASH_MODEL_ID),
+        ] {
+            let catalog = model_catalog_response(plan);
+            assert_eq!(catalog["defaults"]["agent"], expected, "plan={plan:?}");
+            let model = catalog_model(&catalog, expected);
+            assert_eq!(model["enabled"], true);
+            assert_eq!(model["deprecated"], false);
+            assert_eq!(model["capabilities"]["tool_use"], true);
+            assert!(plan.allows_model(expected));
         }
     }
 

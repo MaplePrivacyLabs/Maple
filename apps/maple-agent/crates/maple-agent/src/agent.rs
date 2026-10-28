@@ -62,8 +62,12 @@ pub use surface::{
 pub use tasks::NOTHING_TO_COMPACT_ERROR;
 pub use types::*;
 
-/// The model a new account starts on.
-const DEFAULT_AGENT_MODEL: &str = "glm-5-3";
+/// The model a new task starts on when the user has not picked one and the
+/// catalog suggests none it offers.
+const DEFAULT_AGENT_MODEL: &str = "deepseek-v4-1-flash";
+/// The built-in default before it; a saved `defaultModel` equal to it was
+/// not a pick.
+const PREVIOUS_BUILT_IN_AGENT_MODEL: &str = "glm-5-3";
 /// Earlier defaults; an account still saved with one moves to the current one.
 const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
 const PREVIOUS_RECOMMENDED_AGENT_MODEL: &str = "glm-5-2";
