@@ -2,6 +2,10 @@
   "identifier": "cloud.opensecret.maple.dev",
   "productName": "Maple Research Dev",
   "scheme": "cloud.opensecret.maple.dev",
+  "linux": {
+    "packageName": "maple-research-dev",
+    "runtimeDependencies": ["libwebkit2gtk-4.1.so.0()(64bit)"]
+  },
   "environment": {
     "MAPLE_DESKTOP_VARIANT": "dev",
     "VITE_MAPLE_DESKTOP_VARIANT": "dev",

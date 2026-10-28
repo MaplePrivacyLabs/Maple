@@ -39,7 +39,7 @@ fn validate_desktop_dev_profile() {
             std::env::var("VITE_MAPLE_DESKTOP_VARIANT").is_err(),
             "use the Research Dev desktop build script"
         );
-        if target_os == "macos" {
+        if matches!(target_os.as_str(), "macos" | "linux") {
             assert_ne!(
                 config["identifier"], "cloud.opensecret.maple.dev",
                 "use the Research Dev desktop build script for this bundle"
@@ -47,9 +47,9 @@ fn validate_desktop_dev_profile() {
         }
         return;
     }
-    assert_eq!(
-        target_os, "macos",
-        "Research Dev desktop packaging currently supports macOS"
+    assert!(
+        matches!(target_os.as_str(), "macos" | "linux"),
+        "Research Dev desktop packaging supports macOS and Linux"
     );
     let profile: serde_json::Value =
         serde_json::from_str(include_str!("desktop-dev-profile.json")).unwrap();
@@ -72,6 +72,9 @@ fn validate_desktop_dev_profile() {
         serde_json::json!([])
     );
     assert_eq!(config["bundle"]["createUpdaterArtifacts"], false);
+    if target_os == "linux" {
+        assert_eq!(config["mainBinaryName"], profile["linux"]["packageName"]);
+    }
 }
 
 #[allow(dead_code)]
