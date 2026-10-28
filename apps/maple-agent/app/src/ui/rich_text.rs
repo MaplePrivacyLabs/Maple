@@ -752,12 +752,14 @@ pub fn plain_paragraph(text: SharedString, ordinal: Option<u64>, ctx: &RenderCtx
 
 /// Code block with a language label and a copy button. `label` is the
 /// display name of the language; `copy_id` must be unique per block.
+/// `ordinal` makes the code selectable like a paragraph.
 pub fn code_block(
     code: SharedString,
     label: SharedString,
     id_name: SharedString,
     index: u64,
-    view: Option<gpui::EntityId>,
+    ordinal: Option<u64>,
+    ctx: &RenderCtx,
 ) -> Div {
     let copy_code = code.clone();
     let copy_id = ElementId::NamedInteger(id_name.clone(), index);
@@ -785,7 +787,7 @@ pub fn code_block(
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child(label),
                 )
-                .child(widgets::copy_button(copy_id, copy_code, None, view)),
+                .child(widgets::copy_button(copy_id, copy_code, None, ctx.view)),
         )
         .child(
             // Long lines scroll sideways instead of wrapping; a vertical
@@ -801,7 +803,18 @@ pub fn code_block(
                 .font_family(crate::assets::FONT_MONO)
                 .text_size(gpui::px(13.))
                 .text_color(gpui::rgb(theme::code_text()))
-                .child(code),
+                // The bare element, not a full-width paragraph div, so the
+                // scroll area measures the longest line.
+                .child(RichText {
+                    ordinal,
+                    text: code,
+                    highlights: Highlights::default(),
+                    links: Links::default(),
+                    mono: Mono::default(),
+                    selection: ctx.selection.clone(),
+                    focus: ctx.focus.clone(),
+                    styled: None,
+                }),
         )
 }
 
