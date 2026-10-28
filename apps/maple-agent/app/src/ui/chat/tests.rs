@@ -7618,10 +7618,15 @@ mod state_tests {
         // With a task menu open, the folder has no strip. An outside
         // press closes the menu and still reaches the folder underneath.
         press(cx, "menu-session-s1");
-        cx.update(|window, _| window.refresh());
-        cx.run_until_parked();
+        // As in press(), a cached view may need one extra paint for bounds.
+        let header = (0..2)
+            .find_map(|_| {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+                cx.debug_bounds("folder-/tmp/proj")
+            })
+            .expect("folder header");
         assert!(cx.debug_bounds("menu-project-/tmp/proj").is_none());
-        let header = cx.debug_bounds("folder-/tmp/proj").expect("folder header");
         cx.simulate_click(
             gpui::point(header.right() - px(30.), header.center().y),
             gpui::Modifiers::default(),
