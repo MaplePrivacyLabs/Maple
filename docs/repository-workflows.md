@@ -36,12 +36,16 @@ branches in step with the lane table.
   goes to the run's branch-scoped Actions cache, which `master` and other
   pull requests cannot read.
 - Lane caches (`Swatinem/rust-cache`, prefix `ci-v2`) are keyed by lane and
-  toolchain (the workspace's `flake.lock` and `rust-toolchain.toml`), which
-  must match exactly, then by rust-cache's lockfile hash, which may not: a
-  version bump restores its exact cache, and any other lockfile change the
-  newest cache of the same lane and toolchain. The restore key also hashes the
-  runner's rustc versions and `CARGO*`/`RUST*` variables, so a runner image
+  toolchain pins (the workspace's `flake.lock`, and OpenSecret's
+  `rust-toolchain.toml`), which must match exactly, then by rust-cache's
+  lockfile hash, which may not: a version bump restores its exact cache, and
+  any other lockfile change the newest cache of the same lane and toolchain.
+  The restore key also hashes the runner's rustc versions (the Windows lanes'
+  rustup pin among them) and `CARGO*`/`RUST*` variables, so a runner image
   with a new preinstalled Rust starts cold once, until master saves again.
+  rust-cache's save keeps every build of a crate still in the graph, so a
+  master run that will save a new cache first deletes the lane's target
+  directory: each saved cache holds one dependency graph.
   `agent-supply-chain` and `agent-provider`, which only resolve the Agent's
   dependency graph, share `agent-cargo-home`: the Cargo registry and git
   sources (zed and cua among them) without a target directory.
