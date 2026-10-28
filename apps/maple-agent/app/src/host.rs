@@ -3555,89 +3555,107 @@ mod tests {
 
     #[tokio::test]
     async fn retired_in_place_repair_refuses_before_runtime_drain_or_source_changes() {
-        fn snapshot(
-            path: &std::path::Path,
-        ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
-            fn visit(
-                root: &std::path::Path,
+        // Temporary Windows stress diagnosis inside the ordinary parallel suite.
+        for _ in 0..if cfg!(windows) { 20 } else { 1 } {
+            fn snapshot(
                 path: &std::path::Path,
-                files: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
-            ) {
-                for entry in std::fs::read_dir(path).unwrap() {
-                    let entry = entry.unwrap();
-                    let path = entry.path();
-                    if entry.file_type().unwrap().is_dir() {
-                        visit(root, &path, files);
-                    } else {
-                        assert!(entry.file_type().unwrap().is_file());
-                        files.insert(
-                            path.strip_prefix(root).unwrap().to_owned(),
-                            std::fs::read(path).unwrap(),
-                        );
+                shared_memory: &std::path::Path,
+            ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+                fn visit(
+                    root: &std::path::Path,
+                    path: &std::path::Path,
+                    shared_memory: &std::path::Path,
+                    files: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+                ) {
+                    for entry in std::fs::read_dir(path).unwrap() {
+                        let entry = entry.unwrap();
+                        let path = entry.path();
+                        // SQLite's WAL-index holds transient lock/read marks. Only
+                        // this exact file is excluded; database and WAL bytes stay.
+                        if path == shared_memory {
+                            continue;
+                        }
+                        if entry.file_type().unwrap().is_dir() {
+                            visit(root, &path, shared_memory, files);
+                        } else {
+                            assert!(entry.file_type().unwrap().is_file());
+                            files.insert(
+                                path.strip_prefix(root).unwrap().to_owned(),
+                                std::fs::read(path).unwrap(),
+                            );
+                        }
                     }
                 }
+                let mut files = std::collections::BTreeMap::new();
+                visit(path, path, shared_memory, &mut files);
+                files
             }
-            let mut files = std::collections::BTreeMap::new();
-            visit(path, path, &mut files);
-            files
+            let directory = tempfile::tempdir().unwrap();
+            let backend = Arc::new(LocalBackend::isolated_for_test(directory.path()));
+            let store = backend.store().unwrap().clone();
+            store
+                .set_app_setting("repair-refusal-sentinel", &serde_json::json!(true), 1)
+                .unwrap();
+            // Drain the seed write's queued checkpoint before comparing physical
+            // bytes. Reopen the same live store without queuing another commit.
+            store.close().unwrap();
+            store.initialize_plain().unwrap();
+            let receipts = Arc::new(receipts::Receipts::new(store.clone()));
+            let (events, mut observed) = broadcast::channel(16);
+            let remote = crate::remote::manager::Manager::new(
+                backend.clone(),
+                events.clone(),
+                receipts.clone(),
+            );
+            let owner = OwnerContext::new(Some(&store));
+            let generation = ConnectionGeneration::capture(&backend).unwrap();
+            let drain = owner.draining.subscribe();
+            let shared_memory = store.paths().db().join("maple.db-shm");
+            let before = snapshot(store.paths().root(), &shared_memory);
+            // A stale repair request must return without joining the operation or
+            // admission queues, including while another operation owns them.
+            let _operation = owner.operation.lock().await;
+            let _admission = owner.admission.read().await;
+            let result = tokio::time::timeout(
+                Duration::from_millis(100),
+                owner.dispatch(
+                    &backend,
+                    &remote,
+                    &events,
+                    protocol::SensitiveRequest(Request {
+                        id: 1,
+                        method: "repair_store".into(),
+                        send_id: None,
+                        params: serde_json::json!({"rebuild_timeline":true}),
+                    }),
+                    receipts,
+                    &generation,
+                ),
+            )
+            .await
+            .expect("retired repair cannot wait for a runtime drain");
+            assert_eq!(
+                result.unwrap_err(),
+                repair::retired_operation_error("repair_store").unwrap()
+            );
+            assert_eq!(snapshot(store.paths().root(), &shared_memory), before);
+            assert_eq!(store.state(), StoreState::Open);
+            assert!(!owner.busy.load(Ordering::Acquire));
+            assert!(!owner.maintenance.load(Ordering::Acquire));
+            assert!(!drain.has_changed().unwrap());
+            assert!(matches!(
+                observed.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+            assert!(owner.completion_notice.lock().unwrap().is_none());
+            assert_eq!(
+                store.app_setting("repair-refusal-sentinel").unwrap(),
+                Some(serde_json::json!(true))
+            );
+            store
+                .set_app_setting("after-retired-repair", &serde_json::json!(true), 2)
+                .unwrap();
         }
-        let directory = tempfile::tempdir().unwrap();
-        let backend = Arc::new(LocalBackend::isolated_for_test(directory.path()));
-        let store = backend.store().unwrap().clone();
-        store
-            .set_app_setting("repair-refusal-sentinel", &serde_json::json!(true), 1)
-            .unwrap();
-        let receipts = Arc::new(receipts::Receipts::new(store.clone()));
-        let (events, mut observed) = broadcast::channel(16);
-        let remote =
-            crate::remote::manager::Manager::new(backend.clone(), events.clone(), receipts.clone());
-        let owner = OwnerContext::new(Some(&store));
-        let generation = ConnectionGeneration::capture(&backend).unwrap();
-        let drain = owner.draining.subscribe();
-        let before = snapshot(store.paths().root());
-        // A stale repair request must return without joining the operation or
-        // admission queues, including while another operation owns them.
-        let _operation = owner.operation.lock().await;
-        let _admission = owner.admission.read().await;
-        let result = tokio::time::timeout(
-            Duration::from_millis(100),
-            owner.dispatch(
-                &backend,
-                &remote,
-                &events,
-                protocol::SensitiveRequest(Request {
-                    id: 1,
-                    method: "repair_store".into(),
-                    send_id: None,
-                    params: serde_json::json!({"rebuild_timeline":true}),
-                }),
-                receipts,
-                &generation,
-            ),
-        )
-        .await
-        .expect("retired repair cannot wait for a runtime drain");
-        assert_eq!(
-            result.unwrap_err(),
-            repair::retired_operation_error("repair_store").unwrap()
-        );
-        assert_eq!(snapshot(store.paths().root()), before);
-        assert_eq!(store.state(), StoreState::Open);
-        assert!(!owner.busy.load(Ordering::Acquire));
-        assert!(!owner.maintenance.load(Ordering::Acquire));
-        assert!(!drain.has_changed().unwrap());
-        assert!(matches!(
-            observed.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-        assert!(owner.completion_notice.lock().unwrap().is_none());
-        assert_eq!(
-            store.app_setting("repair-refusal-sentinel").unwrap(),
-            Some(serde_json::json!(true))
-        );
-        store
-            .set_app_setting("after-retired-repair", &serde_json::json!(true), 2)
-            .unwrap();
     }
 
     #[tokio::test]

@@ -579,69 +579,104 @@ fn reused_account_identity_task_uuid_or_store_metadata_cannot_authorize_captured
 
 #[test]
 fn mid_capture_cancellation_drains_the_worker_before_releasing_scratch() {
-    for keyed in [false, true] {
-        for close_store in [false, true] {
-            let (_directory, store, account, mut manager) = fixture(keyed);
-            manager.append_message(user("first copied row", 10));
-            manager.append_message(user("remaining uncopied row", 20));
-            let before = files_below(store.paths().root());
-            let cancellation = Arc::new(AtomicBool::new(false));
-            let registration = store
-                .prepare_replay_capture(
-                    account,
-                    TASK,
-                    store.task_history_stamp(account, TASK).unwrap(),
-                    cancellation.clone(),
-                    CAPTURE_BUDGET,
-                )
-                .unwrap();
-            let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
-            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-            *registration.snapshot.capture_hook.lock().unwrap() = Some(Box::new(move || {
-                entered_tx.send(()).unwrap();
-                release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
-            }));
-            let worker = std::thread::spawn(move || registration.run());
-            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-            assert!(
-                files_below(store.paths().root())
-                    .difference(&before)
-                    .next()
-                    .is_some()
-            );
+    // Temporary Windows diagnosis: retain the ordinary suite's concurrent load
+    // while exercising every keyed/close combination repeatedly.
+    let iterations = if cfg!(windows) { 20 } else { 1 };
+    for iteration in 1..=iterations {
+        for keyed in [false, true] {
+            for close_store in [false, true] {
+                let (_directory, store, account, mut manager) = fixture(keyed);
+                manager.append_message(user("first copied row", 10));
+                manager.append_message(user("remaining uncopied row", 20));
+                let before = files_below(store.paths().root());
+                let cancellation = Arc::new(AtomicBool::new(false));
+                let registration = store
+                    .prepare_replay_capture(
+                        account,
+                        TASK,
+                        store.task_history_stamp(account, TASK).unwrap(),
+                        cancellation.clone(),
+                        CAPTURE_BUDGET,
+                    )
+                    .unwrap();
+                let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+                let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+                *registration.snapshot.capture_hook.lock().unwrap() = Some(Box::new(move || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                }));
+                let worker = std::thread::spawn(move || {
+                    let result = registration.run();
+                    (result, capture_last_stage())
+                });
+                if let Err(entered) = entered_rx.recv_timeout(Duration::from_secs(10)) {
+                    // A failed capture drops the hook sender. Preserve the actual
+                    // worker result instead of reporting only Disconnected, and
+                    // release a late hook before joining after a timeout.
+                    let _ = release_tx.send(());
+                    match worker.join() {
+                        Ok((Err(error), stage)) => panic!(
+                            "capture did not reach its first-row hook: {entered:?}; \
+                         iteration={iteration}, keyed={keyed}, close_store={close_store}; \
+                         stage={stage}; worker failed: {error:?}"
+                        ),
+                        Ok((Ok(snapshot), stage)) => {
+                            let closed = snapshot.close();
+                            panic!(
+                                "capture did not reach its first-row hook: {entered:?}; \
+                             iteration={iteration}, keyed={keyed}, close_store={close_store}; \
+                             stage={stage}; worker completed without the hook; close={closed:?}"
+                            );
+                        }
+                        Err(panic) => {
+                            eprintln!(
+                                "capture worker panicked before its first-row hook: {entered:?}; \
+                             iteration={iteration}, keyed={keyed}, close_store={close_store}"
+                            );
+                            std::panic::resume_unwind(panic);
+                        }
+                    }
+                }
+                assert!(
+                    files_below(store.paths().root())
+                        .difference(&before)
+                        .next()
+                        .is_some()
+                );
 
-            let draining_store = store.clone();
-            let (drained_tx, drained_rx) = std::sync::mpsc::sync_channel(1);
-            let draining = std::thread::spawn(move || {
-                let result = if close_store {
-                    draining_store.close()
-                } else {
-                    draining_store.cancel_all_replays()
-                };
-                drained_tx.send(result).unwrap();
-            });
-            let started = std::time::Instant::now();
-            while !cancellation.load(Ordering::Acquire)
-                && started.elapsed() < Duration::from_secs(5)
-            {
-                std::thread::sleep(Duration::from_millis(1));
+                let draining_store = store.clone();
+                let (drained_tx, drained_rx) = std::sync::mpsc::sync_channel(1);
+                let draining = std::thread::spawn(move || {
+                    let result = if close_store {
+                        draining_store.close()
+                    } else {
+                        draining_store.cancel_all_replays()
+                    };
+                    drained_tx.send(result).unwrap();
+                });
+                let started = std::time::Instant::now();
+                while !cancellation.load(Ordering::Acquire)
+                    && started.elapsed() < Duration::from_secs(5)
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let cancellation_observed = cancellation.load(Ordering::Acquire);
+                let early_drain = drained_rx.try_recv();
+                // Release before assertions so a failing check never leaves a
+                // blocking capture or drain detached behind the test harness.
+                release_tx.send(()).unwrap();
+                let (captured, _) = worker.join().unwrap();
+                let drained = drained_rx.recv_timeout(Duration::from_secs(10));
+                draining.join().unwrap();
+                assert!(cancellation_observed);
+                assert!(matches!(
+                    early_drain,
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ));
+                assert!(captured.is_err());
+                drained.unwrap().unwrap();
+                assert!(files_below(store.paths().root()).is_subset(&before));
             }
-            let cancellation_observed = cancellation.load(Ordering::Acquire);
-            let early_drain = drained_rx.try_recv();
-            // Release before assertions so a failing check never leaves a
-            // blocking capture or drain detached behind the test harness.
-            release_tx.send(()).unwrap();
-            let captured = worker.join().unwrap();
-            let drained = drained_rx.recv_timeout(Duration::from_secs(10));
-            draining.join().unwrap();
-            assert!(cancellation_observed);
-            assert!(matches!(
-                early_drain,
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            ));
-            assert!(captured.is_err());
-            drained.unwrap().unwrap();
-            assert!(files_below(store.paths().root()).is_subset(&before));
         }
     }
 }
