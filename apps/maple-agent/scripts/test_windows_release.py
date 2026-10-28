@@ -620,11 +620,11 @@ class InteractiveInstallerSmokeTests(unittest.TestCase):
         ui.applications.side_effect = lambda _executable: [application] if launched and process.returncode == 0 else []
         return process, application, ui
 
-    def execute(self, process, ui):
+    def execute(self, process, ui, **options):
         environment = {"FIXTURE": "sanitized"}
         clock = self.Clock()
         with patch.object(release, "WindowsSmokeUI", return_value=ui), patch.object(release.subprocess, "Popen", return_value=process) as popen, patch.object(release.time, "monotonic", clock.monotonic), patch.object(release.time, "sleep", clock.sleep):
-            release.interactive_installer_smoke(Path("C:/setup with spaces.exe"), Path("C:/private/install with spaces"), Path("C:/private/install with spaces/versions/0.1.2-12/maple-agent.exe"), Path("C:/private"), environment)
+            release.interactive_installer_smoke(Path("C:/setup with spaces.exe"), Path("C:/private/install with spaces"), Path("C:/private/install with spaces/versions/0.1.2-12/maple-agent.exe"), Path("C:/private"), environment, **options)
         return popen, environment, clock
 
     def test_drives_only_owned_installer_and_requires_its_actual_visible_auto_launch(self):
@@ -650,6 +650,36 @@ class InteractiveInstallerSmokeTests(unittest.TestCase):
         ui.click.assert_not_called()
         application.close.assert_not_called()
         process.terminate.assert_not_called()
+
+    def test_legacy_seed_runs_after_install_before_close_and_gui_waits_for_real_metadata(self):
+        process, application, ui = self.harness()
+        def seed(timeout):
+            self.assertGreater(timeout, 0)
+            self.assertIsNone(process.returncode)
+            self.assertEqual(ui.click.call_args_list, [unittest.mock.call((123, "Install"))])
+        before_close = Mock(side_effect=seed)
+        integration_ready = Mock(side_effect=[False, False, True])
+        self.execute(process, ui, before_close=before_close, integration_ready=integration_ready)
+        before_close.assert_called_once()
+        self.assertEqual(integration_ready.call_count, 3)
+        application.close.assert_called_once()
+
+    def test_visible_app_with_unfinished_icon_migration_cannot_pass(self):
+        process, application, ui = self.harness()
+        integration_ready = Mock(return_value=False)
+        with self.assertRaisesRegex(ValueError, "shell icon refresh did not finish"):
+            self.execute(process, ui, integration_ready=integration_ready)
+        integration_ready.assert_called()
+        application.close.assert_called_once()
+
+    def test_auto_launched_gui_must_remain_live_during_metadata_inspection(self):
+        process, application, ui = self.harness()
+        def ready(_timeout):
+            application.alive.return_value = False
+            return True
+        with self.assertRaisesRegex(ValueError, "during icon verification"):
+            self.execute(process, ui, integration_ready=ready)
+        application.close.assert_called_once()
 
     def test_missing_install_ui_times_out_and_stops_only_the_owned_installer(self):
         process, application, ui = self.harness(buttons=False)
@@ -774,6 +804,154 @@ class InteractiveInstallerSmokeTests(unittest.TestCase):
                     self.assertIs(raised.exception, primary)
                 ui.kernel.TerminateProcess.assert_called_once_with(987, 1)
                 ui.kernel.CloseHandle.assert_called_once_with(987)
+
+
+class WindowsIntegrationProbeTests(unittest.TestCase):
+    def probe(self, scratch):
+        installed = scratch / "install with spaces"
+        registry = Mock(KEY_READ=1, KEY_WOW64_32KEY=2, KEY_SET_VALUE=4, HKEY_CURRENT_USER=5, REG_SZ=1)
+        key = Mock()
+        key.__enter__ = Mock(return_value=key)
+        key.__exit__ = Mock(return_value=False)
+        registry.OpenKey.return_value = key
+        values = {"InstallLocation": str(installed), "DisplayIcon": f'"{installed / "maple-agent.exe"}",0'}
+        registry.QueryValueEx.side_effect = lambda _key, name: (values[name], 1)
+        registry.SetValueEx.side_effect = lambda _key, name, _reserved, _kind, value: values.update({name: value})
+        with patch.dict(release.os.environ, {"SystemRoot": "C:/Windows"}):
+            probe = release.WindowsIntegrationProbe(info(), installed, scratch, {"FIXTURE": "sanitized"}, registry)
+        return probe, registry, values
+
+    def metadata(self, probe, *, migrated=False):
+        return {name: {
+            "target": str(probe.installed / target), "arguments": "",
+            "working_directory": str(probe.scratch), "description": "Maple icon migration smoke fixture",
+            "hotkey": "", "window_style": 1,
+            "icon_location": f'{probe.icon if migrated else probe.installed / target},0',
+        } for name, target in (("main", "maple-agent.exe"), ("uninstall", "uninstall.exe"))}
+
+    def test_cache_path_and_bytes_are_derived_independently_from_canonical_profile_artwork(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            probe, _, _ = self.probe(scratch)
+            artwork = (release.COMPONENT / "app/packaging/maple-agent-dev.ico").read_bytes()
+            self.assertEqual(probe.artwork, artwork)
+            self.assertEqual(probe.icon, scratch / "data" / info()["data_namespace"] / "windows-integration" / (hashlib.sha256(artwork).hexdigest() + ".ico"))
+            self.assertFalse(probe.icon.is_relative_to(probe.installed))
+            self.assertFalse(probe.icon.is_relative_to(scratch / "data" / info()["data_namespace"] / "store-v1"))
+
+    def test_seed_uses_absolute_builtin_powershell_and_literal_file_arguments_for_fixed_owned_links(self):
+        with tempfile.TemporaryDirectory(prefix="maple $literal ") as temporary:
+            probe, registry, values = self.probe(Path(temporary))
+            metadata = self.metadata(probe)
+            result = subprocess.CompletedProcess("fixture probe", 0, json.dumps(metadata).encode())
+            with patch.object(release, "capture_preflight", return_value=result) as capture:
+                probe.seed()
+            arguments, environment = capture.call_args.args
+            self.assertEqual(arguments[0], Path("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"))
+            self.assertEqual(arguments[-4:], ["seed", info()["display_name"], probe.installed, probe.scratch])
+            self.assertEqual(environment, {"FIXTURE": "sanitized"})
+            self.assertEqual(capture.call_args.kwargs["timeout"], 20)
+            self.assertEqual(probe.before, metadata)
+            self.assertEqual(values["DisplayIcon"], f'"{probe.installed / "maple-agent.exe"}",0')
+            registry.SetValueEx.assert_called_once()
+
+    def test_seed_refuses_a_changed_registered_root_before_any_shortcut_or_registry_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            probe, registry, values = self.probe(Path(temporary))
+            values["InstallLocation"] = "C:/another installation"
+            with patch.object(release, "capture_preflight") as capture, self.assertRaisesRegex(ValueError, "changed installation root"):
+                probe.seed()
+            capture.assert_not_called()
+            registry.SetValueEx.assert_not_called()
+
+    def test_old_display_metadata_is_pending_and_does_not_probe_shortcuts_or_an_arbitrary_image(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            probe, _, values = self.probe(Path(temporary))
+            probe.before = self.metadata(probe)
+            for value in (values["DisplayIcon"], '"C:/unrelated/icon.ico",0'):
+                values["DisplayIcon"] = value
+                with patch.object(probe, "shortcuts") as shortcuts:
+                    self.assertFalse(probe.ready())
+                shortcuts.assert_not_called()
+
+    def test_final_metadata_requires_exact_canonical_file_and_preserves_all_other_link_properties(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            probe, _, values = self.probe(Path(temporary))
+            probe.before = self.metadata(probe)
+            values["DisplayIcon"] = f'"{probe.icon}",0'
+            probe.icon.parent.mkdir(parents=True)
+            probe.icon.write_bytes(probe.artwork)
+            actual = self.metadata(probe, migrated=True)
+            with patch.object(probe, "shortcuts", return_value=actual) as shortcuts:
+                self.assertTrue(probe.ready(timeout=7))
+            shortcuts.assert_called_once_with(timeout=7)
+            for field in ("target", "arguments", "working_directory", "description", "hotkey", "window_style"):
+                with self.subTest(field=field):
+                    changed = json.loads(json.dumps(actual))
+                    changed["main"][field] = "changed"
+                    with patch.object(probe, "shortcuts", return_value=changed), self.assertRaisesRegex(ValueError, "non-icon"):
+                        probe.ready()
+            actual["uninstall"]["icon_location"] = str(probe.installed / "versions/old/maple-agent.exe") + ",0"
+            with patch.object(probe, "shortcuts", return_value=actual), self.assertRaisesRegex(ValueError, "persistent profile"):
+                probe.ready()
+            probe.icon.write_bytes(b"wrong artwork")
+            with self.assertRaisesRegex(ValueError, "canonical profile artwork"):
+                probe.ready()
+
+    def test_link_probe_rejects_missing_extra_or_duplicate_native_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            probe, _, _ = self.probe(Path(temporary))
+            for output in (b'{}', b'{"main":{},"uninstall":{}}', b'{"main":{},"main":{},"uninstall":{}}'):
+                result = subprocess.CompletedProcess("fixture probe", 0, output)
+                with self.subTest(output=output), patch.object(release, "capture_preflight", return_value=result), self.assertRaises(ValueError):
+                    probe.shortcuts()
+
+    def test_icon_reference_accepts_only_the_expected_file_and_zero_index(self):
+        path = Path("C:/Maple icons/canonical.ico")
+        for value in ('"C:\\Maple icons\\canonical.ico",0', 'c:/maple icons/canonical.ico, 0'):
+            self.assertTrue(release.windows_icon_equal(value, path))
+        for value in (None, str(path), str(path) + ",1", str(path) + ",0,0", '"C:/other.ico",0'):
+            self.assertFalse(release.windows_icon_equal(value, path))
+
+    def test_gui_requires_first_render_and_lifetime_before_integration_readiness(self):
+        for rendered in (False, True):
+            with self.subTest(rendered=rendered), tempfile.TemporaryDirectory() as temporary:
+                clock = InteractiveInstallerSmokeTests.Clock()
+                process = Mock()
+                process.poll.return_value = None
+                def spawn(_arguments, **options):
+                    if rendered:
+                        options["stderr"].write(b"startup: window open at 0\nstartup: first render at 0\n")
+                        options["stderr"].flush()
+                    return process
+                ready = Mock(side_effect=[False, True])
+                with patch.object(release.subprocess, "Popen", side_effect=spawn), patch.object(release.time, "monotonic", clock.monotonic), patch.object(release.time, "sleep", clock.sleep), patch.object(sys, "stderr", io.StringIO()):
+                    if rendered:
+                        release.gui_smoke(Path("private/generation.exe"), Path(temporary), {}, integration_ready=ready)
+                        self.assertEqual(ready.call_count, 2)
+                        self.assertGreaterEqual(clock.now, 11)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "create and render"):
+                            release.gui_smoke(Path("private/generation.exe"), Path(temporary), {}, integration_ready=ready)
+                        ready.assert_not_called()
+                process.terminate.assert_called_once()
+
+    def test_rendered_gui_cannot_exit_during_metadata_probe_and_still_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            clock = InteractiveInstallerSmokeTests.Clock()
+            process = Mock(returncode=None)
+            process.poll.side_effect = lambda: process.returncode
+            def spawn(_arguments, **options):
+                options["stderr"].write(b"startup: window open at 0\nstartup: first render at 0\n")
+                options["stderr"].flush()
+                return process
+            def ready(_timeout):
+                process.returncode = 1
+                return True
+            with patch.object(release.subprocess, "Popen", side_effect=spawn), patch.object(release.time, "monotonic", clock.monotonic), patch.object(release.time, "sleep", clock.sleep), patch.object(sys, "stderr", io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "during icon verification"):
+                    release.gui_smoke(Path("private/generation.exe"), Path(temporary), {}, integration_ready=ready)
+            process.terminate.assert_not_called()
 
 
 class PointerPinTests(unittest.TestCase):
