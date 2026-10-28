@@ -214,6 +214,9 @@ def quarantined() -> List[str]:
 
 
 def cache_key(lane: Lane) -> str:
+    """The part of a lane's rust-cache key that must match exactly: its toolchain pins.
+    rust-cache appends the lockfile hash after the restore key, so a lockfile change
+    restores the newest cache of the same lane and toolchain."""
     digest = hashlib.sha256()
     for name in lane.cache_files:
         digest.update((ROOT / name).read_bytes())

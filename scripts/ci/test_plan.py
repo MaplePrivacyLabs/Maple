@@ -179,10 +179,9 @@ class LaneTableTests(unittest.TestCase):
         for path in ("apps/maple-agent/crates/maple-agent-updater/src/installer.rs",
                      "apps/maple-agent/app/src/windows_bootstrap.rs",
                      ".github/actions/setup-agent-windows/action.yml", "scripts/ci/agent_windows.py"):
-            for event in (PR, QUEUE):
+            for event in (PR, QUEUE, PUSH):  # a master push saves its cache
                 with self.subTest(path=path, event=event):
                     self.assertIn("agent-windows-updater", selected([path], event))
-            self.assertNotIn("agent-windows-updater", selected([path], PUSH))  # nightly runs it on master
         # Its dependency versions, features and profiles, and CI edits, run it too.
         for path in ("apps/maple-agent/Cargo.lock", "apps/maple-agent/Cargo.toml", ".github/workflows/ci.yml"):
             with self.subTest(path=path):
@@ -611,6 +610,18 @@ class PlannerTests(unittest.TestCase):
                           lanes.LINUX.label))
         entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
         self.assertEqual({len(entry["cache_key"]) for entry in entries if entry["cache"]}, {16})
+
+    def test_a_cache_key_pins_the_toolchain_and_leaves_lockfiles_to_rust_cache(self):
+        # rust-cache hashes the lockfiles after the restore key, so a lockfile change falls
+        # back by prefix; the planner's part must match exactly and holds only the pins.
+        for lane in lanes.LANES:
+            if lane.cache:
+                workspace = lane.workspaces.split("->")[0].strip()
+                pins = {f"{workspace}/{name}" for name in ("flake.lock", "rust-toolchain.toml")
+                        if (plan.ROOT / workspace / name).is_file()}
+                with self.subTest(lane=lane.id):
+                    self.assertIn(f"{workspace}/flake.lock", pins)
+                    self.assertEqual(set(lane.cache_files), pins)
 
     def test_a_cache_is_saved_only_into_the_home_runners_store(self):
         def saves(**overrides):

@@ -449,6 +449,25 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(saves, ["push"])
                 self.assertEqual(variants(workflows()[name]["jobs"][job_id], "push"), ["prod"])
 
+    def test_c4_lane_caches_fall_back_by_lockfile_only_within_their_own_family(self):
+        # The planner's shared key holds only toolchain pins, so rust-cache must hash the
+        # lockfiles itself: after the restore key, so a lockfile change restores by prefix.
+        steps = [step for job_id in plan.MATRIX_JOBS for step in workflows()["ci.yml"]["jobs"][job_id]["steps"]
+                 if step.get("uses", "").startswith("Swatinem/rust-cache@")]
+        self.assertEqual(len(steps), len(plan.MATRIX_JOBS))
+        families = set()
+        for step in steps:
+            self.assertEqual(step["with"]["shared-key"], "${{ matrix.cache }}-${{ matrix.cache_key }}")
+            self.assertEqual(step["with"]["add-rust-environment-hash-key"], "true")
+            families |= {f"{step['with']['prefix-key']}-{lane.cache}-" for lane in plan.LANES if lane.cache}
+        # No lane family overlaps a release family, and no other cache step reads or writes one.
+        release = RESERVED_PREFIXES + ("ci-v1-agent-release-", "ci-v1-agent-package-")
+        self.assertFalse([family for family in families if family.startswith(release)])
+        foreign = [(name, job_id) for name, job_id, step in cache_steps()
+                   for key in [step["with"].get("key", "")] + str(step["with"].get("restore-keys", "")).splitlines()
+                   if key.strip().startswith(tuple(families))]
+        self.assertEqual(foreign, [])
+
     def test_c4_dev_testflight_build_number_is_the_run_number(self):
         job = workflows()["ios-dev-testflight.yml"]["jobs"]["build-ios-dev"]
         identity = next(step for step in job["steps"] if step.get("id") == "identity")

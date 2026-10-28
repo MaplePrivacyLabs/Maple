@@ -107,12 +107,14 @@ jobs:
         if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          prefix-key: ci-v1
-          # rust-cache ignores `key` when `shared-key` is set, so the lockfile
-          # hash (which also pins the flake's toolchain) goes into the shared key.
+          prefix-key: ci-v2
+          # Restore key: the prefix, the shared key (the lane and its toolchain pins,
+          # plan.py cache_key) and the runner's rustc versions and CARGO*/RUST* variables.
+          # The cache key adds third-party Cargo.lock entries and versionless manifests:
+          # a version bump hits exactly, any other lockfile change restores by prefix.
           shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
           workspaces: ${{ matrix.workspaces }}
-          add-rust-environment-hash-key: "false"
+          add-rust-environment-hash-key: "true"
           # The action runs cargo from the workspace directory: use an absolute flake path.
           cmd-format: nix develop --no-update-lock-file ${{ github.workspace }}/${{ matrix.flake }} -c {0}
           # cache_save (plan.py): a failover runner never saves into another vendor's store.
@@ -144,10 +146,11 @@ jobs:
         if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          prefix-key: ci-v1
+          # Keys as in the nix job: a lockfile change restores by prefix.
+          prefix-key: ci-v2
           shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
           workspaces: ${{ matrix.workspaces }}
-          add-rust-environment-hash-key: "false"
+          add-rust-environment-hash-key: "true"
           # cache_save (plan.py): a failover runner never saves into another vendor's store.
           save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && matrix.cache_save }}
       - name: Run lane

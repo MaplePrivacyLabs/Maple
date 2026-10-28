@@ -133,9 +133,9 @@ class Lane:
     workdir: str = "."
     run: str = ""
     env: Tuple[Tuple[str, str], ...] = ()
-    cache: str = ""                             # rust-cache shared key under the ci-v1 prefix
+    cache: str = ""                             # rust-cache shared key under ci.yml's ci-v2 prefix
     workspaces: str = ""
-    cache_files: Tuple[str, ...] = ()           # hashed into the cache key
+    cache_files: Tuple[str, ...] = ()           # toolchain pins, hashed into the shared key
     timeout: int = 15
     gate: bool = True                           # selected by CI_INFRA edits
     opensecret: Optional[str] = None            # the opensecret_change_detection.py output that selects it
@@ -146,7 +146,7 @@ class Lane:
 
 AGENT_DIR = dict(
     workdir="apps/maple-agent", workspaces="apps/maple-agent -> target",
-    cache_files=("apps/maple-agent/flake.lock", "apps/maple-agent/Cargo.lock"),
+    cache_files=("apps/maple-agent/flake.lock",),
     env=(("RUSTFLAGS", "-D warnings"),),
 )
 AGENT_FLAKE = dict(flake="./apps/maple-agent", **AGENT_DIR)
@@ -225,8 +225,9 @@ LANES: Tuple[Lane, ...] = (
          cache="agent-windows", timeout=45, **AGENT_WIN),
     # The updater's native Windows filesystem, Authenticode, transaction and bootstrap
     # tests, on GitHub's free image (16 cores only add queueing to a 2 s suite); master
-    # runs them nightly. Serial and no-fail-fast, as the suite's fixtures were qualified.
-    Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"), events=PR_AND_NIGHTLY,
+    # pushes run them too and save their cache. Serial and no-fail-fast, as the suite's
+    # fixtures were qualified.
+    Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"),
          run="cargo test -p maple-agent-updater --locked --no-fail-fast -- --test-threads=1",
          cache="agent-windows-updater", timeout=30, **dict(AGENT_WIN, runner=GITHUB_WINDOWS_FREE)),
     # The rest of `just ci` and the native macOS suite: master, nightly and ci:full.
@@ -372,7 +373,7 @@ LANES: Tuple[Lane, ...] = (
          run="cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings"
              " && cargo test --locked --all-features",
          cache="os-rust", workspaces="services/opensecret -> target", cache_files=tuple(
-             "services/opensecret/" + name for name in ("Cargo.lock", "rust-toolchain.toml", "flake.lock")),
+             "services/opensecret/" + name for name in ("rust-toolchain.toml", "flake.lock")),
          submodules=True, timeout=30, env=OPENSECRET_ENV, hook="opensecret"),
     Lane("os-sdk-e2e", ("scripts/ci/opensecret-sdk-e2e.sh",), opensecret="integration", job="os-sdk-e2e",
          run="./scripts/ci/opensecret-sdk-e2e.sh", timeout=45),
