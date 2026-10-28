@@ -114,8 +114,11 @@ one release may update both platforms to the same version.
 Windows x64 Dev/Prod installers are built by the same desktop workflow, with
 master Authenticode signing through the existing `windows-signing` environment;
 master pushes build only Prod, and a manual dispatch also builds Dev.
-Windows uses manual installer downloads; automatic updates and built-in CUA
-remain unsupported. Preserve that boundary when changing package metadata.
+Windows Prod uses its signed v3 update feed and generation tar bundle; its
+signed NSIS setup remains the manual installation download. Normal publication
+includes Windows through the same protected publisher as macOS and Linux,
+without a separate Windows activation variable. Built-in Windows CUA remains
+unsupported.
 Dev and unpackaged builds have no production updater. Empty-key profiles still
 disable update traffic. Do not substitute a test key or inherit feed/key overrides
 from the launch environment. Embedded profiles, bundle IDs and state namespaces

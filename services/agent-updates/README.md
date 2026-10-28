@@ -100,7 +100,9 @@ Signature format is prehashed minisign Ed25519 with exact trusted comment
 ## Publication and authority
 
 `agent-updates-publish.yml` is manual, trusted-master-only, and serialized with
-operator pointer changes through `agent-updates-production`. It selects an exact
+operator pointer changes through `agent-updates-production`. Normal publication
+includes macOS, Linux and Windows; Windows has no separate activation variable
+or approval path. It selects an exact
 completed trusted-master `agent-desktop-build.yml` run, requires the successful
 Prod producers and final download verifiers for every included platform (not
 merely overall workflow success), verifies every final file's

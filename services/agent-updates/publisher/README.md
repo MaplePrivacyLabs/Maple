@@ -17,22 +17,19 @@ are required; the exact item-ID inputs are listed in the [service setup](../READ
 The public key must already be pinned both in the selected build's source profile
 and in the publisher's trusted source profile. An empty key list blocks publication.
 
-Normal publication defaults to macOS and Linux at the same version, build and
-source. Disable Linux only explicitly for a historical macOS-only run. Initial
-unadvertised Linux publications enable the real N-to-N+1 rehearsal; passing
-that rehearsal remains a gate before invitations.
-Windows is opt-in with `include_windows: true`; it remains disabled by default.
-The workflow also requires `AGENT_WINDOWS_UPDATES_ENABLED=true` before a Windows
-publication can proceed. Enable that owner-controlled activation only after the
-native signed-package, install, update, failure-recovery and relaunch qualification.
-Implementation and offline tests alone do not qualify that activation.
+Normal publication defaults to macOS, Linux and Windows at the same version,
+build and source. Omit a platform only explicitly for a historical producer
+that did not build it. Windows uses the same production setup, protected
+`updates-production` stages and exact-package verification as the other platforms;
+there is no separate Windows activation variable or approval path.
 
 ```sh
 publisher=services/agent-updates/publisher/publisher.py
-python3 "$publisher" trust --run-id BUILD_RUN_ID --linux --output trust.json
-# Both platform packages come from this one verified producer run.
-python3 "$publisher" prepare --run-id BUILD_RUN_ID --version 0.0.4 \
-  --build BUILD_RUN_NUMBER --macos macos-artifacts --linux linux-artifacts --notes-file notes.txt \
+python3 "$publisher" trust --run-id BUILD_RUN_ID --linux --windows --output trust.json
+# All three platform packages come from this one verified producer run.
+python3 "$publisher" prepare --run-id BUILD_RUN_ID --version 0.0.12 \
+  --build BUILD_RUN_NUMBER --macos macos-artifacts --linux linux-artifacts \
+  --windows windows-artifacts --notes-file notes.txt \
   --public-key public-key.pub --output bundle
 python3 "$publisher" reserve --bundle bundle --public-key bundle/public-key.pub \
   --endpoint https://ACCOUNT.r2.cloudflarestorage.com --bucket AGENT_BUCKET
@@ -43,9 +40,10 @@ python3 "$publisher" publish --bundle bundle --public-key bundle/public-key.pub 
   --base-url https://updates.maple.ai
 ```
 
-For an activated Windows release, also pass `--windows` to `trust` and
-`--windows windows-artifacts` to `prepare`. All included packages must come from
-that same selected producer run, with the same source, version and build.
+The low-level CLI selects platform packages explicitly with `--linux` and
+`--windows`, retaining historical bundle preparation. The normal workflow
+supplies both. All included packages must come from that same selected producer
+run, with the same source, version and build.
 
 `trust` returns the source SHA, selected artifact names, exact run attempt,
 publication date and build number as JSON. Only completed trusted master runs of

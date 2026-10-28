@@ -350,12 +350,12 @@ official Maple signatures, installed A-to-B updates, visible GUI or paired
 remote-upgrade behavior. Record those qualifications separately from a green
 component job or an installer consumer.
 
-Windows publication is opt-in and additionally requires the repository variable
-`AGENT_WINDOWS_UPDATES_ENABLED=true`. Leave it disabled until signed installed
-upgrades, interruption recovery, native relaunch, GUI and paired remote checks
-are qualified. Before public Windows downloads, apply the reviewed download
-tracking `0002` migration as documented by that service; its existing database
-was initialized outside Wrangler's migration history.
+Windows participates in normal publication alongside macOS and Linux, using
+the same exact-source package verification, update signatures and protected
+publication stages. There is no Windows-specific activation variable or
+approval path. Before serving Windows download events, ensure the shared
+tracking schema includes the `0002` migration documented by that service; its
+existing database was initialized outside Wrangler's migration history.
 
 Before invites, publish two unadvertised signed increasing versions and run the
 actual installed application's check, download, confirmation, host stop, swap
