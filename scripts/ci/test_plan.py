@@ -179,10 +179,9 @@ class LaneTableTests(unittest.TestCase):
         for path in ("apps/maple-agent/crates/maple-agent-updater/src/installer.rs",
                      "apps/maple-agent/app/src/windows_bootstrap.rs",
                      ".github/actions/setup-agent-windows/action.yml", "scripts/ci/agent_windows.py"):
-            for event in (PR, QUEUE):
+            for event in (PR, QUEUE, PUSH):  # a master push saves its cache
                 with self.subTest(path=path, event=event):
                     self.assertIn("agent-windows-updater", selected([path], event))
-            self.assertNotIn("agent-windows-updater", selected([path], PUSH))  # nightly runs it on master
         # Its dependency versions, features and profiles, and CI edits, run it too.
         for path in ("apps/maple-agent/Cargo.lock", "apps/maple-agent/Cargo.toml", ".github/workflows/ci.yml"):
             with self.subTest(path=path):
@@ -527,9 +526,10 @@ class OpenSecretLaneTests(unittest.TestCase):
 
     def test_eif_builder_and_checkout(self):
         entries = {e["id"]: e for e in json.loads(plan.outputs(dict.fromkeys(ACTIVE, ["x"]))["nix"])}
-        for lane in ("os-rust", "os-flake-check", "deps-opensecret"):
-            self.assertEqual((entries[lane]["submodules"], entries[lane]["fetch_depth"]), ("recursive", 0))
-        self.assertEqual((entries["os-pcr"]["submodules"], entries["os-pcr"]["fetch_depth"]), ("false", 1))
+        checkout = {lane: (entry["submodules"], entry["fetch_depth"], entry["filter"]) for lane, entry in entries.items()}
+        for lane in ("os-rust", "os-flake-check", "deps-opensecret"):  # Nix needs revCount: blobless full history
+            self.assertEqual(checkout[lane], ("recursive", 0, "blob:none"))
+        self.assertEqual(checkout["os-pcr"], ("false", 1, ""))
         self.assertEqual(plan.OPENSECRET_OUTPUTS, OUTPUTS)
 
 
@@ -611,6 +611,26 @@ class PlannerTests(unittest.TestCase):
                           lanes.LINUX.label))
         entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
         self.assertEqual({len(entry["cache_key"]) for entry in entries if entry["cache"]}, {16})
+
+    def test_a_cache_key_pins_the_toolchain_and_leaves_lockfiles_to_rust_cache(self):
+        # rust-cache hashes the lockfiles after the restore key, so a lockfile change falls
+        # back by prefix; the planner's part must match exactly and holds only the pins.
+        for lane in lanes.LANES:
+            if lane.cache:
+                workspace = lane.workspaces.split("->")[0].strip()
+                pins = {f"{workspace}/{name}" for name in ("flake.lock", "rust-toolchain.toml")
+                        if (plan.ROOT / workspace / name).is_file()}
+                with self.subTest(lane=lane.id):
+                    self.assertIn(f"{workspace}/flake.lock", pins)
+                    self.assertEqual(set(lane.cache_files), pins)
+
+    def test_the_dependency_lanes_share_a_cargo_home_cache_without_targets(self):
+        # They only resolve the Agent's graph; master's cache spares their git dependency clones.
+        result = plan.outputs(dict.fromkeys(ACTIVE, ["x"]))
+        entries = [entry for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])]
+        homes = {entry["id"]: entry["cache"] for entry in entries if entry["cache"] and not entry["cache_targets"]}
+        self.assertEqual(homes, dict.fromkeys(("agent-supply-chain", "agent-provider"), "agent-cargo-home"))
+        self.assertTrue(all(entry["cache_targets"] for entry in entries if entry["id"] not in homes))
 
     def test_a_cache_is_saved_only_into_the_home_runners_store(self):
         def saves(**overrides):

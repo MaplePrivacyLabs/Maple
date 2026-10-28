@@ -133,23 +133,27 @@ class Lane:
     workdir: str = "."
     run: str = ""
     env: Tuple[Tuple[str, str], ...] = ()
-    cache: str = ""                             # rust-cache shared key under the ci-v1 prefix
+    cache: str = ""                             # rust-cache shared key under ci.yml's ci-v2 prefix
     workspaces: str = ""
-    cache_files: Tuple[str, ...] = ()           # hashed into the cache key
+    cache_files: Tuple[str, ...] = ()           # toolchain pins, hashed into the shared key
+    cache_targets: bool = True                  # False caches only the Cargo home: registry and git sources
     timeout: int = 15
     gate: bool = True                           # selected by CI_INFRA edits
     opensecret: Optional[str] = None            # the opensecret_change_detection.py output that selects it
-    submodules: bool = False                    # check out submodules, with the full history Nix needs
+    submodules: bool = False                    # check out submodules, with the full (blobless) history Nix needs
     hook: Optional[str] = None                  # the pre-commit component that runs these checks
     restore: str = ""                           # read-only restore of a cache another workflow writes
 
 
 AGENT_DIR = dict(
     workdir="apps/maple-agent", workspaces="apps/maple-agent -> target",
-    cache_files=("apps/maple-agent/flake.lock", "apps/maple-agent/Cargo.lock"),
+    cache_files=("apps/maple-agent/flake.lock",),
     env=(("RUSTFLAGS", "-D warnings"),),
 )
 AGENT_FLAKE = dict(flake="./apps/maple-agent", **AGENT_DIR)
+# Lanes that only resolve the Agent's graph share its Cargo home, without a target
+# directory, so they stop cloning the zed and cua git dependencies on every run.
+AGENT_CARGO_HOME = dict(AGENT_FLAKE, cache="agent-cargo-home", cache_targets=False)
 AGENT_WIN = dict(job="windows", runner=WINDOWS, **AGENT_DIR)  # pinned rustup, no flake
 FAST_RELEASE = (("CARGO_PROFILE_RELEASE_LTO", "thin"), ("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "16"))
 AGENT_PACKAGE_FLAKE = dict(AGENT_FLAKE, env=AGENT_DIR["env"] + FAST_RELEASE)
@@ -225,8 +229,9 @@ LANES: Tuple[Lane, ...] = (
          cache="agent-windows", timeout=45, **AGENT_WIN),
     # The updater's native Windows filesystem, Authenticode, transaction and bootstrap
     # tests, on GitHub's free image (16 cores only add queueing to a 2 s suite); master
-    # runs them nightly. Serial and no-fail-fast, as the suite's fixtures were qualified.
-    Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"), events=PR_AND_NIGHTLY,
+    # pushes run them too and save their cache. Serial and no-fail-fast, as the suite's
+    # fixtures were qualified.
+    Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"),
          run="cargo test -p maple-agent-updater --locked --no-fail-fast -- --test-threads=1",
          cache="agent-windows-updater", timeout=30, **dict(AGENT_WIN, runner=GITHUB_WINDOWS_FREE)),
     # The rest of `just ci` and the native macOS suite: master, nightly and ci:full.
@@ -243,7 +248,7 @@ LANES: Tuple[Lane, ...] = (
              " && cargo test --workspace --locked",
          cache="agent-full-windows", timeout=90, gate=False, **dict(AGENT_WIN, runner=GITHUB_WINDOWS_FREE)),
     # Pinned SQLCipher sources, per-target advisories and bans.
-    Lane("agent-supply-chain", AGENT_DEPENDENCIES, run="just supply-chain", timeout=30, **AGENT_FLAKE),
+    Lane("agent-supply-chain", AGENT_DEPENDENCIES, run="just supply-chain", timeout=30, **AGENT_CARGO_HOME),
     # Released rusqlite's own tests against the static SQLCipher provider (nightly.yml: all three OSes).
     Lane("agent-provider", tuple("apps/maple-agent/" + glob for glob in (
         "Cargo.lock", "dependencies/sqlcipher/**", "scripts/test-rusqlite-provider.py",
@@ -251,7 +256,7 @@ LANES: Tuple[Lane, ...] = (
     )), events=NOT_NIGHTLY, run="python3 scripts/test_rusqlite_provider.py && mkdir -p target"
                               " && cargo metadata --locked --format-version 1 > target/provider-metadata.json"
                               " && python3 scripts/test-rusqlite-provider.py target/provider-metadata.json",
-         timeout=20, **AGENT_FLAKE),
+         timeout=20, **AGENT_CARGO_HOME),
     # Unsigned Dev packages through the scripts agent-desktop-build.yml uses on master.
     # The rehearsal proves packaging, not the optimizer: thin LTO with parallel codegen
     # instead of master's fat LTO, from its own cache that the nightly run refreshes.
@@ -372,7 +377,7 @@ LANES: Tuple[Lane, ...] = (
          run="cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings"
              " && cargo test --locked --all-features",
          cache="os-rust", workspaces="services/opensecret -> target", cache_files=tuple(
-             "services/opensecret/" + name for name in ("Cargo.lock", "rust-toolchain.toml", "flake.lock")),
+             "services/opensecret/" + name for name in ("rust-toolchain.toml", "flake.lock")),
          submodules=True, timeout=30, env=OPENSECRET_ENV, hook="opensecret"),
     Lane("os-sdk-e2e", ("scripts/ci/opensecret-sdk-e2e.sh",), opensecret="integration", job="os-sdk-e2e",
          run="./scripts/ci/opensecret-sdk-e2e.sh", timeout=45),

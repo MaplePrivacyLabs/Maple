@@ -84,8 +84,11 @@ jobs:
         with:
           persist-credentials: false
           # OpenSecret's flake reads its submodule, which Nix fetches only with full history.
+          # Blobless history has every commit and tree but only the checked-out files'
+          # contents, so Nix reads the same source from a ninth of the download.
           submodules: ${{ matrix.submodules }}
           fetch-depth: ${{ matrix.fetch_depth }}
+          filter: ${{ matrix.filter }}
       - uses: ./.github/actions/setup-nix
       - name: Select pinned Xcode
         if: runner.os == 'macOS'
@@ -104,19 +107,32 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
       - name: Rust cache (restore everywhere, save only on master and in the lane's home store)
+        id: rust-cache
         if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          prefix-key: ci-v1
-          # rust-cache ignores `key` when `shared-key` is set, so the lockfile
-          # hash (which also pins the flake's toolchain) goes into the shared key.
+          prefix-key: ci-v2
+          # Restore key: the prefix, the shared key (the lane and its toolchain pins,
+          # plan.py cache_key) and the runner's rustc versions and CARGO*/RUST* variables.
+          # The cache key adds third-party Cargo.lock entries and versionless manifests:
+          # a version bump hits exactly, any other lockfile change restores by prefix.
           shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
           workspaces: ${{ matrix.workspaces }}
-          add-rust-environment-hash-key: "false"
+          cache-targets: ${{ matrix.cache_targets }}
+          add-rust-environment-hash-key: "true"
           # The action runs cargo from the workspace directory: use an absolute flake path.
           cmd-format: nix develop --no-update-lock-file ${{ github.workspace }}/${{ matrix.flake }} -c {0}
           # cache_save (plan.py): a failover runner never saves into another vendor's store.
           save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && matrix.cache_save }}
+      - name: Build master's lane cache from one dependency graph
+        # rust-cache's save keeps every build of a crate still in the graph, so saving after
+        # a prefix restore would carry the old graph's builds forward: master starts clean.
+        if: matrix.cache != '' && matrix.cache_targets && steps.rust-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && matrix.cache_save
+        env:
+          WORKSPACES: ${{ matrix.workspaces }}
+        run: |
+          root=${WORKSPACES%% ->*} target=${WORKSPACES##*-> }
+          rm -rf "${root:?}/${target:?}"
       - name: Run lane
         env:
           LANE: ${{ matrix.id }}
@@ -141,15 +157,27 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-agent-windows
       - name: Rust cache (restore everywhere, save only on master and in the lane's home store)
+        id: rust-cache
         if: matrix.cache != ''
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          prefix-key: ci-v1
+          # Keys as in the nix job: a lockfile change restores by prefix.
+          prefix-key: ci-v2
           shared-key: ${{ matrix.cache }}-${{ matrix.cache_key }}
           workspaces: ${{ matrix.workspaces }}
-          add-rust-environment-hash-key: "false"
+          cache-targets: ${{ matrix.cache_targets }}
+          add-rust-environment-hash-key: "true"
           # cache_save (plan.py): a failover runner never saves into another vendor's store.
           save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && matrix.cache_save }}
+      - name: Build master's lane cache from one dependency graph
+        # rust-cache's save keeps every build of a crate still in the graph, so saving after
+        # a prefix restore would carry the old graph's builds forward: master starts clean.
+        if: matrix.cache != '' && matrix.cache_targets && steps.rust-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && matrix.cache_save
+        env:
+          WORKSPACES: ${{ matrix.workspaces }}
+        run: |
+          root=${WORKSPACES%% ->*} target=${WORKSPACES##*-> }
+          rm -rf "${root:?}/${target:?}"
       - name: Run lane
         env:
           LANE: ${{ matrix.id }}
@@ -518,8 +546,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-          # Nix requires revCount for recursively fetched Git inputs.
+          # Nix requires revCount for recursively fetched Git inputs; blobless
+          # history keeps every commit, so Nix reads the same source.
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-nix
       - name: Migrate, start OpenSecret and run both SDKs' integration suites
         run: python3 scripts/ci/plan.py run os-sdk-e2e
@@ -591,7 +621,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+          # Blobless full history: the same source, narHash and EIF derivation as a full clone.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Install pinned Determinate Nix for FlakeHub authentication
         uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3

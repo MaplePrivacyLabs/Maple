@@ -35,15 +35,27 @@ branches in step with the lane table.
   manual runs outside `master`): without FlakeHub credentials, its Nix store
   goes to the run's branch-scoped Actions cache, which `master` and other
   pull requests cannot read.
-- Lane caches (`Swatinem/rust-cache`, prefix `ci-v1`, keyed by lane and
-  lockfile hashes) are saved by master pushes and the nightly run, into the
-  store of the lane's own runner vendor; a runner from the other vendor (a
-  failover) only restores. Heavy Rust caches therefore live in Blacksmith's
-  store. GitHub's holds what GitHub-hosted jobs need: the lane caches of
-  `agent-full-windows` and `agent-windows-updater` (both saved only by the
-  nightly run), the `agent-package-windows` packaging cache (below), the
-  signed Research Windows build's Bun binary, the release, the Nix installer
-  and that EIF check.
+- Lane caches (`Swatinem/rust-cache`, prefix `ci-v2`) are keyed by lane and
+  toolchain pins (the workspace's `flake.lock`, and OpenSecret's
+  `rust-toolchain.toml`), which must match exactly, then by rust-cache's
+  lockfile hash, which may not: a version bump restores its exact cache, and
+  any other lockfile change the newest cache of the same lane and toolchain.
+  The restore key also hashes the runner's rustc versions (the Windows lanes'
+  rustup pin among them) and `CARGO*`/`RUST*` variables, so a runner image
+  with a new preinstalled Rust starts cold once, until master saves again.
+  rust-cache's save keeps every build of a crate still in the graph, so a
+  master run that will save a new cache first deletes the lane's target
+  directory: each saved cache holds one dependency graph.
+  `agent-supply-chain` and `agent-provider`, which only resolve the Agent's
+  dependency graph, share `agent-cargo-home`: the Cargo registry and git
+  sources (zed and cua among them) without a target directory.
+  Master pushes and the nightly run save them, into the store of the lane's
+  own runner vendor; a runner from the other vendor (a failover) only
+  restores. Heavy Rust caches therefore live in Blacksmith's store. GitHub's
+  holds what GitHub-hosted jobs need: the lane caches of `agent-full-windows`
+  (saved only by the nightly run) and `agent-windows-updater`, the
+  `agent-package-windows` packaging cache (below), the signed Research Windows
+  build's Bun binary, the release, the Nix installer and that EIF check.
   `test_workflow_policy.py` lists these writers.
 - The signed master builds write the keys `release.yml` restores by prefix
   (`<os>-sccache-*` for macOS and Linux, `xcode-cache-*`,
@@ -156,12 +168,13 @@ The `agent-windows-updater` lane runs `cargo test -p maple-agent-updater
 --locked --no-fail-fast -- --test-threads=1` on GitHub's free Windows image:
 the updater's native filesystem, Authenticode-rejection, transaction and
 recovery tests, and the bootstrap integration test, which compiles the app's
-`windows_bootstrap.rs`. It runs on pull requests that change the updater
-crate, that file, the Agent workspace's `Cargo.lock` or `Cargo.toml`, the
-Windows toolchain or CI itself, with `ci:windows` or `ci:full`, and nightly on
-master, which saves its cache. Like every `windows` matrix lane it has no signing credential or
-protected environment. The reparse tests need the symlink privilege GitHub's
-runner grants. A pass qualifies no official signature, signed installed
+`windows_bootstrap.rs`. It runs when a pull request or master push changes
+the updater crate, that file, the Agent workspace's `Cargo.lock` or
+`Cargo.toml`, the Windows toolchain or CI itself, with `ci:windows` or
+`ci:full`, and nightly; master runs save its cache. Like every `windows`
+matrix lane it has no signing credential or protected environment. The
+reparse tests need the symlink privilege GitHub's runner grants. A pass
+qualifies no official signature, signed installed
 upgrade, visible GUI or paired remote upgrade.
 
 The manual `agent-windows-signature-probe.yml` takes an exact historical

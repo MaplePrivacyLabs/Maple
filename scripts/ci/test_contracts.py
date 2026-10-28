@@ -449,6 +449,38 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(saves, ["push"])
                 self.assertEqual(variants(workflows()[name]["jobs"][job_id], "push"), ["prod"])
 
+    def test_c4_lane_caches_fall_back_by_lockfile_only_within_their_own_family(self):
+        # The planner's shared key holds only toolchain pins, so rust-cache must hash the
+        # lockfiles itself: after the restore key, so a lockfile change restores by prefix.
+        families = set()
+        for job_id in plan.MATRIX_JOBS:
+            steps = workflows()["ci.yml"]["jobs"][job_id]["steps"]
+            index = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith("Swatinem/rust-cache@"))
+            step, clean = steps[index], steps[index + 1]
+            with self.subTest(job=job_id):
+                self.assertEqual(step["with"]["shared-key"], "${{ matrix.cache }}-${{ matrix.cache_key }}")
+                self.assertEqual(step["with"]["add-rust-environment-hash-key"], "true")
+                # A master run that saves without an exact hit starts from an empty target,
+                # so a prefix restore never carries the old graph's builds into the new cache.
+                save = step["with"]["save-if"].removeprefix("${{").removesuffix("}}").strip()
+                self.assertIn(f"steps.{step['id']}.outputs.cache-hit != 'true'", clean["if"])
+                self.assertIn(save, clean["if"])
+                self.assertIn("matrix.cache_targets", clean["if"])
+                self.assertEqual(clean["run"].splitlines(), [
+                    "root=${WORKSPACES%% ->*} target=${WORKSPACES##*-> }", 'rm -rf "${root:?}/${target:?}"'])
+                self.assertEqual(clean["env"]["WORKSPACES"], "${{ matrix.workspaces }}")
+            families |= {f"{step['with']['prefix-key']}-{lane.cache}-" for lane in plan.LANES if lane.cache}
+        # No lane family overlaps a release family or any other cache key, either way round.
+        release = RESERVED_PREFIXES + ("ci-v1-agent-release-", "ci-v1-agent-package-")
+        self.assertFalse([(f, r) for f in families for r in release if f.startswith(r) or r.startswith(f)])
+        keys = [key for _, _, step in cache_steps()
+                for key in [step["with"].get("key", "")] + str(step["with"].get("restore-keys", "")).splitlines()]
+        keys += [f"{step['with'].get('prefix-key', 'v0-rust')}-{step['with'].get('shared-key') or step['with'].get('key', '')}"
+                 for name, job_id, job in jobs() if (name, job_id) not in {("ci.yml", j) for j in plan.MATRIX_JOBS}
+                 for step in job.get("steps", []) if step.get("uses", "").startswith("Swatinem/rust-cache@")]
+        static = {key.strip().split("${{")[0] for key in keys} - {""}
+        self.assertFalse([(f, k) for f in families for k in static if f.startswith(k) or k.startswith(f)])
+
     def test_c4_dev_testflight_build_number_is_the_run_number(self):
         job = workflows()["ios-dev-testflight.yml"]["jobs"]["build-ios-dev"]
         identity = next(step for step in job["steps"] if step.get("id") == "identity")

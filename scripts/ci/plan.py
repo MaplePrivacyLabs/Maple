@@ -214,6 +214,9 @@ def quarantined() -> List[str]:
 
 
 def cache_key(lane: Lane) -> str:
+    """The part of a lane's rust-cache key that must match exactly: its toolchain pins.
+    rust-cache appends the lockfile hash after the restore key, so a lockfile change
+    restores the newest cache of the same lane and toolchain."""
     digest = hashlib.sha256()
     for name in lane.cache_files:
         digest.update((ROOT / name).read_bytes())
@@ -240,8 +243,10 @@ def outputs(selected: Selection, quarantine: Sequence[str] = ()) -> Dict[str, st
             # would write it into another vendor's store.
             "cache_save": cache_store(runner_label(lane)) == cache_store(lane.runner.label),
             "workspaces": lane.workspaces,
+            "cache_targets": lane.cache_targets,
             "submodules": "recursive" if lane.submodules else "false",
             "fetch_depth": 0 if lane.submodules else 1,
+            "filter": "blob:none" if lane.submodules else "",
             "restore": lane.restore,
         } for lane in LANES if lane.id in selected and lane.job == job]
     return {name: json.dumps(value, separators=(",", ":")) for name, value in result.items()}

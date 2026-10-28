@@ -106,7 +106,9 @@ of the lanes your staged files select.
   `ci.yml`, is listed under [caches](repository-workflows.md#caches)). Master
   and nightly runs save lane caches into the store of the lane's own runner
   vendor: Blacksmith's, or GitHub's for the Agent lanes on GitHub's Windows
-  image.
+  image. A lane cache must match the lane's toolchain exactly; after a
+  lockfile change, a run restores the newest one by prefix, and master
+  rebuilds the lane's target from scratch before it saves.
 - Never cancel master, signed, evidence or nightly runs.
 - Never edit the release or publisher workflows, signing environments or
   OpenSecret approval gating to clear a check. A failing contract test means
