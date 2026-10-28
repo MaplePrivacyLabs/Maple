@@ -246,6 +246,7 @@ def outputs(selected: Selection, quarantine: Sequence[str] = ()) -> Dict[str, st
             "cache_targets": lane.cache_targets,
             "submodules": "recursive" if lane.submodules else "false",
             "fetch_depth": 0 if lane.submodules else 1,
+            "filter": "blob:none" if lane.submodules else "",
             "restore": lane.restore,
         } for lane in LANES if lane.id in selected and lane.job == job]
     return {name: json.dumps(value, separators=(",", ":")) for name, value in result.items()}

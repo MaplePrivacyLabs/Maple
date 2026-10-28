@@ -140,7 +140,7 @@ class Lane:
     timeout: int = 15
     gate: bool = True                           # selected by CI_INFRA edits
     opensecret: Optional[str] = None            # the opensecret_change_detection.py output that selects it
-    submodules: bool = False                    # check out submodules, with the full history Nix needs
+    submodules: bool = False                    # check out submodules, with the full (blobless) history Nix needs
     hook: Optional[str] = None                  # the pre-commit component that runs these checks
     restore: str = ""                           # read-only restore of a cache another workflow writes
 

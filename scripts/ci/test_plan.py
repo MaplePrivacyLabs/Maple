@@ -526,9 +526,10 @@ class OpenSecretLaneTests(unittest.TestCase):
 
     def test_eif_builder_and_checkout(self):
         entries = {e["id"]: e for e in json.loads(plan.outputs(dict.fromkeys(ACTIVE, ["x"]))["nix"])}
-        for lane in ("os-rust", "os-flake-check", "deps-opensecret"):
-            self.assertEqual((entries[lane]["submodules"], entries[lane]["fetch_depth"]), ("recursive", 0))
-        self.assertEqual((entries["os-pcr"]["submodules"], entries["os-pcr"]["fetch_depth"]), ("false", 1))
+        checkout = {lane: (entry["submodules"], entry["fetch_depth"], entry["filter"]) for lane, entry in entries.items()}
+        for lane in ("os-rust", "os-flake-check", "deps-opensecret"):  # Nix needs revCount: blobless full history
+            self.assertEqual(checkout[lane], ("recursive", 0, "blob:none"))
+        self.assertEqual(checkout["os-pcr"], ("false", 1, ""))
         self.assertEqual(plan.OPENSECRET_OUTPUTS, OUTPUTS)
 
 

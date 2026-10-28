@@ -84,8 +84,11 @@ jobs:
         with:
           persist-credentials: false
           # OpenSecret's flake reads its submodule, which Nix fetches only with full history.
+          # Blobless history has every commit and tree but only the checked-out files'
+          # contents, so Nix reads the same source from a ninth of the download.
           submodules: ${{ matrix.submodules }}
           fetch-depth: ${{ matrix.fetch_depth }}
+          filter: ${{ matrix.filter }}
       - uses: ./.github/actions/setup-nix
       - name: Select pinned Xcode
         if: runner.os == 'macOS'
@@ -523,8 +526,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-          # Nix requires revCount for recursively fetched Git inputs.
+          # Nix requires revCount for recursively fetched Git inputs; blobless
+          # history keeps every commit, so Nix reads the same source.
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-nix
       - name: Migrate, start OpenSecret and run both SDKs' integration suites
         run: python3 scripts/ci/plan.py run os-sdk-e2e
@@ -596,7 +601,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+          # Blobless full history: the same source, narHash and EIF derivation as a full clone.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Install pinned Determinate Nix for FlakeHub authentication
         uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
