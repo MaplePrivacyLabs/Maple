@@ -2911,7 +2911,7 @@ mod revalidation_tests {
             }
             for revision in 0..20 {
                 let mut computers = sidebar.computers.as_ref().clone();
-                computers[0].label = format!("Updated computer {revision}");
+                computers[0].label = format!("Updated computer {revision}").into();
                 sidebar.set_computers(Arc::new(computers), cx);
             }
             assert_eq!(sidebar.group_pages.generation, generation);
