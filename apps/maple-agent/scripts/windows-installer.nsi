@@ -5,6 +5,8 @@ Unicode true
 
 Name "${DISPLAY_NAME}"
 OutFile "${INSTALLER}"
+Icon "${ICON}"
+UninstallIcon "${ICON}"
 InstallDir "$LOCALAPPDATA\Programs\${DISPLAY_NAME}"
 InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation"
 RequestExecutionLevel user
@@ -181,6 +183,19 @@ refused:
   Abort
 done:
 SectionEnd
+
+Function .onInstSuccess
+  ; The success callback runs when the completed installer closes. Silent
+  ; updates/reinstalls stay quiet, and failed or cancelled installs never call
+  ; this callback. The stable launcher verifies the committed generation.
+  IfSilent done
+  SetOutPath "$INSTDIR"
+  ClearErrors
+  Exec '"$INSTDIR\maple-agent.exe"'
+  IfErrors 0 done
+  MessageBox MB_OK|MB_ICONEXCLAMATION "${DISPLAY_NAME} was installed, but could not be opened. Open it from the Start menu."
+done:
+FunctionEnd
 
 Section "Uninstall"
   SetShellVarContext current

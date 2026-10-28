@@ -302,6 +302,25 @@ class BundleTests(unittest.TestCase):
 
 
 class RuntimeClosureTests(unittest.TestCase):
+    def test_payload_verifier_requires_the_exact_profile_icon_in_the_final_pe(self):
+        import test_windows_build_info as fixture
+
+        for profile in ("dev", "prod"):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                identity = info(profile)
+                (directory / "build-info.json").write_text(json.dumps(identity))
+                (directory / "LICENSE.txt").write_bytes((release.COMPONENT / "LICENSE").read_bytes())
+                binary = directory / "maple-agent.exe"
+                canonical = release.COMPONENT / "app/packaging" / ("maple-agent-dev.ico" if profile == "dev" else "maple-agent.ico")
+                other = canonical.with_name("maple-agent.ico" if profile == "dev" else "maple-agent-dev.ico")
+                with patch.object(release, "source_sha", return_value="a" * 40):
+                    binary.write_bytes(fixture.pe(identity, resources=fixture.icon_records(canonical.read_bytes())))
+                    release.verify_payload(profile, directory, identity, True, verify_signature=False)
+                    binary.write_bytes(fixture.pe(identity, resources=fixture.icon_records(other.read_bytes())))
+                    with self.assertRaisesRegex(ValueError, "canonical profile icon"):
+                        release.verify_payload(profile, directory, identity, True, verify_signature=False)
+
     def test_os_components_and_api_sets_are_allowed_but_compiler_runtime_is_not(self):
         # ICU is an OS component from Win10 1703; WER is an OS component from
         # Vista. Both appeared in the actual optimized Agent executable.
@@ -493,6 +512,15 @@ class PackageBoundaryTests(unittest.TestCase):
             self.assertNotEqual(info("dev")["bundle_id"], info("prod")["bundle_id"])
             self.assertNotEqual(info("dev")["display_name"], info("prod")["display_name"])
 
+    def test_generated_config_selects_the_profile_artwork_from_the_source_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "configuration.nsh"
+            for profile, artwork in (("dev", "maple-agent-dev.ico"), ("prod", "maple-agent.ico")):
+                with self.subTest(profile=profile):
+                    release.write_nsis_config(path, info(profile), Path("payload"), Path("setup.exe"), False, "12")
+                    expected = release.nsis_literal(release.COMPONENT / "app/packaging" / artwork)
+                    self.assertIn(f'!define ICON "{expected}"\n', path.read_text(encoding="utf-8"))
+
     def test_nsis_native_preflight_precedes_installed_files_and_pointer_activation(self):
         source = (SCRIPTS / "windows-installer.nsi").read_text()
         preflight = source.index('--internal-windows-installer-preflight "$INSTDIR"')
@@ -557,6 +585,195 @@ class PackageBoundaryTests(unittest.TestCase):
         mutation = re.compile(r'^(?:Delete(?:RegKey|RegValue)?|RMDir|Write\w*|CreateDirectory|CreateShortcut|SetOutPath|File)\b')
         remaining = [line.strip() for line in after.splitlines() if mutation.match(line.strip())]
         self.assertEqual(remaining, [])
+
+
+class InteractiveInstallerSmokeTests(unittest.TestCase):
+    class Clock:
+        def __init__(self):
+            self.now = 10
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    def harness(self, *, buttons=True, launched=True, visible=True, alive=True, early_code=None):
+        process = Mock(pid=123, returncode=early_code)
+        process.poll.side_effect = lambda: process.returncode
+        def wait(timeout):
+            if process.returncode is None:
+                raise subprocess.TimeoutExpired("owned fixture installer", timeout)
+            return process.returncode
+        process.wait.side_effect = wait
+        process.terminate.side_effect = lambda: setattr(process, "returncode", -1)
+        application = Mock(identity=(789, 987654321))
+        application.visible.return_value = visible
+        application.alive.return_value = alive
+        ui = Mock()
+        ui.button.side_effect = lambda pid, caption: (pid, caption) if buttons else None
+        def click(button):
+            if button == (123, "Close"):
+                process.returncode = 0
+        ui.click.side_effect = click
+        ui.application.side_effect = lambda _executable, **_options: application if launched and process.returncode == 0 else None
+        ui.applications.side_effect = lambda _executable: [application] if launched and process.returncode == 0 else []
+        return process, application, ui
+
+    def execute(self, process, ui):
+        environment = {"FIXTURE": "sanitized"}
+        clock = self.Clock()
+        with patch.object(release, "WindowsSmokeUI", return_value=ui), patch.object(release.subprocess, "Popen", return_value=process) as popen, patch.object(release.time, "monotonic", clock.monotonic), patch.object(release.time, "sleep", clock.sleep):
+            release.interactive_installer_smoke(Path("C:/setup with spaces.exe"), Path("C:/private/install with spaces"), Path("C:/private/install with spaces/versions/0.1.2-12/maple-agent.exe"), Path("C:/private"), environment)
+        return popen, environment, clock
+
+    def test_drives_only_owned_installer_and_requires_its_actual_visible_auto_launch(self):
+        process, application, ui = self.harness()
+        popen, environment, clock = self.execute(process, ui)
+        command = popen.call_args.args[0]
+        self.assertEqual(command, '"C:/setup with spaces.exe" /D=C:/private/install with spaces')
+        self.assertNotIn("/S", command)
+        self.assertIs(popen.call_args.kwargs["env"], environment)
+        self.assertEqual(popen.call_args.kwargs["cwd"], Path("C:/private"))
+        self.assertEqual(ui.button.call_args_list, [unittest.mock.call(123, "Install"), unittest.mock.call(123, "Close")])
+        self.assertEqual(ui.click.call_args_list, [unittest.mock.call((123, "Install")), unittest.mock.call((123, "Close"))])
+        self.assertGreaterEqual(clock.now, 11)
+        application.visible.assert_called()
+        application.close.assert_called_once()
+        process.terminate.assert_not_called()
+
+    def test_actual_installer_failure_is_preserved_and_never_launches_a_fallback_app(self):
+        process, application, ui = self.harness(early_code=41)
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.execute(process, ui)
+        self.assertEqual(raised.exception.returncode, 41)
+        ui.click.assert_not_called()
+        application.close.assert_not_called()
+        process.terminate.assert_not_called()
+
+    def test_missing_install_ui_times_out_and_stops_only_the_owned_installer(self):
+        process, application, ui = self.harness(buttons=False)
+        with self.assertRaisesRegex(ValueError, "did not reach Install"):
+            self.execute(process, ui)
+        ui.click.assert_not_called()
+        process.terminate.assert_called_once()
+        application.close.assert_not_called()
+
+    def test_launch_before_close_is_a_failure_and_its_exact_process_is_cleaned_up(self):
+        process, application, ui = self.harness()
+        ui.application.return_value = application
+        ui.application.side_effect = None
+        with self.assertRaisesRegex(ValueError, "before it closed"):
+            self.execute(process, ui)
+        self.assertEqual(ui.click.call_args_list, [unittest.mock.call((123, "Install"))])
+        process.terminate.assert_called_once()
+        application.close.assert_called_once()
+
+    def test_success_without_an_auto_launch_or_visible_window_cannot_pass(self):
+        for changes in ({"launched": False}, {"visible": False}, {"alive": False}):
+            with self.subTest(changes=changes):
+                process, application, ui = self.harness(**changes)
+                with self.assertRaisesRegex(ValueError, "did not open|exited early"):
+                    self.execute(process, ui)
+                if changes.get("launched", True):
+                    application.close.assert_called_once()
+                process.terminate.assert_not_called()
+
+    def test_cleanup_failure_does_not_hide_the_primary_or_prevent_owned_app_cleanup(self):
+        process, application, ui = self.harness(alive=False)
+        process.wait.side_effect = [0, OSError("private cleanup details")]
+        diagnostics = io.StringIO()
+        with patch.object(sys, "stderr", diagnostics), self.assertRaisesRegex(ValueError, "exited early"):
+            self.execute(process, ui)
+        application.close.assert_called_once()
+        self.assertIn("Windows interactive smoke cleanup failure: OSError", diagnostics.getvalue())
+        self.assertNotIn("private cleanup details", diagnostics.getvalue())
+
+    def test_failed_hidden_launch_cleans_all_new_processes_and_preserves_the_existing_host(self):
+        process, _, ui = self.harness(launched=False)
+        existing = Mock(identity=(456, 111))
+        hidden_gui = Mock(identity=(789, 222))
+        new_host = Mock(identity=(987, 333))
+        ui.applications.side_effect = None
+        ui.applications.return_value = [existing, hidden_gui, new_host]
+        clock = self.Clock()
+        with patch.object(release.subprocess, "Popen", return_value=process), patch.object(release.time, "monotonic", clock.monotonic), patch.object(release.time, "sleep", clock.sleep):
+            with self.assertRaisesRegex(ValueError, "did not open"):
+                release.interactive_installer_smoke(Path("fixture.exe"), Path("private/install"), Path("private/generation/maple-agent.exe"), Path("private"), {}, ui=ui, existing={(456, 111)})
+        existing.release.assert_called_once()
+        existing.close.assert_not_called()
+        hidden_gui.close.assert_called_once()
+        new_host.close.assert_called_once()
+
+    def test_silent_install_must_not_start_even_a_hidden_generation_process(self):
+        _, application, ui = self.harness()
+        application.identity = (123, 456)
+        ui.applications.side_effect = None
+        ui.applications.return_value = [application]
+        with patch.object(release, "WindowsSmokeUI", return_value=ui), self.assertRaisesRegex(ValueError, "Silent Windows installer launched"):
+            release.quiet_installer_smoke(Path("C:/private/generation/maple-agent.exe"))
+        application.visible.assert_not_called()
+        application.close.assert_called_once()
+
+    def test_silent_repeat_preserves_existing_host_and_checks_for_new_processes(self):
+        _, application, ui = self.harness()
+        application.identity = (123, 456)
+        ui.applications.side_effect = None
+        ui.applications.return_value = [application]
+        clock = self.Clock()
+        with patch.object(release.time, "monotonic", clock.monotonic), patch.object(release.time, "sleep", clock.sleep):
+            release.quiet_installer_smoke(Path("C:/private/generation/maple-agent.exe"), ui=ui, existing={(123, 456)})
+        application.release.assert_called()
+        application.close.assert_not_called()
+        self.assertGreaterEqual(clock.now, 11)
+
+    def test_existing_host_handles_are_retained_and_released_without_stopping_them(self):
+        host = Mock(identity=(456, 987654321))
+        ui = Mock()
+        ui.applications.return_value = [host]
+        executable = Path("C:/private/generation/maple-agent.exe")
+        with patch.object(release, "WindowsSmokeUI", return_value=ui):
+            with release.smoke_application_baseline(executable) as (driver, existing):
+                self.assertIs(driver, ui)
+                self.assertEqual(existing, {(456, 987654321)})
+                host.release.assert_not_called()
+            ui.applications.assert_called_once_with(executable)
+        host.release.assert_called_once()
+        host.close.assert_not_called()
+
+    def test_gui_selection_skips_existing_host_and_scans_all_matching_processes(self):
+        ui = object.__new__(release.WindowsSmokeUI)
+        host = Mock(identity=(456, 111))
+        hidden = Mock(identity=(789, 222))
+        hidden.visible.return_value = False
+        gui = Mock(identity=(456, 333))  # A reused PID is a different identity.
+        gui.visible.return_value = True
+        ui.applications = Mock(return_value=[host, hidden, gui])
+        selected = ui.application(Path("C:/private/generation/maple-agent.exe"), existing={(456, 111)}, visible_only=True)
+        self.assertIs(selected, gui)
+        host.visible.assert_not_called()
+        host.release.assert_called_once()
+        hidden.release.assert_called_once()
+        gui.release.assert_not_called()
+
+    def test_owned_gui_exit_race_is_accepted_only_when_the_same_handle_has_exited(self):
+        for exited in (True, False):
+            with self.subTest(exited=exited):
+                ui = Mock()
+                ui.kernel.WaitForSingleObject.side_effect = [258, 0 if exited else 258, 0]
+                ui.kernel.TerminateProcess.return_value = 0
+                primary = OSError("fixed native failure")
+                ui.ctypes.WinError.return_value = primary
+                application = object.__new__(release.WindowsSmokeApplication)
+                application.ui, application.handle = ui, 987
+                if exited:
+                    application.close()
+                else:
+                    with self.assertRaises(OSError) as raised:
+                        application.close()
+                    self.assertIs(raised.exception, primary)
+                ui.kernel.TerminateProcess.assert_called_once_with(987, 1)
+                ui.kernel.CloseHandle.assert_called_once_with(987)
 
 
 class PointerPinTests(unittest.TestCase):

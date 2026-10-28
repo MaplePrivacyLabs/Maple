@@ -1,0 +1,7 @@
+// Existing Maple artwork in standard 16/24/32/48/64/256-pixel ICO sizes.
+// GPUI's Windows platform loads the main executable's icon resource ID 1.
+#ifdef MAPLE_AGENT_DEV
+1 ICON "packaging/maple-agent-dev.ico"
+#else
+1 ICON "packaging/maple-agent.ico"
+#endif

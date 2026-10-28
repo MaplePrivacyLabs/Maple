@@ -38,15 +38,51 @@ def aligned(value, alignment):
     return (value + alignment - 1) // alignment * alignment
 
 
+def icon_records(icon, *, group_id=1, language=1033):
+    """Build resource records with deliberately nonsequential linker image IDs."""
+    _, _, count = struct.unpack_from("<HHH", icon)
+    group = bytearray(struct.pack("<HHH", 0, 1, count))
+    records = []
+    for index in reversed(range(count)):
+        width, height, colors, zero, _, bits, length, offset = struct.unpack_from("<BBBBHHII", icon, 6 + 16 * index)
+        identifier = 100 + 7 * index
+        group += struct.pack("<BBBBHHIH", width, height, colors, zero, 1, bits, length, identifier)
+        records.append((3, identifier, language, icon[offset:offset + length]))
+    return records + [(14, group_id, language, bytes(group))]
+
+
+def resource_section(records, address):
+    tree = {}
+    for kind, identifier, language, data in records:
+        tree.setdefault(kind, {}).setdefault(identifier, {})[language] = data
+    content = bytearray()
+
+    def directory(entries):
+        offset = len(content)
+        content.extend(struct.pack("<IIHHHH", 0, 0, 0, 0, 0, len(entries)) + bytes(8 * len(entries)))
+        for index, (identifier, value) in enumerate(sorted(entries.items())):
+            if isinstance(value, dict):
+                pointer = directory(value) | 0x80000000
+            else:
+                pointer = len(content)
+                content.extend(struct.pack("<IIII", address + pointer + 16, len(value), 0, 0) + value)
+                content.extend(bytes(aligned(len(content), 4) - len(content)))
+            struct.pack_into("<II", content, offset + 16 + 8 * index, identifier, pointer)
+        return offset
+
+    directory(tree)
+    return bytes(content)
+
+
 def pe(payload, *, machine=metadata.MACHINE_AMD64, characteristics=0x22, duplicate=False,
-       imports=(), delay_imports=()):
+       imports=(), delay_imports=(), resources=()):
     """Create a PE32+ image fixture using no native Windows tools."""
     if not isinstance(payload, bytes):
         payload = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     sections = [(b".text", b"\xc3", 0x60000020), (b".maple", payload, 0x40000040)]
     if duplicate:
         sections.append((b".maple", payload, 0x40000040))
-    count = len(sections) + bool(imports or delay_imports)
+    count = len(sections) + bool(imports or delay_imports) + bool(resources)
     headers_size = aligned(SECTIONS + 40 * count, 512)
     headers = bytearray(headers_size)
     headers[:2] = b"MZ"
@@ -89,7 +125,16 @@ def pe(payload, *, machine=metadata.MACHINE_AMD64, characteristics=0x22, duplica
         if delay_imports:
             struct.pack_into("<II", headers, OPTIONAL + 112 + 13 * 8, address + regular_size, delay_size)
         raw_size = aligned(len(content), 512)
-        struct.pack_into("<8sIIIIIIHHI", headers, SECTIONS + 40 * (count - 1), b".idata",
+        struct.pack_into("<8sIIIIIIHHI", headers, SECTIONS + 40 * len(sections), b".idata",
+                         len(content), address, raw_size, headers_size + len(body), 0, 0, 0, 0, 0x40000040)
+        body += content + bytes(raw_size - len(content))
+        address += aligned(len(content), 4096)
+    if resources:
+        content = resource_section(resources, address)
+        struct.pack_into("<II", headers, OPTIONAL + 112 + 2 * 8, address, len(content))
+        raw_size = aligned(len(content), 512)
+        index = len(sections) + bool(imports or delay_imports)
+        struct.pack_into("<8sIIIIIIHHI", headers, SECTIONS + 40 * index, b".rsrc",
                          len(content), address, raw_size, headers_size + len(body), 0, 0, 0, 0, 0x40000040)
         body += content + bytes(raw_size - len(content))
         address += aligned(len(content), 4096)
@@ -207,6 +252,77 @@ class StaticWindowsMetadataTests(unittest.TestCase):
         })
         self.write()
         self.assertEqual(metadata.inspect_pe(self.binary)["imports"], [])
+
+    def test_icon1_matches_both_canonical_profiles_without_executing(self):
+        for name in ("maple-agent", "maple-agent-dev"):
+            icon = SCRIPTS.parent / "app/packaging" / (name + ".ico")
+            self.write(resources=icon_records(icon.read_bytes()), imports=("kernel32.dll",))
+            with self.subTest(profile=name), mock.patch.object(subprocess, "run", side_effect=AssertionError("artifact executed")):
+                metadata.verify_icon(self.binary, icon)
+                self.assertEqual(metadata.inspect_pe(self.binary)["imports"], ["kernel32.dll"])
+
+    def test_icon1_rejects_missing_wrong_profile_or_modified_image(self):
+        dev = SCRIPTS.parent / "app/packaging/maple-agent-dev.ico"
+        prod = SCRIPTS.parent / "app/packaging/maple-agent.ico"
+        valid = icon_records(dev.read_bytes())
+        changed = list(valid)
+        kind, identifier, language, image = changed[0]
+        changed[0] = (kind, identifier, language, image[:-1] + bytes([image[-1] ^ 1]))
+        for records in ((), icon_records(dev.read_bytes(), group_id=2), icon_records(prod.read_bytes()), changed, valid[1:]):
+            self.write(resources=records)
+            with self.subTest(records=len(records)), self.assertRaisesRegex(ValueError, "icon resource|ICON1"):
+                metadata.verify_icon(self.binary, dev)
+
+    def test_icon1_rejects_bad_resource_tables_and_data_bounds(self):
+        icon = SCRIPTS.parent / "app/packaging/maple-agent-dev.ico"
+        records = icon_records(icon.read_bytes())
+        # Root type entries start at +16; their targets must be subdirectories.
+        for relative, value in ((12, 0xFFFFFFFF), (12, 0x10001), (16 + 4, 0), (16 + 4, 0xFFFFFFFF), (24, 3), (16, 15)):
+            self.write(resources=records)
+            data = bytearray(self.binary.read_bytes())
+            resource_offset = struct.unpack_from("<I", data, SECTIONS + 2 * 40 + 20)[0]
+            struct.pack_into("<I", data, resource_offset + relative, value)
+            self.binary.write_bytes(data)
+            with self.subTest(relative=relative, value=value), self.assertRaisesRegex(ValueError, "PE icon resource"):
+                metadata.verify_icon(self.binary, icon)
+        for field, value in ((0, 1), (4, metadata.MAX_ICON_BYTES + 1), (12, 1)):
+            self.write(resources=records)
+            data = bytearray(self.binary.read_bytes())
+            resource_offset = struct.unpack_from("<I", data, SECTIONS + 2 * 40 + 20)[0]
+            # First type/name/language points to the first icon-image data entry.
+            image_names = struct.unpack_from("<I", data, resource_offset + 20)[0] & 0x7FFFFFFF
+            languages = struct.unpack_from("<I", data, resource_offset + image_names + 20)[0] & 0x7FFFFFFF
+            entry = struct.unpack_from("<I", data, resource_offset + languages + 20)[0]
+            struct.pack_into("<I", data, resource_offset + entry + field, value)
+            self.binary.write_bytes(data)
+            with self.subTest(data_field=field), self.assertRaisesRegex(ValueError, "PE icon resource"):
+                metadata.verify_icon(self.binary, icon)
+        for field, value in ((0, 1), (4, metadata.MAX_ICON_BYTES + 1), (4, 16)):
+            self.write(resources=records)
+            self.mutate(OPTIONAL + 112 + 2 * 8 + field, value)
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "PE icon resource|file-backed"):
+                metadata.verify_icon(self.binary, icon)
+
+    def test_icon1_rejects_missing_language_and_corrupt_group_descriptors(self):
+        icon = SCRIPTS.parent / "app/packaging/maple-agent-dev.ico"
+        records = icon_records(icon.read_bytes())
+        group = records[-1]
+        for offset, value in ((2, 2), (4, 5), (6 + 4, 2), (6 + 12, 999)):
+            changed = bytearray(group[3])
+            struct.pack_into("<H", changed, offset, value)
+            self.write(resources=records[:-1] + [(*group[:3], bytes(changed))])
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "ICON1|icon resource"):
+                metadata.verify_icon(self.binary, icon)
+        self.write(resources=[(*record[:2], 0, record[3]) if record[0] == 3 else record for record in records])
+        with self.assertRaisesRegex(ValueError, "canonical profile icon"):
+            metadata.verify_icon(self.binary, icon)
+        changed = bytearray(group[3])
+        first_id = struct.unpack_from("<H", changed, 6 + 12)[0]
+        struct.pack_into("<H", changed, 6 + 12, 0)
+        self.write(resources=[(kind, 0 if identifier == first_id else identifier, language, data)
+                              for kind, identifier, language, data in records[:-1]] + [(*group[:3], bytes(changed))])
+        with self.assertRaisesRegex(ValueError, "invalid PE ICON1"):
+            metadata.verify_icon(self.binary, icon)
 
     def test_import_names_cannot_hide_paths_or_unterminated_oversized_strings(self):
         for name in ("../kernel32.dll", "C:\\kernel32.dll", "dir/kernel32.dll", "bad:name.dll", "x" * 256 + ".dll", "kernel32.exe"):

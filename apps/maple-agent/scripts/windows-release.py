@@ -174,6 +174,7 @@ def write_nsis_config(path, info, payload, installer, unsigned, build):
         "DISPLAY_NAME": info["display_name"], "BUNDLE_ID": info["bundle_id"],
         "VERSION": info["version"], "NUMERIC_VERSION": info["version"].split("-", 1)[0],
         "PAYLOAD": payload, "INSTALLER": installer,
+        "ICON": COMPONENT / "app/packaging" / ("maple-agent-dev.ico" if info["profile"] == "dev" else "maple-agent.ico"),
         "BUILD": build, "GENERATION": info["version"] + "-" + build,
     }
     signer = SCRIPTS / "windows-sign-file.ps1"
@@ -311,6 +312,7 @@ def verify_payload(profile, directory, expected_info, unsigned, *, verify_signat
     if info != expected_info or json.loads((directory / "build-info.json").read_text(encoding="utf-8")) != info:
         raise ValueError("Installer payload identity differs from its verified build")
     validate_imports(binary)
+    pe.verify_icon(binary, COMPONENT / "app/packaging" / ("maple-agent-dev.ico" if profile == "dev" else "maple-agent.ico"))
     if (directory / "LICENSE.txt").read_bytes() != (COMPONENT / "LICENSE").read_bytes():
         raise ValueError("Installer license differs from the reviewed source")
     if verify_signature:
@@ -611,8 +613,8 @@ def smoke_failure_evidence(phase, error, installed, generation_name, registry, a
         except OSError:
             registration = "unavailable"
         code = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
-        native = decode_activation_failure(code) if phase in ("install", "repeat-install") else None
-        installer_phase = NSIS_FAILURE_PHASES.get(code, "unknown") if phase in ("install", "repeat-install", "uninstall") else None
+        native = decode_activation_failure(code) if phase in ("install", "repeat-install", "interactive-install") else None
+        installer_phase = NSIS_FAILURE_PHASES.get(code, "unknown") if phase in ("install", "repeat-install", "interactive-install", "uninstall") else None
         if native:
             installer_phase = "activation-child"
         evidence = {"phase": phase, "error": type(error).__name__, "exit_code": code,
@@ -686,6 +688,8 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                 raise ValueError("Freshly installed Windows bootstrap differs from its generation")
             signature(executable, unsigned)
             signature(uninstaller, unsigned)
+            # A fresh silent install must not start any app/host process.
+            quiet_installer_smoke(generation / "maple-agent.exe")
             phase = "installed-cli"
             actual = run([executable, "--build-info"], env=environment, capture_output=True, text=True).stdout
             if json.loads(actual) != info:
@@ -708,11 +712,20 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             # A repeated manual installer must retain the active generation
             # and stable bootstrap rather than rewriting a running payload.
             bootstrap_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
-            phase = "repeat-install"
-            with pin_current_pointer(installed / "current.json"):
-                run(command_as_windows_args(command), env=environment, timeout=120)
-                if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
-                    raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
+            # ACP/GUI probes can leave their legitimate background host using
+            # the same PE. Retain its exact identity so it is never mistaken
+            # for an installer-launched GUI or stopped by UI-smoke cleanup.
+            with smoke_application_baseline(generation / "maple-agent.exe") as (ui, existing):
+                phase = "repeat-install"
+                with pin_current_pointer(installed / "current.json"):
+                    run(command_as_windows_args(command), env=environment, timeout=120)
+                    if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
+                        raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
+                quiet_installer_smoke(generation / "maple-agent.exe", ui=ui, existing=existing)
+                phase = "interactive-install"
+                interactive_installer_smoke(installer, installed, generation / "maple-agent.exe", scratch, environment, ui=ui, existing=existing)
+            if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
+                raise ValueError("Interactive repeat changed stable bootstrap or active pointer")
         except BaseException as error:
             primary = error
             smoke_failure_evidence(phase, error, installed, generation_name, registry, registry_access, winreg)
@@ -746,7 +759,7 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                     smoke_failure_evidence(cleanup_phase, error, installed, generation_name, registry, registry_access, winreg)
                     if primary is None:
                         raise
-    print("Verified Windows install, identity, signed-out ACP, GUI first render, host stop and state-preserving uninstall")
+    print("Verified Windows install, identity, signed-out ACP, GUI first render, silent/repeat install, interactive auto-launch, host stop and state-preserving uninstall")
 
 
 def command_as_windows_args(command):
@@ -762,6 +775,264 @@ def bounded_diagnostics(data):
     data = re.sub(rb"\x1b\[[0-9;]*[A-Za-z]", b"", data[-8192:])
     safe = bytes(value for value in data if value in (9, 10, 13) or 32 <= value < 127)
     print("Isolated Windows startup diagnostics:\n" + safe.decode("ascii"), file=sys.stderr)
+
+
+class WindowsSmokeUI:
+    """Native UI driver; inspect all PIDs, operate only the owned installer/app."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        self.ctypes, self.types = ctypes, wintypes
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.user = ctypes.WinDLL("user32", use_last_error=True)
+        self.psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        self.callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        declarations = (
+            (self.kernel.OpenProcess, (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD), wintypes.HANDLE),
+            (self.kernel.QueryFullProcessImageNameW, (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)), wintypes.BOOL),
+            (self.kernel.GetProcessTimes, (wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)), wintypes.BOOL),
+            (self.kernel.CloseHandle, (wintypes.HANDLE,), wintypes.BOOL),
+            (self.kernel.WaitForSingleObject, (wintypes.HANDLE, wintypes.DWORD), wintypes.DWORD),
+            (self.kernel.TerminateProcess, (wintypes.HANDLE, wintypes.UINT), wintypes.BOOL),
+            (self.psapi.EnumProcesses, (ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)), wintypes.BOOL),
+            (self.user.EnumWindows, (self.callback, wintypes.LPARAM), wintypes.BOOL),
+            (self.user.GetWindowThreadProcessId, (wintypes.HWND, ctypes.POINTER(wintypes.DWORD)), wintypes.DWORD),
+            (self.user.IsWindowVisible, (wintypes.HWND,), wintypes.BOOL),
+            (self.user.IsWindowEnabled, (wintypes.HWND,), wintypes.BOOL),
+            (self.user.GetDlgItem, (wintypes.HWND, ctypes.c_int), wintypes.HWND),
+            (self.user.GetWindowTextW, (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int), ctypes.c_int),
+            (self.user.PostMessageW, (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM), wintypes.BOOL),
+        )
+        for function, arguments, result in declarations:
+            function.argtypes, function.restype = arguments, result
+
+    def windows(self, pid):
+        windows = []
+        @self.callback
+        def collect(window, _data):
+            owner = self.types.DWORD()
+            self.user.GetWindowThreadProcessId(window, self.ctypes.byref(owner))
+            if owner.value == pid:
+                windows.append(window)
+            return True
+        if not self.user.EnumWindows(collect, 0):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+        return windows
+
+    def button(self, pid, caption):
+        for window in self.windows(pid):
+            button = self.user.GetDlgItem(window, 1)  # Stock NSIS Next/Install/Close.
+            text = self.ctypes.create_unicode_buffer(128)
+            if button and self.user.IsWindowEnabled(window) and self.user.IsWindowEnabled(button):
+                self.user.GetWindowTextW(button, text, len(text))
+                if text.value.replace("&", "") == caption:
+                    return window, button
+        return None
+
+    def click(self, button):
+        # WM_COMMAND / BN_CLICKED to this owned dialog; no global input or focus.
+        if not self.user.PostMessageW(button[0], 0x111, 1, button[1]):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+
+    def applications(self, executable):
+        pids = (self.types.DWORD * 4096)()
+        used = self.types.DWORD()
+        if not self.psapi.EnumProcesses(pids, self.ctypes.sizeof(pids), self.ctypes.byref(used)):
+            raise self.ctypes.WinError(self.ctypes.get_last_error())
+        if used.value >= self.ctypes.sizeof(pids):
+            raise ValueError("Windows smoke process inventory exceeded its bounds")
+        expected = os.path.normcase(os.path.normpath(str(executable)))
+        matches = []
+        for pid in pids[:used.value // self.ctypes.sizeof(self.types.DWORD)]:
+            # Query + synchronize + terminate. A retained native handle prevents
+            # cleanup from targeting a different process after PID reuse.
+            handle = self.kernel.OpenProcess(0x1000 | 0x100000 | 1, False, pid)
+            if not handle:
+                continue  # Other users/system processes are outside this smoke.
+            image = self.ctypes.create_unicode_buffer(32768)
+            size = self.types.DWORD(len(image))
+            matched = self.kernel.QueryFullProcessImageNameW(handle, 0, image, self.ctypes.byref(size)) and os.path.normcase(os.path.normpath(image.value)) == expected
+            if matched:
+                try:
+                    matches.append(WindowsSmokeApplication(self, handle, pid))
+                except BaseException:
+                    for process in matches:
+                        process.release()
+                    raise
+            else:
+                self.kernel.CloseHandle(handle)
+        return matches
+
+    def application(self, executable, *, existing=(), visible_only=False):
+        selected = None
+        candidates = self.applications(executable)
+        try:
+            for candidate in candidates:
+                if selected is None and candidate.identity not in existing and (not visible_only or candidate.visible()):
+                    selected = candidate
+            return selected
+        finally:
+            for candidate in candidates:
+                if candidate is not selected:
+                    candidate.release()
+
+
+class WindowsSmokeApplication:
+    def __init__(self, ui, handle, pid):
+        self.ui, self.handle, self.pid = ui, handle, pid
+        created, exited, kernel, user = (ui.types.FILETIME() for _ in range(4))
+        if not ui.kernel.GetProcessTimes(handle, *(ui.ctypes.byref(value) for value in (created, exited, kernel, user))):
+            error = ui.ctypes.WinError(ui.ctypes.get_last_error())
+            self.release()
+            raise error
+        self.identity = pid, (created.dwHighDateTime << 32) | created.dwLowDateTime
+
+    def alive(self):
+        result = self.ui.kernel.WaitForSingleObject(self.handle, 0)
+        if result not in (0, 258):
+            raise self.ui.ctypes.WinError(self.ui.ctypes.get_last_error())
+        return result == 258  # WAIT_TIMEOUT means this exact process is live.
+
+    def visible(self):
+        return any(self.ui.user.IsWindowVisible(window) for window in self.ui.windows(self.pid))
+
+    def close(self):
+        try:
+            if self.alive():
+                if not self.ui.kernel.TerminateProcess(self.handle, 1):
+                    error = self.ui.ctypes.WinError(self.ui.ctypes.get_last_error())
+                    # A natural exit between the liveness probe and terminate
+                    # is harmless only when this same handle is signalled.
+                    if self.ui.kernel.WaitForSingleObject(self.handle, 0) != 0:
+                        raise error
+                if self.ui.kernel.WaitForSingleObject(self.handle, 10000) != 0:
+                    raise ValueError("Owned Windows smoke application did not stop")
+        finally:
+            self.release()
+
+    def release(self):
+        self.ui.kernel.CloseHandle(self.handle)
+
+
+@contextmanager
+def smoke_application_baseline(executable):
+    ui = WindowsSmokeUI()
+    processes = ui.applications(executable)
+    try:
+        yield ui, {process.identity for process in processes}
+    finally:
+        for process in processes:
+            process.release()  # Existing hosts remain owned by host-stop below.
+
+
+def quiet_installer_smoke(executable, *, ui=None, existing=()):
+    ui = ui or WindowsSmokeUI()
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        unexpected, cleanup_error = False, None
+        for application in ui.applications(executable):
+            try:
+                if application.identity in existing:
+                    application.release()
+                else:
+                    unexpected = True
+                    application.close()
+            except Exception as error:
+                cleanup_error = cleanup_error or error
+        if unexpected:
+            if cleanup_error:
+                print("Windows silent smoke cleanup failure: " + type(cleanup_error).__name__, file=sys.stderr)
+            raise ValueError("Silent Windows installer launched the application")
+        if cleanup_error:
+            raise cleanup_error
+        time.sleep(0.05)
+
+
+def interactive_installer_smoke(installer, installed, executable, scratch, environment, *, ui=None, existing=()):
+    ui = ui or WindowsSmokeUI()
+    command = command_as_windows_args(f'"{installer}" /D={installed}')
+    process = subprocess.Popen(command, cwd=scratch, env=environment, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    application, primary = None, None
+    try:
+        deadline = time.monotonic() + 120
+        for caption in ("Install", "Close"):
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    if process.returncode:
+                        raise subprocess.CalledProcessError(process.returncode, command)
+                    raise ValueError("Interactive Windows installer exited before completion")
+                button = ui.button(process.pid, caption)
+                if button:
+                    if caption == "Close":
+                        application = ui.application(executable, existing=existing)
+                        if application:
+                            raise ValueError("Interactive Windows installer launched before it closed")
+                    ui.click(button)
+                    break
+                time.sleep(0.05)
+            else:
+                raise ValueError("Interactive Windows installer did not reach " + caption)
+        code = process.wait(timeout=max(1, deadline - time.monotonic()))
+        if code:
+            raise subprocess.CalledProcessError(code, command)
+        # Observe the process launched by NSIS through the verified bootstrap,
+        # rather than launching the generation ourselves or trusting its PID.
+        deadline, ready_at = time.monotonic() + 45, None
+        while time.monotonic() < deadline:
+            application = application or ui.application(executable, existing=existing, visible_only=True)
+            if application:
+                if not application.alive():
+                    raise ValueError("Auto-launched Windows application exited early")
+                if application.visible():
+                    ready_at = ready_at or time.monotonic()
+                    if time.monotonic() - ready_at >= 1:
+                        return
+            time.sleep(0.05)
+        raise ValueError("Interactive Windows installer did not open the installed application")
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        # An installer cleanup failure must not prevent exact-app cleanup, or
+        # replace the original failure from the interactive proof.
+        cleanup_error = None
+        try:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
+        except Exception as error:
+            cleanup_error = error
+        attempted = set()
+        try:
+            if application:
+                attempted.add(application.identity)
+                application.close()
+        except Exception as error:
+            cleanup_error = cleanup_error or error
+        if primary is not None:
+            # A failed/hidden launch can leave more than one new process. On
+            # failure collect all of this isolated generation's new processes;
+            # success leaves its legitimate host for the host-stop proof.
+            try:
+                candidates = ui.applications(executable)
+            except Exception as error:
+                candidates = []
+                cleanup_error = cleanup_error or error
+            for candidate in candidates:
+                try:
+                    if candidate.identity in existing or candidate.identity in attempted:
+                        candidate.release()
+                    else:
+                        candidate.close()
+                except Exception as error:
+                    cleanup_error = cleanup_error or error
+        if cleanup_error:
+            print("Windows interactive smoke cleanup failure: " + type(cleanup_error).__name__, file=sys.stderr)
+            if primary is None:
+                raise cleanup_error
 
 
 def gui_smoke(executable, scratch, environment):

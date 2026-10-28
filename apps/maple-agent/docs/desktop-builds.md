@@ -108,6 +108,10 @@ Prod uses a separate signed Windows v3 feed. The per-user installation keeps a
 stable signed launcher and uninstaller; updates stage a new
 `versions/<version>-<build>/` generation and atomically select it with
 `current.json`, preserving the running generation. Dev has no production feed.
+Closing a successfully completed interactive installer opens Maple. Silent
+`/S` installs do not launch it. The executable, installer and uninstaller use
+the profile's Maple icon; an upgrade from 0.0.12 retains that release's stable
+launcher and existing shortcut artwork.
 macOS packages contain a DMG and application
 archive; drag the chosen Agent app into Applications. Both Agent profiles can
 coexist with Maple Research. Linux packages contain
@@ -236,6 +240,9 @@ and code trust before installed files or registration change; a durable manual
 install intent permits safe interrupted-install recovery. Unsigned Prod must
 refuse before modification; unsigned Dev remains a positive install/GUI/uninstall
 preview with no production feed or keys.
+The native smoke also repeats the silent install without opening another
+process, then completes the interactive installer and observes its actual
+auto-launched window before the existing host-stop and uninstall checks.
 
 The downloaded verifier captures the signed checker's read-only preflight
 output before invoking NSIS. On failure it records the install phase and only
