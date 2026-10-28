@@ -45,7 +45,7 @@ GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile no
 # PR lanes use the org's 16-core GitHub-hosted Windows 2025 runner (the same image family,
 # GitHub's cache store); CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
 GITHUB_WINDOWS = Runner("maple-windows-2025-16core", "CI_WINDOWS_GITHUB_RUNNER")
-GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the free standard runner, for the nightly full suite
+GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the free standard runner, for the native Windows test suites
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"
@@ -87,9 +87,11 @@ SDK_TS = ("sdk/src/**", "sdk/package.json", "sdk/bun.lock", "sdk/bunfig.toml",
 AGENT = ("apps/maple-agent/**",)
 WINDOWS_TOOLCHAIN = (".github/actions/setup-agent-windows/**", "scripts/ci/agent_windows.py")
 # What the native Windows updater tests compile: the updater crate (its library and
-# the bootstrap integration test, which includes the app's Windows bootstrap) and the toolchain.
+# the bootstrap integration test, which includes the app's Windows bootstrap), its locked
+# dependencies, the workspace's dependency features and profiles, and the toolchain.
 AGENT_WINDOWS_UPDATER = ("apps/maple-agent/crates/maple-agent-updater/**",
-                         "apps/maple-agent/app/src/windows_bootstrap.rs") + WINDOWS_TOOLCHAIN
+                         "apps/maple-agent/app/src/windows_bootstrap.rs",
+                         "apps/maple-agent/Cargo.lock", "apps/maple-agent/Cargo.toml") + WINDOWS_TOOLCHAIN
 # The packaging scripts and what they call, and the toolchain that builds the bundles.
 AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/build-*", "scripts/package-*", "scripts/verify-*", "scripts/release-info.py",
@@ -193,7 +195,7 @@ DESKTOP = tuple(TAURI + glob for glob in ("tauri.conf.json", "build.rs", "script
                                       "verify-release-artifacts.sh", "attestation-manifest.sh"))
 # The Windows PR lane is the only one that runs the scripts it shares with DESKTOP in Git Bash.
 WINDOWS_DESKTOP = (TAURI + "tauri.windows.conf.json", TAURI + "resources/windows/**", TAURI + "scripts/*windows*",
-                   "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py", "scripts/ci/_common.sh",
+                   TAURI + "scripts/onnxruntime-pins.sh", "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py", "scripts/ci/_common.sh",
                    "scripts/ci/verify-release-artifacts.sh")
 
 # The paths only OpenSecret lanes consume; plan.py counts them as classified.
@@ -222,10 +224,11 @@ LANES: Tuple[Lane, ...] = (
              " && cargo clippy --workspace --all-targets --locked -- -D warnings",
          cache="agent-windows", timeout=45, **AGENT_WIN),
     # The updater's native Windows filesystem, Authenticode, transaction and bootstrap
-    # tests, on GitHub's image; master runs them nightly, which also saves the cache.
+    # tests, on GitHub's free image (16 cores only add queueing to a 2 s suite); master
+    # runs them nightly. Serial and no-fail-fast, as the suite's fixtures were qualified.
     Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"), events=PR_AND_NIGHTLY,
-         run="cargo test -p maple-agent-updater --locked", cache="agent-windows-updater", timeout=30, gate=False,
-         **dict(AGENT_WIN, runner=GITHUB_WINDOWS)),
+         run="cargo test -p maple-agent-updater --locked --no-fail-fast -- --test-threads=1",
+         cache="agent-windows-updater", timeout=30, **dict(AGENT_WIN, runner=GITHUB_WINDOWS_FREE)),
     # The rest of `just ci` and the native macOS suite: master, nightly and ci:full.
     Lane("agent-full-linux", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), run="just ci-extra",
          cache="agent-full-linux", timeout=30, gate=False, **AGENT_FLAKE),

@@ -184,9 +184,12 @@ class LaneTableTests(unittest.TestCase):
                 with self.subTest(path=path, event=event):
                     self.assertIn("agent-windows-updater", selected([path], event))
             self.assertNotIn("agent-windows-updater", selected([path], PUSH))  # nightly runs it on master
-        for path in ("apps/maple-agent/Cargo.lock", "apps/maple-agent/app/src/main.rs",
-                     "apps/maple-agent/app/src/update.rs", "apps/maple-agent/scripts/windows-release.py",
-                     ".github/workflows/ci.yml"):
+        # Its dependency versions, features and profiles, and CI edits, run it too.
+        for path in ("apps/maple-agent/Cargo.lock", "apps/maple-agent/Cargo.toml", ".github/workflows/ci.yml"):
+            with self.subTest(path=path):
+                self.assertIn("agent-windows-updater", selected([path]))
+        for path in ("apps/maple-agent/app/src/main.rs", "apps/maple-agent/crates/maple-agent/Cargo.toml",
+                     "apps/maple-agent/app/src/update.rs", "apps/maple-agent/scripts/windows-release.py"):
             with self.subTest(path=path):
                 self.assertNotIn("agent-windows-updater", selected([path]))
         for label in ("ci:windows", "ci:full"):
@@ -224,9 +227,9 @@ class LaneTableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workflow = Path(tmp) / "ci.yml"
             workflow.write_text(plan.CI_WORKFLOW.read_text().replace(
-                "CI_WINDOWS_GITHUB_RUNNER: ${{ vars.CI_WINDOWS_GITHUB_RUNNER }}\n", ""))
+                "CI_WINDOWS_RUNNER: ${{ vars.CI_WINDOWS_RUNNER }}\n", ""))
             with mock.patch.object(plan, "CI_WORKFLOW", workflow):
-                self.assertIn("ci.yml plan: CI_WINDOWS_GITHUB_RUNNER is not passed to plan.py",
+                self.assertIn("ci.yml plan: CI_WINDOWS_RUNNER is not passed to plan.py",
                               plan.lint_problems(plan.tracked_files()))
 
 
@@ -487,6 +490,8 @@ class ClientLaneTests(unittest.TestCase):
                              (tauri + "tauri.conf.json", desktop | {"research-rust", "repo"}),
                              (tauri + "resources/windows/README.md", windows | {"research-rust"}),
                              ("scripts/ci/desktop-windows-pr.sh", windows | {"repo"}),
+                             # The Windows ONNX Runtime, VC++ and WiX pins live with the others.
+                             (tauri + "scripts/onnxruntime-pins.sh", desktop | windows | {"research-ios", "research-rust"}),
                              # Only the Windows lane runs the verifier in Git Bash.
                              ("scripts/ci/verify-release-artifacts.sh", desktop | windows | {"repo"}),
                              ("scripts/ci/research-dev-desktop.sh", {"research-dev-macos", "repo"})):
@@ -639,26 +644,27 @@ class PlannerTests(unittest.TestCase):
                 result = plan.outputs(dict.fromkeys(ACTIVE, ["x"]))
             return {entry["id"]: entry["cache_save"] for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])}
 
-        cached = {"agent-test", "agent-windows", "agent-windows-updater"}
+        cached = {"agent-test", "agent-windows"}
         self.assertTrue(cached <= {lane.id for lane in lanes.LANES if lane.cache})
         with mock.patch.dict(os.environ):
             for runner in lanes.LINUX, lanes.LINUX_HEAVY, lanes.MACOS, lanes.WINDOWS, lanes.GITHUB_WINDOWS:
                 os.environ.pop(runner.variable, None)
             self.assertTrue(all(saves().values()))
-            # Another Blacksmith size, or a larger GitHub runner, keeps its vendor's store.
+            # Another Blacksmith size keeps its vendor's store.
             on = saves(CI_LINUX_HEAVY_RUNNER="blacksmith-16vcpu-ubuntu-2404",
-                       CI_WINDOWS_GITHUB_RUNNER="maple-windows-2025-16core")
+                       CI_WINDOWS_RUNNER="blacksmith-16vcpu-windows-2025")
             self.assertEqual({lane: on[lane] for lane in cached}, dict.fromkeys(cached, True))
             # A failover to the other vendor restores what it can and saves nothing.
-            off = saves(CI_LINUX_HEAVY_RUNNER="ubuntu-latest", CI_WINDOWS_RUNNER="windows-2025",
-                        CI_WINDOWS_GITHUB_RUNNER="blacksmith-8vcpu-windows-2025")
+            off = saves(CI_LINUX_HEAVY_RUNNER="ubuntu-latest", CI_WINDOWS_RUNNER="windows-2025")
             self.assertEqual({lane: off[lane] for lane in cached}, dict.fromkeys(cached, False))
+            # The free GitHub runner has no override, so its lanes always save into GitHub's store.
+            self.assertTrue(on["agent-windows-updater"] and off["agent-windows-updater"])
         self.assertEqual(lanes.GITHUB_WINDOWS.variable, "CI_WINDOWS_GITHUB_RUNNER")
         self.assertEqual({lane.id for lane in lanes.LANES if lane.runner == lanes.GITHUB_WINDOWS},
-                         {"agent-windows-updater", "agent-package-windows", "research-desktop-windows"})
-        # Nobody waits on the full native suite: the free standard runner, without an override.
+                         {"agent-package-windows", "research-desktop-windows"})
+        # The native test suites gain nothing from 16 cores: the free standard runner, without an override.
         self.assertEqual({lane.id for lane in lanes.LANES if lane.runner == lanes.GITHUB_WINDOWS_FREE},
-                         {"agent-full-windows"})
+                         {"agent-full-windows", "agent-windows-updater"})
 
     def test_run_executes_the_lane_command_in_its_flake(self):
         with mock.patch.object(plan.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()), \

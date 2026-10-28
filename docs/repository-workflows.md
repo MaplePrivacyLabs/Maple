@@ -149,12 +149,13 @@ merging source.
 ## Agent Windows updater checks
 
 The `agent-windows-updater` lane runs `cargo test -p maple-agent-updater
---locked` on GitHub's Windows image: the updater's native filesystem,
-Authenticode-rejection, transaction and recovery tests, and the bootstrap
-integration test, which compiles the app's `windows_bootstrap.rs`. It runs on
-pull requests that change the updater crate, that file or the Windows
-toolchain, with `ci:windows` or `ci:full`, and nightly on master, which saves
-its cache. Like every `windows` matrix lane it has no signing credential or
+--locked --no-fail-fast -- --test-threads=1` on GitHub's free Windows image:
+the updater's native filesystem, Authenticode-rejection, transaction and
+recovery tests, and the bootstrap integration test, which compiles the app's
+`windows_bootstrap.rs`. It runs on pull requests that change the updater
+crate, that file, the Agent workspace's `Cargo.lock` or `Cargo.toml`, the
+Windows toolchain or CI itself, with `ci:windows` or `ci:full`, and nightly on
+master, which saves its cache. Like every `windows` matrix lane it has no signing credential or
 protected environment. The reparse tests need the symlink privilege GitHub's
 runner grants. A pass qualifies no official signature, signed installed
 upgrade, visible GUI or paired remote upgrade.
