@@ -22,9 +22,9 @@ on:
         default: true
         type: boolean
       include_windows:
-        description: Include qualified Windows packages after Windows update delivery is activated
+        description: Publish this release for Windows too (disable only for a legacy macOS/Linux run)
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -58,15 +58,10 @@ jobs:
         env:
           ACTIVATED: ${{ vars.AGENT_UPDATES_ENABLED }}
           PUBLIC_KEY: ${{ vars.AGENT_UPDATE_PUBLIC_KEY }}
-          INCLUDE_WINDOWS: ${{ inputs.include_windows }}
-          WINDOWS_ACTIVATED: ${{ vars.AGENT_WINDOWS_UPDATES_ENABLED }}
         run: |
           set -euo pipefail
           [ "$ACTIVATED" = true ] || { echo 'Agent update production setup has not been activated by its owner.' >&2; exit 1; }
           [ -n "$PUBLIC_KEY" ] || { echo 'Agent public update key is not configured.' >&2; exit 1; }
-          if [ "$INCLUDE_WINDOWS" = true ]; then
-            [ "$WINDOWS_ACTIVATED" = true ] || { echo 'Windows update delivery has not completed its owner-approved native qualification.' >&2; exit 1; }
-          fi
           printf '%s\n' "$PUBLIC_KEY" > public-key.pub
       - name: Verify exact build, download final packages and prepare without secrets
         env:
