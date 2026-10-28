@@ -106,10 +106,9 @@ local-install rehearsal package, not a signed release or deployment. The lane
 checks out the exact PR head; tie the downloaded package and its profile hashes
 to that source run and checkout log when recording test evidence.
 
-The lane runs when the Dev profile or this script changes, or when a PR carries
-`ci:research-dev-macos` (or `ci:package`). Labels are read when the run starts:
-add the label, then re-run the `CI` workflow. Other native changes use the
-`research-desktop-*` lanes.
+The lane runs when a PR carries `ci:research-dev-macos` (or `ci:package`).
+Labels are read when the run starts: add the label, then re-run the `CI`
+workflow. `ci:package` also runs the `research-desktop-*` bundles.
 
 The different bundle ID separates the WebView's stored credentials and Tauri's
 app config/data directories from the production app. Dev does not run the old

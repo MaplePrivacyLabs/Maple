@@ -105,10 +105,9 @@ class AgentSelectionTests(unittest.TestCase):
         self.assertEqual(selected(["scripts/ci/verify-agent-rust-deps.py"]), {"agent-lint", "research-rust", "repo"})
         for path in ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"):
             with self.subTest(path=path):
-                self.assertEqual(selected([path]), {"agent-macos", "agent-package-macos", "research-ios",
-                                                    "research-desktop-macos", "repo"})
+                self.assertEqual(selected([path]), {"agent-macos", "research-ios", "repo"})
         self.assertEqual(selected(["scripts/ci/agent_windows.py"]),
-                         {"agent-windows", "agent-windows-updater", "agent-package-windows", "repo"})
+                         {"agent-windows", "agent-windows-updater", "repo"})
 
     def test_intentional_differences_select_only_the_repo_lane(self):
         for path in (
@@ -363,46 +362,21 @@ class AgentLaneTests(unittest.TestCase):
         self.assertIn("agent-supply-chain", active(NIGHTLY))
         self.assertNotIn("agent-provider", active(NIGHTLY))  # nightly.yml runs it on every OS
 
-    def test_packaging_rehearsal_runs_on_the_narrow_selector_or_a_label(self):
+    def test_packaging_rehearsals_run_only_by_label_and_nightly(self):
+        # A PR never waits on a packaging build: master's agent-desktop-build.yml
+        # builds the real packages, and ci:package or the nightly run rehearses them.
+        packages = AGENT_PACKAGE | {"agent-package-windows"}
         for path in ("apps/maple-agent/scripts/build-release.sh", "apps/maple-agent/flake.lock",
-                     "apps/maple-agent/flake.nix", "apps/maple-agent/app/packaging/macos-entitlements.plist",
-                     "apps/maple-agent/scripts/verify-linux-bundle-docker.sh",
-                     # What package-release.sh and verify-release.sh call.
-                     "apps/maple-agent/scripts/macos-release-app.sh", "apps/maple-agent/scripts/release-info.py",
-                     "apps/maple-agent/scripts/linux-release-bundle.py", "apps/maple-agent/scripts/linux-install.sh",
-                     "apps/maple-agent/scripts/smoke-macos-release.py",
-                     ".github/workflows/agent-desktop-build.yml"):
-            with self.subTest(path=path):
-                self.assertLessEqual(AGENT_PACKAGE, selected([path]))
-                self.assertFalse({lane for lane in selected([path], PUSH) if lane.startswith("agent-package")})
-        self.assertEqual(AGENT_PACKAGE & selected(["scripts/ci/apple-toolchain.json"]), {"agent-package-macos"})
-        for path in ("apps/maple-agent/app/src/main.rs", "apps/maple-agent/scripts/macos-debug-app.sh"):
-            with self.subTest(path=path):
-                self.assertFalse(AGENT_PACKAGE & selected([path]))
-        self.assertEqual(agent_lanes(selected(["docs/x.md"], labels=["ci:package"])),
-                         AGENT_PACKAGE | {"agent-package-windows"})
-
-    def test_windows_packaging_runs_on_its_own_inputs_or_a_label(self):
-        # Windows is on the Agent feed: its installer, packaging scripts, release
-        # identity and toolchain get the native unsigned package and install smoke.
-        for path in ("apps/maple-agent/scripts/windows-installer.nsi", "apps/maple-agent/scripts/windows-release.py",
-                     "apps/maple-agent/scripts/windows-build-info.py", "apps/maple-agent/scripts/build-release.sh",
-                     "apps/maple-agent/scripts/release-info.py", "apps/maple-agent/release-profiles.json",
-                     "apps/maple-agent/release_profile.rs", ".github/actions/setup-agent-windows/action.yml",
+                     "apps/maple-agent/scripts/windows-installer.nsi", "apps/maple-agent/scripts/windows-release.py",
+                     "apps/maple-agent/app/packaging/macos-entitlements.plist", "apps/maple-agent/release-profiles.json",
+                     ".github/workflows/agent-desktop-build.yml", "scripts/ci/apple-toolchain.json",
                      "scripts/ci/agent_windows.py"):
-            for event in (PR, QUEUE):
+            for event in (PR, QUEUE, PUSH):
                 with self.subTest(path=path, event=event):
-                    self.assertIn("agent-package-windows", selected([path], event))
-            self.assertNotIn("agent-package-windows", selected([path], PUSH))  # master builds it signed
-        # Linux- and macOS-only packaging, Agent code and CI edits do not.
-        for path in ("apps/maple-agent/scripts/linux-release-bundle.py", "apps/maple-agent/scripts/macos-release-app.sh",
-                     "apps/maple-agent/flake.lock", "apps/maple-agent/app/packaging/macos-entitlements.plist",
-                     "apps/maple-agent/app/src/main.rs", "apps/maple-agent/crates/maple-agent-updater/src/installer.rs",
-                     ".github/workflows/ci.yml", "scripts/ci/plan.py"):
-            with self.subTest(path=path):
-                self.assertNotIn("agent-package-windows", selected([path]))
+                    self.assertFalse(packages & selected([path], event))
         for label in ("ci:package", "ci:full"):
-            self.assertIn("agent-package-windows", selected(["docs/x.md"], labels=[label]))
+            self.assertEqual(agent_lanes(selected(["docs/x.md"], labels=[label])) & packages, packages)
+        self.assertLessEqual(packages, active(NIGHTLY))
 
     def test_full_suites_run_on_master_nightly_and_by_label(self):
         full = {"agent-full-linux", "agent-full-macos", "agent-full-windows"}
@@ -481,29 +455,29 @@ class ClientLaneTests(unittest.TestCase):
         self.assertFalse(selected(["docs/x.md"], labels=["ci:package", "ci:eif", "ci:windows"]) & DEPS)
 
     def test_research_platform_builds_run_on_native_inputs_or_labels(self):
-        desktop = {"research-desktop-macos", "research-desktop-linux"}
-        windows = {"research-desktop-windows"}
+        desktop = {"research-desktop-macos", "research-desktop-linux", "research-desktop-windows",
+                   "research-dev-macos"}
         tauri = "apps/maple-research/frontend/src-tauri/"
+        # Mobile builds still follow their native inputs; desktop bundles never block
+        # a PR (desktop-build.yml builds master; ci:package rehearses them).
         for path, lanes_ in ((tauri + "gen/apple/project.yml", {"research-ios"}),
                              (tauri + "gen/android/app/build.gradle.kts", {"research-android"}),
-                             (tauri + "dmg/background.tiff", {"research-desktop-macos", "research-rust"}),
-                             (tauri + "tauri.conf.json", desktop | {"research-rust", "repo"}),
-                             (tauri + "resources/windows/README.md", windows | {"research-rust"}),
-                             ("scripts/ci/desktop-windows-pr.sh", windows | {"repo"}),
-                             # The Windows ONNX Runtime, VC++ and WiX pins live with the others.
-                             (tauri + "scripts/onnxruntime-pins.sh", desktop | windows | {"research-ios", "research-rust"}),
-                             # Only the Windows lane runs the verifier in Git Bash.
-                             ("scripts/ci/verify-release-artifacts.sh", desktop | windows | {"repo"}),
-                             ("scripts/ci/research-dev-desktop.sh", {"research-dev-macos", "repo"})):
+                             (tauri + "dmg/background.tiff", {"research-rust"}),
+                             (tauri + "tauri.conf.json", {"research-rust", "repo"}),
+                             (tauri + "resources/windows/README.md", {"research-rust"}),
+                             ("scripts/ci/desktop-windows-pr.sh", {"repo"}),
+                             (tauri + "scripts/onnxruntime-pins.sh", {"research-ios", "research-rust"}),
+                             ("scripts/ci/verify-release-artifacts.sh", {"repo"}),
+                             ("scripts/ci/research-dev-desktop.sh", {"repo"})):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), lanes_)
                 self.assertFalse({lane for lane in selected([path], PUSH) if lane.startswith("research-")})
         self.assertEqual(selected(["docs/x.md"], labels=["ci:ios"]), {"research-ios"})
+        self.assertEqual(selected(["docs/x.md"], labels=["ci:research-dev-macos"]), {"research-dev-macos"})
         # ci:windows is the Agent's; Research Windows packaging comes with ci:package.
         self.assertEqual(selected(["docs/x.md"], labels=["ci:windows"]),
                          {"agent-windows", "agent-windows-updater", "agent-full-windows"})
-        self.assertLessEqual(desktop | windows | {"research-dev-macos"},
-                             selected(["docs/x.md"], labels=["ci:package"]))
+        self.assertLessEqual(desktop, selected(["docs/x.md"], labels=["ci:package"]))
         self.assertFalse({lane for lane in selected([".github/workflows/ci.yml"]) if lane.startswith(
             ("research-ios", "research-android", "research-desktop", "research-dev"))})
 
