@@ -111,7 +111,8 @@ APPLE_TOOLCHAIN = ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.p
 AGENT_DESKTOP = AGENT + RUST_SDK + PROXY_RUNTIME + (
     ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/**",
     "scripts/ci/verify-agent-rust-deps.py", *APPLE_TOOLCHAIN, "scripts/ci/agent_windows.py",
-    "scripts/ci/install-windows-artifact-signing.ps1", "scripts/ci/windows-artifact-sign.ps1",
+    "scripts/ci/cargo_graph_key.py", "scripts/ci/install-windows-artifact-signing.ps1",
+    "scripts/ci/windows-artifact-sign.ps1",
 )
 # Selectors for workflows outside ci.yml, read by `plan.py only NAME`.
 SELECTORS = {"agent-desktop": AGENT_DESKTOP}

@@ -156,6 +156,9 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
   `actions/cache/restore`, and only for a key a push-only workflow saves.
 - Never write a release-reserved prefix (`test_contracts.RESERVED_PREFIXES`,
   plus `ci-v1-agent-release-`) from `ci.yml` or a PR job.
+- The Agent release key's hash is a step output from
+  `scripts/ci/cargo_graph_key.py`, not `hashFiles`. C4 runs that step, so an
+  empty or misnamed output cannot turn the exact key into a family prefix.
 - Turn off implicit saves on PR paths: setup-bun `no-cache: true` and no
   Magic Nix Cache (both checked), and Trivy `cache: "false"` (convention).
 - After a lockfile change, master's first save deletes the lane's target
@@ -205,7 +208,7 @@ All run in the `repo` lane, through the flake checks `ci-scripts`,
 | C1 | One `Release` workflow; listeners check their producer's success, repository and event; release jobs gated | You touched a release trigger or listener. Revert it |
 | C2 | The Agent publisher and signature probe trust `agent-desktop-build.yml` jobs, artifacts, runners and events | You renamed or moved a signed Agent job. Revert it |
 | C3 | Release evidence jobs run on master pushes and never cancel | You changed an evidence workflow's trigger, job or concurrency |
-| C4 | Release cache ownership, exact Agent release keys, lane-family isolation, Dev TestFlight build numbers | You wrote or overlapped a release cache key |
+| C4 | Release cache ownership, exact Agent release keys and how they are hashed, lane-family isolation, Dev TestFlight build numbers | You wrote or overlapped a release cache key, or changed the Agent key's hash step |
 | C5 | The EIF event gate, mismatch semantics, OIDC and FlakeHub jobs, one builder class, a manual EIF release | You changed an EIF job, runner or guard |
 | C6 | Each protected environment has fixed consumer jobs; `windows-signing` is GitHub-hosted | You added, moved or renamed an `environment:` |
 | C7 | Docs name only existing workflow files and display names | A doc names a missing `.yml` file, or a backticked or bold name before "workflow" that is not a display name |

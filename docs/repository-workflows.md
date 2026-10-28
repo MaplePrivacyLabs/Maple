@@ -73,8 +73,12 @@ branches in step with the lane table.
   of its own runner vendor, so `release.yml`'s `build-web` (GitHub-hosted)
   starts with a cold Bun cache; Bun installs in seconds.
 - `agent-desktop-build.yml`'s unsigned builders save the exact key
-  `ci-v1-agent-release-<os>-<hash of both lockfiles>` on master pushes, with
-  no fallback keys. Pushes build only Prod; the nightly Dev and dispatched
+  `ci-v1-agent-release-<os>-<graph hash>` on master pushes, with no fallback
+  keys. `scripts/ci/cargo_graph_key.py` hashes the Agent's `flake.lock` and
+  its `Cargo.lock` without the versions of workspace and path crates, which
+  Cargo rebuilds anyway: a release version bump keeps the key, and a change
+  to any third-party package or dependency edge, or to the toolchain, makes
+  the next build cold. Pushes build only Prod; the nightly Dev and dispatched
   builds restore the same key without saving (the profile changes only Agent
   workspace crates, which Cargo rebuilds). No `ci.yml` lane reads it. The
   Agent packaging lanes build thin LTO into their own
@@ -118,7 +122,8 @@ the other side of each contract. A failure means the workflow change is wrong:
    CodeQL that is not red: the newest finished scan of the release commit or an
    ancestor succeeded (a scan still running does not block). These run on every
    relevant master push and are never cancelled.
-4. The signed master builds write the release cache keys above, and
+4. The signed master builds write the release cache keys above (the Agent's
+   is `cargo_graph_key.py`'s hash of its lockfiles, with no fallback), and
    `ios-dev-testflight.yml`'s run number is the Maple Dev build number: never
    rename that file.
 5. Every OpenSecret EIF builder that uses FlakeHub (`ci.yml`'s `os-eif`,
