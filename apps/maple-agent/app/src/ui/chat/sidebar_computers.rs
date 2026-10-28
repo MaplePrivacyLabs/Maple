@@ -2574,7 +2574,8 @@ mod paging_tests {
         for (mut computer, id) in [(local, "local-cached"), (remote, "remote-cached")] {
             computer.sessions.push(session_from_summary(&task(id)));
             let mut page = snapshot_page(&computer, "", false);
-            page.loaded.extend(["groups".into(), "projects".into()]);
+            page.loaded
+                .extend(["archive-count".into(), "groups".into(), "projects".into()]);
             page.next_groups = Some(format!("next-{id}"));
             page.groups[0].more.active = Some(format!("active-{id}"));
             sidebar.group_pages.hosts.insert(computer.key, page);
@@ -2691,9 +2692,11 @@ mod paging_tests {
             );
             assert_eq!(visible_tasks(sidebar), ["local-cached", "remote-cached"]);
             let stale = group_reply_action(sidebar);
-            let mut computers = sidebar.computers.as_ref().clone();
-            computers[0].label = "Updated computer".into();
-            sidebar.set_computers(Arc::new(computers), cx);
+            // Explicit order/scope refreshes replace pending request authority
+            // immediately. Label-only activity is deliberately coalesced in
+            // Manual mode and is covered separately below.
+            sidebar.refresh_computer_pages(cx);
+            sidebar.rebuild_sections();
             assert_eq!(visible_tasks(sidebar), ["local-cached", "remote-cached"]);
             for page in sidebar.group_pages.hosts.values() {
                 assert!(page.next_groups.is_none());
@@ -2885,8 +2888,16 @@ mod revalidation_tests {
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
-            sidebar.view.sort = SidebarSort::Manual;
-            sidebar.computers = Arc::new(Vec::new());
+            sidebar.view = SidebarView {
+                group: SidebarGroup::Project,
+                sort: SidebarSort::Manual,
+            };
+            let mut local = Computer::pending("local".into(), "This Computer".into(), None);
+            local.key = None;
+            local.backend = Some(sidebar.backend.clone());
+            let mut remote = Computer::pending("remote".into(), "Remote".into(), None);
+            remote.backend = Some(Arc::new(AgentBackend::for_remote_test("remote").unwrap()));
+            sidebar.computers = Arc::new(vec![local, remote]);
             sidebar.group_pages.scope = Some((String::new(), None, false));
             let generation = sidebar.group_pages.generation;
             for key in [None, Some("remote".into())] {
@@ -2898,8 +2909,10 @@ mod revalidation_tests {
                     },
                 );
             }
-            for _ in 0..20 {
-                sidebar.revalidate_computer_pages(cx);
+            for revision in 0..20 {
+                let mut computers = sidebar.computers.as_ref().clone();
+                computers[0].label = format!("Updated computer {revision}");
+                sidebar.set_computers(Arc::new(computers), cx);
             }
             assert_eq!(sidebar.group_pages.generation, generation);
             assert!(sidebar.group_pages.revalidation_pending);
@@ -2925,7 +2938,10 @@ mod revalidation_tests {
             );
             assert_eq!(sidebar.group_pages.generation, generation.wrapping_add(1));
             assert!(!sidebar.group_pages.revalidation_pending);
-            assert!(!sidebar.group_pages.manual_reads_pending());
+            assert!(
+                sidebar.group_pages.manual_reads_pending(),
+                "one trailing reload started"
+            );
             // An older callback cannot refill the replacement generation.
             sidebar.apply_computer_page(
                 action(Some("remote".into())),

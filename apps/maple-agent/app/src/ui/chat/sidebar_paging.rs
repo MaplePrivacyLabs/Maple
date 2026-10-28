@@ -186,7 +186,10 @@ mod tests {
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
-            sidebar.view = SidebarView::default();
+            sidebar.view = SidebarView {
+                group: SidebarGroup::Status,
+                ..SidebarView::default()
+            };
             sidebar.computers = Arc::new(vec![
                 Computer::pending("one".into(), "One".into(), None),
                 Computer::pending("two".into(), "Two".into(), None),
@@ -220,9 +223,7 @@ mod tests {
                     }],
                     false,
                 );
-                // The Active response is the only nonempty page in this
-                // scoped fixture. Confirm the other task states empty before
-                // inspecting the merged Project view's stable prefix.
+                // Active is the only nonempty task reply in this scoped fixture.
                 sidebar.pages.loading.clear();
                 sidebar
                     .pages
@@ -260,7 +261,16 @@ mod tests {
                     2,
                     "only live A tasks survive refresh"
                 );
-                assert_eq!(sidebar.grouped_project_names(), ["a"]);
+                assert_eq!(sidebar.view.group, SidebarGroup::Status);
+                assert!(sidebar.grouped_project_names().is_empty());
+                assert_eq!(
+                    sidebar
+                        .project_roots
+                        .iter()
+                        .map(|project| project.root.as_str())
+                        .collect::<Vec<_>>(),
+                    ["/a"]
+                );
                 sidebar.set_computers(
                     Arc::new(vec![
                         Computer::pending("one".into(), "One".into(), None),
