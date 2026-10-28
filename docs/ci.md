@@ -1,13 +1,13 @@
 # CI
 
 `.github/workflows/ci.yml` runs every required pull-request check. Its one
-verdict, `ci-ok`, is the only required status check: it passes when every
-lane the planner selected succeeded, and an unselected lane may only be
-skipped. `opensecret-eif.yml`, `pages-preview-build.yml`, `auth-pages-ci.yml`
-and `proxy-rust.yml` also run on matching pull requests; they are advisory
-and not part of `ci-ok`. Signed builds, publication, caches and the contracts
-CI keeps are in [repository workflows](repository-workflows.md). Agents
-changing or triggering CI load
+verdict, `ci-ok`, is the only required status check: it passes when every lane
+the planner selected succeeded, and an unselected lane may only be skipped.
+`auth-pages-ci.yml` and `proxy-rust.yml` also run on matching pull requests,
+and `opensecret-eif.yml` and `pages-preview-build.yml` on matching pull
+requests to `master`; they are advisory and not part of `ci-ok`. Signed
+builds, publication, caches and the contracts CI keeps are in [repository
+workflows](repository-workflows.md). Agents changing or triggering CI load
 [`$change-maple-ci`](../.agents/skills/change-maple-ci/SKILL.md).
 
 ## How lanes are chosen
@@ -42,11 +42,14 @@ The `plan` job summary lists each selected lane and why. To preview locally:
 
 ```sh
 python3 scripts/ci/plan.py explain --base origin/master --head HEAD
+python3 scripts/ci/plan.py explain --event push --base "$(git merge-base origin/master HEAD)" --head HEAD
 ```
 
-`explain` also reads paths from stdin, and `--event push` shows master's
-selection. It applies no labels and lists `os-eif` for any EIF input, without
-the same-repository, base-`master` and approval-edit checks.
+The second command shows what master would run after the merge; a push diff
+does not use the merge base, so pass it yourself. `explain` also reads paths
+from stdin. It applies no labels, and it lists `os-eif` for any EIF input
+without the same-repository and base-`master` checks (it does drop it for a
+PCR approval edit).
 
 ## Tiers
 
@@ -123,18 +126,20 @@ of the lanes your staged files select.
 ## Rules
 
 - Never add `paths:` to `ci.yml`; `ci-ok` must report on every pull request.
-- Without labels, every pull request reaches `ci-ok` well under 10 minutes. A lane slower
-  than about 8 minutes runs only by label, nightly, or as master's real
-  builds; check its warm duration before selecting it by path on pull
-  requests.
-- Pull requests never save an Actions cache (one branch-scoped exception,
-  outside `ci.yml`, is listed under [caches](repository-workflows.md#caches));
-  same-repository EIF candidates may push to FlakeHub. Master
-  and nightly runs save lane caches into the store of the lane's own runner
-  vendor: Blacksmith's, or GitHub's for the Agent lanes on GitHub's Windows
-  image. A lane cache must match the lane's toolchain exactly; after a
-  lockfile change, a run restores the newest one by prefix, and master
-  rebuilds the lane's target from scratch before it saves.
+- Without labels, every pull request must reach `ci-ok` well under 10
+  minutes. A lane slower than about 8 minutes stays off the pull-request
+  path: it runs only by label, nightly, or as master's real builds. Check its
+  warm duration before selecting it by path on pull requests.
+- Lanes never save a cache on a pull request; only master pushes and the
+  nightly run do, into the store of the lane's own runner vendor:
+  Blacksmith's, or GitHub's for the Agent lanes on GitHub's Windows image.
+  The EIF jobs are the exceptions: on pull requests they may write
+  branch-scoped Actions-cache entries that master cannot read, and
+  same-repository EIF builds push to FlakeHub
+  ([caches](repository-workflows.md#caches)). A lane cache must match the
+  lane's toolchain exactly; after a lockfile change, a run restores the
+  newest one by prefix, and master rebuilds the lane's target from scratch
+  before it saves.
 - Never cancel master, signed, evidence or nightly runs.
 - Never edit the release or publisher workflows, signing environments or
   OpenSecret approval gating to clear a check. A failing contract test means
@@ -174,7 +179,9 @@ org's 16-core GitHub runner are billed by the minute.
 During an outage or a queue burst, set the repository variable
 `CI_LINUX_RUNNER`, `CI_LINUX_HEAVY_RUNNER`, `CI_MACOS_RUNNER`,
 `CI_WINDOWS_RUNNER` or `CI_WINDOWS_GITHUB_RUNNER` to another label; no pull
-request is needed, and it applies when `plan` next runs (**Re-run all jobs**).
+request is needed. Matrix lanes pick it up when `plan` next runs (**Re-run
+all jobs** on a finished run, or the next push); special jobs read it when
+they are queued.
 `CI_WINDOWS_GITHUB_RUNNER=windows-2025` moves the 16-core lanes to the
 standard runner, which uses the same cache store. A runner from the other
 vendor never saves a cache. The EIF builder, `os-helpers` and the free

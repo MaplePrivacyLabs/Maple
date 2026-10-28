@@ -43,8 +43,7 @@ must be staged here **before `bun tauri build`** on Windows.
 
 ## CI staging
 
-The `research-desktop-windows` CI lane (on pull requests with `ci:package`)
-and the signed builds stage these automatically through
+The Windows PR and signed release workflows stage these automatically through
 `scripts/ci/desktop-windows-pr.sh` and `scripts/ci/desktop-windows-release.sh`
 before the Tauri build. Those scripts use:
 
@@ -59,10 +58,10 @@ field. The staging script therefore rejects ARM64EC markers and only copies
 native AMD64 runtime DLLs into the installer payload.
 
 The PR build emits `target/reproducibility/desktop-pr-windows-*.sha256` proof
-manifests, which the same lane verifies after the build. The signed release
-build emits `target/reproducibility/desktop-release-windows-*.sha256` proof
-manifests after the installer is Authenticode-signed and the final Tauri
-updater `.sig` is generated; CI verifies those from uploaded artifacts.
+manifests. The signed release build emits
+`target/reproducibility/desktop-release-windows-*.sha256` proof manifests after
+the installer is Authenticode-signed and the final Tauri updater `.sig` is
+generated. CI verifies those manifests from uploaded artifacts.
 
 For a **local** Windows build, run `scripts/provide-windows-onnxruntime.sh`
 first (it exports `ORT_DYLIB_PATH`), then run the same staging helper:

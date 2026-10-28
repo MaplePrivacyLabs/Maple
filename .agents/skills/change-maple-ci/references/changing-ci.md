@@ -7,10 +7,10 @@ Paths are relative to the repository root. `scripts/ci/lanes.py` and
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Lane id, which is also the check name |
+| `id` | Lane id and check name (a special job may add a suffix, such as `os-eif (dev)`) |
 | `paths` | The lane's own inputs. They select it in CI, and the hook selects its `hook` component from these alone |
 | `also` | CI-only fan-out to consumers (for example, the Rust SDK selects Agent lanes). The hook ignores it |
-| `pr_paths` | `None`: PRs use `paths + also`. `()`: never path-selected on PRs (label only), while push and nightly still use `paths + also`. A tuple: a narrower PR selector |
+| `pr_paths` | `None`: PRs use `paths + also`. `()`: no PR path selection (labels, and CI edits unless `gate=False`), while push and nightly still use `paths + also`. A tuple: a narrower PR selector |
 | `labels` | PR labels that add the lane (default `ci:full`) |
 | `events` | Events the lane is active for (`GATE`, `PR_SIDE`, `PR_AND_NIGHTLY`, `NOT_NIGHTLY`, or a custom set) |
 | `job` | `nix` or `windows` (the generic matrices), or the id of a special `ci.yml` job |
@@ -18,7 +18,7 @@ Paths are relative to the repository root. `scripts/ci/lanes.py` and
 | `flake`, `workdir`, `run`, `env` | `plan.py run` runs `cd <workdir> && <run>` under `bash -euo pipefail`, inside `nix develop --no-update-lock-file <flake>` when set. On Windows it uses Git Bash from `PATH`, without Nix |
 | `cache`, `workspaces`, `cache_files`, `cache_targets` | rust-cache shared key, workspaces, toolchain pins hashed into the key, and whether to cache `target/` (False keeps only the Cargo home) |
 | `timeout` | Minutes |
-| `gate` | Selected when CI infrastructure changes. Set `False` for slow builds |
+| `gate` | Selected when CI infrastructure changes, whatever `pr_paths` says. Set `False` for slow builds |
 | `opensecret` | The `opensecret_change_detection.py` output that selects the lane |
 | `submodules` | Recursive submodules with full blobless history (Nix needs `revCount`) |
 | `hook` | Pre-commit component that runs the same checks locally |
@@ -60,9 +60,9 @@ Event sets:
   repository equal to this repository, and a usable diff. It is dropped when
   any path edits a PCR approval.
 
-`plan.py explain` calls the same selection with no labels and no `os-eif`
-filter. For label behaviour, read the `labels=` fields or run the
-`test_plan.py` helpers:
+`plan.py explain` calls the same selection with no labels. It drops `os-eif`
+for an approval edit but skips the same-repository and base-`master` checks.
+For label behaviour, read the `labels=` fields or call `plan.select`:
 
 ```sh
 python3 -c 'import sys; sys.path.insert(0, "scripts/ci"); import plan; print(sorted(plan.select("pull_request", ["docs/x.md"], ["ci:package"])))'
@@ -75,39 +75,47 @@ python3 -c 'import sys; sys.path.insert(0, "scripts/ci"); import plan; print(sor
    recipe. `run` should be one short line.
 3. Choose `paths` from what the command reads. Use `also` only for consumers
    that build this lane's inputs from the tree.
-4. Choose the PR exposure:
-   - default for a fast lane;
-   - `pr_paths=()` plus a label for anything slower than about 8 minutes;
-   - `gate=False` if a CI edit should not run it.
-5. Add a `test_plan.py` case. Use the helpers `selected(paths, event,
-   labels)` and `active(event)`. Assert the PR and push selection, the
-   labels, and nightly membership. Follow the existing classes, for example
-   `AgentLaneTests`.
-6. If the lane has a `hook`, add a `hook_selected <name>` branch to
-   `.githooks/pre-commit`. `test_plan.py` checks that one exists.
+4. Choose the PR exposure. The default suits a fast lane. Over about 8
+   minutes warm, set both `pr_paths=()` and `gate=False`: with `pr_paths=()`
+   alone, a CI edit still selects it on PRs. It then runs by label (default
+   `ci:full`), on master pushes and nightly; `events=PR_AND_NIGHTLY` also
+   drops master pushes.
+5. Add a `test_plan.py` case. Use the helpers
+   `selected(paths, event, labels)` and `active(event)`. Assert the PR and
+   push selection, the labels, and nightly membership. Follow the existing
+   classes, for example `AgentLaneTests`.
+6. If the lane reuses an existing `hook` component (for example `sdk_ts`),
+   add its command to that component's own hook (`sdk/.githooks/pre-commit`).
+   A new component name also needs a `hook_selected <name>` branch in
+   `.githooks/pre-commit`; `test_plan.py` checks that one exists. Never add a
+   check inside `scripts/ci/build-sdk-publish.sh`: the SDK publishers run it.
 7. Run `plan.py lint`, `just lane <id>` and `just lane repo`.
 
 ## Add or change a special job
 
 A special job is for services, OIDC, artifacts, or another workflow's cache.
-Its id is the lane's `job`. `plan.py lint` and policy tests 7 to 9 check the
-following:
+Its id is the lane's `job`. Checked by `plan.py lint` and the policy tests:
+
+- `runs-on` exactly `${{ vars.<VARIABLE> || '<label>' }}` when the runner has
+  an override variable, otherwise the plain label; `timeout-minutes` equals
+  the lane's `timeout` (lint).
+- `ci-ok` needs it (test 8); a new runner label is declared in
+  `.github/actionlint.yaml` (test 9 and lint); checkouts use
+  `persist-credentials: false` (test 3).
+- Cache saves are guarded to master `push` or `schedule` and to the home
+  vendor (`startsWith(runner.name, 'blacksmith')`, or its negation for a
+  GitHub home); restore-only caches use `actions/cache/restore` (the cache
+  tests).
+
+By convention, not checked:
 
 - `if: fromJSON(needs.plan.outputs.lanes)['<id>']`, plus any extra guard the
-  planner also applies. For `os-eif`, change the job's `if:` and the
+  planner also applies. A mismatch shows only at run time, as `ci-ok`'s
+  `(selected): skipped`. For `os-eif`, change the job's `if:` and the
   planner's candidate rule together.
-- `runs-on` exactly `${{ vars.<VARIABLE> || '<label>' }}` when the runner has
-  an override variable, otherwise the plain label. `timeout-minutes` equals
-  the lane's `timeout`.
-- Add it to `ci-ok`'s `needs`.
-- Declare a new runner label in `.github/actionlint.yaml`.
-- Put the work in `plan.py run <id>` or a script, not inline YAML.
-- Guard cache saves to master `push` or `schedule` and to the home vendor
-  (`startsWith(runner.name, 'blacksmith')`, or its negation for a GitHub
-  home). Restore-only caches use `actions/cache/restore`.
-- Check out with `persist-credentials: false`. Any full history must use
-  `filter: blob:none`; full checkouts on Blacksmith can otherwise take
-  minutes.
+- The work lives in `plan.py run <id>` or a script, not inline YAML.
+- A full-history checkout uses `filter: blob:none`, as every one in `ci.yml`
+  does; full checkouts on Blacksmith can otherwise take minutes.
 
 Never rename the matrix jobs' `name: ${{ matrix.id }}`. The quarantine
 verdict maps job names to lane ids.
@@ -131,8 +139,9 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
 - An override to the other vendor restores what it can and saves nothing.
   Failover runners are often slower, while timeouts are sized for the home
   runner.
-- Never move signing, attestation or verification jobs, the updater tests or
-  install smokes to Blacksmith, and never move one EIF builder alone.
+- Never move the Agent's signing or attestation jobs, `windows-signing`
+  jobs, artifact verifiers, the updater tests or install smokes to
+  Blacksmith, and never move one EIF builder alone.
 
 ## Caches
 
@@ -140,16 +149,15 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
   a lane's `cache` name, editing `cache_files`, or changing any
   `CARGO*`/`RUST*` variable in the step's environment (including `ci.yml`'s
   top-level `env`) makes the next run cold. Its PR stays cold on every push,
-  because PRs never save.
+  because lanes never save on PRs.
 - Only master `push` and `schedule` runs save, through `save-if` and
   `matrix.cache_save` (the vendor rule).
 - `ci.yml` may read another workflow's cache only with
   `actions/cache/restore`, and only for a key a push-only workflow saves.
-- Never write a release-reserved prefix (`<os>-sccache-`, `xcode-cache-`,
-  `maple-dev-xcode`, `release-onnxruntime-ios-`, `<os>-bun-`, `<os>-gradle-`,
-  `ci-v1-agent-release-`) from `ci.yml` or a PR job.
-- Turn off implicit saves on PR paths: setup-bun `no-cache: true`, Trivy
-  `cache: "false"`, and no Magic Nix Cache.
+- Never write a release-reserved prefix (`test_contracts.RESERVED_PREFIXES`,
+  plus `ci-v1-agent-release-`) from `ci.yml` or a PR job.
+- Turn off implicit saves on PR paths: setup-bun `no-cache: true` and no
+  Magic Nix Cache (both checked), and Trivy `cache: "false"` (convention).
 - After a lockfile change, master's first save deletes the lane's target
   first, so that master run is slower than its PR.
 
@@ -188,8 +196,8 @@ All run in the `repo` lane, through the flake checks `ci-scripts`,
   8. `ci-ok` always reports and needs every job;
   9. declared runner labels.
 
-  It also checks that PRs never save caches and that only the listed jobs
-  write GitHub's store.
+  It also checks that no PR path saves a cache master reads, and that only
+  the listed jobs write GitHub's store.
 - **`test_contracts.py`** imports the code on the other side of each seam.
 
 | Contract | Protects | If it fails |
@@ -208,14 +216,11 @@ selected or nightly; run it yourself after doc edits.
 
 ## Other workflows
 
-- Only `ci.yml`, `opensecret-eif.yml`, `pages-preview-build.yml`,
-  `auth-pages-ci.yml` and `proxy-rust.yml` may run on pull requests
-  (`PULL_REQUEST_WORKFLOWS`). Adding one is an owner decision.
-- The release-evidence workflows (`frontend-tests.yml`, `rust-tests.yml`,
-  `web-build.yml`, `desktop-build.yml`, `android-build.yml`,
-  `mobile-build.yml`, `codeql.yml`) feed the release preflight. Do not fold
-  them into `ci.yml`, rename their jobs, or change their `paths:` without the
-  release owner.
+- Only the workflows in `test_workflow_policy.PULL_REQUEST_WORKFLOWS` may run
+  on pull requests. Adding one is an owner decision.
+- The release-evidence workflows (`ci_evidence.WORKFLOWS`) feed the release
+  preflight. Do not fold them into `ci.yml`, rename their jobs, or change
+  their `paths:` without the release owner.
 - `pages-preview-build.yml` and `auth-pages-ci.yml` are producers that
   `pages-publish.yml` and `auth-pages-dev-publish.yml` trust by name and
   artifact. They overlap `research-web` and `auth` on purpose: the publishers
@@ -232,7 +237,8 @@ selected or nightly; run it yourself after doc edits.
   OpenSecret change, reviewed as one.
 - For EIF checkout, Nix, cache or runner changes, prove that narHash,
   drvPaths and PCRs match the last master `eif-trusted` run, on fresh hosted
-  runners. Get the PR evidence with `ci:eif` and **Re-run all jobs**.
+  runners. Get the PR evidence with `ci:eif`, then push or **Re-run all
+  jobs** on a finished run.
 - Read [CI approval checks](../../../../services/opensecret/docs/nitro-deploy.md#ci-approval-checks)
   and the [cache policy](../../../../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation)
   first.
@@ -249,7 +255,12 @@ selected or nightly; run it yourself after doc edits.
 - `os-helpers` needs Docker that can build `linux/arm64`.
 - `os-eif` needs Linux ARM64 and `EIF_MODE=dev` or `prod`.
 
-`just lane repo` runs every root flake check. To run one, use
-`nix build --no-link --no-update-lock-file ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).<name>"`,
-where `<name>` is `ci-scripts`, `workflows`, `release-gates`, `pages` or
-`pcr-compatibility`.
+`just lane repo` runs every root flake check. A faster loop for `scripts/ci`
+or workflow edits:
+
+```sh
+nix develop --no-update-lock-file .#ci -c python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'
+SYS=$(nix eval --impure --raw --expr builtins.currentSystem)
+nix eval --no-update-lock-file --json ".#checks.$SYS" --apply builtins.attrNames   # the check names
+nix build --no-link --no-update-lock-file .#checks.$SYS.ci-scripts .#checks.$SYS.workflows .#checks.$SYS.release-gates
+```

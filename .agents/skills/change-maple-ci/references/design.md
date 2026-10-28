@@ -12,8 +12,9 @@ table:
 - `plan.py hook`, which is `.githooks/pre-commit`;
 - `just lane <id>`, which is `plan.py run`.
 
-CI, the hook and local runs therefore execute the same command string and
-cannot drift. Separate workflows with their own `paths:` filters and change
+CI and `just lane` run the same command. The hook picks components from the
+same paths but runs each component's faster subset (format, lint, type checks
+and unit tests). Separate workflows with their own `paths:` filters and change
 selectors drift apart and multiply check rows. A planner can do what
 `paths:` filters cannot:
 
@@ -42,8 +43,8 @@ silently. `ci-ok` runs `if: always()` and needs every other job.
 
 The `master` branch rules require `ci-ok` and no other status check.
 Auto-merge is on. There is no merge queue, and branches need not be up to
-date. Either would add a
-second full `ci-ok` run to every merge and fight stacked PRs. Master instead
+date. Either would add a second full `ci-ok` run to every merge and fight
+stacked PRs. Master instead
 re-verifies every push, and the team fixes forward. `ci.yml` already handles
 `merge_group`, so a queue is a settings change if it is ever needed.
 
@@ -58,9 +59,9 @@ already build the real artifacts on every relevant push. A PR rehearsal adds
 waiting, not coverage.
 
 No code enforces this rule; there is no timing guard. Slow lanes crept back
-before, one path selector at a time, until PRs waited 35 to 45 minutes. Check
-a lane's warm duration (the run history of its check row) before you
-path-select it.
+before, one path selector at a time. Check a lane's warm duration (the run
+history of its check row) before you path-select it. A slow lane needs both
+`pr_paths=()` and `gate=False`, or every CI edit still selects it on PRs.
 
 `test_plan.py` pins the current choices. Packaging is label-only, and the
 full suites run on master, nightly and by label. Research iOS and Android are
@@ -81,14 +82,16 @@ inputs.
 
 `save-if` in `ci.yml` allows only master `push` and `schedule`. The policy test
 `test_pull_requests_never_save_caches…` also checks dispatch and queue runs,
-and actions that save implicitly (setup-bun, Magic Nix Cache, Trivy). There
-are two deliberate exceptions, and neither writes the Actions cache that
-master reads:
+and every cache-writing action in `CACHE_WRITERS`, including the implicit
+savers setup-bun and Magic Nix Cache. The EIF jobs are the deliberate
+exceptions, and none of them writes the Actions cache that master reads:
 
 - `opensecret-eif.yml`'s unprivileged `eif` job writes only its own
   branch-scoped Actions cache.
-- The same-repository PR `os-eif` candidate pushes to FlakeHub, a Nix binary
-  cache, through job-scoped OIDC.
+- The same-repository PR builders (`ci.yml`'s `os-eif`,
+  `opensecret-eif.yml`'s `eif-trusted`) push to FlakeHub, a Nix binary cache,
+  through job-scoped OIDC. When FlakeHub does not initialize, the cache
+  action falls back to the run's branch-scoped Actions cache.
 
 ## Master runs are never cancelled
 
@@ -111,23 +114,39 @@ this; `AGENTS.md` states the rule.
 
 Standard GitHub-hosted runners are free for this public repository.
 Blacksmith and the org's 16-core GitHub Windows runner are billed per minute.
+[CI runners](../../../../docs/ci.md#runners) assigns each lane; the reasons:
 
-| Work | Runner class | Why |
-| --- | --- | --- |
-| Compiles people wait on: Agent lint and test, macOS lanes, Windows Clippy, Research Rust, OpenSecret Rust | Blacksmith | Fast, and caches stay warm in Blacksmith's store. The two heaviest Agent lanes use the 32-vCPU class, about twice as fast cold as 8 vCPU |
-| `plan`, `ci-ok`, `repo`, SDK, proxy, web, services, `deps-*`, `os-pcr`, `os-flake-check`, CodeQL | Free GitHub Linux | Light work, or nobody waits on it |
-| Agent native Windows suites (`agent-windows-updater`, `agent-full-windows`) | Free `windows-2025` | Blacksmith's Windows workspace has an inherited write ACE that the updater's storage validation rejects. The reparse tests need the symlink privilege GitHub grants. 16 cores only add queueing to a short suite |
-| `agent-package-windows`, `research-desktop-windows`, release `build-windows` | `maple-windows-2025-16core` | Install smokes need GitHub's image; the bundles gain from cores |
-| Agent master Windows build | Blacksmith Windows | The fat-LTO link is single-threaded, so 16 cores are no faster |
-| Attestation, signing, verification, TestFlight submission | GitHub-hosted | The Agent publisher verifies attestations with `--deny-self-hosted-runners`, and Blacksmith counts as self-hosted. `windows-signing`'s Azure trust names GitHub-hosted runners (C6). Signing and verify jobs restore no cache |
-| `os-helpers`, proxy arm64 image | Free `ubuntu-24.04-arm` | No heavy compile |
-| Every EIF builder that uses FlakeHub | `blacksmith-16vcpu-ubuntu-2404-arm` | One class for PR candidates, master checks and the release build (C5). `opensecret-eif.yml`'s unprivileged fork job stays on `ubuntu-24.04-arm` |
+- **Compiles people wait on run on Blacksmith.** They are fast, and their
+  caches stay warm in Blacksmith's store. `agent-lint` and `agent-test` use
+  the 32-vCPU class, about twice as fast cold as 8 vCPU.
+- **Light or unwatched work runs on free GitHub runners:** `plan`, `ci-ok`,
+  `repo`, SDK, proxy, web, services, `deps-*`, `os-pcr`, `os-flake-check` and
+  CodeQL.
+- **The Agent's native Windows suites run on free `windows-2025`.**
+  Blacksmith's Windows workspace has an inherited write ACE that the
+  updater's storage validation rejects, and the reparse tests need the
+  symlink privilege GitHub grants. 16 cores only add queueing to a short
+  suite.
+- **Windows packaging (`agent-package-windows`, `research-desktop-windows`,
+  release `build-windows`) uses `maple-windows-2025-16core`.** Install smokes
+  need GitHub's image, and the bundles gain from cores.
+- **The Agent's master Windows build runs on Blacksmith Windows.** The
+  fat-LTO link is single-threaded, so 16 cores are no faster.
+- **The Agent's signing and attestation, `windows-signing` jobs and artifact
+  verifiers are GitHub-hosted.** The Agent publisher verifies attestations
+  with `--deny-self-hosted-runners`, and Blacksmith counts as self-hosted.
+  `windows-signing`'s Azure trust names GitHub-hosted runners (C6).
+  Verifiers run fresh and restore no cache. Research's macOS, Linux, iOS and
+  Android signed builds compile and sign on Blacksmith.
+- **Every EIF builder that uses FlakeHub runs on
+  `blacksmith-16vcpu-ubuntu-2404-arm`:** one class for PR candidates, master
+  checks and the release build (C5). `opensecret-eif.yml`'s unprivileged fork
+  job stays on `ubuntu-24.04-arm`.
 
-The override variables (`CI_LINUX_RUNNER`, `CI_LINUX_HEAVY_RUNNER`,
-`CI_MACOS_RUNNER`, `CI_WINDOWS_RUNNER`, `CI_WINDOWS_GITHUB_RUNNER`) move lanes
-in an outage or a queue burst without a PR. They are unset by default. The
-EIF builder, `os-helpers` and the free Windows suites have none on purpose.
-C5 pins the EIF builder; the others have no better fallback.
+The override variables (`CI_*_RUNNER`) move lanes in an outage or a queue
+burst without a PR. They are unset by default. The EIF builder, `os-helpers`
+and the free Windows suites have none on purpose: C5 pins the EIF builder,
+and the others have no better fallback.
 
 ## Cache stores and keys
 
@@ -142,8 +161,11 @@ C5 pins the EIF builder; the others have no better fallback.
 - **Lane caches (`ci-v2`).** The key is the lane's cache name, a hash of its
   toolchain pins (`cache_files`), and rust-cache's own hash of the runner's
   rustc and `CARGO*`/`RUST*` variables. All of these must match exactly.
-  rust-cache adds the lockfile hash, which may differ: after a lockfile
-  change, the newest entry of the same lane and toolchain restores by prefix.
+  rust-cache adds the lockfile hash of third-party crates, which may differ:
+  a workspace version bump still hits exactly, and after any other lockfile
+  change the newest entry of the same lane and toolchain restores by prefix.
+  Caches keyed on the raw `Cargo.lock` (`research-rust`, `research-android`
+  and the `agent-package-*` caches) restore by prefix after a bump too.
   A saving master run without an exact hit first deletes the lane's target
   directory, so each saved cache holds one dependency graph.
 - **`agent-cargo-home`.** `agent-supply-chain` and `agent-provider` only
@@ -156,31 +178,31 @@ C5 pins the EIF builder; the others have no better fallback.
   builds only restore it. No `ci.yml` lane reads it. A `Cargo.lock` change,
   version bumps included, makes the next master Agent build fully cold. That
   cost is known and accepted.
-- **Reserved prefixes.** `release.yml` restores `<os>-sccache-`,
-  `xcode-cache-`, `release-onnxruntime-ios-`, `<os>-bun-` and `<os>-gradle-`
-  by prefix. Only the signed master workflows write them. `ci.yml` only
-  restores keys that master saves. No lane family shares a prefix with a
-  release family, or a new key would hijack the release's fallback (C4).
+- **Reserved prefixes.** `release.yml` restores the families in
+  `test_contracts.RESERVED_PREFIXES` by prefix. Only the signed master
+  workflows write them. `ci.yml` only restores keys that master saves. No
+  lane family shares a prefix with a release family, or a new key would
+  hijack the release's fallback (C4).
 
 ## Fat LTO and the packaging rehearsals
 
 The owner chose fat LTO with one codegen unit for Agent release builds
 (`apps/maple-agent/Cargo.toml`), because download size matters. Thin LTO
-measured clearly larger binaries. Do not re-pitch it. The consequence is a
-master Agent build of roughly 25 minutes, mostly single-threaded compile and
-link, which bigger runners do not speed up. The `ci:package` rehearsals
-deliberately build thin LTO (`FAST_RELEASE` in `lanes.py`) into their own
-`ci-v1-agent-package-*` caches. They prove the packaging, not the optimizer.
-Only the nightly master run saves those caches.
+measured clearly larger binaries. The consequence is a slow master Agent
+build, mostly single-threaded compile and link, which bigger runners do not
+speed up. The `ci:package` rehearsals deliberately build thin LTO
+(`FAST_RELEASE` in `lanes.py`) into their own `ci-v1-agent-package-*` caches.
+They prove the packaging, not the optimizer. Only the nightly master run
+saves those caches.
 
 ## Agent Dev builds run nightly
 
 `agent-desktop-build.yml` builds Prod on master pushes, Dev nightly at 10:37
 UTC, and both on dispatch. Prod no longer waits on, or gets skipped by, a
-failed Dev leg, and each push saves a full Dev build set. The nightly run can
-never be published, because the publisher accepts only `push` and
-`workflow_dispatch` runs. The hour avoids the other scheduled runs and the
-top of the hour. Research iOS Dev TestFlight stays on push.
+failed Dev leg, and pushes no longer spend runner time on Dev packages. The
+nightly run can never be published, because the publisher accepts only
+`push` and `workflow_dispatch` runs. The hour avoids the other scheduled runs
+and the top of the hour. Research iOS Dev TestFlight stays on push.
 
 ## CodeQL only has to be "not red"
 
@@ -228,13 +250,14 @@ audit whenever they are selected.
 
 ## Tests: behaviour and contracts, not text
 
-Tests that assert a script's or workflow's text break on harmless renames and
-rewording and catch no behaviour. A hand-copied list of required test names
-breaks on the next rename. Test
-what the planner selects, or the contract another file consumes:
-`test_contracts.py` imports `publisher.py`, `ci_evidence.py` and the
-signature probe rather than copying their rules. Derive any list a test
-needs.
+Tests that grep a script's or workflow's prose or comments break on harmless
+renames and rewording and catch no behaviour. A hand-copied list of required
+test names breaks on the next rename. Test what the planner selects, or the
+contract another file consumes: `test_contracts.py` imports `publisher.py`,
+`ci_evidence.py` and the signature probe rather than copying their rules.
+Where a seam depends on exact structure, a contract test asserts the parsed
+YAML fields and conditions (for example the clean step's `run` lines or the
+EIF `sign` job's `if:`). Derive any list a test needs.
 
 The policy and contract tests do keep a few deliberate security allowlists:
 `PULL_REQUEST_WORKFLOWS`, `GITHUB_STORE_WRITERS`, `GITHUB_STORE_LANES`,

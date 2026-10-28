@@ -71,13 +71,13 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
 
 The helper proves an empty-database migration and the selected local synthetic
 database suites, including OAuth settings preservation, callback selection,
-and Google/GitHub callback completion through the real V1 encryption middleware
-and V2 gateway. Completion tests exchange synthetic credentials only with
-local mock token/user-info endpoints, verify the originally selected callback
-after settings change, and reject replay without another exchange. The
-`os-sdk-e2e` lane in `ci.yml` runs this helper too. These fixtures do not prove a live
-OAuth provider flow, a released SDK or application, or a data conversion from
-representative old rows.
+and Google/GitHub callback completion through the real V1 encryption
+middleware and V2 gateway. Completion tests exchange synthetic credentials
+only with local mock token/user-info endpoints, verify the originally selected
+callback after settings change, and reject replay without another exchange.
+The `os-sdk-e2e` lane in `ci.yml` runs this helper too. These fixtures do not
+prove a live OAuth provider flow, a released SDK or application, or a data
+conversion from representative old rows.
 
 For a data migration, separately build an upgrade-shaped disposable database
 with representative pre-change rows and verify restart, rollback, and retry
@@ -159,10 +159,11 @@ Read-only EIF construction and PCR comparison are validation when in scope.
 Root backend CI runs the component flake checks but does not build the
 default package. `ci.yml`'s `os-eif` lane builds dev/prod EIF candidates for
 same-repository PRs to `master` that change measured inputs (or carry
-`ci:eif`) without editing approvals; it reports PCRs and compares nothing.
-`opensecret-eif.yml` builds dev/prod and compares generated measurements on
-PRs that explicitly edit the four approved PCR JSON files, relevant
-backend/TEE or approval changes to master, and manual runs. Ordinary backend PRs do not require new PCR approvals. A PR
+`ci:eif`) without editing approvals; it reports PCR0 and whether approval is
+needed, and never fails on a mismatch. `opensecret-eif.yml` builds dev/prod
+and compares generated measurements on PRs that explicitly edit the four
+approved PCR JSON files, relevant backend/TEE or approval changes to master,
+and manual runs. Ordinary backend PRs do not require new PCR approvals. A PR
 fails on a mismatch only in an environment whose approval files it edits; a
 master mismatch passes with a notice and the built PCRs, meaning the revision
 awaits approval. The check script exits 3 for a mismatch and with another

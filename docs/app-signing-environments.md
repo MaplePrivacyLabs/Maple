@@ -113,11 +113,11 @@ Rerunning an old workflow revision that predates these environment declarations
 will no longer have signing access; use a current reviewed revision instead.
 
 `just lane repo` (the root `nix flake check`) checks workflow syntax and the
-signing job boundaries. The manual `Check app signing credentials` workflow checks
-credential availability without signing, building, or publishing anything. Only
-jobs using an environment with required reviewers, such as `zapstore-publishing`,
-pause for approval. Run it on `master`; a run from a feature branch should be
-rejected by the environment policies.
+signing job boundaries. The manual `Check app signing credentials` workflow
+checks credential availability without signing, building, or publishing
+anything. Only jobs using an environment with required reviewers, such as
+`zapstore-publishing`, pause for approval. Run it on `master`; a run from a
+feature branch should be rejected by the environment policies.
 
 Server-side environment policies and secret placement must also
 be verified through GitHub; a source test cannot enforce repository settings.

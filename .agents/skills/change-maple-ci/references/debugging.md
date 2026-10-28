@@ -14,23 +14,25 @@ Start with the facts the run already has:
 | Action | Re-plans? | Use for |
 | --- | --- | --- |
 | Push a commit | Yes | Code fixes; also picks up new labels and variables |
-| **Re-run all jobs** | Yes: `plan` reads the PR's current labels and repository variables | After adding a label, or changing `CI_QUARANTINE` or a `CI_*_RUNNER` variable |
+| **Re-run all jobs** | Yes: `plan` reads the PR's current labels and repository variables | After adding a label, or changing `CI_QUARANTINE` or a `CI_*_RUNNER` variable. GitHub offers it only on a finished run: cancel a running PR run first, never a master run |
 | **Re-run failed jobs** | No: reuses the old `plan` outputs (lanes, matrix runners, quarantine) | Infrastructure flakes in a lane |
 | Dispatch `ci.yml` | Its own plan from the `lanes` input | Running lanes on a branch outside a PR. It never saves caches |
 
 Adding a label never starts a run by itself. That is deliberate: a label
 event could otherwise post a fresh green `ci-ok` on a commit whose real run
-failed.
+failed. With auto-merge on, a run planned before the label can still pass
+`ci-ok` and merge the PR without the labelled lanes; push or cancel it before
+it finishes.
 
 A new push to a PR cancels the superseded run, and the new `plan` waits for
-the cancellation to finish. Rapid re-pushes each add about a minute.
+the cancellation to finish, so rapid re-pushes each add some delay.
 
 ## Failure signatures
 
 | Signature | Cause | Response |
 | --- | --- | --- |
 | Nix setup fails: `HTTP error 416`, `SSL_read`, or "is required, but there is no substituter" | Transient `cache.nixos.org` error. Setup has no automatic retry | Re-run the failed job |
-| "lost communication with the server", or a job that vanished mid-run | Lost runner | Re-run failed jobs. On `agent-desktop-build.yml`, re-running in the same run keeps the build number; publication still belongs to the release owner |
+| "lost communication with the server", or a job that vanished mid-run | Lost runner | Re-run failed jobs. On `agent-desktop-build.yml` (signed builds), ask the release owner first; a re-run in the same run keeps the build number |
 | `plan` fails with `lane selection failed` on a PR | A label read through `gh api` failed, or the event payload was unusable | **Re-run all jobs** |
 | `plan` fails on every event, master included | `CI_QUARANTINE` names an unknown lane or `repo` | Fix or clear the variable |
 | `plan` succeeds but selects every lane | An unclassified path, or no usable diff (new branch, force-push) | Own or mark inert the path in `lanes.py`; `plan.py lint` lists it |
@@ -41,13 +43,15 @@ the cancellation to finish. Rapid re-pushes each add about a minute.
 | `repo` fails `test_workflow_policy` or `test_contracts` | Your change crossed a policy or a release seam | Fix the change; see the contract table in [changing CI](changing-ci.md#guard-tests) |
 | `repo` fails C7 on an unrelated PR | An earlier docs-only merge named a missing workflow; docs PRs do not run `repo` | Fix the doc reference |
 | `agent-lint` fails `check-rust` | The Agent flake's rustc no longer equals the Windows rustup pin | Bump `AGENT_WINDOWS_RUST` and `setup-agent-windows` together |
-| Agent native Windows suite (`agent-full-windows`) fails in a SQLite store test with a locked file or a disconnected channel | Known intermittent flake on Windows | Re-run once. A repeat goes to the `ci-nightly` issue; do not quarantine it to merge |
 | An EIF comparison on master reports a mismatch | Measured inputs changed; approval is a release step | A notice, not a failure. Do not edit approvals |
+| Any other failure you cannot explain | Possibly an infrastructure fault | Re-run the failed job once. A repeat is real: fix it, and do not quarantine it to merge |
 
 ## Slow runs
 
 - **Cold cache.** The first run after any of these is cold:
-  - a lockfile change (a prefix fallback restores the nearest entry);
+  - a lockfile change: a prefix fallback restores the nearest entry (a
+    workspace version bump still hits rust-cache lanes exactly, but not
+    `research-rust`, `research-android` or the packaging caches);
   - a new cache prefix, lane `cache` name or `cache_files` pin;
   - a change to a `CARGO*` or `RUST*` variable;
   - a runner image with a new preinstalled Rust or MSVC.
@@ -63,12 +67,19 @@ the cancellation to finish. Rapid re-pushes each add about a minute.
 - **Queued jobs.** If `agent-lint` or `agent-test` sit queued while other
   Blacksmith jobs start, the 32-vCPU pool is bursting. Set the repository
   variable `CI_LINUX_HEAVY_RUNNER=blacksmith-16vcpu-ubuntu-2404` (same
-  vendor, so caches still work), use **Re-run all jobs**, and unset the
-  variable afterwards. The same pattern applies to the other `CI_*_RUNNER`
-  variables in an outage. Changing repository variables needs admin rights,
-  so ask the owner if you lack them.
+  vendor, so caches still work) and unset it afterwards. For the 8-vCPU
+  lanes, `CI_LINUX_RUNNER=blacksmith-16vcpu-ubuntu-2404` keeps Blacksmith's
+  store. In a Blacksmith-wide outage use `ubuntu-latest` (or `macos-26`,
+  `windows-2025`): cold, saves nothing, slower.
+  - Matrix lanes take their runner from `plan`, so re-plan: cancel a PR run,
+    then **Re-run all jobs**. Never cancel a master run; the variable applies
+    from the next push. Special jobs read the variable when they are queued.
+  - Changing repository variables needs admin rights, so ask the owner if
+    you lack them.
 - **Slow checkouts.** Full-history checkouts on Blacksmith are slow without
-  `filter: blob:none`. Every full-history checkout in CI uses it; keep it.
+  `filter: blob:none`. Every full-history checkout in `ci.yml` uses it; keep
+  it. Adding it to other workflows (`opensecret-eif*.yml`, `release.yml`,
+  publishers) is an OpenSecret or release change.
 
 ## Nightly failures
 
@@ -81,17 +92,22 @@ as red checks on the master commit.
 
 ## Quarantine
 
-Setting `CI_QUARANTINE=<lane>` turns that lane's failure into a warning in
-`ci-ok` while it keeps running. It needs no PR and applies at the next plan.
-Use it only when the owner asks; fix the lane instead. A typo fails every
-plan, and `repo` cannot be quarantined.
+`CI_QUARANTINE` is for emergencies the owner asks for; fix the lane instead
+([design](design.md#quarantine), [CI](../../../../docs/ci.md#quarantine)).
 
 ## Release-adjacent signals
 
-- A master merge that touches `.github/`, `scripts/ci/` or Nix makes older
-  Research evidence unusable. The next Research release needs a push that
-  runs the evidence workflows again. Tell the release owner; do not work
-  around `ci_evidence.py`.
+- A master merge that touches any path outside `ci_evidence.unrelated_path`
+  (anything but `apps/maple-agent/`, `docs/`, `.agents/` and root
+  `AGENTS.md`) makes older Research evidence unusable. A release's
+  version-bump push re-runs the evidence workflows, so the risk is a merge
+  between a bump and its release. Tell the release owner; do not work around
+  `ci_evidence.py`.
+- Files below a component's root, READMEs included, are build inputs. On
+  master they start signed builds: an Agent one through
+  `plan.py only agent-desktop`, a Research one through `change_detection.py`.
+  A partial Research build (one platform only) is not usable release
+  evidence either.
 - `services/agent-updates/**` changes select every signed Research build on
   master. Never push to `master` to test them.
 - A red CodeQL scan blocks the next release, not `ci-ok`.

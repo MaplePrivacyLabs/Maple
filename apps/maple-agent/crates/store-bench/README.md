@@ -12,8 +12,7 @@ nix develop --no-update-lock-file . -c just store-bench-ci
 nix develop --no-update-lock-file . -c just store-bench
 ```
 
-The small `store-bench-ci` fixture has 40 tasks / 8,000 entries, including a
-2,000-entry hot task.
+The CI fixture has 40 tasks / 8,000 entries, including a 2,000-entry hot task.
 The full fixture has 2,000 tasks / 1,000,000 entries, including a 100,000-entry
 hot task and a 20,000-entry long task. The deterministic generator adapts the
 research harness's shape to current typed Pi messages. It creates real user
@@ -65,13 +64,13 @@ Each JSON result has a sibling SHA-256 file and records engine/provider
 versions, source revision/dirty state, executable digest, OS/CPU/memory, load,
 dataset identity and settings. No synthetic database or key is uploaded.
 
-## References
+## References and CI
 
 `scripts/evaluate.py` requires both modes, the canonical seed/scale, all
 scenarios and their sample counts, effective durability settings, and indexed
 plans with and without statistics. Missing scenarios cannot silently remove a
-slow operation. The `linux-ci` profile compares medians at 10x its recorded
-Linux reference; the `macos-full` profile uses 2x its recorded macOS reference. Platform
+slow operation. Linux CI compares medians at 10x its actual Linux reference;
+the `macos-full` profile uses 2x its actual macOS reference. Platform
 mismatches are rejected. Native Mac small runs can use `--profile linux-ci
 --diagnostic` to validate workload evidence without comparing or recording a
 Linux runner gate.

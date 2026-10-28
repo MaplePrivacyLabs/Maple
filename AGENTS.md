@@ -85,15 +85,17 @@ and installed-client raw URLs. Never change approvals to clear ordinary PR check
 Load `$change-maple-ci` before changing, triggering or debugging CI; it holds
 the full rules and their reasons. In short:
 
-- `ci-ok` is the one required check. Without labels, every PR reaches it well
-  under 10 minutes; slower builds run only by `ci:*` label, nightly, or on master.
+- `ci-ok` is the one required check. Without labels, every PR must reach it
+  well under 10 minutes; slower builds run only by `ci:*` label, nightly, or
+  on master.
 - Add or change checks only as lanes in `scripts/ci/lanes.py`, each with a
   `test_plan.py` case; no new side workflows or bespoke guard scripts.
 - Never put `[skip ci]`, `[ci skip]` or similar in a commit or PR title: master
   plans each push from the previous commit, so a skipped commit is never checked.
 - Test behavior, or a contract another file consumes; never a script's or
   workflow's text, and never hand-copied lists of names.
-- Pull requests never save an Actions cache, and master runs are never cancelled.
+- Lanes never save a cache on a pull request (the EIF jobs' branch-scoped
+  exceptions are in the skill), and master runs are never cancelled.
 - Never edit release or publisher workflows, signing environments, or OpenSecret
   approval gating to clear a check; a failing contract test means fix the change.
 - Run `just lane <id>` for the lanes your change selects before pushing. Add a

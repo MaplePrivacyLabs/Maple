@@ -191,9 +191,10 @@ return validation; package metadata alone does not prove those browser flows.
 
 ## Packaging commands
 
-From `apps/maple-agent`, using the pinned component shell (`just
-package-rehearsal` runs the host platform's sequence, as the `agent-package-*`
-lanes do):
+From `apps/maple-agent`, using the pinned component shell
+(`just package-rehearsal` runs this sequence with extra macOS or Linux
+verification, as the `agent-package-linux` and `agent-package-macos` lanes
+do; Windows uses the commands below):
 
 ```sh
 nix develop --no-update-lock-file . -c ./scripts/build-release.sh dev
@@ -214,9 +215,9 @@ Windows builds use the pinned Rust/MSVC environment from
 `RUSTFLAGS='-D warnings -C target-feature=+crt-static'`. Master's unsigned
 build compiles on Blacksmith Windows; signing, verification and the
 `ci:package` rehearsal's install smoke run on GitHub's Windows image
-([CI runners](../../../docs/ci.md#runners)). `build-release.sh` selects the explicit x64 MSVC target
-so host build tools keep their normal linkage, then stages the exact resulting
-executable.
+([CI runners](../../../docs/ci.md#runners)). `build-release.sh` selects the
+explicit x64 MSVC target so host build tools keep their normal linkage, then
+stages the exact resulting executable.
 From the component directory in Git Bash on Windows:
 
 ```sh

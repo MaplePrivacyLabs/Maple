@@ -32,13 +32,16 @@ branches in step with the lane table.
 
 ## Caches
 
-- Pull requests restore Actions caches and never save one. The one exception
-  is `opensecret-eif.yml`'s `eif` job (fork PRs that edit PCR approvals, and
-  manual runs outside `master`): without FlakeHub credentials, its Nix store
+- Pull requests restore Actions caches, and no pull-request write reaches a
+  cache `master` reads. The exceptions are the EIF jobs.
+  `opensecret-eif.yml`'s `eif` job (fork PRs that edit PCR approvals, and
+  manual runs outside `master`) has no FlakeHub credentials, so its Nix store
   goes to the run's branch-scoped Actions cache, which `master` and other
   pull requests cannot read. Same-repository PR EIF builds (`ci.yml`'s
   `os-eif` and `opensecret-eif.yml`'s `eif-trusted`) push to the FlakeHub Nix
-  cache by design ([cache policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation)).
+  cache by design, and fall back to the branch-scoped Actions cache when
+  FlakeHub does not initialize
+  ([cache policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation)).
 - Lane caches (`Swatinem/rust-cache`, prefix `ci-v2`) are keyed by lane and
   toolchain pins (the workspace's `flake.lock`, and OpenSecret's
   `rust-toolchain.toml`), which must match exactly, then by rust-cache's
@@ -76,7 +79,8 @@ branches in step with the lane table.
   workspace crates, which Cargo rebuilds). No `ci.yml` lane reads it. The
   Agent packaging lanes build thin LTO into their own
   `ci-v1-agent-package-<os>-*` caches, which only the nightly master run
-  saves. Signing, attestation and verification jobs restore nothing.
+  saves. The Agent's signing, attestation and verification jobs restore
+  nothing.
 
 ## Concurrency
 
@@ -241,7 +245,8 @@ release workflows use:
 | Research macOS, Linux, Android and iOS builds, which compile and sign (master and release); `rust-tests.yml`; the Agent's unsigned master builds | Blacksmith (`blacksmith-6vcpu-macos-26`, `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`) |
 | Release `build-windows` | `maple-windows-2025-16core` |
 | Signed Research Windows master build; Agent Windows signing and verification | `windows-2025` |
-| Artifact verifiers, TestFlight submission, the Agent's signing and attestation, CodeQL, web and frontend evidence, proxy release rehearsal | Other GitHub-hosted runners |
+| Artifact verifiers, TestFlight submission, the Agent's signing and attestation, CodeQL, web and frontend evidence | Other GitHub-hosted runners |
+| Proxy release builds and their PR rehearsal (`proxy-rust.yml`) | GitHub-hosted Linux and Windows, Blacksmith macOS |
 | EIF builders that use FlakeHub | `blacksmith-16vcpu-ubuntu-2404-arm` |
 
 The Agent's signing and attestation, `windows-signing` jobs and every artifact

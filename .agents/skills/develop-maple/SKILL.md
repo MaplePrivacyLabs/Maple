@@ -59,6 +59,7 @@ Load the matching workflow when the task crosses it:
 - `$develop-opensecret-sdk` or `$develop-maple-proxy`: their owned source/contracts.
 - `$review-maple-security`: a trust-boundary change or security review.
 - `$validate-maple`: validation beyond the focused loop and before handoff.
+- `$change-maple-ci`: CI lanes, labels, re-runs, or red or slow CI.
 - `$release-maple`: explicitly authorized publication only.
 
 ## Focused loop and handoff

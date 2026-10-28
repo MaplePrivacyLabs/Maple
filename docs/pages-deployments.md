@@ -181,12 +181,13 @@ publication requires a Research release.
 
 The Dev producer is `Auth Pages CI` itself: its job runs `auth-ci.sh` and
 builds the artifact. On pull requests, `ci.yml`'s `auth` lane runs the same
-`auth-ci.sh` for `ci-ok`, so the checks run twice by design. Push and PR path filters cover Auth source, its build scripts,
-the artifact tooling and shared Nix inputs; a newer PR head cancels an older
-build. The Pages and publisher tests run in `ci.yml`'s `repo` lane. Unrelated application changes
-alone do not trigger it. PR checkout and manifest use the exact PR head SHA,
-not GitHub's synthetic merge SHA. Forks retain the unprivileged CI checks but
-do not produce a publishable artifact. Each publisher executes trusted master
+`auth-ci.sh` for `ci-ok`, so the checks run twice by design. Push and PR path
+filters cover Auth source, its build scripts, the artifact tooling and shared
+Nix inputs; a newer PR head cancels an older build. The Pages and publisher
+tests run in `ci.yml`'s `repo` lane. Unrelated application changes alone do
+not trigger it. PR checkout and manifest use the exact PR head SHA, not
+GitHub's synthetic merge SHA. Forks retain the unprivileged CI checks but do
+not produce a publishable artifact. Each publisher executes trusted master
 tooling in a separate `workflow_run` job; PR code never receives publication
 credentials.
 

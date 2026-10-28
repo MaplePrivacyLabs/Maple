@@ -589,11 +589,11 @@ environment:
 The source lives under [`proxy/`](https://github.com/MaplePrivacyLabs/Maple/tree/master/proxy)
 in the Maple repository. The root `ci.yml` workflow runs locked Rust checks
 for proxy changes (lane `proxy`), supply-chain policy when the proxy's
-manifest, lockfile or `deny.toml` changes (`deps-proxy`), and non-publishing
-container builds: on pull requests only when `proxy/Dockerfile` or
-`.dockerignore` changes (`proxy-container`), and on `master` for both
-architectures whenever container inputs change (`proxy-container`,
-`proxy-container-arm64`). After every successful stable Maple Release, a separate serialized
+manifest, lockfile or `deny.toml`, or the Rust SDK manifest, changes
+(`deps-proxy`), and non-publishing container builds: on pull requests only
+when `proxy/Dockerfile` or `.dockerignore` changes (`proxy-container`), and
+on `master` for both architectures whenever container inputs change
+(`proxy-container`, `proxy-container-arm64`). After every successful stable Maple Release, a separate serialized
 publisher compares the checked-in proxy version with the previous stable Maple
 Release and rejects changed container inputs without a version bump. Version
 `0.3.3` remains the explicit unbackfilled migration baseline. A new or missing
