@@ -196,8 +196,9 @@ jobs:
     name: Build Windows binary (${{ matrix.variant }})
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
-    # GitHub-hosted, like the signing and verify jobs that consume its binary.
-    runs-on: maple-windows-2025-16core
+    # Fat LTO links on one thread, so GitHub's 16-core runner is no faster warm;
+    # Blacksmith costs less. Its release cache lives in Blacksmith's store.
+    runs-on: blacksmith-8vcpu-windows-2025
     permissions:
       contents: read
     timeout-minutes: 120

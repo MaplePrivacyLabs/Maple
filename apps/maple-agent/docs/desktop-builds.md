@@ -208,7 +208,7 @@ continues to use the macOS feed. Dev has no update feed on either platform.
 Both platforms retain one release version and source commit; separate feed
 paths preserve compatibility with existing macOS clients.
 
-Windows builds run on the org's 16-core GitHub-hosted `maple-windows-2025-16core` with the pinned Rust/MSVC
+Windows builds run on `blacksmith-8vcpu-windows-2025` with the pinned Rust/MSVC
 environment from `.github/actions/setup-agent-windows` and
 `RUSTFLAGS='-D warnings -C target-feature=+crt-static'`; signing stays on
 GitHub's `windows-2025`. `build-release.sh` selects the explicit x64 MSVC target

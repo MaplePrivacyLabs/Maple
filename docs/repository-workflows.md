@@ -42,8 +42,8 @@ branches in step with the lane table.
   store. GitHub's holds what GitHub-hosted jobs need: the lane caches of
   `agent-full-windows` and `agent-windows-updater` (both saved only by the
   nightly run), the `agent-package-windows` packaging cache (below), the
-  unsigned Agent Windows build, the signed Research Windows build's Bun binary,
-  the release, the Nix installer and that EIF check.
+  signed Research Windows build's Bun binary, the release, the Nix installer
+  and that EIF check.
   `test_workflow_policy.py` lists these writers.
 - The signed master builds write the keys `release.yml` restores by prefix
   (`<os>-sccache-*` for macOS and Linux, `xcode-cache-*`,
@@ -217,20 +217,23 @@ macOS); lane runners are the constants in `scripts/ci/lanes.py`. The signed
 Research macOS, Linux, Android and iOS builds compile and sign on Blacksmith.
 Artifact verifiers, TestFlight submission, and the Agent's signing and
 attestation use GitHub-hosted runners. Windows builds that compile run on the
-org's 16-core GitHub-hosted runner `maple-windows-2025-16core`: the unsigned Agent
-build, the release's `build-windows`, the Agent's native updater tests and
-packaging rehearsal, and the Research Windows PR package
-([CI runners](ci.md#runners)). The signed Research master build and
-`agent-full-windows` (nightly, or by label) use GitHub's free standard
-`windows-2025`, like the short signing and verify jobs. Jobs that compile and
+org's 16-core GitHub-hosted runner `maple-windows-2025-16core`: the release's
+`build-windows`, the Agent packaging rehearsal and the Research Windows PR
+package ([CI runners](ci.md#runners)). The unsigned Agent master build compiles
+on `blacksmith-8vcpu-windows-2025`: its fat-LTO link runs on one thread, so 16
+cores are no faster. The signed Research master build and the Agent's native
+suites (`agent-windows-updater`, and `agent-full-windows` nightly or by label)
+use GitHub's free standard `windows-2025`, like the short signing and verify
+jobs. Jobs that compile and
 sign install the pinned Artifact Signing module before compiling, so a failed
 module download fails early; the module's own NuGet packages and the Azure
 login still come after the compile. The installer retries the PowerShell
 Gallery and its CDN and accepts only the pinned SHA-256. Rust, MSVC, Perl and
 the linker are pinned by `.github/actions/setup-agent-windows` for the Agent.
 Blacksmith's Windows workspace inherits a foreign write ACE that the updater's
-storage validation rejects, so only the Agent Windows Clippy lane uses
-`blacksmith-8vcpu-windows-2025`.
+storage validation rejects, so the updater tests and install smokes stay on
+GitHub's image; `blacksmith-8vcpu-windows-2025` runs the Agent Windows Clippy
+lane and the unsigned Agent master build.
 
 Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
