@@ -177,7 +177,7 @@ and the others have no better fallback.
   binary. `scripts/ci/cargo_graph_key.py` hashes the Agent's `flake.lock` and
   every third-party package and dependency edge in its `Cargo.lock`, but not
   the versions of workspace and path crates. Cargo rebuilds those anyway, so a
-  release version bump, the commonest Agent lockfile change, keeps the fat-LTO
+  version bump of them, the commonest Agent lockfile change, keeps the fat-LTO
   build warm. Any other lockfile change makes it fully cold; that cost is
   known and accepted. Only Prod pushes save it; the nightly Dev and dispatch
   builds only restore it. No `ci.yml` lane reads it.

@@ -62,9 +62,9 @@ the cancellation to finish, so rapid re-pushes each add some delay.
   lanes save only from the 04:17 UTC nightly run. A labelled run right after
   a lockfile change restores by prefix and is slower.
 - **Agent master builds.** The exact-key release cache misses when a
-  third-party package, a dependency edge or `flake.lock` changes (a workspace
-  version bump keeps it), and fat LTO bounds the link. The master Agent build
-  is slow by design; it does not gate PRs.
+  third-party package, a dependency edge or `flake.lock` changes (a version
+  bump of workspace or path crates keeps it), and fat LTO bounds the link. The
+  master Agent build is slow by design; it does not gate PRs.
 - **Queued jobs.** If `agent-lint` or `agent-test` sit queued while other
   Blacksmith jobs start, the 32-vCPU pool is bursting. Set the repository
   variable `CI_LINUX_HEAVY_RUNNER=blacksmith-16vcpu-ubuntu-2404` (same

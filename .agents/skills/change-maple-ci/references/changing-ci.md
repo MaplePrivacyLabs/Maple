@@ -157,8 +157,9 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
 - Never write a release-reserved prefix (`test_contracts.RESERVED_PREFIXES`,
   plus `ci-v1-agent-release-`) from `ci.yml` or a PR job.
 - The Agent release key's hash is a step output from
-  `scripts/ci/cargo_graph_key.py`, not `hashFiles`. C4 runs that step, so an
-  empty or misnamed output cannot turn the exact key into a family prefix.
+  `scripts/ci/cargo_graph_key.py`, not `hashFiles`. C4 runs that step, with
+  the script working and failing, so an empty or misnamed output cannot turn
+  the exact key into a family prefix.
 - Turn off implicit saves on PR paths: setup-bun `no-cache: true` and no
   Magic Nix Cache (both checked), and Trivy `cache: "false"` (convention).
 - After a lockfile change, master's first save deletes the lane's target

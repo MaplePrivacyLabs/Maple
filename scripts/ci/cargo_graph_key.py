@@ -70,8 +70,19 @@ def _packages(lock: dict) -> list:
     return nodes
 
 
+def _without_commit(source: str) -> str:
+    """A source without the `#<commit>` Cargo appends to a locked git package's source."""
+    return source.split("#", 1)[0]
+
+
 def _resolve(reference: str, by_name: dict, where: str) -> tuple:
-    """The package a dependency names, by Cargo's own lookup (cargo's resolver/encode.rs)."""
+    """The package a dependency names, by the lookup rules in Cargo's resolver/encode.rs.
+
+    Cargo writes a reference's source without the `#<commit>` that a git package's own
+    `source` carries, and ignores it when comparing, so this does too; the package's full
+    source still goes into the hash. Sources are otherwise compared as written, which is
+    stricter than Cargo's URL canonicalisation: a mismatch there fails loudly.
+    """
     match = REFERENCE.fullmatch(reference)
     if not match:
         raise GraphError(f"{where}: unreadable dependency {reference!r}")
@@ -83,7 +94,9 @@ def _resolve(reference: str, by_name: dict, where: str) -> tuple:
     else:
         candidates = [node for node in candidates if node["version"] == match["version"]]
     if match["source"] is not None:
-        candidates = [node for node in candidates if node["source"] == match["source"]]
+        wanted = _without_commit(match["source"])
+        candidates = [node for node in candidates
+                      if node["source"] is not None and _without_commit(node["source"]) == wanted]
     else:
         # Cargo never writes a local package's source, so it wins when none is written.
         local = [node for node in candidates if node["source"] is None]
