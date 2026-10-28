@@ -412,6 +412,7 @@ mod tests {
     fn privileged_local_operations_are_not_remote_commands() {
         for name in [
             "login",
+            "login_guest",
             "logout_and_clear",
             "change_password",
             "create_api_key",

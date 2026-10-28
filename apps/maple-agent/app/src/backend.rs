@@ -249,6 +249,7 @@ operations! {
     set_sidebar_order(user_id: (&str), order: (crate::settings::SidebarOrder)) -> ();
     set_task_pinned(user_id: (&str), task: (&str), pinned: (bool)) -> ();
     login(email: (String), password: (String)) -> AuthSession;
+    login_guest(account_id: (String), password: (String)) -> AuthSession;
     logout_and_clear(account_user: (&str)) -> ();
     oauth_start(provider: (OAuthProvider)) -> String;
     oauth_wait_for_handoff(provider: (OAuthProvider)) -> AuthSession;
@@ -823,6 +824,7 @@ pub(crate) async fn dispatch(
     if matches!(
         request.method.as_str(),
         "login"
+            | "login_guest"
             | "logout_and_clear"
             | "oauth_wait_for_handoff"
             | "oauth_complete"

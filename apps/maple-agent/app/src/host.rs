@@ -1153,7 +1153,11 @@ impl OwnerContext {
         #[cfg(feature = "proxy")]
         if matches!(
             method,
-            "login" | "logout_and_clear" | "oauth_wait_for_handoff" | "oauth_complete"
+            "login"
+                | "login_guest"
+                | "logout_and_clear"
+                | "oauth_wait_for_handoff"
+                | "oauth_complete"
         ) {
             // Wake a pending proxy restore before waiting for admission. Its
             // account validation must not hold up a local account transition.
@@ -4222,6 +4226,7 @@ mod tests {
     fn locked_gate_rejects_data_auth_remote_and_subscription_methods() {
         for method in [
             "login",
+            "login_guest",
             "get_ui_settings",
             "set_ui_settings",
             "subscribe",

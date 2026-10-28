@@ -467,7 +467,8 @@ maple-agent --version       Print the version.
 ### `maple-agent login`
 
 Prompts for the account email (or takes `--email`) and the password, signs
-in, and saves the session the same way the desktop app does. Use it on a
+in, and saves the session the same way the desktop app does. An anonymous
+account signs in with `--account-id <ID>` instead of an email. Use it on a
 machine that never opens the window so `maple-agent acp` has a sign-in. The
 password is always prompted for; there is no flag for it. OAuth sign-in is
 desktop-only for now.
