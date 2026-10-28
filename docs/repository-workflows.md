@@ -183,7 +183,7 @@ same checkout. The `os-eif` lane builds dev and
 prod EIF candidates on same-repository PRs to `master` that change measured
 inputs (or carry the `ci:eif` label) without editing PCR approvals, on the
 release builder's
-`blacksmith-8vcpu-ubuntu-2404-arm` class, and reports their PCRs.
+`blacksmith-16vcpu-ubuntu-2404-arm` class, and reports their PCRs.
 `opensecret-eif.yml` compares measurements on PRs that edit approved PCR JSON,
 on relevant master changes and on manual runs; that approval status is not
 part of `ci-ok`. A mismatch fails a manual run outside `master`, and a PR only
