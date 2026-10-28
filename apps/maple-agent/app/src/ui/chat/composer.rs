@@ -191,28 +191,33 @@ impl ChatScreen {
                     }),
                 ),
         )
-        .when(collapsed_progress > 0., |row| {
+        .when(
+            collapsed_progress > 0. && self.selected_session.is_some(),
+            |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .left(toolbar_left + toolbar_width + header_gap)
+                        .top((titlebar::TITLE_BAR_HEIGHT - window.rem_size()) / 2.)
+                        .w(px(1.))
+                        .h_4()
+                        .opacity(collapsed_progress)
+                        .bg(gpui::rgb(theme::border())),
+                )
+            },
+        )
+        .when(self.selected_session.is_some(), |row| {
             row.child(
-                div()
-                    .absolute()
-                    .left(toolbar_left + toolbar_width + header_gap)
-                    .top((titlebar::TITLE_BAR_HEIGHT - window.rem_size()) / 2.)
-                    .w(px(1.))
-                    .h_4()
-                    .opacity(collapsed_progress)
-                    .bg(gpui::rgb(theme::border())),
+                titlebar::title(title)
+                    .debug_selector(|| "header-title".to_string())
+                    // Sized by its text, like the chips: nowrap gives it a
+                    // real intrinsic width (a clamped, shrinkable title
+                    // measured as 0 px and vanished). The cap keeps a long
+                    // title from pushing the chips out of the pane.
+                    .flex_none()
+                    .max_w(gpui::relative(0.6)),
             )
         })
-        .child(
-            titlebar::title(title)
-                .debug_selector(|| "header-title".to_string())
-                // Sized by its text, like the chips: nowrap gives it a
-                // real intrinsic width (a clamped, shrinkable title
-                // measured as 0 px and vanished). The cap keeps a long
-                // title from pushing the chips out of the pane.
-                .flex_none()
-                .max_w(gpui::relative(0.6)),
-        )
         .child(
             div()
                 .flex_none()
