@@ -82,14 +82,19 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
+      - name: Hash the Agent's third-party dependency graph and toolchain
+        id: graph
+        run: python3 ../../scripts/ci/cargo_graph_key.py Cargo.lock flake.lock >> "$GITHUB_OUTPUT"
       - name: Restore the exact-key Agent release cache
         id: cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          # Lockfiles only, and no restore-keys: a master build never starts from
-          # another dependency graph's artifacts. Prod pushes save it; Dev builds
-          # only restore it (Cargo rebuilds what the profile changes).
-          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          # No restore-keys: a master build never starts from another dependency
+          # graph's artifacts. The hash covers flake.lock and every third-party
+          # package and edge in Cargo.lock, not workspace or path crate versions
+          # (Cargo rebuilds those anyway). Prod pushes save it; Dev builds only
+          # restore it (Cargo rebuilds what the profile changes).
+          key: ci-v1-agent-release-${{ runner.os }}-${{ steps.graph.outputs.hash }}
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
@@ -224,14 +229,19 @@ jobs:
         run: python3 scripts/test_windows_build_info.py
       - name: Exercise Windows host launch in a restrictive job
         run: python3 scripts/test_windows_host_spawn.py
+      - name: Hash the Agent's third-party dependency graph and toolchain
+        id: graph
+        run: python3 ../../scripts/ci/cargo_graph_key.py Cargo.lock flake.lock >> "$GITHUB_OUTPUT"
       - name: Restore the exact-key Agent release cache
         id: cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          # Lockfiles only, and no restore-keys: a master build never starts from
-          # another dependency graph's artifacts. Prod pushes save it; Dev builds
-          # only restore it (Cargo rebuilds what the profile changes).
-          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          # No restore-keys: a master build never starts from another dependency
+          # graph's artifacts. The hash covers flake.lock and every third-party
+          # package and edge in Cargo.lock, not workspace or path crate versions
+          # (Cargo rebuilds those anyway). Prod pushes save it; Dev builds only
+          # restore it (Cargo rebuilds what the profile changes).
+          key: ci-v1-agent-release-${{ runner.os }}-${{ steps.graph.outputs.hash }}
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
@@ -402,14 +412,19 @@ jobs:
       - name: Verify pinned Nix runtime
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
+      - name: Hash the Agent's third-party dependency graph and toolchain
+        id: graph
+        run: python3 ../../scripts/ci/cargo_graph_key.py Cargo.lock flake.lock >> "$GITHUB_OUTPUT"
       - name: Restore the exact-key Agent release cache
         id: cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          # Lockfiles only, and no restore-keys: a master build never starts from
-          # another dependency graph's artifacts. Prod pushes save it; Dev builds
-          # only restore it (Cargo rebuilds what the profile changes).
-          key: ci-v1-agent-release-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          # No restore-keys: a master build never starts from another dependency
+          # graph's artifacts. The hash covers flake.lock and every third-party
+          # package and edge in Cargo.lock, not workspace or path crate versions
+          # (Cargo rebuilds those anyway). Prod pushes save it; Dev builds only
+          # restore it (Cargo rebuilds what the profile changes).
+          key: ci-v1-agent-release-${{ runner.os }}-${{ steps.graph.outputs.hash }}
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache

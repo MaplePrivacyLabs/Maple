@@ -115,6 +115,8 @@ class AgentSelectionTests(unittest.TestCase):
             "scripts/ci/change_detection.py",
             # Signing scripts: no ci.yml Agent lane signs anything (agent-desktop-build.yml does).
             "scripts/ci/windows-artifact-sign.ps1", "scripts/ci/install-windows-artifact-signing.ps1",
+            # The release cache key: no ci.yml lane reads the release cache.
+            "scripts/ci/cargo_graph_key.py",
         ):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), {"repo"})
@@ -394,7 +396,7 @@ class AgentLaneTests(unittest.TestCase):
         for path in ("apps/maple-agent/app/src/main.rs", "sdk/rust/src/client.rs", "proxy/src/proxy.rs",
                      ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/action.yml",
                      "scripts/ci/select-xcode.py", "scripts/ci/agent_windows.py",
-                     "scripts/ci/windows-artifact-sign.ps1"):
+                     "scripts/ci/cargo_graph_key.py", "scripts/ci/windows-artifact-sign.ps1"):
             with self.subTest(path=path):
                 self.assertTrue(plan.matches(path, lanes.AGENT_DESKTOP))
         for path in ("flake.lock", "sdk/src/index.ts", "sdk/rust/tests/x.rs", "proxy/Dockerfile",

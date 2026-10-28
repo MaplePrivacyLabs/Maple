@@ -15,10 +15,12 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
+import cargo_graph_key
 import plan
 import windows_signature_reference as signature_probe
 from test_workflow_policy import (ENVIRONMENTS, GITHUB_HOSTED, LISTENERS, ROOT, cache_writer, environment, jobs,
@@ -44,6 +46,7 @@ RESERVED_PREFIXES = (
 )
 ONNX_CACHE = "apps/maple-research/frontend/src-tauri/onnxruntime-ios"
 # The unsigned Agent builders that write the exact-key release cache; no ci.yml lane reads it.
+# Its key hashes the Agent's dependency graph and toolchain with cargo_graph_key.py.
 AGENT_RELEASE_WRITERS = frozenset(("agent-desktop-build.yml", job) for job in ("macos-build", "windows-build", "linux"))
 AGENT_RELEASE_READERS: frozenset = frozenset()
 # The packaging rehearsals build thin LTO into their own cache, saved only by
@@ -448,6 +451,56 @@ class ContractTests(unittest.TestCase):
                     "github.ref": "refs/heads/master"})]
                 self.assertEqual(saves, ["push"])
                 self.assertEqual(variants(workflows()[name]["jobs"][job_id], "push"), ["prod"])
+
+    def test_c4_agent_release_key_hashes_the_dependency_graph_and_toolchain(self):
+        # Each builder computes the key's hash in an unconditional step before the restore.
+        # Run that step as the runner would: its output must be cargo_graph_key.py's hash of
+        # the Agent's lockfiles, and a failing script must fail the step with no output. An
+        # empty or misnamed output would turn the exact key into a prefix that restores any
+        # entry of the family.
+        agent = ROOT / "apps/maple-agent"
+        expected = cargo_graph_key.key((agent / "Cargo.lock").read_text(), (agent / "flake.lock").read_text())
+        pattern = r"ci-v1-agent-release-\$\{\{ runner\.os \}\}-\$\{\{ steps\.([\w-]+)\.outputs\.([\w-]+) \}\}"
+        with tempfile.TemporaryDirectory() as temporary:
+            working = Path(temporary) / "bin/python3"
+            working.parent.mkdir()
+            working.symlink_to(sys.executable)
+            failing = Path(temporary) / "failing/python3"
+            failing.parent.mkdir()
+            failing.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n")
+            failing.chmod(0o755)
+
+            def run(step, directory, python, output):
+                return subprocess.run(
+                    [shutil.which("bash"), "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+                    cwd=ROOT / directory, capture_output=True, text=True,
+                    env={**os.environ, "GITHUB_OUTPUT": str(output),
+                         "PATH": f"{python.parent}{os.pathsep}{os.environ['PATH']}"})
+
+            for name, job_id in sorted(AGENT_RELEASE_WRITERS):
+                workflow = workflows()[name]
+                steps = workflow["jobs"][job_id]["steps"]
+                restore = next(index for index, step in enumerate(steps)
+                               if step.get("uses", "").startswith("actions/cache/restore@")
+                               and step["with"]["key"].startswith("ci-v1-agent-release-"))
+                with self.subTest(job=job_id):
+                    reference = re.fullmatch(pattern, steps[restore]["with"]["key"])
+                    self.assertIsNotNone(reference)
+                    producer = next(index for index, step in enumerate(steps) if step.get("id") == reference[1])
+                    step = steps[producer]
+                    self.assertLess(producer, restore)
+                    self.assertFalse({"if", "continue-on-error", "shell"} & set(step))
+                    defaults = {**workflow.get("defaults", {}).get("run", {}),
+                                **workflow["jobs"][job_id].get("defaults", {}).get("run", {})}
+                    self.assertEqual(defaults.get("shell"), "bash")
+                    directory = step.get("working-directory", defaults.get("working-directory", "."))
+                    output = Path(temporary) / f"{job_id}.output"
+                    result = run(step, directory, working, output)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text().splitlines(), [f"{reference[2]}={expected}"])
+                    failed = Path(temporary) / f"{job_id}.failed"
+                    self.assertNotEqual(run(step, directory, failing, failed).returncode, 0)
+                    self.assertEqual(failed.read_text() if failed.exists() else "", "")
 
     def test_c4_lane_caches_fall_back_by_lockfile_only_within_their_own_family(self):
         # The planner's shared key holds only toolchain pins, so rust-cache must hash the

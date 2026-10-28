@@ -172,12 +172,15 @@ and the others have no better fallback.
   resolve the Agent graph. They share a Cargo-home-only cache (registry and
   git sources, no target), so they stop re-cloning large git dependencies.
 - **Release caches stay exact.** The signed Agent builders restore and save
-  only `ci-v1-agent-release-<os>-<hash of both lockfiles>`, with no
-  `restore-keys`. A prefix fallback could carry a removed crate's build output
-  into a signed binary. Only Prod pushes save it; the nightly Dev and dispatch
-  builds only restore it. No `ci.yml` lane reads it. A `Cargo.lock` change,
-  version bumps included, makes the next master Agent build fully cold. That
-  cost is known and accepted.
+  only `ci-v1-agent-release-<os>-<graph hash>`, with no `restore-keys`. A
+  prefix fallback could carry a removed crate's build output into a signed
+  binary. `scripts/ci/cargo_graph_key.py` hashes the Agent's `flake.lock` and
+  every third-party package and dependency edge in its `Cargo.lock`, but not
+  the versions of workspace and path crates. Cargo rebuilds those anyway, so a
+  version bump of them, the commonest Agent lockfile change, keeps the fat-LTO
+  build warm. Any other lockfile change makes it fully cold; that cost is
+  known and accepted. Only Prod pushes save it; the nightly Dev and dispatch
+  builds only restore it. No `ci.yml` lane reads it.
 - **Reserved prefixes.** `release.yml` restores the families in
   `test_contracts.RESERVED_PREFIXES` by prefix. Only the signed master
   workflows write them. `ci.yml` only restores keys that master saves. No
