@@ -228,18 +228,9 @@ impl LockedKey {
             return Err(KeyError::NotEnoughMemory { required_mib: 1 });
         };
         if unsafe { VirtualLock(mapping, allocation_len) } == 0 {
-            #[cfg(test)]
-            {
-                // Capture before VirtualFree or diagnostic queries can replace
-                // the native failure. Never include an address or key bytes.
-                let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-                windows_key_diagnostics::lock_failed(error);
-            }
             unsafe { VirtualFree(mapping, 0, MEM_RELEASE) };
             return Err(KeyError::MemoryLock);
         }
-        #[cfg(test)]
-        windows_key_diagnostics::locked(allocation_len);
         Ok(Self {
             memory,
             allocation_len,
@@ -261,113 +252,9 @@ impl Drop for LockedKey {
                 use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualFree, VirtualUnlock};
                 VirtualUnlock(self.memory.as_ptr().cast(), self.allocation_len);
                 VirtualFree(self.memory.as_ptr().cast(), 0, MEM_RELEASE);
-                #[cfg(test)]
-                windows_key_diagnostics::released(self.allocation_len);
             }
         }
     }
-}
-
-// Temporary Windows test-process observation only. Counters own no keys or
-// mappings, change no working-set limits, and cannot enable unlocked fallback.
-#[cfg(all(test, windows))]
-mod windows_key_diagnostics {
-    use std::{
-        fs::OpenOptions,
-        io::{self, Write},
-        sync::{
-            OnceLock,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-        },
-    };
-
-    use windows_sys::Win32::{
-        Foundation::GetLastError,
-        System::{
-            SystemInformation::{GetSystemInfo, SYSTEM_INFO},
-            Threading::{GetCurrentProcess, GetProcessWorkingSetSize},
-        },
-    };
-
-    static PAGE_BYTES: OnceLock<usize> = OnceLock::new();
-    static LIVE_PAGES: AtomicUsize = AtomicUsize::new(0);
-    static PEAK_PAGES: AtomicUsize = AtomicUsize::new(0);
-    static LOCK_FAILURES: AtomicUsize = AtomicUsize::new(0);
-    static SUMMARY_WRITTEN: AtomicBool = AtomicBool::new(false);
-
-    fn page_bytes() -> usize {
-        *PAGE_BYTES.get_or_init(|| {
-            let mut information = SYSTEM_INFO::default();
-            unsafe { GetSystemInfo(&mut information) };
-            information.dwPageSize as usize
-        })
-    }
-
-    pub(super) fn locked(bytes: usize) {
-        let pages = bytes.div_ceil(page_bytes());
-        let live = LIVE_PAGES.fetch_add(pages, Ordering::SeqCst) + pages;
-        PEAK_PAGES.fetch_max(live, Ordering::SeqCst);
-    }
-
-    pub(super) fn released(bytes: usize) {
-        LIVE_PAGES.fetch_sub(bytes.div_ceil(page_bytes()), Ordering::SeqCst);
-    }
-
-    fn resources() -> String {
-        let mut minimum = 0;
-        let mut maximum = 0;
-        let bounds_error =
-            if unsafe { GetProcessWorkingSetSize(GetCurrentProcess(), &mut minimum, &mut maximum) }
-                == 0
-            {
-                Some(unsafe { GetLastError() })
-            } else {
-                None
-            };
-        let live = LIVE_PAGES.load(Ordering::SeqCst);
-        let peak = PEAK_PAGES.load(Ordering::SeqCst).max(live);
-        format!(
-            "live_pages={live}; peak_pages_so_far={peak}; page_bytes={}; \
-             working_set_min_bytes={minimum}; working_set_max_bytes={maximum}; \
-             working_set_query_error={bounds_error:?}; lock_failures={}",
-            page_bytes(),
-            LOCK_FAILURES.load(Ordering::SeqCst)
-        )
-    }
-
-    pub(super) fn lock_failed(error: u32) {
-        LOCK_FAILURES.fetch_add(1, Ordering::SeqCst);
-        let _ = writeln!(
-            io::stderr(),
-            "Windows LockedKey VirtualLock failed: win32={error}; {}",
-            resources()
-        );
-    }
-
-    pub(super) fn write_replay_checkpoint() -> io::Result<()> {
-        let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") else {
-            return Ok(());
-        };
-        if SUMMARY_WRITTEN.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-        // One bounded success checkpoint, not a claim about the final process
-        // peak after later tests finish. No environment/path value is emitted.
-        let summary = format!(
-            "\nTemporary Windows LockedKey resources at replay stress completion: {}.\n",
-            resources()
-        );
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?
-            .write_all(summary.as_bytes())
-    }
-}
-
-#[cfg(all(test, windows))]
-pub(super) fn write_windows_key_test_summary() -> io::Result<()> {
-    windows_key_diagnostics::write_replay_checkpoint()
 }
 
 /// NFC is applied equally on set and unlock. No minimum is imposed on unlock,

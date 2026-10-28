@@ -29,23 +29,6 @@ const SPACE_CHECK_BYTES: u64 = 1024 * 1024;
 const SCRATCH_PREFIX: &str = "capture-";
 const SCRATCH_SUFFIX: &str = ".sqlite";
 
-// Temporary native-flake diagnosis. This owns no snapshot, hook, key or path;
-// it must not keep the worker's hook sender alive after a capture failure.
-#[cfg(test)]
-std::thread_local! {
-    static CAPTURE_STAGE: std::cell::Cell<&'static str> = const { std::cell::Cell::new("worker-entry") };
-}
-
-#[cfg(test)]
-fn capture_stage(stage: &'static str) {
-    CAPTURE_STAGE.set(stage);
-}
-
-#[cfg(test)]
-fn capture_last_stage() -> &'static str {
-    CAPTURE_STAGE.get()
-}
-
 #[derive(Default)]
 pub(super) struct ReplayRegistry {
     inner: Mutex<Registry>,
@@ -158,24 +141,16 @@ pub(crate) struct ReplayCapture {
 impl ReplayCapture {
     pub(crate) fn run(self) -> StoreResult<Arc<ReplaySnapshot>> {
         let snapshot = Arc::clone(&self.snapshot);
-        #[cfg(test)]
-        capture_stage("capture-admission");
         // A queued worker may start after close/reopen; do not open even a
         // source read transaction when its registered slot was revoked.
         if let Some(error) = stop_error(&snapshot.cancellation, self.started, self.budget) {
             snapshot.close()?;
             return Err(error);
         }
-        #[cfg(test)]
-        capture_stage("store-upgrade");
         let store = snapshot.store.upgrade().ok_or(StoreError::Busy)?;
         // Nested result keeps scratch I/O/cipher failures out of source damage
         // observation. Only operations on the real source return the outer Err.
-        #[cfg(test)]
-        capture_stage("source-read-bulk");
         let result = store.read_bulk(|tx| {
-            #[cfg(test)]
-            capture_stage("capture-state-lock");
             let mut state = snapshot.state.lock().map_err(|_| StoreError::Busy)?;
             if let Some(error) = stop_error(&snapshot.cancellation, self.started, self.budget) {
                 return Ok(Err(error));
@@ -461,13 +436,9 @@ fn capture(
     started: Instant,
     budget: Duration,
 ) -> Result<Scope, CaptureError> {
-    #[cfg(test)]
-    capture_stage("source-scope");
     let scope = source_scope(tx, snapshot.account, &snapshot.task, snapshot.stamp)
         .map_err(CaptureError::Source)?;
     let cancellation = Arc::clone(&snapshot.cancellation);
-    #[cfg(test)]
-    capture_stage("source-progress-handler");
     tx.progress_handler(1000, Some(move || stopped(&cancellation, started, budget)))
         .map_err(|error| CaptureError::Source(error.into()))?;
     let _reset = ProgressReset(tx);
@@ -479,13 +450,9 @@ fn capture(
         .connection
         .as_mut()
         .ok_or(CaptureError::Scratch(StoreError::Busy))?;
-    #[cfg(test)]
-    capture_stage("scratch-transaction");
     let scratch_tx = scratch
         .transaction()
         .map_err(|error| CaptureError::Scratch(error.into()))?;
-    #[cfg(test)]
-    capture_stage("source-row-query");
     let mut rows = tx.prepare_cached(
         "SELECT row_seq,update_seq,entry_seq,item_index,codec,length(item),item FROM timeline_rows
          WHERE task_id=?1 AND epoch=?2 AND hidden=0 ORDER BY row_seq",
@@ -493,22 +460,14 @@ fn capture(
     let mut rows = rows
         .query(params![scope.task_key.0, snapshot.stamp.rows_epoch])
         .map_err(|error| CaptureError::Source(error.into()))?;
-    #[cfg(test)]
-    capture_stage("scratch-space-probe");
     let mut space = SpaceBudget::new(store.paths.root()).map_err(CaptureError::Scratch)?;
-    #[cfg(test)]
-    capture_stage("source-next-row");
     while let Some(row) = rows
         .next()
         .map_err(|error| CaptureError::Source(error.into()))?
     {
-        #[cfg(test)]
-        capture_stage("capture-cancellation-or-deadline");
         if let Some(error) = stop_error(&snapshot.cancellation, started, budget) {
             return Err(CaptureError::Scratch(error));
         }
-        #[cfg(test)]
-        capture_stage("source-row-size");
         let stored: i64 = row
             .get(5)
             .map_err(|error| CaptureError::Source(error.into()))?;
@@ -519,13 +478,9 @@ fn capture(
         if stored > super::codec::MAX_DECODED_BYTES {
             return Err(CaptureError::Source(StoreError::InvalidData));
         }
-        #[cfg(test)]
-        capture_stage("scratch-space-admission");
         space
             .before_write(stored as u64)
             .map_err(CaptureError::Scratch)?;
-        #[cfg(test)]
-        capture_stage("source-row-payload");
         let payload = Zeroizing::new(
             row.get::<_, Vec<u8>>(6)
                 .map_err(|error| CaptureError::Source(error.into()))?,
@@ -533,8 +488,6 @@ fn capture(
         if payload.len() != stored {
             return Err(CaptureError::Source(StoreError::InvalidData));
         }
-        #[cfg(test)]
-        capture_stage("scratch-first-row-insert");
         scratch_tx.execute(
             "INSERT INTO frozen(row_seq,update_seq,entry_seq,item_index,codec,item) VALUES(?1,?2,?3,?4,?5,?6)",
             params![row.get::<_, i64>(0).map_err(|error| CaptureError::Source(error.into()))?,
@@ -567,14 +520,8 @@ fn source_scope(
     task: &str,
     expected: TaskHistoryStamp,
 ) -> StoreResult<Scope> {
-    #[cfg(test)]
-    capture_stage("source-account-authority");
     tasks::writable_account(tx, account)?;
-    #[cfg(test)]
-    capture_stage("source-task-identity");
     let task_key = tasks::task_key_tx(tx, account, task)?;
-    #[cfg(test)]
-    capture_stage("source-history-stamp");
     let stamp: TaskHistoryStamp = tx.query_row(
         "SELECT rows_epoch,last_seq FROM tasks WHERE id=?1",
         [task_key.0],
@@ -588,15 +535,11 @@ fn source_scope(
     if stamp != expected {
         return Err(StoreError::Conflict);
     }
-    #[cfg(test)]
-    capture_stage("source-user-identity");
     let (user_key, user_id) = tx.query_row(
         "SELECT user_key,user_id FROM accounts WHERE id=?1",
         [account.0],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    #[cfg(test)]
-    capture_stage("source-store-identity");
     Ok(Scope {
         store_id: store_id(tx)?,
         task_key,
@@ -676,18 +619,12 @@ struct Spool {
 impl Spool {
     fn create(root: &Path) -> StoreResult<Self> {
         let directory = root.join("replays");
-        #[cfg(test)]
-        capture_stage("scratch-private-root");
         verify_private_path(root, true)?;
-        #[cfg(test)]
-        capture_stage("scratch-private-directory");
         private_directory(&directory)?;
         let path = directory.join(format!(
             "{SCRATCH_PREFIX}{}{SCRATCH_SUFFIX}",
             uuid::Uuid::new_v4()
         ));
-        #[cfg(test)]
-        capture_stage("scratch-private-file");
         drop(private_new_file(&path)?);
         let mut spool = Self {
             connection: None,
@@ -695,27 +632,15 @@ impl Spool {
             path,
             after: 0,
         };
-        #[cfg(test)]
-        capture_stage("scratch-locked-key");
-        spool.key = Some(LockedKey::random().map_err(|_error| {
-            #[cfg(test)]
-            eprintln!("replay scratch key setup failed: {_error:?}");
-            StoreError::Busy
-        })?);
-        #[cfg(test)]
-        capture_stage("scratch-sqlite-open");
+        spool.key = Some(LockedKey::random().map_err(|_| StoreError::Busy)?);
         let connection = Connection::open_with_flags(
             &spool.path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
-        #[cfg(test)]
-        capture_stage("scratch-sqlcipher-key");
         engine::key_connection(&connection, spool.key.as_ref().ok_or(StoreError::Busy)?)?;
 
-        #[cfg(test)]
-        capture_stage("scratch-sqlite-config");
         connection.pragma_update(None, "trusted_schema", false)?;
         connection.pragma_update(None, "temp_store", "MEMORY")?;
         connection.pragma_update(None, "cache_size", -4096)?;
@@ -731,12 +656,8 @@ impl Spool {
             return Err(StoreError::InvalidData);
         }
         connection.pragma_update(None, "synchronous", "OFF")?;
-        #[cfg(test)]
-        capture_stage("scratch-schema");
         connection.execute_batch("CREATE TABLE frozen(row_seq INTEGER PRIMARY KEY,update_seq INTEGER NOT NULL,
             entry_seq INTEGER NOT NULL,item_index INTEGER NOT NULL,codec INTEGER NOT NULL,item BLOB NOT NULL) STRICT")?;
-        #[cfg(test)]
-        capture_stage("scratch-file-verification");
         verify_private_path(&spool.path, false)?;
         spool.connection = Some(connection);
         Ok(spool)
