@@ -806,6 +806,106 @@ class InteractiveInstallerSmokeTests(unittest.TestCase):
                 ui.kernel.CloseHandle.assert_called_once_with(987)
 
 
+class NativeShortcutProbeTests(unittest.TestCase):
+    def native(self, metadata):
+        native = object.__new__(release.WindowsShortcutCOM)
+        native.ctypes, native.hresult = ctypes, ctypes.c_int32
+        native.guid_type = ctypes.c_ubyte * 16
+        native.guid = lambda _value: native.guid_type()
+        native.phase, native.release = Mock(), Mock()
+        def create(_clsid, _outer, _context, _iid, output):
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = 111
+            return 0
+        native.ole = types.SimpleNamespace(CoCreateInstance=Mock(side_effect=create))
+        def call(_interface, slot, *arguments, **_options):
+            if slot == 0:
+                ctypes.cast(arguments[1], ctypes.POINTER(ctypes.c_void_p)).contents.value = 222
+        native.call = Mock(side_effect=call)
+        native.metadata = Mock(return_value=metadata)
+        return native
+
+    def test_native_seed_saves_only_after_raw_target_and_empty_argument_guards(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "owned.lnk"
+            path.write_bytes(b"native link fixture")
+            target = Path(temporary) / "maple-agent.exe"
+            for changed in ({}, {"target": "C:/other.exe"}, {"arguments": "--custom"}):
+                with self.subTest(changed=changed):
+                    native = self.native({"target": str(target), "arguments": "", **changed})
+                    if changed:
+                        with self.assertRaisesRegex(ValueError, "not owned"):
+                            native.probe(path, target, seed=True, working_directory=Path(temporary))
+                    else:
+                        native.probe(path, target, seed=True, working_directory=Path(temporary))
+                    slots = [call.args[1] for call in native.call.call_args_list]
+                    self.assertEqual(slots, [0, 5] if changed else [0, 5, 17, 9, 7, 6])
+                    self.assertEqual(native.call.call_args_list[1].args[2:], (str(path), 0))
+                    self.assertEqual([call.args[0].value for call in native.release.call_args_list], [222, 111])
+
+    def test_native_read_is_data_only_and_releases_both_interfaces_after_read_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "owned.lnk"
+            path.write_bytes(b"native link fixture")
+            native = self.native({"target": "C:/owned.exe", "arguments": ""})
+            native.probe(path, Path("C:/owned.exe"))
+            self.assertEqual([call.args[1] for call in native.call.call_args_list], [0, 5])
+            primary = OSError("fixed native read failure")
+            native.metadata.side_effect = primary
+            with self.assertRaises(OSError) as raised:
+                native.probe(path, Path("C:/owned.exe"))
+            self.assertIs(raised.exception, primary)
+            self.assertEqual(native.release.call_count, 4)
+
+    def test_sta_success_and_already_initialized_balance_uninitialize_but_failed_init_does_not(self):
+        for status in (0, 1, 0x80010106):
+            with self.subTest(status=status):
+                ole = types.SimpleNamespace(CoInitializeEx=Mock(return_value=status), CoUninitialize=Mock(), CoCreateInstance=Mock(), CoTaskMemFree=Mock())
+                with patch.object(ctypes, "WinDLL", return_value=ole, create=True):
+                    native = release.WindowsShortcutCOM()
+                    self.assertEqual(ctypes.sizeof(native.guid_type), 16)
+                    self.assertEqual(bytes(native.guid("000214f9-0000-0000-c000-000000000046")), bytes.fromhex("f914020000000000c000000000000046"))
+                    if status < 2:
+                        with native:
+                            pass
+                        ole.CoUninitialize.assert_called_once()
+                    else:
+                        with self.assertRaisesRegex(OSError, "HRESULT 0x80010106"):
+                            with native:
+                                self.fail("Changed COM apartment cannot admit the shortcut probe")
+                        ole.CoUninitialize.assert_not_called()
+                ole.CoInitializeEx.assert_called_once_with(None, 2)
+
+    def test_public_native_probe_refuses_link_or_unicode_inputs_before_opening_com(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            path = directory / "owned.lnk"
+            path.write_bytes(b"fixture")
+            link = directory / "alias.lnk"
+            link.symlink_to(path)
+            with patch.object(release, "WindowsShortcutCOM") as native:
+                with self.assertRaisesRegex(ValueError, "regular files"):
+                    release.probe_windows_shortcut(link, path)
+                with self.assertRaisesRegex(ValueError, "Unicode bound"):
+                    release.probe_windows_shortcut(path, path, description="bad\0value")
+                native.assert_not_called()
+
+    def test_known_folder_frees_the_returned_allocation_even_when_hresult_fails(self):
+        native = Mock(ctypes=ctypes, hresult=ctypes.c_int32, guid_type=ctypes.c_ubyte * 16)
+        native.guid.return_value = native.guid_type()
+        primary = OSError("fixed known-folder failure")
+        native.check.side_effect = primary
+        def locate(_folder, _flags, _token, output):
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = 987
+            return -1
+        shell = types.SimpleNamespace(SHGetKnownFolderPath=Mock(side_effect=locate))
+        with patch.object(release, "WindowsShortcutCOM") as context, patch.object(ctypes, "WinDLL", return_value=shell, create=True):
+            context.return_value.__enter__.return_value = native
+            with self.assertRaises(OSError) as raised:
+                release.windows_programs_directory()
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(native.ole.CoTaskMemFree.call_args.args[0].value, 987)
+
+
 class WindowsIntegrationProbeTests(unittest.TestCase):
     def probe(self, scratch):
         installed = scratch / "install with spaces"
@@ -825,7 +925,7 @@ class WindowsIntegrationProbeTests(unittest.TestCase):
         return {name: {
             "target": str(probe.installed / target), "arguments": "",
             "working_directory": str(probe.scratch), "description": "Maple icon migration smoke fixture",
-            "hotkey": "", "window_style": 1,
+            "hotkey": 0, "window_style": 1,
             "icon_location": f'{probe.icon if migrated else probe.installed / target},0',
         } for name, target in (("main", "maple-agent.exe"), ("uninstall", "uninstall.exe"))}
 
@@ -839,7 +939,7 @@ class WindowsIntegrationProbeTests(unittest.TestCase):
             self.assertFalse(probe.icon.is_relative_to(probe.installed))
             self.assertFalse(probe.icon.is_relative_to(scratch / "data" / info()["data_namespace"] / "store-v1"))
 
-    def test_seed_uses_absolute_builtin_powershell_and_literal_file_arguments_for_fixed_owned_links(self):
+    def test_seed_uses_bounded_isolated_python_with_literal_arguments_for_fixed_owned_links(self):
         with tempfile.TemporaryDirectory(prefix="maple $literal ") as temporary:
             probe, registry, values = self.probe(Path(temporary))
             metadata = self.metadata(probe)
@@ -847,13 +947,46 @@ class WindowsIntegrationProbeTests(unittest.TestCase):
             with patch.object(release, "capture_preflight", return_value=result) as capture:
                 probe.seed()
             arguments, environment = capture.call_args.args
-            self.assertEqual(arguments[0], Path("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"))
-            self.assertEqual(arguments[-4:], ["seed", info()["display_name"], probe.installed, probe.scratch])
+            self.assertEqual(arguments[:3], [sys.executable, "-I", "-c"])
+            self.assertEqual(arguments[4:], [Path(release.__file__).resolve(), info()["display_name"], probe.installed, probe.scratch, "seed", probe.checkpoint])
             self.assertEqual(environment, {"FIXTURE": "sanitized"})
             self.assertEqual(capture.call_args.kwargs["timeout"], 20)
             self.assertEqual(probe.before, metadata)
             self.assertEqual(values["DisplayIcon"], f'"{probe.installed / "maple-agent.exe"}",0')
             registry.SetValueEx.assert_called_once()
+
+    def test_exact_python_child_protocol_runs_with_private_fixture_paths_and_native_api_contract(self):
+        with tempfile.TemporaryDirectory(prefix="maple $literal ") as temporary:
+            probe, _, _ = self.probe(Path(temporary))
+            probe.probe_module = Path(temporary) / "native fixture $literal.py"
+            probe.probe_module.write_text('''from pathlib import Path
+def windows_programs_directory():
+    return Path(__file__).parent / "Programs"
+def probe_windows_shortcut(path, expected_target, *, seed, working_directory, phase):
+    phase("link-save" if seed else "link-read")
+    return {"target": str(expected_target), "arguments": "", "working_directory": str(working_directory),
+            "description": "fixture", "hotkey": 0, "window_style": 3, "icon_location": str(path) + ",0"}
+''')
+            actual = probe.shortcuts(seed=True)
+            self.assertEqual(actual["main"]["target"], str(probe.installed / "maple-agent.exe"))
+            self.assertEqual(actual["uninstall"]["target"], str(probe.installed / "uninstall.exe"))
+            self.assertEqual(actual["main"]["working_directory"], str(probe.scratch))
+            self.assertEqual(actual["main"]["window_style"], 3)
+            self.assertEqual(probe.checkpoint.read_text(), "link-save")
+
+    def test_native_child_timeout_reports_only_the_fixed_last_phase_and_preserves_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            probe, _, _ = self.probe(Path(temporary))
+            primary = subprocess.TimeoutExpired("fixed child", 20)
+            def timeout(*_arguments, **_options):
+                probe.checkpoint.write_text("link-load")
+                raise primary
+            diagnostics = io.StringIO()
+            with patch.object(release, "capture_preflight", side_effect=timeout), patch.object(sys, "stderr", diagnostics):
+                with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                    probe.shortcuts(timeout=7)
+            self.assertIs(raised.exception, primary)
+            self.assertEqual(diagnostics.getvalue(), "Windows shortcut probe stopped at: link-load\n")
 
     def test_seed_refuses_a_changed_registered_root_before_any_shortcut_or_registry_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:

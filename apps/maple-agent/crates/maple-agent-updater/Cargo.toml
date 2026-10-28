@@ -33,3 +33,6 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Secu
 base64 = "0.22"
 blake2 = "0.10"
 ed25519-dalek = "2"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "=0.61.3", features = ["Win32_UI_WindowsAndMessaging"] }

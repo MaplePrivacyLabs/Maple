@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import uuid
 import zipfile
 
 
@@ -528,6 +529,178 @@ def capture_preflight(arguments, environment, timeout=120):
         process.stdout.close()
 
 
+class WindowsShortcutCOM:
+    """Narrow IShellLinkW/IPersistFile ABI; no automation server or Resolve."""
+
+    def __init__(self, phase=None):
+        import ctypes
+
+        self.ctypes, self.phase = ctypes, phase or (lambda _name: None)
+        self.hresult = ctypes.c_int32
+        class GUID(ctypes.Structure):
+            _fields_ = [("data1", ctypes.c_uint32), ("data2", ctypes.c_uint16),
+                        ("data3", ctypes.c_uint16), ("data4", ctypes.c_ubyte * 8)]
+        self.guid_type = GUID
+        self.ole = ctypes.WinDLL("ole32", use_last_error=True)
+        self.ole.CoInitializeEx.argtypes, self.ole.CoInitializeEx.restype = (ctypes.c_void_p, ctypes.c_uint32), self.hresult
+        self.ole.CoUninitialize.argtypes, self.ole.CoUninitialize.restype = (), None
+        self.ole.CoCreateInstance.argtypes = (ctypes.POINTER(GUID), ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p))
+        self.ole.CoCreateInstance.restype = self.hresult
+        self.ole.CoTaskMemFree.argtypes, self.ole.CoTaskMemFree.restype = (ctypes.c_void_p,), None
+
+    def guid(self, value):
+        return self.guid_type.from_buffer_copy(uuid.UUID(value).bytes_le)
+
+    def check(self, result, operation):
+        if self.hresult(result).value < 0:
+            raise OSError(f"Windows shortcut {operation} failed (HRESULT 0x{result & 0xFFFFFFFF:08x})")
+
+    def __enter__(self):
+        self.phase("com-init")
+        self.check(self.ole.CoInitializeEx(None, 2), "STA initialization")
+        return self
+
+    def __exit__(self, *_error):
+        try:
+            self.phase("com-release")
+        finally:
+            self.ole.CoUninitialize()
+
+    def method(self, interface, slot, result, *arguments):
+        c = self.ctypes
+        table = c.cast(interface, c.POINTER(c.POINTER(c.c_void_p))).contents
+        return c.WINFUNCTYPE(result, c.c_void_p, *arguments)(table[slot])
+
+    def call(self, interface, slot, *arguments, types=(), operation):
+        self.check(self.method(interface, slot, self.hresult, *types)(interface, *arguments), operation)
+
+    def release(self, interface):
+        if interface.value:
+            self.method(interface, 2, self.ctypes.c_uint32)(interface)
+            interface.value = None
+
+    def string(self, interface, slot, *, path=False, icon_index=None):
+        c = self.ctypes
+        buffer = c.create_unicode_buffer(32768)
+        types, arguments = (c.c_wchar_p, c.c_int32), (buffer, len(buffer))
+        if path:
+            types, arguments = (*types, c.c_void_p, c.c_uint32), (*arguments, None, 4)  # SLGP_RAWPATH.
+        if icon_index is not None:
+            types, arguments = (*types, c.POINTER(c.c_int32)), (*arguments, c.byref(icon_index))
+        self.call(interface, slot, *arguments, types=types, operation="read string")
+        if len(buffer.value) >= len(buffer) - 1:
+            raise ValueError("Windows shortcut field exceeds its Unicode bound")
+        return buffer.value
+
+    def metadata(self, link):
+        c = self.ctypes
+        hotkey, show, index = c.c_uint16(), c.c_int32(), c.c_int32()
+        self.call(link, 12, c.byref(hotkey), types=(c.POINTER(c.c_uint16),), operation="read hotkey")
+        self.call(link, 14, c.byref(show), types=(c.POINTER(c.c_int32),), operation="read show command")
+        icon = self.string(link, 16, icon_index=index)
+        return {"target": self.string(link, 3, path=True), "arguments": self.string(link, 10),
+                "working_directory": self.string(link, 8), "description": self.string(link, 6),
+                "hotkey": hotkey.value, "window_style": show.value, "icon_location": f"{icon},{index.value}"}
+
+    def probe(self, path, expected_target, *, seed=False, working_directory=None, description="Maple icon migration smoke fixture"):
+        c = self.ctypes
+        link, persist = c.c_void_p(), c.c_void_p()
+        try:
+            self.phase("shell-create")
+            clsid = self.guid("00021401-0000-0000-c000-000000000046")
+            iid = self.guid("000214f9-0000-0000-c000-000000000046")
+            self.check(self.ole.CoCreateInstance(c.byref(clsid), None, 1, c.byref(iid), c.byref(link)), "create ShellLinkW")
+            if not link.value:
+                raise ValueError("Windows shortcut returned a null ShellLinkW")
+            self.phase("persist-query")
+            iid = self.guid("0000010b-0000-0000-c000-000000000046")
+            self.call(link, 0, c.byref(iid), c.byref(persist), types=(c.POINTER(self.guid_type), c.POINTER(c.c_void_p)), operation="query IPersistFile")
+            if not persist.value:
+                raise ValueError("Windows shortcut returned a null IPersistFile")
+            self.phase("link-load")
+            self.call(persist, 5, str(path), 0, types=(c.c_wchar_p, c.c_uint32), operation="load")
+            self.phase("link-read")
+            metadata = self.metadata(link)
+            if not windows_path_equal(metadata["target"], expected_target) or metadata["arguments"] != "":
+                raise ValueError("Shortcut is not owned by this smoke install")
+            if seed:
+                self.phase("link-seed")
+                self.call(link, 17, str(expected_target), 0, types=(c.c_wchar_p, c.c_int32), operation="set fixture icon")
+                for slot, value in ((9, working_directory), (7, description)):
+                    if value is not None:
+                        self.call(link, slot, str(value), types=(c.c_wchar_p,), operation="set fixture property")
+                regular(path)
+                self.phase("link-save")
+                self.call(persist, 6, str(path), 1, types=(c.c_wchar_p, c.c_int32), operation="save fixture")
+                metadata = self.metadata(link)
+            return metadata
+        finally:
+            try:
+                self.phase("link-release")
+            finally:
+                try:
+                    self.release(persist)
+                finally:
+                    self.release(link)
+
+
+def probe_windows_shortcut(path, expected_target, *, seed=False, working_directory=None,
+                           description="Maple icon migration smoke fixture", phase=None):
+    """Read/seed one explicit owned link; also used by the fast native fixture."""
+    path, expected_target = Path(path), Path(expected_target)
+    regular(path)
+    for value in (path, expected_target, working_directory, description):
+        if value is not None and ("\0" in str(value) or len(str(value)) >= 32767):
+            raise ValueError("Windows shortcut input exceeds its Unicode bound")
+    with WindowsShortcutCOM(phase) as native:
+        return native.probe(path, expected_target, seed=seed, working_directory=working_directory, description=description)
+
+
+def windows_programs_directory():
+    with WindowsShortcutCOM() as native:
+        c = native.ctypes
+        shell = c.WinDLL("shell32", use_last_error=True)
+        shell.SHGetKnownFolderPath.argtypes = (c.POINTER(native.guid_type), c.c_uint32, c.c_void_p, c.POINTER(c.c_void_p))
+        shell.SHGetKnownFolderPath.restype = native.hresult
+        folder = native.guid("a77f5d77-2e2b-44c3-a6a2-aba601054a51")  # FOLDERID_Programs.
+        pointer = c.c_void_p()
+        try:
+            native.check(shell.SHGetKnownFolderPath(c.byref(folder), 0, None, c.byref(pointer)), "locate Programs")
+            if not pointer.value:
+                raise ValueError("Windows Programs folder returned a null path")
+            characters = c.cast(pointer, c.POINTER(c.c_wchar))
+            value = []
+            for index in range(32768):
+                if characters[index] == "\0":
+                    return Path("".join(value))
+                value.append(characters[index])
+            raise ValueError("Windows Programs folder exceeds its Unicode bound")
+        finally:
+            native.ole.CoTaskMemFree(pointer)
+
+
+SHORTCUT_PROBE_CHILD = r'''
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("windows_release_probe", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+display_name, installed, working, mode, checkpoint = sys.argv[2:]
+installed, working, checkpoint = Path(installed), Path(working), Path(checkpoint)
+def phase(name):
+    checkpoint.write_text(name, encoding="ascii")
+phase("known-folder")
+directory = module.windows_programs_directory() / display_name
+if mode not in ("seed", "read"):
+    raise ValueError("Invalid shortcut probe operation")
+metadata = {}
+for name, filename, target in (("main", display_name + ".lnk", "maple-agent.exe"), ("uninstall", "Uninstall.lnk", "uninstall.exe")):
+    metadata[name] = module.probe_windows_shortcut(directory / filename, installed / target,
+        seed=mode == "seed", working_directory=working, phase=phase)
+print(json.dumps(metadata, sort_keys=True, separators=(",", ":")), flush=True)
+'''
+
+
 class WindowsIntegrationProbe:
     """Seed only this smoke install's legacy links; inspect real Shell metadata."""
 
@@ -538,51 +711,25 @@ class WindowsIntegrationProbe:
         self.artwork = canonical.read_bytes()
         self.icon = scratch / "data" / info["data_namespace"] / "windows-integration" / (hashlib.sha256(self.artwork).hexdigest() + ".ico")
         self.registry = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + info["bundle_id"]
-        self.script = scratch / "shortcut-probe.ps1"
-        self.powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
         self.scratch, self.before = scratch, None
-        # WScript.Shell reads the actual IShellLink properties. Save is used
-        # only for two guarded links in this private smoke fixture, never by
-        # inspection. All values are literal -File arguments, not shell code.
-        self.script.write_text(r'''param([string]$Mode, [string]$DisplayName, [string]$InstallRoot, [string]$WorkingDirectory)
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$programs = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
-$directory = Join-Path $programs $DisplayName
-$shell = New-Object -ComObject WScript.Shell
-$result = @{}
-try {
-    foreach ($name in @('main', 'uninstall')) {
-        $filename = if ($name -eq 'main') { "$DisplayName.lnk" } else { 'Uninstall.lnk' }
-        $target = Join-Path $InstallRoot $(if ($name -eq 'main') { 'maple-agent.exe' } else { 'uninstall.exe' })
-        $path = Join-Path $directory $filename
-        $attributes = [IO.File]::GetAttributes($path)
-        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -or ($attributes -band [IO.FileAttributes]::Directory)) { throw 'Shortcut is not a regular file' }
-        $link = $shell.CreateShortcut($path)
-        try {
-            if (-not [string]::Equals($link.TargetPath, $target, [StringComparison]::OrdinalIgnoreCase) -or $link.Arguments -ne '') { throw 'Shortcut is not owned by this smoke install' }
-            if ($Mode -eq 'seed') {
-                $link.IconLocation = "$target,0"
-                $link.WorkingDirectory = $WorkingDirectory
-                $link.Description = 'Maple icon migration smoke fixture'
-                $link.Save()
-            } elseif ($Mode -ne 'read') { throw 'Invalid shortcut probe operation' }
-            $result[$name] = @{
-                target = $link.TargetPath; arguments = $link.Arguments
-                working_directory = $link.WorkingDirectory; description = $link.Description
-                hotkey = $link.Hotkey; window_style = $link.WindowStyle
-                icon_location = $link.IconLocation
-            }
-        } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($link) }
-    }
-    $result | ConvertTo-Json -Compress -Depth 3
-} finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
-''', encoding="utf-8", newline="\n")
+        self.checkpoint = scratch / "shortcut-probe-phase.txt"
+        self.probe_module = Path(__file__).resolve()
 
     def shortcuts(self, *, seed=False, timeout=20):
-        result = capture_preflight([self.powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", self.script,
-                                    "seed" if seed else "read", self.info["display_name"], self.installed, self.scratch], self.environment, timeout=min(20, timeout))
+        # Keep the existing exact-child deadline/output bounds around native
+        # COM too. The child uses this same direct API as the fast Rust fixture,
+        # without PowerShell, Windows Script Host, Resolve or shell automation.
+        self.checkpoint.write_text("python-start", encoding="ascii")
+        arguments = [sys.executable, "-I", "-c", SHORTCUT_PROBE_CHILD, self.probe_module,
+                     self.info["display_name"], self.installed, self.scratch,
+                     "seed" if seed else "read", self.checkpoint]
+        try:
+            result = capture_preflight(arguments, self.environment, timeout=min(20, timeout))
+        except subprocess.SubprocessError:
+            self.report_phase()
+            raise
         if result.returncode:
+            self.report_phase()
             bounded_diagnostics(result.stdout)
             raise subprocess.CalledProcessError(result.returncode, result.args)
         metadata = json.loads(result.stdout.decode("utf-8-sig"), object_pairs_hook=pe.unique_object)
@@ -590,6 +737,16 @@ try {
         if type(metadata) is not dict or set(metadata) != {"main", "uninstall"} or any(type(value) is not dict or set(value) != fields for value in metadata.values()):
             raise ValueError("Windows shortcut probe returned an invalid inventory")
         return metadata
+
+    def report_phase(self):
+        try:
+            regular(self.checkpoint)
+            with self.checkpoint.open("rb") as checkpoint:
+                value = checkpoint.read(64)
+            if value in {name.encode("ascii") for name in ("python-start", "known-folder", "com-init", "shell-create", "persist-query", "link-load", "link-read", "link-seed", "link-save", "link-release", "com-release")}:
+                print("Windows shortcut probe stopped at: " + value.decode("ascii"), file=sys.stderr)
+        except (OSError, ValueError):
+            pass  # Diagnostic failure cannot replace the actual child failure.
 
     def registration(self, *, write=False):
         access = self.winreg.KEY_READ | self.winreg.KEY_WOW64_32KEY
