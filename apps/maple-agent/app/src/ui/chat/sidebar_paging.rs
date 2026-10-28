@@ -58,68 +58,41 @@ mod tests {
     }
 
     #[gpui::test]
-    fn empty_tasks_precede_archived_only_after_pages_complete(cx: &mut gpui::TestAppContext) {
+    fn empty_task_pages_keep_navigation_without_an_empty_message(cx: &mut gpui::TestAppContext) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
         let backend =
             Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
         let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
-        sidebar.update(cx, |sidebar, cx| {
+        sidebar.update(cx, |sidebar, _| {
             sidebar.reset_persisted_for_test();
             sidebar.pages.enabled = true;
-            let empty = SidebarEntry::Empty(SidebarEmpty::NoTasks);
-            sidebar.rebuild_sections();
-            assert!(
-                !sidebar.entries.contains(&empty),
-                "unrequested pages are unknown"
-            );
-            sidebar
-                .pages
-                .ready
-                .extend([PageKind::Active, PageKind::Settled, PageKind::Pinned]);
-            for group in [
-                SidebarGroup::Project,
-                SidebarGroup::Status,
-                SidebarGroup::List,
-            ] {
-                sidebar.view.group = group;
-                sidebar.rebuild_sections();
-                let empty_row = sidebar
-                    .entries
-                    .iter()
-                    .position(|entry| *entry == empty)
-                    .unwrap();
-                let archived_row = sidebar
-                    .entries
-                    .iter()
-                    .position(|entry| *entry == SidebarEntry::ArchivedHeader)
-                    .unwrap();
-                assert!(empty_row < archived_row);
+            for complete in [false, true] {
+                if complete {
+                    sidebar.pages.ready.extend([
+                        PageKind::Active,
+                        PageKind::Settled,
+                        PageKind::Pinned,
+                    ]);
+                }
+                for group in [
+                    SidebarGroup::Project,
+                    SidebarGroup::Status,
+                    SidebarGroup::List,
+                ] {
+                    sidebar.view.group = group;
+                    sidebar.rebuild_sections();
+                    assert_eq!(
+                        sidebar.entries,
+                        [
+                            SidebarEntry::NewTask,
+                            SidebarEntry::ProjectsHeader,
+                            SidebarEntry::ArchivedHeader,
+                        ]
+                    );
+                }
             }
-            for kind in [PageKind::Active, PageKind::Settled, PageKind::Pinned] {
-                sidebar.pages.loading.insert(kind);
-                sidebar.rebuild_sections();
-                assert!(!sidebar.entries.contains(&empty), "loading is not empty");
-                sidebar.pages.loading.remove(&kind);
-                sidebar.pages.next.insert(kind, "more".into());
-                sidebar.rebuild_sections();
-                assert!(
-                    !sidebar.entries.contains(&empty),
-                    "unloaded continuation is not empty"
-                );
-                sidebar.pages.next.remove(&kind);
-                sidebar.pages.failed.insert(kind);
-                sidebar.rebuild_sections();
-                assert!(
-                    !sidebar.entries.contains(&empty),
-                    "failed pages are not empty"
-                );
-                sidebar.pages.failed.remove(&kind);
-            }
-            sidebar.rebuild_sections();
-            assert!(sidebar.entries.contains(&empty));
-            cx.notify();
         });
     }
 
@@ -422,8 +395,8 @@ mod tests {
                 assert!(
                     !sidebar
                         .entries
-                        .contains(&SidebarEntry::Empty(SidebarEmpty::NoTasks)),
-                    "project metadata does not establish that task pages are empty"
+                        .iter()
+                        .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
                 );
             }
             sidebar
@@ -434,9 +407,10 @@ mod tests {
                 sidebar.view.group = group;
                 sidebar.rebuild_sections();
                 assert!(
-                    sidebar
+                    !sidebar
                         .entries
-                        .contains(&SidebarEntry::Empty(SidebarEmpty::NoTasks))
+                        .iter()
+                        .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
                 );
             }
             sidebar.view.group = SidebarGroup::Project;

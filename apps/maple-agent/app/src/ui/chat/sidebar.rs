@@ -388,8 +388,6 @@ impl TaskRung {
 /// Why the task list has no rows to show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SidebarEmpty {
-    /// No tasks exist yet.
-    NoTasks,
     /// The search filter matched nothing.
     NoMatches,
 }
@@ -1805,12 +1803,8 @@ impl Sidebar {
             && self.sections.iter().all(|(section, rows)| {
                 !matches!(section, SidebarSection::Project(_)) && rows.is_empty()
             });
-        if empty && !self.pages.any_loading() && (empty_known || !self.filter.is_empty()) {
-            entries.push(SidebarEntry::Empty(if self.filter.is_empty() {
-                SidebarEmpty::NoTasks
-            } else {
-                SidebarEmpty::NoMatches
-            }));
+        if empty && !self.pages.any_loading() && !self.filter.is_empty() {
+            entries.push(SidebarEntry::Empty(SidebarEmpty::NoMatches));
         }
         if !self.archived_rows.is_empty() || (self.pages.enabled && self.filter.is_empty()) {
             entries.push(SidebarEntry::ArchivedHeader);
@@ -3055,58 +3049,35 @@ impl Sidebar {
                     ))
                     .into_any_element()
             }
-            Some(SidebarEntry::Empty(reason)) => {
-                let (title, hint) = match reason {
-                    SidebarEmpty::NoTasks => ("No tasks yet", "Start one with ⌘N"),
-                    SidebarEmpty::NoMatches => ("Nothing matches", "Try another search"),
-                };
-                div()
-                    .debug_selector(|| "sidebar-empty".to_string())
-                    .px_4()
-                    .flex()
-                    .flex_col()
-                    .when(reason == SidebarEmpty::NoTasks, |column| {
-                        column.w_full().pt_5().pb_6().min_h(px(106.))
-                    })
-                    .when(reason == SidebarEmpty::NoMatches, |column| {
-                        column.mt_6().items_center()
-                    })
-                    .gap_1()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .when(reason == SidebarEmpty::NoMatches, |column| {
-                        column.child(icon("search", px(18.), theme::text_faint()))
-                    })
-                    .child(
-                        div()
-                            .when(reason == SidebarEmpty::NoTasks, |title| {
-                                title
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(gpui::rgb(theme::text_primary()))
-                            })
-                            .when(reason == SidebarEmpty::NoMatches, |title| title.mt_1())
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(hint),
-                    )
-                    .when(reason == SidebarEmpty::NoMatches, |column| {
-                        column.child(
-                            widgets::ghost_button("clear-search-empty")
-                                .mt_2()
-                                .text_xs()
-                                .py_1()
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.clear_search(cx);
-                                }))
-                                .child("Clear search"),
-                        )
-                    })
-                    .into_any_element()
-            }
+            Some(SidebarEntry::Empty(SidebarEmpty::NoMatches)) => div()
+                .debug_selector(|| "sidebar-empty".to_string())
+                .px_4()
+                .flex()
+                .flex_col()
+                .mt_6()
+                .items_center()
+                .gap_1()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .child(icon("search", px(18.), theme::text_faint()))
+                .child(div().mt_1().child("Nothing matches"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child("Try another search"),
+                )
+                .child(
+                    widgets::ghost_button("clear-search-empty")
+                        .mt_2()
+                        .text_xs()
+                        .py_1()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.clear_search(cx);
+                        }))
+                        .child("Clear search"),
+                )
+                .into_any_element(),
             Some(SidebarEntry::ArchivedHeader) => {
                 let expanded = self.archived_expanded;
                 let count = if self.uses_computer_projection() && self.project_filter.is_none() {

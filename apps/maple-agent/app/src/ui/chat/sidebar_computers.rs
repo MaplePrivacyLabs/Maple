@@ -2003,12 +2003,8 @@ impl Sidebar {
                 }
             }
         }
-        if entries.len() == group_start && !has_pins && self.projects_expanded {
-            entries.push(SidebarEntry::Empty(if searching {
-                SidebarEmpty::NoMatches
-            } else {
-                SidebarEmpty::NoTasks
-            }));
+        if searching && entries.len() == group_start && !has_pins && self.projects_expanded {
+            entries.push(SidebarEntry::Empty(SidebarEmpty::NoMatches));
         }
         entries
     }

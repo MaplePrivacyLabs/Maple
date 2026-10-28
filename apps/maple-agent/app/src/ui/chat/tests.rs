@@ -7381,18 +7381,12 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn empty_sidebar_has_full_width_guidance_below_projects(cx: &mut TestAppContext) {
+    fn empty_sidebar_keeps_controls_without_task_guidance(cx: &mut TestAppContext) {
         let (_chat, cx) = chat_window(cx, |_, _| {});
-        let empty = cx
-            .debug_bounds("sidebar-empty")
-            .expect("empty task guidance");
-        let projects = cx
-            .debug_bounds("projects-header")
-            .expect("projects heading");
-        let settings = cx.debug_bounds("open-settings").expect("settings footer");
-        assert_eq!(empty.size.width, SIDEBAR_WIDTH);
-        assert!(empty.top() >= projects.bottom());
-        assert!(empty.bottom() < settings.top());
+        assert!(cx.debug_bounds("sidebar-empty").is_none());
+        for selector in ["new-task", "projects-header", "open-settings"] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector}");
+        }
     }
 
     #[gpui::test]
