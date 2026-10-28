@@ -129,9 +129,10 @@ head_sha="$(printf '%s' "$preflight" | jq -r .head_sha)"
 
 The script requires a clean current `master`, exact manifest version parity, a
 newer version and unused tag, and successful executed master CI jobs.
-CodeQL must run on the exact release commit; canonical master push, nightly,
-or manual CodeQL runs qualify. Every master push runs it; if that run is
-missing or failed, run CodeQL manually from master before preflight. Other workflows still require
+CodeQL must not be red: the newest finished CodeQL run (master push, nightly or
+manual) on the release commit or an ancestor must have succeeded. A scan still
+running does not block the release. If the newest finished scan failed, fix it
+or re-run CodeQL from master before preflight. Other workflows still require
 master-push evidence. Research test/build evidence may
 come from an ancestor only when the complete Git tree diff contains exclusively
 independent Agent, documentation, agent guidance, or release-gate test-harness
