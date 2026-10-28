@@ -86,8 +86,10 @@ macOS's native-TLS activation with Linux's backend selection creates a false
 OpenSSL edge. The build verifier additionally checks each target's actual Cargo
 feature graph. The signed-source verifier regenerates the amalgamation and
 compares its bytes, allowing only the source crate's documented WASM guard.
-CI is configured to run released rusqlite's suite against this static provider
-on all three platforms. Local macOS results do not substitute for Linux or Windows.
+The `Nightly` workflow runs released rusqlite's suite against this static
+provider on Linux, macOS and Windows; pull requests and master pushes that
+change the provider inputs run it on Linux (`agent-provider`). Local macOS
+results do not substitute for Linux or Windows.
 
 On 2026-10-21, the local pinned macOS shell passed the released rusqlite 0.40.2
 `modern-full` suite against the patched provider: 334 passing tests and three

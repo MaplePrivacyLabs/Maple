@@ -74,7 +74,7 @@ and retain hosted-flow-before-native-build ordering for future handoff changes.
 `master` always builds. Other branches, forks, pull requests, tags, and GitHub
 Releases cannot enter this workflow's signing or upload jobs. The independent production
 `mobile-build.yml` keeps its change selection,
-artifact names, and TestFlight destination. Its own serial lane also supports
+artifact names, and TestFlight destination. Its own serial queue also supports
 a master-only manual dispatch to force a fresh production build.
 
 The development workflow calls the shared `scripts/ci/ios-release.sh` with

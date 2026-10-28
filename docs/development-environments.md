@@ -1,7 +1,7 @@
 # Development environments and authentication
 
 Choose the environment for the task before setup, implementation, or smoke
-testing. Keep the chosen lane through API, client/project ID, auth origin,
+testing. Keep the chosen environment through API, client/project ID, auth origin,
 account, billing/flags, and runtime configuration.
 
 | Environment | Use | Required setup/evidence |

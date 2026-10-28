@@ -75,8 +75,9 @@ artifact's `pcr.json`; the deployment verifier rejects anything else.
 ## CI approval checks
 
 The root `ci.yml` `os-eif` lane builds dev/prod EIF candidates on Linux ARM64
-for same-repository PRs that change measured inputs without editing PCR
-approvals. The candidate job explicitly realizes and inspects the exact user
+for same-repository PRs to `master` that change measured inputs (or carry the
+`ci:eif` label) without editing PCR approvals. The candidate job explicitly
+realizes and inspects the exact user
 initramfs passed to the EIF builder, including when the final EIF comes from cache,
 resolves its entrypoint's CA path, and reports the archived bundle's hash and
 affected-root check alongside the EIF hash and PCRs. The archived CA bytes

@@ -332,22 +332,22 @@ cd apps/maple-agent
 nix develop --no-update-lock-file -c just ci
 ```
 
-Workflow and configuration changes also require the root pinned
-`nix flake check --no-update-lock-file`. Focused core and installer tests cover
+Workflow and configuration changes also require root `just lane repo` (the
+pinned `nix flake check`). Focused core and installer tests cover
 signature, schema, anti-rollback, interrupted downloads, saved-state tampering,
 archive/path attacks, staging integrity, replacement receipts and lock exclusion.
-Prod macOS packaging also runs the real installer archive scanner against each
-produced unsigned PR or signed master `.app.tar.gz`, binding the scanned bytes to
+Signed Prod macOS packaging on master also runs the real installer archive
+scanner against each produced `.app.tar.gz`, binding the scanned bytes to
 the package checksum before final upload/attestation. BSDtar host metadata is
 explicitly omitted during creation; signed file contents and existing native
 signature/notarization checks remain intact.
 They do not prove Developer ID distribution, deployed service behavior, or a
 successful real package update.
 
-The `agent-windows-updater` lane in `ci.yml` runs `cargo test -p
-maple-agent-updater --locked --no-fail-fast -- --test-threads=1` on Windows, with no signing or publication
-credentials: the native filesystem, trust rejection, transaction and recovery
-tests and the bootstrap component test. These fixtures do not establish
+The `ci.yml` `agent-windows-updater` lane runs the updater's native Windows
+tests with no signing or publication credentials: the filesystem, trust
+rejection, transaction and recovery tests and the bootstrap component test.
+These fixtures do not establish
 official Maple signatures, installed A-to-B updates, visible GUI or paired
 remote-upgrade behavior. Record those qualifications separately from a green
 component job or an installer consumer.

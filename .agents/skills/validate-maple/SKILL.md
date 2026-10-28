@@ -15,7 +15,7 @@ Follow [development environments](../../../docs/development-environments.md).
 Any backend change, heavy feature, or specific frontend/backend/log/billing
 interaction uses an isolated linked Local stack. Small frontend work may
 intentionally use hosted Dev with a valid Dev account/login. Keep effective
-API/project, auth route, account, and dependent services in the selected lane.
+API/project, auth route, account, and dependent services in the selected environment.
 A debug build, simulator, or package does not prove Local.
 
 Use the union of checks for changed boundaries; add relevant lower-level

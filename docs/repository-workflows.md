@@ -3,8 +3,9 @@
 Read this reference when changing hooks, workflows, caches, runners or
 publication configuration. [CI](ci.md) explains the pull-request checks: the
 single required check `ci-ok`, the tiers, labels, the lane table in
-`scripts/ci/lanes.py`, running a lane locally and adding one. Commands and
-paths are relative to the monorepo root.
+`scripts/ci/lanes.py`, lane runners, running a lane locally and adding one.
+Agents load [`$change-maple-ci`](../.agents/skills/change-maple-ci/SKILL.md).
+Commands and paths are relative to the monorepo root.
 
 ## Pre-commit hook
 
@@ -24,17 +25,23 @@ Research Rust runs formatting and tests, without Clippy; repository changes
 run actionlint on staged workflows and the `scripts/ci` tests. Integration
 suites, cargo-deny, `nix flake check` and packaging stay in CI.
 `MAPLE_HOOK_FULL=1` runs slower variants where they exist, `MAPLE_HOOK_ONLY=a,b`
-restricts the components, and `MAPLE_HOOK_SKIP=1` or `git commit --no-verify`
-skips the hook. `scripts/ci/test_plan.py` keeps the hook's components and its
+restricts the components, `MAPLE_HOOK_NO_NIX=1` runs from `PATH` even with
+Nix installed, and `MAPLE_HOOK_SKIP=1` or `git commit --no-verify` skips the
+hook. `scripts/ci/test_plan.py` keeps the hook's components and its
 branches in step with the lane table.
 
 ## Caches
 
-- Pull requests restore caches and never save one. The one exception is
+- Pull requests restore Actions caches, and no pull-request write reaches a
+  cache `master` reads. The exceptions are the EIF jobs.
   `opensecret-eif.yml`'s `eif` job (fork PRs that edit PCR approvals, and
-  manual runs outside `master`): without FlakeHub credentials, its Nix store
+  manual runs outside `master`) has no FlakeHub credentials, so its Nix store
   goes to the run's branch-scoped Actions cache, which `master` and other
-  pull requests cannot read.
+  pull requests cannot read. Same-repository PR EIF builds (`ci.yml`'s
+  `os-eif` and `opensecret-eif.yml`'s `eif-trusted`) push to the FlakeHub Nix
+  cache by design, and fall back to the branch-scoped Actions cache when
+  FlakeHub does not initialize
+  ([cache policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation)).
 - Lane caches (`Swatinem/rust-cache`, prefix `ci-v2`) are keyed by lane and
   toolchain pins (the workspace's `flake.lock`, and OpenSecret's
   `rust-toolchain.toml`), which must match exactly, then by rust-cache's
@@ -72,7 +79,8 @@ branches in step with the lane table.
   workspace crates, which Cargo rebuilds). No `ci.yml` lane reads it. The
   Agent packaging lanes build thin LTO into their own
   `ci-v1-agent-package-<os>-*` caches, which only the nightly master run
-  saves. Signing, attestation and verification jobs restore nothing.
+  saves. The Agent's signing, attestation and verification jobs restore
+  nothing.
 
 ## Concurrency
 
@@ -113,13 +121,23 @@ the other side of each contract. A failure means the workflow change is wrong:
 4. The signed master builds write the release cache keys above, and
    `ios-dev-testflight.yml`'s run number is the Maple Dev build number: never
    rename that file.
-5. OpenSecret EIF builds use the release builder's runner class, and only the
-   listed jobs receive `id-token: write` or use FlakeHub. An EIF approval
+5. Every OpenSecret EIF builder that uses FlakeHub (`ci.yml`'s `os-eif`,
+   `opensecret-eif.yml`'s `eif-trusted` and the release build) runs on the
+   release builder's runner class, and only the listed jobs receive
+   `id-token: write` or use FlakeHub. The unprivileged fork job stays on
+   `ubuntu-24.04-arm`. An EIF approval
    mismatch fails only where that environment's approval files are edited
    (or a manual run outside `master`); on master it is a notice.
 6. Each protected environment has a fixed set of consumer jobs;
    `windows-signing` runs only on GitHub-hosted runners.
-7. Docs, guides and READMEs name only workflows that exist.
+7. Docs, guides and READMEs name only workflows that exist. Docs select no
+   lane, so this runs with the `repo` lane and nightly; run `just lane repo`
+   after editing docs.
+
+The Pages and Auth publishers also trust their producers
+(`pages-preview-build.yml`, `pages-production-build.yml`,
+`auth-pages-ci.yml`, `auth-pages-build.yml`) by file, artifact name and
+gates; `test_pages_workflows.py` and `test_pages_auth_workflows.py` pin them.
 
 `scripts/ci/test_workflow_policy.py` holds the rules every workflow keeps: no
 `pull_request_target`, and a fixed set of workflows that run on pull requests;
@@ -164,18 +182,12 @@ merging source.
 
 ## Agent Windows updater checks
 
-The `agent-windows-updater` lane runs `cargo test -p maple-agent-updater
---locked --no-fail-fast -- --test-threads=1` on GitHub's free Windows image:
-the updater's native filesystem, Authenticode-rejection, transaction and
-recovery tests, and the bootstrap integration test, which compiles the app's
-`windows_bootstrap.rs`. It runs when a pull request or master push changes
-the updater crate, that file, the Agent workspace's `Cargo.lock` or
-`Cargo.toml`, the Windows toolchain or CI itself, with `ci:windows` or
-`ci:full`, and nightly; master runs save its cache. Like every `windows`
-matrix lane it has no signing credential or protected environment. The
-reparse tests need the symlink privilege GitHub's runner grants. A pass
-qualifies no official signature, signed installed
-upgrade, visible GUI or paired remote upgrade.
+The `agent-windows-updater` lane (see `scripts/ci/lanes.py` for what selects
+it) runs the updater's native filesystem, Authenticode-rejection, transaction
+and recovery tests and the bootstrap integration test on GitHub's Windows
+image. Like every `windows` matrix lane it has no signing credential or
+protected environment. A pass qualifies no official signature, signed
+installed upgrade, visible GUI or paired remote upgrade.
 
 The manual `agent-windows-signature-probe.yml` takes an exact historical
 producer run, attempt and source and the artifact's ZIP and PE digests. It
@@ -225,28 +237,31 @@ caps Bash heredoc pipes at 512 bytes, and larger bodies use a temporary file.
 
 ## Runners and toolchains
 
-Compilation runs on Blacksmith runners (ARM64 `blacksmith-6vcpu-macos-26` for
-macOS); lane runners are the constants in `scripts/ci/lanes.py`. The signed
-Research macOS, Linux, Android and iOS builds compile and sign on Blacksmith.
-Artifact verifiers, TestFlight submission, and the Agent's signing and
-attestation use GitHub-hosted runners. Windows builds that compile run on the
-org's 16-core GitHub-hosted runner `maple-windows-2025-16core`: the release's
-`build-windows`, the Agent packaging rehearsal and the Research Windows PR
-package ([CI runners](ci.md#runners)). The unsigned Agent master build compiles
-on `blacksmith-8vcpu-windows-2025`: its fat-LTO link runs on one thread, so 16
-cores are no faster. The signed Research master build and the Agent's native
-suites (`agent-windows-updater`, and `agent-full-windows` nightly or by label)
-use GitHub's free standard `windows-2025`, like the short signing and verify
-jobs. Jobs that compile and
-sign install the pinned Artifact Signing module before compiling, so a failed
-module download fails early; the module's own NuGet packages and the Azure
-login still come after the compile. The installer retries the PowerShell
-Gallery and its CDN and accepts only the pinned SHA-256. Rust, MSVC, Perl and
-the linker are pinned by `.github/actions/setup-agent-windows` for the Agent.
-Blacksmith's Windows workspace inherits a foreign write ACE that the updater's
-storage validation rejects, so the updater tests and install smokes stay on
-GitHub's image; `blacksmith-8vcpu-windows-2025` runs the Agent Windows Clippy
-lane and the unsigned Agent master build.
+[CI runners](ci.md#runners) assigns the `ci.yml` lanes. The signed and
+release workflows use:
+
+| Work | Runner |
+| --- | --- |
+| Research macOS, Linux, Android and iOS builds, which compile and sign (master and release); `rust-tests.yml`; the Agent's unsigned master builds | Blacksmith (`blacksmith-6vcpu-macos-26`, `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`) |
+| Release `build-windows` | `maple-windows-2025-16core` |
+| Signed Research Windows master build; Agent Windows signing and verification | `windows-2025` |
+| Artifact verifiers, TestFlight submission, the Agent's signing and attestation, CodeQL, web and frontend evidence | Other GitHub-hosted runners |
+| Proxy release builds and their PR rehearsal (`proxy-rust.yml`) | GitHub-hosted Linux and Windows, Blacksmith macOS |
+| EIF builders that use FlakeHub | `blacksmith-16vcpu-ubuntu-2404-arm` |
+
+The Agent's signing and attestation, `windows-signing` jobs and every artifact
+verifier stay GitHub-hosted: the Agent publisher rejects self-hosted signers,
+Blacksmith counts as self-hosted, and verifiers run fresh. The Agent's
+unsigned master Windows build compiles on Blacksmith because its fat-LTO link
+runs on one thread, so 16 cores are no faster. Blacksmith's Windows workspace
+inherits a foreign write ACE that the updater's storage validation rejects,
+so the updater tests and install smokes stay on GitHub's image. Jobs that
+compile and sign install the pinned Artifact Signing module before compiling,
+so a failed module download fails early; the module's own NuGet packages and
+the Azure login still come after the compile. The installer retries the
+PowerShell Gallery and its CDN and accepts only the pinned SHA-256. Rust,
+MSVC, Perl and the linker are pinned by `.github/actions/setup-agent-windows`
+for the Agent.
 
 Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through

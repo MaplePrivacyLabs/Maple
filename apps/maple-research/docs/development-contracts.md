@@ -40,10 +40,13 @@ checks for every affected client path.
 The Maple Proxy source lives under `proxy/`. From the repository root,
 run its Rust commands through
 `nix develop --no-update-lock-file ./proxy -c bash -lc 'cd proxy && ...'`;
-the root `ci.yml` `proxy` lane owns proxy CI. Proxy runtime changes select desktop
-builds; SDK-only changes do not, since Research builds the SDK source its own
-manifests select. Container, test, documentation, and standalone lockfile
-changes remain independent.
+the root `ci.yml` `proxy` lane owns proxy CI. Proxy runtime and Rust SDK build
+changes select `research-rust` on PRs, because the Research shell builds both
+from the tree. On master, Rust SDK build changes select every signed native
+build and proxy runtime changes the signed desktop builds. TypeScript SDK
+changes select no app build, since Research builds the SDK its own manifests
+select. Container, test, documentation, and standalone lockfile changes
+remain independent.
 
 ## Code ownership and placement
 

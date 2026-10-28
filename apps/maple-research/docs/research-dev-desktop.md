@@ -72,12 +72,13 @@ under `target/research-dev/cargo` rather than replacing ordinary desktop outputs
 Only this explicit local command builds the Dev RPM; existing PR/release package
 jobs and production identities are unchanged.
 
-Older `ci-desktop-pr` RPMs use Dev services but retain the production `maple`
-package identity. They do **not** install beside production. Restore the website
-RPM to that slot separately; for equal versions use `sudo dnf reinstall ./<rpm>`,
-or `sudo dnf downgrade ./<rpm>` if the website version is older. Sign in again if
-needed; do not copy credentials between the two apps. No automatic data migration
-or deletion is performed by the Dev build.
+Ordinary Research PR package RPMs (the `research-desktop-linux` lane) use Dev
+services but retain the production `maple` package identity. They do **not**
+install beside production. Restore the website RPM to that slot separately;
+for equal versions use `sudo dnf reinstall ./<rpm>`, or
+`sudo dnf downgrade ./<rpm>` if the website version is older. Sign in again
+if needed; do not copy credentials between the two apps. No automatic data
+migration or deletion is performed by the Dev build.
 
 ### macOS
 
@@ -106,9 +107,10 @@ local-install rehearsal package, not a signed release or deployment. The lane
 checks out the exact PR head; tie the downloaded package and its profile hashes
 to that source run and checkout log when recording test evidence.
 
-The lane runs when a PR carries `ci:research-dev-macos` (or `ci:package`).
-Labels are read when the run starts: add the label, then re-run the `CI`
-workflow. `ci:package` also runs the `research-desktop-*` bundles.
+The lane runs when a PR carries `ci:research-dev-macos` (or `ci:package` or
+`ci:full`). Labels are read when the run's `plan` job starts: add the label,
+then push or use **Re-run all jobs** on a finished run (**Re-run failed jobs**
+keeps the old plan). `ci:package` also runs the `research-desktop-*` bundles.
 
 The different bundle ID separates the WebView's stored credentials and Tauri's
 app config/data directories from the production app. Dev does not run the old

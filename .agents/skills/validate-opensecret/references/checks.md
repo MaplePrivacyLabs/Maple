@@ -71,13 +71,13 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
 
 The helper proves an empty-database migration and the selected local synthetic
 database suites, including OAuth settings preservation, callback selection,
-and Google/GitHub callback completion through the real V1 encryption middleware
-and V2 gateway. Completion tests exchange synthetic credentials only with
-local mock token/user-info endpoints, verify the originally selected callback
-after settings change, and reject replay without another exchange. The SDK
-integration workflow runs this helper too. These fixtures do not prove a live
-OAuth provider flow, a released SDK or application, or a data conversion from
-representative old rows.
+and Google/GitHub callback completion through the real V1 encryption
+middleware and V2 gateway. Completion tests exchange synthetic credentials
+only with local mock token/user-info endpoints, verify the originally selected
+callback after settings change, and reject replay without another exchange.
+The `os-sdk-e2e` lane in `ci.yml` runs this helper too. These fixtures do not
+prove a live OAuth provider flow, a released SDK or application, or a data
+conversion from representative old rows.
 
 For a data migration, separately build an upgrade-shaped disposable database
 with representative pre-change rows and verify restart, rollback, and retry
@@ -157,7 +157,10 @@ nix build --no-link --no-write-lock-file '.?submodules=1#default'
 PCR reference/history updates remain operator-controlled release work.
 Read-only EIF construction and PCR comparison are validation when in scope.
 Root backend CI runs the component flake checks but does not build the
-default package. The separate root EIF approval workflow builds dev/prod
+default package. `ci.yml`'s `os-eif` lane builds dev/prod EIF candidates for
+same-repository PRs to `master` that change measured inputs (or carry
+`ci:eif`) without editing approvals; it reports PCR0 and whether approval is
+needed, and never fails on a mismatch. `opensecret-eif.yml` builds dev/prod
 and compares generated measurements on PRs that explicitly edit the four
 approved PCR JSON files, relevant backend/TEE or approval changes to master,
 and manual runs. Ordinary backend PRs do not require new PCR approvals. A PR
@@ -177,7 +180,8 @@ For EIF cache/workflow changes, follow
 FlakeHub OIDC for master and same-repository PRs, with forks and other manual
 refs on the unprivileged GitHub cache path. Verify actual authentication,
 custom-kernel substitution, and timing on fresh hosted ARM64 master and
-same-repository PR runs, then fork reuse of the GitHub cache warmed by master.
+same-repository PR runs, and check fork runs separately for cache misses and
+cold-build duration; master does not guarantee a warm cache for forks.
 Local store hits and skipped PR jobs cannot establish hosted cache performance
 or cross-organization access.
 
