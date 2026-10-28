@@ -116,7 +116,7 @@ impl ChatScreen {
                 .flex_none()
                 .pl(inset)
                 .pr_3()
-                .bg(gpui::rgb(theme::bg_sidebar())),
+                .bg(gpui::rgb(theme::bg_app())),
         )
         .child(
             div()

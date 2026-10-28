@@ -6795,7 +6795,7 @@ impl Render for ChatScreen {
                             .flex_1()
                             .h_full()
                             .min_w_0()
-                            .bg(gpui::rgb(theme::bg_sidebar()))
+                            .bg(gpui::rgb(theme::bg_app()))
                             .child(
                                 // The header is the window's title bar; a wheel
                                 // over it scrolls nothing.
@@ -6808,7 +6808,6 @@ impl Render for ChatScreen {
                                     .flex_col()
                                     .flex_1()
                                     .min_h_0()
-                                    .rounded_tl(theme::RADIUS_LG)
                                     .bg(gpui::rgb(theme::bg_app()))
                                     .child(main),
                             ),
@@ -6894,6 +6893,16 @@ impl ChatScreen {
             .when(expansion > 0. && expansion < 1., |column| {
                 column.overflow_hidden()
             })
+            // Keep the title-bar surface steady beneath the fading sidebar.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(CHAT_HEADER_HEIGHT)
+                    .bg(gpui::rgb(theme::bg_app())),
+            )
             .when(expansion < 1., |column| {
                 column.child(self.render_sidebar_rail(cx))
             })
@@ -7222,7 +7231,7 @@ impl ChatScreen {
                     .id("sidebar-rail-titlebar")
                     .h(CHAT_HEADER_HEIGHT)
                     .flex_none()
-                    .bg(gpui::rgb(theme::bg_sidebar())),
+                    .bg(gpui::rgb(theme::bg_app())),
             ))
             .child(rail)
     }
