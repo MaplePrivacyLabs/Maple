@@ -7195,6 +7195,74 @@ mod state_tests {
         }
     }
 
+    #[gpui::test]
+    fn draft_project_context_fits_a_narrow_window(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().flex().flex_col().child(self.chat.clone())
+            }
+        }
+        cx.executor().allow_parking();
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            crate::desktop::register_key_bindings(cx);
+            let backend = Arc::new(
+                AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
+            );
+            let mut chat = ChatScreen::new_without_start(backend, "user".into(), cx);
+            chat.booting = false;
+            chat.trust_prompts = false;
+            chat.project_label = "A long project name that must fit beside its branch".into();
+            chat.branch_label = Some("(feature/a-long-branch-name-that-must-also-fit)".into());
+            chat.sidebar
+                .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+            chat
+        });
+        let (_host, cx) = cx.add_window_view(|_, _| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(640.), px(480.)));
+        cx.update(|window, _| window.activate_window());
+        for has_history in [false, true] {
+            for collapsed in [false, true] {
+                for expanded in [false, true] {
+                    chat.update(cx, |this, cx| {
+                        this.replace_timeline(if has_history {
+                            vec![user_item("u1", "hi")]
+                        } else {
+                            Vec::new()
+                        });
+                        this.composer_expanded = expanded;
+                        this.set_sidebar_collapsed(collapsed, cx);
+                        cx.notify();
+                    });
+                    cx.run_until_parked();
+                    let project = cx.debug_bounds("root-picker").expect("project");
+                    let branch = cx.debug_bounds("project-branch").expect("branch");
+                    let composer = cx.debug_bounds("composer-box").expect("composer");
+                    assert_eq!(project.left(), composer.left());
+                    assert!(
+                        project.right() <= composer.right() && branch.right() <= composer.right(),
+                        "history={has_history}, collapsed={collapsed}, expanded={expanded}: project={project:?}, branch={branch:?}, composer={composer:?}"
+                    );
+                    assert!(project.bottom() <= composer.top());
+                    assert!(composer.top() - project.bottom() <= px(12.));
+                    assert!(composer.size.height > px(0.));
+                    assert!(composer.bottom() <= px(480.));
+                    assert!(cx.debug_bounds("header-title").is_none());
+                    press(cx, "root-picker");
+                    assert_eq!(open_menu(&chat, cx), "Project");
+                    let menu = cx.debug_bounds("project-menu").expect("project menu");
+                    assert!(!menu.contains(&project.center()));
+                    assert!(menu.left() >= px(0.) && menu.right() <= px(640.));
+                    cx.simulate_keystrokes("escape");
+                }
+            }
+        }
+    }
+
     /// The collapsed header keeps its commands before the title in both
     /// pane layouts; expanding keeps only the same fixed toggle.
     #[gpui::test]
