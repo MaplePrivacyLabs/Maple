@@ -211,8 +211,8 @@ pub fn pulse(phase: f32, shift: f32, low: f32, high: f32) -> f32 {
     low + (high - low) * wave
 }
 
-/// A short, symmetric transition for hover plates. Press and focus styles
-/// remain native GPUI refinements, applied after this background.
+/// A short, symmetric transition for hover plates and control reveals.
+/// Press and focus styles remain native GPUI refinements.
 pub const HOVER: Duration = Duration::from_millis(120);
 
 #[derive(Clone, Copy)]
@@ -223,10 +223,11 @@ struct HoverTransition {
 }
 
 impl HoverTransition {
-    fn new(now: Instant) -> Self {
+    fn new(visible: bool, now: Instant) -> Self {
+        let value = if visible { 1. } else { 0. };
         Self {
-            from: 0.,
-            target: 0.,
+            from: value,
+            target: value,
             started: now,
         }
     }
@@ -252,6 +253,9 @@ impl HoverTransition {
         (value, value != self.target)
     }
 }
+
+// Visibility and background hover can have different targets on one control.
+struct RevealTransition(HoverTransition);
 
 // Premultiplied RGB avoids a dark flash when fading from transparent.
 fn hover_color(rest: gpui::Hsla, hover: gpui::Hsla, amount: f32) -> gpui::Hsla {
@@ -293,8 +297,13 @@ pub fn hover_background(
         rest: rest.into(),
         hover: hover.into(),
         highlighted: None,
+        revealed: None,
         #[cfg(test)]
         observed: None,
+        #[cfg(test)]
+        observed_opacity: None,
+        #[cfg(test)]
+        test_now: None,
     }
 }
 
@@ -303,8 +312,13 @@ pub struct HoverBackground {
     rest: gpui::Hsla,
     hover: gpui::Hsla,
     highlighted: Option<bool>,
+    revealed: Option<bool>,
     #[cfg(test)]
     observed: Option<std::rc::Rc<RefCell<gpui::Fill>>>,
+    #[cfg(test)]
+    observed_opacity: Option<std::rc::Rc<std::cell::Cell<f32>>>,
+    #[cfg(test)]
+    test_now: Option<Instant>,
 }
 
 impl HoverBackground {
@@ -319,6 +333,13 @@ impl HoverBackground {
     /// Use that existing state instead of maintaining a second hover target.
     pub fn highlighted(mut self, highlighted: bool) -> Self {
         self.highlighted = Some(highlighted);
+        self
+    }
+
+    /// Fade visibility in place, keeping the control's hitbox and layout.
+    /// Native focus styles can still reveal a keyboard target immediately.
+    pub fn revealed(mut self, visible: bool) -> Self {
+        self.revealed = Some(visible);
         self
     }
 }
@@ -406,16 +427,34 @@ impl Element for HoverBackground {
                 && !cx.has_active_drag()
         });
         let now = Instant::now();
+        #[cfg(test)]
+        let now = self.test_now.unwrap_or(now);
         let (amount, animating) = window.with_element_state(
             id.expect("hover controls have an id"),
             |state: Option<HoverTransition>, _| {
-                let mut state = state.unwrap_or_else(|| HoverTransition::new(now));
+                let mut state = state.unwrap_or_else(|| HoverTransition::new(false, now));
                 let frame = state.update(hovered, now, cx.reduce_motion());
                 (frame, state)
             },
         );
         self.element.style().background = Some(hover_color(self.rest, self.hover, amount).into());
-        if animating {
+        let reveal_animating = if let Some(visible) = self.revealed {
+            let (opacity, animating) = window.with_element_state(
+                id.expect("revealed controls have an id"),
+                |state: Option<RevealTransition>, _| {
+                    // An initially visible control should not fade in on mount.
+                    let mut state = state
+                        .unwrap_or_else(|| RevealTransition(HoverTransition::new(visible, now)));
+                    let frame = state.0.update(visible, now, cx.reduce_motion());
+                    (frame, state)
+                },
+            );
+            self.element.style().opacity = Some(opacity);
+            animating
+        } else {
+            false
+        };
+        if animating || reveal_animating {
             window.request_animation_frame();
         }
         if self.highlighted.is_none()
@@ -440,6 +479,17 @@ impl Element for HoverBackground {
                 .background
                 .unwrap_or_default();
         }
+        #[cfg(test)]
+        if let Some(observed) = &self.observed_opacity {
+            use gpui::InteractiveElement;
+            observed.set(
+                self.element
+                    .interactivity()
+                    .compute_style(id, hitbox.as_ref(), window, cx)
+                    .opacity
+                    .unwrap_or(1.),
+            );
+        }
     }
 }
 
@@ -449,7 +499,7 @@ mod hover_tests {
     #[test]
     fn hover_reverses_from_the_displayed_value_and_settles() {
         let now = Instant::now();
-        let mut transition = HoverTransition::new(now);
+        let mut transition = HoverTransition::new(false, now);
         assert_eq!(transition.update(false, now, false), (0., false));
         assert_eq!(transition.update(true, now, false), (0., true));
         let halfway = now + HOVER / 2;
@@ -467,7 +517,7 @@ mod hover_tests {
     #[test]
     fn reduced_motion_settles_an_interrupted_hover_immediately() {
         let now = Instant::now();
-        let mut transition = HoverTransition::new(now);
+        let mut transition = HoverTransition::new(false, now);
         transition.update(true, now, false);
         assert_eq!(transition.update(true, now + HOVER / 4, true), (1., false));
         assert_eq!(transition.update(false, now + HOVER / 2, true), (0., false));
@@ -476,7 +526,7 @@ mod hover_tests {
     #[test]
     fn hover_eases_symmetrically_without_darkening_transparent_colors() {
         let now = Instant::now();
-        let mut transition = HoverTransition::new(now);
+        let mut transition = HoverTransition::new(false, now);
         transition.update(true, now, false);
         let early = transition.value(now + HOVER / 4);
         let late = transition.value(now + HOVER * 3 / 4);
@@ -488,6 +538,97 @@ mod hover_tests {
         assert_eq!(middle.g, 1.);
         assert_eq!(middle.b, 1.);
         assert_eq!(middle.a, 0.5);
+    }
+
+    #[gpui::test]
+    fn reveal_fades_reverses_and_preserves_focus_and_geometry(cx: &mut gpui::TestAppContext) {
+        use gpui::{div, prelude::*, px};
+        use std::{cell::Cell, rc::Rc};
+        struct Host {
+            visible: bool,
+            now: Instant,
+            focus: gpui::FocusHandle,
+            observed: Rc<Cell<f32>>,
+        }
+        impl gpui::Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut button = super::super::widgets::secondary_button("reveal-test")
+                    .debug_selector(|| "reveal-test".into())
+                    .track_focus(&self.focus)
+                    .focus_visible(|style| style.opacity(1.))
+                    .highlighted(false)
+                    .revealed(self.visible)
+                    .child("Action");
+                button.observed_opacity = Some(self.observed.clone());
+                button.test_now = Some(self.now);
+                div().size_full().p(px(20.)).child(button)
+            }
+        }
+        let observed = Rc::new(Cell::new(0.));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (host, cx) = cx.add_window_view(|_, cx| Host {
+            visible: true,
+            now: Instant::now(),
+            focus: cx.focus_handle(),
+            observed: observed.clone(),
+        });
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("reveal-test").unwrap();
+        assert_eq!(
+            observed.get(),
+            1.,
+            "visible controls do not fade in on mount"
+        );
+        let set_visible = |visible, cx: &mut gpui::VisualTestContext| {
+            host.update(cx, |host, cx| {
+                host.visible = visible;
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        let frame_after = |duration, cx: &mut gpui::VisualTestContext| {
+            host.update(cx, |host, cx| {
+                host.now += duration;
+                cx.notify();
+            });
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+        };
+        set_visible(false, cx);
+        assert!(observed.get() > 0., "hide must not snap off");
+        frame_after(HOVER / 4, cx);
+        assert!(observed.get() > 0. && observed.get() < 1.);
+        set_visible(true, cx);
+        assert!(
+            observed.get() > 0. && observed.get() < 1.,
+            "reverse in place"
+        );
+        frame_after(HOVER, cx);
+        assert_eq!(observed.get(), 1.);
+        set_visible(false, cx);
+        frame_after(HOVER, cx);
+        assert_eq!(observed.get(), 0.);
+        set_visible(true, cx);
+        assert!(observed.get() < 1., "show must not snap on");
+        frame_after(HOVER, cx);
+        assert_eq!(observed.get(), 1.);
+        assert_eq!(cx.debug_bounds("reveal-test").unwrap(), bounds);
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        set_visible(false, cx);
+        assert_eq!(observed.get(), 0.);
+        set_visible(true, cx);
+        assert_eq!(observed.get(), 1.);
+        set_visible(false, cx);
+        let focus = host.update(cx, |host, _| host.focus.clone());
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| focus.focus(window, cx));
+        cx.run_until_parked();
+        assert_eq!(observed.get(), 1., "keyboard focus reveals immediately");
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
     }
 
     #[gpui::test]
