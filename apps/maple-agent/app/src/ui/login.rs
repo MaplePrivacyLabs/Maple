@@ -578,7 +578,7 @@ impl Render for LoginScreen {
     }
 }
 
-fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> gpui::Stateful<Div> {
+fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> crate::ui::motion::HoverBackground {
     widgets::primary_button("login-submit")
         .w_full()
         .mt_1()
@@ -597,7 +597,7 @@ fn oauth_button(
     provider: OAuthProvider,
     busy: bool,
     cx: &mut Context<LoginScreen>,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     widgets::secondary_button(gpui::SharedString::from(format!(
         "oauth-{}",
         provider.label().to_lowercase()

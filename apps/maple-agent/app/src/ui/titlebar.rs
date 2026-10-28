@@ -184,11 +184,15 @@ fn control(
         .bg(gpui::rgb(theme::bg_title_control()))
         .text_xs()
         .text_color(gpui::rgb(theme::text_primary()))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_title_control_hover()))
-                .cursor_pointer()
+        .map(|element| {
+            let rest: gpui::Hsla = gpui::rgb(theme::bg_title_control()).into();
+            crate::ui::motion::hover_background(
+                element,
+                rest,
+                gpui::rgb(theme::bg_title_control_hover()),
+            )
         })
+        .hover(|style| style.cursor_pointer())
         .on_mouse_down(gpui::MouseButton::Left, {
             let action = std::rc::Rc::new(action);
             move |_event, window, cx| {

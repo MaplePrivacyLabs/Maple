@@ -1710,7 +1710,20 @@ impl SettingsScreen {
                     .when(application_selected, |row| {
                         row.border_l_2().border_color(gpui::rgb(theme::accent()))
                     })
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
+                    .map(|element| {
+                        let rest: gpui::Hsla = gpui::rgb(if selected {
+                            theme::bg_elevated()
+                        } else {
+                            theme::bg_sidebar()
+                        })
+                        .into();
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_elevated()),
+                        )
+                    })
+                    .hover(|style| style.cursor_pointer())
                     .on_click({
                         let section = *section;
                         cx.listener(move |this, _event, _window, cx| {
@@ -2826,11 +2839,19 @@ impl SettingsScreen {
                     theme::text_secondary()
                 }))
                 .when(active, |el| el.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
+                .map(|element| {
+                    let rest: gpui::Hsla = if active {
+                        gpui::rgb(theme::bg_sidebar_row_hover()).into()
+                    } else {
+                        gpui::transparent_black()
+                    };
+                    crate::ui::motion::hover_background(
+                        element,
+                        rest,
+                        gpui::rgb(theme::bg_sidebar_row_hover()),
+                    )
                 })
+                .hover(|style| style.cursor_pointer())
                 .child(label)
         };
         div()
