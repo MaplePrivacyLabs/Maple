@@ -2,7 +2,6 @@
 //! Persistent public artwork is outside both installed generations and store-v1.
 
 use super::*;
-use sha2::Digest as _;
 use std::ffi::{OsStr, OsString};
 use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
 use windows::{
