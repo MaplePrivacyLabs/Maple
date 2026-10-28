@@ -4113,7 +4113,6 @@ impl Render for Sidebar {
             .child(titlebar::drag_region(
                 div()
                     .id("sidebar-top-row")
-                    .relative()
                     .flex()
                     .items_center()
                     .justify_between()
@@ -4123,15 +4122,6 @@ impl Render for Sidebar {
                     // beside them; the space above it is still the bar.
                     .pt(wordmark_row_top())
                     .pb_2()
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .h(super::CHAT_HEADER_HEIGHT)
-                            .bg(gpui::rgb(theme::bg_app())),
-                    )
                     .child(
                         div()
                             .flex_none()
