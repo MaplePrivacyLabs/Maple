@@ -103,7 +103,8 @@ Signature format is prehashed minisign Ed25519 with exact trusted comment
 operator pointer changes through `agent-updates-production`. Normal publication
 includes macOS, Linux and Windows; Windows has no separate activation variable
 or approval path. It selects an exact
-completed trusted-master `agent-desktop-build.yml` run, requires the successful
+completed trusted-master push or dispatched `agent-desktop-build.yml` run,
+requires the successful
 Prod producers and final download verifiers for every included platform (not
 merely overall workflow success), verifies every final file's
 GitHub attestation against master and the source commit, and validates build

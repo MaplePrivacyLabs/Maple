@@ -243,6 +243,7 @@ class ContractTests(unittest.TestCase):
         config = load(ROOT / publisher.WORKFLOW)
         self.assertIn("master", config["on"]["push"]["branches"])
         self.assertIn("workflow_dispatch", config["on"])
+        self.assertTrue(config["on"].get("schedule"))  # Dev packages build nightly
         run_id = 4242
         for job_id, job in config["jobs"].items():
             attests = any(step.get("uses", "").startswith("actions/attest@") for step in job.get("steps", []))
@@ -252,7 +253,13 @@ class ContractTests(unittest.TestCase):
                 self.assertFalse([step for step in job.get("steps", []) if step.get("uses", "").startswith(
                     ("actions/cache", "Swatinem/rust-cache@"))], f"{job_id} must restore no cache")
         # Each job's `if:` and `needs` decide whether it runs: a Prod job they skip fails the publisher.
-        for event in ("push", "workflow_dispatch"):
+        # A push builds only Prod, the nightly run only Dev (never published), a dispatch both.
+        profiles = {"push": ["prod"], "workflow_dispatch": ["dev", "prod"], "schedule": ["dev"]}
+        for event, expected in profiles.items():
+            results = job_results(config, event)
+            for job_id, job in config["jobs"].items():
+                if "variant" in job.get("strategy", {}).get("matrix", {}):
+                    self.assertEqual((results[job_id], variants(job, event)), ("success", expected), (event, job_id))
             inventory, artifacts = desktop_run(config, run_id, event)
             run = {"id": run_id, "run_attempt": 1, "run_number": 77, "path": publisher.WORKFLOW,
                    "head_branch": "master", "event": event, "status": "completed", "head_sha": "a" * 40,
@@ -262,6 +269,16 @@ class ContractTests(unittest.TestCase):
                          "artifacts": {"total_count": len(artifacts), "artifacts": artifacts}}
             with self.subTest(event=event), mock.patch.object(
                     publisher, "gh_json", lambda path: responses[re.sub(r".*/runs/\d+/?([a-z]*).*", r"\1", path)]):
+                if "prod" not in expected:
+                    with self.assertRaises(publisher.PublishError):
+                        publisher.trust_run(run_id, linux=True, windows=True)
+                    # Even a nightly run with every Prod job and artifact is never published.
+                    inventory, artifacts = desktop_run(config, run_id, "push")
+                    responses.update(jobs={"total_count": len(inventory), "jobs": inventory},
+                                     artifacts={"total_count": len(artifacts), "artifacts": artifacts})
+                    with self.assertRaisesRegex(publisher.PublishError, "untrusted build workflow or ref"):
+                        publisher.trust_run(run_id, linux=True, windows=True)
+                    continue
                 proof = publisher.trust_run(run_id, linux=True, windows=True)
                 self.assertEqual(proof["build"], "77")  # run_number is the Agent build number
         # The publisher checks the Windows package's build against that run number.
@@ -420,11 +437,17 @@ class ContractTests(unittest.TestCase):
         writers =[(name, job_id, step) for name, job_id, step in cache_steps() if cache_writer(step)
                    and (name, job_id) in AGENT_RELEASE_WRITERS | AGENT_RELEASE_READERS]
         self.assertEqual({(name, job_id) for name, job_id, _ in writers}, AGENT_RELEASE_WRITERS)
-        for _, job_id, step in writers:
+        for name, job_id, step in writers:
             with self.subTest(job=job_id):
                 self.assertTrue(step["uses"].startswith("actions/cache/save@"))
                 self.assertEqual(step["with"]["path"], restores[0][2]["path"])
-                self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/master'", step["if"])
+                # Dev and Prod share the key. Only master pushes, which build only Prod, save it;
+                # nightly and dispatched builds only restore it.
+                saves = [event for event in ("push", "schedule", "workflow_dispatch") if evaluate(expression(step), {
+                    "steps.cache.outputs.cache-hit": "false", "github.event_name": event,
+                    "github.ref": "refs/heads/master"})]
+                self.assertEqual(saves, ["push"])
+                self.assertEqual(variants(workflows()[name]["jobs"][job_id], "push"), ["prod"])
 
     def test_c4_dev_testflight_build_number_is_the_run_number(self):
         job = workflows()["ios-dev-testflight.yml"]["jobs"]["build-ios-dev"]

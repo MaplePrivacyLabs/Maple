@@ -42,8 +42,8 @@ branches in step with the lane table.
   store. GitHub's holds what GitHub-hosted jobs need: the lane caches of
   `agent-full-windows` and `agent-windows-updater` (both saved only by the
   nightly run), the `agent-package-windows` packaging cache (below), the
-  unsigned Agent Windows build, the signed Research Windows build's Bun binary,
-  the release, the Nix installer and that EIF check.
+  signed Research Windows build's Bun binary, the release, the Nix installer
+  and that EIF check.
   `test_workflow_policy.py` lists these writers.
 - The signed master builds write the keys `release.yml` restores by prefix
   (`<os>-sccache-*` for macOS and Linux, `xcode-cache-*`,
@@ -55,10 +55,12 @@ branches in step with the lane table.
   starts with a cold Bun cache; Bun installs in seconds.
 - `agent-desktop-build.yml`'s unsigned builders save the exact key
   `ci-v1-agent-release-<os>-<hash of both lockfiles>` on master pushes, with
-  no fallback keys; no `ci.yml` lane reads it. The Agent packaging lanes build
-  thin LTO into their own `ci-v1-agent-package-<os>-*` caches, which only the
-  nightly master run saves. Signing, attestation and verification jobs restore
-  nothing.
+  no fallback keys. Pushes build only Prod; the nightly Dev and dispatched
+  builds restore the same key without saving (the profile changes only Agent
+  workspace crates, which Cargo rebuilds). No `ci.yml` lane reads it. The
+  Agent packaging lanes build thin LTO into their own
+  `ci-v1-agent-package-<os>-*` caches, which only the nightly master run
+  saves. Signing, attestation and verification jobs restore nothing.
 
 ## Concurrency
 
@@ -125,10 +127,11 @@ scripts only `ci.yml`'s unsigned lanes run select none. Only `mobile-build` and
 Android release evidence comes only from master pushes. The selector routes
 proxy runtime and Rust SDK build inputs to the native builds, because the
 Research shell builds both from the tree. TypeScript SDK changes never select
-app builds: each frontend builds the SDK its own manifest selects. Agent desktop
-packages build on master pushes that change Agent inputs (`plan.py only
-agent-desktop`) and on every manual dispatch. Signing jobs keep their protected
-environments; approving one trusts its runner with that environment's secrets.
+app builds: each frontend builds the SDK its own manifest selects. Agent Prod
+desktop packages build on master pushes that change Agent inputs (`plan.py only
+agent-desktop`), Agent Dev packages nightly, and both on every manual dispatch.
+Signing jobs keep their protected environments; approving one trusts its
+runner with that environment's secrets.
 To rehearse the signed Research release scripts outside CI, run
 `scripts/ci/signed-release-rehearsal.sh <desktop|ios|android|all>` in the root
 Nix shell that builds the platform (`.#apple`, `.#android`, and
@@ -180,7 +183,7 @@ same checkout. The `os-eif` lane builds dev and
 prod EIF candidates on same-repository PRs to `master` that change measured
 inputs (or carry the `ci:eif` label) without editing PCR approvals, on the
 release builder's
-`blacksmith-8vcpu-ubuntu-2404-arm` class, and reports their PCRs.
+`blacksmith-16vcpu-ubuntu-2404-arm` class, and reports their PCRs.
 `opensecret-eif.yml` compares measurements on PRs that edit approved PCR JSON,
 on relevant master changes and on manual runs; that approval status is not
 part of `ci-ok`. A mismatch fails a manual run outside `master`, and a PR only
@@ -214,20 +217,23 @@ macOS); lane runners are the constants in `scripts/ci/lanes.py`. The signed
 Research macOS, Linux, Android and iOS builds compile and sign on Blacksmith.
 Artifact verifiers, TestFlight submission, and the Agent's signing and
 attestation use GitHub-hosted runners. Windows builds that compile run on the
-org's 16-core GitHub-hosted runner `maple-windows-2025-16core`: the unsigned Agent
-build, the release's `build-windows`, the Agent's native updater tests and
-packaging rehearsal, and the Research Windows PR package
-([CI runners](ci.md#runners)). The signed Research master build and
-`agent-full-windows` (nightly, or by label) use GitHub's free standard
-`windows-2025`, like the short signing and verify jobs. Jobs that compile and
+org's 16-core GitHub-hosted runner `maple-windows-2025-16core`: the release's
+`build-windows`, the Agent packaging rehearsal and the Research Windows PR
+package ([CI runners](ci.md#runners)). The unsigned Agent master build compiles
+on `blacksmith-8vcpu-windows-2025`: its fat-LTO link runs on one thread, so 16
+cores are no faster. The signed Research master build and the Agent's native
+suites (`agent-windows-updater`, and `agent-full-windows` nightly or by label)
+use GitHub's free standard `windows-2025`, like the short signing and verify
+jobs. Jobs that compile and
 sign install the pinned Artifact Signing module before compiling, so a failed
 module download fails early; the module's own NuGet packages and the Azure
 login still come after the compile. The installer retries the PowerShell
 Gallery and its CDN and accepts only the pinned SHA-256. Rust, MSVC, Perl and
 the linker are pinned by `.github/actions/setup-agent-windows` for the Agent.
 Blacksmith's Windows workspace inherits a foreign write ACE that the updater's
-storage validation rejects, so only the Agent Windows Clippy lane uses
-`blacksmith-8vcpu-windows-2025`.
+storage validation rejects, so the updater tests and install smokes stay on
+GitHub's image; `blacksmith-8vcpu-windows-2025` runs the Agent Windows Clippy
+lane and the unsigned Agent master build.
 
 Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through

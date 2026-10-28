@@ -52,8 +52,9 @@ Labels `ci:windows`, `ci:package` and `ci:full` add lanes when a change carries
 Windows or packaging risk its paths do not show
 ([labels](../../../docs/ci.md#labels)); master adds the full Linux and macOS
 suites, and the full Windows suite runs nightly. On master,
-`.github/workflows/agent-desktop-build.yml` builds signed packages for pushes
-that change `AGENT_DESKTOP` inputs and on every manual dispatch.
+`.github/workflows/agent-desktop-build.yml` builds signed Prod packages for
+pushes that change `AGENT_DESKTOP` inputs, Dev packages nightly, and both on
+every manual dispatch.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including
 the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency
@@ -113,7 +114,8 @@ bundles and a separate v2 wire schema, preserving the shipped macOS v1 feed;
 one release may update both platforms to the same version.
 Windows x64 Dev/Prod installers are built by the same desktop workflow, with
 master Authenticode signing through the existing `windows-signing` environment;
-master pushes build only Prod, and a manual dispatch also builds Dev.
+like macOS and Linux, master pushes build only Prod, the nightly run builds
+Dev, and a manual dispatch builds both.
 Windows Prod uses its signed v3 update feed and generation tar bundle; its
 signed NSIS setup remains the manual installation download. Normal publication
 includes Windows through the same protected publisher as macOS and Linux,

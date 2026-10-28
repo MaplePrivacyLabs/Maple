@@ -772,7 +772,7 @@ class DiffTests(unittest.TestCase):
         unknown = self.commit("newroot/x")
         self.assertEqual(self.only(PUSH, {"before": runtime, "after": unknown}), "selected=true\n")
         for event, payload in ((PUSH, {"before": "0" * 40, "after": docs}), (PUSH, {"before": SHA_A, "after": docs}),
-                               (PUSH, {}), (DISPATCH, {})):
+                               (PUSH, {}), (DISPATCH, {}), (NIGHTLY, {"schedule": "37 10 * * *"})):
             with self.subTest(event=event, payload=payload):
                 self.assertEqual(self.only(event, payload), "selected=true\n")
 

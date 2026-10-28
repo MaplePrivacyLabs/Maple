@@ -340,9 +340,10 @@ just release                    # local release build only
 
 For hosted Dev and Prod packages, see [desktop builds](docs/desktop-builds.md)
 and [build profiles](docs/release-profiles.md). The desktop build workflow
-produces both profiles on protected `master` (Windows Dev only on a manual
-dispatch); macOS packages use Developer ID signing and notarization, and Linux
-packages are portable user-local tar bundles.
+builds signed Prod packages on `master` pushes that change Agent inputs, Dev
+packages nightly, and both on a manual dispatch from `master`; macOS packages
+use Developer ID signing and notarization, and Linux packages are portable
+user-local tar bundles.
 
 The root also offers `just agent-check`, `just agent-build`, and
 `just agent-dev`. Native development on macOS requires full Xcode at

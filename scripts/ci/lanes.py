@@ -206,7 +206,7 @@ OPENSECRET_SHELL = "./services/opensecret?submodules=1#ci"
 OPENSECRET_ENV = (("OPENSECRET_DEV_POSTGRES", "0"), ("OPENSECRET_DEV_ENV", "0"), ("OPENSECRET_DEV_CONTAINERS", "0"),
                   ("RUSTFLAGS", "-D warnings"))
 # Every EIF build runs on opensecret-eif-release.yml's runner class (test_contracts C5).
-EIF_BUILDER = Runner("blacksmith-8vcpu-ubuntu-2404-arm")
+EIF_BUILDER = Runner("blacksmith-16vcpu-ubuntu-2404-arm")
 
 LANES: Tuple[Lane, ...] = (
     Lane("agent-lint", AGENT, also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/verify-agent-rust-deps.py",),
