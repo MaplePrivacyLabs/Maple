@@ -229,7 +229,7 @@ impl Document {
         let mut offset = 0u64;
         for block in &self.blocks {
             match block {
-                Block::Text { text, .. } => visit(offset, text),
+                Block::Text { text, .. } | Block::Code { code: text, .. } => visit(offset, text),
                 Block::Table { rows, .. } => {
                     for (cell_ix, cell) in rows.iter().flat_map(|row| row.iter()).enumerate() {
                         visit(offset + cell_ix as u64, &cell.text);
@@ -409,7 +409,8 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                     label.clone(),
                     id_name.clone(),
                     index as u64,
-                    ctx.view,
+                    ctx.for_block(block_offset),
+                    ctx,
                 ),
                 *in_quote,
                 *list_depth,
@@ -1012,13 +1013,20 @@ mod tests {
 
     #[test]
     fn table_cells_take_selection_ordinals_before_later_blocks() {
-        let document = parse("| a | b |\n| --- | --- |\n| c | d |\n\nafter");
+        let document = parse("| a | b |\n| --- | --- |\n| c | d |\n\nafter\n\n```\nls\n```");
         let mut seen: Vec<(u64, String)> = Vec::new();
         document.for_each_selectable(|offset, text| seen.push((offset, text.to_string())));
-        let expected: Vec<(u64, String)> = [(0, "a"), (1, "b"), (2, "c"), (3, "d"), (4, "after")]
-            .into_iter()
-            .map(|(offset, text)| (offset, text.to_string()))
-            .collect();
+        let expected: Vec<(u64, String)> = [
+            (0, "a"),
+            (1, "b"),
+            (2, "c"),
+            (3, "d"),
+            (4, "after"),
+            (5, "ls"),
+        ]
+        .into_iter()
+        .map(|(offset, text)| (offset, text.to_string()))
+        .collect();
         assert_eq!(seen, expected);
     }
 
