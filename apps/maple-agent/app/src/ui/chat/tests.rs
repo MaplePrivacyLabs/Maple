@@ -7161,6 +7161,7 @@ mod state_tests {
                         let branch = cx.debug_bounds("project-branch").expect("draft branch");
                         let composer = cx.debug_bounds("composer-box").expect("composer");
                         let header = cx.debug_bounds("chat-header").expect("header");
+                        assert!(cx.debug_bounds("header-title").is_none());
                         assert!(
                             project.top() >= header.bottom(),
                             "history={has_history}, collapsed={collapsed}, expanded={expanded}, pending={pending_create}: project={project:?}, header={header:?}, composer={composer:?}"

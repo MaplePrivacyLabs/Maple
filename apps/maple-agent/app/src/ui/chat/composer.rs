@@ -185,36 +185,39 @@ impl ChatScreen {
                     }),
                 ),
         )
-        .when(collapsed_progress > 0., |row| {
-            row.child(
-                div()
-                    .absolute()
-                    .left(toolbar_left + toolbar_width + header_gap)
-                    .top((super::CHAT_HEADER_HEIGHT - window.rem_size()) / 2.)
-                    .w(px(1.))
-                    .h_4()
-                    .opacity(collapsed_progress)
-                    .bg(gpui::rgb(theme::border())),
-            )
-        })
-        .child(
-            div()
-                .debug_selector(|| "header-title".to_string())
-                // Sized by its text, like the chips: nowrap gives it a
-                // real intrinsic width (a clamped, shrinkable title
-                // measured as 0 px and vanished). The cap keeps a long
-                // title from pushing the chips out of the pane.
-                .flex_none()
-                .max_w(gpui::relative(0.6))
-                .truncate()
-                .text_lg()
-                .line_height(px(24.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(title),
+        .when(
+            collapsed_progress > 0. && self.selected_session.is_some(),
+            |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .left(toolbar_left + toolbar_width + header_gap)
+                        .top((super::CHAT_HEADER_HEIGHT - window.rem_size()) / 2.)
+                        .w(px(1.))
+                        .h_4()
+                        .opacity(collapsed_progress)
+                        .bg(gpui::rgb(theme::border())),
+                )
+            },
         )
         .when(self.selected_session.is_some(), |row| {
-            row.child(self.render_project_context(Placement::BelowStart, window, cx))
+            row.child(
+                div()
+                    .debug_selector(|| "header-title".to_string())
+                    // Sized by its text, like the chips: nowrap gives it a
+                    // real intrinsic width (a clamped, shrinkable title
+                    // measured as 0 px and vanished). The cap keeps a long
+                    // title from pushing the chips out of the pane.
+                    .flex_none()
+                    .max_w(gpui::relative(0.6))
+                    .truncate()
+                    .text_lg()
+                    .line_height(px(24.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .child(title),
+            )
+            .child(self.render_project_context(Placement::BelowStart, window, cx))
         })
         .child(div().flex_1())
     }
