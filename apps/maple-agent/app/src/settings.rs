@@ -17,26 +17,41 @@ pub struct RemoteSidebarSettings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct SidebarView {
+    #[serde(deserialize_with = "view_preference_or_default")]
     pub group: SidebarGroup,
+    #[serde(deserialize_with = "view_preference_or_default")]
     pub sort: SidebarSort,
+}
+
+// View state is optional presentation data. Unknown values (for example after
+// a downgrade) or malformed fields must not prevent the host from starting.
+fn view_preference_or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde::Deserialize::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarGroup {
-    #[default]
-    Project,
     Connection,
     Status,
     List,
+    #[default]
+    #[serde(other)]
+    Project,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarSort {
-    #[default]
-    Updated,
     Manual,
+    #[default]
+    #[serde(other)]
+    Updated,
 }
 
 /// Stable presentation identity; a remote task or project belongs to its computer.
@@ -53,6 +68,8 @@ pub struct SidebarOrder {
     pub projects: Vec<SidebarItemKey>,
     pub connections: Vec<Option<String>>,
     pub tasks: Vec<SidebarItemKey>,
+    /// Pinned presentation order is independent of each task's ordinary slot.
+    pub pinned_tasks: Vec<SidebarItemKey>,
     pub created_before_ms: i64,
 }
 
@@ -90,7 +107,7 @@ pub struct AppSettings {
     /// `/work/project` is not the same project as that path on this computer.
     #[serde(default)]
     pub remote_sidebars: std::collections::HashMap<String, RemoteSidebarSettings>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "view_preference_or_default")]
     pub sidebar_layout: SidebarView,
     /// Whether run completion and questions raise desktop notifications
     /// while the window is not focused.
@@ -988,22 +1005,65 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_layout_rejects_unknown_choices() {
-        for group in ["invalid", "unknown"] {
-            assert!(
-                serde_json::from_value::<AppSettings>(serde_json::json!({
-                    "sidebar_layout": {"group": group}
-                }))
-                .is_err()
-            );
+    fn sidebar_layout_defaults_unknown_and_invalid_choices_independently() {
+        for invalid in [
+            serde_json::json!("future-choice"),
+            serde_json::json!(null),
+            serde_json::json!(false),
+            serde_json::json!(42),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "sidebar_layout": {"group": invalid, "sort": "manual"},
+                "theme": "dark"
+            }))
+            .unwrap();
+            assert_eq!(settings.sidebar_layout.group, SidebarGroup::Project);
+            assert_eq!(settings.sidebar_layout.sort, SidebarSort::Manual);
+            assert_eq!(settings.theme, "dark");
+
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "sidebar_layout": {"group": "connection", "sort": invalid}
+            }))
+            .unwrap();
+            assert_eq!(settings.sidebar_layout.group, SidebarGroup::Connection);
+            assert_eq!(settings.sidebar_layout.sort, SidebarSort::Updated);
+
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "sidebar_layout": invalid
+            }))
+            .unwrap();
+            assert_eq!(settings.sidebar_layout, SidebarView::default());
         }
-        for sort in ["invalid", "unknown"] {
-            assert!(
-                serde_json::from_value::<AppSettings>(serde_json::json!({
-                    "sidebar_layout": {"sort": sort}
-                }))
-                .is_err()
-            );
+    }
+
+    #[test]
+    fn invalid_view_preferences_do_not_block_host_settings_or_later_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        for invalid in [
+            serde_json::json!({"group": "future-group", "sort": "future-sort"}),
+            serde_json::json!({"group": 7, "sort": {"invalid": true}}),
+            serde_json::Value::Null,
+        ] {
+            store
+                .set_app_setting(
+                    "ui",
+                    &serde_json::json!({"sidebar_layout": invalid, "theme": "dark"}),
+                    1,
+                )
+                .unwrap();
+            let loaded = load_host_settings(&store, None).unwrap();
+            assert_eq!(loaded.sidebar_layout, SidebarView::default());
+            assert_eq!(loaded.theme, "dark");
+            apply_host_patch(&store, None, &serde_json::json!({"reduce_motion": true})).unwrap();
+            let loaded = load_host_settings(&store, None).unwrap();
+            assert!(loaded.reduce_motion);
+            assert_eq!(loaded.theme, "dark");
+            assert_eq!(loaded.sidebar_layout, SidebarView::default());
         }
     }
 

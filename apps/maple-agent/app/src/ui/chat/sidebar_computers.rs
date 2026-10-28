@@ -18,9 +18,45 @@ pub(super) struct ComputerPages {
     scope: Option<(String, Option<String>, bool)>,
     hosts: HashMap<Option<String>, ComputerHostPage>,
     more: Vec<ComputerMore>,
+    revalidation_pending: bool,
 }
 
 impl ComputerPages {
+    /// Manual order starts from every loaded summary, including folded groups.
+    pub(super) fn task_order_seeds(&self) -> Vec<(SidebarItemKey, i64, i64, bool)> {
+        self.hosts
+            .iter()
+            .flat_map(|(computer, page)| {
+                page.groups
+                    .iter()
+                    .flat_map(|group| group.tasks.iter())
+                    .chain(page.active.iter())
+                    .chain(page.settled.iter())
+                    .chain(page.search.iter())
+                    .chain(page.archived.iter())
+                    .map(|task| {
+                        (
+                            SidebarItemKey {
+                                computer: computer.clone(),
+                                id: task.uuid.clone(),
+                            },
+                            task.created_ms,
+                            task.updated_ms,
+                            task.pinned_ms.is_some(),
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    fn manual_reads_pending(&self) -> bool {
+        self.hosts.values().any(|page| {
+            page.loading
+                .iter()
+                .any(|key| key != "archive-count" && key != "projects")
+        })
+    }
+
     pub(super) fn project_summaries(&self, computer: &Option<String>) -> Option<&[ProjectSummary]> {
         self.hosts
             .get(computer)
@@ -442,6 +478,42 @@ pub(super) struct OtherTask {
 }
 
 impl Sidebar {
+    /// View fixtures supply bounded, verified owner snapshots rather than
+    /// asynchronous pages from the fixtures' deliberately empty stores.
+    #[cfg(test)]
+    pub(crate) fn seed_computer_snapshot_pages_for_test(&mut self) {
+        self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
+        self.manual_catalog.cancel_pending();
+        self.group_pages.scope = Some((
+            self.filter.clone(),
+            self.project_filter.clone(),
+            self.archived_expanded,
+        ));
+        self.group_pages.hosts = self
+            .computers
+            .iter()
+            .map(|computer| {
+                assert!(computer.backend.is_some(), "fixture needs a verified owner");
+                let mut page = snapshot_page(computer, &self.filter, self.archived_expanded);
+                page.loaded.extend(
+                    [
+                        "archive-count",
+                        "projects",
+                        "groups",
+                        "tasks:false",
+                        "tasks:true",
+                        "search",
+                        "archived",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned),
+                );
+                (computer.key.clone(), page)
+            })
+            .collect();
+        self.rebuild_sections();
+    }
+
     fn computer_task_pin(&self, computer: &Computer, task: &TaskSummary) -> Option<i64> {
         if computer.key.is_none() {
             return task.pinned_ms;
@@ -555,8 +627,14 @@ impl Sidebar {
                 .contains(&self.filter)
     }
 
-    pub(super) fn uses_computer_projection(&self) -> bool {
+    pub(super) fn has_added_computer(&self) -> bool {
         self.computers.iter().any(|computer| computer.key.is_some())
+    }
+
+    pub(super) fn uses_computer_projection(&self) -> bool {
+        // Project navigation reads the owning host's scoped task pages. The
+        // cross-computer pages represent the unfiltered sidebar instead.
+        self.project_filter.is_none() && self.has_added_computer()
     }
 
     pub(in crate::ui::chat) fn set_computers(
@@ -564,11 +642,18 @@ impl Sidebar {
         computers: Arc<Vec<Computer>>,
         cx: &mut Context<Self>,
     ) {
-        let scope_changed = self.uses_computer_projection()
+        let scope_changed = self.has_added_computer()
             && !computers.iter().any(|computer| computer.key.is_some())
             && self.project_filter.take().is_some();
         let changed = computer_revision(&self.computers) != computer_revision(&computers)
             || existing_snapshot_changed(&self.computers, &computers);
+        let owners_changed = self.computers.len() != computers.len()
+            || self.computers.iter().any(|old| {
+                computers
+                    .iter()
+                    .find(|new| old.key == new.key)
+                    .is_none_or(|new| !same_computer_owner(old, new))
+            });
         if changed {
             self.group_pages.hosts.retain(|key, _| {
                 self.computers
@@ -589,7 +674,11 @@ impl Sidebar {
         if scope_changed && self.pages.enabled {
             self.refresh_pages(cx);
         } else if changed {
-            self.revalidate_computer_pages(cx);
+            if owners_changed {
+                self.start_computer_revalidation(cx);
+            } else {
+                self.revalidate_computer_pages(cx);
+            }
         } else {
             self.ensure_computer_pages(cx);
         }
@@ -649,9 +738,11 @@ impl Sidebar {
             }
             true
         });
+        self.manual_catalog.cancel_pending();
         if inventory_changed {
             self.manual_catalog.invalidate();
         }
+        self.group_pages.revalidation_pending = false;
         self.group_pages.hosts = state.pages.hosts;
         self.group_pages.scope = Some(scope);
         self.group_pages.more.clear();
@@ -696,6 +787,25 @@ impl Sidebar {
     }
 
     pub(super) fn revalidate_computer_pages(&mut self, cx: &mut Context<Self>) {
+        // Let the current Manual snapshot finish. Repeated activity only asks
+        // for one fresh trailing snapshot, rather than repeatedly cancelling
+        // useful work or filling the catalog's two scan slots with stale work.
+        if self.view.sort == SidebarSort::Manual && self.group_pages.manual_reads_pending() {
+            self.group_pages.revalidation_pending = true;
+            return;
+        }
+        self.start_computer_revalidation(cx);
+    }
+
+    fn finish_computer_revalidation(&mut self, cx: &mut Context<Self>) {
+        if self.group_pages.revalidation_pending && !self.group_pages.manual_reads_pending() {
+            self.start_computer_revalidation(cx);
+        }
+    }
+
+    fn start_computer_revalidation(&mut self, cx: &mut Context<Self>) {
+        self.group_pages.revalidation_pending = false;
+        self.manual_catalog.cancel_pending();
         self.manual_catalog.invalidate();
         self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
         for page in self.group_pages.hosts.values_mut() {
@@ -705,6 +815,8 @@ impl Sidebar {
     }
 
     pub(super) fn refresh_computer_pages(&mut self, cx: &mut Context<Self>) {
+        self.manual_catalog.cancel_pending();
+        self.group_pages.revalidation_pending = false;
         self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
         // Ordering edits invalidate cursors, not the summaries already loaded
         // beyond page one. A scope/owner change still discards them separately.
@@ -728,6 +840,8 @@ impl Sidebar {
             self.archived_expanded,
         );
         if self.group_pages.scope.as_ref() != Some(&scope) {
+            self.manual_catalog.cancel_pending();
+            self.group_pages.revalidation_pending = false;
             self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
             self.group_pages.hosts.clear();
             self.group_pages.scope = Some(scope);
@@ -1019,6 +1133,7 @@ impl Sidebar {
             }
             Err(error) => {
                 page.errors.insert(key, error);
+                self.finish_computer_revalidation(cx);
                 self.rebuild_entries();
                 cx.notify();
                 return;
@@ -1145,6 +1260,8 @@ impl Sidebar {
             self.remember_task_project_labels(own_labels);
             self.merge_page_sessions(own_tasks);
         }
+        self.load_missing_group_states(cx);
+        self.finish_computer_revalidation(cx);
         self.rebuild_computer_project_roots();
         self.rebuild_entries();
         self.list.remeasure_items(0..self.entries.len());
@@ -1336,8 +1453,15 @@ impl Sidebar {
         right: &Option<String>,
         b: &TaskSummary,
     ) -> std::cmp::Ordering {
-        self.task_order_key(left, &a.uuid, a.created_ms, a.updated_ms)
-            .cmp(&self.task_order_key(right, &b.uuid, b.created_ms, b.updated_ms))
+        let key = |computer, task: &TaskSummary| {
+            if task.state != "archived" && task.pinned_ms.is_some() {
+                self.pinned_task_order_key(computer, &task.uuid, task.created_ms, task.updated_ms)
+            } else {
+                self.task_order_key(computer, &task.uuid, task.created_ms, task.updated_ms)
+            }
+        };
+        key(left, a)
+            .cmp(&key(right, b))
             .then_with(|| left.cmp(right))
             .then_with(|| a.uuid.cmp(&b.uuid))
     }
@@ -1351,6 +1475,165 @@ impl Sidebar {
                 b,
             )
         });
+    }
+
+    fn computer_group_prefix(
+        &self,
+        computer: &Computer,
+        group: &NavigationProjectGroup,
+    ) -> prefix::Prefix<bool> {
+        let page = self.group_pages.hosts.get(&computer.key);
+        // The continuation belongs to the received snapshot, before live state
+        // changes or Pinned extraction alter its presentation.
+        let source = page
+            .and_then(|page| {
+                page.groups
+                    .iter()
+                    .find(|stored| stored.project.root == group.project.root)
+            })
+            .map_or(group.tasks.as_slice(), |stored| stored.tasks.as_slice());
+        prefix::Prefix::new(
+            [false, true].map(|settled| {
+                let key = ComputerPageKind::Project {
+                    root: group.project.root.clone(),
+                    settled,
+                }
+                .key();
+                prefix::Stream {
+                    source: settled,
+                    end: source
+                        .iter()
+                        .filter(|task| (task.state == "settled") == settled)
+                        .map(|task| {
+                            self.task_prefix_position(
+                                &computer.key,
+                                &task.uuid,
+                                task.created_ms,
+                                task.updated_ms,
+                            )
+                        })
+                        .max(),
+                    complete: (if settled {
+                        group.more.settled.is_none()
+                    } else {
+                        group.more.active.is_none()
+                    }) && page.is_none_or(|page| {
+                        !page.loading.contains(&key) && !page.errors.contains_key(&key)
+                    }),
+                }
+            }),
+            self.view.sort == SidebarSort::Manual,
+        )
+    }
+
+    fn computer_flat_prefix(
+        &self,
+        hosts: &[usize],
+        state: Option<bool>,
+    ) -> prefix::Prefix<(usize, bool)> {
+        let streams = hosts.iter().flat_map(|&index| {
+            let computer = &self.computers[index];
+            let page = self.group_pages.hosts.get(&computer.key);
+            [false, true]
+                .into_iter()
+                .filter(move |settled| {
+                    state.is_none_or(|state| state == *settled) && computer.backend.is_some()
+                })
+                .map(move |settled| {
+                    let kind = ComputerPageKind::Tasks { settled };
+                    let key = kind.key();
+                    let tasks = page.map(|page| if settled { &page.settled } else { &page.active });
+                    prefix::Stream {
+                        source: (index, settled),
+                        end: tasks
+                            .into_iter()
+                            .flatten()
+                            .map(|task| {
+                                self.task_prefix_position(
+                                    &computer.key,
+                                    &task.uuid,
+                                    task.created_ms,
+                                    task.updated_ms,
+                                )
+                            })
+                            .max(),
+                        complete: page.is_some_and(|page| {
+                            !page.loading.contains(&key)
+                                && !page.errors.contains_key(&key)
+                                && if settled {
+                                    page.next_settled.is_none()
+                                } else {
+                                    page.next_active.is_none()
+                                }
+                        }),
+                    }
+                })
+        });
+        prefix::Prefix::new(streams, self.view.sort == SidebarSort::Manual)
+    }
+
+    fn prefix_exempt_task(&self, computer: &Computer, task: &TaskSummary) -> bool {
+        task.pinned_ms.is_some()
+            || computer.running.contains(&task.uuid)
+            || (computer.key.as_deref() == self.backend.remote_host()
+                && (self.selected.as_ref() == Some(&task.uuid)
+                    || self.running.contains(&task.uuid)
+                    || self.pages.is_live(&task.uuid)))
+    }
+
+    /// A group first page can spend its budget on just Active tasks. Read the
+    /// missing Settled prefix before presenting a merged list; zero-budget
+    /// groups retain their explicit More action instead of causing background
+    /// scans of projects past the visible row budget.
+    fn load_missing_group_states(&mut self, cx: &mut Context<Self>) {
+        if !self.filter.is_empty()
+            || matches!(self.view.group, SidebarGroup::Status | SidebarGroup::List)
+        {
+            return;
+        }
+        let mut actions = Vec::new();
+        for computer in self
+            .computers
+            .iter()
+            .filter(|computer| computer.backend.is_some())
+        {
+            let Some(page) = self.group_pages.hosts.get(&computer.key) else {
+                continue;
+            };
+            for group in page.groups.iter().filter(|group| !group.tasks.is_empty()) {
+                for settled in [false, true] {
+                    let cursor = if settled {
+                        &group.more.settled
+                    } else {
+                        &group.more.active
+                    };
+                    let kind = ComputerPageKind::Project {
+                        root: group.project.root.clone(),
+                        settled,
+                    };
+                    if cursor.is_some()
+                        && !page.loading.contains(&kind.key())
+                        && !page.errors.contains_key(&kind.key())
+                        && !group
+                            .tasks
+                            .iter()
+                            .any(|task| (task.state == "settled") == settled)
+                    {
+                        actions.push(ComputerMore {
+                            computer: computer.key.clone(),
+                            generation: self.group_pages.generation,
+                            kind,
+                            cursor: cursor.clone(),
+                            label: "Loading tasks…".into(),
+                            loading: false,
+                        });
+                    }
+                }
+            }
+        }
+        for action in actions {
+            self.load_computer_page(action, cx);
+        }
     }
 
     fn push_computer_group(
@@ -1367,6 +1650,18 @@ impl Sidebar {
         if self.collapsed_projects.contains(&target) {
             return;
         }
+        let prefix = self.computer_group_prefix(computer, &group);
+        if self.filter.is_empty() {
+            group.tasks.retain(|task| {
+                self.prefix_exempt_task(computer, task)
+                    || prefix.allows(&self.task_prefix_position(
+                        &computer.key,
+                        &task.uuid,
+                        task.created_ms,
+                        task.updated_ms,
+                    ))
+            });
+        }
         group
             .tasks
             .sort_by(|a, b| self.compare_computer_tasks(&computer.key, a, &computer.key, b));
@@ -1375,6 +1670,9 @@ impl Sidebar {
         }
         if self.filter.is_empty() {
             for (settled, cursor) in [(false, group.more.active), (true, group.more.settled)] {
+                if prefix.next.first() != Some(&settled) {
+                    continue;
+                }
                 self.computer_more_entry(
                     entries,
                     &computer.key,
@@ -1383,11 +1681,7 @@ impl Sidebar {
                         settled,
                     },
                     cursor,
-                    if settled {
-                        "more settled tasks"
-                    } else {
-                        "more active tasks"
-                    },
+                    "more tasks",
                 );
             }
         }
@@ -1514,6 +1808,30 @@ impl Sidebar {
                 }
             }
         }
+        let flat_prefix = self.computer_flat_prefix(&hosts, None);
+        let active_prefix = self.computer_flat_prefix(&hosts, Some(false));
+        let settled_prefix = self.computer_flat_prefix(&hosts, Some(true));
+        if flat && !searching {
+            tasks.retain(|(index, task)| {
+                let computer = &computers[*index];
+                let prefix = if self.view.group == SidebarGroup::Status {
+                    if task.state == "settled" {
+                        &settled_prefix
+                    } else {
+                        &active_prefix
+                    }
+                } else {
+                    &flat_prefix
+                };
+                self.prefix_exempt_task(computer, task)
+                    || prefix.allows(&self.task_prefix_position(
+                        &computer.key,
+                        &task.uuid,
+                        task.created_ms,
+                        task.updated_ms,
+                    ))
+            });
+        }
         // Pins are a desktop view across computers, above every grouping.
         // Keep the task's original project and saved order for unpinning.
         let mut pinned = Vec::new();
@@ -1602,8 +1920,13 @@ impl Sidebar {
                             self.push_computer_task(&mut entries, &computers[*index], task);
                         }
                         if !searching {
-                            for &index in &hosts {
-                                self.push_computer_flat_more(&mut entries, index, Some(settled));
+                            let prefix = if settled {
+                                &settled_prefix
+                            } else {
+                                &active_prefix
+                            };
+                            if let Some(&(index, state)) = prefix.next.first() {
+                                self.push_computer_flat_more(&mut entries, index, Some(state));
                             }
                         }
                     }
@@ -1618,13 +1941,12 @@ impl Sidebar {
                     for (index, task) in &tasks {
                         self.push_computer_task(&mut entries, &computers[*index], task);
                     }
-                    for &index in &hosts {
-                        if searching {
+                    if searching {
+                        for &index in &hosts {
                             self.push_computer_flat_more(&mut entries, index, None);
-                        } else {
-                            self.push_computer_flat_more(&mut entries, index, Some(false));
-                            self.push_computer_flat_more(&mut entries, index, Some(true));
                         }
+                    } else if let Some(&(index, state)) = flat_prefix.next.first() {
+                        self.push_computer_flat_more(&mut entries, index, Some(state));
                     }
                     entries.extend(unavailable.iter().copied().map(SidebarEntry::Computer));
                 }
@@ -2096,6 +2418,13 @@ impl Sidebar {
                                         slot.child(
                                             div()
                                                 .id("computer-disclosure")
+                                                .role(gpui::Role::Button)
+                                                .aria_label(if expanded {
+                                                    "Collapse connection"
+                                                } else {
+                                                    "Expand connection"
+                                                })
+                                                .aria_expanded(expanded)
                                                 .absolute()
                                                 .top_0()
                                                 .right(FOLDER_ICON_SIZE + px(3.))
@@ -2216,10 +2545,21 @@ mod paging_tests {
         user: &str,
     ) -> Entity<Sidebar> {
         let chat = cx.new(|cx| ChatScreen::new_without_start(backend, user.into(), cx));
-        chat.read_with(cx, |chat, _| chat.sidebar.clone())
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView {
+                group: SidebarGroup::Project,
+                sort: SidebarSort::Manual,
+            };
+        });
+        sidebar
     }
 
     fn seed_browse_pages(sidebar: &mut Sidebar) {
+        // These cache-transfer fixtures use exact desktop Manual cursors. The
+        // separate merged-prefix tests cover the host timestamp frontier.
+        sidebar.view.sort = SidebarSort::Manual;
         let mut local = computer();
         local.backend = Some(sidebar.backend.clone());
         local.sessions.clear();
@@ -2418,6 +2758,7 @@ mod paging_tests {
         source.update(cx, |sidebar, cx| {
             sidebar.filter = "different query".into();
             sidebar.ensure_computer_pages(cx);
+            sidebar.rebuild_sections();
             assert!(
                 sidebar
                     .group_pages
@@ -2527,5 +2868,288 @@ mod paging_tests {
         let page = snapshot_page(&computer, "", false);
         assert_eq!(page.groups.len(), 1);
         assert_eq!(page.groups[0].tasks[0].uuid, "head");
+    }
+}
+
+#[cfg(test)]
+mod revalidation_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn manual_activity_coalesces_into_one_trailing_snapshot(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view.sort = SidebarSort::Manual;
+            sidebar.computers = Arc::new(Vec::new());
+            sidebar.group_pages.scope = Some((String::new(), None, false));
+            let generation = sidebar.group_pages.generation;
+            for key in [None, Some("remote".into())] {
+                sidebar.group_pages.hosts.insert(
+                    key,
+                    ComputerHostPage {
+                        loading: HashSet::from(["groups".into()]),
+                        ..Default::default()
+                    },
+                );
+            }
+            for _ in 0..20 {
+                sidebar.revalidate_computer_pages(cx);
+            }
+            assert_eq!(sidebar.group_pages.generation, generation);
+            assert!(sidebar.group_pages.revalidation_pending);
+            let action = |computer| ComputerMore {
+                computer,
+                generation,
+                kind: ComputerPageKind::Groups,
+                cursor: None,
+                label: "Loading tasks…".into(),
+                loading: true,
+            };
+            sidebar.apply_computer_page(
+                action(None),
+                Ok(ComputerPageReply::Groups(Default::default())),
+                cx,
+            );
+            assert_eq!(sidebar.group_pages.generation, generation);
+            assert!(sidebar.group_pages.revalidation_pending);
+            sidebar.apply_computer_page(
+                action(Some("remote".into())),
+                Ok(ComputerPageReply::Groups(Default::default())),
+                cx,
+            );
+            assert_eq!(sidebar.group_pages.generation, generation.wrapping_add(1));
+            assert!(!sidebar.group_pages.revalidation_pending);
+            assert!(!sidebar.group_pages.manual_reads_pending());
+            // An older callback cannot refill the replacement generation.
+            sidebar.apply_computer_page(
+                action(Some("remote".into())),
+                Err("stale failure".into()),
+                cx,
+            );
+            assert!(
+                sidebar
+                    .group_pages
+                    .hosts
+                    .values()
+                    .all(|page| page.errors.is_empty())
+            );
+        });
+    }
+
+    #[test]
+    fn metadata_reads_do_not_delay_a_trailing_manual_snapshot() {
+        let pages = ComputerPages {
+            hosts: HashMap::from([(
+                None,
+                ComputerHostPage {
+                    loading: HashSet::from(["projects".into(), "archive-count".into()]),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        assert!(!pages.manual_reads_pending());
+    }
+}
+
+#[cfg(test)]
+mod merged_prefix_tests {
+    use super::*;
+
+    fn task(id: &str, state: &str, updated: i64) -> TaskSummary {
+        TaskSummary {
+            uuid: id.into(),
+            title: id.into(),
+            project_root: "/tmp/project".into(),
+            project_display_name: None,
+            state: state.into(),
+            kind: "desktop".into(),
+            pinned_ms: None,
+            web_enabled: false,
+            model: None,
+            message_count: 1,
+            created_ms: updated,
+            updated_ms: updated,
+            truncated: false,
+        }
+    }
+
+    fn shown(sidebar: &Sidebar) -> Vec<String> {
+        sidebar
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                SidebarEntry::Task(task) => Some(sidebar.sessions[task.session].id.clone()),
+                SidebarEntry::OtherTask(index) => {
+                    let Destination::Task(id) = &sidebar.other_tasks[*index].request.destination
+                    else {
+                        return None;
+                    };
+                    Some(id.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn unread_remote_rows_do_not_fill_gaps_in_another_computers_list(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView {
+                group: SidebarGroup::List,
+                sort: SidebarSort::Updated,
+            };
+            sidebar.selected = None;
+            sidebar.running.clear();
+            let mut local = Computer::pending("local".into(), "This Computer".into(), None);
+            local.key = None;
+            local.backend = Some(sidebar.backend.clone());
+            let mut remote = Computer::pending("remote".into(), "Remote".into(), None);
+            remote.backend = Some(Arc::new(AgentBackend::for_remote_test("remote").unwrap()));
+            sidebar.computers = Arc::new(vec![local, remote]);
+            let local_tasks = vec![
+                task("local-900", "active", 900),
+                task("local-800", "active", 800),
+            ];
+            sidebar.sessions = local_tasks.iter().map(session_from_summary).collect();
+            sidebar.group_pages.hosts.insert(
+                None,
+                ComputerHostPage {
+                    active: local_tasks,
+                    ..Default::default()
+                },
+            );
+            let remote_key = Some("remote".into());
+            sidebar.group_pages.hosts.insert(
+                remote_key.clone(),
+                ComputerHostPage {
+                    active: vec![
+                        task("remote-1000", "active", 1000),
+                        task("remote-950", "active", 950),
+                    ],
+                    next_active: Some("next".into()),
+                    ..Default::default()
+                },
+            );
+            sidebar.rebuild_sections();
+            let before = shown(sidebar);
+            assert_eq!(before, ["remote-1000"]);
+            assert_eq!(sidebar.group_pages.more.len(), 1);
+            assert_eq!(sidebar.group_pages.more[0].computer, remote_key);
+            assert!(matches!(
+                sidebar.group_pages.more[0].kind,
+                ComputerPageKind::Tasks { settled: false }
+            ));
+            let remote = sidebar.group_pages.hosts.get_mut(&remote_key).unwrap();
+            remote.active.extend([
+                task("remote-940", "active", 940),
+                task("remote-850", "active", 850),
+            ]);
+            remote.next_active = None;
+            sidebar.rebuild_sections();
+            let after = shown(sidebar);
+            assert_eq!(&after[..before.len()], before);
+            assert_eq!(
+                after,
+                [
+                    "remote-1000",
+                    "remote-950",
+                    "remote-940",
+                    "local-900",
+                    "remote-850",
+                    "local-800"
+                ]
+            );
+            assert!(sidebar.group_pages.more.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn project_more_advances_only_the_state_limiting_its_merged_prefix(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView::default();
+            sidebar.selected = None;
+            let mut remote = Computer::pending("remote".into(), "Remote".into(), None);
+            remote.backend = Some(Arc::new(AgentBackend::for_remote_test("remote").unwrap()));
+            sidebar.computers = Arc::new(vec![remote]);
+            let remote_key = Some("remote".into());
+            let mut group = NavigationProjectGroup {
+                project: ProjectSummary {
+                    root: "/tmp/project".into(),
+                    display_name: None,
+                    position: None,
+                    last_used_ms: 110,
+                    name_revision: 0,
+                    is_default_workspace: false,
+                    truncated: false,
+                },
+                tasks: vec![
+                    task("active-80", "active", 80),
+                    task("active-70", "active", 70),
+                    task("settled-110", "settled", 110),
+                    task("settled-100", "settled", 100),
+                ],
+                more: Default::default(),
+            };
+            group.more.settled = Some("next".into());
+            sidebar.group_pages.hosts.insert(
+                remote_key.clone(),
+                ComputerHostPage {
+                    groups: vec![group],
+                    ..Default::default()
+                },
+            );
+            sidebar.rebuild_sections();
+            assert_eq!(shown(sidebar), ["settled-110"]);
+            assert_eq!(sidebar.group_pages.more.len(), 1);
+            assert!(matches!(
+                sidebar.group_pages.more[0].kind,
+                ComputerPageKind::Project { settled: true, .. }
+            ));
+            let group = &mut sidebar
+                .group_pages
+                .hosts
+                .get_mut(&remote_key)
+                .unwrap()
+                .groups[0];
+            group.tasks.push(task("settled-90", "settled", 90));
+            group.more.settled = None;
+            sidebar.rebuild_sections();
+            assert_eq!(
+                shown(sidebar),
+                [
+                    "settled-110",
+                    "settled-100",
+                    "settled-90",
+                    "active-80",
+                    "active-70"
+                ]
+            );
+            assert!(sidebar.group_pages.more.is_empty());
+        });
     }
 }

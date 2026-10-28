@@ -133,8 +133,10 @@ Goose, with an independent dependency graph.
   dragging rearranges the sidebar without changing a task's project, computer
   or status. Dragging a task silently selects Manual order, which persists
   across grouping changes and restarts; new tasks appear at the top. Pinned
-  tasks sit above the grouping header and return to their normal group when
-  unpinned. Tasks also support rename, archive, and restore.
+  tasks sit above the grouping header; their own drag order does not change
+  the position they return to when unpinned. Sidebar menus open toward the
+  main pane so the list stays visible. Tasks also support rename, archive,
+  and restore. Unknown or malformed View preferences fall back to defaults.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
   speech voice and speed), Keyboard Shortcuts, System prompt, Integrations

@@ -71,6 +71,7 @@ fn validate_sidebar_order(order: &crate::settings::SidebarOrder) -> Result<(), S
     const MAX_ORDER_BYTES: usize = 2 * 1024 * 1024;
     if order.projects.len() > MAX_ITEMS
         || order.tasks.len() > MAX_ITEMS
+        || order.pinned_tasks.len() > MAX_ITEMS
         || order.connections.len() > MAX_CONNECTIONS
     {
         return Err("Sidebar order is too large".into());
@@ -92,6 +93,7 @@ fn validate_sidebar_order(order: &crate::settings::SidebarOrder) -> Result<(), S
     for (items, maximum, is_task) in [
         (&order.projects, MAX_ROOT_BYTES, false),
         (&order.tasks, MAX_TASK_ID_BYTES, true),
+        (&order.pinned_tasks, MAX_TASK_ID_BYTES, true),
     ] {
         let mut seen = HashSet::new();
         for item in items {
@@ -117,6 +119,7 @@ fn validate_sidebar_order(order: &crate::settings::SidebarOrder) -> Result<(), S
         .projects
         .iter()
         .chain(&order.tasks)
+        .chain(&order.pinned_tasks)
         .fold(bytes, |bytes, item| bytes.saturating_add(item.id.len()));
     if bytes > MAX_ORDER_BYTES
         || serde_json::to_vec(order)

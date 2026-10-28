@@ -463,10 +463,10 @@ impl Reader {
         if state.generation != self.generation {
             return;
         }
-        if let Some(index) = state.cache.iter().position(|entry| entry.scope == scope) {
-            if let Some(previous) = state.cache.remove(index) {
-                state.cache_bytes = state.cache_bytes.saturating_sub(previous.bytes);
-            }
+        if let Some(index) = state.cache.iter().position(|entry| entry.scope == scope)
+            && let Some(previous) = state.cache.remove(index)
+        {
+            state.cache_bytes = state.cache_bytes.saturating_sub(previous.bytes);
         }
         while state.cache.len() >= MAX_CACHE_SCOPES
             || state.cache_bytes.saturating_add(bytes) > MAX_CACHE_BYTES
@@ -514,6 +514,15 @@ impl Reader {
         encode_cursor(scope, after).map(Some)
     }
 
+    async fn scan_slot(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        let slots = self.owner()?.scan_slots.clone();
+        tokio::select! {
+            biased;
+            _ = self.pending.cancelled() => Err(CANCELLED.into()),
+            permit = slots.acquire_owned() => permit.map_err(|_| CANCELLED.to_string()),
+        }
+    }
+
     pub(super) async fn page(
         self,
         backend: Arc<AgentBackend>,
@@ -544,12 +553,7 @@ impl Reader {
             self.authorize(&backend, &user)?;
             return candidates.finish(scope, after, limit);
         }
-        let slots = self.owner()?.scan_slots.clone();
-        let _permit = tokio::select! {
-            biased;
-            _ = self.pending.cancelled() => return Err(CANCELLED.into()),
-            permit = slots.acquire_owned() => permit.map_err(|_| CANCELLED.to_string())?,
-        };
+        let _permit = self.scan_slot().await?;
         // A preceding scan may have completed while this reader waited.
         if let Some(tasks) = self.cached(&backend, inventory_scope)? {
             for task in tasks.iter() {
@@ -631,5 +635,43 @@ impl Reader {
             );
         }
         candidates.finish(scope, after, limit)
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelling_a_reload_releases_queued_scans_before_a_slot_opens() {
+        let catalog = Catalog::default();
+        let first = catalog.reader().scan_slot().await.unwrap();
+        let second = catalog.reader().scan_slot().await.unwrap();
+        let queued_reader = catalog.reader();
+        let mut queued = Box::pin(queued_reader.scan_slot());
+        let pending = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(queued.as_mut(), cx).is_pending())
+        })
+        .await;
+        assert!(pending, "both scan slots are occupied");
+        catalog.cancel_pending();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), queued)
+            .await
+            .expect("cancelled queued scan must not wait for an old slot");
+        assert!(matches!(result, Err(message) if message == CANCELLED));
+        drop((first, second));
+        assert!(catalog.reader().scan_slot().await.is_ok());
+    }
+
+    #[test]
+    fn replacing_a_reload_cancels_active_and_queued_readers() {
+        let catalog = Catalog::default();
+        let active = catalog.reader();
+        let queued = catalog.reader();
+        catalog.cancel_pending();
+        catalog.invalidate();
+        assert!(matches!(active.owner(), Err(message) if message == CANCELLED));
+        assert!(matches!(queued.owner(), Err(message) if message == CANCELLED));
+        assert!(catalog.reader().owner().is_ok());
     }
 }

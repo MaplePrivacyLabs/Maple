@@ -18,6 +18,8 @@ mod computers;
 mod ordering;
 #[path = "sidebar_paging.rs"]
 mod paging;
+#[path = "sidebar_prefix.rs"]
+mod prefix;
 use super::computers::{Computer, Destination, Navigate, ProjectRenameRequest, ProjectTarget};
 use computers::{ComputerPages, OtherTask};
 use paging::{PageKind, SidebarPages};
@@ -587,6 +589,7 @@ pub(super) struct Sidebar {
     order_loading: bool,
     manual_catalog: catalog::Catalog,
     task_ranks: HashMap<Option<String>, HashMap<String, usize>>,
+    pinned_task_ranks: HashMap<Option<String>, HashMap<String, usize>>,
     order_query_dirty: bool,
     project_ranks: HashMap<Option<String>, HashMap<String, usize>>,
     project_roots: Vec<ProjectRow>,
@@ -776,6 +779,7 @@ impl Sidebar {
         if let Some(order) = crate::settings::cached_sidebar_order(&self.user_id) {
             sort_changed |= self.view.sort == SidebarSort::Manual
                 && (self.order.tasks != order.tasks
+                    || self.order.pinned_tasks != order.pinned_tasks
                     || self.order.created_before_ms != order.created_before_ms);
             self.order = order;
             self.order_loaded = true;
@@ -911,6 +915,7 @@ impl Sidebar {
             order_loading: false,
             manual_catalog: catalog::Catalog::default(),
             task_ranks: HashMap::new(),
+            pinned_task_ranks: HashMap::new(),
             order_query_dirty: false,
             project_ranks: HashMap::new(),
             project_roots: Vec::new(),
@@ -1115,6 +1120,7 @@ impl Sidebar {
 
     /// Forget tasks that left the app (their project was removed).
     pub(super) fn forget_tasks(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        self.forget_task_order(ids, cx);
         self.forget_page_tasks(ids);
         let before = self.pinned_tasks.len();
         self.pinned_tasks
@@ -1405,6 +1411,7 @@ impl Sidebar {
     /// process reads; a fixture starts from nothing persisted.
     #[cfg(test)]
     pub(super) fn reset_persisted_for_test(&mut self) {
+        crate::settings::retire_sidebar_account(&self.user_id);
         // Most fixtures check the task ladder, so they group by status.
         self.view = SidebarView {
             group: SidebarGroup::Status,
@@ -1415,6 +1422,7 @@ impl Sidebar {
         self.order_loaded = true;
         self.order_loading = false;
         self.task_ranks.clear();
+        self.pinned_task_ranks.clear();
         self.project_ranks.clear();
         self.project_metadata.clear();
         self.task_project_labels.clear();
@@ -1550,7 +1558,7 @@ impl Sidebar {
         let filtering = !filter.is_empty();
         let project_scope = self.project_filter.clone();
         let scoped = project_scope.as_deref();
-        let pinned_ids: HashSet<&str> = self.pinned_tasks.iter().map(String::as_str).collect();
+        let pinned_ids: HashSet<String> = self.pinned_tasks.iter().cloned().collect();
         let mut pinned = Vec::new();
         let mut listed = Vec::new();
         let mut archived = Vec::new();
@@ -1619,10 +1627,14 @@ impl Sidebar {
         let mut keys = HashMap::new();
         for &ix in pinned.iter().chain(&listed).chain(&archived) {
             let task = &self.sessions[ix];
-            keys.insert(
-                ix,
-                self.task_order_key(&computer, &task.id, task.created_ms, task.updated_ms),
-            );
+            let key = if task.state != AgentTaskState::Archived
+                && pinned_ids.contains(task.id.as_str())
+            {
+                self.pinned_task_order_key(&computer, &task.id, task.created_ms, task.updated_ms)
+            } else {
+                self.task_order_key(&computer, &task.id, task.created_ms, task.updated_ms)
+            };
+            keys.insert(ix, key);
         }
         let order = |a: &usize, b: &usize| {
             keys[a]
@@ -1630,6 +1642,20 @@ impl Sidebar {
                 .then_with(|| self.sessions[*a].id.cmp(&self.sessions[*b].id))
         };
         pinned.sort_by(order);
+        if let Some(prefix) = self.local_task_prefix() {
+            listed.retain(|&ix| {
+                let task = &self.sessions[ix];
+                self.running.contains(&task.id)
+                    || self.selected.as_ref() == Some(&task.id)
+                    || self.pages.is_live(&task.id)
+                    || prefix.allows(&self.task_prefix_position(
+                        &computer,
+                        &task.id,
+                        task.created_ms,
+                        task.updated_ms,
+                    ))
+            });
+        }
         listed.sort_by(order);
         archived.sort_by(order);
         let mut sections = Vec::new();
@@ -1737,6 +1763,8 @@ impl Sidebar {
                 tasks(&mut entries, *section, rows);
             }
             if self.pages.enabled {
+                let prefix = self.local_task_prefix();
+                let next_state = prefix.as_ref().and_then(|prefix| prefix.next.first());
                 for (kind, expanded) in [
                     (
                         PageKind::Active,
@@ -1751,7 +1779,10 @@ impl Sidebar {
                     (PageKind::Search, !self.filter.is_empty()),
                     (PageKind::Projects, true),
                 ] {
-                    if expanded && self.pages.has_more(kind) {
+                    let allowed = prefix.is_none()
+                        || !matches!(kind, PageKind::Active | PageKind::Settled)
+                        || next_state == Some(&kind);
+                    if allowed && expanded && self.pages.has_more(kind) {
                         entries.push(SidebarEntry::LoadMore(kind));
                     }
                 }
@@ -2587,7 +2618,7 @@ impl Sidebar {
         if self.can_reorder() {
             for (forward, id, icon, label) in [
                 (false, "move-project-up", "arrow-up", "Move up"),
-                (true, "move-project-down", "chevron-down", "Move down"),
+                (true, "move-project-down", "arrow-down", "Move down"),
             ] {
                 if self.project_move_available(target, forward) {
                     let target = target.clone();
@@ -3314,12 +3345,12 @@ impl Sidebar {
                 cx,
             )
         });
-        let choose_computer = self.uses_computer_projection();
+        let choose_computer = self.has_added_computer();
         let add_open = choose_computer && self.popup.is_open(&SidebarPopup::NewProject);
         let add_menu = add_open.then(|| {
             self.popup.render(
                 self.new_project_computer_menu(),
-                Placement::BelowEnd,
+                Placement::BelowStart,
                 window,
                 cx,
             )
@@ -3484,14 +3515,13 @@ impl Sidebar {
 
     /// Add project stays visible until there is a project to browse.
     fn new_project_button(&self, open: bool) -> gpui::Stateful<Div> {
-        header_button("new-project", "folder-plus", "New project", open).when(
-            !open && !self.project_roots.is_empty(),
-            |button| {
+        header_button("new-project", "folder-plus", "New project", open)
+            .debug_selector(|| "new-project".to_owned())
+            .when(!open && !self.project_roots.is_empty(), |button| {
                 button
                     .opacity(0.)
                     .group_hover("projects-header-actions", |style| style.opacity(1.))
-            },
-        )
+            })
     }
 
     fn new_project_computer_menu(&self) -> Menu<Self> {
@@ -3715,7 +3745,7 @@ impl Sidebar {
             }
             let placement = self
                 .project_menu_at
-                .map_or(Placement::BelowEnd, Placement::At);
+                .map_or(Placement::BelowStart, Placement::At);
             self.project_popup.render(menu, placement, window, cx)
         });
         let toggle = root.target.clone();
@@ -3762,7 +3792,7 @@ impl Sidebar {
                     .separator()
                     .item(menu_item(items.delete));
             }
-            self.popup.render(menu, Placement::BelowEnd, window, cx)
+            self.popup.render(menu, Placement::BelowStart, window, cx)
         });
         let session = row.id.clone();
         div()
@@ -3929,6 +3959,8 @@ impl Sidebar {
                 row_element.child(
                     div()
                         .id(row.pin_id.clone())
+                        .role(gpui::Role::Button)
+                        .aria_label("Unpin task")
                         .size_5()
                         .flex()
                         .items_center()
@@ -4252,19 +4284,16 @@ mod tests {
     #[gpui::test]
     fn sidebar_remeasures_an_offscreen_heading_when_its_gap_changes(cx: &mut gpui::TestAppContext) {
         use super::*;
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
         let backend =
             Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
         let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
         let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
-            sidebar.computers = Arc::new(vec![
-                Computer::pending("east".into(), "East".into(), None),
-                Computer::pending("west".into(), "West".into(), None),
-            ]);
+            sidebar.reset_persisted_for_test();
             sidebar.project_filter = Some("/tmp/proj".into());
             sidebar.application_vim_enabled = true;
-            sidebar.list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(0.));
             let sessions = (0..102)
                 .map(|ix| AgentSessionSummary {
                     id: format!("s{ix}"),
@@ -4285,6 +4314,8 @@ mod tests {
                 .collect();
             sidebar.pinned_tasks = (0..100).map(|ix| format!("s{ix}")).collect();
             sidebar.set_sessions(sessions, cx);
+            sidebar.list =
+                gpui::ListState::new(sidebar.entries.len(), gpui::ListAlignment::Top, px(0.));
         });
         let list = sidebar.update(cx, |sidebar, _| sidebar.list.clone());
         struct Host(Entity<Sidebar>);

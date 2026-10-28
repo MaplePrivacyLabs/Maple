@@ -30,7 +30,7 @@ impl ReorderRow {
 
 impl Sidebar {
     pub(super) fn connection_grouping_available(&self) -> bool {
-        self.uses_computer_projection()
+        self.has_added_computer()
     }
 
     pub(super) fn load_order(&mut self, cx: &mut Context<Self>) {
@@ -85,6 +85,23 @@ impl Sidebar {
         );
     }
 
+    pub(super) fn forget_task_order(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        if !self.order_loaded {
+            return;
+        }
+        self.sync_cached_order();
+        let computer = self.backend.remote_host();
+        let keep =
+            |key: &SidebarItemKey| key.computer.as_deref() != computer || !ids.contains(&key.id);
+        let before = self.order.tasks.len() + self.order.pinned_tasks.len();
+        self.order.tasks.retain(keep);
+        self.order.pinned_tasks.retain(keep);
+        if self.order.tasks.len() + self.order.pinned_tasks.len() != before {
+            self.rebuild_order_ranks();
+            self.save_order(cx);
+        }
+    }
+
     pub(super) fn rebuild_order_ranks(&mut self) {
         self.task_ranks.clear();
         for (rank, task) in self.order.tasks.iter().enumerate() {
@@ -92,6 +109,22 @@ impl Sidebar {
                 .entry(task.computer.clone())
                 .or_default()
                 .insert(task.id.clone(), rank);
+        }
+        self.pinned_task_ranks.clear();
+        for (rank, task) in self.order.pinned_tasks.iter().enumerate() {
+            self.pinned_task_ranks
+                .entry(task.computer.clone())
+                .or_default()
+                .insert(task.id.clone(), rank);
+        }
+        // Older saved orders had one rank list. Keep their pinned placement
+        // until the user arranges Pinned independently for the first time.
+        for (rank, task) in self.order.tasks.iter().enumerate() {
+            self.pinned_task_ranks
+                .entry(task.computer.clone())
+                .or_default()
+                .entry(task.id.clone())
+                .or_insert(self.order.pinned_tasks.len() + rank);
         }
         self.project_ranks.clear();
         for (rank, project) in self.order.projects.iter().enumerate() {
@@ -126,15 +159,57 @@ impl Sidebar {
         &self,
         computer: &Option<String>,
     ) -> Option<catalog::ManualOrder> {
-        (self.view.sort == SidebarSort::Manual && self.order_loaded).then(|| catalog::ManualOrder {
-            cutoff: self.order.created_before_ms,
-            tasks: self
-                .order
-                .tasks
-                .iter()
-                .filter(|task| &task.computer == computer)
-                .map(|task| task.id.clone())
-                .collect(),
+        self.manual_order_for(computer, false)
+    }
+
+    pub(super) fn local_pinned_manual_order(
+        &self,
+        computer: &Option<String>,
+    ) -> Option<catalog::ManualOrder> {
+        self.manual_order_for(computer, true)
+    }
+
+    pub(super) fn pinned_task_order_key(
+        &self,
+        computer: &Option<String>,
+        id: &str,
+        created: i64,
+        updated: i64,
+    ) -> (u8, i64) {
+        if self.view.sort == SidebarSort::Updated {
+            return (0, updated.saturating_neg());
+        }
+        catalog::manual_order_key(
+            self.pinned_task_ranks
+                .get(computer)
+                .and_then(|ranks| ranks.get(id))
+                .copied(),
+            created,
+            self.order.created_before_ms,
+        )
+    }
+
+    fn manual_order_for(
+        &self,
+        computer: &Option<String>,
+        pinned: bool,
+    ) -> Option<catalog::ManualOrder> {
+        (self.view.sort == SidebarSort::Manual && self.order_loaded).then(|| {
+            let mut seen = HashSet::new();
+            let preferred = if pinned {
+                self.order.pinned_tasks.as_slice()
+            } else {
+                &[]
+            };
+            catalog::ManualOrder {
+                cutoff: self.order.created_before_ms,
+                tasks: preferred
+                    .iter()
+                    .chain(&self.order.tasks)
+                    .filter(|task| &task.computer == computer && seen.insert(task.id.clone()))
+                    .map(|task| task.id.clone())
+                    .collect(),
+            }
         })
     }
 
@@ -152,6 +227,7 @@ impl Sidebar {
         {
             if self.view.sort == SidebarSort::Manual
                 && (self.order.tasks != order.tasks
+                    || self.order.pinned_tasks != order.pinned_tasks
                     || self.order.created_before_ms != order.created_before_ms)
             {
                 self.order_query_dirty = true;
@@ -221,7 +297,7 @@ impl Sidebar {
         }
     }
 
-    pub(super) fn set_view(&mut self, mut view: SidebarView, cx: &mut Context<Self>) {
+    pub(crate) fn set_view(&mut self, mut view: SidebarView, cx: &mut Context<Self>) {
         self.sync_cached_order();
         // Changing task order must preserve a saved Connection grouping while
         // the desktop is still loading its paired-computer inventory.
@@ -451,7 +527,7 @@ impl Sidebar {
                 (
                     SidebarDragItem::Task(self.reorder_rows.get(row)?.task.clone()?),
                     session.title.clone().into(),
-                    "message-square",
+                    "square-pen",
                 )
             }
             SidebarEntry::OtherTask(index) => {
@@ -459,7 +535,7 @@ impl Sidebar {
                 (
                     SidebarDragItem::Task(self.reorder_rows.get(row)?.task.clone()?),
                     task.session.title.clone().into(),
-                    "message-square",
+                    "square-pen",
                 )
             }
             _ => return None,
@@ -553,41 +629,119 @@ impl Sidebar {
         true
     }
 
-    fn seed_task_order(&mut self) {
+    fn loaded_task_order_seeds(&self) -> HashMap<SidebarItemKey, (i64, i64, bool)> {
         let computer = self.backend.remote_host().map(str::to_owned);
-        let mut seen = HashSet::new();
-        let visible = self
-            .entries
-            .iter()
-            .filter_map(|entry| match *entry {
-                SidebarEntry::Task(task) => {
-                    self.sessions
-                        .get(task.session)
-                        .map(|session| SidebarItemKey {
-                            computer: computer.clone(),
-                            id: session.id.clone(),
+        let mut loaded = HashMap::<SidebarItemKey, (i64, i64, bool)>::new();
+        for (key, created, updated, pinned) in self.group_pages.task_order_seeds() {
+            loaded
+                .entry(key)
+                .and_modify(|(_, known, _)| *known = (*known).max(updated))
+                .or_insert((created, updated, pinned));
+        }
+        for host in self.computers.iter() {
+            for task in &host.sessions {
+                if task.message_count > 0 || host.running.contains(&task.id) {
+                    loaded
+                        .entry(SidebarItemKey {
+                            computer: host.key.clone(),
+                            id: task.id.clone(),
                         })
+                        .and_modify(|(_, known, _)| *known = (*known).max(task.updated_ms))
+                        .or_insert((
+                            task.created_ms,
+                            task.updated_ms,
+                            host.pinned.contains(&task.id),
+                        ));
                 }
-                SidebarEntry::OtherTask(index) => {
-                    self.other_tasks.get(index).map(|task| SidebarItemKey {
-                        computer: task.request.computer.clone(),
-                        id: task.session.id.clone(),
+            }
+        }
+        for task in self.sessions.iter() {
+            if task.message_count > 0 || self.running.contains(&task.id) {
+                loaded
+                    .entry(SidebarItemKey {
+                        computer: computer.clone(),
+                        id: task.id.clone(),
                     })
-                }
-                _ => None,
-            })
-            .filter(|key| seen.insert(key.clone()))
+                    .and_modify(|(_, known, _)| *known = (*known).max(task.updated_ms))
+                    .or_insert((
+                        task.created_ms,
+                        task.updated_ms,
+                        self.pinned_tasks.contains(&task.id),
+                    ));
+            }
+        }
+        for (key, (_, _, pinned)) in &mut loaded {
+            *pinned = if key.computer == computer {
+                self.pinned_tasks.contains(&key.id)
+            } else {
+                self.computers
+                    .iter()
+                    .find(|host| host.key == key.computer)
+                    .is_some_and(|host| host.pinned.contains(&key.id))
+            };
+        }
+        loaded
+    }
+
+    fn seed_task_order(&mut self) {
+        let mut loaded = self
+            .loaded_task_order_seeds()
+            .into_iter()
             .collect::<Vec<_>>();
+        loaded.sort_by(|(a, (_, updated_a, _)), (b, (_, updated_b, _))| {
+            updated_b
+                .cmp(updated_a)
+                .then_with(|| a.computer.cmp(&b.computer))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let visible = loaded
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let seen = visible.iter().collect::<HashSet<_>>();
         let remaining = self
             .order
             .tasks
             .iter()
-            .filter(|key| !seen.contains(*key))
+            .filter(|key| !seen.contains(key))
             .cloned()
             .collect::<Vec<_>>();
         self.order.tasks = visible.into_iter().chain(remaining).collect();
+        self.order.pinned_tasks = loaded
+            .into_iter()
+            .filter(|(_, (_, _, pinned))| *pinned)
+            .map(|(key, _)| key)
+            .collect();
         self.order.created_before_ms = crate::settings::timestamp_ms();
         self.rebuild_order_ranks();
+    }
+
+    fn materialize_loaded_task_order(&mut self) {
+        let known = self.order.tasks.iter().collect::<HashSet<_>>();
+        let mut missing = self
+            .loaded_task_order_seeds()
+            .into_iter()
+            .filter(|(key, _)| !known.contains(key))
+            .collect::<Vec<_>>();
+        missing.sort_by(|(a, (created_a, _, _)), (b, (created_b, _, _))| {
+            catalog::manual_order_key(None, *created_a, self.order.created_before_ms)
+                .cmp(&catalog::manual_order_key(
+                    None,
+                    *created_b,
+                    self.order.created_before_ms,
+                ))
+                .then_with(|| a.computer.cmp(&b.computer))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let split =
+            missing.partition_point(|(_, (created, _, _))| *created > self.order.created_before_ms);
+        let older = missing.split_off(split);
+        self.order.tasks = missing
+            .into_iter()
+            .map(|(key, _)| key)
+            .chain(std::mem::take(&mut self.order.tasks))
+            .chain(older.into_iter().map(|(key, _)| key))
+            .collect();
     }
 
     pub(super) fn commit_reorder(
@@ -618,6 +772,9 @@ impl Sidebar {
         if task_move && self.order.created_before_ms == 0 {
             self.seed_task_order();
         }
+        if task_move && drag.group != Some(TaskGroup::Pinned) {
+            self.materialize_loaded_task_order();
+        }
         match (&drag.item, target) {
             (SidebarDragItem::Project(source), SidebarDragItem::Project(target)) => {
                 let source = SidebarItemKey {
@@ -634,15 +791,22 @@ impl Sidebar {
                 move_item(&mut self.order.connections, source, target, after)
             }
             (SidebarDragItem::Task(source), SidebarDragItem::Task(target)) => {
-                let mut desired = sequence
+                let visible = sequence
                     .iter()
                     .filter_map(|item| match item {
                         SidebarDragItem::Task(key) => Some(key.clone()),
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                move_item(&mut desired, source, target, after);
-                self.order.tasks = merge_task_subset(&self.order.tasks, &desired);
+                let saved = if drag.group == Some(TaskGroup::Pinned) {
+                    &mut self.order.pinned_tasks
+                } else {
+                    &mut self.order.tasks
+                };
+                include_unranked_tasks(saved, &visible);
+                // Moving one row must not swap the other members of its
+                // visible group through unrelated projects' global slots.
+                move_item(saved, source, target, after);
                 self.view.sort = SidebarSort::Manual;
             }
             _ => return,
@@ -744,33 +908,239 @@ fn move_item<T: PartialEq>(items: &mut Vec<T>, source: &T, target: &T, after: bo
 
 fn order_fits(order: &SidebarOrder) -> bool {
     order.tasks.len() <= 8192
+        && order.pinned_tasks.len() <= 8192
         && order.projects.len() <= 8192
         && order.connections.len() <= 256
         && serde_json::to_vec(order).is_ok_and(|json| json.len() <= 2 * 1024 * 1024)
 }
 
-/// Replace only the visible group's slots. Other groups and folded/unloaded
-/// tasks keep their relative arrangement, even after switching grouping views.
-fn merge_task_subset(saved: &[SidebarItemKey], desired: &[SidebarItemKey]) -> Vec<SidebarItemKey> {
-    let subset = desired.iter().collect::<HashSet<_>>();
-    let mut slots = saved.iter().filter(|key| subset.contains(key)).count();
-    if slots == 0 {
-        return desired.iter().chain(saved).cloned().collect();
+/// Materialize new rows in their current relative positions before moving one.
+/// Already ranked rows retain their positions, including hidden group members.
+fn include_unranked_tasks(saved: &mut Vec<SidebarItemKey>, visible: &[SidebarItemKey]) {
+    for (index, key) in visible.iter().enumerate() {
+        if saved.contains(key) {
+            continue;
+        }
+        let next = visible[index + 1..]
+            .iter()
+            .find_map(|next| saved.iter().position(|saved| saved == next));
+        let previous = visible[..index]
+            .iter()
+            .rev()
+            .find_map(|previous| saved.iter().position(|saved| saved == previous));
+        let at = next
+            .or_else(|| previous.map(|previous| previous + 1))
+            .unwrap_or(0);
+        saved.insert(at, key.clone());
     }
-    let mut remaining = desired.iter();
-    let mut result = Vec::with_capacity(saved.len() + desired.len());
-    for key in saved {
-        if subset.contains(key) {
-            if let Some(next) = remaining.next() {
-                result.push(next.clone());
-            }
-            slots -= 1;
-            if slots == 0 {
-                result.extend(remaining.by_ref().cloned());
-            }
-        } else {
-            result.push(key.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(id: &str) -> SidebarItemKey {
+        SidebarItemKey {
+            computer: None,
+            id: id.into(),
         }
     }
-    result
+
+    fn task(id: &str, root: &str, updated_ms: i64) -> AgentSessionSummary {
+        AgentSessionSummary {
+            id: id.into(),
+            title: id.into(),
+            project_root: root.into(),
+            created_ms: 1,
+            updated_ms,
+            message_count: 1,
+            model: None,
+            web_enabled: true,
+            state: AgentTaskState::Active,
+            acp: false,
+        }
+    }
+
+    #[test]
+    fn moving_one_group_member_preserves_all_other_tasks_relative_order() {
+        let mut saved = ["a1", "other1", "a2", "other2", "a3"].map(key).to_vec();
+        include_unranked_tasks(&mut saved, &[key("a1"), key("a2"), key("a3")]);
+        move_item(&mut saved, &key("a3"), &key("a1"), false);
+        assert_eq!(saved, ["a3", "a1", "other1", "a2", "other2"].map(key));
+    }
+
+    #[test]
+    fn moving_a_new_task_keeps_unranked_neighbors_and_hidden_tasks_in_order() {
+        let mut saved = ["old1", "hidden", "old2"].map(key).to_vec();
+        include_unranked_tasks(
+            &mut saved,
+            &[key("new2"), key("new1"), key("old1"), key("old2")],
+        );
+        move_item(&mut saved, &key("new2"), &key("old2"), true);
+        assert_eq!(saved, ["new1", "old1", "hidden", "old2", "new2"].map(key));
+    }
+
+    #[gpui::test]
+    fn pinned_drag_preserves_the_tasks_ordinary_slots(cx: &mut gpui::TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView {
+                group: SidebarGroup::List,
+                sort: SidebarSort::Manual,
+            };
+            sidebar.order.created_before_ms = 100;
+            sidebar.order.tasks = ["a", "b", "c", "d"].map(key).to_vec();
+            sidebar.pinned_tasks = vec!["a".into(), "c".into()];
+            sidebar.rebuild_order_ranks();
+            sidebar.set_sessions(
+                vec![
+                    task("a", "/a", 4),
+                    task("b", "/a", 3),
+                    task("c", "/b", 2),
+                    task("d", "/b", 1),
+                ],
+                cx,
+            );
+            let ordinary = sidebar.order.tasks.clone();
+            let drag = SidebarDrag {
+                sidebar: cx.entity_id(),
+                item: SidebarDragItem::Task(key("c")),
+                group: Some(TaskGroup::Pinned),
+                name: "c".into(),
+                icon: "square-pen",
+            };
+            sidebar.commit_reorder(&drag, &SidebarDragItem::Task(key("a")), false, cx);
+            assert_eq!(sidebar.order.tasks, ordinary);
+            assert_eq!(sidebar.order.pinned_tasks, [key("c"), key("a")]);
+            assert!(
+                sidebar.pinned_task_order_key(&None, "c", 1, 2)
+                    < sidebar.pinned_task_order_key(&None, "a", 1, 4)
+            );
+            sidebar.archived_expanded = true;
+            for task in &mut sidebar.sessions {
+                if task.id == "a" || task.id == "c" {
+                    task.state = AgentTaskState::Archived;
+                }
+            }
+            sidebar.rebuild_sections();
+            let archived = sidebar
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    SidebarEntry::Task(row) if row.archived => {
+                        Some(sidebar.sessions[row.session].id.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(archived, ["a", "c"]);
+            for task in &mut sidebar.sessions {
+                task.state = AgentTaskState::Active;
+            }
+            sidebar.pinned_tasks.clear();
+            sidebar.rebuild_sections();
+            let unpinned = sidebar
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    SidebarEntry::Task(row) => Some(sidebar.sessions[row.session].id.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(unpinned, ["a", "b", "c", "d"]);
+            // Deleting a local task releases its saved slots, but a task with
+            // the same identifier on another computer remains independent.
+            let remote = SidebarItemKey {
+                computer: Some("remote".into()),
+                id: "c".into(),
+            };
+            sidebar.order.tasks.push(remote.clone());
+            sidebar.save_order(cx);
+            sidebar.forget_tasks(&["c".into()], cx);
+            assert_eq!(sidebar.order.tasks, [key("a"), key("b"), key("d"), remote]);
+            assert_eq!(sidebar.order.pinned_tasks, [key("a")]);
+        });
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+    }
+
+    #[gpui::test]
+    fn initial_manual_order_includes_tasks_in_folded_projects(cx: &mut gpui::TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view.group = SidebarGroup::Project;
+            sidebar.collapsed_projects.insert(ProjectTarget {
+                computer: None,
+                path: "/folded".into(),
+            });
+            sidebar.set_sessions(
+                vec![
+                    task("older", "/folded", 10),
+                    task("newer", "/folded", 30),
+                    task("visible", "/open", 20),
+                ],
+                cx,
+            );
+            sidebar.seed_task_order();
+            assert_eq!(
+                sidebar.order.tasks,
+                [key("newer"), key("visible"), key("older")]
+            );
+
+            sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView {
+                group: SidebarGroup::Project,
+                sort: SidebarSort::Manual,
+            };
+            sidebar.order.created_before_ms = 100;
+            sidebar.order.tasks = [key("old-a"), key("old-b")].to_vec();
+            sidebar.collapsed_projects.insert(ProjectTarget {
+                computer: None,
+                path: "/b".into(),
+            });
+            let mut new_a = task("new-a", "/a", 300);
+            new_a.created_ms = 300;
+            let mut new_b = task("new-b", "/b", 200);
+            new_b.created_ms = 200;
+            sidebar.rebuild_order_ranks();
+            sidebar.set_sessions(
+                vec![
+                    new_a,
+                    new_b,
+                    task("old-a", "/a", 50),
+                    task("old-b", "/b", 40),
+                ],
+                cx,
+            );
+            let drag = SidebarDrag {
+                sidebar: cx.entity_id(),
+                item: SidebarDragItem::Task(key("old-a")),
+                group: Some(TaskGroup::Project(ProjectTarget {
+                    computer: None,
+                    path: "/a".into(),
+                })),
+                name: "old-a".into(),
+                icon: "square-pen",
+            };
+            sidebar.commit_reorder(&drag, &SidebarDragItem::Task(key("new-a")), false, cx);
+            assert_eq!(
+                sidebar.order.tasks,
+                [key("old-a"), key("new-a"), key("new-b"), key("old-b")]
+            );
+        });
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+    }
 }

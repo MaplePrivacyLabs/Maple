@@ -220,6 +220,14 @@ mod tests {
                     }],
                     false,
                 );
+                // The Active response is the only nonempty page in this
+                // scoped fixture. Confirm the other task states empty before
+                // inspecting the merged Project view's stable prefix.
+                sidebar.pages.loading.clear();
+                sidebar
+                    .pages
+                    .ready
+                    .extend([PageKind::Active, PageKind::Settled, PageKind::Pinned]);
                 sidebar.archived_expanded = true;
                 sidebar.rebuild_sections();
                 let shown: Vec<_> = sidebar
@@ -351,7 +359,11 @@ mod tests {
                 false,
             );
             sidebar.rebuild_sections();
-            assert_eq!(sidebar.grouped_project_names(), ["b", "a"]);
+            assert_eq!(
+                sidebar.grouped_project_names(),
+                ["a", "b"],
+                "loading tasks does not reorder project containers"
+            );
             sidebar.set_filter_for_test("a", cx);
             assert_eq!(sidebar.grouped_project_names(), ["a"]);
             sidebar.set_filter_for_test("unmatched", cx);
@@ -378,6 +390,13 @@ mod tests {
             sidebar.selected = None;
             let row = |id: &str, root: &str| TaskSummary {
                 project_root: root.into(),
+                updated_ms: match id {
+                    "a1" => 40,
+                    "a2" => 30,
+                    "b1" => 20,
+                    "c1" => 10,
+                    _ => 1,
+                },
                 ..page_summary(id)
             };
             sidebar.apply_task_page(PageKind::Pinned, vec![row("pin", "/a")], false);
@@ -425,7 +444,8 @@ mod tests {
                     .iter()
                     .map(|(_, rows)| rows.len())
                     .sum::<usize>(),
-                4
+                2,
+                "rows beyond the unread Settled frontier stay cached"
             );
             let more = |sidebar: &Sidebar| {
                 sidebar
@@ -441,7 +461,6 @@ mod tests {
                 more(sidebar),
                 [
                     PageKind::Pinned,
-                    PageKind::Active,
                     PageKind::Settled,
                     PageKind::Projects,
                     PageKind::Archived
@@ -465,8 +484,10 @@ mod tests {
             assert!(more(sidebar).contains(&PageKind::Settled));
             sidebar.view.group = SidebarGroup::List;
             sidebar.rebuild_sections();
-            assert!(more(sidebar).contains(&PageKind::Active));
-            assert_eq!(sidebar.section_rows(SidebarSection::List).len(), 4);
+            assert_eq!(sidebar.pages.ids[&PageKind::Settled], ["b1"]);
+            assert!(more(sidebar).contains(&PageKind::Settled));
+            assert!(!more(sidebar).contains(&PageKind::Active));
+            assert_eq!(sidebar.section_rows(SidebarSection::List).len(), 2);
         });
     }
 
@@ -591,6 +612,20 @@ pub(super) struct SidebarPages {
 }
 
 impl SidebarPages {
+    pub(super) fn kind_contains(&self, kind: PageKind, id: &str) -> bool {
+        self.ids
+            .get(&kind)
+            .is_some_and(|ids| ids.iter().any(|current| current == id))
+    }
+
+    pub(super) fn kind_complete(&self, kind: PageKind) -> bool {
+        !self.has_more(kind)
+    }
+
+    pub(super) fn is_live(&self, id: &str) -> bool {
+        self.live.contains_key(id)
+    }
+
     pub(super) fn has_more(&self, kind: PageKind) -> bool {
         self.next.contains_key(&kind)
             || self.failed.contains(&kind)
@@ -968,9 +1003,13 @@ impl Sidebar {
         let user = self.user_id.clone();
         let project = self.project_filter.clone();
         let filter = self.filter.clone();
-        let manual = self
-            .local_manual_order(&self.backend.remote_host().map(str::to_owned))
-            .map(|order| (self.manual_catalog.reader(), order));
+        let computer = self.backend.remote_host().map(str::to_owned);
+        let manual = if kind == PageKind::Pinned {
+            self.local_pinned_manual_order(&computer)
+        } else {
+            self.local_manual_order(&computer)
+        }
+        .map(|order| (self.manual_catalog.reader(), order));
         let search = if kind == PageKind::Search {
             if self.pages.search.is_none() {
                 let roots = self
@@ -1384,5 +1423,169 @@ impl Sidebar {
         self.pages.loading.remove(&PageKind::Projects);
         self.pages.failed.remove(&PageKind::Projects);
         self.load_project_page(cx);
+    }
+}
+
+#[cfg(test)]
+mod merged_prefix_tests {
+    use super::*;
+
+    fn summary(id: &str, state: &str, updated: i64) -> TaskSummary {
+        TaskSummary {
+            uuid: id.into(),
+            title: id.into(),
+            project_root: "/tmp/project".into(),
+            project_display_name: None,
+            state: state.into(),
+            kind: "desktop".into(),
+            pinned_ms: None,
+            web_enabled: false,
+            model: None,
+            message_count: 1,
+            created_ms: updated,
+            updated_ms: updated,
+            truncated: false,
+        }
+    }
+
+    fn shown(sidebar: &Sidebar) -> Vec<String> {
+        sidebar
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                SidebarEntry::Task(task) => Some(sidebar.sessions[task.session].id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn loading_more_appends_to_the_merged_list_instead_of_filling_gaps(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView {
+                group: SidebarGroup::List,
+                sort: SidebarSort::Updated,
+            };
+            sidebar.selected = None;
+            sidebar.running.clear();
+            sidebar.computers = Arc::new(Vec::new());
+            sidebar.pages.enabled = true;
+            for (kind, state, newest) in [
+                (PageKind::Active, "active", 200),
+                (PageKind::Settled, "settled", 1000),
+            ] {
+                sidebar.apply_task_page(
+                    kind,
+                    (0..50)
+                        .map(|ix| summary(&format!("{state}-{ix}"), state, newest - ix))
+                        .collect(),
+                    false,
+                );
+                sidebar.pages.next.insert(kind, "next".into());
+            }
+            sidebar.rebuild_sections();
+            let first = shown(sidebar);
+            assert_eq!(first.len(), 49);
+            assert!(first.iter().all(|id| id.starts_with("settled")));
+            let more = sidebar
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    SidebarEntry::LoadMore(kind) => Some(*kind),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(more, [PageKind::Settled]);
+            // A later Settled page belongs ahead of the fetched Active rows.
+            sidebar.apply_task_page(
+                PageKind::Settled,
+                (50..100)
+                    .map(|ix| summary(&format!("settled-{ix}"), "settled", 1000 - ix))
+                    .collect(),
+                true,
+            );
+            sidebar.pages.next.remove(&PageKind::Settled);
+            sidebar.rebuild_sections();
+            let second = shown(sidebar);
+            assert_eq!(&second[..first.len()], first);
+            assert_eq!(second.len(), 149);
+            assert!(second[..100].iter().all(|id| id.starts_with("settled")));
+            assert!(
+                sidebar
+                    .entries
+                    .contains(&SidebarEntry::LoadMore(PageKind::Active))
+            );
+            assert!(
+                !sidebar
+                    .entries
+                    .contains(&SidebarEntry::LoadMore(PageKind::Settled))
+            );
+            // Exhausting Active releases the complete remaining merged tail.
+            sidebar.apply_task_page(
+                PageKind::Active,
+                (50..100)
+                    .map(|ix| summary(&format!("active-{ix}"), "active", 200 - ix))
+                    .collect(),
+                true,
+            );
+            sidebar.pages.next.remove(&PageKind::Active);
+            sidebar.rebuild_sections();
+            let third = shown(sidebar);
+            assert_eq!(&third[..second.len()], second);
+            assert_eq!(third.len(), 200);
+        });
+    }
+
+    #[gpui::test]
+    fn cursor_timestamp_ties_are_sorted_once_when_the_boundary_is_complete(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView {
+                group: SidebarGroup::Project,
+                sort: SidebarSort::Updated,
+            };
+            sidebar.selected = None;
+            sidebar.running.clear();
+            sidebar.computers = Arc::new(Vec::new());
+            sidebar.pages.enabled = true;
+            sidebar.apply_task_page(PageKind::Active, vec![summary("z", "active", 100)], false);
+            sidebar.apply_task_page(
+                PageKind::Settled,
+                vec![summary("settled", "settled", 101)],
+                false,
+            );
+            sidebar.pages.next.insert(PageKind::Active, "tie".into());
+            sidebar.rebuild_sections();
+            assert_eq!(shown(sidebar), ["settled"]);
+            sidebar.apply_task_page(PageKind::Active, vec![summary("a", "active", 100)], true);
+            sidebar.rebuild_sections();
+            assert_eq!(shown(sidebar), ["settled"]);
+            sidebar.pages.next.remove(&PageKind::Active);
+            sidebar.rebuild_sections();
+            assert_eq!(shown(sidebar), ["settled", "a", "z"]);
+            // A selected/running task remains reachable outside the prefix.
+            sidebar.pages.next.insert(PageKind::Settled, "more".into());
+            sidebar.selected = Some("a".into());
+            sidebar.running.insert("z".into());
+            sidebar.rebuild_sections();
+            assert_eq!(shown(sidebar), ["a", "z"]);
+        });
     }
 }

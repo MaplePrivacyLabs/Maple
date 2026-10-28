@@ -61,6 +61,38 @@ mod state_tests {
         }
     }
 
+    /// Model a connected catalog without asking its empty fixture stores to
+    /// replace the supplied summary pages. Disconnected snapshots deliberately
+    /// cannot expose actionable tasks in the real sidebar.
+    fn set_computer_snapshots(
+        chat: &mut ChatScreen,
+        computers: Arc<Vec<computers::Computer>>,
+        cx: &mut Context<ChatScreen>,
+    ) {
+        let mut computers = computers.as_ref().clone();
+        for computer in &mut computers {
+            if computer.backend.is_none() {
+                computer.backend = Some(
+                    chat.computers
+                        .iter()
+                        .find(|existing| existing.key == computer.key)
+                        .and_then(|existing| existing.backend.clone())
+                        .unwrap_or_else(|| {
+                            if let Some(key) = &computer.key {
+                                Arc::new(AgentBackend::for_remote_test(key).unwrap())
+                            } else {
+                                chat.backend.clone()
+                            }
+                        }),
+                );
+            }
+        }
+        chat.set_computers(Arc::new(computers), cx);
+        chat.sidebar.update(cx, |sidebar, _| {
+            sidebar.seed_computer_snapshot_pages_for_test();
+        });
+    }
+
     #[gpui::test]
     fn computer_catalog_buffers_summary_changes_without_loading_transcripts(
         cx: &mut TestAppContext,
@@ -170,6 +202,9 @@ mod state_tests {
         use super::super::sidebar::SidebarEntry;
         let chat = screen(cx);
         chat.update(cx, |this, cx| {
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_view(crate::settings::SidebarView::default(), cx);
+            });
             this.sessions = vec![summary("same-id", "Local task")];
             this.recent_roots = vec![recent_root("/tmp/proj")];
             this.sync_sidebar(cx);
@@ -191,7 +226,7 @@ mod state_tests {
                 loading: false,
                 error: None,
             };
-            this.set_computers(Arc::new(vec![local, remote]), cx);
+            set_computer_snapshots(this, Arc::new(vec![local, remote]), cx);
             this.sidebar.update(cx, |sidebar, _| {
                 assert_eq!(
                     sidebar
@@ -240,10 +275,14 @@ mod state_tests {
             this.sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_view(crate::settings::SidebarView::default(), cx);
                 sidebar.set_project_filter(Some("/tmp/proj".into()), cx);
-                assert!(sidebar.grouped_project_names().is_empty());
+                assert_eq!(sidebar.grouped_project_names(), ["proj"]);
+                assert!(!sidebar.entries().iter().any(|entry| matches!(
+                    entry,
+                    SidebarEntry::OtherTask(_) | SidebarEntry::ComputerProject(_)
+                )));
             });
             let local = this.computer_snapshot("This computer".into(), cx);
-            this.set_computers(Arc::new(vec![local]), cx);
+            set_computer_snapshots(this, Arc::new(vec![local]), cx);
             assert_eq!(this.sidebar.read(cx).project_filter(), None);
             assert_eq!(
                 this.sidebar.read(cx).grouped_project_names(),
@@ -271,7 +310,7 @@ mod state_tests {
                 label: "Remote folder".into(),
             }];
             remote.sessions = vec![summary_at("remote", "Before title", "/remote")];
-            this.set_computers(Arc::new(vec![local.clone(), remote.clone()]), cx);
+            set_computer_snapshots(this, Arc::new(vec![local.clone(), remote.clone()]), cx);
             this.set_sidebar_filter("after title", cx);
             assert!(
                 !this
@@ -282,7 +321,7 @@ mod state_tests {
                     .any(|e| matches!(e, SidebarEntry::OtherTask(_)))
             );
             remote.sessions[0].title = "After title".into();
-            this.set_computers(Arc::new(vec![local, remote]), cx);
+            set_computer_snapshots(this, Arc::new(vec![local, remote]), cx);
             assert!(
                 this.sidebar
                     .read(cx)
@@ -771,7 +810,7 @@ mod state_tests {
                 label: "Old remote label".into(),
             }];
             remote.sessions = vec![summary("s1", "Remote task")];
-            this.set_computers(Arc::new(vec![local, remote]), cx);
+            set_computer_snapshots(this, Arc::new(vec![local, remote]), cx);
         });
         let requests = Rc::new(RefCell::new(Vec::new()));
         let seen = requests.clone();
@@ -783,7 +822,7 @@ mod state_tests {
         chat.update(cx, |this, cx| {
             let mut catalog = this.computers.as_ref().clone();
             catalog[1].projects[0].label = "Renamed remote project".into();
-            this.set_computers(Arc::new(catalog), cx);
+            set_computer_snapshots(this, Arc::new(catalog), cx);
             assert_eq!(
                 this.project_label(cx),
                 "Local name",
@@ -6335,11 +6374,12 @@ mod state_tests {
             assert_eq!(view(cx).sort, SidebarSort::Manual);
             closed(cx);
         }
-        assert!(sidebar.update(cx, |sidebar, _| sidebar.entries().contains(
-            &crate::ui::chat::sidebar::SidebarEntry::SectionLabel(
-                crate::ui::chat::sidebar::SidebarSection::List
-            )
-        )));
+        assert!(sidebar.update(cx, |sidebar, _| {
+            sidebar
+                .entries()
+                .contains(&crate::ui::chat::sidebar::SidebarEntry::ProjectsHeader)
+                && sidebar.section_rows(crate::ui::chat::sidebar::SidebarSection::List) == [0]
+        }));
         press(cx, "view-options");
         press(cx, "sidebar-sort");
         press(cx, "sort-updated");
@@ -6356,6 +6396,42 @@ mod state_tests {
         assert_eq!(view(cx).group, SidebarGroup::Connection);
         assert_eq!(view(cx).sort, SidebarSort::Updated);
         closed(cx);
+    }
+
+    #[gpui::test]
+    fn new_project_computer_menu_opens_right_in_a_scoped_project(cx: &mut TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+            this.set_computers(identical_path_project_catalog(), cx);
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_project_filter(Some("/tmp/proj".into()), cx);
+            });
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                observed.borrow_mut().push(event.clone());
+            })
+        });
+        press(cx, "new-project");
+        assert!(
+            cx.debug_bounds("new-project-local").unwrap().left()
+                >= cx.debug_bounds("new-project").unwrap().left(),
+            "the computer chooser opens toward the main pane"
+        );
+        assert!(cx.debug_bounds("new-project-east").is_some());
+        cx.simulate_keystrokes("down down enter");
+        assert!(events.borrow().iter().any(|event| matches!(
+            event,
+            SidebarEvent::Navigate(request)
+                if request.computer.as_deref() == Some("east")
+                    && request.destination == Destination::NewProject
+        )));
     }
 
     /// A folder header's menu opens from its "…" button,
@@ -6383,6 +6459,11 @@ mod state_tests {
         });
         press(cx, "menu-project-/tmp/proj");
         assert_eq!(open_menu(&chat, cx), "ProjectMenu(/tmp/proj)");
+        assert!(
+            cx.debug_bounds("rename-project-/tmp/proj").unwrap().left()
+                >= cx.debug_bounds("menu-project-/tmp/proj").unwrap().left(),
+            "project actions leave the sidebar to the left of the menu"
+        );
         press(cx, "menu-project-/tmp/proj");
         assert_eq!(open_menu(&chat, cx), "");
         press(cx, "new-task-in-/tmp/proj");
@@ -6645,20 +6726,20 @@ mod state_tests {
                 SidebarTarget::NewTask,
                 SidebarTarget::Search,
                 SidebarTarget::Projects,
-                SidebarTarget::Project("/b".into()),
-                task("s2"),
                 SidebarTarget::Project("/a".into()),
                 task("s1"),
                 task("s3"),
+                SidebarTarget::Project("/b".into()),
+                task("s2"),
             ]
         );
         chat.update(cx, |this, cx| {
-            this.selected_session = Some("s2".into());
+            this.selected_session = Some("s3".into());
             this.sync_sidebar_selection(cx);
             assert_eq!(
                 this.task_step_target(1, cx)
                     .map(|(_, request)| request.destination),
-                Some(crate::ui::chat::computers::Destination::Task("s1".into()))
+                Some(crate::ui::chat::computers::Destination::Task("s2".into()))
             );
         });
         sidebar.update(cx, |sidebar, cx| {
@@ -6728,21 +6809,17 @@ mod state_tests {
         };
         let local = screen(here, "here", "/a");
         let peer = screen(there, "there", "/b");
-        let mut computers = vec![
+        let computers = vec![
             local.read_with(cx, |chat, cx| {
                 chat.computer_snapshot("This computer".into(), cx)
             }),
             peer.read_with(cx, |chat, cx| chat.computer_snapshot("Peer".into(), cx)),
         ];
-        // Rows come from these snapshots alone. With a backend, the sidebar
-        // also reads pages from the fixtures' empty stores, and those replies
-        // remove the rows whenever they happen to land.
-        for computer in &mut computers {
-            computer.backend = None;
-        }
         let computers = Arc::new(computers);
         for chat in [&local, &peer] {
-            chat.update(cx, |chat, cx| chat.set_computers(computers.clone(), cx));
+            chat.update(cx, |chat, cx| {
+                set_computer_snapshots(chat, computers.clone(), cx)
+            });
         }
         let (shell, cx) = cx.add_window_view(|_, _| Shell {
             chat: local.clone(),
@@ -7502,6 +7579,10 @@ mod state_tests {
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.models = vec!["voxtral-small-24b".to_string()];
+            // Keep the composer below the right-opening task menu. This
+            // checks switching between visible triggers, not clicking through
+            // an occluding menu onto the centered empty-task composer.
+            this.replace_timeline(vec![user_item("existing-message", "Earlier message")]);
             this.sync_sidebar(cx);
         });
         for (first, then, open) in [
@@ -7513,6 +7594,14 @@ mod state_tests {
             ("root-picker", "mcp-menu", "Integrations"),
         ] {
             press(cx, first);
+            if first == "menu-session-s1" && then == "model-picker" {
+                let menu = cx.debug_bounds("task-menu-s1").expect("task menu");
+                let model = cx.debug_bounds("model-picker").expect("model picker");
+                assert!(
+                    !menu.contains(&model.center()),
+                    "the second trigger is visible"
+                );
+            }
             press(cx, then);
             assert_eq!(open_menu(&chat, cx), open, "{first} then {then}");
             chat.update(cx, |this, cx| {
@@ -7556,9 +7645,8 @@ mod state_tests {
         assert_eq!(open_menu(&chat, cx), "Project");
     }
 
-    /// A task menu reaches over the rows below it. A press on one of its
-    /// items lands on the item, not on the overflow button of the row
-    /// underneath.
+    /// Task actions open toward the main pane, keeping the task list visible.
+    /// A press on an item still reaches the intended action.
     #[gpui::test]
     fn test_a_press_on_a_menu_item_reaches_the_item(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |this, cx| {
@@ -7570,13 +7658,18 @@ mod state_tests {
             this.sync_sidebar(cx);
         });
         press(cx, "menu-session-s1");
+        let trigger = cx.debug_bounds("menu-session-s1").expect("s1's button");
         let beneath = cx.debug_bounds("menu-session-s2").expect("s2's button");
         let rename = cx.debug_bounds("rename-task-s1").expect("s1's Rename item");
         assert!(
-            rename.contains(&beneath.center()),
-            "the fixture puts s2's button under s1's Rename item"
+            rename.left() >= trigger.left(),
+            "the menu opens to the right of its trigger"
         );
-        cx.simulate_click(beneath.center(), gpui::Modifiers::default());
+        assert!(
+            !rename.contains(&beneath.center()),
+            "the menu leaves the next task's controls visible"
+        );
+        cx.simulate_click(rename.center(), gpui::Modifiers::default());
         assert_eq!(open_menu(&chat, cx), "", "s2's menu did not open");
         let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
         assert!(
@@ -7879,9 +7972,12 @@ mod state_tests {
             this.selected_session = None;
             this.draft = true;
             this.project_root = Some("/shared".into());
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_view(crate::settings::SidebarView::default(), cx);
+            });
             this.sessions = vec![summary_at("same-id", "Existing task", "/shared")];
             this.apply_recent_roots(vec![named_root("/shared", "Local project", 1)], cx);
-            this.set_computers(identical_path_project_catalog(), cx);
+            set_computer_snapshots(this, identical_path_project_catalog(), cx);
             this.composer
                 .clone()
                 .unwrap()
@@ -7896,15 +7992,18 @@ mod state_tests {
                 observed.borrow_mut().push(event.clone());
             })
         });
-        sidebar.update(cx, |sidebar, cx| {
+        sidebar.update(cx, |sidebar, _| {
             for computer in [Some("east"), Some("west")] {
                 let target = ProjectTarget {
                     computer: computer.map(str::to_string),
                     path: "/shared".into(),
                 };
-                assert_eq!(
-                    sidebar.project_menu_labels_for_test(&target),
-                    vec!["Rename project"]
+                let labels = sidebar.project_menu_labels_for_test(&target);
+                assert_eq!(labels.first(), Some(&"Rename project"));
+                assert!(
+                    labels
+                        .iter()
+                        .all(|label| matches!(*label, "Rename project" | "Move up" | "Move down"))
                 );
             }
             let local = ProjectTarget {
@@ -7915,18 +8014,17 @@ mod state_tests {
             assert!(own_menu.contains(&"Rename project"));
             assert!(own_menu.contains(&"Open folder"));
             assert!(own_menu.contains(&"Remove project"));
-            sidebar.set_header_menu_open(true, cx);
         });
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
         let local = cx
-            .debug_bounds("switcher-/shared")
+            .debug_bounds("folder-/shared")
             .expect("local project row");
         let east = cx
-            .debug_bounds("switcher-computer-east-/shared")
+            .debug_bounds("folder-computer-east-/shared")
             .expect("east project row");
         let west = cx
-            .debug_bounds("switcher-computer-west-/shared")
+            .debug_bounds("folder-computer-west-/shared")
             .expect("west project row");
         assert_ne!(local.center(), east.center());
         assert_ne!(east.center(), west.center());

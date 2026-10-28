@@ -39,8 +39,20 @@ be rearranged by dragging. Dragging a task silently selects Manual order; this
 changes only presentation order, preserving its project, execution computer and
 status. The manual task order carries across grouping changes and restarts on
 the viewing desktop. New tasks appear at the top; activity on existing tasks
-does not reshuffle their manual order. These preferences belong to the viewing
-desktop's signed-in account.
+does not reshuffle their manual order. Manual ranks and personal pins belong
+to the viewing desktop's signed-in account; grouping and sorting choices are
+saved on that desktop.
+
+Pinned tasks have their own presentation order, so dragging them does not
+change where they return when unpinned. Dragging in Status or In one list
+moves only that task; the relative order of other tasks stays intact. The
+initial Manual order includes loaded tasks in folded groups too.
+
+Manual refreshes coalesce repeated activity into one trailing reload, and
+replacing a reload cancels its stale scans. Pagination exposes a complete
+sorted prefix across Active and Settled; loading more extends that prefix
+instead of inserting older-state pages into gaps above existing rows. These
+are viewing-desktop behaviors and do not require a different remote protocol.
 
 Project display names belong to the execution computer and the signed-in account.
 **Rename project** in a sidebar project's menu updates that one name from

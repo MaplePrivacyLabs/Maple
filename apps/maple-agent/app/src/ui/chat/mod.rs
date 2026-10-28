@@ -5411,23 +5411,27 @@ impl ChatScreen {
         }
         self.sign_out_pending = true;
         // Pending upload completions cannot admit a prompt while saving the
-        // account's final presentation edits before sign-out.
+        // account's final presentation edits before sign-out. Those edits are
+        // best effort: a failed flush must never keep an account signed in.
         self.accept_send_results = false;
         self.call(
             async {
-                tokio::time::timeout(
+                match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
                     crate::settings::flush_pending(),
                 )
                 .await
-                .map_err(|_| "Saving changes before sign-out timed out. Try again.".to_string())?
-                .map_err(|message| format!("Could not save changes before signing out: {message}"))
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        log::warn!("Could not save UI preferences before sign-out: {error}")
+                    }
+                    Err(_) => log::warn!("Saving UI preferences before sign-out timed out"),
+                }
+                Ok(())
             },
             cx,
-            |this, result, cx| match result {
-                Ok(()) => this.sign_out_after_settings_flush(cx),
-                Err(message) => this.sign_out_failed(message, cx),
-            },
+            |this, _, cx| this.sign_out_after_settings_flush(cx),
         );
     }
 
