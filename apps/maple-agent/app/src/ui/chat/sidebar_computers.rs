@@ -1725,7 +1725,10 @@ impl Sidebar {
         self.other_tasks.clear();
         self.group_pages.more.clear();
         self.computer_archived_count = 0;
-        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::Search];
+        let mut entries = vec![SidebarEntry::NewTask];
+        if self.search_visible {
+            entries.push(SidebarEntry::Search);
+        }
         // A mounted view projects only bounded, owner-fenced summary pages.
         // Drafts, transcripts and execution remain in their owning ChatScreen.
         let computers = self.computers.clone();

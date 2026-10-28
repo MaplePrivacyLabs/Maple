@@ -1516,9 +1516,17 @@ impl Sidebar {
     }
 
     pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_visible = true;
-        self.reveal_row(1, cx);
-        self.list.remeasure_items(1..2);
+        if !self.search_visible {
+            self.search_visible = true;
+            self.rebuild_entries();
+        }
+        if let Some(row) = self
+            .entries
+            .iter()
+            .position(|entry| *entry == SidebarEntry::Search)
+        {
+            self.reveal_row(row, cx);
+        }
         let handle = self.search_input.read(cx).focus_handle(cx);
         handle.focus(window, cx);
         self.search_focus_out = Some(cx.on_focus_out(&handle, window, |_this, _, window, cx| {
@@ -1544,7 +1552,7 @@ impl Sidebar {
             return false;
         }
         self.search_visible = false;
-        self.list.remeasure_items(1..2);
+        self.rebuild_entries();
         cx.notify();
         true
     }
@@ -1719,7 +1727,10 @@ impl Sidebar {
 
     /// Project bounded local-cache rows through the selected grouping.
     fn local_entries(&self) -> Vec<SidebarEntry> {
-        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::Search];
+        let mut entries = vec![SidebarEntry::NewTask];
+        if self.search_visible {
+            entries.push(SidebarEntry::Search);
+        }
         let empty_known = self.filter.is_empty() && self.pages.non_archived_complete();
         let pinned_roots: HashSet<&str> = self
             .pinned_rows
@@ -2837,8 +2848,7 @@ impl Sidebar {
         div()
             .debug_selector(|| "sidebar-search".to_string())
             // Most of the sidebar takes no focus, so a press anywhere else
-            // must end the search itself: drop the cursor, and return to
-            // the Search row when nothing was typed.
+            // must drop the cursor and hide the field when nothing was typed.
             .on_mouse_down_out(cx.listener(|this, _event, window, cx| {
                 if this.search_input.read(cx).menu_open() {
                     return;
@@ -3468,7 +3478,7 @@ impl Sidebar {
     fn view_button(&self, open: bool) -> gpui::Stateful<Div> {
         header_button("view-options", "list-filter", "View options", open)
             .debug_selector(|| "view-options".into())
-            .tab_index(4)
+            .tab_index(5)
             .focus_visible(|style| widgets::focus_ring(style.opacity(1.)))
             .on_key_down(ChatScreen::sidebar_button_key_down)
             .when(!open, |button| {
