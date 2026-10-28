@@ -2875,11 +2875,15 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                                .cursor_pointer()
+                        .map(|element| {
+                            let rest: gpui::Hsla = gpui::transparent_black();
+                            crate::ui::motion::hover_background(
+                                element,
+                                rest,
+                                gpui::rgb(theme::bg_sidebar_row_selected()),
+                            )
                         })
+                        .hover(|style| style.cursor_pointer())
                         .tooltip(widgets::tooltip_for_action(
                             "Clear search",
                             &super::ChatEscape,
@@ -2960,11 +2964,15 @@ impl Sidebar {
                     .gap_2()
                     .text_sm()
                     .text_color(gpui::rgb(color))
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                    .map(|element| {
+                        let rest: gpui::Hsla = gpui::transparent_black();
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
                     })
+                    .hover(|style| style.cursor_pointer())
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
                     .tooltip(widgets::tooltip_for_action(label, action))
                     .on_click(move |_event, window, cx| {
@@ -3018,11 +3026,15 @@ impl Sidebar {
                     .px_2()
                     .py_1()
                     .rounded(ROW_RADIUS)
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                    .map(|element| {
+                        let rest: gpui::Hsla = gpui::transparent_black();
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
                     })
+                    .hover(|style| style.cursor_pointer())
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.toggle_section_expanded(section, cx);
                         this.hover_heading(SidebarEntry::SectionLabel(section), cx);
@@ -3109,11 +3121,15 @@ impl Sidebar {
                     .px_2()
                     .py_1()
                     .rounded(ROW_RADIUS)
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                    .map(|element| {
+                        let rest: gpui::Hsla = gpui::transparent_black();
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
                     })
+                    .hover(|style| style.cursor_pointer())
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_archived_visibility(cx);
                         this.hover_heading(SidebarEntry::ArchivedHeader, cx);
@@ -3429,7 +3445,7 @@ impl Sidebar {
             .into_any_element()
     }
 
-    fn view_button(&self, open: bool) -> gpui::Stateful<Div> {
+    fn view_button(&self, open: bool) -> crate::ui::motion::HoverBackground {
         header_button("view-options", "list-filter", "View options", open)
             .debug_selector(|| "view-options".into())
             .when(!open, |button| {
@@ -3514,7 +3530,7 @@ impl Sidebar {
     }
 
     /// Add project stays visible until there is a project to browse.
-    fn new_project_button(&self, open: bool) -> gpui::Stateful<Div> {
+    fn new_project_button(&self, open: bool) -> crate::ui::motion::HoverBackground {
         header_button("new-project", "folder-plus", "New project", open)
             .debug_selector(|| "new-project".to_owned())
             .when(!open && !self.project_roots.is_empty(), |button| {
@@ -3631,14 +3647,18 @@ impl Sidebar {
             .when(menu_open, |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
             })
-            .when(hover, |row| {
-                row.hover(|style| {
-                    if self.dragging {
-                        style
-                    } else {
-                        style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    }
-                })
+            .map(|row| {
+                let rest = if menu_open {
+                    gpui::rgb(theme::bg_sidebar_row_hover()).into()
+                } else {
+                    gpui::transparent_black()
+                };
+                crate::ui::motion::hover_background(
+                    row,
+                    rest,
+                    gpui::rgb(theme::bg_sidebar_row_hover()),
+                )
+                .when(!hover || self.dragging, |row| row.highlighted(false))
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 if !this.collapsed_projects.remove(&toggle_target) {
@@ -3865,7 +3885,7 @@ impl Sidebar {
         application_selected: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<Div> {
+    ) -> crate::ui::motion::HoverBackground {
         let SidebarTaskEntry {
             session: index,
             pinned: is_pinned,
@@ -3919,8 +3939,17 @@ impl Sidebar {
             .text_color(gpui::rgb(theme::text_sidebar()))
             // A row being renamed is a text field: no hover highlight and
             // no hover actions over it, so the edit is plain to see.
-            .when(!renaming && !self.dragging, |el| {
-                el.hover(|style| style.bg(gpui::rgb(hover_bg)).cursor_pointer())
+            .map(|row| {
+                let rest = if is_selected {
+                    gpui::rgb(theme::bg_sidebar_row_selected()).into()
+                } else {
+                    gpui::transparent_black()
+                };
+                crate::ui::motion::hover_background(row, rest, gpui::rgb(hover_bg))
+                    .when(renaming || self.dragging, |row| row.highlighted(false))
+                    .when(!renaming && !self.dragging, |row| {
+                        row.hover(|style| style.cursor_pointer())
+                    })
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
@@ -3966,11 +3995,15 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                                .cursor_pointer()
+                        .map(|element| {
+                            let rest: gpui::Hsla = gpui::transparent_black();
+                            crate::ui::motion::hover_background(
+                                element,
+                                rest,
+                                gpui::rgb(theme::bg_sidebar_row_selected()),
+                            )
                         })
+                        .hover(|style| style.cursor_pointer())
                         .tooltip(widgets::tooltip("Unpin", None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
@@ -4138,7 +4171,7 @@ pub(super) fn row_action(
     icon_name: &'static str,
     label: &'static str,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     row_button(id, group, icon_name, label)
         .tooltip(widgets::tooltip(label, None))
         .on_click(on_click)
@@ -4151,7 +4184,7 @@ fn row_menu_button(
     group: &SharedString,
     label: &'static str,
     open: bool,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     row_button(id, group, "ellipsis", label).when(open, |button| {
         button
             .opacity(1.)
@@ -4166,7 +4199,7 @@ fn header_button(
     icon_name: &'static str,
     label: &'static str,
     open: bool,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     div()
         .id(id)
         .role(gpui::Role::Button)
@@ -4177,11 +4210,15 @@ fn header_button(
         .items_center()
         .justify_center()
         .rounded(theme::RADIUS_SM)
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                .cursor_pointer()
+        .map(|element| {
+            let rest: gpui::Hsla = gpui::transparent_black();
+            crate::ui::motion::hover_background(
+                element,
+                rest,
+                gpui::rgb(theme::bg_sidebar_row_hover()),
+            )
         })
+        .hover(|style| style.cursor_pointer())
         .when(open, |button| {
             button.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
         })
@@ -4197,7 +4234,7 @@ fn row_button(
     group: &SharedString,
     icon_name: &'static str,
     label: &'static str,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     div()
         .debug_selector(|| id.to_string())
         .id(id)
@@ -4211,11 +4248,15 @@ fn row_button(
         .rounded(theme::RADIUS_SM)
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                .cursor_pointer()
+        .map(|element| {
+            let rest: gpui::Hsla = gpui::transparent_black();
+            crate::ui::motion::hover_background(
+                element,
+                rest,
+                gpui::rgb(theme::bg_sidebar_row_selected()),
+            )
         })
+        .hover(|style| style.cursor_pointer())
         .active(|style| style.bg(gpui::rgb(theme::border())))
         .child(icon(icon_name, px(14.), theme::text_secondary()))
 }

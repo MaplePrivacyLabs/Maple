@@ -1,9 +1,8 @@
 //! Shared chrome for the gpui screens: popup panels, buttons, switches,
 //! tooltips, card rows, input frames, and banners.
 //!
-//! Every helper returns a bare `div()` builder, so it costs the same as
-//! the inline chain it replaces: no allocation, no parsing, nothing
-//! cached. Callers keep their own ids, children, and click handlers.
+//! Helpers preserve the div builder API and callers keep their ids, children,
+//! and click handlers. Hover backgrounds share a short reversible transition.
 //!
 //! Shapes follow the brand kit: buttons are pills, small controls use
 //! `theme::RADIUS_SM`, popups and inputs `theme::RADIUS_MD`, cards
@@ -20,6 +19,7 @@ use gpui::{
 };
 
 use super::icons::icon;
+use super::motion::{HoverBackground, hover_background};
 use super::theme;
 
 /// How long an icon-only control waits before showing its tooltip. Icons
@@ -92,49 +92,60 @@ fn pill(id: impl Into<ElementId>) -> Stateful<Div> {
 }
 
 /// Accent-filled action button: coral pill with a light label.
-pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .bg(gpui::rgb(theme::accent()))
-        .text_color(gpui::rgb(theme::on_accent()))
-        .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
-        .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom()))))
+pub fn primary_button(id: impl Into<ElementId>) -> HoverBackground {
+    hover_background(
+        pill(id)
+            .bg(gpui::rgb(theme::accent()))
+            .text_color(gpui::rgb(theme::on_accent()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom())))),
+        gpui::rgb(theme::accent()),
+        gpui::rgb(theme::accent_hover()),
+    )
 }
 
 /// Neutral pill for the second action beside a [`primary_button`]
 /// (Cancel, Back, alternate sign-in): a pebble fill that darkens on hover.
-pub fn secondary_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .bg(gpui::rgb(theme::bg_sidebar_pill()))
-        .text_color(gpui::rgb(theme::text_primary()))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                .cursor_pointer()
-        })
-        .active(|style| press_depth(style.bg(gpui::rgb(theme::border()))))
+pub fn secondary_button(id: impl Into<ElementId>) -> HoverBackground {
+    hover_background(
+        pill(id)
+            .bg(gpui::rgb(theme::bg_sidebar_pill()))
+            .text_color(gpui::rgb(theme::text_primary()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| press_depth(style.bg(gpui::rgb(theme::border())))),
+        gpui::rgb(theme::bg_sidebar_pill()),
+        gpui::rgb(theme::bg_sidebar_row_selected()),
+    )
 }
 
 /// Text-only button for low-emphasis actions: no fill, no border, and
 /// the label brightens on hover.
-pub fn ghost_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .text_color(gpui::rgb(theme::text_secondary()))
-        .hover(|style| {
-            style
-                .text_color(gpui::rgb(theme::text_primary()))
-                .bg(theme::overlay_hover())
-                .cursor_pointer()
-        })
-        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
+pub fn ghost_button(id: impl Into<ElementId>) -> HoverBackground {
+    hover_background(
+        pill(id)
+            .text_color(gpui::rgb(theme::text_secondary()))
+            .hover(|style| {
+                style
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .cursor_pointer()
+            })
+            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill()))),
+        gpui::transparent_black(),
+        theme::overlay_hover(),
+    )
 }
 
 /// Destructive pill (Remove, Deny): error fill with a light label.
-pub fn danger_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .bg(gpui::rgb(theme::status_error()))
-        .text_color(gpui::rgb(theme::on_accent()))
-        .hover(|style| style.opacity(0.9).cursor_pointer())
-        .active(|style| press_depth(style.opacity(0.85)))
+pub fn danger_button(id: impl Into<ElementId>) -> HoverBackground {
+    let error: Hsla = gpui::rgb(theme::status_error()).into();
+    hover_background(
+        pill(id)
+            .text_color(gpui::rgb(theme::on_accent()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| press_depth(style.opacity(0.85))),
+        error,
+        gpui::hsla(error.h, error.s, error.l, 0.9),
+    )
 }
 
 /// Square icon-only button with a hover plate, used in list rows and
@@ -147,7 +158,7 @@ pub fn icon_button(
     label: &'static str,
     size: Pixels,
     color: u32,
-) -> Stateful<Div> {
+) -> HoverBackground {
     icon_button_base(id, name, label, size, color).tooltip(tooltip(label, None))
 }
 
@@ -161,7 +172,7 @@ pub fn icon_button_for_action(
     size: Pixels,
     color: u32,
     action: &dyn Action,
-) -> Stateful<Div> {
+) -> HoverBackground {
     icon_button_base(id, name, label, size, color).tooltip(tooltip_for_action(label, action))
 }
 
@@ -171,26 +182,26 @@ fn icon_button_base(
     label: &'static str,
     size: Pixels,
     color: u32,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .role(Role::Button)
-        .aria_label(label)
-        .flex_none()
-        .size_7()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(theme::RADIUS_SM)
-        .focus_visible(focus_ring)
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                .cursor_pointer()
-        })
-        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-        .tooltip_show_delay(ICON_TOOLTIP_DELAY)
-        .child(icon(name, size, color))
+) -> HoverBackground {
+    hover_background(
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .flex_none()
+            .size_7()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme::RADIUS_SM)
+            .focus_visible(focus_ring)
+            .hover(|style| style.cursor_pointer())
+            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+            .tooltip_show_delay(ICON_TOOLTIP_DELAY)
+            .child(icon(name, size, color)),
+        gpui::transparent_black(),
+        gpui::rgb(theme::bg_sidebar_row_hover()),
+    )
 }
 
 /// On/off switch: a pill track with a knob that sits right when `on`.
@@ -565,7 +576,7 @@ pub fn copy_button(
     text: SharedString,
     reveal: Option<&SharedString>,
     view: Option<gpui::EntityId>,
-) -> Stateful<Div> {
+) -> super::motion::HoverBackground {
     let id = id.into();
     let copied = copied_recently(&id);
     let click_id = id.clone();
@@ -593,7 +604,6 @@ pub fn copy_button(
         .focus_visible(focus_ring)
         .hover(|style| {
             style
-                .bg(theme::overlay_hover())
                 .text_color(gpui::rgb(theme::text_secondary()))
                 .cursor_pointer()
         })
@@ -623,6 +633,13 @@ pub fn copy_button(
             },
         ))
         .child(if copied { "Copied" } else { "Copy" })
+        .map(|button| {
+            super::motion::hover_background(
+                button,
+                gpui::transparent_black(),
+                gpui::rgb(theme::bg_sidebar_row_hover()),
+            )
+        })
 }
 
 #[cfg(test)]

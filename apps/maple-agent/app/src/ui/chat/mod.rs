@@ -3822,9 +3822,15 @@ impl ChatScreen {
                                     .py_0p5()
                                     .rounded(theme::RADIUS_SM)
                                     .text_color(gpui::rgb(theme::accent()))
-                                    .hover(|style| {
-                                        style.bg(theme::overlay_hover()).cursor_pointer()
+                                    .map(|element| {
+                                        let rest: gpui::Hsla = gpui::transparent_black();
+                                        crate::ui::motion::hover_background(
+                                            element,
+                                            rest,
+                                            theme::overlay_hover(),
+                                        )
                                     })
+                                    .hover(|style| style.cursor_pointer())
                                     .on_click(cx.listener(move |_, _, _, cx| {
                                         cx.emit(crate::update::UpdateRequested(action));
                                     }))
@@ -3839,7 +3845,15 @@ impl ChatScreen {
                                 .px_2()
                                 .py_0p5()
                                 .rounded(theme::RADIUS_SM)
-                                .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
+                                .map(|element| {
+                                    let rest: gpui::Hsla = gpui::transparent_black();
+                                    crate::ui::motion::hover_background(
+                                        element,
+                                        rest,
+                                        theme::overlay_hover(),
+                                    )
+                                })
+                                .hover(|style| style.cursor_pointer())
                                 .on_click(cx.listener(|_, _, _, cx| {
                                     cx.emit(crate::update::UpdateRequested(
                                         crate::update::UpdateAction::Later,
@@ -7061,11 +7075,15 @@ impl ChatScreen {
                 .pl(mark_padding)
                 .rounded(theme::RADIUS_SM)
                 .focus_visible(widgets::focus_ring)
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
+                .map(|element| {
+                    let rest: gpui::Hsla = gpui::transparent_black();
+                    crate::ui::motion::hover_background(
+                        element,
+                        rest,
+                        gpui::rgb(theme::bg_sidebar_row_hover()),
+                    )
                 })
+                .hover(|style| style.cursor_pointer())
                 .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
                 // Inside a drag region: a press here is a click, not a drag.
                 .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {

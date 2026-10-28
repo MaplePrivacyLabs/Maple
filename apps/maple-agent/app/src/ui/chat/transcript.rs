@@ -449,7 +449,7 @@ fn copy_message_button(
     group: &SharedString,
     text: SharedString,
     view: Option<gpui::EntityId>,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     widgets::copy_button(
         SharedString::from(format!("copy-message-{item_id}")),
         text,
@@ -1619,11 +1619,21 @@ pub(super) fn render_question_card(
                             && selection.is_some_and(|s| s.cursor == Some(option_index)),
                         |row| row.bg(gpui::rgb(theme::bg_sidebar_row_hover())),
                     )
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                    .map(|element| {
+                        let rest: gpui::Hsla = if entry.multi_select
+                            && selection.is_some_and(|s| s.cursor == Some(option_index))
+                        {
+                            gpui::rgb(theme::bg_sidebar_row_hover()).into()
+                        } else {
+                            gpui::transparent_black()
+                        };
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
                     })
+                    .hover(|style| style.cursor_pointer())
                     .on_click({
                         cx.listener(move |this, _event, _window, cx| {
                             this.toggle_question_option(question_index, option_index, cx);

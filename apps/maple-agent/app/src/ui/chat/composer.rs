@@ -256,10 +256,10 @@ impl ChatScreen {
 
     /// `button` as the opener of `popup`, with `menu` attached below or
     /// above it while the popup is open.
-    fn with_menu(
+    fn with_menu<E: gpui::StatefulInteractiveElement + IntoElement>(
         &self,
         popup: ChatPopup,
-        button: gpui::Stateful<Div>,
+        button: E,
         placement: Placement,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -427,11 +427,15 @@ impl ChatScreen {
                     .items_center()
                     .justify_center()
                     .rounded(theme::RADIUS_SM)
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::accent_container()))
-                            .cursor_pointer()
+                    .map(|element| {
+                        let rest: gpui::Hsla = gpui::transparent_black();
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_sidebar_pill()),
+                        )
                     })
+                    .hover(|style| style.cursor_pointer())
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
                     .when(self.attachment_picking, |el| el.opacity(0.5))
                     .tooltip(widgets::tooltip("Attach files or images", None))
@@ -452,11 +456,23 @@ impl ChatScreen {
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
                         .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::accent_container()))
-                                .cursor_pointer()
+                        .map(|element| {
+                            let rest: gpui::Hsla = if recording {
+                                gpui::rgb(theme::status_error()).into()
+                            } else {
+                                gpui::transparent_black()
+                            };
+                            crate::ui::motion::hover_background(
+                                element,
+                                rest,
+                                gpui::rgb(if recording {
+                                    theme::status_error()
+                                } else {
+                                    theme::bg_sidebar_pill()
+                                }),
+                            )
                         })
+                        .hover(|style| style.cursor_pointer())
                         .when(transcribing, |el| el.opacity(0.5))
                         .tooltip(widgets::tooltip(
                             if recording {
@@ -689,11 +705,19 @@ impl ChatScreen {
                     .when(is_selected, |row| {
                         row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                     })
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                    .map(|element| {
+                        let rest: gpui::Hsla = if is_selected {
+                            gpui::rgb(theme::bg_sidebar_row_selected()).into()
+                        } else {
+                            gpui::transparent_black()
+                        };
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
                     })
+                    .hover(|style| style.cursor_pointer())
                     .on_click(move |_event, _window, cx: &mut gpui::App| {
                         chat.update(cx, |chat, cx| chat.complete_slash_command(&name, cx))
                             .ok();
@@ -854,7 +878,14 @@ impl ChatScreen {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())))
+                    .map(|element| {
+                        let rest: gpui::Hsla = gpui::transparent_black();
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_elevated()),
+                        )
+                    })
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.close_side_thread(cx);
                     }))
@@ -994,7 +1025,10 @@ impl ChatScreen {
             .px_3()
             .py_2()
             .cursor_pointer()
-            .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())))
+            .map(|element| {
+                let rest: gpui::Hsla = gpui::transparent_black();
+                crate::ui::motion::hover_background(element, rest, gpui::rgb(theme::bg_elevated()))
+            })
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.toggle_plan_collapsed(cx);
             }))
@@ -1283,11 +1317,15 @@ impl ChatScreen {
                             .items_center()
                             .justify_center()
                             .rounded(theme::RADIUS_SM)
-                            .hover(|style| {
-                                style
-                                    .bg(gpui::rgb(theme::accent_container()))
-                                    .cursor_pointer()
+                            .map(|element| {
+                                let rest: gpui::Hsla = gpui::transparent_black();
+                                crate::ui::motion::hover_background(
+                                    element,
+                                    rest,
+                                    gpui::rgb(theme::bg_sidebar_pill()),
+                                )
                             })
+                            .hover(|style| style.cursor_pointer())
                             .tooltip(widgets::tooltip(
                                 if expanded {
                                     "Shrink composer"
@@ -1468,7 +1506,7 @@ fn chip(
     chevron: bool,
     active: bool,
     highlight: bool,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let color = if highlight {
         theme::accent()
     } else if active {
@@ -1492,11 +1530,15 @@ fn chip(
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))
         .when(active, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_pill()))
-                .cursor_pointer()
+        .map(|element| {
+            let rest: gpui::Hsla = if active {
+                gpui::rgb(theme::bg_sidebar_pill()).into()
+            } else {
+                gpui::transparent_black()
+            };
+            crate::ui::motion::hover_background(element, rest, gpui::rgb(theme::bg_sidebar_pill()))
         })
+        .hover(|style| style.cursor_pointer())
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))
         .child(div().whitespace_nowrap().child(label))

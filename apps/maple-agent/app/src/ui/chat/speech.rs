@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    Context, Div, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, px,
+    Context, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
 };
 
 use super::{ChatScreen, SpeechState};
@@ -213,7 +213,7 @@ pub(super) fn speak_message_button(
     text: SharedString,
     speech: Option<&SpeechState>,
     chat: gpui::WeakEntity<ChatScreen>,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let item_id = item_id.to_string();
     let (glyph, label) = match speech {
         None => (
@@ -246,9 +246,12 @@ pub(super) fn speak_message_button(
         .text_color(gpui::rgb(theme::text_muted()))
         .opacity(if active { 1. } else { 0. })
         .group_hover(group.clone(), |style| style.opacity(1.))
+        .map(|element| {
+            let rest: gpui::Hsla = gpui::transparent_black();
+            crate::ui::motion::hover_background(element, rest, gpui::rgb(theme::bg_elevated()))
+        })
         .hover(|style| {
             style
-                .bg(gpui::rgb(theme::bg_elevated()))
                 .text_color(gpui::rgb(theme::text_secondary()))
                 .cursor_pointer()
         })

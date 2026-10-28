@@ -293,13 +293,15 @@ impl ChatScreen {
                 .justify_center()
                 .rounded(theme::RADIUS_SM)
                 .when(busy, |button| button.opacity(0.5))
-                .when(!busy, |button| {
-                    button.hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
+                .map(|button| {
+                    crate::ui::motion::hover_background(
+                        button,
+                        gpui::transparent_black(),
+                        gpui::rgb(theme::bg_sidebar_row_hover()),
+                    )
                 })
+                .when(busy, |button| button.highlighted(false))
+                .when(!busy, |button| button.hover(|style| style.cursor_pointer()))
                 .child(icon(icon_name, px(12.), theme::text_secondary()))
         };
         Some(
