@@ -8,7 +8,7 @@ out of the task.
 
 | Path | Guide and workflow |
 | --- | --- |
-| `apps/maple-research/` | [Research guide](apps/maple-research/AGENTS.md); `$develop-maple` for existing React/Vite/Tauri web, desktop, and mobile; `$change-maple-agent-mode` for its embedded Goose/ACP/MCP runtime |
+| `apps/maple-research/` | [Research guide](apps/maple-research/AGENTS.md); `$develop-maple` for existing React/Vite/Tauri web, desktop, and mobile |
 | `apps/maple-auth/` | [Auth guide](apps/maple-auth/AGENTS.md); independent hosted V2 native sign-in, package and publisher; Research keeps built-in auth |
 | `apps/maple-agent/` | [Agent guide](apps/maple-agent/AGENTS.md); `$develop-maple-agent` for the independent GPUI desktop prototype |
 | `sdk/` | [SDK guide](sdk/README.md); `$develop-opensecret-sdk` for TypeScript/React and Rust clients |

@@ -1,6 +1,6 @@
 ---
 name: validate-maple
-description: Select and run Maple component checks, platform builds, and exact-runtime smoke evidence for the changed behavior. Use for requested validation or when implementation crosses API/account, Tauri IPC, Agent, auth, persistence, mobile, or packaging boundaries.
+description: Select and run Maple component checks, platform builds, and exact-runtime smoke evidence for the changed behavior. Use for requested validation or when implementation crosses API/account, Tauri IPC, auth, persistence, mobile, or packaging boundaries.
 ---
 
 # Validate Maple
@@ -26,7 +26,7 @@ checks rather than blindly running unrelated platforms or live services.
 | Prose/inert metadata | Verify consumed result, paths/links/examples/claims; flake checks for workflow/Nix/release configuration |
 | Isolated frontend | Focused then complete frontend checks, PR web build, browser smoke of changed states/accessibility |
 | API/account/persistence/stream | Applicable frontend gates plus configured client/backend smoke: relevant login/logout/account switch, failure, cancel, reload/history |
-| Native IPC/Agent/proxy/device effects | Applicable Rust gates, affected platform build, exact-app user action through native result and representative rejection |
+| Native IPC/proxy/device effects | Applicable Rust gates, affected platform build, exact-app user action through native result and representative rejection |
 | Mobile/lifecycle/deep links/payments | Affected simulator/device runtime in addition to compilation; exercise changed permission/background/return-link paths |
 | Release/signing/distribution | Required platform/artifact evidence; publication only through `$release-maple` with explicit authority |
 
@@ -41,8 +41,8 @@ a checked-in React-to-IPC harness, manual exact-app smoke is required. Read
 - [Automated/platform checks](references/automated-checks.md): component CI,
   fixed PR builds, and affected platform recipes. Read only those sections.
 - [Runtime smoke](references/runtime-smoke.md): configured local desktop, exact
-  app identity, Agent/MCP/proxy, deep links, PDF/OCR, and optional macOS picker
-  automation details. Read only the scenarios needed.
+  app identity, local proxy, the Agent placeholder, deep links, PDF/OCR, and
+  optional macOS picker automation details. Read only the scenarios needed.
 - `$develop-opensecret-sdk`, `$develop-maple-proxy`, and `$develop-maple-agent`:
   component gates and selected SDK/dependency-source proof.
 - `$validate-opensecret`: backend, disposable DB, and in-tree SDK compatibility.

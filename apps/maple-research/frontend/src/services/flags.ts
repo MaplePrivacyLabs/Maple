@@ -4,8 +4,7 @@ const DEV_FLAGS_BASE_URL = "https://flags-dev.opensecret.cloud";
 const PROD_FLAGS_BASE_URL = "https://flags.opensecret.cloud";
 
 export const FEATURE_FLAGS = {
-  AGENT_MODE: "agent_mode",
-  AGENT_CONNECTIONS: "agent_connections"
+  AGENT_MODE: "agent_mode"
 } as const;
 
 export type FlagValues = Readonly<Record<string, boolean>>;
@@ -32,7 +31,7 @@ interface CacheEntry {
 // Off by default; set VITE_FORCE_FEATURE_FLAGS to a comma-separated list of flag
 // keys (e.g. "agent_mode") to force them enabled. Intended for local/dev builds
 // only — real builds leave this unset so server flags remain authoritative.
-export function isForcedOn(key: string): boolean {
+function isForcedOn(key: string): boolean {
   const raw = import.meta.env.VITE_FORCE_FEATURE_FLAGS;
   if (typeof raw !== "string" || raw.trim() === "") return false;
   const forced = new Set(

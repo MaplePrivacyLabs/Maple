@@ -55,8 +55,8 @@ jobs:
       - name: Cache sccache and Cargo downloads
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
-          key: ci-v1-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
-          restore-keys: ci-v1-research-rust-
+          key: ci-v2-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
+          restore-keys: ci-v2-research-rust-
           path: |
             ~/.cache/sccache
             ~/.cargo/registry/index

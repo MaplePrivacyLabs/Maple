@@ -15,7 +15,6 @@ import {
   PersistentHomeNavigationContext,
   useAccountSidebarOpenState
 } from "@/contexts/PersistentHomeNavigationContext";
-import { AgentSessionSelectionMemory } from "@/services/agentSessionSelection";
 
 const TRANSIENT_HOME_SEARCH_PARAMS = ["team_setup", "credits_success", "api_settings"];
 
@@ -60,7 +59,6 @@ export function PersistentHomeNavigationProvider({ children }: { children: React
   const homeHrefUserIdRef = useRef(userId);
   const skipNextHomeCaptureRef = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useAccountSidebarOpenState(userId);
-  const [agentSessionSelection] = useState(() => new AgentSessionSelectionMemory());
 
   const captureHomeHref = useCallback(() => {
     if (!userId || window.location.pathname !== "/") return;
@@ -124,10 +122,9 @@ export function PersistentHomeNavigationProvider({ children }: { children: React
     () => ({
       returnToHome,
       sidebarOpen,
-      setSidebarOpen,
-      agentSessionSelection
+      setSidebarOpen
     }),
-    [agentSessionSelection, returnToHome, setSidebarOpen, sidebarOpen]
+    [returnToHome, setSidebarOpen, sidebarOpen]
   );
 
   return (

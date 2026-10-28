@@ -94,9 +94,9 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # Exactly rust-tests.yml's key and paths; it is the only writer. Its Cargo git
-          # database spares the Goose and PDFOxide fetches Cargo makes for every target.
-          key: ci-v1-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
-          restore-keys: ci-v1-research-rust-
+          # database spares the PDFOxide fetch Cargo makes for every target.
+          key: ci-v2-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
+          restore-keys: ci-v2-research-rust-
           path: |
             ~/.cache/sccache
             ~/.cargo/registry/index
@@ -351,8 +351,8 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # Exactly rust-tests.yml's key and paths; it is the only writer.
-          key: ci-v1-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
-          restore-keys: ci-v1-research-rust-
+          key: ci-v2-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
+          restore-keys: ci-v2-research-rust-
           path: |
             ~/.cache/sccache
             ~/.cargo/registry/index

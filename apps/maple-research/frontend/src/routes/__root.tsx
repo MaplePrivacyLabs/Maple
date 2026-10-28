@@ -10,7 +10,7 @@ import { ExternalUrlConfirmHandler } from "@/components/ExternalUrlConfirmHandle
 import { RootRuntimeLayout } from "@/components/RootRuntimeLayout";
 import { TeamSeatMismatchAlert } from "@/components/team/TeamSeatMismatchAlert";
 import { VerificationModal } from "@/components/VerificationModal";
-import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
+import { proxyService } from "@/services/proxyService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 
 interface RootRouterContext {
@@ -43,6 +43,7 @@ function Root() {
   const userId = auth.user?.user.id || null;
   const location = useLocation();
   const persistentHomeRef = useRef<HTMLDivElement>(null);
+  const previousUserIdRef = useRef(userId);
 
   const isHomeRoute = location.pathname === "/";
   const isSettingsRoute =
@@ -50,9 +51,13 @@ function Root() {
   const keepAuthenticatedHomeMounted = !!auth.user && (isHomeRoute || isSettingsRoute);
 
   useLayoutEffect(() => {
-    // Queue cleanup before route-level passive effects initialize Agent Mode.
-    // A failed transition is surfaced by Agent Mode's matching wait gate.
-    void transitionAgentAuthUser(userId).catch(() => {});
+    // Explicit sign-outs reset the local proxy themselves. Also stop and scrub it
+    // when the account goes away or changes any other way (session expiry,
+    // signing in as someone else) so it never keeps serving the previous key.
+    const previousUserId = previousUserIdRef.current;
+    previousUserIdRef.current = userId;
+    if (!previousUserId || previousUserId === userId) return;
+    void proxyService.stopAndResetProxy().catch(() => {});
   }, [userId]);
 
   useEffect(() => {

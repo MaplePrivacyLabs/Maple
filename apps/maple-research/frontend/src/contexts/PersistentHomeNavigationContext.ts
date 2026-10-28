@@ -8,7 +8,6 @@ import {
   type Dispatch,
   type SetStateAction
 } from "react";
-import type { AgentSessionSelectionMemory } from "@/services/agentSessionSelection";
 import {
   loadSidebarOpenPreference,
   saveSidebarOpenPreference
@@ -32,7 +31,6 @@ export type PersistentHomeNavigation = {
   returnToHome: (options?: { replace?: boolean }) => void;
   sidebarOpen: boolean | null;
   setSidebarOpen: Dispatch<SetStateAction<boolean | null>>;
-  agentSessionSelection: AgentSessionSelectionMemory;
 };
 
 export const PersistentHomeNavigationContext = createContext<PersistentHomeNavigation | null>(null);

@@ -17,8 +17,8 @@ package boundaries remain independently versioned and publishable:
 - `apps/maple-research/frontend/package.json` is authoritative for whether Maple's browser client
   consumes a published TypeScript version or the in-tree `file:../../../sdk` package.
 - Research native clients, Maple Agent, and `proxy/` select their Rust SDK
-  through their own manifests and lockfiles. Research iOS and Android use the
-  Rust SDK for native OAuth; the embedded proxy and Goose remain desktop-only.
+  through their own manifests and lockfiles. Research uses the Rust SDK for
+  native OAuth on desktop and mobile; its embedded proxy is desktop-only.
 
 Follow the [consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
 To ship an SDK change to clients, follow the

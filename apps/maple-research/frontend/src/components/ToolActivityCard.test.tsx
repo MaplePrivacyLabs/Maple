@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ToolActivityCard } from "./ToolActivityCard";
 
 describe("ToolActivityCard", () => {
-  test("renders the compact Agent visual hierarchy with an accessible kind label", () => {
+  test("renders the compact visual hierarchy with an accessible kind label", () => {
     const markup = renderToStaticMarkup(
       <ToolActivityCard kind="web" title="Web Search: maple" status="completed" />
     );
@@ -16,7 +16,7 @@ describe("ToolActivityCard", () => {
     expect(markup).not.toContain("<details");
   });
 
-  test("supports Agent's status copy while announcing status changes", () => {
+  test("supports custom status copy while announcing status changes", () => {
     const markup = renderToStaticMarkup(
       <ToolActivityCard kind="shell" title="Terminal: pwd" status="active" statusLabel="Running" />
     );

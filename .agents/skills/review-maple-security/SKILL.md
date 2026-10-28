@@ -1,6 +1,6 @@
 ---
 name: review-maple-security
-description: Review Maple security across authentication, account isolation, local persistence, Tauri IPC and capabilities, OAuth and deep links, the Local OpenAI Proxy, Agent Mode tools and permissions, MCP, ACP, streaming concurrency, secrets, logging, and configurable API endpoints. Use for explicit security audits, threat modeling, security-sensitive code review, or regression assessment.
+description: Review Maple security across authentication, account isolation, local persistence, Tauri IPC and capabilities, OAuth and deep links, the Local OpenAI Proxy, streaming concurrency, secrets, logging, and configurable API endpoints. Use for explicit security audits, threat modeling, security-sensitive code review, or regression assessment.
 ---
 
 # Review Maple Security
@@ -62,62 +62,52 @@ Trace data and authority across every boundary touched by the change:
 user/browser or WebView
   -> React state, storage, and OpenSecret SDK
   -> Tauri IPC and plugin capabilities
-  -> native Rust state, filesystem, keyring, processes, and listeners
+  -> native Rust state, filesystem, keyring, and listeners
   -> OpenSecret API and other configured public API endpoints
-
-Agent prompt or remote content
-  -> Maple permission policy
-  -> Goose tool request
-  -> Maple developer tool, MCP process/server, or ACP caller
-  -> local files, shell, network, and credentials
 ```
 
-Treat renderer input, model output, MCP output, ACP input, remote content, persisted JSON, URLs, paths, and environment values as untrusted at their receiving boundary. Validate again where authority is exercised.
+Treat renderer input, model output, remote content, persisted JSON, deep-link parameters, URLs, paths, and environment values as untrusted at their receiving boundary. Validate again where authority is exercised.
 
 ## Review Authentication and Account Lifecycles
 
-Inspect these source areas when authentication, user state, native providers, logout, deletion, or account switching is relevant:
+Inspect these source areas when authentication, user state, logout, deletion, or account switching is relevant:
 
-- `apps/maple-research/frontend/src/services/mapleApiAuthService.ts`
-- `apps/maple-research/frontend/src/services/agentAuthLifecycle.ts`
-- `apps/maple-research/frontend/src/services/agentOperationFence.ts`
-- `apps/maple-research/frontend/src/services/agentRuntimeService.ts`
-- `apps/maple-research/frontend/src-tauri/src/maple_api.rs`
+- `apps/maple-research/frontend/src/routes/__root.tsx` (stops and resets the local proxy when the signed-in user changes)
 - `apps/maple-research/frontend/src/components/RootRuntimeLayout.tsx`
+- `apps/maple-research/frontend/src/components/settings/SettingsLayout.tsx`
+- `apps/maple-research/frontend/src/services/proxyService.ts`
 - every logout, guest-upgrade, verification, and account-deletion path
 
 Require these invariants:
 
-- Verify token ownership against the backend before publishing native credentials for an expected user.
-- Serialize native credential installation, refresh reconciliation, and clearing. Fence late refreshes with immutable client identity and generation.
 - Bind long-lived native handles and in-flight operations to an opaque account scope plus revocable generation; never silently rebind them to a new account.
 - Include user identity in query/cache keys and remount account-owned providers on transition.
-- Drain old-account Agent, ACP, proxy, timers, requests, controllers, and object URLs before activating a new account.
+- Drain old-account proxy, timers, requests, controllers, and object URLs before activating a new account.
 - Retain failed cleanup targets so rapid A -> B -> C transitions cannot skip A or B.
 - Perform required local credential cleanup before losing the authenticated context needed to identify the owner. Make rollback or fail-closed behavior explicit when cleanup fails.
 - Avoid new direct `os.signOut()` calls. Route sign-out, guest conversion, verification transitions, and deletion through one reviewed lifecycle sequence.
 - Treat `localStorage` and `sessionStorage` as sensitive client storage, not a native trust anchor or secure vault.
 
-Exercise success, cancellation, failure, timeout, token refresh during validation, wrong-user tokens, repeated logout, rapid account switching, and app exit/update. Check every `await` for stale account ownership before subsequent mutation.
+Exercise success, cancellation, failure, timeout, repeated logout, rapid account switching, and app exit/update. Check every `await` for stale account ownership before subsequent mutation.
 
 ## Review Local Persistence and Secrets
 
 Inspect where state is stored, who can read it, when it roams, and how precisely it is deleted.
 
-- Key user-sensitive Agent config, sessions, recent roots, trust decisions, caches, and runtime data by account scope.
+- Key user-sensitive config, caches, and runtime data by account scope.
 - Keep device/path-specific state in app-local-data when roaming it could affect another device.
 - Treat a hashed user ID as namespacing, not authorization or encryption.
 - Treat Unix mode `0600` files and `0700` directories as defense in depth, not encrypted storage.
-- Treat persisted MCP environment values, HTTP headers, proxy keys, and other
-  credentials as sensitive. Verify storage, fallback, and deletion guarantees
-  from the implementation; do not infer encryption from file permissions or
-  opaque serialization.
+- Treat persisted proxy keys and other credentials as sensitive. Verify
+  storage, fallback, and deletion guarantees from the implementation; do not
+  infer encryption from file permissions or opaque serialization.
 - Prefer secure platform credential storage where the product contract requires it. Specify fallback and hard-clear behavior; do not silently report success while a stale credential remains.
 - Write credential-bearing files through a restrictive same-directory temporary file, sync it, and atomically replace the destination. Avoid write-then-chmod windows.
 - Scope history clearing, session deletion, and account deletion to the exact target. Preserve unrelated account data and unrelated app configuration.
-- Re-check canonicalization, symlink behavior, traversal, file type, file size, and deletion boundaries for every renderer- or agent-controlled path.
+- History clearing and account deletion deliberately leave local Agent Mode data from Maple v3.4.5 on disk (the `agent/` and `acp/` app-data directories and Agent `localStorage` keys other than `workspaceMode`, the Chat | Agent preference that account deletion resets to Chat), because the desktop Agent page tells users to open it with that version. Their copy must describe only chats; do not report the retained data as a deletion bug.
+- Re-check canonicalization, symlink behavior, traversal, file type, file size, and deletion boundaries for every renderer-controlled path.
 
-Never include real tokens, passwords, prompts, private paths, encrypted user seeds, MCP secrets, or full credential-bearing URLs in tests, logs, screenshots, or reports. Use explicit non-secret fixtures.
+Never include real tokens, passwords, prompts, private paths, encrypted user seeds, or full credential-bearing URLs in tests, logs, screenshots, or reports. Use explicit non-secret fixtures.
 
 ## Review Tauri and Native Authority
 
@@ -145,7 +135,7 @@ Ask whether the change:
 - validates native URLs and sockets rather than trusting a frontend-created configuration; and
 - changes a privileged behavior without exact-app runtime proof.
 
-Keep security-sensitive local effects in native Rust: process launch, MCP connection, filesystem mutation, local listeners, credential persistence, deep-link ingestion, updater/restart, and account-bound native sessions. Minimize capabilities rather than compensating with renderer checks.
+Keep security-sensitive local effects in native Rust: filesystem mutation, local listeners, credential persistence, deep-link ingestion, native OAuth, and updater/restart. Minimize capabilities rather than compensating with renderer checks.
 
 Application-defined Rust commands and plugin commands are separate authority
 paths. Under the repository's default Tauri build configuration,
@@ -164,58 +154,6 @@ through the exact application, real UI entry point, intended command, native
 effect, and a representative rejection case.
 
 Treat untrusted Markdown and external URLs as a renderer boundary. Preserve sanitization before trusted transforms, suppress remote images unless intentionally supported, confirm external navigation, and review any sanitizer schema, raw HTML, KaTeX/highlight, CSP, or opener change together.
-
-## Review Agent Mode, Tools, MCP, and ACP
-
-Read the current implementation and docs together:
-
-- `apps/maple-research/frontend/src-tauri/src/agent.rs`
-- `apps/maple-research/frontend/src-tauri/src/agent/`
-- `apps/maple-research/frontend/src-tauri/src/agent_acp.rs`
-- `apps/maple-research/frontend/src-tauri/src/agent_host.rs`
-- `apps/maple-research/frontend/src-tauri/src/agent_tauri.rs`
-- `apps/maple-research/docs/agent-mode-mcp.md`
-- `apps/maple-research/docs/agent-mode-acp.md`
-
-Keep these concepts separate:
-
-- **Permission policy:** which tool calls Maple or a caller consents to.
-- **Containment:** which resources an allowed tool can actually access.
-- **Credential scope:** which secrets an allowed process receives and for how long.
-- **Surface ownership:** whether Desktop or an ACP caller owns events, approvals, and cancellation.
-
-Do not describe Read-only/SmartApprove, allowed project roots, Unix socket
-permissions, or process-group cleanup as an operating-system sandbox. A
-project-root grant is not per-tool filesystem confinement; enforce and test
-containment separately when it is part of the required policy.
-
-Require these invariants:
-
-- Derive a per-tool policy matrix from permission configuration, automatic
-  handling, classifiers, and executors. Distinguish always-allowed, automatic,
-  classifier-approved, and caller-approved paths. Do not generalize one
-  classifier or URL policy to another. Read-only is a consent and integrity
-  policy, not confidentiality or filesystem containment.
-- Treat classifier input as untrusted. On classifier-backed paths, ambiguity,
-  failure, timeout, invalid structured output, or cancellation must fall back
-  to caller approval. Establish explicit tool-specific rules for sensitive
-  reads, mutation, arbitrary execution, and network access.
-- Treat remote `read_image` as a separate network boundary. Review URL
-  admission, redirects, credentials and private destinations, size and time
-  bounds, and downloader behavior; never infer that `open_url` policy applies.
-- Bind every permission response to exact account generation, session, run, calling surface, request ID, and payload. Make IDs one-shot; reject unknown, duplicate, reused, late, cross-surface, disconnected, and cancelled responses.
-- Apply a more restrictive mode before fallible asynchronous setup or persistence so one last permissive action cannot slip through.
-- Keep Desktop and ACP events, approvals, status, and cancellation isolated. Do not make ACP runs actionable through the Desktop Tauri projection.
-- Bound event queues and surface overflow as truncation/error; a slow client must not block runtime cleanup.
-- Allowlist and bound tool-context environment keys and values. Scrub same-named ambient variables, linearize revocation with process launch, and revoke before future spawn.
-- Treat STDIO MCP as arbitrary local code execution. Preserve executable-plus-argument tokenization without a shell. Saving may remain inert; enabling or connecting is the execution boundary.
-- Freeze the complete MCP executable/endpoint/environment/header definition into the session snapshot. Do not retroactively send changed credentials to old sessions.
-- Keep project skill discovery disabled until the canonical project root has an explicit trust decision. Fail closed when trust or the root cannot be loaded.
-- Treat a same-user ACP endpoint as a local trust boundary, not independent application authentication. Explain which same-user processes can connect and what credentials/tools they can reach.
-
-Preserve intended power features when they are product choices. Assess whether
-their consent and containment match the documented threat model rather than
-assuming intentional execution authority violates the design.
 
 ## Review the Local OpenAI Proxy
 
@@ -278,9 +216,9 @@ Inspect the browser and native OpenSecret clients independently:
 
 - `apps/maple-research/frontend/src/app.tsx`
 - `apps/maple-research/frontend/src/ai/OpenAIContext.tsx`
-- `apps/maple-research/frontend/src/services/mapleApiAuthService.ts`
-- `apps/maple-research/frontend/src-tauri/src/maple_api.rs`
-- `apps/maple-research/frontend/src-tauri/src/agent/provider.rs`
+- `apps/maple-research/frontend/src-tauri/src/open_secret_config.rs`
+- `apps/maple-research/frontend/src-tauri/src/native_oauth.rs`
+- `apps/maple-research/frontend/src-tauri/src/proxy.rs`
 - `sdk/src/` and `sdk/rust/` when the SDK implementation or public protocol is
   in scope
 - the pinned JavaScript and Rust OpenSecret SDK versions and lockfiles
@@ -318,7 +256,7 @@ Use unique fake canary values in tests so accidental propagation is detectable w
 
 ## Review Streaming and Concurrency
 
-Inspect `ChatRuntimeContext`, `chatRuntimeStore`, `UnifiedChat`, stream coalescing, retry recovery, Agent event routing, and any affected async service.
+Inspect `ChatRuntimeContext`, `chatRuntimeStore`, `UnifiedChat`, stream coalescing, retry recovery, and any affected async service.
 
 Require every request, stream, timer, retry, load, cancellation, and delayed callback to capture immutable owner identity plus generation/run token. Re-check ownership after every `await` before mutation.
 
@@ -346,7 +284,7 @@ Keep in Maple:
 - presentation, accessibility, navigation, drafts, and client orchestration;
 - account-keyed client caches and safe projection of server state;
 - Tauri lifecycle and explicitly local OS integrations; and
-- native enforcement for local files, processes, credentials, IPC, listeners, Agent tools, MCP, and ACP.
+- native enforcement for local files, credentials, IPC, and listeners.
 
 Do not use billing status, feature flags, hidden routes, or disabled controls as
 authorization. Configure billing and feature flags as external dev/prod HTTP
@@ -368,11 +306,9 @@ Run dependency advisory checks only with available, trusted tooling and without 
 
 Add boundary-specific proof:
 
-- **Auth/account:** wrong-user credentials, refresh during validation, A -> B -> C, cleanup failure/retry, logout with pending operations, deletion ordering, restart.
+- **Auth/account:** A -> B -> C, implicit sign-out, cleanup failure/retry, logout with pending operations, deletion ordering, restart.
 - **Deep link:** exact valid callback, wrong scheme/authority/path/provider, missing or stale state, duplicate/replay, malformed parameters, safe redirect, and no credential logging.
 - **Proxy:** CORS-off `Origin` POST and `Sec-Fetch-Site` GET rejection; originless local success; CORS-on preflight with `Authorization`; no saved fallback; non-loopback rejection or explicit secure mode; invalid backend endpoints; start/stop/restart; auto-start; offline logout; delayed-start race.
-- **Agent permissions:** classifier ambiguity/failure, Auto -> Read-only mid-run, unknown/duplicate/reused/late responses, cross-surface attempts, cancellation/disconnect, event overflow.
-- **MCP/ACP:** inert save versus execution, deterministic STDIO and Streamable HTTP fixture, enable/disable, failed connection, immutable session snapshot, secret revocation, same-user client boundary, caller disconnect.
 - **Persistence:** account A/B isolation, precise history/data deletion, roaming versus device-local behavior, restrictive permissions, keyring hard-clear failure, symlink/path cases.
 - **Streaming:** simultaneous A/B runs, rapid A -> B -> A, hidden completion, cancel with pending deltas, ambiguous retry, draft rekey collision, account teardown, stale timers and loads.
 

@@ -17,11 +17,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { DEFAULT_AGENT_MODEL } from "@/services/agentModels";
 import { proxyService, type ProxyConfig, type ProxyStatus } from "@/services/proxyService";
 import { getProxyBaseUrl, isCodingAgentModel } from "@/services/proxyModels";
 import type { OpenSecretModel } from "@/state/LocalStateContextDef";
 import { isTauriDesktop } from "@/utils/platform";
+import { QUICK_MODEL_ALIAS } from "@/utils/utils";
 import { ProxyClientGuides } from "./ProxyClientGuides";
 import { ProxyModelList } from "./ProxyModelList";
 
@@ -69,7 +69,7 @@ export function ProxyConfigSection({
 
     setSelectedModelId((current) => {
       if (guideModels.some((model) => model.id === current)) return current;
-      return guideModels.find((model) => model.id === DEFAULT_AGENT_MODEL)?.id ?? guideModels[0].id;
+      return guideModels.find((model) => model.id === QUICK_MODEL_ALIAS)?.id ?? guideModels[0].id;
     });
   }, [guideModels]);
 

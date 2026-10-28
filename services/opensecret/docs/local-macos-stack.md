@@ -139,5 +139,6 @@ fixture for this backend. API selection does not localize native OAuth; follow
 the [client environment/login contract](../../../docs/development-environments.md).
 
 Follow the selected Maple revision's own `AGENTS.md` and development or
-validation skill when present. Browser Research and native Agent Mode are
-separate consumers; choose the path that exercises the changed contract.
+validation skill when present. Browser Research (TypeScript SDK) and Maple Agent
+(`apps/maple-agent`, Rust SDK) are separate consumers; choose the path that
+exercises the changed contract.

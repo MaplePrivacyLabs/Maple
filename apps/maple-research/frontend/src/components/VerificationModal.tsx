@@ -15,14 +15,9 @@ import { Loader2, CheckCircle, LogOut } from "lucide-react";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { AlertDestructive } from "./AlertDestructive";
-import {
-  clearMapleApiAuthForUser,
-  restoreMapleApiAuthForUser,
-  stopAgentRuntimeForUser
-} from "@/services/agentRuntimeService";
-import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { getBillingService } from "@/billing/billingService";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 import { navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
@@ -124,9 +119,7 @@ export function VerificationModal() {
     setSignOutError(null);
     setIsSigningOut(true);
     const releaseChatFence = beginAllChatRuntimeDeletionFence(runtimeStore);
-    let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
     let signedOut = false;
-    let nativeAuthCleared = false;
     const userId = os.auth.user?.user.id;
 
     try {
@@ -141,24 +134,10 @@ export function VerificationModal() {
 
     const releaseAppleBilling = suspendAppleBillingForAccount(userId);
     try {
-      operationBlock = await stopAgentRuntimeForUser(userId);
-    } catch (error) {
-      releaseAppleBilling();
-      console.error("Error stopping Agent Mode:", error);
-      releaseChatFence();
-      setSignOutError("Maple couldn't stop Agent Mode. Please try logging out again.");
-      setIsSigningOut(false);
-      return;
-    }
-
-    try {
       assertChatAccountCredential(userId);
       // Credential reset is a required part of logout.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(userId, (name) => {
-        assertChatAccountCredential(userId);
-        return os.deleteApiKey(name);
-      });
+      await proxyService.stopAndResetProxy();
 
       assertChatAccountCredential(userId);
       // Do not carry this account's third-party billing JWT into the next
@@ -169,8 +148,6 @@ export function VerificationModal() {
         sessionStorage.removeItem("maple_billing_token");
       }
 
-      await clearMapleApiAuthForUser(userId);
-      nativeAuthCleared = true;
       assertChatAccountCredential(userId);
       await os.signOut();
       signedOut = true;
@@ -178,24 +155,12 @@ export function VerificationModal() {
       queryClient.clear();
     } catch (error) {
       console.error("Error during sign out:", error);
-      setSignOutError(
-        "Maple couldn't securely reset Agent Mode or finish logging out. Please try again."
-      );
+      setSignOutError("Maple couldn't finish logging out. Please try again.");
     } finally {
       releaseAppleBilling();
       if (!signedOut) {
         releaseChatFence();
-        if (nativeAuthCleared) {
-          try {
-            await restoreMapleApiAuthForUser(userId);
-          } catch (error) {
-            console.error("Error restoring Maple API authentication:", error);
-          }
-        }
-        operationBlock.release();
         setIsSigningOut(false);
-      } else {
-        operationBlock.retainUntilNextSession();
       }
     }
   };

@@ -84,21 +84,8 @@ Clean up only the exact PIDs, listeners, temporary accounts, and artifacts creat
 
 Choose only scenarios relevant to the change, but cross every changed boundary.
 
-### Agent Mode, MCP, and local proxy
+### Local OpenAI Proxy
 
-- Run Agent Mode in the desktop app; it is unavailable in the web build.
-- For presentation-only Agent Mode changes, exercise the exact changed states,
-  interactions, accessibility, focus, theme, and layout in the native app. Do
-  not add file writes, shell execution, account switching, or lifecycle
-  manipulation merely to populate the UI.
-- For behavioral changes, verify the applicable start, intermediate state,
-  permission, cancellation, completion, restart, and shutdown boundaries. Run
-  `$change-maple-agent-mode` for the proportional lifecycle matrix.
-- Confirm process and listener ownership before and after cancellation, logout,
-  account switch, and app exit when those long-lived boundaries are affected.
-- For MCP, follow `apps/maple-research/docs/agent-mode-mcp.md`: use the pinned Everything server, send a unique marker, verify server request, arguments, result, and final answer, then disable or stop the server and verify a clear failure.
-- Verify that stale sessions cannot cross account boundaries when session or
-  account ownership changed.
 - Before local-proxy smoke, choose and verify an unused checkout-specific
   loopback port. After start, verify that the recorded Maple PID owns the
   listener; do not assume the default port is available.
@@ -108,11 +95,28 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
   the Tauri Local OpenAI Proxy, start it through the exact packaged or
   development app UI and verify its account, lifecycle, saved-key, CORS, and
   logout behavior through that app. One target does not prove the other.
+- When the proxy lifecycle changes, confirm listener ownership before and after
+  logout, account switch, and app exit. Every sign-out or account change must
+  stop and reset the proxy, including implicit ones such as a revoked session.
 - When forwarding behavior changes, exercise authenticated `/v1/models`, one
   non-streaming chat response, one streaming response with exactly one
   `[DONE]`, and embeddings against the intended backend. Add invalid/missing
   authentication, timeout, cancellation, and upstream-error cases as
   applicable. `/health` alone is only liveness evidence.
+
+### Agent placeholder
+
+- The sidebar Chat | Agent switch appears in Chat only in the desktop app,
+  for an account with the `agent_mode` flag (or a local build with
+  `VITE_FORCE_FEATURE_FLAGS=agent_mode`). Verify it is absent from Chat with
+  the flag off and in web and mobile builds. While in Agent, including after
+  a relaunch restores Agent, it stays visible even with the flag off so the
+  user can return to Chat.
+- In Agent, the sidebar shows only the wordmark row, the switch, and the
+  account menu; the main view shows the Maple Work page. Verify both external
+  links open in the system browser, that a collapsed or narrow-window sidebar
+  can be reopened from the page, and that a relaunch restores the last mode.
+- Switch back to Chat and verify the chat sidebar and history are unchanged.
 
 ### PDF and OCR
 
@@ -133,9 +137,8 @@ Codex must use its built-in Computer Use instead of CUA, even when CUA is
 installed. Other agents should skip this unless driving the GUI with
 cua-driver (pid + `window_id`).
 
-On macOS every Maple native file or folder picker — Agent project folder,
-chat photo/document upload, Save, and any other Tauri `dialog` — is hosted
-by **Open and Save Panel Service**
+On macOS every Maple native file picker — chat photo/document upload, Save,
+and any other native file dialog — is hosted by **Open and Save Panel Service**
 (`com.apple.appkit.xpc.openAndSavePanelService`), not Maple and not Finder.
 After the picker appears, `list_windows` with no pid filter and take the
 panel-service window whose title is `Open` or `Save` and whose bounds
@@ -149,7 +152,7 @@ Maple parent is observation-only; presses return
 
 Act on the panel-service pid/`window_id` (`foreground` pixels). That
 window may be `is_on_screen: false` and screenshot black. Confirm on
-Maple (`Where:` / selected name, then the product result: Trust/PROJECTS
-for an Agent folder, or the composer attachment for an upload). Do not
+Maple (`Where:` / selected name, then the product result, such as the
+composer attachment for an upload). Do not
 escalate the CUA session to desktop because Maple's stub refused input.
 After the panel closes, Maple web AX is the target again.

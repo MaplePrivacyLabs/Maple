@@ -121,7 +121,7 @@ describe("UpdateEventListener", () => {
         return () => {};
       }),
       restartForUpdate: mock(async () => {
-        throw new Error("agent drain failed");
+        throw new Error("restart failed");
       })
     });
 

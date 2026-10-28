@@ -1297,8 +1297,8 @@
 
 /*
  * Conversation typography is intentionally scoped to shared chat turns. The
- * product chrome keeps Maple's normal 14px Manrope treatment while Unified
- * Chat and Agent Mode consume the same device-local reading preference.
+ * product chrome keeps Maple's normal 14px Manrope treatment while chat turns
+ * consume the device-local reading preference.
  */
 .chat-typography {
   --chat-font-size-sm: calc(var(--chat-font-size, 15px) - 1px);
