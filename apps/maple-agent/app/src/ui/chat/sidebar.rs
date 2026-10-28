@@ -2897,8 +2897,7 @@ impl Sidebar {
                 .h_9()
                 .rounded(SEARCH_ROW_RADIUS)
                 .border_1()
-                .border_color(gpui::rgb(theme::border()))
-                .bg(gpui::rgb(theme::bg_sidebar_pill()))
+                .border_color(gpui::transparent_black())
                 .flex()
                 .items_center()
                 .gap_2()
@@ -2907,7 +2906,7 @@ impl Sidebar {
                 .text_color(gpui::rgb(theme::text_primary()))
                 .hover(|style| {
                     style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         .cursor_pointer()
                 })
                 .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
