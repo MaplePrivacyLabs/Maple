@@ -342,13 +342,13 @@ signature/notarization checks remain intact.
 They do not prove Developer ID distribution, deployed service behavior, or a
 successful real package update.
 
-The `agent-windows-updater` lane in `ci.yml` runs the actual updater and
-bootstrap component tests on Windows with no signing or publication
-credentials. It requires the named native filesystem, trust rejection,
-transaction and recovery cases and rejects ignored or empty suites. These
-fixtures do not establish official Maple signatures, installed A-to-B updates,
-visible GUI or paired remote-upgrade behavior. Record those qualifications
-separately from a green component job or an installer consumer.
+The `agent-windows-updater` lane in `ci.yml` runs `cargo test -p
+maple-agent-updater --locked` on Windows, with no signing or publication
+credentials: the native filesystem, trust rejection, transaction and recovery
+tests and the bootstrap component test. These fixtures do not establish
+official Maple signatures, installed A-to-B updates, visible GUI or paired
+remote-upgrade behavior. Record those qualifications separately from a green
+component job or an installer consumer.
 
 Windows publication is opt-in and additionally requires the repository variable
 `AGENT_WINDOWS_UPDATES_ENABLED=true`. Leave it disabled until signed installed

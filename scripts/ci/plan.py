@@ -6,7 +6,7 @@
   only NAME    another workflow's push selector: print selected=true|false
   opensecret   opensecret-eif.yml's changes job: the OpenSecret selector's outputs
   explain      show what changed paths select (stdin, or --base/--head)
-  verdict      ci.yml's ci-ok job: every selected lane's job succeeded
+  verdict      ci.yml's ci-ok job: every selected lane's job succeeded, or its lane is quarantined
   hook         .githooks/pre-commit: the components whose checks the staged paths select
   check-rust   the Agent flake's rustc must equal the Windows rustup pin
   lint         the table classifies every tracked file and matches ci.yml
@@ -170,8 +170,6 @@ def plan_event(event: str, payload: dict) -> Selection:
         unknown = sorted(set(names) - {lane.id for lane in active(event)})
         if unknown:
             raise ValueError(f"not an active lane: {', '.join(unknown)}")
-        if "research-desktop-windows-verify" in names:  # it verifies that lane's artifact
-            names.append("research-desktop-windows")
         return {name: ["dispatch"] for name in names}
     if event == NIGHTLY:
         return everything(event, "nightly")
@@ -202,6 +200,19 @@ def plan_event(event: str, payload: dict) -> Selection:
     return selected
 
 
+def quarantined() -> List[str]:
+    """CI_QUARANTINE: comma-separated lane ids that still run, but whose failures
+    ci-ok reports without failing. An id that names no lane is an error, and so is
+    `repo`: it enforces the workflow policy and the release contracts."""
+    names = sorted({name.strip() for name in os.environ.get("CI_QUARANTINE", "").split(",") if name.strip()})
+    unknown = [name for name in names if name not in {lane.id for lane in LANES}]
+    if unknown:
+        raise ValueError(f"CI_QUARANTINE names no lane: {', '.join(unknown)}")
+    if "repo" in names:
+        raise ValueError("CI_QUARANTINE cannot name repo: it enforces the workflow policy and release contracts")
+    return names
+
+
 def cache_key(lane: Lane) -> str:
     digest = hashlib.sha256()
     for name in lane.cache_files:
@@ -214,9 +225,9 @@ def runner_label(lane: Lane) -> str:
     return os.environ.get(lane.runner.variable or "") or lane.runner.label
 
 
-def outputs(selected: Selection) -> Dict[str, str]:
+def outputs(selected: Selection, quarantine: Sequence[str] = ()) -> Dict[str, str]:
     """`lanes` maps every active lane to whether it runs; each matrix job gets its entries."""
-    result = {"lanes": {lane.id: lane.id in selected for lane in LANES}}
+    result = {"lanes": {lane.id: lane.id in selected for lane in LANES}, "quarantine": list(quarantine)}
     for job in MATRIX_JOBS:
         result[job] = [{
             "id": lane.id,
@@ -236,8 +247,11 @@ def outputs(selected: Selection) -> Dict[str, str]:
     return {name: json.dumps(value, separators=(",", ":")) for name, value in result.items()}
 
 
-def summary(event: str, selected: Selection) -> str:
+def summary(event: str, selected: Selection, quarantine: Sequence[str] = ()) -> str:
     lines = [f"### Lanes for this {event}", ""]
+    if quarantine:
+        lines += ["Quarantined by `CI_QUARANTINE` (they run, but their failures do not fail `ci-ok`): "
+                  + ", ".join(f"`{name}`" for name in quarantine), ""]
     if not selected:
         return "\n".join(lines + ["No lane selected."]) + "\n"
     lines += ["| Lane | Why |", "|---|---|"]
@@ -252,6 +266,11 @@ def summary(event: str, selected: Selection) -> str:
 def github() -> int:
     event = os.environ["GITHUB_EVENT_NAME"]
     try:
+        quarantine = quarantined()
+    except ValueError as error:  # a typo must not silently quarantine nothing
+        print(f"::error::{error}")
+        return 1
+    try:
         selected = plan_event(event, json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()))
     except Exception as error:  # noqa: BLE001 - every failure is handled the same way
         if event in PR_EVENTS:
@@ -261,8 +280,8 @@ def github() -> int:
         print(f"::warning::lane selection failed ({error!r}); selecting every lane")
         selected = everything(event, "selection failed")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-        output.writelines(f"{name}={value}\n" for name, value in outputs(selected).items())
-    text = summary(event, selected)
+        output.writelines(f"{name}={value}\n" for name, value in outputs(selected, quarantine).items())
+    text = summary(event, selected, quarantine)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
             output.write(text)
@@ -270,23 +289,49 @@ def github() -> int:
     return 0
 
 
+def unsuccessful(ids: Sequence[str]) -> Optional[set]:
+    """The matrix lanes among `ids` whose entry in this run did not succeed (an
+    entry is named after its lane), or None when the run's jobs cannot be read."""
+    path = (f"repos/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}"
+            "/jobs?filter=latest&per_page=100")
+    try:
+        listing = subprocess.run(["gh", "api", "--paginate", path, "--jq", ".jobs[] | [.name, .conclusion] | @tsv"],
+                                 check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"::warning::cannot read this run's job results: {error!r}")
+        return None
+    conclusions = dict(line.split("\t", 1) for line in listing.splitlines() if "\t" in line)
+    return {lane for lane in ids if conclusions.get(lane) != "success"}
+
+
 def verdict() -> int:
     """ci-ok: the job of every selected lane succeeded, and every other job was
-    skipped (or succeeded). NEEDS is ci-ok's `needs` context, plan included."""
+    skipped (or succeeded). NEEDS is ci-ok's `needs` context, plan included. A
+    quarantined lane's failure is a warning; for the matrix jobs, which run many
+    lanes, the run's job results show which entries failed."""
     needs = json.loads(os.environ["NEEDS"])
     if needs.get("plan", {}).get("result") != "success":
         print("::error::plan did not succeed")
         return 1
     selected = json.loads(needs["plan"]["outputs"]["lanes"])
-    failed = []
+    quarantine = set(json.loads(needs["plan"]["outputs"].get("quarantine") or "[]"))
+    failed, excused = [], []
     for job, state in sorted(needs.items()):
-        wanted = any(selected.get(lane.id) for lane in LANES if lane.job == job)
-        if state.get("result") not in (("success",) if wanted else ("success", "skipped")):
-            failed.append(f"{job} ({'selected' if wanted else 'not selected'}): {state.get('result')}")
+        wanted = [lane.id for lane in LANES if lane.job == job and selected.get(lane.id)]
+        if state.get("result") in (("success",) if wanted else ("success", "skipped")):
+            continue
+        if quarantine & set(wanted):
+            failing = unsuccessful(wanted) if job in MATRIX_JOBS else set(wanted)
+            if failing and failing <= quarantine:  # a failure it cannot attribute blocks
+                excused += sorted(failing)
+                continue
+        failed.append(f"{job} ({'selected' if wanted else 'not selected'}): {state.get('result')}")
+    for lane in excused:
+        print(f"::warning::{lane} did not succeed; it is quarantined (CI_QUARANTINE), so it does not fail ci-ok")
     if failed:
         print("::error::a job did not finish as planned: " + "; ".join(failed))
         return 1
-    print("ci-ok: every selected lane succeeded")
+    print("ci-ok: every selected lane succeeded" + (", but for quarantined ones" if excused else ""))
     return 0
 
 

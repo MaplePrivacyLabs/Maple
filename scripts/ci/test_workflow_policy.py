@@ -28,8 +28,14 @@ NIX_INPUTS = {"source-tag": "v3.23.3", "github-token": ""}
 VERIFY_NIX = "bash scripts/ci/verify-nix-runtime.sh"
 SETUP_NIX = "./.github/actions/setup-nix"
 PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}")
-# Standard images, and the org's GitHub-hosted larger runners (named maple-*).
-GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|maple-(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+")
+# Standard images, and the org's one GitHub-hosted larger runner, by its exact label:
+# a pattern would also admit a self-hosted runner that borrowed the name.
+GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|maple-windows-2025-16core")
+# The workflows that run on pull requests or the merge queue. Every other check is a
+# ci.yml lane (scripts/ci/lanes.py), so ci-ok judges it; adding one here is an owner call.
+PULL_REQUEST_WORKFLOWS = frozenset({
+    "ci.yml", "opensecret-eif.yml", "pages-preview-build.yml", "auth-pages-ci.yml", "proxy-rust.yml",
+})
 CLOUDFLARE = frozenset({"CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"})
 # Every protected environment and the secrets configured in it.
 ENVIRONMENTS = {
@@ -68,14 +74,14 @@ BRANCH_SCOPED_NIX = frozenset({("opensecret-eif.yml", "eif")})
 # Jobs on GitHub-hosted runners that save caches into GitHub's store; every other
 # cache lives in Blacksmith's. The release and the Nix installer also use GitHub's.
 GITHUB_STORE_WRITERS = frozenset({
-    ("desktop-build.yml", "build-windows"),  # the signed Research Windows build
+    ("desktop-build.yml", "build-windows"),  # the signed Research Windows build (setup-bun's Bun binary)
     ("agent-desktop-build.yml", "windows-build"),  # the unsigned Agent Windows build (exact key)
-    # The Agent lanes on GitHub's Windows image (scripts/ci/lanes.py GITHUB_WINDOWS):
-    # agent-full-windows in the windows matrix, the updater tests and the packaging rehearsal.
-    ("ci.yml", "windows"), ("ci.yml", "agent-windows-updater"), ("ci.yml", "agent-package-windows"),
+    # The Agent lanes on GitHub's Windows image: the native suites in the windows
+    # matrix and the packaging rehearsal.
+    ("ci.yml", "windows"), ("ci.yml", "agent-package-windows"),
 }) | BRANCH_SCOPED_NIX
 # The only cached matrix lanes whose home runner uses GitHub's store.
-GITHUB_STORE_LANES = frozenset({"agent-full-windows"})
+GITHUB_STORE_LANES = frozenset({"agent-full-windows", "agent-windows-updater"})
 # A special job whose runner a repository variable overrides saves only on its home
 # runner's vendor; Blacksmith runner names start with "blacksmith".
 ON_BLACKSMITH = "startsWith(runner.name, 'blacksmith')"
@@ -161,6 +167,8 @@ class WorkflowPolicyTests(unittest.TestCase):
                 self.assertNotIn("pull_request_target", triggers(config))
                 if "workflow_run" in triggers(config):
                     self.assertIn(name, LISTENERS)
+        self.assertEqual({name for name, config in workflows().items()
+                          if {"pull_request", "merge_group"} & triggers(config)}, PULL_REQUEST_WORKFLOWS)
 
     def test_2_every_action_is_local_or_pinned_to_a_commit(self):
         files = sorted(WORKFLOWS.glob("*.yml")) + sorted((ROOT / ".github/actions").glob("*/action.yml"))
@@ -295,7 +303,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                             self.assertIn(ON_BLACKSMITH, guard)
                             self.assertEqual("!" + ON_BLACKSMITH in guard,
                                              {lanes.cache_store(label) for label in labels} == {"github"})
-                if any(GITHUB_HOSTED.fullmatch(label) for label in labels):
+                if "github" in {lanes.cache_store(label) for label in labels}:  # any non-Blacksmith runner
                     writers.add((name, job_id))
         self.assertEqual(writers, GITHUB_STORE_WRITERS)
         # Within a matrix writer, pin the lanes themselves.

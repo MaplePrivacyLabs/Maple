@@ -40,13 +40,15 @@ branches in step with the lane table.
   store of the lane's own runner vendor; a runner from the other vendor (a
   failover) only restores. Heavy Rust caches therefore live in Blacksmith's
   store. GitHub's holds what GitHub-hosted jobs need: the lane caches of
-  `agent-full-windows` and `agent-windows-updater`, the
-  `agent-package-windows` packaging cache (below), the unsigned Agent and signed
-  Research Windows builds, the release, the Nix installer and that EIF check.
+  `agent-full-windows` and `agent-windows-updater` (both saved only by the
+  nightly run), the `agent-package-windows` packaging cache (below), the
+  unsigned Agent Windows build, the signed Research Windows build's Bun binary,
+  the release, the Nix installer and that EIF check.
   `test_workflow_policy.py` lists these writers.
 - The signed master builds write the keys `release.yml` restores by prefix
-  (`<os>-sccache-*`, `xcode-cache-*`, `release-onnxruntime-ios-*`,
-  `<os>-bun-*`, `<os>-gradle-*`). No pull-request job writes these prefixes;
+  (`<os>-sccache-*` for macOS and Linux, `xcode-cache-*`,
+  `release-onnxruntime-ios-*`, `<os>-bun-*`, `<os>-gradle-*`). Research Windows
+  builds use no compiler cache. No pull-request job writes these prefixes;
   the Research platform lanes only restore them. The iOS ONNX key text is
   identical in every workflow that uses it. A release job reads only the store
   of its own runner vendor, so `release.yml`'s `build-web` (GitHub-hosted)
@@ -105,11 +107,12 @@ the other side of each contract. A failure means the workflow change is wrong:
 7. Docs, guides and READMEs name only workflows that exist.
 
 `scripts/ci/test_workflow_policy.py` holds the rules every workflow keeps: no
-`pull_request_target`; actions pinned to commits; checkouts without persisted
-credentials; read-only workflow permissions, with write scopes granted to the
-jobs that need them; secrets only inside their environment's jobs; a pinned,
-verified Nix install; a timeout on every job; `ci-ok` needing every other
-`ci.yml` job; and declared runner labels.
+`pull_request_target`, and a fixed set of workflows that run on pull requests;
+actions pinned to commits; checkouts without persisted credentials; read-only
+workflow permissions, with write scopes granted to the jobs that need them;
+secrets only inside their environment's jobs; a pinned, verified Nix install; a
+timeout on every job; `ci-ok` needing every other `ci.yml` job; and declared
+runner labels.
 
 ## Signed builds and publication
 
@@ -145,23 +148,16 @@ merging source.
 
 ## Agent Windows updater checks
 
-The `agent-windows-updater` lane runs on pull requests and master pushes that
-change the updater, the Windows bootstrap, the app's update and desktop code,
-the release profiles or the Windows packaging scripts, and with `ci:windows` or
-`ci:full`. It has no signing credential or protected environment. Its
-dependencies come from its own cache, which master pushes and the nightly run
-save; the Agent's own crates always compile from source.
-`scripts/ci/windows-app-typecheck.ps1` typechecks
-`maple-agent-app --all-targets` with `cargo check --locked`, Windows-only test
-fixtures included, without code generation. `scripts/ci/windows-updater-tests.ps1`
-refuses signing and publication credentials, then runs the native updater,
-filesystem, Authenticode-rejection and bootstrap tests; every listed native case
-must run, so a runner without the symlink privilege the reparse fixtures need
-fails. Both scripts run even when the first fails, and both need the Actions
-context (`RUNNER_TEMP`, `GITHUB_SHA`, the run id and attempt). Their receipts
-and Cargo logs are kept as an artifact even on failure. Neither qualifies an
-official signature, a signed installed upgrade, the visible GUI or a paired
-remote upgrade.
+The `agent-windows-updater` lane runs `cargo test -p maple-agent-updater
+--locked` on GitHub's Windows image: the updater's native filesystem,
+Authenticode-rejection, transaction and recovery tests, and the bootstrap
+integration test, which compiles the app's `windows_bootstrap.rs`. It runs on
+pull requests that change the updater crate, that file or the Windows
+toolchain, with `ci:windows` or `ci:full`, and nightly on master, which saves
+its cache. Like every `windows` matrix lane it has no signing credential or
+protected environment. The reparse tests need the symlink privilege GitHub's
+runner grants. A pass qualifies no official signature, signed installed
+upgrade, visible GUI or paired remote upgrade.
 
 The manual `agent-windows-signature-probe.yml` takes an exact historical
 producer run, attempt and source and the artifact's ZIP and PE digests. It
@@ -217,14 +213,19 @@ Research macOS, Linux, Android and iOS builds compile and sign on Blacksmith.
 Artifact verifiers, TestFlight submission, and the Agent's signing and
 attestation use GitHub-hosted runners. Windows builds that compile run on the
 org's 16-core GitHub-hosted runner `maple-windows-2025-16core`: the unsigned Agent
-build, the signed Research build, the release's `build-windows`, and the Agent's
-native Windows test lanes and packaging rehearsal ([CI runners](ci.md#runners)).
-The short signing and verify jobs stay on GitHub's standard `windows-2025`. Rust,
-MSVC, Perl and the linker are pinned by `.github/actions/setup-agent-windows` for
-the Agent. Blacksmith's Windows workspace inherits a foreign write ACE that the
-updater's storage validation rejects, so only the Agent Windows Clippy lane and
-the Research Windows PR package use `blacksmith-8vcpu-windows-2025`; the latter
-has no cache, because its signed build's cache lives in GitHub's store.
+build, the release's `build-windows`, the Agent's native updater tests and
+packaging rehearsal, and the Research Windows PR package
+([CI runners](ci.md#runners)). The signed Research master build and
+`agent-full-windows` (nightly, or by label) use GitHub's free standard
+`windows-2025`, like the short signing and verify jobs. Jobs that compile and
+sign install the pinned Artifact Signing module before compiling, so a failed
+module download fails early; the module's own NuGet packages and the Azure
+login still come after the compile. The installer retries the PowerShell
+Gallery and its CDN and accepts only the pinned SHA-256. Rust, MSVC, Perl and
+the linker are pinned by `.github/actions/setup-agent-windows` for the Agent.
+Blacksmith's Windows workspace inherits a foreign write ACE that the updater's
+storage validation rejects, so only the Agent Windows Clippy lane uses
+`blacksmith-8vcpu-windows-2025`.
 
 Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through

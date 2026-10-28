@@ -39,7 +39,7 @@ ci_evidence = module("ci_evidence", ".agents/skills/release-maple/scripts/ci_evi
 RELEASE_FEEDING = frozenset({"release.yml", "desktop-build.yml", "android-build.yml", "mobile-build.yml",
                              "ios-dev-testflight.yml"})
 RESERVED_PREFIXES = (
-    "Linux-sccache-", "macOS-sccache-", "Windows-sccache-", "${{ runner.os }}-sccache-", "xcode-cache-",
+    "Linux-sccache-", "macOS-sccache-", "${{ runner.os }}-sccache-", "xcode-cache-",
     "maple-dev-xcode", "release-onnxruntime-ios-", "${{ runner.os }}-bun-", "${{ runner.os }}-gradle-",
 )
 ONNX_CACHE = "apps/maple-research/frontend/src-tauri/onnxruntime-ios"
@@ -101,11 +101,14 @@ def condition(job: dict) -> str:
     return " ".join(str(job.get("if", "")).split())
 
 
-def variants(job: dict) -> list:
+def variants(job: dict, event: str) -> list:
+    """The job's `variant` matrix on `event`: a list, or `fromJSON(<condition> && '[...]' || '[...]')`."""
     matrix = job.get("strategy", {}).get("matrix", {}).get("variant")
     if matrix is None or isinstance(matrix, list):
         return matrix or [None]
-    return sorted({value for array in re.findall(r"\[[^\]]*\]", matrix) for value in json.loads(array)})
+    text = matrix.strip().removeprefix("${{").removesuffix("}}").strip().removeprefix("fromJSON(").removesuffix(")")
+    return json.loads(expression_value(text.replace("&&", " and ").replace("||", " or "),
+                                       {"github.event_name": event}))
 
 
 def job_results(config: dict, event: str) -> dict:
@@ -150,7 +153,7 @@ def desktop_run(config: dict, run_id: int, event: str = "push"):
     results = job_results(config, event)
     inventory, artifacts = [], []
     for job_id, job in config["jobs"].items():
-        for variant in variants(job):
+        for variant in variants(job, event):
             inventory.append({"name": expand(job.get("name", job_id), variant), "status": "completed",
                               "conclusion": results[job_id], "labels": [job["runs-on"]]})
             if results[job_id] == "success":
@@ -173,11 +176,15 @@ def expression(job: dict) -> str:
     return " ".join(text.replace("!cancelled()", "NOT_CANCELLED").replace("always()", "True").split())
 
 
-def evaluate(text: str, context: dict) -> bool:
-    for key, value in context.items():
-        text = text.replace(key, repr(value))
+def expression_value(text: str, context: dict):
+    for key, replacement in context.items():
+        text = text.replace(key, repr(replacement))
     literals = {"true": True, "false": False, "null": None}  # GitHub's literals; quoted strings are untouched
-    return bool(eval(text, {"__builtins__": {}}, literals))  # noqa: S307 - fixed workflow text
+    return eval(text, {"__builtins__": {}}, literals)  # noqa: S307 - fixed workflow text
+
+
+def evaluate(text: str, context: dict) -> bool:
+    return bool(expression_value(text, context))
 
 
 def cancels(concurrency) -> bool:

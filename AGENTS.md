@@ -84,7 +84,13 @@ and installed-client raw URLs. Never change approvals to clear ordinary PR check
 ## CI rules for agents
 
 - `ci-ok` is the one required check; [CI](docs/ci.md) explains its lanes and labels.
-- Add or change checks only as lanes in `scripts/ci/lanes.py`, with a `test_plan.py` case.
+- Add or change checks only through `scripts/ci/lanes.py`, as lanes with a
+  `test_plan.py` case; no new side workflows or bespoke guard scripts.
+- Never put `[skip ci]`, `[ci skip]` or similar in a commit or PR title: master
+  plans each push from the previous commit, so a skipped commit is never checked.
+- Never write tests that assert a script's or workflow's text; test behavior, or
+  a contract another file consumes (`test_contracts.py`). Never hand-copy lists
+  of test names; a required list must be derived, not maintained.
 - Pull requests never save caches, and master runs are never cancelled.
 - Never edit release or publisher workflows, signing environments, or OpenSecret
   approval gating to clear a check; a failing contract test means fix the change.

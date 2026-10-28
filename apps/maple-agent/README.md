@@ -330,8 +330,9 @@ just release                    # local release build only
 
 For hosted Dev and Prod packages, see [desktop builds](docs/desktop-builds.md)
 and [build profiles](docs/release-profiles.md). The desktop build workflow
-produces both profiles on protected `master`; macOS packages use Developer ID
-signing and notarization, and Linux packages are portable user-local tar bundles.
+produces both profiles on protected `master` (Windows Dev only on a manual
+dispatch); macOS packages use Developer ID signing and notarization, and Linux
+packages are portable user-local tar bundles.
 
 The root also offers `just agent-check`, `just agent-build`, and
 `just agent-dev`. Native development on macOS requires full Xcode at
@@ -622,10 +623,10 @@ tests run in the ordinary app test suite.
 
 The root `ci.yml` runs this component's lanes (`scripts/ci/lanes.py`) when
 Agent or its shared Rust dependencies change: format, lint and tests on Linux
-and clippy on macOS for every PR, and the full Linux, macOS and Windows suites
-on master. Root `just lane <id>` runs one lane as CI does. `just ci` is the full
-local format, lint, build and test gate; `just release` separately validates the
-optimized binary. PR jobs have no signing or publishing credentials. See the
+and clippy on macOS and Windows for every PR, the full Linux and macOS suites
+on master, and the full Windows suite nightly. Root `just lane <id>` runs one
+lane as CI does. `just ci` is the full local format, lint, build and test gate;
+`just release` separately validates the optimized binary. PR jobs have no signing or publishing credentials. See the
 root agent guide for shared checks.
 
 Two by-hand checks complement the automated ones: the

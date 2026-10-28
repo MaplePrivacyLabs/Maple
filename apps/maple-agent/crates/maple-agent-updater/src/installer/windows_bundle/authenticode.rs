@@ -581,8 +581,8 @@ mod tests {
         let unsigned_memberships = catalog_memberships(&unsigned);
         assert_eq!(unsigned_memberships, [CatalogLookup::Absent; 2]);
 
-        // The native harness independently verifies Microsoft's OS signature.
-        // This same fixed fixture caught the original embedded-only bypass.
+        // powershell.exe is catalog-signed by Microsoft, and this fixed fixture caught
+        // the original embedded-only bypass; this test asserts only catalog membership.
         let signed = File::open(windows_powershell_fixture()).unwrap();
         let signed_memberships = catalog_memberships(&signed);
         assert!(
@@ -594,8 +594,9 @@ mod tests {
 
     #[test]
     fn native_microsoft_publisher_is_rejected_even_for_unsigned_dev() {
-        // Native qualification separately proves this fixed Windows binary has
-        // a valid Microsoft signature; another publisher cannot be a Dev bypass.
+        // Another publisher (Microsoft, for this fixed Windows binary) cannot be a
+        // Dev bypass. Nothing here checks that its signature is valid, so this also
+        // holds for an invalid one; the catalog test above checks only membership.
         let executable = windows_powershell_fixture();
         assert!(executable.is_file());
         assert!(!verify(&executable));

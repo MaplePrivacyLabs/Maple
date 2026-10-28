@@ -48,6 +48,7 @@ jobs:
       pull-requests: read
     outputs:
       lanes: ${{ steps.plan.outputs.lanes }}
+      quarantine: ${{ steps.plan.outputs.quarantine }}
       nix: ${{ steps.plan.outputs.nix }}
       windows: ${{ steps.plan.outputs.windows }}
     steps:
@@ -66,6 +67,7 @@ jobs:
           CI_MACOS_RUNNER: ${{ vars.CI_MACOS_RUNNER }}
           CI_WINDOWS_RUNNER: ${{ vars.CI_WINDOWS_RUNNER }}
           CI_WINDOWS_GITHUB_RUNNER: ${{ vars.CI_WINDOWS_GITHUB_RUNNER }}
+          CI_QUARANTINE: ${{ vars.CI_QUARANTINE }}
         run: python3 scripts/ci/plan.py github
 
   nix:
@@ -153,48 +155,6 @@ jobs:
         env:
           LANE: ${{ matrix.id }}
         run: python3 scripts/ci/plan.py run "$LANE"
-
-  # Native Windows updater tests and the app typecheck, with no credential or
-  # environment. Their receipts and Cargo logs are kept as an artifact even when
-  # a script fails.
-  agent-windows-updater:
-    name: agent-windows-updater
-    needs: plan
-    if: fromJSON(needs.plan.outputs.lanes)['agent-windows-updater']
-    # GitHub's image, as the native updater tests require (scripts/ci/lanes.py GITHUB_WINDOWS).
-    runs-on: ${{ vars.CI_WINDOWS_GITHUB_RUNNER || 'maple-windows-2025-16core' }}
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-agent-windows
-      - name: Rust cache (restore everywhere, save only on master and on GitHub's runners)
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          prefix-key: ci-v1
-          # Its own key: these checks compile other units than agent-full-windows'
-          # workspace build (check-mode metadata, one package's features).
-          shared-key: agent-windows-updater-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "false"
-          # A failover to a Blacksmith runner must not fill Blacksmith's store.
-          save-if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') && !startsWith(runner.name, 'blacksmith') }}
-      - name: Typecheck the Windows app and run the native updater tests
-        run: python3 scripts/ci/plan.py run agent-windows-updater
-      - name: Keep the receipts and Cargo logs
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: agent-windows-updater-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/maple-windows-app-typecheck/
-            ${{ runner.temp }}/maple-windows-updater-tests/
-          if-no-files-found: error
-          retention-days: 14
 
   # Unsigned Dev packages built like agent-desktop-build.yml's master builds, from
   # their master-written cache. Required when the packaging selector fires.
@@ -471,13 +431,13 @@ jobs:
             apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-linux-*.sha256
           retention-days: 5
 
-  # No cache: desktop-build.yml writes the Windows one to GitHub's store, which
-  # a Blacksmith runner cannot read.
+  # Builds the unsigned installer, then verifies its proofs, as desktop-build.yml's
+  # Linux verifier does for the signed one.
   research-desktop-windows:
     name: research-desktop-windows
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['research-desktop-windows']
-    runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    runs-on: ${{ vars.CI_WINDOWS_GITHUB_RUNNER || 'maple-windows-2025-16core' }}
     timeout-minutes: 60
     defaults:
       run:
@@ -493,7 +453,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable action, exact toolchain below
         with:
           toolchain: 1.94.1 # desktop-build.yml's Windows toolchain
-      - name: Build the unsigned installer
+      - name: Build the unsigned installer and verify its proofs
         run: python3 scripts/ci/plan.py run research-desktop-windows
       - name: Upload the installer and its proofs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -505,25 +465,6 @@ jobs:
             apps/maple-research/frontend/src-tauri/resources/windows/*.dll
             apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-windows-*.sha256
           retention-days: 5
-
-  research-desktop-windows-verify:
-    name: research-desktop-windows-verify
-    needs: [plan, research-desktop-windows]
-    if: fromJSON(needs.plan.outputs.lanes)['research-desktop-windows-verify']
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-nix
-      - name: Download the installer and its proofs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: maple-windows-x64-pr
-          path: artifacts
-      - name: Verify the reproducibility proofs
-        run: python3 scripts/ci/plan.py run research-desktop-windows-verify
 
   research-dev-macos:
     name: research-dev-macos
@@ -682,12 +623,14 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [plan, nix, windows, agent-windows-updater, agent-package-linux, agent-package-macos,
-            agent-package-windows, research-rust, research-ios, research-desktop-macos, research-desktop-linux,
-            research-desktop-windows, research-desktop-windows-verify, research-dev-macos, os-sdk-e2e, os-helpers,
-            os-eif]
+    needs: [plan, nix, windows, agent-package-linux, agent-package-macos, agent-package-windows, research-rust,
+            research-ios, research-desktop-macos, research-desktop-linux, research-desktop-windows,
+            research-dev-macos, os-sdk-e2e, os-helpers, os-eif]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # the run's job results, read only to attribute a quarantined lane's failure
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -695,5 +638,6 @@ jobs:
           sparse-checkout: scripts/ci
       - name: Every selected lane succeeded
         env:
+          GH_TOKEN: ${{ github.token }}
           NEEDS: ${{ toJSON(needs) }}
         run: python3 scripts/ci/plan.py verdict

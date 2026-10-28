@@ -42,8 +42,8 @@ python3 scripts/ci/plan.py explain --base origin/master --head HEAD
 | When | What runs |
 | --- | --- |
 | Pull request, merge queue | Selected lanes, including unsigned platform and package rehearsals when their native inputs change. A new push cancels the superseded run. |
-| Master push | The selected lanes again (for Agent inputs, also the full Agent suites on Linux, macOS and Windows), the signed builds, the release-evidence workflows and CodeQL. Never cancelled. |
-| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures open or update one `ci-nightly` issue; a green night closes it. |
+| Master push | The selected lanes again (for Agent inputs, also the full Agent suites on Linux and macOS), the signed builds, the release-evidence workflows and CodeQL. Never cancelled. |
+| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories and the Agent's native Windows suites included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures and [quarantined lanes](#quarantine) open or update one `ci-nightly` issue; a green night closes it. |
 | On demand | PR labels (below), or a `ci.yml` dispatch with comma-separated lane ids or `all`. |
 
 ## Labels
@@ -63,7 +63,7 @@ Add the label, then re-run the CI workflow (or push): `plan` reads labels when i
 | --- | --- |
 | `ci:full` | Every lane except the OpenSecret EIF candidate |
 | `ci:package` | Unsigned Agent and Research desktop packages on every OS |
-| `ci:windows` | Agent Windows tests and Clippy, the Windows updater tests, and the Research Windows package |
+| `ci:windows` | The Agent's Windows Clippy, native updater tests and full Windows suite |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build |
 | `ci:research-dev-macos` | The unsigned Research Dev app |
 | `ci:eif` | The OpenSecret EIF candidate (same-repository PRs to `master` that edit no PCR approval) |
@@ -74,8 +74,7 @@ Add the label, then re-run the CI workflow (or push): `plan` reads labels when i
 lane's command in its pinned Nix shell, exactly as `ci.yml` does. macOS lanes
 need macOS and use its selected Xcode (CI pins it with
 `scripts/ci/select-xcode.py`), Windows lanes need Windows with the toolchain
-from `.github/actions/setup-agent-windows` (`agent-windows-updater` also needs
-the Actions variables its scripts check), `os-sdk-e2e` needs a local PostgreSQL
+from `.github/actions/setup-agent-windows`, `os-sdk-e2e` needs a local PostgreSQL
 and `os-eif` needs Linux on ARM64. Before pushing a workflow, CI-script or
 flake change, run `just lane repo` (every root flake check). The
 [pre-commit hook](repository-workflows.md#pre-commit-hook) runs the fast part
@@ -114,15 +113,30 @@ of the lanes your staged files select.
 - Keep each lane's work in a script or recipe, so it runs outside GitHub
   Actions.
 
+## Quarantine
+
+To stop a broken or flaky lane from blocking every pull request while it is
+fixed, set the repository variable `CI_QUARANTINE` to its lane id
+(comma-separated for several); no pull request is needed. A quarantined lane
+is still selected and runs, and its own check shows its real result, but
+`ci-ok` reports its failure as a warning instead of failing. In the `nix` and
+`windows` matrices, the run's job results tell its failure apart from its
+neighbours'. An id that names no lane fails `plan`, so a typo cannot
+quarantine nothing; so does `repo`, which enforces the workflow policy and
+release contracts. The nightly report lists every active quarantine; clear the
+variable when the lane is fixed.
+
 ## Runners
 
 Lanes use Blacksmith runners or GitHub-hosted runners; the runner
 constants are at the top of `scripts/ci/lanes.py`. During an outage, set the
 repository variable `CI_LINUX_RUNNER`, `CI_LINUX_HEAVY_RUNNER`,
 `CI_MACOS_RUNNER` or `CI_WINDOWS_RUNNER` to another label; no pull request is
-needed. The three Agent lanes that need GitHub's Windows image
-(`agent-full-windows`, `agent-windows-updater`, `agent-package-windows`) run on
-the org's 16-core GitHub-hosted runner `maple-windows-2025-16core` (billed by the
-minute); `CI_WINDOWS_GITHUB_RUNNER=windows-2025` moves them back to the standard
-runner, which uses the same cache store. A runner from the other vendor never
+needed. The Agent Windows lanes that need GitHub's image
+(`agent-windows-updater`, `agent-package-windows`) and, for speed,
+`research-desktop-windows` run on the org's 16-core GitHub-hosted runner
+`maple-windows-2025-16core` (billed by the minute);
+`CI_WINDOWS_GITHUB_RUNNER=windows-2025` moves them back to the standard runner,
+which uses the same cache store. `agent-full-windows` (nightly, or by label)
+uses the free standard `windows-2025`. A runner from the other vendor never
 saves a cache.

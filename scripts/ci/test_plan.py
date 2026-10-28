@@ -20,8 +20,8 @@ from opensecret_change_detection import OUTPUTS
 
 
 ACTIVE = {lane.id for lane in lanes.LANES}
-AGENT_PR = {"agent-lint", "agent-test", "agent-macos"}
-AGENT_PUSH = AGENT_PR | {"agent-windows", "agent-full-linux", "agent-full-macos", "agent-full-windows"}
+AGENT_PR = {"agent-lint", "agent-test", "agent-macos", "agent-windows"}
+AGENT_PUSH = AGENT_PR | {"agent-full-linux", "agent-full-macos"}
 AGENT_PACKAGE = {"agent-package-linux", "agent-package-macos"}
 # What opensecret_change_detection.py's "all checks" selects in ci.yml (deps-opensecret follows its manifests).
 OPENSECRET_ALL = {"os-rust", "os-sdk-e2e", "os-flake-check", "os-helpers", "os-eif"}
@@ -165,27 +165,33 @@ class LaneTableTests(unittest.TestCase):
         self.assertEqual(agent_lanes(selected(["proxy/src/main.rs"])), AGENT_PR)
         self.assertFalse(agent([".dockerignore", "proxy/Dockerfile"], PUSH))
 
-    def test_windows_clippy_runs_on_prs_only_for_windows_paths_or_labels(self):
-        windows = "apps/maple-agent/app/src/host/windows_spawn.rs"
-        other = "apps/maple-agent/app/src/ui/x.rs"
-        self.assertIn("agent-windows", selected([windows]))
-        self.assertIn("agent-windows", selected([windows], QUEUE))
-        self.assertNotIn("agent-windows", selected([other]))
-        self.assertIn("agent-windows", selected([other], PUSH))
+    def test_windows_clippy_runs_on_every_agent_change(self):
+        for path in ("apps/maple-agent/app/src/ui/x.rs", "apps/maple-agent/app/src/host/windows_spawn.rs",
+                     "proxy/src/proxy.rs"):
+            for event in (PR, QUEUE, PUSH):
+                with self.subTest(path=path, event=event):
+                    self.assertIn("agent-windows", selected([path], event))
         self.assertIn("agent-windows", selected(["docs/x.md"], labels=["ci:windows"]))
         # Every PR lane but the EIF candidate, which only its own inputs select.
         self.assertEqual(selected(["docs/x.md"], labels=["ci:full"]), active(PR) - {"os-eif"})
         self.assertEqual(selected(["docs/x.md"], labels=["unrelated"]), set())
 
-    def test_windows_updater_tests_follow_the_same_paths_on_prs_and_master(self):
-        # test_windows_updater_workflow.py lists every path; these show the shape.
-        updater = "apps/maple-agent/crates/maple-agent-updater/src/installer.rs"
-        for path in (updater, "apps/maple-agent/app/src/update.rs", "apps/maple-agent/scripts/windows-release.py"):
-            for event in (PR, QUEUE, PUSH):
+    def test_windows_updater_tests_run_for_updater_paths_by_label_and_nightly(self):
+        for path in ("apps/maple-agent/crates/maple-agent-updater/src/installer.rs",
+                     "apps/maple-agent/app/src/windows_bootstrap.rs",
+                     ".github/actions/setup-agent-windows/action.yml", "scripts/ci/agent_windows.py"):
+            for event in (PR, QUEUE):
                 with self.subTest(path=path, event=event):
                     self.assertIn("agent-windows-updater", selected([path], event))
-        self.assertNotIn("agent-windows-updater", selected(["apps/maple-agent/app/src/ui/x.rs"], PUSH))
-        self.assertEqual(selected(["scripts/ci/windows-updater-tests.ps1"]), {"agent-windows-updater", "repo"})
+            self.assertNotIn("agent-windows-updater", selected([path], PUSH))  # nightly runs it on master
+        for path in ("apps/maple-agent/Cargo.lock", "apps/maple-agent/app/src/main.rs",
+                     "apps/maple-agent/app/src/update.rs", "apps/maple-agent/scripts/windows-release.py",
+                     ".github/workflows/ci.yml"):
+            with self.subTest(path=path):
+                self.assertNotIn("agent-windows-updater", selected([path]))
+        for label in ("ci:windows", "ci:full"):
+            self.assertIn("agent-windows-updater", selected(["docs/x.md"], labels=[label]))
+        self.assertIn("agent-windows-updater", active(NIGHTLY))
 
     def test_inert_paths_select_nothing(self):
         for path in ("apps/maple-agent/docs/x.md", "docs/x.md", ".agents/skills/x/SKILL.md"):
@@ -395,11 +401,13 @@ class AgentLaneTests(unittest.TestCase):
         for label in ("ci:package", "ci:full"):
             self.assertIn("agent-package-windows", selected(["docs/x.md"], labels=[label]))
 
-    def test_full_suites_run_on_master_nightly_and_ci_full_only(self):
+    def test_full_suites_run_on_master_nightly_and_by_label(self):
         full = {"agent-full-linux", "agent-full-macos", "agent-full-windows"}
         self.assertFalse(full & selected(["apps/maple-agent/app/src/main.rs"]))
-        self.assertLessEqual(full, selected(["apps/maple-agent/app/src/main.rs"], PUSH))
+        # Windows runs nightly on its free runner rather than on every master push.
+        self.assertEqual(full & selected(["apps/maple-agent/app/src/main.rs"], PUSH), full - {"agent-full-windows"})
         self.assertLessEqual(full, selected(["docs/x.md"], labels=["ci:full"]))
+        self.assertIn("agent-full-windows", selected(["docs/x.md"], labels=["ci:windows"]))
         self.assertLessEqual(full | {"agent-windows"}, active(NIGHTLY))
         self.assertFalse({"agent-provider"} & active(NIGHTLY))  # nightly.yml runs it on three OSes
         # Nightly refreshes the rehearsals' own caches.
@@ -471,7 +479,7 @@ class ClientLaneTests(unittest.TestCase):
 
     def test_research_platform_builds_run_on_native_inputs_or_labels(self):
         desktop = {"research-desktop-macos", "research-desktop-linux"}
-        windows = {"research-desktop-windows", "research-desktop-windows-verify"}
+        windows = {"research-desktop-windows"}
         tauri = "apps/maple-research/frontend/src-tauri/"
         for path, lanes_ in ((tauri + "gen/apple/project.yml", {"research-ios"}),
                              (tauri + "gen/android/app/build.gradle.kts", {"research-android"}),
@@ -479,13 +487,16 @@ class ClientLaneTests(unittest.TestCase):
                              (tauri + "tauri.conf.json", desktop | {"research-rust", "repo"}),
                              (tauri + "resources/windows/README.md", windows | {"research-rust"}),
                              ("scripts/ci/desktop-windows-pr.sh", windows | {"repo"}),
+                             # Only the Windows lane runs the verifier in Git Bash.
+                             ("scripts/ci/verify-release-artifacts.sh", desktop | windows | {"repo"}),
                              ("scripts/ci/research-dev-desktop.sh", {"research-dev-macos", "repo"})):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), lanes_)
                 self.assertFalse({lane for lane in selected([path], PUSH) if lane.startswith("research-")})
         self.assertEqual(selected(["docs/x.md"], labels=["ci:ios"]), {"research-ios"})
+        # ci:windows is the Agent's; Research Windows packaging comes with ci:package.
         self.assertEqual(selected(["docs/x.md"], labels=["ci:windows"]),
-                         windows | {"agent-windows", "agent-windows-updater"})
+                         {"agent-windows", "agent-windows-updater", "agent-full-windows"})
         self.assertLessEqual(desktop | windows | {"research-dev-macos"},
                              selected(["docs/x.md"], labels=["ci:package"]))
         self.assertFalse({lane for lane in selected([".github/workflows/ci.yml"]) if lane.startswith(
@@ -571,10 +582,16 @@ class PlannerTests(unittest.TestCase):
         _, outputs = self.github(DISPATCH, {}, LANES_INPUT="agent-test")
         self.assertEqual({lane for lane, on in outputs["lanes"].items() if on}, {"agent-test"})
         self.assertEqual([entry["id"] for entry in outputs["nix"]], ["agent-test"])
-        # A verifier brings the job whose artifact it verifies.
-        _, outputs = self.github(DISPATCH, {}, LANES_INPUT="research-desktop-windows-verify")
-        self.assertEqual({lane for lane, on in outputs["lanes"].items() if on},
-                         {"research-desktop-windows", "research-desktop-windows-verify"})
+
+    def test_quarantined_lanes_still_run_and_an_unknown_id_fails_the_plan(self):
+        code, outputs = self.github(NIGHTLY, {}, CI_QUARANTINE=" research-ios,agent-test, ")
+        self.assertEqual((code, outputs["quarantine"]), (0, ["agent-test", "research-ios"]))
+        self.assertTrue(outputs["lanes"]["agent-test"])
+        self.assertEqual(self.github(NIGHTLY, {})[1]["quarantine"], [])
+        for event, payload in ((NIGHTLY, {}), (PUSH, {"before": SHA_A, "after": SHA_B})):
+            with self.subTest(event=event):
+                self.assertEqual(self.github(event, payload, CI_QUARANTINE="agent-test,agent-tset")[0], 1)
+                self.assertEqual(self.github(event, payload, CI_QUARANTINE="agent-test,repo")[0], 1)
 
     def test_eif_candidate_builds_only_same_repository_prs_to_master_with_a_usable_diff(self):
         pull = {"number": 1, "base": {"sha": SHA_A, "ref": "master"},
@@ -622,7 +639,7 @@ class PlannerTests(unittest.TestCase):
                 result = plan.outputs(dict.fromkeys(ACTIVE, ["x"]))
             return {entry["id"]: entry["cache_save"] for job in lanes.MATRIX_JOBS for entry in json.loads(result[job])}
 
-        cached = {"agent-test", "agent-windows", "agent-full-windows"}
+        cached = {"agent-test", "agent-windows", "agent-windows-updater"}
         self.assertTrue(cached <= {lane.id for lane in lanes.LANES if lane.cache})
         with mock.patch.dict(os.environ):
             for runner in lanes.LINUX, lanes.LINUX_HEAVY, lanes.MACOS, lanes.WINDOWS, lanes.GITHUB_WINDOWS:
@@ -638,7 +655,10 @@ class PlannerTests(unittest.TestCase):
             self.assertEqual({lane: off[lane] for lane in cached}, dict.fromkeys(cached, False))
         self.assertEqual(lanes.GITHUB_WINDOWS.variable, "CI_WINDOWS_GITHUB_RUNNER")
         self.assertEqual({lane.id for lane in lanes.LANES if lane.runner == lanes.GITHUB_WINDOWS},
-                         {"agent-windows-updater", "agent-full-windows", "agent-package-windows"})
+                         {"agent-windows-updater", "agent-package-windows", "research-desktop-windows"})
+        # Nobody waits on the full native suite: the free standard runner, without an override.
+        self.assertEqual({lane.id for lane in lanes.LANES if lane.runner == lanes.GITHUB_WINDOWS_FREE},
+                         {"agent-full-windows"})
 
     def test_run_executes_the_lane_command_in_its_flake(self):
         with mock.patch.object(plan.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()), \
@@ -656,11 +676,15 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][:2], ["C:/Git/usr/bin/bash.exe", "-euo"])
         self.assertEqual(run.call_args.kwargs["env"]["RUSTFLAGS"], "-D warnings")
 
-    def verdict(self, lanes_on, **results):
-        needs = {"plan": {"result": "success", "outputs": {"lanes": json.dumps(dict.fromkeys(lanes_on, True))}}}
+    def verdict(self, lanes_on, quarantine=(), **results):
+        needs = {"plan": {"result": "success", "outputs": {"lanes": json.dumps(dict.fromkeys(lanes_on, True)),
+                                                           "quarantine": json.dumps(list(quarantine))}}}
         needs.update({job: {"result": result} for job, result in results.items()})
-        with mock.patch.dict(os.environ, {"NEEDS": json.dumps(needs)}), contextlib.redirect_stdout(io.StringIO()):
-            return plan.verdict()
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"NEEDS": json.dumps(needs)}), contextlib.redirect_stdout(out):
+            code = plan.verdict()
+        self.output = out.getvalue()
+        return code
 
     def test_verdict_needs_every_selected_job_to_succeed_and_the_rest_skipped(self):
         # nix carries agent-lint; agent-package-linux and os-eif are special jobs.
@@ -674,6 +698,29 @@ class PlannerTests(unittest.TestCase):
         needs = {"plan": {"result": "failure", "outputs": {}}}
         with mock.patch.dict(os.environ, {"NEEDS": json.dumps(needs)}), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(plan.verdict(), 1)
+
+    def test_verdict_reports_a_quarantined_lanes_failure_without_failing(self):
+        # A special job runs one lane.
+        package = {"nix": "skipped", "agent-package-linux": "failure"}
+        self.assertEqual(self.verdict(["agent-package-linux"], **package), 1)
+        self.assertEqual(self.verdict(["agent-package-linux"], ["agent-package-linux"], **package), 0)
+        self.assertIn("::warning::agent-package-linux did not succeed", self.output)
+        self.assertEqual(self.verdict(["agent-package-linux"], ["agent-package-linux"], nix="skipped",
+                                      **{"agent-package-linux": "success"}), 0)
+        self.assertNotIn("::warning::", self.output)
+        # A matrix job runs many: the run's job results name the entries that failed.
+        listing = mock.Mock(stdout="plan\tsuccess\nagent-lint\tsuccess\nagent-test\tfailure\n")
+        with mock.patch.object(plan.subprocess, "run", return_value=listing) as run:
+            self.assertEqual(self.verdict(["agent-lint", "agent-test"], ["agent-test"], nix="failure"), 0)
+            self.assertIn("::warning::agent-test did not succeed", self.output)
+            self.assertIn("/actions/runs/", run.call_args.args[0][3])
+            # Another failing entry, or a failure no entry explains, still fails ci-ok.
+            listing.stdout = "agent-lint\tfailure\nagent-test\tfailure\n"
+            self.assertEqual(self.verdict(["agent-lint", "agent-test"], ["agent-test"], nix="failure"), 1)
+            listing.stdout = "agent-lint\tsuccess\nagent-test\tsuccess\n"
+            self.assertEqual(self.verdict(["agent-lint", "agent-test"], ["agent-test"], nix="failure"), 1)
+        with mock.patch.object(plan.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "gh")):
+            self.assertEqual(self.verdict(["agent-lint", "agent-test"], ["agent-test"], nix="failure"), 1)
 
     def test_check_rust_compares_the_flake_compiler_with_the_windows_pin(self):
         for reported, expected in ((f"rustc {lanes.AGENT_WINDOWS_RUST} (abc 2026-01-01)\n", 0),
