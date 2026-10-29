@@ -29,7 +29,10 @@ def load_pin(path=PIN):
 
 def select_xcode(pin, applications=Path("/Applications")):
     version = pin["version"]
-    for name in (f"Xcode_{version}.app", f"Xcode_{version}.0.app", "Xcode.app"):
+    # Hosted images may keep a release under a suffixed name (for example
+    # Xcode_27.1_Release_Candidate.app); the exact build check below decides.
+    suffixed = sorted(path.name for path in applications.glob(f"Xcode_{version}_*.app"))
+    for name in (f"Xcode_{version}.app", f"Xcode_{version}.0.app", *suffixed, "Xcode.app"):
         developer = applications / name / "Contents/Developer"
         if not (developer / "usr/bin/xcodebuild").is_file():
             continue
