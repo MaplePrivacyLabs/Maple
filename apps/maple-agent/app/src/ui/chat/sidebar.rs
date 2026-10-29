@@ -409,6 +409,7 @@ pub(super) enum SidebarSection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidebarHoverSection {
     Projects,
+    Computer(usize),
     Section(SidebarSection),
     Archived,
 }
@@ -1867,8 +1868,14 @@ impl Sidebar {
                     SidebarEntry::SectionLabel(label) => {
                         section = Some(SidebarHoverSection::Section(*label))
                     }
+                    SidebarEntry::Computer(index) => {
+                        section = Some(SidebarHoverSection::Computer(*index))
+                    }
                     SidebarEntry::ArchivedHeader => section = Some(SidebarHoverSection::Archived),
-                    SidebarEntry::Task(_) | SidebarEntry::OtherTask(_) => {}
+                    SidebarEntry::Task(_)
+                    | SidebarEntry::OtherTask(_)
+                    | SidebarEntry::ComputerProject(_)
+                    | SidebarEntry::ComputerMore(_) => {}
                     _ => section = None,
                 }
                 section
@@ -1890,7 +1897,17 @@ impl Sidebar {
                     ix.checked_sub(1).and_then(|ix| entries.get(ix)),
                     Some(SidebarEntry::SectionLabel(_) | SidebarEntry::ArchivedHeader)
                 ),
-                after: unarchived_task(entry) && !entries.get(ix + 1).is_some_and(unarchived_task),
+                after: match entry {
+                    SidebarEntry::SectionLabel(SidebarSection::Project(index)) => self
+                        .collapsed_projects
+                        .contains(&self.project_roots[*index].target),
+                    SidebarEntry::ComputerProject(index) => self
+                        .collapsed_projects
+                        .contains(&self.computer_projects[*index].target),
+                    _ => {
+                        unarchived_task(entry) && !entries.get(ix + 1).is_some_and(unarchived_task)
+                    }
+                },
             })
             .collect();
         let old_spacing = std::mem::replace(&mut self.row_spacing, row_spacing);
@@ -2930,7 +2947,6 @@ impl Sidebar {
     ) -> AnyElement {
         let selected = self.selected.as_deref();
         let chat = self.chat.clone();
-        // Adjacent folded headings keep only their pill margins.
         let spacing = self.row_spacing.get(ix).copied().unwrap_or_default();
         let heading_gap = spacing.before;
         let entry = match self.entries.get(ix).copied() {
@@ -3167,14 +3183,8 @@ impl Sidebar {
             }
             None => div().into_any_element(),
         };
-        let entry = if matches!(
-            self.entries.get(ix),
-            Some(SidebarEntry::Task(_) | SidebarEntry::OtherTask(_))
-        ) {
-            div()
-                .when(spacing.after, |row| row.mb_2())
-                .child(entry)
-                .into_any_element()
+        let entry = if spacing.after {
+            div().mb_2().child(entry).into_any_element()
         } else {
             entry
         };
@@ -3333,7 +3343,8 @@ impl Sidebar {
     fn section_hovered(&self, section: SidebarHoverSection) -> bool {
         self.hovered_section == Some(section)
             || (section == SidebarHoverSection::Projects
-                && matches!(self.hovered_section, Some(SidebarHoverSection::Section(label)) if label != SidebarSection::Pinned))
+                && (matches!(self.hovered_section, Some(SidebarHoverSection::Computer(_)))
+                    || matches!(self.hovered_section, Some(SidebarHoverSection::Section(label)) if label != SidebarSection::Pinned)))
     }
 
     /// Reserve the chevron's space; a folded section always shows it.

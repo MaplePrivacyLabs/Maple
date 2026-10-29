@@ -2359,7 +2359,6 @@ impl Sidebar {
                     computer: computer.key.clone(),
                     destination: Destination::Overview,
                 };
-                let disclosure_request = request.clone();
                 let action_group: SharedString =
                     format!("computer-header-actions-{:?}", computer.key).into();
                 let new_project = Navigate {
@@ -2395,6 +2394,8 @@ impl Sidebar {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.toggle_computer_group(&request, cx) {
                             cx.emit(SidebarEvent::Navigate(request.clone()));
+                        } else {
+                            this.hover_heading(SidebarEntry::Computer(index), cx);
                         }
                     }))
                     .child(
@@ -2403,60 +2404,22 @@ impl Sidebar {
                             .flex()
                             .items_center()
                             .gap(FOLDER_HEADER_GAP)
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .relative()
-                                    .w(FOLDER_ICON_SIZE)
-                                    .h(FOLDER_ICON_SIZE)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(icon("monitor", FOLDER_ICON_SIZE, theme::text_muted()))
-                                    .when(collapsible, |slot| {
-                                        slot.child(
-                                            div()
-                                                .id("computer-disclosure")
-                                                .role(gpui::Role::Button)
-                                                .aria_label(if expanded {
-                                                    "Collapse connection"
-                                                } else {
-                                                    "Expand connection"
-                                                })
-                                                .aria_expanded(expanded)
-                                                .absolute()
-                                                .top_0()
-                                                .right(FOLDER_ICON_SIZE + px(3.))
-                                                .w(FOLDER_HEADER_PADDING - gpui::rems(0.5))
-                                                .h(FOLDER_ICON_SIZE)
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    cx.stop_propagation();
-                                                    this.toggle_computer_group(
-                                                        &disclosure_request,
-                                                        cx,
-                                                    );
-                                                }))
-                                                .child(icon(
-                                                    if expanded {
-                                                        "chevron-down"
-                                                    } else {
-                                                        "chevron-right"
-                                                    },
-                                                    px(12.),
-                                                    theme::text_muted(),
-                                                )),
-                                        )
-                                    }),
-                            )
+                            .child(icon("monitor", FOLDER_ICON_SIZE, theme::text_muted()))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .truncate()
-                                    .child(computer.label.clone()),
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(div().min_w_0().truncate().child(computer.label.clone()))
+                                    .when(collapsible, |row| {
+                                        row.child(self.section_chevron(
+                                            expanded,
+                                            "computer-disclosure",
+                                            SidebarHoverSection::Computer(index),
+                                        ))
+                                    }),
                             )
                             .when(
                                 collapsible && !dragging && !self.sidebar_menu_open(),
