@@ -105,6 +105,8 @@ impl Granularity {
 /// Shared drag-selection state, owned by the chat screen.
 #[derive(Default)]
 pub struct TextSelection {
+    /// Destination under the most recent transcript context-menu press.
+    context_link: Option<String>,
     anchor: Option<SelectionPos>,
     head: Option<SelectionPos>,
     down: Option<SelectionPos>,
@@ -119,6 +121,16 @@ pub struct TextSelection {
 }
 
 impl TextSelection {
+    pub fn context_link(&self) -> Option<&str> {
+        self.context_link.as_deref()
+    }
+
+    /// Clear before dispatching a right-click to the transcript's paragraphs,
+    /// so a press on empty space cannot reuse a previous link.
+    pub fn clear_context_link(&mut self) {
+        self.context_link = None;
+    }
+
     pub fn is_selecting(&self) -> bool {
         self.selecting
     }
@@ -135,6 +147,7 @@ impl TextSelection {
     /// Forget the selection and every registered paragraph. Call this when
     /// the transcript changes session so stale text cannot be copied.
     pub fn clear(&mut self) {
+        self.clear_context_link();
         self.reset_selection();
         self.registry.clear();
     }
@@ -579,17 +592,33 @@ impl Element for RichText {
         let ordinal = self.ordinal;
         let focus = self.focus.clone();
 
-        // Press: start a selection at the character under the pointer.
+        // Press: resolve a context link or start a text selection.
         {
             let entity = entity.clone();
             let layout = layout.clone();
             let hitbox = hitbox.clone();
+            let links = self.links.clone();
             window.on_mouse_event(
                 move |event: &gpui::MouseDownEvent, phase, window: &mut Window, cx: &mut App| {
-                    if phase != gpui::DispatchPhase::Bubble
-                        || event.button != MouseButton::Left
-                        || !hitbox.is_hovered(window)
-                    {
+                    if phase != gpui::DispatchPhase::Bubble || !hitbox.is_hovered(window) {
+                        return;
+                    }
+                    if event.button == MouseButton::Right {
+                        // The transcript opens its menu later in this same
+                        // bubbling dispatch. Leave the selection intact.
+                        if let Some(entity) = &entity {
+                            let url = layout
+                                .index_for_position(event.position)
+                                .ok()
+                                .and_then(|index| {
+                                    links.iter().find(|(range, _)| range.contains(&index))
+                                })
+                                .map(|(_, url)| url.clone());
+                            entity.update(cx, |state, _| state.context_link = url);
+                        }
+                        return;
+                    }
+                    if event.button != MouseButton::Left {
                         return;
                     }
                     if let Some(focus) = &focus {

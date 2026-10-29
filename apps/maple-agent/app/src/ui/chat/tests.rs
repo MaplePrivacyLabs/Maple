@@ -1163,6 +1163,91 @@ mod state_tests {
         }
     }
 
+    #[gpui::test]
+    fn transcript_context_menu_copies_link_destinations(cx: &mut TestAppContext) {
+        let url = "https://example.test/docs?q=maple#install";
+        let (chat, cx) = chat_window(cx, |this, _| {
+            let mut reply = item(
+                "reply",
+                "message",
+                Some(&format!("[Read the docs]({url}) and ordinary text")),
+            );
+            reply.role = Some("assistant".into());
+            this.replace_timeline(vec![reply]);
+        });
+        let row = cx.debug_bounds("timeline-row-reply").expect("reply");
+        let at = gpui::point(row.left() + px(5.), row.top() + px(10.));
+        let right_click = |cx: &mut gpui::VisualTestContext, at| {
+            cx.simulate_mouse_move(at, None, gpui::Modifiers::default());
+            cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+            cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+            cx.run_until_parked();
+        };
+        right_click(cx, at);
+        assert!(cx.debug_bounds("transcript-menu-copy-link").is_some());
+        assert!(!cx.update(|_, app| {
+            chat.read(app)
+                .selection
+                .as_ref()
+                .unwrap()
+                .read(app)
+                .has_selection()
+        }));
+        press(cx, "transcript-menu-copy-link");
+        assert_eq!(
+            cx.update(|_, app| app.read_from_clipboard().and_then(|item| item.text())),
+            Some(url.to_owned()),
+        );
+        assert!(chat.update(cx, |this, _| this.popup.open_key().is_none()));
+
+        // A later press past the text must not reuse the previous link.
+        right_click(cx, gpui::point(row.right() - px(20.), at.y));
+        assert!(cx.debug_bounds("transcript-menu").is_some());
+        assert!(cx.debug_bounds("transcript-menu-copy-link").is_none());
+        cx.simulate_keystrokes("escape");
+
+        // Link actions coexist with copying an existing text selection.
+        chat.update(cx, |this, cx| this.select_all_text(cx));
+        cx.run_until_parked();
+        right_click(cx, at);
+        assert!(cx.debug_bounds("transcript-menu-copy-link").is_some());
+        press(cx, "transcript-menu-copy");
+        assert_eq!(
+            cx.update(|_, app| app.read_from_clipboard().and_then(|item| item.text())),
+            Some("Read the docs and ordinary text".to_owned()),
+        );
+
+        // Bare URLs and table cells use the same hit testing and clipboard path.
+        for (source, table) in [
+            (url.to_owned(), false),
+            (
+                format!("| Docs |\n| --- |\n| [Read the docs]({url}) |"),
+                true,
+            ),
+        ] {
+            chat.update(cx, |this, cx| {
+                let mut reply = item("reply", "message", Some(&source));
+                reply.role = Some("assistant".into());
+                this.replace_timeline(vec![reply]);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let at = if table {
+                let cell = cx.debug_bounds("md-cell-1-0").expect("link cell");
+                gpui::point(cell.left() + px(15.), cell.center().y)
+            } else {
+                let row = cx.debug_bounds("timeline-row-reply").expect("reply");
+                gpui::point(row.left() + px(5.), row.top() + px(10.))
+            };
+            right_click(cx, at);
+            press(cx, "transcript-menu-copy-link");
+            assert_eq!(
+                cx.update(|_, app| app.read_from_clipboard().and_then(|item| item.text())),
+                Some(url.to_owned()),
+            );
+        }
+    }
+
     /// The subagent card shows one row per live `delegate` call, follows
     /// the tool each subagent runs, and empties when they end.
     #[gpui::test]
