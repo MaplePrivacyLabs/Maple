@@ -11019,63 +11019,79 @@ mod state_tests {
         );
     }
     #[gpui::test]
-    fn update_button_sits_left_of_settings_in_the_sidebar_footer(cx: &mut TestAppContext) {
-        struct ChatHost {
-            chat: Entity<ChatScreen>,
-        }
-        impl Render for ChatHost {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div().size_full().flex().flex_col().child(self.chat.clone())
-            }
-        }
-        cx.executor().allow_parking();
-        let chat = cx.new(|cx| {
-            let _guard = SETTINGS_LOCK.lock();
-            let backend = Arc::new(
-                crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
-                    .unwrap(),
-            );
-            ChatScreen::new_without_start(backend, "user".into(), cx)
-        });
-        let (_host, cx) = cx.add_window_view(|_, _| ChatHost { chat: chat.clone() });
-        cx.simulate_resize(gpui::size(px(1213.), px(800.)));
-        assert!(cx.debug_bounds("update-button").is_none());
-        let ready = crate::update::Snapshot {
-            state: crate::update::State::Ready,
-            label: "v0.0.14 is ready to install".into(),
-            version: Some("0.0.14".into()),
-            remote_candidate: None,
-            primary: Some(crate::update::UpdateAction::Restart),
-            primary_label: "Restart to Update",
-            manual_download_url: None,
-            show_banner: true,
-        };
-        chat.update(cx, |chat, cx| chat.set_update(ready.clone(), cx));
-        cx.run_until_parked();
-        let update = cx.debug_bounds("update-button").expect("update button");
-        let settings = cx.debug_bounds("open-settings").expect("settings button");
-        assert!(
-            update.right() <= settings.left(),
-            "{update:?}, {settings:?}"
-        );
-        assert!(
-            update.top() >= settings.top() && update.bottom() <= settings.bottom(),
-            "{update:?}, {settings:?}"
-        );
-        assert!(settings.right() <= SIDEBAR_WIDTH, "{settings:?}");
-
-        // "Later" in About hides the button until the next release.
-        chat.update(cx, |chat, cx| {
-            chat.set_update(
-                crate::update::Snapshot {
-                    show_banner: false,
-                    ..ready
+    fn update_badge_marks_settings_and_its_menu_row_routes_by_state(cx: &mut TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let sections = Rc::new(RefCell::new(Vec::new()));
+        let (action_log, section_log) = (actions.clone(), sections.clone());
+        let _actions = cx.update(|_, app| {
+            app.subscribe(
+                &chat,
+                move |_, request: &crate::update::UpdateRequested, _| {
+                    action_log.borrow_mut().push(request.0);
                 },
-                cx,
             )
         });
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("update-button").is_none());
+        let _sections = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, request: &OpenSettingsSection, _| {
+                section_log.borrow_mut().push(request.0);
+            })
+        });
+        let set = |cx: &mut gpui::VisualTestContext, state, show_banner| {
+            chat.update(cx, |chat, cx| {
+                chat.set_update(
+                    crate::update::Snapshot {
+                        state,
+                        label: "v0.0.14 is ready to install".into(),
+                        version: Some("0.0.14".into()),
+                        remote_candidate: None,
+                        primary: Some(crate::update::UpdateAction::Restart),
+                        primary_label: "Restart to Update",
+                        manual_download_url: None,
+                        show_banner,
+                    },
+                    cx,
+                )
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+
+        assert!(cx.debug_bounds("settings-update-badge").is_none());
+        press(cx, "open-settings");
+        assert!(cx.debug_bounds("settings-menu-update").is_none());
+        press(cx, "open-settings");
+
+        set(cx, crate::update::State::Ready, true);
+        let badge = cx.debug_bounds("settings-update-badge").expect("badge");
+        let settings = cx.debug_bounds("open-settings").expect("settings button");
+        assert!(
+            badge.left() > settings.left() + px(40.) && badge.right() < settings.center().x,
+            "the badge follows the Settings label: {badge:?}, {settings:?}"
+        );
+        assert!(badge.top() >= settings.top() && badge.bottom() <= settings.bottom());
+        press(cx, "open-settings");
+        assert!(
+            cx.debug_bounds("settings-menu-update").unwrap().top()
+                < cx.debug_bounds("settings-menu-account").unwrap().top()
+        );
+        press(cx, "settings-menu-update");
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        assert_eq!(*actions.borrow(), [crate::update::UpdateAction::Restart]);
+
+        set(cx, crate::update::State::Error, true);
+        press(cx, "open-settings");
+        press(cx, "settings-menu-update");
+        assert_eq!(*sections.borrow(), [Section::About]);
+        assert_eq!(actions.borrow().len(), 1);
+
+        // "Later" in About hides both until the next release.
+        set(cx, crate::update::State::Ready, false);
+        assert!(cx.debug_bounds("settings-update-badge").is_none());
+        press(cx, "open-settings");
+        assert!(cx.debug_bounds("settings-menu-update").is_none());
     }
 
     #[gpui::test]

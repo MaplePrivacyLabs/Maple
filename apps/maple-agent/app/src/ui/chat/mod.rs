@@ -3777,67 +3777,31 @@ impl ChatScreen {
         }
     }
 
-    /// The sidebar footer's update button, shown only when the updater has
-    /// something for the user. A ready update opens the restart
-    /// confirmation; anything else (manual download, finishing an install,
-    /// a failure) opens About, which shows the full message and actions.
-    fn render_update_button(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<Div>> {
+    /// What the Settings menu says about the updater, when it has
+    /// something for the user: the row label and whether it failed.
+    fn update_notice(&self) -> Option<(&'static str, bool)> {
         let snapshot = &self.update;
         if !snapshot.show_banner {
             return None;
         }
-        let failed = snapshot.state == crate::update::State::Error;
-        let ready = snapshot.state == crate::update::State::Ready;
-        let label = if ready {
-            snapshot.version.as_ref().map_or_else(
-                || snapshot.label.clone(),
-                |version| format!("Update to v{version}"),
-            )
+        Some(match snapshot.state {
+            crate::update::State::Error => ("Update failed", true),
+            crate::update::State::RestartRequired => ("Restart to finish update", false),
+            _ => ("Update available", false),
+        })
+    }
+
+    /// A ready update opens the restart confirmation; anything else
+    /// (manual download, a failure) opens About, which shows the full
+    /// message and actions.
+    fn open_update(&mut self, cx: &mut Context<Self>) {
+        if self.update.state == crate::update::State::Ready {
+            cx.emit(crate::update::UpdateRequested(
+                crate::update::UpdateAction::Restart,
+            ));
         } else {
-            snapshot.label.clone()
-        };
-        Some(
-            div()
-                .id("update-button")
-                .debug_selector(|| "update-button".to_string())
-                .role(gpui::Role::Button)
-                .aria_label(SharedString::from(label.clone()))
-                .flex_none()
-                .size(px(28.))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(failed, |button| {
-                    button
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        .child(icon("circle-alert", px(16.), theme::text_muted()))
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                .cursor_pointer()
-                        })
-                })
-                .when(!failed, |button| {
-                    button
-                        .bg(gpui::rgb(theme::accent()))
-                        .child(icon("download", px(15.), theme::on_accent()))
-                        .hover(|style| style.opacity(0.9).cursor_pointer())
-                })
-                .focus_visible(widgets::focus_ring)
-                .tooltip_show_delay(widgets::ICON_TOOLTIP_DELAY)
-                .tooltip(widgets::tooltip(label, None))
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    if ready {
-                        cx.emit(crate::update::UpdateRequested(
-                            crate::update::UpdateAction::Restart,
-                        ));
-                    } else {
-                        cx.emit(OpenSettingsSection(Section::About));
-                    }
-                })),
-        )
+            cx.emit(OpenSettingsSection(Section::About));
+        }
     }
 
     /// Keep a sent prompt for Up/Down recall. Repeats move to the end.
@@ -6579,6 +6543,28 @@ fn transcript_list_state() -> gpui::ListState {
     state
 }
 
+/// The update mark beside Settings and on its menu row: a download glyph
+/// on the accent, or a muted alert when the update failed.
+fn update_badge(size: gpui::Pixels, failed: bool) -> Div {
+    let badge = div()
+        .flex_none()
+        .size(size)
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center();
+    if failed {
+        badge
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
+            .child(icon("circle-alert", size * 0.67, theme::text_muted()))
+    } else {
+        badge
+            .bg(gpui::rgb(theme::accent()))
+            .child(icon("download", size * 0.6, theme::on_accent()))
+    }
+}
+
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Refreshed every frame; activation changes force a redraw, so
@@ -6917,8 +6903,13 @@ impl ChatScreen {
     ) -> Div {
         let expanded = expansion > 0.95;
         let open = self.popup.is_open(&ChatPopup::Settings);
+        let update = self.update_notice();
         let button = widgets::ghost_button("open-settings")
-            .aria_label("Settings menu")
+            .aria_label(if update.is_some() {
+                "Settings menu, update available"
+            } else {
+                "Settings menu"
+            })
             .a11y_synthetic_children(|tree| {
                 tree.parent_node()
                     .set_has_popup(gpui::accesskit::HasPopup::Menu);
@@ -6933,12 +6924,37 @@ impl ChatScreen {
             .when(open, |button| {
                 button.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
             })
-            .child(icon("settings", px(16.), theme::text_secondary()))
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(icon("settings", px(16.), theme::text_secondary()))
+                    // Collapsed, a dot on the gear stands in for the badge.
+                    .when(!expanded && update.is_some(), |gear| {
+                        gear.child(
+                            div()
+                                .debug_selector(|| "settings-update-dot".to_string())
+                                .absolute()
+                                .top(px(-2.))
+                                .right(px(-2.))
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::accent())),
+                        )
+                    }),
+            )
             .when(expanded, |button| {
                 button
                     .justify_start()
                     .gap_2()
-                    .child(div().flex_1().child("Settings"))
+                    .child("Settings")
+                    .when_some(update, |button, (_, failed)| {
+                        button.child(
+                            update_badge(px(18.), failed)
+                                .debug_selector(|| "settings-update-badge".to_string()),
+                        )
+                    })
+                    .child(div().flex_1())
                     .child(
                         icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
                             icon.with_transformation(gpui::Transformation::rotate(gpui::radians(
@@ -6952,7 +6968,6 @@ impl ChatScreen {
             .trigger(ChatPopup::Settings, button, cx, |this, _, cx| {
                 this.popup.toggle(ChatPopup::Settings, cx);
             });
-        let update = self.render_update_button(cx);
         let mut footer = div()
             .absolute()
             .bottom_0()
@@ -6962,22 +6977,12 @@ impl ChatScreen {
             } else {
                 SIDEBAR_RAIL_WIDTH
             })
-            // Collapsed, the update button stacks above the Settings gear.
-            .h(if update.is_some() && !expanded {
-                px(90.)
-            } else {
-                px(54.)
-            })
+            .h(px(54.))
             .px_2()
             .py(px(6.))
             .border_t_1()
             .border_color(gpui::rgb(theme::border_subtle()))
             .bg(gpui::rgb(theme::bg_sidebar()))
-            .flex()
-            .when(!expanded, |footer| footer.flex_col().justify_end())
-            .items_center()
-            .gap_1()
-            .children(update)
             .child(button);
         if open {
             let usage_label = self.sidebar_plan.as_ref().map_or_else(
@@ -7063,6 +7068,21 @@ impl ChatScreen {
                     .content(usage),
                 )
                 .separator()
+                .items(update.map(|(label, failed)| {
+                    MenuItem::new("settings-menu-update", label, |this: &mut Self, _, cx| {
+                        this.open_update(cx);
+                    })
+                    .content(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            // The badge overhangs the icon column by 2 px a
+                            // side, so its label lines up with the rows below.
+                            .child(update_badge(px(18.), failed).mx(px(-2.)))
+                            .child(label),
+                    )
+                }))
                 .item(
                     MenuItem::new("settings-menu-account", "Account", |_: &mut Self, _, cx| {
                         cx.emit(OpenSettingsSection(Section::Account));
