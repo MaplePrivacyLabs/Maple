@@ -2093,7 +2093,7 @@ impl Sidebar {
             let session = session_from_summary(task);
             let pinned = self.computer_task_pin(computer, task).is_some();
             let metadata = if self.show_task_metadata(pinned, archived) {
-                format!(
+                one_line(&format!(
                     "{} · {}",
                     self.computer_project_name(
                         computer,
@@ -2108,8 +2108,7 @@ impl Sidebar {
                         }
                     ),
                     computer.label,
-                )
-                .into()
+                ))
             } else {
                 SharedString::default()
             };
@@ -2122,9 +2121,9 @@ impl Sidebar {
                     destination: Destination::Task(task.uuid.clone()),
                 },
                 id: format!("computer-task-{:?}-{}", computer.key, task.uuid).into(),
-                title: latest
-                    .map_or_else(|| task.title.clone(), |session| session.title.clone())
-                    .into(),
+                title: one_line(
+                    latest.map_or(task.title.as_str(), |session| session.title.as_str()),
+                ),
                 pinned,
                 activity: if computer.running.contains(&task.uuid) {
                     Some(SessionActivity::Running)
@@ -2136,6 +2135,12 @@ impl Sidebar {
             });
             entries.push(SidebarEntry::OtherTask(index));
         }
+    }
+
+    /// The title on another computer's task row.
+    #[cfg(test)]
+    pub(in crate::ui::chat) fn other_task_title(&self, index: usize) -> Option<&str> {
+        Some(self.other_tasks.get(index)?.title.as_ref())
     }
 
     pub(in crate::ui::chat) fn computer_target(
@@ -2279,8 +2284,15 @@ impl Sidebar {
             SidebarEntry::OtherTask(index) => {
                 let task = &self.other_tasks[index];
                 let request = task.request.clone();
+                let row_bg = if selected {
+                    theme::bg_sidebar_row_hover()
+                } else {
+                    theme::bg_sidebar()
+                };
+                let hover_group = (!dragging).then_some(&task.id);
                 div()
                     .id(task.id.clone())
+                    .group(task.id.clone())
                     .role(gpui::Role::ListBoxOption)
                     .aria_label(task.title.clone())
                     .aria_selected(false)
@@ -2315,20 +2327,12 @@ impl Sidebar {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(
-                                div()
-                                    .line_clamp(1)
-                                    .text_ellipsis()
-                                    .child(task.title.clone()),
-                            )
+                            .child(row_line(task.title.clone(), hover_group, row_bg, hover_bg))
                             .when(!task.metadata.is_empty(), |column| {
                                 column.child(
-                                    div()
+                                    row_line(task.metadata.clone(), hover_group, row_bg, hover_bg)
                                         .text_xs()
-                                        .text_color(gpui::rgb(theme::text_secondary()))
-                                        .line_clamp(1)
-                                        .text_ellipsis()
-                                        .child(task.metadata.clone()),
+                                        .text_color(gpui::rgb(theme::text_secondary())),
                                 )
                             }),
                     )

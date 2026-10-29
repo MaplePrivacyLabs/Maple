@@ -219,7 +219,7 @@ mod state_tests {
                     path: "/tmp/proj".into(),
                     label: "proj".into(),
                 }],
-                sessions: vec![summary("same-id", "Remote task")],
+                sessions: vec![summary("same-id", "Remote\r\ntask")],
                 running: HashSet::from(["same-id".into()]),
                 unread: HashSet::new(),
                 pinned: Vec::new(),
@@ -249,6 +249,10 @@ mod state_tests {
                     .iter()
                     .find(|e| matches!(e, SidebarEntry::OtherTask(_)))
                     .unwrap();
+                let SidebarEntry::OtherTask(index) = entry else {
+                    unreachable!()
+                };
+                assert_eq!(sidebar.other_task_title(index), Some("Remote task"));
                 assert_eq!(
                     sidebar.computer_target(entry),
                     Some(navigation::SidebarTarget::Computer(Navigate {
@@ -9256,12 +9260,35 @@ mod state_tests {
             // A rename moves the row strings.
             this.upsert_session(summary("s1", "Renamed"), cx);
             assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ref(), "Renamed");
+            // Search retains raw line breaks.
+            for title in ["Two\nlines", "Two\r\nlines", "Two\rlines", "Two lines"] {
+                this.upsert_session(summary("s1", title), cx);
+                let sidebar = this.sidebar.read(cx);
+                assert_eq!(sidebar.rows()[0].title.as_ref(), "Two lines");
+                assert_eq!(sidebar.rows()[0].search, title.to_lowercase());
+            }
+            // Case-only renames still refresh the displayed title.
+            this.upsert_session(summary("s1", "two lines"), cx);
+            assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ref(), "two lines");
+            // Filtering reuses the normalized row cache.
+            this.upsert_session(summary("s1", "Two\nlines"), cx);
+            let built = this.sidebar.read(cx).rows()[0].title.as_ptr();
+            this.set_sidebar_filter("two", cx);
+            assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ptr(), built);
+            this.set_sidebar_filter("", cx);
             this.sidebar.update(cx, |sidebar, _| {
                 sidebar.set_project_name_for_test("/tmp/proj", "Nice");
             });
             assert_eq!(
                 this.sidebar.read(cx).rows()[0].project_name.as_ref(),
                 "Nice"
+            );
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_project_name_for_test("/tmp/proj", "Nice\nname");
+            });
+            assert_eq!(
+                this.sidebar.read(cx).rows()[0].project_name.as_ref(),
+                "Nice name"
             );
         });
     }
