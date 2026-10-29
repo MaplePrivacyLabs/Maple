@@ -203,6 +203,7 @@ def build(binary, output):
         stage.run(sys.executable, SCRIPTS / "linux-release-appimage.py", "--stage-only", binary, root)
         (root / "AppRun").write_text(bundle_apprun())
         shutil.copyfile(SCRIPTS / "linux-install.sh", root / "install.sh")
+        shutil.copyfile(SCRIPTS / "linux-bundle-README.txt", root / "README.txt")
         shutil.copyfile(SCRIPTS / "linux-install.py", root / "usr/share/maple-agent/install.py")
         (root / "bundle.json").write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
         stage.normalize_public_permissions(root)

@@ -204,6 +204,40 @@ class LinuxBundleArchiveTests(unittest.TestCase):
 
 
 class LinuxBundleLauncherTests(unittest.TestCase):
+    def test_built_archives_ship_readable_install_instructions_for_both_profiles(self):
+        for profile, root_name in (("prod", ROOT), ("dev", "maple-agent-dev.app")):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as temporary:
+                temporary = Path(temporary)
+                output = temporary / f"maple-agent-{profile}-0.0.4-aaaaaaaa-linux-x86_64.tar.gz"
+                metadata = {"channel": profile, "version": "0.0.4", "build_number": "42",
+                            "bundle_id": bundle.install.PROFILES[profile][2]}
+
+                def stage_fixture(*args):
+                    root = Path(args[-1])
+                    root.mkdir()
+                    for name, data, mode, kind, link in fixture_entries():
+                        relative = Path(name).relative_to(ROOT)
+                        path = root / relative
+                        if kind == tarfile.DIRTYPE:
+                            path.mkdir(exist_ok=True)
+                        elif kind == tarfile.SYMTYPE:
+                            path.symlink_to(link)
+                        else:
+                            path.write_bytes(data)
+                            path.chmod(mode)
+
+                with mock.patch.object(bundle.stage, "metadata_from_environment", return_value=metadata), \
+                     mock.patch.object(bundle.stage, "run", side_effect=stage_fixture), \
+                     mock.patch.object(bundle, "audit"), \
+                     mock.patch.dict(os.environ, MAPLE_PACKAGE_SOURCE_SHA="a" * 40, SOURCE_DATE_EPOCH="1"):
+                    bundle.build(temporary / "unused-binary", output)
+                root = bundle.extract_archive(output, temporary / "extracted", profile)
+                self.assertEqual(root.name, root_name)
+                readme = root / "README.txt"
+                self.assertEqual(readme.read_bytes(), (bundle.SCRIPTS / "linux-bundle-README.txt").read_bytes())
+                self.assertEqual(stat.S_IMODE(readme.stat().st_mode), 0o644)
+                self.assertEqual((root / "install.sh").read_bytes(), (bundle.SCRIPTS / "linux-install.sh").read_bytes())
+
     def test_clears_same_appdir_image_state_and_preserves_host_overrides(self):
         with tempfile.TemporaryDirectory() as temporary:
             app = Path(temporary).resolve() / "maple-agent.app"

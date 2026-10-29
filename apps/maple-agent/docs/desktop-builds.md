@@ -138,7 +138,17 @@ application directory at `~/.local/maple-agent.app` (Dev:
 `~/.local/maple-agent-dev.app`), a command in `~/.local/bin`, and a desktop entry.
 Python 3 is required for initial installation only. First install
 refuses existing installation or integration paths; subsequent upgrades use the
-application's updater. Its `AppRun` entrypoint starts the
+application's updater. After installation, open Activities / Show Applications
+and search for **Maple Work** (or **Maple Work Dev**); that entry can be pinned
+to the dock. The download includes `README.txt` with these instructions.
+
+On Ubuntu/GNOME, do not double-click `AppRun` or try to open it inside File Roller
+(Archive Manager). Extract the entire archive first, then run `install.sh` from
+a terminal as shown above. `AppRun` is a shell script, not a desktop launcher;
+GNOME Files need not execute it on double-click. There is no need to change file
+associations or script-execution security settings. For a portable launch without
+installing, run `./maple-agent.app/AppRun` from a terminal (Dev:
+`./maple-agent-dev.app/AppRun`). Its `AppRun` entrypoint starts the
 bundled executable and runtime directly, without an AppImage mount or FUSE.
 The host must provide its normal CA certificate trust store for TLS validation;
 existing user certificate-path overrides remain supported. The isolated CI
