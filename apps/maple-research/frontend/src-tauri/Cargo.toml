@@ -127,7 +127,8 @@ tauri-plugin-sign-in-with-apple = { path = "patches/tauri-plugin-sign-in-with-ap
 # which can leave a dylib's LINKEDIT string table 4-byte aligned. macOS 27 refuses to
 # load such dylibs when they are linked against its SDK, and every build loads its
 # proc-macros as dylibs. They never ship, so leave them unstripped. Remove once the
-# pinned Rust's rust-objcopy includes llvm/llvm-project#203680.
+# root flake pins Rust 1.98 or newer: its stripped proc-macros stay 8-byte aligned,
+# which is why the Agent needs no override (llvm/llvm-project#203680).
 [profile.dev.build-override]
 strip = false
 

@@ -35,18 +35,6 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
-# Cargo strips build scripts and proc-macros whenever their profile has no debug info
-# (release, and dev under CI's CARGO_PROFILE_DEV_DEBUG=0), using rustc's rust-objcopy,
-# which can leave a dylib's LINKEDIT string table 4-byte aligned. macOS 27 refuses to
-# load such dylibs when they are linked against its SDK, and every build loads its
-# proc-macros as dylibs. They never ship, so leave them unstripped. Remove once the
-# pinned Rust's rust-objcopy includes llvm/llvm-project#203680.
-[profile.dev.build-override]
-strip = false
-
-[profile.release.build-override]
-strip = false
-
 # The embedded proxy requires `maple-sdk` from the registry; resolve it to the same
 # in-tree source as the workspace dependency above (docs/sdk-publishing.md).
 [patch.crates-io]
