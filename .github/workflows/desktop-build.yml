@@ -214,7 +214,7 @@ jobs:
   verify-macos-desktop-artifacts:
     needs:
       - build-macos
-    runs-on: xcode-27
+    runs-on: macos-26
     timeout-minutes: 30
     permissions:
       contents: read

@@ -534,7 +534,10 @@ jobs:
     permissions:
       contents: read
       attestations: read
-    runs-on: xcode-27
+    # Launch the signed app on macOS 26, where most users run it, rather than on
+    # the macOS 27 it was built on. The job builds nothing, so it uses the image's
+    # default Xcode: the pinned 27.1 exists only on xcode-27.
+    runs-on: macos-26
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -556,9 +559,6 @@ jobs:
       - name: Verify pinned Nix runtime
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
-      - name: Select pinned Xcode
-        working-directory: .
-        run: python3 scripts/ci/select-xcode.py
       - name: Download exact Agent packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
