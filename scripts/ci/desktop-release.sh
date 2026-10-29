@@ -52,6 +52,7 @@ case "$(host_os)" in
     (cd "${TAURI_DIR}" && cargo build --locked --bins --features tauri/custom-protocol --release)
     sanitize_linux_target_release_executable
     run_with_nix_usr_bin bun tauri build --verbose --config "${release_config}"
+    verify_tauri_used_pinned_linuxdeploy
     restore_linux_runtime_library_path
     normalize_linux_desktop_packages
 
