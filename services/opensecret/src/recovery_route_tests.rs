@@ -2430,6 +2430,90 @@ async fn legacy_confirm_request(app: axum::Router, body: Value) -> axum::http::R
     .await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn legacy_password_reset_confirm_reports_a_lost_commit_race_as_bad_request() {
+    use crate::models::schema::users;
+    use diesel::{sql_types::BigInt, Connection};
+    #[derive(diesel::QueryableByName)]
+    struct Blocked {
+        #[diesel(sql_type = BigInt)]
+        count: i64,
+    }
+
+    let fixture = authenticated_password_fixture("legacy-confirm-race").await;
+    let app_state = fixture.app_state.clone();
+    let project = first_active_project(&app_state);
+    let secret = "legacy-confirm-race-secret";
+    let request =
+        insert_reset_request_fixture(&app_state, &project, &fixture.user, "LRACE123", secret, 24);
+    let body = legacy_confirm_body(
+        &fixture.email,
+        "LRACE123",
+        secret,
+        project.client_id,
+        "legacy-confirm-race-password",
+    );
+
+    // Hold the user-row lock so the reset passes its proof checks and then
+    // waits at commit; consume its request meanwhile, as a concurrent reset
+    // would, so the guarded consume finds nothing when the lock is released.
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+    let mut pending = None;
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        users::table
+            .filter(users::uuid.eq(fixture.user.uuid))
+            .for_update()
+            .first::<crate::models::users::User>(conn)?;
+        let app = login_router(app_state.clone());
+        pending = Some(tokio::spawn(legacy_confirm_request(app, body)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            // pg_stat_activity is snapshotted once per transaction.
+            diesel::sql_query("SELECT pg_stat_clear_snapshot()").execute(conn)?;
+            let blocked = diesel::sql_query(
+                "SELECT count(*) FROM pg_stat_activity WHERE pg_blocking_pids(pid) @> ARRAY[pg_backend_pid()]",
+            )
+            .get_result::<Blocked>(conn)?;
+            if blocked.count > 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the legacy reset must wait on the user-row lock"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        diesel::update(password_reset_requests::table.find(request.id))
+            .set(password_reset_requests::is_reset.eq(true))
+            .execute(conn)?;
+        Ok(())
+    })
+    .expect("lock-holding transaction should commit");
+
+    let response = pending.unwrap().await.expect("reset task should finish");
+    assert_generic_bad_request(response).await;
+    assert!(
+        app_state
+            .authenticate_user(
+                Some(fixture.email.clone()),
+                None,
+                fixture.password.to_string(),
+                fixture.user.project_id,
+            )
+            .await
+            .expect("authentication check should run")
+            .is_some(),
+        "the losing reset must leave the original password in place"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
 #[tokio::test]
 #[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
 async fn legacy_password_reset_confirm_retains_destructive_contract_without_recovery() {

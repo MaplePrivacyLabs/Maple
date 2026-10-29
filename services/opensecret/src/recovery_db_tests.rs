@@ -562,15 +562,44 @@ async fn recovery_wrap_loading_bounds_host_data_and_rejects_duplicate_slots() {
         .set(w::seed_enc.eq(&old.seed_enc))
         .execute(conn)
         .unwrap();
-    let mut duplicate = wrapping;
-    duplicate.credential_lookup_hash = vec![99; 32];
-    duplicate.insert(conn).unwrap();
+    // The database holds one recovery slot per user across every wrapping
+    // version, so a version bump must replace the slot rather than add one.
+    for (lookup_hash, version) in [(vec![99; 32], 1), (old.credential_lookup_hash.clone(), 2)] {
+        let mut duplicate = wrapping.clone();
+        duplicate.credential_lookup_hash = lookup_hash;
+        duplicate.wrapping_version = version;
+        assert!(matches!(
+            duplicate.insert(conn),
+            Err(UserSeedWrappingError::DatabaseError(
+                diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::UniqueViolation,
+                    _
+                )
+            ))
+        ));
+    }
+    // Host storage is untrusted: if the index is dropped and a second slot
+    // appears, reads still fail closed instead of choosing one.
+    use diesel::Connection;
+    let rolled_back = conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        diesel::sql_query("DROP INDEX idx_user_seed_wrappings_one_recovery").execute(conn)?;
+        let mut duplicate = wrapping.clone();
+        duplicate.credential_lookup_hash = vec![99; 32];
+        duplicate.insert(conn).unwrap();
+        assert!(matches!(
+            UserSeedWrapping::get_recovery_for_user(conn, user.uuid),
+            Err(UserSeedWrappingError::InvalidRecoveryWrapping)
+        ));
+        Err(diesel::result::Error::RollbackTransaction)
+    });
     assert!(matches!(
-        db.get_recovery_wrap(user.uuid),
-        Err(DBError::UserSeedWrappingError(
-            UserSeedWrappingError::InvalidRecoveryWrapping
-        ))
+        rolled_back,
+        Err(diesel::result::Error::RollbackTransaction)
     ));
+    assert_eq!(
+        db.get_recovery_wrap(user.uuid).unwrap().map(|wrap| wrap.id),
+        Some(old.id)
+    );
     db.delete_user(&user).unwrap();
 }
 
@@ -650,5 +679,45 @@ async fn recovery_reset_rechecks_expiry_after_waiting_for_the_user_lock() {
         .unwrap()
         .password_enc
         .is_none());
+    db.delete_user(&user).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable migrated recovery test database"]
+async fn reset_request_lookup_selects_the_newest_open_request_for_a_repeated_code() {
+    use crate::models::password_reset::NewPasswordResetRequest;
+    let db = build_db(test_database_url().expect("disposable database required"));
+    let project = first_active_project(&db);
+    let user = create_test_user(
+        &db,
+        project.id,
+        format!("recovery-reset-order-{}@example.com", Uuid::new_v4()),
+    );
+    // Same code MAC on two open requests: options and completion must both
+    // read the newest one, never an older or expired duplicate.
+    let older = db
+        .create_password_reset_request(NewPasswordResetRequest::new(
+            user.uuid,
+            "older-hash".into(),
+            vec![5; 32],
+            -1,
+        ))
+        .unwrap();
+    let newer = db
+        .create_password_reset_request(NewPasswordResetRequest::new(
+            user.uuid,
+            "newer-hash".into(),
+            vec![5; 32],
+            24,
+        ))
+        .unwrap();
+    assert!(newer.id > older.id);
+    for _ in 0..3 {
+        let selected = db
+            .get_password_reset_request_by_user_id_and_code(user.uuid, vec![5; 32])
+            .unwrap()
+            .expect("an open request should match");
+        assert_eq!(selected.id, newer.id);
+    }
     db.delete_user(&user).unwrap();
 }

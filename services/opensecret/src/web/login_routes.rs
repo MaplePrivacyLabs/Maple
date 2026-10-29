@@ -665,6 +665,10 @@ pub async fn password_reset_confirm(
         crate::Error::PasswordResetExpired => ApiError::BadRequest,
         crate::Error::InvalidPasswordResetSecret => ApiError::BadRequest,
         crate::Error::InvalidPasswordResetRequest => ApiError::BadRequest,
+        // A concurrent reset consumed the request or changed the credential
+        // first; this is the same rejection as an already-used request.
+        crate::Error::DatabaseError(DBError::PasswordResetRequestNotFound)
+        | crate::Error::DatabaseError(DBError::StaleCredentialState) => ApiError::BadRequest,
         _ => ApiError::InternalServerError,
     })?;
 

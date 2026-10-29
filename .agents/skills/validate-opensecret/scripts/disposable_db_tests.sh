@@ -190,11 +190,6 @@ compaction_count="$(awk '/^models::response_compaction::tests::db_.*: test$/ { c
 # Keep the selected persistence contract explicit: a missing ignored test is a failure.
 test "$compaction_count" -eq 20
 
-cargo test --locked --all-features recovery \
-  -- --ignored --list | tee "$workdir/recovery-tests.list"
-recovery_count="$(awk '/^.*: test$/ { count++ }
-  END { print count + 0 }' "$workdir/recovery-tests.list")"
-test "$recovery_count" -gt 0
 
 cargo test --locked --all-features aead_db_tamper_tests \
   -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/aead-tests.log"
@@ -250,14 +245,32 @@ for callback_filter in \
   callback_count=$((callback_count + selected_count))
 done
 
-cargo test --locked --all-features recovery \
-  -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/recovery-tests.log"
-if grep -qi 'skipping:' "$workdir/recovery-tests.log"; then
-  printf 'Recovery database test output contained a skip marker\n' >&2
-  exit 1
-fi
-grep -Eq "test result: ok\\. ${recovery_count} passed; 0 failed; 0 ignored;" \
-  "$workdir/recovery-tests.log"
+# Exact prefixes keep unrelated ignored tests out; pinned counts make a
+# renamed or un-ignored recovery test a failure instead of a silent drop.
+recovery_count=0
+for recovery_suite in \
+  recovery_db_tests::=12 \
+  recovery_route_tests::=24 \
+  transport_v2::gateway::tests::db_recovery_=1; do
+  recovery_filter="${recovery_suite%=*}"
+  expected_count="${recovery_suite##*=}"
+  cargo test --locked --all-features "$recovery_filter" \
+    -- --ignored --list >"$workdir/recovery-tests.list"
+  selected_count="$(awk -v prefix="$recovery_filter" \
+    'index($0, prefix) == 1 && /: test$/ { count++ }
+     END { print count + 0 }' "$workdir/recovery-tests.list")"
+  test "$selected_count" -eq "$expected_count"
+
+  cargo test --locked --all-features "$recovery_filter" \
+    -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/recovery-tests.log"
+  if grep -qi 'skipping:' "$workdir/recovery-tests.log"; then
+    printf 'Recovery database test output contained a skip marker\n' >&2
+    exit 1
+  fi
+  grep -Eq "test result: ok\\. ${selected_count} passed; 0 failed; 0 ignored;" \
+    "$workdir/recovery-tests.log"
+  recovery_count=$((recovery_count + selected_count))
+done
 
 assert_database_identity
 assert_migration_count
