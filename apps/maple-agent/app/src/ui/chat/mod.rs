@@ -1956,12 +1956,7 @@ impl ChatScreen {
         self.restore_selected_project(registration.project, cx);
         self.refresh_roots(cx);
         self.land_project_selection(registration.project_root, self.selection_generation, cx);
-        if self.navigation_only {
-            self.navigation_only = false;
-            self.booting = true;
-            self.refresh_slash_commands(cx);
-            self.start_runtime(cx);
-        }
+        self.leave_catalog(cx);
         self.screen_focus_pending = true;
     }
 
@@ -4447,6 +4442,9 @@ impl ChatScreen {
             cx.notify();
             return;
         }
+        // A catalog would drop the reply's transcript rows. Leave it first;
+        // its runtime start then holds this send like any other boot.
+        self.leave_catalog(cx);
         if self.booting {
             self.notice = Some("Agent runtime is still starting".into());
             cx.notify();

@@ -11357,6 +11357,59 @@ mod state_tests {
             });
         }
 
+        /// New Task clicked while a freshly opened computer still loads its
+        /// catalog. The task created from that draft must show its reply.
+        #[gpui::test]
+        fn new_task_during_a_pending_catalog_still_shows_its_transcript(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.selected_session = None;
+                this.project_root = Some(absolute_fixture_root("remote"));
+                this.navigation_only = true;
+                this.navigation_ready = false;
+                this.host_recovery.events = Some(Vec::new());
+                this.navigate(Destination::Overview, cx);
+                assert!(this.pending_navigation.is_some());
+                this.new_session(cx);
+                this.host_recovery.events = None;
+                this.finish_navigation_bootstrap(cx);
+
+                assert!(
+                    !this.navigation_only,
+                    "the visible computer must leave catalog mode"
+                );
+                this.selected_session = Some("remote-task".into());
+                this.draft = false;
+                this.handle_service_event(
+                    AgentServiceEvent::TimelineItem {
+                        session_id: "remote-task".into(),
+                        run_id: Some("run".into()),
+                        item: item("reply", "message", Some("the answer")),
+                    },
+                    cx,
+                );
+                assert!(!this.timeline.is_empty(), "the reply must be shown");
+            });
+        }
+
+        /// Whatever left a catalog on screen, a send never runs from it:
+        /// it leaves catalog mode and waits for the runtime it starts.
+        #[gpui::test]
+        fn sending_from_a_catalog_leaves_it_before_anything_runs(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.selected_session = None;
+                this.project_root = Some(absolute_fixture_root("remote"));
+                this.navigation_only = true;
+                this.navigation_ready = true;
+                this.booting = false;
+                this.send_text("hello".into(), cx);
+                assert!(!this.navigation_only);
+                assert!(this.booting);
+                assert!(this.pending_first_send.is_none(), "nothing was sent");
+            });
+        }
+
         #[gpui::test]
         fn draft_project_intent_survives_a_pending_catalog(cx: &mut TestAppContext) {
             let chat = screen(cx);
