@@ -73,6 +73,45 @@ fn full_output_path(text: &str) -> PathBuf {
     PathBuf::from(&text[start..end])
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finishing_progress_waits_for_an_in_flight_reporter() {
+    // Model a reporter inside synchronous send_update on another worker. Abort
+    // cannot interrupt that code; the final result must wait until it returns.
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let reported = Arc::new(AtomicBool::new(false));
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn({
+        let (gate, reported) = (gate.clone(), reported.clone());
+        async move {
+            started.send(()).unwrap();
+            gate.wait();
+            reported.store(true, Ordering::Release);
+        }
+    });
+    ready.await.unwrap();
+    let throttle = UpdateThrottle {
+        dirty: Arc::new(AtomicBool::new(false)),
+        wake: Arc::new(Notify::new()),
+        task,
+        output: Arc::new(Mutex::new(OutputAccumulator::new("progress-fixture"))),
+        updates: ToolUpdates::none(),
+        progress: Arc::new(ShellProgress {
+            cwd: PathBuf::new(),
+            timeout: None,
+            started: Instant::now(),
+            last_output: Mutex::new(Instant::now()),
+        }),
+    };
+    let finish = throttle.finish();
+    tokio::pin!(finish);
+    let first_poll = futures_util::poll!(&mut finish);
+    // Always release the worker before asserting, including on a regression.
+    gate.wait();
+    assert!(first_poll.is_pending(), "completion must join the reporter");
+    finish.await;
+    assert!(reported.load(Ordering::Acquire));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn commands_run_and_report_their_exit_code() {

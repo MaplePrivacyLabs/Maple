@@ -72,8 +72,11 @@ agent runtime; its desktop Agent page points users to Maple Work.
   approval.
 - Shell tool calls start in the task's saved folder on the execution computer.
   An absolute `workdir` selects another checkout/worktree for one call; a `cd`
-  inside a command does not affect later calls. Maple supplies a 120-second
-  default deadline, and the call can request a longer `timeout` explicitly.
+  inside a command does not affect later calls. Maple supplies a 30-minute
+  default deadline to allow slow builds, and the call can request a longer
+  `timeout` explicitly. Search guidance asks for a short timeout (normally
+  30 seconds) and a narrower scope if it expires; that shorter limit applies
+  only when the call requests it.
   Quiet commands report their starting folder, elapsed time, time since output and
   deadline every five seconds, including on collapsed tool cards. Stop and
   deadlines kill the shell's process group on Unix (the process tree on Windows).

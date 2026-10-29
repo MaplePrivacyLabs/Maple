@@ -128,8 +128,8 @@ fn the_model_gets_read_a_shell_edit_and_write() {
     };
     assert_eq!(tools.builtin, ["read", shell, "edit", "write"]);
     assert!(tools.options.powershell.spawn_hook.is_some());
-    assert_eq!(tools.options.bash.default_timeout, Some(120.0));
-    assert_eq!(tools.options.powershell.default_timeout, Some(120.0));
+    assert_eq!(tools.options.bash.default_timeout, Some(1800.0));
+    assert_eq!(tools.options.powershell.default_timeout, Some(1800.0));
 }
 
 fn tool(tools: &TaskTools, name: &str) -> Arc<dyn pi_agent_core::AgentTool> {

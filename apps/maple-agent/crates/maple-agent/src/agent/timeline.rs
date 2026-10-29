@@ -632,11 +632,13 @@ impl LiveTimeline {
                 is_error,
                 ..
             } => {
-                let Some(id) = self.tool_rows.get(tool_call_id) else {
+                // Retire the occurrence so a delayed partial result cannot
+                // overwrite its final status or output while other tools run.
+                let Some(id) = self.tool_rows.remove(tool_call_id) else {
                     return Vec::new();
                 };
                 vec![tool_result_item(
-                    id.clone(),
+                    id,
                     &result.content,
                     result.details.as_ref(),
                     *is_error,

@@ -527,7 +527,7 @@ impl ShellTool {
     /// The guideline that goes with the tool's snippet.
     pub fn guidelines(&self) -> Vec<String> {
         let mut rules = vec![
-            "For repository searches, set workdir to the absolute intended checkout/worktree and search within it. Verify the folder before using parent paths; never guess ../../ from a temporary folder. Avoid recursive searches of filesystem roots or virtual filesystems such as /proc, /sys and /dev. head limits output, not runtime; use a timeout for searches.".to_string(),
+            "For repository searches, set workdir to the absolute intended checkout/worktree and search within it. Verify the folder before using parent paths; never guess ../../ from a temporary folder. Avoid recursive searches of filesystem roots or virtual filesystems such as /proc, /sys and /dev. head limits output, not runtime; request a short timeout (normally 30 seconds) for searches and narrow the scope if it expires.".to_string(),
         ];
         if self.expose_session_environment {
             rules.push(format!(
@@ -649,9 +649,11 @@ impl UpdateThrottle {
         self.wake.notify_one();
     }
 
-    /// Stop, sending whatever has not been sent.
-    fn finish(self) {
+    /// Join the reporter before the tool returns: abort alone cannot stop a
+    /// synchronous send already running on another executor thread.
+    async fn finish(mut self) {
         self.task.abort();
+        let _ = (&mut self.task).await;
         send_update(&self.dirty, &self.output, &self.updates, &self.progress);
     }
 }
@@ -819,12 +821,12 @@ impl AgentTool for ShellTool {
             output.finish();
             (output.snapshot(true), output.last_line_bytes())
         };
-        if let Some(throttle) = throttle
+        let finished_throttle = throttle
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .take()
-        {
-            throttle.finish();
+            .take();
+        if let Some(throttle) = finished_throttle {
+            throttle.finish().await;
         }
         // The kept output reaches the model either way; a failed save loses only the
         // rest, and the note says the file could not be saved.

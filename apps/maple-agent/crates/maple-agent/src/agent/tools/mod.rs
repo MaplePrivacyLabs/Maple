@@ -33,8 +33,9 @@ use crate::maple_api::MapleWebTransport;
 
 /// The developer's choice of bash.
 pub(crate) const SHELL_ENV: &str = "MAPLE_SHELL";
-/// Silent searches must not hold a task forever. Builds can request longer explicitly.
-const SHELL_DEFAULT_TIMEOUT: f64 = 120.0;
+/// Leave room for slow builds while bounding commands that never finish.
+/// Searches request a shorter timeout through the shell tool's guidelines.
+const SHELL_DEFAULT_TIMEOUT: f64 = 30.0 * 60.0;
 
 /// How a task's tools are set up.
 pub(crate) struct TaskTools {

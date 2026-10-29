@@ -87,6 +87,60 @@ fn shown(items: &[AgentTimelineItem]) -> Vec<Shown> {
         .collect()
 }
 
+#[test]
+fn late_tool_progress_cannot_replace_a_final_result_while_another_tool_runs() {
+    for (text, is_error) in [
+        ("finished", false),
+        ("Command aborted", true),
+        ("Command timed out after 30 seconds", true),
+    ] {
+        let mut live = LiveTimeline::default();
+        let mut reply = AssistantMessage::empty(&FauxProvider::new().model());
+        reply.content = vec![
+            faux_tool_call("bash", json!({"command": "first"})),
+            faux_tool_call("bash", json!({"command": "second"})),
+        ];
+        let calls: Vec<_> = reply.tool_calls().cloned().collect();
+        let mut rows = live.rows(&AgentEvent::MessageEnd {
+            message: SessionMessage::Llm(Message::Assistant(reply)),
+        });
+        let update = |call: &ToolCall| AgentEvent::ToolExecutionUpdate {
+            tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            args: Value::Object(call.arguments.clone()),
+            partial_result: AgentToolResult::text("still running"),
+        };
+        for call in &calls {
+            for row in live.rows(&AgentEvent::ToolExecutionStart {
+                tool_call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                args: Value::Object(call.arguments.clone()),
+            }) {
+                merge_into(&mut rows, row);
+            }
+            assert_eq!(live.rows(&update(call)).len(), 1);
+        }
+        for row in live.rows(&AgentEvent::ToolExecutionEnd {
+            tool_call_id: calls[0].id.clone(),
+            tool_name: calls[0].name.clone(),
+            result: AgentToolResult::text(text),
+            is_error,
+        }) {
+            merge_into(&mut rows, row);
+        }
+        // An already-running reporter can deliver a partial result after End.
+        assert!(live.rows(&update(&calls[0])).is_empty());
+        let active = live.rows(&update(&calls[1]));
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].status.as_deref(), Some("running"));
+        assert_eq!(
+            rows[0].status.as_deref(),
+            Some(if is_error { "failed" } else { "completed" })
+        );
+        assert_eq!(rows[0].output.as_ref().unwrap()["text"], text);
+    }
+}
+
 #[tokio::test]
 async fn live_rows_are_the_rows_a_reload_shows() {
     let faux = FauxProvider::new();
