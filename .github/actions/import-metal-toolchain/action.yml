@@ -7,6 +7,8 @@ description: >-
 runs:
   using: composite
   steps:
+    # The artifact lives one day. A later "Re-run failed jobs" finds it gone: re-run the
+    # metal-toolchain job (Export the Metal Toolchain) so its dependents re-run with it.
     - name: Download the exported Metal Toolchain
       uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
@@ -16,7 +18,9 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if xcodebuild -showComponent metalToolchain | grep -q '^Status: installed'; then
+        # Capture first: grep -q could close the pipe while xcodebuild still writes.
+        component="$(xcodebuild -showComponent metalToolchain 2>/dev/null || true)"
+        if grep -q '^Status: installed' <<<"$component"; then
           echo "The selected Xcode already has its Metal Toolchain."
         else
           import_dir="$RUNNER_TEMP/metal-toolchain"

@@ -289,7 +289,7 @@ LANES: Tuple[Lane, ...] = (
     # which compiles gpui's shaders like the signed builds. Nothing selects it by path or
     # label: the planner adds it to every plan with a lane that requires it.
     Lane("metal-toolchain", (), pr_paths=(), labels=(), gate=False, job="metal-toolchain",
-         runner=GITHUB_XCODE, timeout=15),
+         events=PR_AND_NIGHTLY, runner=GITHUB_XCODE, timeout=15),
     Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),) + FAST_RELEASE, timeout=90, gate=False),

@@ -518,14 +518,19 @@ def lint_problems(files: Sequence[str]) -> List[str]:
             if required is None:
                 problems.append(f"{lane.id}: requires unknown lane {name}")
                 continue
-            if required.paths or required.pr_paths or required.labels or required.gate:
-                problems.append(f"{name}: a required lane must have no paths, labels or gate")
+            if required.paths or required.pr_paths or required.labels or required.gate or required.opensecret:
+                problems.append(f"{name}: a required lane must have no paths, labels, gate or OpenSecret selector")
             if lane.job in MATRIX_JOBS or lane.job not in blocks:
                 problems.append(f"{lane.id}: a lane with requirements needs its own ci.yml job")
                 continue
             needs = re.search(r"^    needs: \[?([^\]\n]*)\]?$", blocks[lane.job], re.M)
             if not needs or required.job not in {n.strip() for n in needs[1].split(",")}:
                 problems.append(f"ci.yml {lane.job}: needs does not include {required.job}")
+    # A fallback plan (everything()) must never run a required lane without a lane that needs it.
+    for name in sorted({name for lane in LANES for name in lane.requires} & set(by_id)):
+        requirers = set().union(*(lane.events for lane in LANES if name in lane.requires))
+        if not by_id[name].events <= requirers:
+            problems.append(f"{name}: a required lane's events must be a subset of its requirers' events")
     for lane in LANES:
         seen, stack = set(), list(lane.requires)
         while stack:

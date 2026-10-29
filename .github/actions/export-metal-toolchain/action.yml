@@ -23,6 +23,8 @@ runs:
         name: metal-toolchain
         path: ${{ runner.temp }}/metal-toolchain.tar
         if-no-files-found: error
+        # Re-run all jobs uploads it again under the same name.
+        overwrite: true
         # Apple's toolchain, re-hosted only for this run's jobs.
         retention-days: 1
         compression-level: 0

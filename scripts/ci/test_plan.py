@@ -248,7 +248,9 @@ class LaneTableTests(unittest.TestCase):
         for broken, problem in ((edited("agent-package-macos", requires=("no-such-lane",)),
                                  "agent-package-macos: requires unknown lane no-such-lane"),
                                 (edited("metal-toolchain", labels=("ci:full",)),
-                                 "metal-toolchain: a required lane must have no paths, labels or gate")):
+                                 "metal-toolchain: a required lane must have no paths, labels, gate or OpenSecret selector"),
+                                (edited("metal-toolchain", events=lanes.GATE),
+                                 "metal-toolchain: a required lane's events must be a subset of its requirers' events")):
             with self.subTest(problem=problem), mock.patch.object(plan, "LANES", broken):
                 self.assertIn(problem, plan.lint_problems(plan.tracked_files()))
 
@@ -413,6 +415,8 @@ class AgentLaneTests(unittest.TestCase):
                 self.assertIn(consumer, chosen)
                 self.assertEqual(chosen[required], [f"required by {consumer}"])
         self.assertLessEqual({consumer, required}, active(NIGHTLY))
+        # A master push that falls back to every lane must not export it for nobody.
+        self.assertNotIn(required, plan.everything(PUSH, "fallback"))
 
     def test_full_suites_run_on_master_nightly_and_by_label(self):
         full = {"agent-full-linux", "agent-full-macos", "agent-full-windows"}
