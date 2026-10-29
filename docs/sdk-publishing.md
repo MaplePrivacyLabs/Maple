@@ -37,6 +37,16 @@ dependency declarations. An SDK publication does not automatically upgrade
 any consumer, and an older published pin is not a reason to block an
 unrelated client release.
 
+Research and Auth resolve transitive `zod` dependencies to `4.6.7` for
+[GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
+This removes Zod 3 from their installed dependency graphs, but the older
+published `@mapleai/sdk` and Research's legacy `@opensecret/react-v1` package
+also embed Zod 3 in their JavaScript bundles. A consumer resolution cannot
+replace that embedded code. A clean Bun audit therefore proves only the
+resolved graph; complete remediation requires rebuilding and publishing the
+SDKs with the patched dependency, then updating the consumer pins. Preserve
+legacy authentication compatibility when preparing that separate upgrade.
+
 Local SDK dependencies are supported during active development, including on
 `master`. Edit the existing manifest and regenerate its lockfile with the
 owning component's pinned tools; no special development mode is required:
