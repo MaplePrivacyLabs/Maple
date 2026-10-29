@@ -133,3 +133,13 @@ host/install lock ownership. Linux activation needs its own packaged update proo
 Follow [updater development](../../../apps/maple-agent/docs/updates.md) for key
 setup and validation. Production resources, keys, routes, signing and publication
 remain separately authorized operations. Do not publish registries incidentally.
+
+## Localization
+
+New Agent UI labels use `ui::i18n` and the embedded Fluent catalogs; follow
+[the localization contract](../../../apps/maple-agent/docs/localization.md).
+Plain labels are cached; parameterized messages are formatted on state changes.
+Language changes apply on restart. Preserve machine identifiers, model-facing
+text, user content and persisted timeline text. Do not translate host/ACP errors
+in place. Expand the converted-module guard with each extraction, and require
+platform/font/packaging evidence before enabling another locale.

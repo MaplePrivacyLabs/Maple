@@ -135,6 +135,9 @@ pub struct AppSettings {
     /// Window size and state from the last run.
     #[serde(default)]
     pub window: Option<WindowState>,
+    /// UI language override; None follows the operating system.
+    #[serde(default, deserialize_with = "view_preference_or_default")]
+    pub locale: Option<String>,
     /// Color theme: "system", "dark", or "light".
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -316,6 +319,7 @@ impl Default for AppSettings {
             reduce_motion: false,
             harness_instructions: String::new(),
             window: None,
+            locale: None,
             theme: default_theme(),
             chat_font_family: default_chat_font_family(),
             chat_font_size: default_chat_font_size(),
@@ -984,6 +988,30 @@ pub(crate) fn install_test_store(store: std::sync::Arc<maple_agent::store::Store
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locale_preferences_are_optional_and_survive_host_patches() {
+        for value in [serde_json::json!({}), serde_json::json!({"locale": 7})] {
+            let settings: AppSettings = serde_json::from_value(value).unwrap();
+            assert_eq!(settings.locale, None);
+        }
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        for locale in [Some("en"), Some("future-locale"), None] {
+            apply_host_patch(&store, None, &serde_json::json!({"locale": locale})).unwrap();
+            apply_host_patch(&store, None, &serde_json::json!({"reduce_motion": true})).unwrap();
+            assert_eq!(
+                load_host_settings(&store, None).unwrap().locale.as_deref(),
+                locale
+            );
+            assert_eq!(
+                store.app_setting("ui").unwrap().unwrap()["locale"],
+                serde_json::json!(locale)
+            );
+        }
+    }
 
     #[test]
     fn the_sidebar_layout_round_trips_and_defaults_to_projects() {

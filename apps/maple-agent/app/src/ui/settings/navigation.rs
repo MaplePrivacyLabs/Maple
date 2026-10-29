@@ -28,6 +28,7 @@ pub(super) enum SettingsRegion {
 pub(super) enum GeneralTarget {
     Web,
     Appearance,
+    Language,
     ChatFont,
     ChatSize,
     ToolDetails,
@@ -133,6 +134,7 @@ impl SettingsScreen {
             Section::General => [
                 GeneralTarget::Web,
                 GeneralTarget::Appearance,
+                GeneralTarget::Language,
                 GeneralTarget::ChatFont,
                 GeneralTarget::ChatSize,
                 GeneralTarget::ToolDetails,
@@ -385,6 +387,7 @@ impl SettingsScreen {
     fn activate_general_target(&mut self, target: GeneralTarget, cx: &mut Context<Self>) {
         match target {
             GeneralTarget::Web => self.toggle_web_default(cx),
+            GeneralTarget::Language => self.toggle_setting_menu(SettingMenu::Language, cx),
             GeneralTarget::Appearance => self.toggle_setting_menu(SettingMenu::Appearance, cx),
             GeneralTarget::ChatFont => self.toggle_setting_menu(SettingMenu::ChatFont, cx),
             GeneralTarget::ChatSize => self.toggle_setting_menu(SettingMenu::ChatSize, cx),
@@ -1179,6 +1182,25 @@ mod tests {
     }
 
     #[gpui::test]
+    fn language_dropdown_supports_pointer_and_keyboard_selection(cx: &mut TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+        let (settings, cx) = dropdown_window(cx, false);
+        for expected in [Some("en"), None] {
+            let button = cx
+                .debug_bounds("setting-value-language")
+                .expect("language selector");
+            cx.simulate_click(button.center(), gpui::Modifiers::default());
+            cx.simulate_keystrokes("down enter");
+            settings.update(cx, |this, _| {
+                assert_eq!(this.settings.locale.as_deref(), expected);
+                assert_eq!(this.popup.open_key(), None);
+            });
+        }
+        crate::settings::discard_decrypted_cache();
+    }
+
+    #[gpui::test]
     fn picking_from_the_dropdown_persists_in_reopened_store(cx: &mut TestAppContext) {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         let root = tempfile::tempdir().unwrap();
@@ -1194,6 +1216,8 @@ mod tests {
         settings.update(cx, |this, cx| {
             this.toggle_setting_menu(SettingMenu::Appearance, cx);
             this.pick_setting_option(SettingMenu::Appearance, 2, cx);
+            this.toggle_setting_menu(SettingMenu::Language, cx);
+            this.pick_setting_option(SettingMenu::Language, 1, cx);
         });
         crate::settings::update_settings_and_wait(|_| {});
         // Detach the writer's Arc and discard its cached value before closing
@@ -1212,6 +1236,10 @@ mod tests {
             saved.get("theme").and_then(serde_json::Value::as_str),
             Some("light"),
             "a dropdown pick must reach the authoritative store"
+        );
+        assert_eq!(
+            saved.get("locale").and_then(serde_json::Value::as_str),
+            Some("en")
         );
         reopened.close().unwrap();
         cx.run_until_parked();

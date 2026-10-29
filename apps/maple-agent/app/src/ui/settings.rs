@@ -115,6 +115,7 @@ impl Section {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingMenu {
     Appearance,
+    Language,
     ChatFont,
     ChatSize,
     Voice,
@@ -126,6 +127,7 @@ impl SettingMenu {
     fn id(self) -> &'static str {
         match self {
             Self::Appearance => "appearance",
+            Self::Language => "language",
             Self::ChatFont => "chat-font",
             Self::ChatSize => "chat-size",
             Self::Voice => "voice",
@@ -961,6 +963,13 @@ impl SettingsScreen {
     /// share this order, so an index means the same option in both.
     fn menu_options(&self, menu: SettingMenu) -> Vec<SettingOption> {
         match menu {
+            SettingMenu::Language => super::i18n::LANGUAGES
+                .iter()
+                .map(|locale| SettingOption {
+                    label: super::i18n::preference_label(*locale).to_string(),
+                    current: self.settings.locale.as_deref() == *locale,
+                })
+                .collect(),
             SettingMenu::Appearance => [
                 theme::Preference::System,
                 theme::Preference::Dark,
@@ -1010,6 +1019,9 @@ impl SettingsScreen {
     /// The saved value shown on the dropdown's trigger button.
     fn menu_value(&self, menu: SettingMenu) -> String {
         match menu {
+            SettingMenu::Language => {
+                super::i18n::preference_label(self.settings.locale.as_deref()).to_string()
+            }
             SettingMenu::Appearance => self.theme.label().to_string(),
             SettingMenu::ChatFont => {
                 crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family)
@@ -1129,6 +1141,13 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match menu {
+            SettingMenu::Language => {
+                let Some(locale) = super::i18n::LANGUAGES.get(index) else {
+                    return;
+                };
+                let locale = locale.map(str::to_owned);
+                self.edit_setting(move |settings| settings.locale = locale, cx);
+            }
             SettingMenu::Appearance => {
                 let Some(preference) = [
                     theme::Preference::System,
@@ -1276,7 +1295,11 @@ impl SettingsScreen {
             }));
             self.popup.render(dropdown, Placement::BelowEnd, window, cx)
         });
-        let slug = title.to_lowercase().replace(' ', "-");
+        let slug = if menu == SettingMenu::Language {
+            menu.id().to_owned()
+        } else {
+            title.to_lowercase().replace(' ', "-")
+        };
         let button =
             widgets::secondary_button(gpui::SharedString::from(format!("setting-value-{slug}")))
                 .debug_selector(move || format!("setting-value-{slug}"))
@@ -1287,7 +1310,11 @@ impl SettingsScreen {
                 .child(self.menu_value_label(menu))
                 .child(icon("chevron-down", px(12.), theme::text_muted()));
         widgets::card_row()
-            .id(setting_row_id(title))
+            .id(if menu == SettingMenu::Language {
+                gpui::SharedString::from("setting-language")
+            } else {
+                setting_row_id(title)
+            })
             .flex()
             .items_center()
             .justify_between()
@@ -1762,6 +1789,14 @@ impl SettingsScreen {
                             SettingMenu::Appearance,
                             window,
                             cx,
+                        ),
+                    ))
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::Language),
+                        self.setting_menu_row(
+                            &super::i18n::tr("settings-language"),
+                            &super::i18n::tr("settings-language-description"),
+                            SettingMenu::Language, window, cx,
                         ),
                     ))
                     .child(section_title("Chat appearance"))
