@@ -4,6 +4,7 @@ import { Link, Outlet, useLocation, useRouter } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
 import {
   ArrowLeft,
+  BarChart3,
   BookOpen,
   CreditCard,
   Database,
@@ -46,6 +47,7 @@ type SettingsNavItem = {
     | "/settings/preferences"
     | "/settings/security"
     | "/settings/billing"
+    | "/settings/usage"
     | "/settings/team"
     | "/settings/api"
     | "/settings/history"
@@ -242,6 +244,7 @@ function SettingsLayoutContent() {
       label: "Plan",
       items: [
         { label: "Billing", to: "/settings/billing", icon: CreditCard },
+        { label: "Usage", to: "/settings/usage", icon: BarChart3 },
         ...(isTeamPlan
           ? [
               {
