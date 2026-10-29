@@ -6570,6 +6570,14 @@ impl EventEmitter<OpenSettings> for ChatScreen {}
 impl EventEmitter<OpenSettingsSection> for ChatScreen {}
 impl EventEmitter<crate::ui::store_gate::RetryStorePersistence> for ChatScreen {}
 
+/// Height cap for the chat composer's text area: the window minus the
+/// header and the composer's own chrome (box padding, control row and
+/// the gutter under it), so the box never reaches the window's bottom
+/// edge. A long prompt scrolls inside the box instead.
+fn composer_max_height(viewport_height: gpui::Pixels) -> gpui::Pixels {
+    (viewport_height - CHAT_HEADER_HEIGHT - px(96.)).max(px(72.))
+}
+
 /// Height hint for transcript rows that have not been measured yet, so a
 /// freshly opened task has a scrollbar of about the right size on its
 /// first frame. Rows are measured as they scroll into view.
@@ -6611,6 +6619,13 @@ impl Render for ChatScreen {
             && self.application_vim.region == self::navigation::ChatRegion::Sidebar;
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_vim_active(vim_in_sidebar, cx));
+        // Keep the composer's grown height inside the pane: a long
+        // prompt scrolls within the box instead of pushing it into the
+        // window's bottom edge.
+        if let Some(composer) = self.composer.clone() {
+            let cap = composer_max_height(window.viewport_size().height);
+            composer.update(cx, |input, cx| input.set_max_height(cap, cx));
+        }
         // First, so a dialog's focus request below wins over a menu handing
         // focus back.
         self.popup.sync_focus(window, cx);

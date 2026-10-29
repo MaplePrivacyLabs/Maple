@@ -128,6 +128,10 @@ pub struct TextInput {
     /// Fill the parent's height instead of sizing to the content
     /// (expanded composer).
     fill_height: bool,
+    /// Pixel cap on the grown height. The text scrolls inside the box
+    /// once it would grow past this (chat composer above the window's
+    /// bottom edge).
+    max_height: Option<Pixels>,
     max_lines: usize,
     /// Last (text, wrap width, font, size, line-height) -> row count, so
     /// layout does not re-shape unchanged text every frame, and a chat
@@ -270,6 +274,7 @@ impl TextInput {
             keep_cursor_visible: false,
             multiline: false,
             fill_height: false,
+            max_height: None,
             max_lines: 8,
             measure_cache: None,
             shape_cache: None,
@@ -407,6 +412,16 @@ impl TextInput {
     pub fn set_fill_height(&mut self, fill: bool, cx: &mut Context<Self>) {
         if self.fill_height != fill {
             self.fill_height = fill;
+            cx.notify();
+        }
+    }
+
+    /// Cap the grown height at `height`, so a long prompt scrolls the
+    /// text inside the box instead of the box growing past the pane's
+    /// bottom edge (the chat composer tracks the window height).
+    pub fn set_max_height(&mut self, height: Pixels, cx: &mut Context<Self>) {
+        if self.max_height != Some(height) {
+            self.max_height = Some(height);
             cx.notify();
         }
     }
@@ -2687,6 +2702,16 @@ impl IntoElement for TextElement {
     }
 }
 
+/// Clamp the grown row count to an explicit pixel cap, so a capped
+/// input scrolls its text inside the box instead of the box growing
+/// past the pane's bottom edge.
+fn capped_rows(rows: usize, max_height: Option<Pixels>, line_height: Pixels) -> usize {
+    match max_height {
+        Some(height) => rows.min(((height / line_height).floor().max(1.)) as usize),
+        None => rows,
+    }
+}
+
 impl Element for TextElement {
     type RequestLayoutState = ();
     type PrepaintState = PrepaintState;
@@ -2750,7 +2775,8 @@ impl Element for TextElement {
                 && *cached_font_size == font_size
                 && *cached_line_height == line_height
             {
-                return size(cache_width, line_height * *rows as f32);
+                let rows = capped_rows(*rows, input.max_height, line_height);
+                return size(cache_width, line_height * rows as f32);
             }
             let run = TextRun {
                 len: text.len(),
@@ -2771,10 +2797,11 @@ impl Element for TextElement {
                 })
                 .unwrap_or(1)
                 .clamp(1, input.max_lines);
+            let shown = capped_rows(rows, input.max_height, line_height);
             entity.update(cx, |input, _| {
                 input.measure_cache = Some((text, cache_width, font, font_size, line_height, rows));
             });
-            size(cache_width, line_height * rows as f32)
+            size(cache_width, line_height * shown as f32)
         });
         (layout, ())
     }
@@ -3527,6 +3554,49 @@ mod tests {
             input.undo_last(cx);
             assert_eq!(input.text(), "");
         });
+    }
+
+    #[gpui::test]
+    fn test_a_height_capped_composer_scrolls_instead_of_growing(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        struct Host {
+            input: Entity<TextInput>,
+        }
+        impl Render for Host {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                // A tall pane: the cap comes from the composer's max
+                // height, not from the pane running out of room.
+                div().w(px(300.)).h(px(600.)).child(self.input.clone())
+            }
+        }
+
+        let input = cx.new(|cx| TextInput::new("", cx).multiline(8));
+        input.update(cx, |input, cx| {
+            input.set_text(&"word ".repeat(400), cx);
+            input.set_max_height(px(100.), cx);
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| Host {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(300.), px(600.)));
+
+        // The box stops at the cap instead of growing to eight rows.
+        let bounds = cx.update(|_, app| input.read(app).last_bounds.expect("drawn bounds"));
+        assert!(
+            bounds.size.height <= px(100.),
+            "the box must respect the height cap, got {bounds:?}"
+        );
+
+        // The text the box cannot show scrolls inside it instead.
+        let scrolled = cx.update(|_window, app| input.read(app).scroll_y);
+        assert!(
+            scrolled > px(0.),
+            "overflowing text must scroll within the box, got {scrolled:?}"
+        );
     }
 
     #[gpui::test]
