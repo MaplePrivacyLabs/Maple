@@ -32,6 +32,20 @@ pub(crate) struct ProjectRenameRequest {
     pub name: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum TaskAction {
+    Rename(String),
+    SetState(AgentTaskState),
+    Pin(bool),
+    Delete,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TaskActionRequest {
+    pub target: crate::settings::SidebarItemKey,
+    pub action: TaskAction,
+}
+
 pub(crate) struct NavigationChanged;
 
 #[derive(Clone)]
@@ -78,6 +92,7 @@ impl Computer {
 
 impl EventEmitter<Navigate> for ChatScreen {}
 impl EventEmitter<ProjectRenameRequest> for ChatScreen {}
+impl EventEmitter<TaskActionRequest> for ChatScreen {}
 impl EventEmitter<NavigationChanged> for ChatScreen {}
 
 impl ChatScreen {
@@ -93,6 +108,64 @@ impl ChatScreen {
         self.merge_project_metadata(roots, cx);
         cx.emit(NavigationChanged);
         cx.notify();
+    }
+
+    pub(crate) fn set_sidebar_task_pin(
+        &mut self,
+        session_id: &str,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let was_pinned = self
+            .sidebar
+            .read(cx)
+            .pinned_tasks()
+            .iter()
+            .any(|id| id == session_id);
+        if was_pinned != pinned {
+            self.toggle_task_pin(session_id, cx);
+        }
+    }
+
+    pub(crate) fn apply_sidebar_task_action(
+        &mut self,
+        session_id: &str,
+        action: &TaskAction,
+        session: Option<AgentSessionSummary>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = session {
+            let root = session.project_root.clone();
+            self.upsert_session(session, cx);
+            if matches!(action, TaskAction::SetState(AgentTaskState::Archived))
+                && self.selected_session.as_deref() == Some(session_id)
+            {
+                self.leave_selected_session(cx);
+                let next = self
+                    .sessions
+                    .iter()
+                    .find(|session| {
+                        session.state != AgentTaskState::Archived && session.project_root == root
+                    })
+                    .map(|session| session.id.clone());
+                if let Some(id) = next {
+                    self.select_session(&id, cx);
+                }
+            }
+        } else if matches!(action, TaskAction::Delete) {
+            self.remove_session(session_id, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn sidebar_task_action_notice(&mut self, message: String, cx: &mut Context<Self>) {
+        self.notice = Some(message.into());
+        cx.notify();
+    }
+
+    pub(crate) fn refresh_sidebar_task_actions(&mut self, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.refresh_computer_pages(cx));
     }
 
     #[cfg(test)]

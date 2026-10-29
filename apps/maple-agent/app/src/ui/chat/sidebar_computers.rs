@@ -467,6 +467,9 @@ fn snapshot_page(computer: &Computer, query: &str, archived_expanded: bool) -> C
 }
 
 pub(super) struct OtherTask {
+    pub(super) target: Arc<SidebarItemKey>,
+    pub(super) row: SidebarRow,
+    pub(super) rung: TaskRung,
     pub(super) request: Navigate,
     pub(super) archived: bool,
     pub(super) session: AgentSessionSummary,
@@ -814,7 +817,7 @@ impl Sidebar {
         self.ensure_computer_pages(cx);
     }
 
-    pub(super) fn refresh_computer_pages(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui::chat) fn refresh_computer_pages(&mut self, cx: &mut Context<Self>) {
         self.manual_catalog.cancel_pending();
         self.group_pages.revalidation_pending = false;
         self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
@@ -2110,7 +2113,29 @@ impl Sidebar {
             } else {
                 SharedString::default()
             };
+            let id: SharedString = format!("computer-task-{:?}-{}", computer.key, task.uuid).into();
+            let mut row = SidebarRow::build_scoped(&session, "", "", &id);
+            row.title =
+                one_line(latest.map_or(task.title.as_str(), |session| session.title.as_str()));
+            row.metadata = metadata.clone();
+            row.group = id.clone();
+            row.element_id = id.clone();
+            let rung = if archived {
+                TaskRung::Archived
+            } else if session.state == AgentTaskState::Settled
+                && !computer.running.contains(&task.uuid)
+            {
+                TaskRung::Settled
+            } else {
+                TaskRung::Active
+            };
             self.other_tasks.push(OtherTask {
+                target: Arc::new(SidebarItemKey {
+                    computer: computer.key.clone(),
+                    id: task.uuid.clone(),
+                }),
+                row,
+                rung,
                 archived,
                 session,
                 metadata,
@@ -2118,7 +2143,7 @@ impl Sidebar {
                     computer: computer.key.clone(),
                     destination: Destination::Task(task.uuid.clone()),
                 },
-                id: format!("computer-task-{:?}-{}", computer.key, task.uuid).into(),
+                id,
                 title: one_line(
                     latest.map_or(task.title.as_str(), |session| session.title.as_str()),
                 ),
@@ -2281,15 +2306,21 @@ impl Sidebar {
             }
             SidebarEntry::OtherTask(index) => {
                 let task = &self.other_tasks[index];
+                let row = &task.row;
                 let request = task.request.clone();
+                let rename_field = self.other_task_rename_field(&task.target, cx);
+                let renaming = rename_field.is_some();
+                let pin_target = TaskTarget::Other(task.target.clone());
                 let row_bg = if selected {
                     theme::bg_sidebar_row_hover()
                 } else {
                     theme::bg_sidebar()
                 };
-                let hover_group = (!dragging).then_some(&task.id);
+                let hover_group = (!renaming && !dragging).then_some(&row.group);
                 div()
+                    .relative()
                     .id(task.id.clone())
+                    .debug_selector(|| task.id.to_string())
                     .group(task.id.clone())
                     .role(gpui::Role::ListBoxOption)
                     .aria_label(task.title.clone())
@@ -2310,7 +2341,7 @@ impl Sidebar {
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
                     .hover(move |s| {
-                        if dragging {
+                        if dragging || renaming {
                             s
                         } else {
                             s.bg(gpui::rgb(hover_bg)).cursor_pointer()
@@ -2325,7 +2356,15 @@ impl Sidebar {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(row_line(task.title.clone(), hover_group, row_bg, hover_bg))
+                            .map(|column| match rename_field {
+                                Some(field) => column.child(field),
+                                None => column.child(row_line(
+                                    task.title.clone(),
+                                    hover_group,
+                                    row_bg,
+                                    hover_bg,
+                                )),
+                            })
                             .when(!task.metadata.is_empty(), |column| {
                                 column.child(
                                     row_line(task.metadata.clone(), hover_group, row_bg, hover_bg)
@@ -2338,7 +2377,32 @@ impl Sidebar {
                         row.child(activity_indicator(&task.id, activity))
                     })
                     .when(task.pinned, |row| {
-                        row.child(icon("pin", px(13.), theme::accent()))
+                        row.child(
+                            row_button(
+                                task.row.pin_id.clone(),
+                                &task.row.group,
+                                "pin",
+                                "Unpin task",
+                            )
+                            .opacity(1.)
+                            .tooltip(widgets::tooltip("Unpin", None))
+                            .on_click(cx.listener(
+                                move |this, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_task_target_pin(&pin_target, true, cx);
+                                },
+                            )),
+                        )
+                    })
+                    .when(!renaming && !dragging, |element| {
+                        element.child(self.task_hover_actions(
+                            row,
+                            TaskTarget::Other(task.target.clone()),
+                            (task.pinned, task.rung),
+                            hover_bg,
+                            window,
+                            cx,
+                        ))
                     })
                     .into_any_element()
             }

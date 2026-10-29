@@ -907,6 +907,10 @@ impl ChatScreen {
         match event.clone() {
             SidebarEvent::Navigate(request) => cx.emit(request),
             SidebarEvent::RenameProject(request) => cx.emit(request),
+            SidebarEvent::TaskAction(request) => cx.emit(request),
+            SidebarEvent::ConfirmTaskDelete { target, title } => {
+                self.request_delete_computer_task(target, title, cx);
+            }
             SidebarEvent::PreferencesChanged => {
                 self.refresh_project_caption(cx);
                 cx.emit(NavigationChanged);
