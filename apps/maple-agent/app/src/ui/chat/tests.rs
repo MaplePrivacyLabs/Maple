@@ -11308,6 +11308,96 @@ mod state_tests {
             });
         }
 
+        #[gpui::test]
+        fn opening_task_does_not_send_into_the_previous_task(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.booting = false;
+                this.loading_session = Some("next-task".into());
+                this.send_text("must stay unsent".into(), cx);
+                assert!(!this.send_pending());
+                assert!(this.pending_first_send.is_none());
+                assert!(this.unresolved_sends.is_empty());
+                assert!(this.notice.is_none());
+            });
+        }
+
+        #[gpui::test]
+        fn workspace_new_task_preserves_sidebar_pages_on_repeated_clicks(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_ready = true;
+                this.booting = false;
+                this.project_root = Some(absolute_fixture_root("workspace"));
+                let current = this.project_root.clone().unwrap();
+                set_computer_snapshots(this, identical_path_project_catalog(), cx);
+                let sidebar = this.sidebar.clone();
+                let pages = sidebar.read(cx).navigation_page_state_for_test();
+                assert!(pages.1 > 0);
+                assert!(!pages.2);
+                for _ in 0..3 {
+                    this.navigate(Destination::DraftProject(current.clone()), cx);
+                    assert!(this.draft);
+                    assert!(
+                        !this.root_selecting,
+                        "the selected workspace needs no registration"
+                    );
+                    assert_eq!(
+                        sidebar.read(cx).navigation_page_state_for_test(),
+                        pages,
+                        "new drafts must preserve all computer pages"
+                    );
+                }
+                // A different workspace still waits for owner registration,
+                // but its landing must not reload unrelated computer pages.
+                this.root_selecting = false;
+                let generation = this.selection_generation;
+                this.land_project_selection(absolute_fixture_root("different"), generation, cx);
+                assert_eq!(sidebar.read(cx).navigation_page_state_for_test(), pages);
+                assert!(this.draft);
+            });
+        }
+
+        #[gpui::test]
+        fn warmed_catalog_activation_keeps_runtime_ready(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_only = true;
+                this.navigation_ready = true;
+                this.booting = false;
+                this.selected_session = None;
+                this.navigate(Destination::Overview, cx);
+                assert!(!this.navigation_only);
+                assert!(
+                    !this.booting,
+                    "first activation must not restart runtime setup"
+                );
+                assert!(this.draft);
+                assert!(this.loading_session.is_none());
+            });
+        }
+
+        #[gpui::test]
+        fn recovering_catalog_reports_inline_loading_without_an_error(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_only = true;
+                this.navigation_ready = false;
+                this.host_recovery.unavailable = true;
+                this.host_recovery.events = Some(Vec::new());
+                let snapshot = this.computer_snapshot("Remote".into(), cx);
+                assert!(snapshot.loading);
+                assert!(snapshot.error.is_none());
+                this.host_recovery.unavailable = false;
+                this.host_recovery.events = None;
+                this.navigation_ready = true;
+                this.booting = true;
+                assert!(this.computer_snapshot("Remote".into(), cx).loading);
+                this.booting = false;
+                assert!(!this.computer_snapshot("Remote".into(), cx).loading);
+            });
+        }
+
         /// A New Task selector click carries its meaning to a previously
         /// visited computer, even if that computer showed an existing task.
         #[gpui::test]
@@ -11393,7 +11483,7 @@ mod state_tests {
         }
 
         /// Whatever left a catalog on screen, a send never runs from it:
-        /// it leaves catalog mode and waits for the runtime it starts.
+        /// it leaves catalog mode and waits for background runtime setup.
         #[gpui::test]
         fn sending_from_a_catalog_leaves_it_before_anything_runs(cx: &mut TestAppContext) {
             let chat = screen(cx);
@@ -11402,7 +11492,8 @@ mod state_tests {
                 this.project_root = Some(absolute_fixture_root("remote"));
                 this.navigation_only = true;
                 this.navigation_ready = true;
-                this.booting = false;
+                // Navigation is ready, but background runtime setup is pending.
+                this.booting = true;
                 this.send_text("hello".into(), cx);
                 assert!(!this.navigation_only);
                 assert!(this.booting);
@@ -11878,6 +11969,35 @@ mod state_tests {
                         .any(|prompt| prompt == "first message")
                 );
             });
+        }
+
+        #[gpui::test]
+        fn navigation_loading_keeps_the_header_and_composer_in_place(cx: &mut TestAppContext) {
+            let (chat, cx) = chat_window(cx, |this, _| {
+                this.loading_session = None;
+                this.root_selecting = false;
+                this.booting = false;
+            });
+            let slot = cx
+                .debug_bounds("navigation-loading-slot")
+                .expect("reserved inline slot");
+            let header = cx.debug_bounds("chat-header").unwrap();
+            let composer = cx.debug_bounds("send-message").unwrap();
+            chat.update(cx, |this, cx| {
+                this.loading_session = Some("opening".into());
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("navigation-loading-slot"), Some(slot));
+            assert_eq!(cx.debug_bounds("chat-header"), Some(header));
+            assert_eq!(cx.debug_bounds("send-message"), Some(composer));
+            chat.update(cx, |this, cx| {
+                this.finish_loading("opening");
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("navigation-loading-slot"), Some(slot));
+            assert_eq!(cx.debug_bounds("send-message"), Some(composer));
         }
 
         #[gpui::test]

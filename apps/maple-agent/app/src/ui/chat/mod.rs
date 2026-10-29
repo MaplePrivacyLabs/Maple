@@ -1620,6 +1620,7 @@ impl ChatScreen {
                     }
                 }
                 this.booting = false;
+                cx.emit(NavigationChanged);
                 this.dispatch_prepared_uploads(cx);
                 cx.notify();
                 this.refresh_models(cx);
@@ -1798,7 +1799,14 @@ impl ChatScreen {
             self.clear_selected_session_presentation(cx);
         }
         self.set_project_context(Some(project_root), cx);
-        self.refresh_sessions(cx);
+        // Starting a draft changes no task inventory. Reloading every host's
+        // sidebar here discards its prepared rows on every workspace button.
+        if !self.draft {
+            let generation = self.selection_generation;
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.refresh_visible_pages_for_generation(generation, cx)
+            });
+        }
     }
 
     /// Persist `root` as the default for new tasks and the next launch
@@ -2924,38 +2932,6 @@ impl ChatScreen {
         }
     }
 
-    /// Overlay shown over the pane while a task snapshot is in flight.
-    fn render_loading_overlay(&self) -> Option<Div> {
-        self.loading_session.as_ref()?;
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(theme::loading_veil())
-                .child(motion::fade_in(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_4()
-                        .py_2()
-                        .rounded_full()
-                        .bg(gpui::rgb(theme::bg_elevated()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        .shadow_md()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .child(spinner("open-task", px(14.), theme::accent()))
-                        .child("Opening task…"),
-                    "loading-overlay-reveal",
-                )),
-        )
-    }
-
     /// Install a new timeline and reset every per-item structure that is
     /// keyed by its contents.
     fn replace_timeline(&mut self, timeline: Vec<AgentTimelineItem>) {
@@ -3304,6 +3280,9 @@ impl ChatScreen {
         stored_summaries: HashMap<String, SharedString>,
         cx: &mut Context<Self>,
     ) {
+        // Every snapshot installation completes the matching open, including
+        // recovery and a newly created task. Keep a newer pending open intact.
+        self.finish_loading(&session.id);
         let changed = self.selected_session.as_deref() != Some(session.id.as_str());
         if changed {
             // Everything the previous task showed goes; the new task's own
@@ -4430,6 +4409,11 @@ impl ChatScreen {
     }
 
     fn send_text_with(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
+        // The previous task stays visible until the requested snapshot lands.
+        // An inline indicator must not let Enter send into that previous task.
+        if self.loading_session.is_some() {
+            return;
+        }
         if self.host_recovery.unavailable {
             self.notice = Some(
                 "Wait for the host connection and task history to recover before sending.".into(),
@@ -4443,7 +4427,7 @@ impl ChatScreen {
             return;
         }
         // A catalog would drop the reply's transcript rows. Leave it first;
-        // its runtime start then holds this send like any other boot.
+        // the existing startup gate holds the send while its runtime warms.
         self.leave_catalog(cx);
         if self.booting {
             self.notice = Some("Agent runtime is still starting".into());
@@ -5878,7 +5862,7 @@ impl ChatScreen {
         let user = self.user_id.clone();
         let selected = self.selected_session.clone();
         let subscription_intent = backend.next_subscription_intent();
-        self.runtime_error = Some("Connected. Refreshing task history…".into());
+        self.runtime_error = None;
         self.call(
             async move {
                 let boot = backend.navigation_bootstrap(&user).await?;
@@ -5991,21 +5975,25 @@ impl ChatScreen {
                         this.handle_service_events(events, cx);
                         this.host_recovery.unavailable = false;
                         this.runtime_error = None;
-                        this.booting = !running && !this.navigation_only;
+                        this.booting = !running;
                         this.check_unresolved_sends(cx);
                         this.dispatch_prepared_uploads(cx);
                         cx.emit(NavigationChanged);
-                        if !this.navigation_only {
-                            this.refresh_models(cx);
-                            this.refresh_roots(cx);
-                            this.refresh_slash_commands(cx);
-                        }
+                        // Warm connected computers before their first click.
+                        // Catalog mode still suppresses transcript selection and
+                        // execution events; warming never opens or runs a task.
                         if this.booting {
                             // A host another client restarted may not have a
                             // runtime yet. Restore catalog/tool availability;
                             // this never replays an admitted prompt. Prepared
                             // uploads still wait for this readiness result.
                             this.start_runtime(cx);
+                        } else {
+                            this.refresh_models(cx);
+                            this.refresh_roots(cx);
+                            this.refresh_slash_commands(cx);
+                            this.refresh_sidebar_plan(cx);
+                            this.refresh_audio_capabilities(cx);
                         }
                         this.finish_navigation_bootstrap(cx);
                     }
@@ -6668,7 +6656,6 @@ impl Render for ChatScreen {
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
         let sidebar_expansion = self.sidebar_expansion(window, cx);
-        let loading_overlay = self.render_loading_overlay();
         let main = if empty {
             self.render_empty_state(window, cx)
         } else {
@@ -6734,18 +6721,6 @@ impl Render for ChatScreen {
                         .children(self.render_slash_palette(cx))
                         .children(self.render_persistence_failure(cx)),
                 )
-        };
-        let main = match loading_overlay {
-            Some(overlay) => div()
-                .relative()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .h_full()
-                .min_w_0()
-                .child(main)
-                .child(overlay),
-            None => main,
         };
         div()
             .key_context(self.application_vim_context())

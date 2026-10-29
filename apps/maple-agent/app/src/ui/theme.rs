@@ -273,15 +273,6 @@ pub fn text_selection() -> gpui::Rgba {
     }
 }
 
-/// Light veil over a pane whose content is being replaced.
-pub fn loading_veil() -> gpui::Hsla {
-    if is_light() {
-        gpui::hsla(0., 0., 1., 0.55)
-    } else {
-        gpui::hsla(0., 0., 0., 0.45)
-    }
-}
-
 /// Dimming layer behind a modal or the image lightbox. One opacity for
 /// every overlay, so a dialog and the lightbox darken the app equally.
 pub fn scrim() -> gpui::Rgba {
