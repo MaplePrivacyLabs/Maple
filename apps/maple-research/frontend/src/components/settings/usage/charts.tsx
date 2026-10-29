@@ -233,8 +233,10 @@ export function StackedBars({
                   strokeWidth={1}
                 />
                 <text
-                  x={mx + 5}
+                  // Near the right edge, put the label on the line's left side.
+                  x={mx > width - margin.right - 120 ? mx - 5 : mx + 5}
                   y={margin.top - 8}
+                  textAnchor={mx > width - margin.right - 120 ? "end" : "start"}
                   fontSize={10.5}
                   fill="hsl(var(--foreground))"
                   fillOpacity={0.7}

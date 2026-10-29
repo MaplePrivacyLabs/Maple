@@ -115,7 +115,9 @@ export function CreditPlanCard({
                 </>
               ) : progress.runOutDate ? (
                 <>
-                  About {fmt(progress.pace)} credits a day reaches {fmtCompact(allowance)} around{" "}
+                  About {fmt(progress.pace)}{" "}
+                  {Math.round(progress.pace) === 1 ? "credit" : "credits"} a day reaches{" "}
+                  {fmtCompact(allowance)} around{" "}
                   <span className="font-medium text-foreground">{fmtDay(progress.runOutDate)}</span>
                   .{" "}
                   {balance > 0
@@ -124,7 +126,8 @@ export function CreditPlanCard({
                 </>
               ) : (
                 <>
-                  About {fmt(progress.pace)} credits a day comes to roughly{" "}
+                  About {fmt(progress.pace)}{" "}
+                  {Math.round(progress.pace) === 1 ? "credit" : "credits"} a day comes to roughly{" "}
                   <span className="font-medium text-foreground">
                     {fmtCompact(progress.projected)}
                   </span>{" "}
@@ -293,13 +296,16 @@ export function TeamPlanCard({
                 `The team pool ran out. Team usage pauses until the reset on ${resetDay}.`
               ) : progress.runOutDate ? (
                 <>
-                  About {fmt(progress.pace)} credits a day reaches {fmtCompact(allowance)} around{" "}
+                  About {fmt(progress.pace)}{" "}
+                  {Math.round(progress.pace) === 1 ? "credit" : "credits"} a day reaches{" "}
+                  {fmtCompact(allowance)} around{" "}
                   <span className="font-medium text-foreground">{fmtDay(progress.runOutDate)}</span>
                   . After that, team usage pauses until the reset.
                 </>
               ) : (
                 <>
-                  About {fmt(progress.pace)} credits a day comes to roughly{" "}
+                  About {fmt(progress.pace)}{" "}
+                  {Math.round(progress.pace) === 1 ? "credit" : "credits"} a day comes to roughly{" "}
                   <span className="font-medium text-foreground">
                     {fmtCompact(progress.projected)}
                   </span>{" "}
