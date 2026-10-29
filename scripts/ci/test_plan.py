@@ -427,6 +427,18 @@ class AgentLaneTests(unittest.TestCase):
         self.assertLessEqual(AGENT_PACKAGE | {"agent-package-windows"}, active(NIGHTLY))
         self.assertFalse(full & selected([".github/workflows/ci.yml"]))  # CI edits prove the gate lanes only
 
+    def test_agent_desktop_selector_covers_every_local_action_the_signed_builds_run(self):
+        # A change to one of them must start the signed build on master.
+        workflow = json.loads(subprocess.run(
+            ["yq", "-o=json", ".", str(plan.ROOT / ".github/workflows/agent-desktop-build.yml")],
+            check=True, capture_output=True, text=True).stdout)
+        actions = {step["uses"].removeprefix("./") for job in workflow["jobs"].values()
+                   for step in job.get("steps", []) if step.get("uses", "").startswith("./.github/actions/")}
+        self.assertTrue(actions)
+        for action in sorted(actions):
+            with self.subTest(action=action):
+                self.assertTrue(plan.matches(f"{action}/action.yml", lanes.AGENT_DESKTOP))
+
     def test_agent_desktop_selector_covers_the_signed_builds_inputs(self):
         for path in ("apps/maple-agent/app/src/main.rs", "sdk/rust/src/client.rs", "proxy/src/proxy.rs",
                      ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/action.yml",

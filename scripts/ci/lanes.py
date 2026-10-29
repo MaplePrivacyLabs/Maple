@@ -110,10 +110,13 @@ AGENT_WINDOWS_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "release_profile.rs",
 )) + WINDOWS_TOOLCHAIN
 APPLE_TOOLCHAIN = ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py")
+# The composite actions that carry Xcode's Metal Toolchain from GitHub's xcode-27 image
+# to Blacksmith macOS jobs (agent-desktop-build.yml macos-build, agent-package-macos).
+METAL_TOOLCHAIN = (".github/actions/export-metal-toolchain/**", ".github/actions/import-metal-toolchain/**")
 # What agent-desktop-build.yml builds and signs on master (`plan.py only agent-desktop`).
 AGENT_DESKTOP = AGENT + RUST_SDK + PROXY_RUNTIME + (
     ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/**",
-    "scripts/ci/verify-agent-rust-deps.py", *APPLE_TOOLCHAIN, "scripts/ci/agent_windows.py",
+    "scripts/ci/verify-agent-rust-deps.py", *APPLE_TOOLCHAIN, *METAL_TOOLCHAIN, "scripts/ci/agent_windows.py",
     "scripts/ci/cargo_graph_key.py", "scripts/ci/install-windows-artifact-signing.ps1",
     "scripts/ci/windows-artifact-sign.ps1",
 )
@@ -279,7 +282,7 @@ LANES: Tuple[Lane, ...] = (
     # and master's real builds in agent-desktop-build.yml.
     Lane("agent-package-linux", AGENT_PACKAGING, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-linux", run="just package-rehearsal", timeout=60, gate=False, **AGENT_PACKAGE_FLAKE),
-    Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN, pr_paths=(), labels=("ci:package", "ci:full"),
+    Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN + METAL_TOOLCHAIN, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60,
          gate=False, requires=("metal-toolchain",), **AGENT_PACKAGE_FLAKE),
     # Exports Xcode's Metal Toolchain as a one-day artifact for the macOS packaging rehearsal,
