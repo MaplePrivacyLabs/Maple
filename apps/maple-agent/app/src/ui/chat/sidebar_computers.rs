@@ -1797,7 +1797,7 @@ impl Sidebar {
                         .map(|group| (index, group)),
                 );
             }
-            if self.archived_expanded {
+            if self.archived_expanded || searching {
                 let source = if searching {
                     &page.search
                 } else {
@@ -1810,6 +1810,9 @@ impl Sidebar {
                     }
                 }
             }
+        }
+        if searching {
+            self.computer_archived_count = archived.len();
         }
         let flat_prefix = self.computer_flat_prefix(&hosts, None);
         let active_prefix = self.computer_flat_prefix(&hosts, Some(false));
@@ -1955,51 +1958,46 @@ impl Sidebar {
                 }
             }
         }
-        let count_failed = hosts.iter().any(|index| {
-            self.group_pages
-                .hosts
-                .get(&computers[*index].key)
-                .is_some_and(|page| page.errors.contains_key("archive-count"))
-        });
-        if self.computer_archived_count > 0 || !archived.is_empty() || count_failed {
+        let has_archived = !archived.is_empty() || (!searching && self.computer_archived_count > 0);
+        if has_archived {
             entries.push(SidebarEntry::ArchivedHeader);
-            for &index in &hosts {
-                let computer = &computers[index];
-                if self
-                    .group_pages
-                    .hosts
-                    .get(&computer.key)
-                    .is_some_and(|page| page.errors.contains_key("archive-count"))
-                {
+        }
+        for &index in &hosts {
+            let computer = &computers[index];
+            if self
+                .group_pages
+                .hosts
+                .get(&computer.key)
+                .is_some_and(|page| page.errors.contains_key("archive-count"))
+            {
+                self.computer_more_entry(
+                    &mut entries,
+                    &computer.key,
+                    ComputerPageKind::ArchiveCount,
+                    None,
+                    &format!("archived task count from {}", computer.label),
+                );
+            }
+        }
+        if has_archived && self.archived_expanded {
+            for (index, task) in archived {
+                self.push_computer_task(&mut entries, &computers[index], &task);
+            }
+            if !searching {
+                for &index in &hosts {
+                    let computer = &computers[index];
+                    let next = self
+                        .group_pages
+                        .hosts
+                        .get(&computer.key)
+                        .and_then(|page| page.next_archived.clone());
                     self.computer_more_entry(
                         &mut entries,
                         &computer.key,
-                        ComputerPageKind::ArchiveCount,
-                        None,
-                        &format!("archived task count from {}", computer.label),
+                        ComputerPageKind::Archived,
+                        next,
+                        &format!("more archived tasks from {}", computer.label),
                     );
-                }
-            }
-            if self.archived_expanded {
-                for (index, task) in archived {
-                    self.push_computer_task(&mut entries, &computers[index], &task);
-                }
-                if !searching {
-                    for &index in &hosts {
-                        let computer = &computers[index];
-                        let next = self
-                            .group_pages
-                            .hosts
-                            .get(&computer.key)
-                            .and_then(|page| page.next_archived.clone());
-                        self.computer_more_entry(
-                            &mut entries,
-                            &computer.key,
-                            ComputerPageKind::Archived,
-                            next,
-                            &format!("more archived tasks from {}", computer.label),
-                        );
-                    }
                 }
             }
         }
@@ -2547,6 +2545,61 @@ mod paging_tests {
             sidebar.group_pages.hosts.insert(computer.key, page);
         }
         sidebar.rebuild_sections();
+    }
+
+    #[gpui::test]
+    fn archived_header_uses_known_counts_without_hiding_count_retries(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let sidebar = test_sidebar(cx, backend, "user");
+        sidebar.update(cx, |sidebar, _| {
+            seed_browse_pages(sidebar);
+            assert!(!sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+
+            let remote = Some("remote".into());
+            sidebar.group_pages.hosts.get_mut(&remote).unwrap().archived_count = 3;
+            sidebar.rebuild_sections();
+            assert!(sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            assert!(sidebar.group_pages.hosts[&remote].archived.is_empty());
+            assert!(!sidebar.archived_expanded);
+
+            let page = sidebar.group_pages.hosts.get_mut(&remote).unwrap();
+            page.archived_count = 0;
+            page.errors.insert("archive-count".into(), "Unavailable".into());
+            sidebar.rebuild_sections();
+            assert!(!sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            assert_eq!(
+                sidebar
+                    .entries
+                    .iter()
+                    .filter(|entry| matches!(entry, SidebarEntry::ComputerMore(index)
+                        if matches!(sidebar.group_pages.more[*index].kind, ComputerPageKind::ArchiveCount)))
+                    .count(),
+                1,
+                "count errors remain retryable without an empty heading"
+            );
+
+            let page = sidebar.group_pages.hosts.get_mut(&remote).unwrap();
+            page.errors.clear();
+            page.archived_count = 3;
+            sidebar.filter = "needle".into();
+            sidebar.rebuild_sections();
+            assert!(!sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+
+            sidebar.group_pages.hosts.get_mut(&remote).unwrap().search.push(TaskSummary {
+                title: "needle archive".into(),
+                state: "archived".into(),
+                ..task("archived-hit")
+            });
+            sidebar.rebuild_sections();
+            assert!(sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            assert_eq!(sidebar.computer_archived_count, 1);
+            assert!(!sidebar.archived_expanded);
+        });
     }
 
     fn visible_tasks(sidebar: &Sidebar) -> Vec<String> {

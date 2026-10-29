@@ -1516,7 +1516,7 @@ impl Sidebar {
             return;
         }
         self.archived_expanded = expanded;
-        if expanded && self.pages.enabled {
+        if expanded && self.pages.enabled && !self.pages.has_started(PageKind::Archived) {
             self.load_page(PageKind::Archived, cx);
         }
         self.refresh_computer_pages(cx);
@@ -1840,7 +1840,7 @@ impl Sidebar {
         if empty && !self.pages.any_loading() && !self.filter.is_empty() {
             entries.push(SidebarEntry::Empty(SidebarEmpty::NoMatches));
         }
-        if !self.archived_rows.is_empty() || (self.pages.enabled && self.filter.is_empty()) {
+        if !self.archived_rows.is_empty() {
             entries.push(SidebarEntry::ArchivedHeader);
             if self.archived_expanded {
                 entries.extend(self.archived_rows.iter().map(|&session| {
@@ -1853,7 +1853,10 @@ impl Sidebar {
                 }));
             }
         }
-        if self.archived_expanded && self.pages.has_more(PageKind::Archived) {
+        if self.pages.has_more(PageKind::Archived)
+            && (self.archived_expanded
+                || (self.archived_rows.is_empty() && !self.pages.loading(PageKind::Archived)))
+        {
             entries.push(SidebarEntry::LoadMore(PageKind::Archived));
         }
         entries
