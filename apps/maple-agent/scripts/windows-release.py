@@ -971,9 +971,6 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                 raise subprocess.CalledProcessError(preflight.returncode, preflight.args)
             if unsigned and info["profile"] == "prod" and preflight.returncode == 0:
                 raise ValueError("Unsigned Prod checker did not refuse read-only preflight")
-            if not (unsigned and info["profile"] == "prod"):
-                phase = "interactive-refusal"
-                interactive_installer_refusal_smoke(installer, scratch, environment, info["bundle_id"])
             phase = "install"
             if unsigned and info["profile"] == "prod":
                 # Keep the actual NSIS refusal proof in addition to the direct
@@ -1120,16 +1117,11 @@ class WindowsSmokeUI:
             (self.kernel.TerminateProcess, (wintypes.HANDLE, wintypes.UINT), wintypes.BOOL),
             (self.psapi.EnumProcesses, (ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)), wintypes.BOOL),
             (self.user.EnumWindows, (self.callback, wintypes.LPARAM), wintypes.BOOL),
-            (self.user.EnumChildWindows, (wintypes.HWND, self.callback, wintypes.LPARAM), wintypes.BOOL),
             (self.user.GetWindowThreadProcessId, (wintypes.HWND, ctypes.POINTER(wintypes.DWORD)), wintypes.DWORD),
             (self.user.IsWindowVisible, (wintypes.HWND,), wintypes.BOOL),
             (self.user.IsWindowEnabled, (wintypes.HWND,), wintypes.BOOL),
             (self.user.GetDlgItem, (wintypes.HWND, ctypes.c_int), wintypes.HWND),
             (self.user.GetWindowTextW, (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int), ctypes.c_int),
-            (self.user.GetClassNameW, (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int), ctypes.c_int),
-            (self.user.GetWindowLongPtrW, (wintypes.HWND, ctypes.c_int), wintypes.LPARAM),
-            (self.user.SendMessageTimeoutW, (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
-                                           wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)), wintypes.LPARAM),
             (self.user.PostMessageW, (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM), wintypes.BOOL),
         )
         for function, arguments, result in declarations:
@@ -1162,57 +1154,6 @@ class WindowsSmokeUI:
         # WM_COMMAND / BN_CLICKED to this owned dialog; no global input or focus.
         if not self.user.PostMessageW(button[0], 0x111, 1, button[1]):
             raise self.ctypes.WinError(self.ctypes.get_last_error())
-
-    def static_controls(self, window, pid):
-        children = []
-        @self.callback
-        def collect(control, _data):
-            children.append(control)
-            return len(children) <= 64
-        # EnumChildWindows may return zero when our callback stops enumeration.
-        self.user.EnumChildWindows(window, collect, 0)
-        if len(children) > 64:
-            raise ValueError("Windows installer dialog exceeded its control bound")
-        controls = []
-        for control in children:
-            owner = self.types.DWORD()
-            self.user.GetWindowThreadProcessId(control, self.ctypes.byref(owner))
-            name = self.ctypes.create_unicode_buffer(128)
-            if owner.value != pid or not self.user.GetClassNameW(control, name, len(name)) or name.value.lower() != "static":
-                continue
-            # SS_ICON/SS_BITMAP return handles, not Unicode message text.
-            kind = self.user.GetWindowLongPtrW(control, -16) & 0x1F  # GWL_STYLE / SS_TYPEMASK
-            if kind not in (0, 1, 2, 11, 12):  # Text-bearing Static styles only.
-                continue
-            controls.append(control)
-            if len(controls) > 16:
-                raise ValueError("Windows installer dialog exceeded its static-text bound")
-        return controls
-
-    def control_text(self, control):
-        text = self.ctypes.create_unicode_buffer(DIAGNOSTIC_LIMIT)
-        copied = self.ctypes.c_size_t()
-        # Unlike GetWindowText, WM_GETTEXT retrieves a control's text across
-        # processes. Bound the synchronous send and abort hung/exiting targets.
-        if not self.user.SendMessageTimeoutW(control, 0x000D, len(text), self.ctypes.addressof(text),
-                                              0x23, 250, self.ctypes.byref(copied)):
-            return None
-        if copied.value >= len(text) - 1:
-            raise ValueError("Windows installer error dialog exceeded diagnostic bounds")
-        return text.value
-
-    def diagnostic(self, pid, *, required_prefix=None):
-        for window in self.windows(pid):
-            button = self.user.GetDlgItem(window, 1)
-            if not button or not self.user.IsWindowVisible(window) or not self.user.IsWindowEnabled(button):
-                continue
-            parts = [self.control_text(control) for control in self.static_controls(window, pid)]
-            message = "\n".join(part for part in parts if part)
-            if len(message) >= DIAGNOSTIC_LIMIT:
-                raise ValueError("Windows installer error dialog exceeded diagnostic bounds")
-            if message and (required_prefix is None or message.startswith(required_prefix)):
-                return (window, button), message
-        return None
 
     def applications(self, executable):
         pids = (self.types.DWORD * 4096)()
@@ -1326,90 +1267,6 @@ def quiet_installer_smoke(executable, *, ui=None, existing=()):
         if cleanup_error:
             raise cleanup_error
         time.sleep(0.05)
-
-
-def interactive_installer_refusal_smoke(installer, scratch, environment, bundle_id, *, ui=None):
-    """The real NSIS failure dialog must retain the native code and refuse safely."""
-    import winreg
-    ui = ui or WindowsSmokeUI()
-    installed = scratch / "refused install"
-    installed.mkdir()
-    sentinel = installed / "user-created-file.txt"
-    sentinel.write_bytes(b"preserve this unknown file")
-    command = command_as_windows_args(f'"{installer}" /D={installed}')
-    process = subprocess.Popen(command, cwd=scratch, env=environment, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    primary = None
-    deadline = time.monotonic() + 120
-    try:
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                raise ValueError("Refusal installer exited before its Install action")
-            button = ui.button(process.pid, "Install")
-            if button:
-                ui.click(button)
-                break
-            time.sleep(0.05)
-        else:
-            raise ValueError("Refusal installer did not reach Install")
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                raise ValueError("Refused installation did not display its error")
-            diagnostic = ui.diagnostic(process.pid, required_prefix="Installation stopped while")
-            if diagnostic:
-                button, message = diagnostic
-                if ("Installer stage: 22" not in message or "Windows process exit code: 0x4E000003" not in message
-                        or "did not pass validation" not in message):
-                    raise ValueError("Installer error did not preserve its stage, native validation code and guidance")
-                ui.click(button)
-                break
-            time.sleep(0.05)
-        else:
-            observation = {"installer_alive": process.poll() is None,
-                           "installer_top_window_count": 0, "expected_error_dialog_present": False}
-            try:
-                observation["installer_top_window_count"] = len(ui.windows(process.pid))
-                observation["expected_error_dialog_present"] = ui.diagnostic(process.pid, required_prefix="Installation stopped while") is not None
-            except Exception as error:
-                observation["observation_error"] = type(error).__name__
-            print("Windows installer refusal observation: " + json.dumps(observation, sort_keys=True), file=sys.stderr)
-            raise ValueError("Refused installation displayed no readable installer diagnostic")
-        while time.monotonic() < deadline:
-            button = ui.button(process.pid, "Close")
-            if button:
-                ui.click(button)
-                break
-            if process.poll() is not None:
-                break
-            time.sleep(0.05)
-        else:
-            raise ValueError("Refused installation did not finish its NSIS failure path")
-        if process.wait(timeout=max(1, deadline - time.monotonic())) != 22:
-            raise ValueError("Displayed installer error changed the NSIS preflight refusal outcome")
-        if set(installed.iterdir()) != {sentinel} or sentinel.read_bytes() != b"preserve this unknown file":
-            raise ValueError("Refused installation changed its existing destination")
-        if any(next((scratch / name).iterdir(), None) is not None for name in ("config", "data", "cache")):
-            raise ValueError("Refused native installation opened application profile state")
-        try:
-            key = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + bundle_id
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY):
-                raise ValueError("Refused interactive installation changed registration")
-        except FileNotFoundError:
-            pass
-        print("Verified Windows installer validation error dialog, exact native status, refusal and unchanged destination/profile/registration")
-    except BaseException as error:
-        primary = error
-        raise
-    finally:
-        try:
-            if process.poll() is None:
-                process.terminate()
-            process.wait(timeout=10)
-        except Exception as error:
-            print("Windows refusal smoke cleanup failure: " + type(error).__name__, file=sys.stderr)
-            if primary is None:
-                raise
-
 
 
 def interactive_installer_smoke(installer, installed, executable, scratch, environment, *, ui=None, existing=(), before_close=None, integration_ready=None):

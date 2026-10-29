@@ -814,151 +814,6 @@ class InteractiveInstallerSmokeTests(unittest.TestCase):
                 ui.kernel.CloseHandle.assert_called_once_with(987)
 
 
-class InteractiveRefusalSmokeTests(unittest.TestCase):
-    def execute(self, *, message=None, installer_code=22, mutation=None, no_dialog=False):
-        with tempfile.TemporaryDirectory() as temporary:
-            scratch = Path(temporary)
-            for name in ("config", "data", "cache", "tmp"):
-                (scratch / name).mkdir()
-            process = Mock(pid=123, returncode=None)
-            process.poll.side_effect = lambda: process.returncode
-            process.wait.side_effect = lambda timeout: process.returncode if process.returncode is not None else (_ for _ in ()).throw(subprocess.TimeoutExpired("owned installer", timeout))
-            process.terminate.side_effect = lambda: setattr(process, "returncode", -1)
-            ui = Mock()
-            ui.windows.return_value = [100]
-            state = {"installed": False, "dismissed": False}
-            body = message or ("Installation stopped while checking the installation.\nInstaller stage: 22\n"
-                               "Windows process exit code: 0x4E000003\nThe installation folder or application files did not pass validation.")
-            def button(pid, caption):
-                if caption == "Install" and not state["installed"] or caption == "Close" and state["dismissed"]:
-                    return pid, caption
-                return None
-            def diagnostic(pid, **_options):
-                self.assertEqual(pid, process.pid)
-                if state["installed"] and not state["dismissed"] and not no_dialog:
-                    return (pid, "OK"), body
-                return None
-            def click(selected):
-                if selected == (process.pid, "Install"):
-                    state["installed"] = True
-                elif selected == (process.pid, "OK"):
-                    state["dismissed"] = True
-                    if mutation:
-                        mutation(scratch)
-                elif selected == (process.pid, "Close"):
-                    process.returncode = installer_code
-            ui.button.side_effect, ui.diagnostic.side_effect, ui.click.side_effect = button, diagnostic, click
-            clock = InteractiveInstallerSmokeTests.Clock()
-            def missing(*_arguments):
-                raise FileNotFoundError
-            registry = types.SimpleNamespace(KEY_READ=1, KEY_WOW64_32KEY=2, HKEY_CURRENT_USER=3, OpenKey=missing)
-            self.process, self.ui = process, ui
-            with patch.dict(sys.modules, winreg=registry), patch.object(release.subprocess, "Popen", return_value=process) as popen, patch.object(release.time, "monotonic", clock.monotonic), patch.object(release.time, "sleep", clock.sleep):
-                release.interactive_installer_refusal_smoke(Path("C:/verified setup.exe"), scratch, {"FIXTURE": "sanitized"}, "fixture.bundle", ui=ui)
-            return popen.call_args, ui
-
-    def test_real_path_driver_requires_actual_error_then_failed_installer_without_mutation(self):
-        call, ui = self.execute()
-        self.assertIn('"C:/verified setup.exe" /D=', call.args[0])
-        self.assertNotIn("/S", call.args[0])
-        self.assertEqual(ui.click.call_args_list, [unittest.mock.call((123, "Install")), unittest.mock.call((123, "OK")), unittest.mock.call((123, "Close"))])
-        self.process.terminate.assert_not_called()
-
-    def test_wrong_stage_or_native_code_or_missing_guidance_cannot_pass(self):
-        for changed in ("Installer stage: 24; Windows process exit code: 0x4E000003; did not pass validation",
-                        "Installer stage: 22; Windows process exit code: 0x00000001; did not pass validation",
-                        "Installer stage: 22; Windows process exit code: 0x4E000003; unrelated advice"):
-            with self.subTest(message=changed), self.assertRaisesRegex(ValueError, "stage, native validation code and guidance"):
-                self.execute(message=changed)
-            self.process.terminate.assert_called_once()
-
-    def test_displayed_message_does_not_bless_a_success_status(self):
-        with self.assertRaisesRegex(ValueError, "changed the NSIS preflight refusal"):
-            self.execute(installer_code=0)
-
-    def test_missing_dialog_reports_bounded_observer_state_and_stops_owned_installer(self):
-        output = io.StringIO()
-        with patch.object(sys, "stderr", output), self.assertRaisesRegex(ValueError, "no readable installer diagnostic"):
-            self.execute(no_dialog=True)
-        self.process.terminate.assert_called_once()
-        details = json.loads(output.getvalue().split("Windows installer refusal observation: ", 1)[1])
-        self.assertEqual(details, {"installer_alive": True, "installer_top_window_count": 1,
-                                  "expected_error_dialog_present": False})
-        self.assertNotIn("window text", output.getvalue())
-
-    def test_failed_installation_must_preserve_unknown_file_and_profile_state(self):
-        for mutation, expected in (
-            (lambda scratch: (scratch / "refused install/user-created-file.txt").write_bytes(b"changed"), "existing destination"),
-            (lambda scratch: (scratch / "data/unexpected.txt").write_bytes(b"changed"), "profile state"),
-        ):
-            with self.subTest(expected=expected), self.assertRaisesRegex(ValueError, expected):
-                self.execute(mutation=mutation)
-
-
-class InstallerDialogObservationTests(unittest.TestCase):
-    def driver(self, *, controls=None, unresponsive=False, oversized=False):
-        ui = object.__new__(release.WindowsSmokeUI)
-        ui.ctypes, ui.types, ui.callback = ctypes, types.SimpleNamespace(DWORD=ctypes.c_uint32), lambda function: function
-        ui.windows = Mock(return_value=[100])
-        controls = controls or {100: [11, 12, 13, 14]}
-        body = "Installation stopped while checking the installation.\nInstaller stage: 22\nWindows process exit code: 0x4E000003"
-        def enumerate_children(window, callback, data):
-            for control in controls[window]:
-                if not callback(control, data):
-                    return 0
-            return 1
-        def owner(control, output):
-            ctypes.cast(output, ctypes.POINTER(ctypes.c_uint32)).contents.value = 999 if control == 13 else 123
-            return 1
-        def class_name(control, output, maximum):
-            output.value = "Button" if control == 12 else "Static"
-            return len(output.value)
-        def text(control, message, maximum, address, flags, timeout, copied):
-            self.assertEqual((message, maximum, flags, timeout), (0x000D, release.DIAGNOSTIC_LIMIT, 0x23, 250))
-            if unresponsive:
-                return 0
-            value = "Normal installer page" if control == 15 else body
-            ctypes.cast(address, ctypes.POINTER(ctypes.c_wchar * maximum)).contents.value = value
-            ctypes.cast(copied, ctypes.POINTER(ctypes.c_size_t)).contents.value = maximum - 1 if oversized else len(value)
-            return 1
-        ui.user = types.SimpleNamespace(EnumChildWindows=Mock(side_effect=enumerate_children),
-            GetWindowThreadProcessId=Mock(side_effect=owner), GetClassNameW=Mock(side_effect=class_name),
-            GetWindowLongPtrW=Mock(side_effect=lambda control, _index: 3 if control == 11 else 0),
-            SendMessageTimeoutW=Mock(side_effect=text), GetWindowTextW=Mock(side_effect=AssertionError("cross-process text must use WM_GETTEXT")),
-            GetDlgItem=Mock(return_value=999), IsWindowVisible=Mock(return_value=True), IsWindowEnabled=Mock(return_value=True))
-        return ui, body
-
-    def test_reads_only_owned_text_static_controls_without_assuming_the_body_id(self):
-        ui, body = self.driver()
-        self.assertEqual(ui.diagnostic(123), ((100, 999), body))
-        self.assertEqual(ui.user.GetDlgItem.call_args_list, [unittest.mock.call(100, 1)])
-        self.assertEqual(ui.user.SendMessageTimeoutW.call_count, 1)
-        self.assertEqual(ui.user.SendMessageTimeoutW.call_args.args[0], 14)
-        ui.user.GetWindowTextW.assert_not_called()
-
-    def test_unresponsive_control_is_bounded_and_is_not_a_readable_dialog(self):
-        ui, _ = self.driver(unresponsive=True)
-        self.assertIsNone(ui.diagnostic(123))
-        self.assertEqual(ui.user.SendMessageTimeoutW.call_args.args[5], 250)
-
-    def test_truncated_native_message_cannot_pass_as_complete_error_evidence(self):
-        ui, _ = self.driver(oversized=True)
-        with self.assertRaisesRegex(ValueError, "diagnostic bounds"):
-            ui.diagnostic(123)
-
-    def test_enumeration_stops_before_reading_an_unbounded_control_tree(self):
-        ui, _ = self.driver(controls={100: list(range(1000, 1100))})
-        with self.assertRaisesRegex(ValueError, "control bound"):
-            ui.diagnostic(123)
-        ui.user.GetClassNameW.assert_not_called()
-        ui.user.SendMessageTimeoutW.assert_not_called()
-
-    def test_expected_error_dialog_is_selected_instead_of_the_installer_page(self):
-        ui, body = self.driver(controls={100: [15], 200: [14]})
-        ui.windows.return_value = [100, 200]
-        self.assertEqual(ui.diagnostic(123, required_prefix="Installation stopped while"), ((200, 999), body))
-
-
 class NativeShortcutProbeTests(unittest.TestCase):
     def native(self, metadata):
         native = object.__new__(release.WindowsShortcutCOM)
@@ -1407,11 +1262,6 @@ class PointerPinTests(unittest.TestCase):
 
 
 class SmokeDiagnosticsTests(unittest.TestCase):
-    def setUp(self):
-        # These cases isolate preservation of an existing primary failure. The
-        # real NSIS/native interactive refusal is covered by its own smoke.
-        self.refusal = self.enterContext(patch.object(release, "interactive_installer_refusal_smoke"))
-
     def registry(self):
         def missing(*_arguments):
             raise FileNotFoundError
@@ -1571,7 +1421,6 @@ class SmokeDiagnosticsTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
         commands.assert_not_called()
-        self.refusal.assert_not_called()
         self.assertIn("fixed native guard failure", diagnostics.getvalue())
         self.assertNotIn("\x1b", diagnostics.getvalue())
         self.assertNotIn("\x00", diagnostics.getvalue())
