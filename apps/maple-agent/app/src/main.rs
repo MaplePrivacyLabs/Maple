@@ -83,18 +83,14 @@ struct Cli {
     internal_theme_watch: bool,
     /// Credential-free native installer admission before any installed write.
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, group = "windows_installer_action", value_name = "INSTALL_ROOT", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    #[arg(long, hide = true, value_name = "INSTALL_ROOT", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
     internal_windows_installer_preflight: Option<std::path::PathBuf>,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, group = "windows_installer_action", num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_preflight", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    #[arg(long, hide = true, num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_preflight", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
     internal_windows_installer_prepare: Vec<std::ffi::OsString>,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, group = "windows_installer_action", value_name = "GENERATION", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    #[arg(long, hide = true, value_name = "GENERATION", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
     internal_windows_installer_activate: Option<String>,
-    /// Interactive NSIS only; silent verification and updates never show a dialog.
-    #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, requires = "windows_installer_action")]
-    internal_windows_installer_show_errors: bool,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
     #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_restart"])]
     internal_windows_uninstall_cleanup: bool,
@@ -290,9 +286,7 @@ fn main() {
         // credentials or a host. Their paths and code identities are checked
         // by the updater's native installer before mutation or delegation.
         let mut internal_exit_code = 1;
-        let mut installer_phase = None;
         let internal = if let Some(root) = &cli.internal_windows_installer_preflight {
-            installer_phase = Some(windows_bootstrap::InstallerPhase::Preflight);
             Some(
                 std::env::current_exe()
                     .map_err(|_| "Could not locate the Windows installer checker".to_owned())
@@ -302,11 +296,13 @@ fn main() {
                             root,
                             profile::PROFILE,
                         )
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| {
+                            internal_exit_code = error.windows_installer_exit_code();
+                            error.to_string()
+                        })
                     }),
             )
         } else if !cli.internal_windows_installer_prepare.is_empty() {
-            installer_phase = Some(windows_bootstrap::InstallerPhase::Preparation);
             Some(
                 std::env::current_exe()
                     .map_err(|_| "Could not locate the Windows installer checker".to_owned())
@@ -322,11 +318,13 @@ fn main() {
                             profile::PROFILE,
                             generation,
                         )
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| {
+                            internal_exit_code = error.windows_installer_exit_code();
+                            error.to_string()
+                        })
                     }),
             )
         } else if let Some(generation) = &cli.internal_windows_installer_activate {
-            installer_phase = Some(windows_bootstrap::InstallerPhase::Activation);
             Some(
                 std::env::current_exe()
                     .map_err(|_| "Could not locate the Windows bootstrap".to_owned())
@@ -363,14 +361,6 @@ fn main() {
         if let Some(result) = internal {
             if let Err(error) = result {
                 eprintln!("{error}");
-                if cli.internal_windows_installer_show_errors
-                    && let Some(phase) = installer_phase
-                    && windows_bootstrap::show_installer_error(profile::DISPLAY_NAME, phase, &error)
-                {
-                    // This is still a failure. NSIS uses the acknowledgement
-                    // only to avoid displaying a second generic error dialog.
-                    std::process::exit(windows_bootstrap::INSTALLER_ERROR_SHOWN);
-                }
                 std::process::exit(internal_exit_code);
             }
             return;
@@ -902,38 +892,6 @@ mod tests {
         assert!(cli.desktop_args.is_empty());
         assert!(parse(&["--build-info", "login"]).is_err());
         assert!(parse(&["--build-info", "some/file.txt"]).is_err());
-    }
-
-    #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[test]
-    fn installer_error_dialog_requires_an_explicit_installer_action() {
-        const SHOW: &str = "--internal-windows-installer-show-errors";
-        for action in [
-            vec!["--internal-windows-installer-preflight", "C:\\Maple"],
-            vec![
-                "--internal-windows-installer-prepare",
-                "C:\\Maple",
-                "0.0.14-780",
-            ],
-            vec!["--internal-windows-installer-activate", "0.0.14-780"],
-        ] {
-            let args: Vec<_> = std::iter::once("maple-agent")
-                .chain(action.iter().copied())
-                .collect();
-            assert!(
-                !Cli::try_parse_from(&args)
-                    .unwrap()
-                    .internal_windows_installer_show_errors
-            );
-            assert!(
-                Cli::try_parse_from(args.into_iter().chain([SHOW]))
-                    .unwrap()
-                    .internal_windows_installer_show_errors
-            );
-        }
-        for args in [vec![SHOW], vec!["--build-info", SHOW], vec![SHOW, "acp"]] {
-            assert!(parse(&args).is_err());
-        }
     }
 
     #[test]

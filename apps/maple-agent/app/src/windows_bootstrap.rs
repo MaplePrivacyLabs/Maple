@@ -1,4 +1,4 @@
-//! Credential-free Windows bootstrap, restart and installer error UI.
+//! Credential-free Windows bootstrap and restart. Never evaluates a shell script.
 //! The installer owns destination/profile/code validation; this module only
 //! delegates to its selected generation or waits for an exact retiring process.
 
@@ -15,62 +15,7 @@ use windows_sys::Win32::{
         CREATE_NO_WINDOW, GetCurrentProcess, GetProcessTimes, OpenProcess,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     },
-    UI::WindowsAndMessaging::{
-        IDOK, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TASKMODAL, MessageBoxW,
-    },
 };
-
-/// UI acknowledgement only, never a successful installation or activation.
-pub(crate) const INSTALLER_ERROR_SHOWN: i32 = 0x4DFF_0001;
-
-#[derive(Clone, Copy)]
-pub(crate) enum InstallerPhase {
-    Preflight,
-    Preparation,
-    Activation,
-}
-
-fn installer_error_message(phase: InstallerPhase, error: &str) -> String {
-    let phase = match phase {
-        InstallerPhase::Preflight => "preflight",
-        InstallerPhase::Preparation => "preparation",
-        InstallerPhase::Activation => "activation",
-    };
-    // Native failures contain fixed validation labels and OS errors, never
-    // account/store state. Bound even unexpected text before handing it to UI.
-    let detail: String = error
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(2048)
-        .collect();
-    format!(
-        "Installation stopped during {phase}.\r\n\r\n{detail}\r\n\r\nSend a screenshot of this message to Maple support."
-    )
-}
-
-/// Called only for an explicitly interactive installer failure, before any
-/// application, account or store initialization. A failed dialog leaves NSIS's
-/// own fallback error visible instead of falsely acknowledging presentation.
-pub(crate) fn show_installer_error(display_name: &str, phase: InstallerPhase, error: &str) -> bool {
-    let text: Vec<u16> = installer_error_message(phase, error)
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    let title: Vec<u16> = format!("{display_name} Setup")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    // SAFETY: both NUL-terminated UTF-16 buffers remain live until the modal
-    // call returns. No borrowed parent-window handle or mutable data is used.
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TASKMODAL,
-        ) == IDOK
-    }
-}
 
 struct ProcessHandle(HANDLE);
 impl Drop for ProcessHandle {
@@ -244,32 +189,6 @@ fn forward_verified_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn installer_error_text_keeps_native_failure_and_distinct_stage() {
-        for (phase, label) in [
-            (InstallerPhase::Preflight, "preflight"),
-            (InstallerPhase::Preparation, "preparation"),
-            (InstallerPhase::Activation, "activation"),
-        ] {
-            let message = installer_error_message(
-                phase,
-                "Windows could not verify Maple's code signature (WinTrust error 0x800B0109)",
-            );
-            assert!(message.starts_with(&format!("Installation stopped during {label}.")));
-            assert!(message.contains("WinTrust error 0x800B0109"));
-            assert!(message.contains("Maple support"));
-        }
-    }
-
-    #[test]
-    fn installer_error_text_bounds_and_sanitizes_unexpected_controls() {
-        let error = format!("native\0error\n{}", "x".repeat(4096));
-        let message = installer_error_message(InstallerPhase::Preflight, &error);
-        assert!(message.contains("nativeerror"));
-        assert!(!message.contains('\0'));
-        assert!(message.len() < 2300);
-    }
 
     #[test]
     fn windows_restart_identity_is_canonical_and_bounded() {

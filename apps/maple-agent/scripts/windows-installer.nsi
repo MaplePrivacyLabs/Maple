@@ -42,7 +42,7 @@ Var NativeStatus
 Var NativeStatusAvailable
 Var NativeActivationStage
 Var NativeWin32Error
-Var DiagnosticArgs
+Var FailureAdvice
 
 Function .onInit
   SetShellVarContext current
@@ -79,13 +79,9 @@ Var PreviousDisplayVersion
 Var HadRegistration
 
 Section "Install"
-  StrCpy $DiagnosticArgs ""
   StrCpy $NativeStatus 0
   StrCpy $NativeStatusAvailable 0
   StrCpy $NativeActivationStage 0
-  IfSilent diagnostics_ready
-  StrCpy $DiagnosticArgs " --internal-windows-installer-show-errors"
-diagnostics_ready:
   ; The temporary copy is the same verified signed application PE. Its private
   ; early command performs no GUI, account, store or backend initialization.
   ; All destination/DACL/reparse checks happen before any installed file or
@@ -102,7 +98,7 @@ diagnostics_ready:
   StrCpy $FailureStage "starting installation checks"
   StrCpy $NativeStatusAvailable 0
   ClearErrors
-  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-preflight "$INSTDIR"$DiagnosticArgs' $NativeStatus
+  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-preflight "$INSTDIR"' $NativeStatus
   IfErrors refused
   StrCpy $NativeStatusAvailable 1
   StrCpy $FailureCode 22
@@ -116,7 +112,7 @@ diagnostics_ready:
   StrCpy $FailureStage "starting installation preparation"
   StrCpy $NativeStatusAvailable 0
   ClearErrors
-  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-prepare "$INSTDIR" ${GENERATION}$DiagnosticArgs' $NativeStatus
+  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-prepare "$INSTDIR" ${GENERATION}' $NativeStatus
   IfErrors refused
   StrCpy $NativeStatusAvailable 1
   StrCpy $FailureCode 24
@@ -178,8 +174,6 @@ uninstaller_ready:
   StrCpy $FailureStage "starting installation activation"
   StrCpy $NativeStatusAvailable 0
   ClearErrors
-  ; Existing immutable bootstraps predate the optional diagnostic flag. Keep
-  ; their activation grammar unchanged when installing a new generation.
   ExecWait '"$INSTDIR\maple-agent.exe" --internal-windows-installer-activate ${GENERATION}' $NativeStatus
   IfErrors failed
   StrCpy $NativeStatusAvailable 1
@@ -212,24 +206,81 @@ restore_registration:
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation" "$PreviousInstallLocation"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayVersion" "$PreviousDisplayVersion"
 refused:
-  ; Only the actual failed child may acknowledge that it already displayed its
-  ; detailed native error. It still follows this refusal path and rollback.
-  StrCmp $NativeStatusAvailable 1 0 fallback_error
-  IntCmp $NativeStatus 0x4DFF0001 error_reported
-fallback_error:
   StrCpy $1 "Installation stopped while $FailureStage.$\r$\n$\r$\nInstaller stage: $FailureCode"
   StrCmp $NativeStatusAvailable 1 0 show_error
   IntFmt $2 "0x%08X" $NativeStatus
   StrCpy $1 "$1$\r$\nWindows process exit code: $2"
-  StrCmp $NativeActivationStage 0 show_error
-  StrCpy $1 "$1$\r$\nNative activation stage: $NativeActivationStage$\r$\nWindows error: $NativeWin32Error"
+  StrCmp $NativeActivationStage 0 describe_error
+  StrCpy $1 "$1$\r$\nNative activation stage: $NativeActivationStage"
+  StrCmp $NativeWin32Error 0 describe_error
+  StrCpy $1 "$1$\r$\nWindows error: $NativeWin32Error"
+describe_error:
+  Call DescribeInstallerError
+  StrCpy $1 "$1$\r$\n$\r$\n$FailureAdvice"
 show_error:
   MessageBox MB_OK|MB_ICONSTOP "$1$\r$\n$\r$\nPlease include these details when contacting Maple support." /SD IDOK
-error_reported:
   SetErrorLevel $FailureCode
   Abort
 done:
 SectionEnd
+
+Function DescribeInstallerError
+  StrCpy $FailureAdvice "Windows could not complete this installation."
+  StrCpy $2 $NativeStatus
+  StrCmp $NativeActivationStage 0 classify
+  StrCpy $2 $NativeWin32Error
+classify:
+  IntCmp $2 0x800B0109 untrusted
+  IntCmp $2 0x800B010A untrusted
+  IntCmp $2 0x80092013 revocation
+  IntCmp $2 0x80092012 revocation
+  IntCmp $2 0x800B0101 certificate_date
+  IntCmp $2 0x80096010 signature
+  IntCmp $2 0x800B0100 signature
+  IntCmp $2 0x4E000001 signature
+  IntCmp $2 0x4E000002 busy
+  IntCmp $2 0x4E000003 validation
+  IntCmp $2 0x4E000004 manual
+  IntCmp $2 0x4E000005 storage
+  IntCmp $2 5 access
+  IntCmp $2 32 locked
+  IntCmp $2 33 locked
+  IntCmp $2 0xC0000135 component
+  Goto done
+untrusted:
+  StrCpy $FailureAdvice "Windows could not establish trust in the signing certificate. Check Windows Update and internet access, then retry."
+  Goto done
+revocation:
+  StrCpy $FailureAdvice "Windows could not check the signing certificate's revocation status. Check your internet connection, then retry."
+  Goto done
+certificate_date:
+  StrCpy $FailureAdvice "Windows reported a certificate validity problem. Check the computer's date and time and Windows Update."
+  Goto done
+signature:
+  StrCpy $FailureAdvice "The application signature or identity could not be verified. Download a new installer from Maple's official download page."
+  Goto done
+busy:
+  StrCpy $FailureAdvice "Another Maple installation or update is active. Let it finish before retrying."
+  Goto done
+validation:
+  StrCpy $FailureAdvice "The installation folder or application files did not pass validation. For a first installation, choose a new empty folder. Otherwise contact Maple support."
+  Goto done
+manual:
+  StrCpy $FailureAdvice "Maple could not safely replace this installation. Contact Maple support with these details."
+  Goto done
+storage:
+  StrCpy $FailureAdvice "Windows could not read or write installation files. Contact Maple support with these details."
+  Goto done
+access:
+  StrCpy $FailureAdvice "Windows denied access to the installation folder. Choose a folder owned by your user account, or contact Maple support."
+  Goto done
+locked:
+  StrCpy $FailureAdvice "An installation file is in use. Close ${DISPLAY_NAME} and its background host, then retry."
+  Goto done
+component:
+  StrCpy $FailureAdvice "Windows could not load a required system component. Check Windows Update and contact Maple support with this code."
+done:
+FunctionEnd
 
 Function .onInstSuccess
   ; The success callback runs when the completed installer closes. Silent
