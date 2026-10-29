@@ -27,6 +27,7 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
   },
   "resolutions": {
+    "zod": "4.6.7",
     "@babel/core": "^7.29.7",
     "@humanfs/node": "^0.16.8",
     "@tauri-apps/api": "2.11.0",
