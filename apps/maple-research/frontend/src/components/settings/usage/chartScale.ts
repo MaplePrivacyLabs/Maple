@@ -10,7 +10,9 @@ export function niceScale(value: number): { max: number; ticks: number[] } {
     const raw = target / intervals;
     const exp = Math.pow(10, Math.floor(Math.log10(raw)));
     const n = raw / exp;
-    const allowQuarter = intervals === 4 && exp >= 10;
+    // Quarter steps read cleanly as 25/250 multiples; above that, five
+    // intervals of 2.5 would label 1.25K as "1.3K".
+    const allowQuarter = exp >= 10 && (intervals === 4 || target <= 1000);
     // Usage counts are whole numbers, so steps never go below 1.
     const step = Math.max(
       1,

@@ -492,6 +492,8 @@ describe("niceScale", () => {
     expect(niceScale(21_000).ticks).toEqual([0, 5_000, 10_000, 15_000, 20_000, 25_000]);
     expect(niceScale(950)).toEqual({ max: 1_000, ticks: [0, 250, 500, 750, 1_000] });
     expect(niceScale(1.04)).toEqual({ max: 2, ticks: [0, 1, 2] });
+    // The Free chart's 100-message limit line keeps a tight axis.
+    expect(niceScale(104)).toEqual({ max: 125, ticks: [0, 25, 50, 75, 100, 125] });
     expect(niceScale(0).max).toBeGreaterThan(0);
   });
 });

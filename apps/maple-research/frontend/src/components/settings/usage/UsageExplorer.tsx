@@ -105,17 +105,23 @@ function TokenBreakdown({
         />
       </div>
       <div className="mt-3 grid grid-cols-3 gap-3">
-        {TOKEN_KINDS.map((k) => (
-          <div key={k}>
-            <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Swatch color={TOKEN_COLOR[k]} /> {TOKEN_LABEL[k]}
-            </p>
-            <p className="text-base font-semibold tabular-nums">{fmtCompact(tokens[k])}</p>
-            <p className="text-[11px] text-muted-foreground">
-              {fmtPct(tokens[k], total)} of tokens
-            </p>
-          </div>
-        ))}
+        {TOKEN_KINDS.map((k) => {
+          // No model reported a cached count in this range: unknown, not zero.
+          const unreported = k === "cached" && cachedReported === 0;
+          return (
+            <div key={k}>
+              <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Swatch color={TOKEN_COLOR[k]} /> {TOKEN_LABEL[k]}
+              </p>
+              <p className="text-base font-semibold tabular-nums">
+                {unreported ? "—" : fmtCompact(tokens[k])}
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                {unreported ? "Not reported" : `${fmtPct(tokens[k], total)} of tokens`}
+              </p>
+            </div>
+          );
+        })}
       </div>
       {cachedReported > 0 && (
         <p className="mt-3 text-xs text-muted-foreground">
