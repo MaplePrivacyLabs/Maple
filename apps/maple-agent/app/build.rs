@@ -7,6 +7,8 @@ mod git_metadata;
 mod release_profile;
 
 fn main() {
+    // Track added and removed catalogs as well as edits to embedded resources.
+    println!("cargo:rerun-if-changed=locales");
     release_profile::emit("../release-profiles.json", "../release_profile.rs", true);
     let git_metadata::GitMetadata {
         revision,

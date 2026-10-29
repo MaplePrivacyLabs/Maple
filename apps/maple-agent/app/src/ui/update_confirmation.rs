@@ -4,7 +4,10 @@
 use gpui::{App, Context, Entity, FocusHandle, Render, SharedString, Window, div, prelude::*, px};
 use tokio::sync::oneshot;
 
-use super::{theme, widgets};
+use super::{
+    i18n::{tr, tr_args},
+    theme, widgets,
+};
 
 pub(crate) struct UpdateConfirmation {
     title: SharedString,
@@ -15,14 +18,22 @@ pub(crate) struct UpdateConfirmation {
 }
 
 pub(crate) fn open(
-    title: String,
+    version: Option<&str>,
     window: &mut Window,
     cx: &mut App,
 ) -> (Entity<UpdateConfirmation>, oneshot::Receiver<usize>) {
     let (sender, receiver) = oneshot::channel();
     let previous_focus = window.focused(cx);
     let view = cx.new(|cx| UpdateConfirmation {
-        title: title.into(),
+        title: version.map_or_else(
+            || tr("update-confirmation-title"),
+            |version| {
+                tr_args(
+                    "update-confirmation-title-version",
+                    [("version", version.into())],
+                )
+            },
+        ),
         answer: Some(sender),
         previous_focus,
         later_focus: cx.focus_handle(),
@@ -119,7 +130,7 @@ impl Render for UpdateConfirmation {
                             .min_h_0()
                             .overflow_y_scroll()
                             .text_sm()
-                            .child(crate::update::RESTART_DETAIL),
+                            .child(tr("update-confirmation-detail")),
                     )
                     .child(
                         div()
@@ -133,7 +144,7 @@ impl Render for UpdateConfirmation {
                                     .debug_selector(|| "update-confirmation-later".to_string())
                                     .track_focus(&self.later_focus)
                                     .focus_visible(widgets::focus_ring)
-                                    .child("Later")
+                                    .child(tr("update-confirmation-later"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.respond(0, window, cx)
                                     })),
@@ -143,7 +154,7 @@ impl Render for UpdateConfirmation {
                                     .debug_selector(|| "update-confirmation-restart".to_string())
                                     .track_focus(&self.restart_focus)
                                     .focus_visible(widgets::focus_ring)
-                                    .child("Restart to Update")
+                                    .child(tr("update-confirmation-restart"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.respond(1, window, cx)
                                     })),
@@ -179,7 +190,11 @@ mod tests {
         let answer = Rc::new(RefCell::new(None));
         let result = answer.clone();
         let (host, cx) = cx.add_window_view(move |window, cx| {
-            let (prompt, receiver) = open(crate::update::restart_title(Some("0.0.14")), window, cx);
+            let (prompt, receiver) = open(Some("0.0.14"), window, cx);
+            assert_eq!(
+                prompt.read(cx).title.as_ref(),
+                "Restart Maple to install v\u{2068}0.0.14\u{2069}?"
+            );
             *result.borrow_mut() = Some(receiver);
             PromptHost {
                 prompt: Some(prompt),
@@ -187,6 +202,17 @@ mod tests {
         });
         let receiver = answer.borrow_mut().take().unwrap();
         (host, receiver, cx)
+    }
+
+    #[gpui::test]
+    fn updater_confirmation_without_version_uses_generic_title(cx: &mut gpui::TestAppContext) {
+        cx.add_window_view(|window, cx| {
+            let (prompt, _answer) = open(None, window, cx);
+            assert_eq!(prompt.read(cx).title.as_ref(), "Restart Maple to update?");
+            PromptHost {
+                prompt: Some(prompt),
+            }
+        });
     }
 
     #[gpui::test]
