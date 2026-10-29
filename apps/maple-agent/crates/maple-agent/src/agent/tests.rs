@@ -16,6 +16,9 @@ use crate::maple_api::test_maple_api_session;
 #[path = "image_persistence_tests.rs"]
 mod image_persistence_tests;
 
+#[path = "shell_tests.rs"]
+mod shell_tests;
+
 const USER: &str = "slice@example.com";
 
 #[derive(Default)]

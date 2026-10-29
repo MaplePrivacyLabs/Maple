@@ -608,6 +608,24 @@ impl LiveTimeline {
                     merge: "replace".to_string(),
                 }]
             }
+            AgentEvent::ToolExecutionUpdate {
+                tool_call_id,
+                partial_result,
+                ..
+            } => {
+                let Some(id) = self.tool_rows.get(tool_call_id) else {
+                    return Vec::new();
+                };
+                let mut item = tool_result_item(
+                    id.clone(),
+                    &partial_result.content,
+                    partial_result.details.as_ref(),
+                    false,
+                    pi_ai::now_ms(),
+                );
+                item.status = Some("running".into());
+                vec![item]
+            }
             AgentEvent::ToolExecutionEnd {
                 tool_call_id,
                 result,

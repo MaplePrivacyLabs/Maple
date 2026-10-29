@@ -616,7 +616,7 @@ fn every_built_in_tool_is_created_with_the_defaults_active() {
     );
     assert_eq!(
         bash.guidelines,
-        ["You can inspect TEST_* environment variables for current model and session details."]
+        ShellTool::bash(dir.path(), BashToolOptions::default(), context()).guidelines()
     );
 }
 

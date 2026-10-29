@@ -10688,8 +10688,14 @@ mod state_tests {
             chat.booting = false;
             chat.replace_timeline(vec![
                 AgentTimelineItem {
-                    status: Some("completed".to_string()),
+                    status: Some("running".to_string()),
                     title: Some("Terminal: cargo test".to_string()),
+                    output: Some(serde_json::json!({"structuredContent": {"shellExecution": {
+                        "cwd": "/fixture/worktree",
+                        "elapsedSeconds": 65,
+                        "outputIdleSeconds": 60,
+                        "timeoutSeconds": 120,
+                    }}})),
                     ..item("tool-1", "tool", None)
                 },
                 AgentTimelineItem {
@@ -10711,6 +10717,19 @@ mod state_tests {
         cx.simulate_resize(gpui::size(px(1200.), px(800.)));
 
         let card = cx.debug_bounds("tool-card").expect("the tool card renders");
+        assert!(
+            cx.debug_bounds("shell-execution-status").is_some(),
+            "shell status remains visible on a collapsed card"
+        );
+        chat.read_with(cx, |chat, _| {
+            let status =
+                super::super::transcript::shell_execution_status(&chat.timeline[0]).unwrap();
+            assert!(status.contains("/fixture/worktree"));
+            assert!(status.contains("Running 65s"));
+            assert!(status.contains("no output for 60s"));
+            assert!(status.contains("deadline 120s"));
+            assert!(status.contains("Stop cancels command"));
+        });
         let tool_title = cx
             .debug_bounds("tool-title")
             .expect("the tool card title renders");

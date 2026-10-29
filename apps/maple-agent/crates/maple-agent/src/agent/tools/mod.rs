@@ -33,6 +33,8 @@ use crate::maple_api::MapleWebTransport;
 
 /// The developer's choice of bash.
 pub(crate) const SHELL_ENV: &str = "MAPLE_SHELL";
+/// Silent searches must not hold a task forever. Builds can request longer explicitly.
+const SHELL_DEFAULT_TIMEOUT: f64 = 120.0;
 
 /// How a task's tools are set up.
 pub(crate) struct TaskTools {
@@ -67,9 +69,11 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
         .map(PathBuf::from);
     let hook = spawn_hook(task.session_id.clone(), task.login_path);
     let mut options = ToolsOptions::default();
+    options.bash.default_timeout = Some(SHELL_DEFAULT_TIMEOUT);
     options.bash.shell_path = shell_path.clone();
     options.bash.spawn_hook = Some(hook.clone());
     options.powershell = PowerShellToolOptions {
+        default_timeout: Some(SHELL_DEFAULT_TIMEOUT),
         spawn_hook: Some(hook),
         ..PowerShellToolOptions::default()
     };

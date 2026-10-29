@@ -2030,6 +2030,7 @@ impl RunWatch {
                 } else {
                     let tool = match event {
                         pi_agent_core::AgentEvent::ToolExecutionStart { tool_call_id, .. }
+                        | pi_agent_core::AgentEvent::ToolExecutionUpdate { tool_call_id, .. }
                         | pi_agent_core::AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
                             Some(tool_call_id.as_str())
                         }

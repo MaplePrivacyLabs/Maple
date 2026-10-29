@@ -70,6 +70,17 @@ agent runtime; its desktop Agent page points users to Maple Work.
   attachments (picker, paste, or drag and drop), a per-message Copy button,
   and a context-window indicator. Every tool call runs without asking for
   approval.
+- Shell tool calls start in the task's saved folder on the execution computer.
+  An absolute `workdir` selects another checkout/worktree for one call; a `cd`
+  inside a command does not affect later calls. Maple supplies a 120-second
+  default deadline, and the call can request a longer `timeout` explicitly.
+  Quiet commands report their starting folder, elapsed time, time since output and
+  deadline every five seconds, including on collapsed tool cards. Stop and
+  deadlines kill the shell's process group on Unix (the process tree on Windows).
+  These are execution safeguards, not a filesystem sandbox: repository searches
+  must still choose the correct folder and bounded scope, and deliberately
+  detached processes can escape a Unix process group. `head` bounds output,
+  not runtime.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. Skills and prompt templates appear in the same list.
