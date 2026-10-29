@@ -1080,17 +1080,22 @@ impl MapleApp {
                 return;
             }
             self.restart_prompt_pending = true;
+            let title = crate::update::restart_title(self.updater.snapshot().version.as_deref());
             #[cfg(target_os = "linux")]
             let answer = {
-                let (prompt, answer) = ui::update_confirmation::open(window, cx);
+                let (prompt, answer) = ui::update_confirmation::open(title, window, cx);
                 self.restart_confirmation = Some(prompt);
                 cx.notify();
                 answer
             };
             #[cfg(not(target_os = "linux"))]
-            let answer = window.prompt(gpui::PromptLevel::Warning, "Restart Maple to update?",
-                Some("This stops running tasks and remote access on this computer. Editors using Maple must reconnect after the update."),
-                &["Later", "Restart to Update"], cx);
+            let answer = window.prompt(
+                gpui::PromptLevel::Warning,
+                &title,
+                Some(crate::update::RESTART_DETAIL),
+                &["Later", "Restart to Update"],
+                cx,
+            );
             let controller = self.updater.clone();
             let backend = self.backend.clone();
             let install_backend = backend.clone();

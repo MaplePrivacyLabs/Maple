@@ -11019,7 +11019,7 @@ mod state_tests {
         );
     }
     #[gpui::test]
-    fn long_update_failure_wraps_without_hiding_download_or_later(cx: &mut TestAppContext) {
+    fn update_button_sits_left_of_settings_in_the_sidebar_footer(cx: &mut TestAppContext) {
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -11031,43 +11031,51 @@ mod state_tests {
         cx.executor().allow_parking();
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
-            let backend = Arc::new(crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
-            let mut chat = ChatScreen::new_without_start(backend, "user".into(), cx);
-            chat.update = crate::update::Snapshot {
-                state: crate::update::State::Error,
-                label: "Could not install the update: permission denied. Quit and reopen Maple, then retry. If this keeps happening, download the latest version manually.".into(),
-                version: Some("0.0.6".into()),
-                remote_candidate: None,
-                primary: Some(crate::update::UpdateAction::ManualDownload),
-                primary_label: "Download",
-                manual_download_url: Some("https://updates.maple.ai/download/agent/stable/macos".into()),
-                show_banner: true,
-            };
-            chat
+            let backend = Arc::new(
+                crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                    .unwrap(),
+            );
+            ChatScreen::new_without_start(backend, "user".into(), cx)
         });
         let (_host, cx) = cx.add_window_view(|_, _| ChatHost { chat: chat.clone() });
-        for width in [1213., 900.] {
-            cx.simulate_resize(gpui::size(px(width), px(800.)));
-            let banner = cx.debug_bounds("update-banner").expect("update banner");
-            let label = cx
-                .debug_bounds("update-banner-label")
-                .expect("failure advice");
-            assert!(
-                label.size.height > px(25.),
-                "failure advice must wrap: {label:?}"
-            );
-            for selector in ["update-primary", "update-later"] {
-                let action = cx.debug_bounds(selector).expect("update action");
-                assert!(
-                    action.left() >= banner.left() && action.right() <= banner.right(),
-                    "{selector}: {action:?}, {banner:?}"
-                );
-                assert!(
-                    action.top() >= label.bottom() && action.bottom() <= banner.bottom(),
-                    "{selector}: {action:?}, {label:?}"
-                );
-            }
-        }
+        cx.simulate_resize(gpui::size(px(1213.), px(800.)));
+        assert!(cx.debug_bounds("update-button").is_none());
+        let ready = crate::update::Snapshot {
+            state: crate::update::State::Ready,
+            label: "v0.0.14 is ready to install".into(),
+            version: Some("0.0.14".into()),
+            remote_candidate: None,
+            primary: Some(crate::update::UpdateAction::Restart),
+            primary_label: "Restart to Update",
+            manual_download_url: None,
+            show_banner: true,
+        };
+        chat.update(cx, |chat, cx| chat.set_update(ready.clone(), cx));
+        cx.run_until_parked();
+        let update = cx.debug_bounds("update-button").expect("update button");
+        let settings = cx.debug_bounds("open-settings").expect("settings button");
+        assert!(
+            update.right() <= settings.left(),
+            "{update:?}, {settings:?}"
+        );
+        assert!(
+            update.top() >= settings.top() && update.bottom() <= settings.bottom(),
+            "{update:?}, {settings:?}"
+        );
+        assert!(settings.right() <= SIDEBAR_WIDTH, "{settings:?}");
+
+        // "Later" in About hides the button until the next release.
+        chat.update(cx, |chat, cx| {
+            chat.set_update(
+                crate::update::Snapshot {
+                    show_banner: false,
+                    ..ready
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("update-button").is_none());
     }
 
     #[gpui::test]

@@ -3777,89 +3777,66 @@ impl ChatScreen {
         }
     }
 
-    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<Div> {
+    /// The sidebar footer's update button, shown only when the updater has
+    /// something for the user. A ready update opens the restart
+    /// confirmation; anything else (manual download, finishing an install,
+    /// a failure) opens About, which shows the full message and actions.
+    fn render_update_button(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<Div>> {
         let snapshot = &self.update;
         if !snapshot.show_banner {
             return None;
         }
-        let action = snapshot.primary;
+        let failed = snapshot.state == crate::update::State::Error;
+        let ready = snapshot.state == crate::update::State::Ready;
+        let label = if ready {
+            snapshot.version.as_ref().map_or_else(
+                || snapshot.label.clone(),
+                |version| format!("Update to v{version}"),
+            )
+        } else {
+            snapshot.label.clone()
+        };
         Some(
             div()
-                .debug_selector(|| "update-banner".to_string())
-                .w_full()
-                .min_w_0()
+                .id("update-button")
+                .debug_selector(|| "update-button".to_string())
+                .role(gpui::Role::Button)
+                .aria_label(SharedString::from(label.clone()))
+                .flex_none()
+                .size(px(28.))
+                .rounded_full()
                 .flex()
-                .flex_col()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .rounded(theme::RADIUS_SM)
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .border_1()
-                .border_color(gpui::rgb(theme::border()))
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_start()
-                        .gap_3()
-                        .child(div().flex_shrink_0().child(icon(
-                            "arrow-up",
-                            px(14.),
-                            theme::accent(),
-                        )))
-                        .child(
-                            div()
-                                .debug_selector(|| "update-banner-label".to_string())
-                                .flex_1()
-                                .min_w_0()
-                                .child(snapshot.label.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .justify_end()
-                        .gap_2()
-                        .when_some(action, |row, action| {
-                            row.child(
-                                div()
-                                    .id("update-primary")
-                                    .debug_selector(|| "update-primary".to_string())
-                                    .flex_shrink_0()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(theme::RADIUS_SM)
-                                    .text_color(gpui::rgb(theme::accent()))
-                                    .hover(|style| {
-                                        style.bg(theme::overlay_hover()).cursor_pointer()
-                                    })
-                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.emit(crate::update::UpdateRequested(action));
-                                    }))
-                                    .child(snapshot.primary_label),
-                            )
+                .items_center()
+                .justify_center()
+                .when(failed, |button| {
+                    button
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .child(icon("circle-alert", px(16.), theme::text_muted()))
+                        .hover(|style| {
+                            style
+                                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                .cursor_pointer()
                         })
-                        .child(
-                            div()
-                                .id("update-later")
-                                .debug_selector(|| "update-later".to_string())
-                                .flex_shrink_0()
-                                .px_2()
-                                .py_0p5()
-                                .rounded(theme::RADIUS_SM)
-                                .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                                .on_click(cx.listener(|_, _, _, cx| {
-                                    cx.emit(crate::update::UpdateRequested(
-                                        crate::update::UpdateAction::Later,
-                                    ));
-                                }))
-                                .child("Later"),
-                        ),
-                ),
+                })
+                .when(!failed, |button| {
+                    button
+                        .bg(gpui::rgb(theme::accent()))
+                        .child(icon("download", px(15.), theme::on_accent()))
+                        .hover(|style| style.opacity(0.9).cursor_pointer())
+                })
+                .focus_visible(widgets::focus_ring)
+                .tooltip_show_delay(widgets::ICON_TOOLTIP_DELAY)
+                .tooltip(widgets::tooltip(label, None))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    if ready {
+                        cx.emit(crate::update::UpdateRequested(
+                            crate::update::UpdateAction::Restart,
+                        ));
+                    } else {
+                        cx.emit(OpenSettingsSection(Section::About));
+                    }
+                })),
         )
     }
 
@@ -6975,6 +6952,7 @@ impl ChatScreen {
             .trigger(ChatPopup::Settings, button, cx, |this, _, cx| {
                 this.popup.toggle(ChatPopup::Settings, cx);
             });
+        let update = self.render_update_button(cx);
         let mut footer = div()
             .absolute()
             .bottom_0()
@@ -6984,12 +6962,22 @@ impl ChatScreen {
             } else {
                 SIDEBAR_RAIL_WIDTH
             })
-            .h(px(54.))
+            // Collapsed, the update button stacks above the Settings gear.
+            .h(if update.is_some() && !expanded {
+                px(90.)
+            } else {
+                px(54.)
+            })
             .px_2()
             .py(px(6.))
             .border_t_1()
             .border_color(gpui::rgb(theme::border_subtle()))
             .bg(gpui::rgb(theme::bg_sidebar()))
+            .flex()
+            .when(!expanded, |footer| footer.flex_col().justify_end())
+            .items_center()
+            .gap_1()
+            .children(update)
             .child(button);
         if open {
             let usage_label = self.sidebar_plan.as_ref().map_or_else(
@@ -7301,7 +7289,6 @@ impl ChatScreen {
                         column.child(widgets::banner(theme::status_error()).child(error))
                     })
                     .children(self.render_persistence_failure(cx))
-                    .children(self.render_update_banner(cx))
                     .children(self.render_notice(cx)),
             );
         div()
