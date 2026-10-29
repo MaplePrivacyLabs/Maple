@@ -3777,90 +3777,31 @@ impl ChatScreen {
         }
     }
 
-    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<Div> {
+    /// What the Settings menu says about the updater, when it has
+    /// something for the user: the row label and whether it failed.
+    fn update_notice(&self) -> Option<(&'static str, bool)> {
         let snapshot = &self.update;
         if !snapshot.show_banner {
             return None;
         }
-        let action = snapshot.primary;
-        Some(
-            div()
-                .debug_selector(|| "update-banner".to_string())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .rounded(theme::RADIUS_SM)
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .border_1()
-                .border_color(gpui::rgb(theme::border()))
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_start()
-                        .gap_3()
-                        .child(div().flex_shrink_0().child(icon(
-                            "arrow-up",
-                            px(14.),
-                            theme::accent(),
-                        )))
-                        .child(
-                            div()
-                                .debug_selector(|| "update-banner-label".to_string())
-                                .flex_1()
-                                .min_w_0()
-                                .child(snapshot.label.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .justify_end()
-                        .gap_2()
-                        .when_some(action, |row, action| {
-                            row.child(
-                                div()
-                                    .id("update-primary")
-                                    .debug_selector(|| "update-primary".to_string())
-                                    .flex_shrink_0()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(theme::RADIUS_SM)
-                                    .text_color(gpui::rgb(theme::accent()))
-                                    .hover(|style| {
-                                        style.bg(theme::overlay_hover()).cursor_pointer()
-                                    })
-                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.emit(crate::update::UpdateRequested(action));
-                                    }))
-                                    .child(snapshot.primary_label),
-                            )
-                        })
-                        .child(
-                            div()
-                                .id("update-later")
-                                .debug_selector(|| "update-later".to_string())
-                                .flex_shrink_0()
-                                .px_2()
-                                .py_0p5()
-                                .rounded(theme::RADIUS_SM)
-                                .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                                .on_click(cx.listener(|_, _, _, cx| {
-                                    cx.emit(crate::update::UpdateRequested(
-                                        crate::update::UpdateAction::Later,
-                                    ));
-                                }))
-                                .child("Later"),
-                        ),
-                ),
-        )
+        Some(match snapshot.state {
+            crate::update::State::Error => ("Update failed", true),
+            crate::update::State::RestartRequired => ("Restart to finish update", false),
+            _ => ("Update available", false),
+        })
+    }
+
+    /// A ready update opens the restart confirmation; anything else
+    /// (manual download, a failure) opens About, which shows the full
+    /// message and actions.
+    fn open_update(&mut self, cx: &mut Context<Self>) {
+        if self.update.state == crate::update::State::Ready {
+            cx.emit(crate::update::UpdateRequested(
+                crate::update::UpdateAction::Restart,
+            ));
+        } else {
+            cx.emit(OpenSettingsSection(Section::About));
+        }
     }
 
     /// Keep a sent prompt for Up/Down recall. Repeats move to the end.
@@ -6602,6 +6543,28 @@ fn transcript_list_state() -> gpui::ListState {
     state
 }
 
+/// The update mark beside Settings and on its menu row: a download glyph
+/// on the accent, or a muted alert when the update failed.
+fn update_badge(size: gpui::Pixels, failed: bool) -> Div {
+    let badge = div()
+        .flex_none()
+        .size(size)
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center();
+    if failed {
+        badge
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
+            .child(icon("circle-alert", size * 0.67, theme::text_muted()))
+    } else {
+        badge
+            .bg(gpui::rgb(theme::accent()))
+            .child(icon("download", size * 0.6, theme::on_accent()))
+    }
+}
+
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Refreshed every frame; activation changes force a redraw, so
@@ -6940,8 +6903,13 @@ impl ChatScreen {
     ) -> Div {
         let expanded = expansion > 0.95;
         let open = self.popup.is_open(&ChatPopup::Settings);
+        let update = self.update_notice();
         let button = widgets::ghost_button("open-settings")
-            .aria_label("Settings menu")
+            .aria_label(if update.is_some() {
+                "Settings menu, update available"
+            } else {
+                "Settings menu"
+            })
             .a11y_synthetic_children(|tree| {
                 tree.parent_node()
                     .set_has_popup(gpui::accesskit::HasPopup::Menu);
@@ -6956,12 +6924,37 @@ impl ChatScreen {
             .when(open, |button| {
                 button.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
             })
-            .child(icon("settings", px(16.), theme::text_secondary()))
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(icon("settings", px(16.), theme::text_secondary()))
+                    // Collapsed, a dot on the gear stands in for the badge.
+                    .when(!expanded && update.is_some(), |gear| {
+                        gear.child(
+                            div()
+                                .debug_selector(|| "settings-update-dot".to_string())
+                                .absolute()
+                                .top(px(-2.))
+                                .right(px(-2.))
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::accent())),
+                        )
+                    }),
+            )
             .when(expanded, |button| {
                 button
                     .justify_start()
                     .gap_2()
-                    .child(div().flex_1().child("Settings"))
+                    .child("Settings")
+                    .when_some(update, |button, (_, failed)| {
+                        button.child(
+                            update_badge(px(18.), failed)
+                                .debug_selector(|| "settings-update-badge".to_string()),
+                        )
+                    })
+                    .child(div().flex_1())
                     .child(
                         icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
                             icon.with_transformation(gpui::Transformation::rotate(gpui::radians(
@@ -7075,6 +7068,21 @@ impl ChatScreen {
                     .content(usage),
                 )
                 .separator()
+                .items(update.map(|(label, failed)| {
+                    MenuItem::new("settings-menu-update", label, |this: &mut Self, _, cx| {
+                        this.open_update(cx);
+                    })
+                    .content(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            // The badge overhangs the icon column by 2 px a
+                            // side, so its label lines up with the rows below.
+                            .child(update_badge(px(18.), failed).mx(px(-2.)))
+                            .child(label),
+                    )
+                }))
                 .item(
                     MenuItem::new("settings-menu-account", "Account", |_: &mut Self, _, cx| {
                         cx.emit(OpenSettingsSection(Section::Account));
@@ -7301,7 +7309,6 @@ impl ChatScreen {
                         column.child(widgets::banner(theme::status_error()).child(error))
                     })
                     .children(self.render_persistence_failure(cx))
-                    .children(self.render_update_banner(cx))
                     .children(self.render_notice(cx)),
             );
         div()

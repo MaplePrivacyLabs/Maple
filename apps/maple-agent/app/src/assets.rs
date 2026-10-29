@@ -23,12 +23,14 @@ assets!(
     "icons/check.svg",
     "icons/chevron-down.svg",
     "icons/chevron-right.svg",
+    "icons/circle-alert.svg",
     // Claude mark (simple-icons, CC0) for the Claude Code integration card.
     "icons/claude-mark.svg",
     "icons/copy.svg",
     // Contrast-safe partner marks published at https://cua.ai/branding.
     "icons/cua-mark-black.svg",
     "icons/cua-mark-white.svg",
+    "icons/download.svg",
     "icons/ellipsis.svg",
     "icons/folder-open.svg",
     "icons/folder-plus.svg",

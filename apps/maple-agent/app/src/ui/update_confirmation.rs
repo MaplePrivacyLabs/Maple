@@ -1,15 +1,13 @@
 //! Bounded Linux updater confirmation. The platform's fallback prompt does not
 //! constrain its detail text; keep this dialog in the owning desktop instead.
 
-use gpui::{App, Context, Entity, FocusHandle, Render, Window, div, prelude::*, px};
+use gpui::{App, Context, Entity, FocusHandle, Render, SharedString, Window, div, prelude::*, px};
 use tokio::sync::oneshot;
 
 use super::{theme, widgets};
 
-pub(crate) const TITLE: &str = "Restart Maple to update?";
-pub(crate) const DETAIL: &str = "This stops running tasks and remote access on this computer. Editors using Maple must reconnect after the update.";
-
 pub(crate) struct UpdateConfirmation {
+    title: SharedString,
     answer: Option<oneshot::Sender<usize>>,
     previous_focus: Option<FocusHandle>,
     later_focus: FocusHandle,
@@ -17,12 +15,14 @@ pub(crate) struct UpdateConfirmation {
 }
 
 pub(crate) fn open(
+    title: String,
     window: &mut Window,
     cx: &mut App,
 ) -> (Entity<UpdateConfirmation>, oneshot::Receiver<usize>) {
     let (sender, receiver) = oneshot::channel();
     let previous_focus = window.focused(cx);
     let view = cx.new(|cx| UpdateConfirmation {
+        title: title.into(),
         answer: Some(sender),
         previous_focus,
         later_focus: cx.focus_handle(),
@@ -67,7 +67,7 @@ impl Render for UpdateConfirmation {
                     .id("update-confirmation")
                     .debug_selector(|| "update-confirmation".to_string())
                     .role(gpui::Role::Dialog)
-                    .aria_label(TITLE)
+                    .aria_label(self.title.clone())
                     .key_context("Dialog")
                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                         match event.keystroke.key.as_str() {
@@ -103,7 +103,13 @@ impl Render for UpdateConfirmation {
                     .flex_col()
                     .gap_4()
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child(div().w_full().flex_shrink_0().text_lg().child(TITLE))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex_shrink_0()
+                            .text_lg()
+                            .child(self.title.clone()),
+                    )
                     .child(
                         div()
                             .id("update-confirmation-body")
@@ -113,7 +119,7 @@ impl Render for UpdateConfirmation {
                             .min_h_0()
                             .overflow_y_scroll()
                             .text_sm()
-                            .child(DETAIL),
+                            .child(crate::update::RESTART_DETAIL),
                     )
                     .child(
                         div()
@@ -173,7 +179,7 @@ mod tests {
         let answer = Rc::new(RefCell::new(None));
         let result = answer.clone();
         let (host, cx) = cx.add_window_view(move |window, cx| {
-            let (prompt, receiver) = open(window, cx);
+            let (prompt, receiver) = open(crate::update::restart_title(Some("0.0.14")), window, cx);
             *result.borrow_mut() = Some(receiver);
             PromptHost {
                 prompt: Some(prompt),

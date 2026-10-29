@@ -30,9 +30,13 @@ latest Release.
 The desktop checks at startup and about hourly, with jitter. Automatic download
 is enabled by default and can be disabled in Settings. An authenticated update
 is downloaded in the background, but replacement requires **Restart to Update**
-and confirmation that active work will stop. **Later** hides the banner while
-keeping the prepared update available in Settings. About, the native application
-menu, and the tray provide update access.
+and confirmation that active work will stop. A pending update marks the sidebar's
+Settings button with a download badge (a dot when the sidebar is collapsed), and
+its menu gains an update row. For a ready update that row opens the
+confirmation, which names the version; other update notices open About.
+**Later** in About hides the badge and row while keeping the prepared update
+available there. About,
+the native application menu, and the tray provide update access.
 
 Paired controllers can inspect a computer's version and prepared update through
 the optional [experimental remote update controls](remote-access.md#experimental-remote-updates).
