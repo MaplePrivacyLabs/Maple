@@ -112,6 +112,13 @@ Closing a successfully completed interactive installer opens Maple. Silent
 the profile's Maple icon. Normal GUI startup also refreshes the icon for this
 profile's existing Start menu shortcuts and installed-app entry, including
 upgrades from 0.0.12, while preserving the stable launcher and shortcut targets.
+An interactive installation refusal shows the native failing check and its
+underlying Windows error, including the full WinTrust status for certificate
+verification failures. If the checker cannot start, the installer reports its
+own phase and any child exit code instead. Include that message when reporting
+a failed install. Silent installs retain nonzero failure statuses without
+opening the native error dialog. Existing signature and storage checks still
+apply; administrator mode is not a bypass.
 macOS packages contain a DMG and application
 archive; drag the chosen Agent app into Applications. Both Agent profiles can
 coexist with Maple Research. Linux packages contain

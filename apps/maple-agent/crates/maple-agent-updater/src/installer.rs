@@ -105,6 +105,8 @@ pub enum InstallError {
     Invalid(&'static str),
     #[error("The update does not have the required Maple code signature and identity")]
     CodeSignature,
+    #[error("Windows could not verify Maple's code signature (WinTrust error 0x{status:08X})")]
+    WindowsCodeSignature { status: u32 },
     #[error("The update could not be installed: {0}")]
     Io(#[from] io::Error),
     #[error("Windows activation failed during {stage}: {source}")]
@@ -149,6 +151,36 @@ type Result<T> = std::result::Result<T, InstallError>;
 #[cfg(test)]
 mod windows_activation_error_tests {
     use super::*;
+
+    #[test]
+    fn windows_signature_status_survives_activation_context_without_changing_error_policy() {
+        for status in [0x800B_0109, 0x8009_2013, 0x800B_0100, u32::MAX] {
+            let source = InstallError::WindowsCodeSignature { status };
+            assert_eq!(
+                source.to_string(),
+                format!(
+                    "Windows could not verify Maple's code signature (WinTrust error 0x{status:08X})"
+                )
+            );
+            assert!(!source.requires_manual_installation());
+            let error = InstallError::WindowsActivation {
+                stage: WindowsActivationStage::BootstrapIdentity,
+                source: Box::new(source),
+            };
+            assert!(error.to_string().contains("bootstrap-identity"));
+            assert!(error.to_string().contains(&format!("0x{status:08X}")));
+            // The existing bounded activation status is not repurposed to
+            // truncate or disguise a full WinTrust DWORD.
+            assert_eq!(error.windows_activation_exit_code(), Some(0x4D04_0000));
+            assert!(!error.requires_manual_installation());
+            let InstallError::WindowsActivation { source, .. } = error else {
+                unreachable!()
+            };
+            assert!(
+                matches!(*source, InstallError::WindowsCodeSignature { status: actual } if actual == status)
+            );
+        }
+    }
 
     #[test]
     fn activation_status_preserves_fixed_stage_and_original_native_error() {

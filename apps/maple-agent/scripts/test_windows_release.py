@@ -550,22 +550,30 @@ class PackageBoundaryTests(unittest.TestCase):
             )
             with self.subTest(command=command):
                 # NSIS leaves the output variable undefined on launch error.
-                # Test its error flag before ever reading a stale zero in $0.
+                # Test its error flag before ever reading a stale child status.
                 self.assertEqual(instructions[index - 1], 'ClearErrors')
                 self.assertEqual(instructions[index + 1], 'IfErrors ' + destination)
                 child = {'refused': (22, 24), 'failed': (41,), 'refuse': (52,)}[destination]
-                self.assertIn(instructions[index + 2], ['StrCpy $FailureCode ' + str(code) for code in child])
-                self.assertEqual(instructions[index + 3], 'StrCmp $0 0 0 ' + destination)
+                following = instructions[index + 2:]
+                compare = next(index for index, line in enumerate(following) if line.startswith('StrCmp '))
+                metadata = following[:compare]
+                self.assertTrue(all(line.startswith('StrCpy ') for line in metadata))
+                self.assertEqual([line for line in metadata if line.startswith('StrCpy $FailureCode ')],
+                                 [next(line for line in metadata if line in ['StrCpy $FailureCode ' + str(code) for code in child])])
+                output = command.rsplit(' ', 1)[1]
+                self.assertEqual(following[compare], 'StrCmp ' + output + ' 0 0 ' + destination)
 
     def test_nsis_exit_codes_identify_probe_phase_and_launch_vs_child_failures(self):
-        source = (SCRIPTS / "windows-installer.nsi").read_text()
+        source = "\n".join(line for line in (SCRIPTS / "windows-installer.nsi").read_text().splitlines()
+                           if not line.lstrip().startswith(';'))
         codes = {int(value) for value in re.findall(r'StrCpy \$FailureCode ([0-9]+)', source)}
         self.assertEqual(codes, set(release.NSIS_FAILURE_PHASES))
         for flag, launch, child in (("installer-preflight", 21, 22), ("installer-prepare", 23, 24),
                                     ("installer-activate", 40, 41), ("uninstall-cleanup", 51, 52)):
             with self.subTest(flag=flag):
-                pattern = (r'StrCpy \$FailureCode ' + str(launch) + r'\s+ClearErrors\s+ExecWait [^\n]*--internal-windows-' + flag
-                           + r'[^\n]*\n\s+IfErrors \w+\s+StrCpy \$FailureCode ' + str(child))
+                metadata = r'(?:\s+StrCpy (?!\$FailureCode)[^\n]+)*'
+                pattern = (r'StrCpy \$FailureCode ' + str(launch) + metadata + r'\s+ClearErrors\s+ExecWait [^\n]*--internal-windows-' + flag
+                           + r'[^\n]*\n\s+IfErrors \w+' + metadata + r'\s+StrCpy \$FailureCode ' + str(child))
                 self.assertRegex(source, pattern)
         self.assertRegex(source, r'ClearErrors\s+GetDLLVersion [^\n]+\n\s+IfErrors unsupported')
         self.assertIn('SetErrorLevel 0', source)
@@ -804,6 +812,152 @@ class InteractiveInstallerSmokeTests(unittest.TestCase):
                     self.assertIs(raised.exception, primary)
                 ui.kernel.TerminateProcess.assert_called_once_with(987, 1)
                 ui.kernel.CloseHandle.assert_called_once_with(987)
+
+
+class InteractiveRefusalSmokeTests(unittest.TestCase):
+    def execute(self, *, message=None, ack=None, installer_code=22, duplicate=False, mutation=None, no_dialog=False):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            for name in ("config", "data", "cache", "tmp"):
+                (scratch / name).mkdir()
+            checker = scratch / "verified-checker.exe"
+            checker.write_bytes(b"verified checker fixture")
+            process = Mock(pid=123, returncode=None)
+            process.poll.side_effect = lambda: process.returncode
+            process.wait.side_effect = lambda timeout: process.returncode if process.returncode is not None else (_ for _ in ()).throw(subprocess.TimeoutExpired("owned installer", timeout))
+            process.terminate.side_effect = lambda: setattr(process, "returncode", -1)
+            child = Mock(pid=456, handle=987)
+            child.exit_code.return_value = release.INSTALLER_ERROR_SHOWN if ack is None else ack
+            ui = Mock()
+            ui.kernel.WaitForSingleObject.return_value = 0
+            ui.installer_child.return_value = child
+            state = {"installed": False, "dismissed": False}
+            body = message or ("Installation stopped during preflight.\nThe prepared update is invalid: "
+                               "unknown files in Windows installation; choose an empty directory")
+            def button(pid, caption):
+                if caption == "Install" and not state["installed"] or caption == "Close" and state["dismissed"]:
+                    return pid, caption
+                return None
+            def diagnostic(pid):
+                if pid == child.pid and not state["dismissed"] and not no_dialog:
+                    return (pid, "OK"), body
+                if pid == process.pid and state["dismissed"] and duplicate:
+                    return (pid, "OK"), "Installation stopped while checking the installation."
+                return None
+            def click(selected):
+                if selected == (process.pid, "Install"):
+                    state["installed"] = True
+                elif selected == (child.pid, "OK"):
+                    state["dismissed"] = True
+                    if mutation:
+                        mutation(scratch)
+                elif selected == (process.pid, "Close"):
+                    process.returncode = installer_code
+            ui.button.side_effect, ui.diagnostic.side_effect, ui.click.side_effect = button, diagnostic, click
+            clock = InteractiveInstallerSmokeTests.Clock()
+            def missing(*_arguments):
+                raise FileNotFoundError
+            registry = types.SimpleNamespace(KEY_READ=1, KEY_WOW64_32KEY=2, HKEY_CURRENT_USER=3, OpenKey=missing)
+            self.process, self.child, self.ui = process, child, ui
+            with patch.dict(sys.modules, winreg=registry), patch.object(release.subprocess, "Popen", return_value=process) as popen, patch.object(release.time, "monotonic", clock.monotonic), patch.object(release.time, "sleep", clock.sleep):
+                release.interactive_installer_refusal_smoke(Path("C:/verified setup.exe"), checker, scratch, {"FIXTURE": "sanitized"}, "fixture.bundle", ui=ui)
+            return popen.call_args, scratch, ui
+
+    def test_real_path_driver_requires_actual_error_then_failed_installer_without_mutation(self):
+        call, _scratch, ui = self.execute()
+        self.assertIn('"C:/verified setup.exe" /D=', call.args[0])
+        self.assertNotIn("/S", call.args[0])
+        self.assertEqual(ui.click.call_args_list, [unittest.mock.call((123, "Install")), unittest.mock.call((456, "OK")), unittest.mock.call((123, "Close"))])
+        ui.installer_child.assert_called_once()
+        self.assertEqual(ui.installer_child.call_args.args[0], 123)
+        self.assertEqual(ui.installer_child.call_args.args[2:], (len(b"verified checker fixture"), hashlib.sha256(b"verified checker fixture").hexdigest()))
+        self.child.close.assert_called_once()
+        self.process.terminate.assert_not_called()
+
+    def test_wrong_native_stage_or_missing_actual_guard_reason_cannot_pass(self):
+        for message in ("Installation stopped during preparation. unknown files in Windows installation; choose an empty directory",
+                        "Installation stopped during preflight. some unrelated error"):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, "stage and actual refusal reason"):
+                self.execute(message=message)
+            self.process.terminate.assert_called_once()
+            self.child.close.assert_called_once()
+
+    def test_shown_message_does_not_bless_an_acknowledgement_or_success_status(self):
+        with self.assertRaisesRegex(ValueError, "acknowledge actual native failure"):
+            self.execute(ack=1)
+        with self.assertRaisesRegex(ValueError, "changed the NSIS preflight refusal"):
+            self.execute(installer_code=0)
+
+    def test_duplicate_generic_dialog_is_a_failure(self):
+        with self.assertRaisesRegex(ValueError, "duplicate generic error"):
+            self.execute(duplicate=True)
+        self.process.terminate.assert_called_once()
+        self.child.close.assert_called_once()
+
+    def test_missing_dialog_times_out_and_cleans_only_bound_processes(self):
+        with self.assertRaisesRegex(ValueError, "bounded native diagnostic"):
+            self.execute(no_dialog=True)
+        self.process.terminate.assert_called_once()
+        self.child.close.assert_called_once()
+
+    def test_failed_installation_must_preserve_unknown_file_and_profile_state(self):
+        for mutation, expected in (
+            (lambda scratch: (scratch / "refused install/user-created-file.txt").write_bytes(b"changed"), "existing destination"),
+            (lambda scratch: (scratch / "data/unexpected.txt").write_bytes(b"changed"), "profile state"),
+        ):
+            with self.subTest(expected=expected), self.assertRaisesRegex(ValueError, expected):
+                self.execute(mutation=mutation)
+
+
+class InstallerChildOwnershipTests(unittest.TestCase):
+    def driver(self, image):
+        ui = object.__new__(release.WindowsSmokeUI)
+        ui.ctypes, ui.types = ctypes, types.SimpleNamespace(DWORD=ctypes.c_uint32)
+        ui.child_pids = Mock(return_value=[456])
+        def query(_handle, _flags, buffer, _size):
+            buffer.value = str(image)
+            return 1
+        ui.kernel = types.SimpleNamespace(OpenProcess=Mock(return_value=987),
+            QueryFullProcessImageNameW=Mock(side_effect=query), CloseHandle=Mock())
+        return ui
+
+    def test_checker_selection_requires_exact_direct_child_path_size_and_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private = root / "owned tmp"
+            private.mkdir()
+            image = private / "maple-installer-check.exe"
+            image.write_bytes(b"verified bytes")
+            digest = hashlib.sha256(image.read_bytes()).hexdigest()
+            for size, expected, kind in ((image.stat().st_size, digest, "valid"),
+                                         (1, digest, "size"), (image.stat().st_size, "0" * 64, "bytes")):
+                with self.subTest(kind=kind):
+                    ui = self.driver(image)
+                    owned = Mock()
+                    with patch.object(release, "WindowsSmokeApplication", return_value=owned) as wrapper:
+                        if kind == "valid":
+                            self.assertIs(ui.installer_child(123, private, size, expected), owned)
+                            wrapper.assert_called_once_with(ui, 987, 456)
+                            ui.kernel.CloseHandle.assert_not_called()
+                        else:
+                            with self.assertRaisesRegex(ValueError, "size differs|differs from verified bytes"):
+                                ui.installer_child(123, private, size, expected)
+                            wrapper.assert_not_called()
+                            ui.kernel.CloseHandle.assert_called_once_with(987)
+                    ui.child_pids.assert_called_once_with(123)
+            ui = self.driver(image)
+            (root / "elsewhere").mkdir()
+            with self.assertRaisesRegex(ValueError, "escaped the isolated"):
+                ui.installer_child(123, root / "elsewhere", image.stat().st_size, digest)
+            ui.kernel.CloseHandle.assert_called_once_with(987)
+
+    def test_other_executables_are_released_without_becoming_cleanup_targets(self):
+        ui = self.driver(Path("C:/other-process.exe"))
+        with patch.object(release, "regular") as regular, patch.object(release, "WindowsSmokeApplication") as wrapper:
+            self.assertIsNone(ui.installer_child(123, Path("C:/owned"), 1, "0" * 64))
+            regular.assert_not_called()
+            wrapper.assert_not_called()
+        ui.kernel.CloseHandle.assert_called_once_with(987)
 
 
 class NativeShortcutProbeTests(unittest.TestCase):
@@ -1254,6 +1408,11 @@ class PointerPinTests(unittest.TestCase):
 
 
 class SmokeDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        # These cases isolate preservation of an existing primary failure. The
+        # real NSIS/native interactive refusal is covered by its own smoke.
+        self.refusal = self.enterContext(patch.object(release, "interactive_installer_refusal_smoke"))
+
     def registry(self):
         def missing(*_arguments):
             raise FileNotFoundError
@@ -1269,7 +1428,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
                         "native_stage": name, "native_win32_error": raw or None,
                     })
         for code in (None, True, "1292435488", -1, 0, 1, 40, 41, 0xC0000005,
-                     0x4D000005, 0x4D0B0005, 0x4DFF0005, 0x14D090005):
+                     0x4D000005, 0x4D0B0005, 0x4DFF0005, 0x14D090005, release.INSTALLER_ERROR_SHOWN):
             with self.subTest(code=code):
                 self.assertIsNone(release.decode_activation_failure(code))
 
@@ -1282,7 +1441,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
         instructions = [line.strip() for line in branch.splitlines()
                         if line.strip() and not line.lstrip().startswith(";")]
         def propagated(phase, code):
-            registers = {"$FailureCode": str(phase), "$0": str(code)}
+            registers = {"$FailureCode": str(phase), "$NativeStatus": str(code)}
             index = 0
             def value(token):
                 return registers.get(token, token)
@@ -1315,7 +1474,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(propagated(41, code), code)
                 self.assertEqual(propagated(40, code), 40)
                 self.assertEqual(propagated(30, code), 30)
-        for code in (0, 1, -1, 0xC0000005, 0x4D000005, 0x4D0B0005, 0x4DFF0005):
+        for code in (0, 1, -1, 0xC0000005, 0x4D000005, 0x4D0B0005, 0x4DFF0005, release.INSTALLER_ERROR_SHOWN):
             self.assertEqual(propagated(41, code), 41)
 
     def test_actual_child_status_is_reported_without_replay_or_primary_error_change(self):
@@ -1413,6 +1572,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
         commands.assert_not_called()
+        self.refusal.assert_not_called()
         self.assertIn("fixed native guard failure", diagnostics.getvalue())
         self.assertNotIn("\x1b", diagnostics.getvalue())
         self.assertNotIn("\x00", diagnostics.getvalue())

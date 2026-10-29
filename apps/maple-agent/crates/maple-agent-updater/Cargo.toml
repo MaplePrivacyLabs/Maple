@@ -36,3 +36,4 @@ ed25519-dalek = "2"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "=0.61.3", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
