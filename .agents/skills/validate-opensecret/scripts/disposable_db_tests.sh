@@ -95,8 +95,8 @@ cleanup() {
   rm -rf -- "$workdir"
 
   if [ "$status" -eq 0 ] && [ "$tests_passed" -eq 1 ]; then
-    printf 'Disposable-DB evidence: %s AEAD/database tests, %s OAuth database tests, %s callback settings/transport tests, and %s Responses compaction persistence tests passed; no tests skipped; temporary cluster removed.\n' \
-      "$aead_count" "$oauth_count" "$callback_count" "$compaction_count"
+    printf 'Disposable-DB evidence: %s AEAD/database tests, %s OAuth database tests, %s callback settings/transport tests, %s Responses compaction persistence tests, and %s recovery tests passed; no tests skipped; temporary cluster removed.\n' \
+      "$aead_count" "$oauth_count" "$callback_count" "$compaction_count" "$recovery_count"
   fi
   exit "$status"
 }
@@ -128,6 +128,7 @@ createdb -h "$pgsockets" -p "$pgport" -U "$admin_user" \
 
 export DATABASE_URL="postgres://opensecret_user:password@127.0.0.1:${pgport}/${test_database}"
 export AEAD_TAMPER_TEST_DATABASE_URL="$DATABASE_URL"
+export RECOVERY_TEST_DATABASE_URL="$DATABASE_URL"
 
 assert_database_identity() {
   local db_identity
@@ -189,6 +190,12 @@ compaction_count="$(awk '/^models::response_compaction::tests::db_.*: test$/ { c
 # Keep the selected persistence contract explicit: a missing ignored test is a failure.
 test "$compaction_count" -eq 20
 
+cargo test --locked --all-features recovery \
+  -- --ignored --list | tee "$workdir/recovery-tests.list"
+recovery_count="$(awk '/^.*: test$/ { count++ }
+  END { print count + 0 }' "$workdir/recovery-tests.list")"
+test "$recovery_count" -gt 0
+
 cargo test --locked --all-features aead_db_tamper_tests \
   -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/aead-tests.log"
 if grep -qi 'skipping:' "$workdir/aead-tests.log"; then
@@ -242,6 +249,15 @@ for callback_filter in \
     "$workdir/callback-tests.log"
   callback_count=$((callback_count + selected_count))
 done
+
+cargo test --locked --all-features recovery \
+  -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/recovery-tests.log"
+if grep -qi 'skipping:' "$workdir/recovery-tests.log"; then
+  printf 'Recovery database test output contained a skip marker\n' >&2
+  exit 1
+fi
+grep -Eq "test result: ok\\. ${recovery_count} passed; 0 failed; 0 ignored;" \
+  "$workdir/recovery-tests.log"
 
 assert_database_identity
 assert_migration_count
