@@ -72,6 +72,9 @@
       "icons/icon.ico"
     ],
     "linux": {
+      "rpm": {
+        "depends": ["libwebkit2gtk-4.1.so.0()(64bit)"]
+      },
       "appimage": {
         "bundleMediaFramework": true,
         "files": {

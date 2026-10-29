@@ -167,6 +167,55 @@ build_rpm_package_from_payload "$TAURI_DIR/target/release/bundle/rpm/Maple-1.2.3
         self.assertIn("libwebkit2gtk-4.1.so.0()(64bit)", requires)
         self.assertNotIn("webkit2gtk4.1", requires)
 
+    def test_rpm_preserves_configured_runtime_dependencies(self):
+        config = json.loads((ROOT / "apps/maple-research/frontend/src-tauri/tauri.conf.json").read_text())
+        self.assertIn("libwebkit2gtk-4.1.so.0()(64bit)", config["bundle"]["linux"]["rpm"]["depends"])
+        self.assertNotIn("webkit2gtk4.1", config["bundle"]["linux"]["rpm"]["depends"])
+        (self.tauri / "tauri.conf.json").write_text(json.dumps(config))
+        self.fake_rpmbuild(0)
+        result = self.run_factory()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        spec = (self.tauri / "maple.spec").read_text()
+        self.assertIn("Requires: libwebkit2gtk-4.1.so.0()(64bit)\n", spec)
+
+    def test_rpm_dependency_verification(self):
+        for requires, expected in (
+            ("libwebkit2gtk-4.1.so.0()(64bit)", 0),
+            ("rpmlib(PayloadFilesHavePrefix) <= 4.0-1", 1),
+            ("webkit2gtk4.1", 1),
+            ("libwebkit2gtk-4_1-0", 1),
+            ("libwebkit2gtk-4.0.so.0()(64bit)", 1),
+            ("libwebkit2gtk-4.1.so.0", 1),
+        ):
+            with self.subTest(requires=requires):
+                result = self.run_shell(f'''
+rpm() {{ printf '%s\\n' '{requires}'; }}
+verify_linux_rpm_package_dependencies fixture.rpm
+''')
+                self.assertEqual(result.returncode, expected, result.stderr)
+
+    @unittest.skipUnless(shutil.which("rpmbuild") and shutil.which("rpm"), "RPM tools are unavailable")
+    def test_built_rpm_declares_webkit_dependency(self):
+        config = json.loads((ROOT / "apps/maple-research/frontend/src-tauri/tauri.conf.json").read_text())
+        config["version"] = "1.2.3"
+        (self.tauri / "tauri.conf.json").write_text(json.dumps(config))
+        result = self.run_factory()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        requires = subprocess.run(
+            ["rpm", "-qp", "--requires", str(self.rpm)],
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        self.assertIn("libwebkit2gtk-4.1.so.0()(64bit)", requires)
+        verified = self.run_shell(f'verify_linux_rpm_package_dependencies "{self.rpm}"')
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def test_rpm_query_failure_is_rejected(self):
+        result = self.run_shell('''
+rpm() { return 19; }
+verify_linux_rpm_package_dependencies fixture.rpm
+''')
+        self.assertNotEqual(result.returncode, 0)
+
     def test_failed_final_move_is_not_hidden_by_cleanup(self):
         self.fake_rpmbuild(0)
         result = self.run_factory('mv() { return 19; }\n')
