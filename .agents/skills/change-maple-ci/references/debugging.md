@@ -70,7 +70,7 @@ the cancellation to finish, so rapid re-pushes each add some delay.
   variable `CI_LINUX_HEAVY_RUNNER=blacksmith-16vcpu-ubuntu-2404` (same
   vendor, so caches still work) and unset it afterwards. For the 8-vCPU
   lanes, `CI_LINUX_RUNNER=blacksmith-16vcpu-ubuntu-2404` keeps Blacksmith's
-  store. In a Blacksmith-wide outage use `ubuntu-latest` (or `macos-26`,
+  store. In a Blacksmith-wide outage use `ubuntu-latest` (or `xcode-27`,
   `windows-2025`): cold, saves nothing, slower.
   - Matrix lanes take their runner from `plan`, so re-plan: cancel a PR run,
     then **Re-run all jobs**. Never cancel a master run; the variable applies

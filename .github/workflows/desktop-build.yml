@@ -15,7 +15,7 @@ jobs:
     environment: desktop-signing
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.macos != 'false') }}
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: blacksmith-6vcpu-macos-27
     timeout-minutes: 120
     permissions:
       contents: read
@@ -214,7 +214,7 @@ jobs:
   verify-macos-desktop-artifacts:
     needs:
       - build-macos
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     permissions:
       contents: read

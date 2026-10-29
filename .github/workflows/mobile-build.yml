@@ -34,7 +34,7 @@ jobs:
       github.ref == 'refs/heads/master' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.ios != 'false')
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: blacksmith-6vcpu-macos-27
     # The ONNX source build and the app build each allow 90 minutes.
     timeout-minutes: 240
     permissions:
@@ -120,7 +120,7 @@ jobs:
 
   verify-ios-artifacts:
     needs: build-ios
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     permissions:
       contents: read
@@ -156,7 +156,7 @@ jobs:
       github.ref == 'refs/heads/master' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: verify-ios-artifacts
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 45
     permissions:
       contents: read

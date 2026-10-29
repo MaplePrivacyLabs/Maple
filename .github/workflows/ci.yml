@@ -233,7 +233,7 @@ jobs:
     name: agent-package-macos
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['agent-package-macos']
-    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -355,7 +355,7 @@ jobs:
     name: research-ios
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['research-ios']
-    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 120 # a missed ONNX Runtime cache builds it from source
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -388,7 +388,7 @@ jobs:
     name: research-desktop-macos
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['research-desktop-macos']
-    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -498,7 +498,7 @@ jobs:
     name: research-dev-macos
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['research-dev-macos']
-    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

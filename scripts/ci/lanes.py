@@ -36,7 +36,7 @@ def cache_store(label: str) -> str:
 # The override variables are unset; set one to fail over during an outage.
 LINUX = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_RUNNER")
 LINUX_HEAVY = Runner("blacksmith-32vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
-MACOS = Runner("blacksmith-6vcpu-macos-26", "CI_MACOS_RUNNER")
+MACOS = Runner("blacksmith-6vcpu-macos-27", "CI_MACOS_RUNNER")
 WINDOWS = Runner("blacksmith-8vcpu-windows-2025", "CI_WINDOWS_RUNNER")
 GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile nothing heavy
 # The Agent updater's native Windows tests and the installer smoke test need GitHub's

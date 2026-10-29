@@ -247,7 +247,7 @@ release workflows use:
 
 | Work | Runner |
 | --- | --- |
-| Research macOS, Linux, Android and iOS builds, which compile and sign (master and release); `rust-tests.yml`; the Agent's unsigned master builds | Blacksmith (`blacksmith-6vcpu-macos-26`, `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`) |
+| Research macOS, Linux, Android and iOS builds, which compile and sign (master and release); `rust-tests.yml`; the Agent's unsigned master builds | Blacksmith (`blacksmith-6vcpu-macos-27`, `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`) |
 | Release `build-windows` | `maple-windows-2025-16core` |
 | Signed Research Windows master build; Agent Windows signing and verification | `windows-2025` |
 | Artifact verifiers, TestFlight submission, the Agent's signing and attestation, CodeQL, web and frontend evidence | Other GitHub-hosted runners |
@@ -268,7 +268,7 @@ PowerShell Gallery and its CDN and accepts only the pinned SHA-256. Rust,
 MSVC, Perl and the linker are pinned by `.github/actions/setup-agent-windows`
 for the Agent.
 
-Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
+Research desktop and iOS builds select Xcode 27.1 (`27A9275`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
 `scripts/ci/select-xcode.py`; the root Nix shell exports the same version for
 its Apple recipes. Do not rely on a runner's default Xcode. The
