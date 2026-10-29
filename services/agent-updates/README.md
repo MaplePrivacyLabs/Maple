@@ -99,6 +99,11 @@ Signature format is prehashed minisign Ed25519 with exact trusted comment
 
 ## Publication and authority
 
+Routine releases use the [reusable operator CLI](publisher/release_helpers/README.md).
+Version, source, run, artifact and proof identities are hash-bound data, not
+edited helper scripts. Existing artifact/signature checks and the separate
+protected reserve, sign and publish approvals remain in place.
+
 `agent-updates-publish.yml` is manual, trusted-master-only, and serialized with
 operator pointer changes through `agent-updates-production`. Normal publication
 includes macOS, Linux and Windows; Windows has no separate activation variable
