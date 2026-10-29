@@ -497,6 +497,11 @@ class ClientLaneTests(unittest.TestCase):
         # Mobile builds still follow their native inputs; desktop bundles never block
         # a PR (desktop-build.yml builds master; ci:package rehearses them).
         for path, lanes_ in ((tauri + "gen/apple/project.yml", {"research-ios"}),
+                             (tauri + "Info.ios.plist", {"research-ios", "research-rust"}),
+                             (tauri + "plugins/tauri-plugin-iap/ios/Sources/IapPlugin.swift",
+                              {"research-ios", "research-rust"}),
+                             (tauri + "patches/tao-0.37.1/src/platform_impl/ios/app_state.rs",
+                              {"research-ios", "research-rust"}),
                              (tauri + "gen/android/app/build.gradle.kts", {"research-android"}),
                              (tauri + "dmg/background.tiff", {"research-rust"}),
                              (tauri + "tauri.conf.json", {"research-rust", "repo"}),

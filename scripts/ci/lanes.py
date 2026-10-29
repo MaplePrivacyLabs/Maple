@@ -343,6 +343,10 @@ LANES: Tuple[Lane, ...] = (
     # desktop-build.yml, mobile-build.yml and android-build.yml build master.
     Lane("research-ios", (TAURI + "gen/apple/**", TAURI + "icons/ios/**", TAURI + "capabilities/mobile-ios.json",
                           TAURI + "tauri.ios-dev.conf.json", TAURI + "Info.plist", TAURI + "Entitlements.plist",
+                          # iOS-only sources: the scene manifest tauri-cli merges into the app's
+                          # plist, plugin Swift code, and the vendored tao's iOS platform layer.
+                          TAURI + "Info.ios.plist", TAURI + "plugins/*/ios/**", TAURI + "patches/*/ios/**",
+                          TAURI + "patches/tao-*/src/platform_impl/ios/**",
                           TAURI + "scripts/*ios*", TAURI + "scripts/canonicalize-static-archive.py",
                           TAURI + "scripts/onnxruntime-pins.sh", "scripts/ci/ios-*.sh", "scripts/ci/ios-build-profile.py",
                           "scripts/ci/canonical-ios-app-hash.py", "scripts/ci/_common.sh",
