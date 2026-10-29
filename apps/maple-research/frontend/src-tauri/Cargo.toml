@@ -98,13 +98,16 @@ keyring = { version = "3", features = ["windows-native"] }
 # The embedded proxy requires `maple-sdk` from the registry; resolve it to the same
 # in-tree source as the dependency above (docs/sdk-publishing.md).
 maple-sdk = { path = "../../../../sdk/rust" }
-# Local patch for tao 0.37.1 Android intent crashes:
-# https://github.com/tauri-apps/tao/issues/1217
+# Local patch for tao 0.37.1 Android intent crashes. tauri-apps/tao#1217 was
+# closed by #1224, which only made getType() null-safe: 0.37.1 still unwraps
+# getIntent, getAction, ClipData items and EXTRA_STREAM, so a null launch intent
+# from real Android launch/deep-link flows aborts the process before
+# tauri-plugin-deep-link sees OAuth/payment redirects. Remove the patch once
+# upstream stops unwrapping those calls.
 #
-# Tao's Android intent handler currently unwraps several JNI calls that can
-# receive null objects from real Android launch/deep-link flows, aborting the
-# process before tauri-plugin-deep-link sees OAuth/payment redirects. Remove
-# this once Tauri resolves to a Tao release containing the upstream fix.
-# The vendored library uses this application's Cargo.lock; its upstream
-# standalone lockfile is intentionally omitted.
+# Vendored from crates.io tao 0.37.1 (sha256
+# f37f381f4e048e6cdf038b5705f8cf14ad108279d46eb968140a7b291aba9400, upstream
+# 37b7e8bc90a0); Maple's changes follow the vendoring commit. The vendored
+# library uses this application's Cargo.lock; its upstream standalone lockfile
+# is intentionally omitted.
 tao = { path = "patches/tao-0.37.1" }

@@ -520,12 +520,14 @@ pub unsafe fn onNewIntent(env: JNIEnv, _: JClass, intent: JObject) {
 }
 
 pub unsafe fn handle_intent(mut env: JNIEnv, intent: JObject) {
-  // Maple local patch for https://github.com/tauri-apps/tao/issues/1217.
+  // Maple local patch. tauri-apps/tao#1217 was closed by #1224, which only made
+  // getType() null-safe; upstream tao (still in 0.37.1) unwraps getIntent,
+  // getAction, ClipData items and EXTRA_STREAM.
   //
   // Android can provide null intent/action/type objects during cold launch,
-  // task restoration, and OEM deep-link delivery. Upstream tao (still in 0.37)
-  // unwraps these JNI calls, which aborts the process across the Rust
-  // JNI boundary. Treat malformed intent pieces as absent and return/continue.
+  // task restoration, and OEM deep-link delivery. Unwrapping these JNI calls
+  // aborts the process across the Rust JNI boundary. Treat malformed intent
+  // pieces as absent and return/continue.
   if intent.is_null() {
     return;
   }
