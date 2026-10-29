@@ -558,9 +558,10 @@ class PackageBoundaryTests(unittest.TestCase):
                 compare = next(index for index, line in enumerate(following) if line.startswith('StrCmp '))
                 metadata = following[:compare]
                 self.assertTrue(all(line.startswith('StrCpy ') for line in metadata))
+                output = command.rsplit(' ', 1)[1]
+                self.assertNotIn(output, [line.split(maxsplit=2)[1] for line in metadata])
                 self.assertEqual([line for line in metadata if line.startswith('StrCpy $FailureCode ')],
                                  [next(line for line in metadata if line in ['StrCpy $FailureCode ' + str(code) for code in child])])
-                output = command.rsplit(' ', 1)[1]
                 self.assertEqual(following[compare], 'StrCmp ' + output + ' 0 0 ' + destination)
 
     def test_nsis_exit_codes_identify_probe_phase_and_launch_vs_child_failures(self):
