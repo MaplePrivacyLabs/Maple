@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hash a Cargo.lock's dependency graph and a flake.lock for an exact cache key.
+"""Hash a Cargo.lock's dependency graph, a flake.lock and toolchain pins for an exact cache key.
 
 agent-desktop-build.yml keys its release cache on this hash. Every third-party
 package's name, version, source and checksum, every dependency edge, and the
@@ -7,7 +7,9 @@ whole flake.lock (the toolchain) are hashed. Only the versions of local
 packages, the ones without a `source` (workspace members and path
 dependencies), are dropped, wherever they appear: a release version bump keeps
 the key, while any other change gives a new one. Cargo rebuilds local packages
-anyway.
+anyway. Further arguments are toolchain pin files hashed as text: the macOS build
+passes scripts/ci/apple-toolchain.json, so an Xcode upgrade never restores
+objects built against the previous SDK. Without them the key is unchanged.
 
 Prints `hash=<sha256>` for $GITHUB_OUTPUT. Input it cannot resolve
 unambiguously fails with no output.
@@ -20,6 +22,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from typing import Sequence
 
 try:
     import tomllib
@@ -147,10 +150,12 @@ def parse_flake_lock(text: str) -> dict:
     return flake
 
 
-def key(cargo_lock: str, flake_lock: str) -> str:
-    """SHA-256 of the normalized Cargo.lock graph and the parsed flake.lock."""
+def key(cargo_lock: str, flake_lock: str, pins: Sequence[str] = ()) -> str:
+    """SHA-256 of the normalized Cargo.lock graph, the parsed flake.lock and any pin texts."""
     payload = {"schema": SCHEMA, "cargo": graph(parse_cargo_lock(cargo_lock)),
                "flake": parse_flake_lock(flake_lock)}
+    if pins:
+        payload["pins"] = [text.replace("\r\n", "\n") for text in pins]
     try:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     except TypeError as error:  # a TOML date or time, which Cargo never writes
@@ -159,12 +164,12 @@ def key(cargo_lock: str, flake_lock: str) -> str:
 
 
 def main(argv: list) -> int:
-    if len(argv) != 2:
-        print("usage: cargo_graph_key.py CARGO_LOCK FLAKE_LOCK", file=sys.stderr)
+    if len(argv) < 2:
+        print("usage: cargo_graph_key.py CARGO_LOCK FLAKE_LOCK [PIN ...]", file=sys.stderr)
         return 2
     try:
         texts = [Path(name).read_text(encoding="utf-8") for name in argv]
-        digest = key(*texts)
+        digest = key(texts[0], texts[1], texts[2:])
     except (OSError, UnicodeError, GraphError) as error:
         print(f"::error::cargo_graph_key.py: {error}", file=sys.stderr)
         return 1

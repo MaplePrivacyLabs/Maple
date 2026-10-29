@@ -1,0 +1,30 @@
+name: Import the Metal Toolchain
+description: >-
+  Install the Metal Toolchain that this run's metal-toolchain job exported, so
+  gpui can compile its Metal shaders on Blacksmith's macOS image. A runner whose
+  Xcode already has it (GitHub's xcode-27 image, during a failover) skips the
+  import. Run it after selecting the pinned Xcode.
+runs:
+  using: composite
+  steps:
+    - name: Download the exported Metal Toolchain
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: metal-toolchain
+        path: ${{ runner.temp }}/metal-toolchain-artifact
+    - name: Import the Metal Toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        if xcodebuild -showComponent metalToolchain | grep -q '^Status: installed'; then
+          echo "The selected Xcode already has its Metal Toolchain."
+        else
+          import_dir="$RUNNER_TEMP/metal-toolchain"
+          mkdir -p "$import_dir"
+          tar -C "$import_dir" -xf "$RUNNER_TEMP/metal-toolchain-artifact/metal-toolchain.tar"
+          bundle="$(find "$import_dir" -maxdepth 1 \( -name '*.exportedBundle' -o -name '*.dmg' \) -print -quit)"
+          test -n "$bundle"
+          xcodebuild -importComponent metalToolchain -importPath "$bundle" \
+            || sudo xcodebuild -importComponent metalToolchain -importPath "$bundle"
+        fi
+        xcrun -sdk macosx metal --version

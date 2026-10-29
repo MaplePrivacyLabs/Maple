@@ -30,7 +30,9 @@ SETUP_NIX = "./.github/actions/setup-nix"
 PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}")
 # Standard images, and the org's one GitHub-hosted larger runner, by its exact label:
 # a pattern would also admit a self-hosted runner that borrowed the name.
-GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|maple-windows-2025-16core")
+# GitHub-hosted labels: the standard images, the per-Xcode macOS images (xcode-27) and the
+# org's larger Windows runner.
+GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|xcode-[0-9]+|maple-windows-2025-16core")
 # The workflows that run on pull requests or the merge queue. Every other check is a
 # ci.yml lane (scripts/ci/lanes.py), so ci-ok judges it; adding one here is an owner call.
 PULL_REQUEST_WORKFLOWS = frozenset({

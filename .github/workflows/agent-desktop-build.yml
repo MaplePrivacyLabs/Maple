@@ -51,9 +51,29 @@ jobs:
         # Dispatch, the nightly run, an unusable push base and selector errors all build.
         run: python3 scripts/ci/plan.py only agent-desktop >> "$GITHUB_OUTPUT"
 
+  # Blacksmith's macOS image cannot download Xcode's Metal Toolchain, so GitHub's
+  # xcode-27 image exports it for the macOS build, which compiles gpui's shaders.
+  metal-toolchain:
+    name: Export the Metal Toolchain
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    runs-on: xcode-27
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Select pinned Xcode
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/export-metal-toolchain
+
   macos-build:
     name: Build macOS binary (${{ matrix.variant }})
-    needs: changes
+    needs: [changes, metal-toolchain]
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: blacksmith-6vcpu-macos-27
     permissions:
@@ -82,9 +102,10 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/import-metal-toolchain
       - name: Hash the Agent's third-party dependency graph and toolchain
         id: graph
-        run: python3 ../../scripts/ci/cargo_graph_key.py Cargo.lock flake.lock >> "$GITHUB_OUTPUT"
+        run: python3 ../../scripts/ci/cargo_graph_key.py Cargo.lock flake.lock ../../scripts/ci/apple-toolchain.json >> "$GITHUB_OUTPUT"
       - name: Restore the exact-key Agent release cache
         id: cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4

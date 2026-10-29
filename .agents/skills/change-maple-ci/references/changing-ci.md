@@ -23,6 +23,7 @@ Paths are relative to the repository root. `scripts/ci/lanes.py` and
 | `submodules` | Recursive submodules with full blobless history (Nix needs `revCount`) |
 | `hook` | Pre-commit component that runs the same checks locally |
 | `restore` | Read-only restore of a cache another workflow writes |
+| `requires` | Lanes whose jobs this lane's special job needs. The planner adds them to every plan that selects the lane, dispatches included; a required lane has no paths, labels or gate of its own, so nothing else selects it (lint). `metal-toolchain` is the example: GitHub's xcode-27 image exports Xcode's Metal Toolchain for `agent-package-macos` |
 
 Event sets:
 
@@ -99,6 +100,8 @@ Its id is the lane's `job`. Checked by `plan.py lint` and the policy tests:
 - `runs-on` exactly `${{ vars.<VARIABLE> || '<label>' }}` when the runner has
   an override variable, otherwise the plain label; `timeout-minutes` equals
   the lane's `timeout` (lint).
+- A lane with `requires` has its own job, whose `needs:` lists each required
+  lane's job (lint).
 - `ci-ok` needs it (test 8); a new runner label is declared in
   `.github/actionlint.yaml` (test 9 and lint); checkouts use
   `persist-credentials: false` (test 3).
@@ -132,7 +135,7 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
 | `MACOS` (Blacksmith macOS) | `CI_MACOS_RUNNER` |
 | `WINDOWS` (Blacksmith Windows) | `CI_WINDOWS_RUNNER` |
 | `GITHUB_WINDOWS` (`maple-windows-2025-16core`) | `CI_WINDOWS_GITHUB_RUNNER`, read only by special jobs |
-| `GITHUB`, `GITHUB_WINDOWS_FREE`, `EIF_BUILDER`, inline `ubuntu-24.04-arm` | none |
+| `GITHUB`, `GITHUB_WINDOWS_FREE`, `GITHUB_XCODE` (`xcode-27`), `EIF_BUILDER`, inline `ubuntu-24.04-arm` | none |
 
 - Matrix lanes resolve their runner when `plan` runs. A new matrix variable
   must be passed in the `plan` step's `env`; `lint` checks this.
@@ -159,7 +162,10 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
 - The Agent release key's hash is a step output from
   `scripts/ci/cargo_graph_key.py`, not `hashFiles`. C4 runs that step, with
   the script working and failing, so an empty or misnamed output cannot turn
-  the exact key into a family prefix.
+  the exact key into a family prefix. The macOS build also passes
+  `scripts/ci/apple-toolchain.json`, as the macOS lanes list it in
+  `cache_files`: an Xcode upgrade must not restore objects built against the
+  previous SDK.
 - Turn off implicit saves on PR paths: setup-bun `no-cache: true` and no
   Magic Nix Cache (both checked), and Trivy `cache: "false"` (convention).
 - After a lockfile change, master's first save deletes the lane's target
@@ -252,6 +258,9 @@ selected or nightly; run it yourself after doc edits.
 `just lane <id>` runs exactly what CI runs. Limits:
 
 - macOS lanes need macOS and the pinned Xcode (`scripts/ci/select-xcode.py`).
+  The Agent's Clippy and native suite build gpui with `runtime_shaders`, so
+  they need no Metal Toolchain; the packaging rehearsal compiles the shaders
+  and needs it (`xcodebuild -downloadComponent MetalToolchain`).
 - Windows lanes need Windows with the toolchain from
   `.github/actions/setup-agent-windows`.
 - `os-sdk-e2e` needs PostgreSQL on `127.0.0.1:5432` with the credentials in

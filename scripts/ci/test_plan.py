@@ -1,6 +1,7 @@
 """Lane selection: the table, the planner's events and the pre-commit hook."""
 
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -233,6 +234,25 @@ class LaneTableTests(unittest.TestCase):
                               plan.lint_problems(plan.tracked_files()))
 
 
+    def test_a_lane_with_requirements_waits_for_their_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "ci.yml"
+            workflow.write_text(plan.CI_WORKFLOW.read_text().replace(
+                "    needs: [plan, metal-toolchain]\n    if: fromJSON(needs.plan.outputs.lanes)['agent-package-macos']",
+                "    needs: plan\n    if: fromJSON(needs.plan.outputs.lanes)['agent-package-macos']"))
+            with mock.patch.object(plan, "CI_WORKFLOW", workflow):
+                self.assertIn("ci.yml agent-package-macos: needs does not include metal-toolchain",
+                              plan.lint_problems(plan.tracked_files()))
+        def edited(lane_id, **changes):
+            return tuple(dataclasses.replace(lane, **changes) if lane.id == lane_id else lane for lane in lanes.LANES)
+        for broken, problem in ((edited("agent-package-macos", requires=("no-such-lane",)),
+                                 "agent-package-macos: requires unknown lane no-such-lane"),
+                                (edited("metal-toolchain", labels=("ci:full",)),
+                                 "metal-toolchain: a required lane must have no paths, labels or gate")):
+            with self.subTest(problem=problem), mock.patch.object(plan, "LANES", broken):
+                self.assertIn(problem, plan.lint_problems(plan.tracked_files()))
+
+
 class HookTests(unittest.TestCase):
     """The pre-commit hook's components: a path selects those of the lanes that own it."""
 
@@ -378,6 +398,21 @@ class AgentLaneTests(unittest.TestCase):
         for label in ("ci:package", "ci:full"):
             self.assertEqual(agent_lanes(selected(["docs/x.md"], labels=[label])) & packages, packages)
         self.assertLessEqual(packages, active(NIGHTLY))
+
+    def test_a_required_lane_runs_only_with_the_lane_that_requires_it(self):
+        # The macOS packaging rehearsal compiles gpui's shaders on Blacksmith, whose image
+        # cannot download the Metal Toolchain; metal-toolchain exports it, and only that
+        # requirement ever selects it.
+        consumer, required = "agent-package-macos", "metal-toolchain"
+        for event in (PR, PUSH):
+            with self.subTest(event=event):
+                self.assertFalse({consumer, required} & selected(["apps/maple-agent/app/src/main.rs"], event))
+        for label in ("ci:package", "ci:full"):
+            with self.subTest(label=label):
+                chosen = plan.select(PR, ["docs/x.md"], [label])
+                self.assertIn(consumer, chosen)
+                self.assertEqual(chosen[required], [f"required by {consumer}"])
+        self.assertLessEqual({consumer, required}, active(NIGHTLY))
 
     def test_full_suites_run_on_master_nightly_and_by_label(self):
         full = {"agent-full-linux", "agent-full-macos", "agent-full-windows"}
@@ -564,6 +599,11 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual({lane for lane, on in outputs["lanes"].items() if on}, {"agent-test"})
         self.assertEqual([entry["id"] for entry in outputs["nix"]], ["agent-test"])
 
+    def test_dispatching_a_lane_also_runs_the_lanes_it_requires(self):
+        _, outputs = self.github(DISPATCH, {}, LANES_INPUT="agent-package-macos")
+        self.assertEqual({lane for lane, on in outputs["lanes"].items() if on},
+                         {"agent-package-macos", "metal-toolchain"})
+
     def test_quarantined_lanes_still_run_and_an_unknown_id_fails_the_plan(self):
         code, outputs = self.github(NIGHTLY, {}, CI_QUARANTINE=" research-ios,agent-test, ")
         self.assertEqual((code, outputs["quarantine"]), (0, ["agent-test", "research-ios"]))
@@ -622,6 +662,8 @@ class PlannerTests(unittest.TestCase):
                 workspace = lane.workspaces.split("->")[0].strip()
                 pins = {f"{workspace}/{name}" for name in ("flake.lock", "rust-toolchain.toml")
                         if (plan.ROOT / workspace / name).is_file()}
+                if lane.runner == lanes.MACOS:  # and the Xcode that builds against the SDK
+                    pins.add("scripts/ci/apple-toolchain.json")
                 with self.subTest(lane=lane.id):
                     self.assertIn(f"{workspace}/flake.lock", pins)
                     self.assertEqual(set(lane.cache_files), pins)

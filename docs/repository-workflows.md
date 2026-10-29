@@ -274,7 +274,11 @@ Research desktop and iOS builds select Xcode 27.1 (`27A9275`) from
 its Apple recipes. Do not rely on a runner's default Xcode. The
 [iOS ONNX pins](../apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh)
 verify artifacts against that exact build, so an Xcode upgrade means rebuilding
-and reviewing those hashes and validating desktop and iOS packaging. A newer
+and reviewing those hashes and validating desktop and iOS packaging. The
+Agent's signed macOS build compiles gpui's Metal shaders: Blacksmith's macOS
+image has no Metal Toolchain and cannot download one, so a GitHub `xcode-27`
+job exports it as a one-day artifact that the build imports, and the build's
+release cache key hashes the Xcode pin. A newer
 CI image does not raise the shipped deployment targets: Research supports
 macOS 13.4 and iOS 16.0.
 
