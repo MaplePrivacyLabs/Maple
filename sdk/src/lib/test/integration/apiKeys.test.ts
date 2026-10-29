@@ -40,6 +40,9 @@ describe("API Key Management", () => {
     // Verify the key format is a UUID with dashes
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     expect(createdKey.key).toMatch(uuidRegex);
+    // The non-secret key ID is separate from the key itself
+    expect(createdKey.public_id).toMatch(uuidRegex);
+    expect(createdKey.public_id).not.toBe(createdKey.key);
 
     // List API keys and verify the new key is present
     const response = await listApiKeys();
@@ -52,6 +55,7 @@ describe("API Key Management", () => {
     expect(foundKey).toBeDefined();
     expect(foundKey!.name).toBe(keyName);
     expect(foundKey!.created_at).toBe(createdKey.created_at);
+    expect(foundKey!.public_id).toBe(createdKey.public_id);
     // The key field should NOT be present in the list response
     expect((foundKey as any).key).toBeUndefined();
 

@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { Link, useBlocker } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
-import { AlertCircle, Calendar, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Calendar, Clock, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
 import { SettingsSection } from "../SettingsPage";
-import { useApiKeys } from "./useApiKeys";
+import { useApiKeyLastUsed, useApiKeys } from "./useApiKeys";
 
 const API_KEY_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -23,6 +23,8 @@ function formatDate(dateString: string) {
 export function ApiKeysSettings() {
   const { deleteApiKey } = useOpenSecret();
   const { data: apiKeys, isLoading, error, refetch } = useApiKeys();
+  // Usage comes from billing; without it, the list simply omits last-used details.
+  const { data: lastUsed } = useApiKeyLastUsed();
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -92,6 +94,8 @@ export function ApiKeysSettings() {
           <div className="divide-y rounded-lg border border-border/70">
             {apiKeys.map((apiKey) => {
               const isConfirmingDelete = pendingDelete === apiKey.name;
+              const lastUsedAt =
+                lastUsed && apiKey.public_id ? (lastUsed.get(apiKey.public_id) ?? null) : undefined;
 
               return (
                 <div key={apiKey.name} className="p-3 sm:p-4">
@@ -102,6 +106,14 @@ export function ApiKeysSettings() {
                         <Calendar className="h-3 w-3" />
                         Created {formatDate(apiKey.created_at)}
                       </p>
+                      {lastUsedAt !== undefined && (
+                        <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                          <Clock className="h-3 w-3" />
+                          {lastUsedAt
+                            ? `Last used ${formatDate(lastUsedAt)}`
+                            : "No use recorded yet"}
+                        </p>
+                      )}
                     </div>
                     {!isConfirmingDelete && (
                       <Button
@@ -165,6 +177,12 @@ export function ApiKeysSettings() {
         <div className="space-y-1.5 text-xs text-muted-foreground">
           <p>API keys allow you to integrate Maple into applications and workflows.</p>
           <p>Keep keys secure and never share them publicly. Treat them like passwords.</p>
+          {lastUsed && !!apiKeys?.length && (
+            <p>
+              Last used shows a key&apos;s most recent request that used credits and can take a
+              moment to update.
+            </p>
+          )}
         </div>
       </div>
     </SettingsSection>

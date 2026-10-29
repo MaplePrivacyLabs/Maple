@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { createZapriteUpgrade, fetchProducts } from "./billingApi";
+import { createZapriteUpgrade, fetchBillingApiKeys, fetchProducts } from "./billingApi";
 
 test("fetchProducts rejects an HTTP error response before parsing it as products", async () => {
   const previousBillingApiUrl = process.env.VITE_MAPLE_BILLING_API_URL;
@@ -70,5 +70,45 @@ test("createZapriteUpgrade rejects a checkout URL from the wrong host", async ()
       process.env.VITE_MAPLE_BILLING_API_URL = previousBillingApiUrl;
     }
     fetchSpy.mockRestore();
+  }
+});
+
+test("fetchBillingApiKeys reads per-key usage with the billing token", async () => {
+  const previousBillingApiUrl = process.env.VITE_MAPLE_BILLING_API_URL;
+  process.env.VITE_MAPLE_BILLING_API_URL = "https://billing.example.test";
+  const body = {
+    api_keys: [
+      {
+        api_key_id: "0b9d6c3e-5f0a-4d43-9a39-2f7c41d1c0aa",
+        last_used_at: "2026-10-01T12:00:00Z"
+      }
+    ]
+  };
+  const fetchSpy = spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    )
+    .mockResolvedValueOnce(new Response("Invalid JWT token", { status: 401 }));
+  const consoleErrorSpy = spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await expect(fetchBillingApiKeys("billing-token")).resolves.toEqual(body);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://billing.example.test/v1/maple/api-keys");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer billing-token");
+
+    // The billing service mints a new token after this error.
+    await expect(fetchBillingApiKeys("expired-token")).rejects.toThrow("Unauthorized");
+  } finally {
+    if (previousBillingApiUrl === undefined) {
+      delete process.env.VITE_MAPLE_BILLING_API_URL;
+    } else {
+      process.env.VITE_MAPLE_BILLING_API_URL = previousBillingApiUrl;
+    }
+    fetchSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
   }
 });
