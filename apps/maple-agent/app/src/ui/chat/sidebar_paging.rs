@@ -58,6 +58,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn empty_task_pages_keep_navigation_without_an_empty_message(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.reset_persisted_for_test();
+            sidebar.pages.enabled = true;
+            for complete in [false, true] {
+                if complete {
+                    sidebar.pages.ready.extend([
+                        PageKind::Active,
+                        PageKind::Settled,
+                        PageKind::Pinned,
+                    ]);
+                }
+                for group in [
+                    SidebarGroup::Project,
+                    SidebarGroup::Status,
+                    SidebarGroup::List,
+                ] {
+                    sidebar.view.group = group;
+                    sidebar.rebuild_sections();
+                    assert_eq!(
+                        sidebar.entries,
+                        [
+                            SidebarEntry::NewTask,
+                            SidebarEntry::ProjectsHeader,
+                            SidebarEntry::ArchivedHeader,
+                        ]
+                    );
+                }
+            }
+        });
+    }
+
+    #[gpui::test]
     fn fresh_empty_pages_do_not_publish_retained_display_rows(cx: &mut gpui::TestAppContext) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
@@ -354,9 +393,24 @@ mod tests {
                 sidebar.view.group = group;
                 sidebar.rebuild_sections();
                 assert!(
-                    sidebar
+                    !sidebar
                         .entries
-                        .contains(&SidebarEntry::Empty(SidebarEmpty::NoTasks))
+                        .iter()
+                        .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
+                );
+            }
+            sidebar
+                .pages
+                .ready
+                .extend([PageKind::Active, PageKind::Settled, PageKind::Pinned]);
+            for group in [SidebarGroup::Status, SidebarGroup::List] {
+                sidebar.view.group = group;
+                sidebar.rebuild_sections();
+                assert!(
+                    !sidebar
+                        .entries
+                        .iter()
+                        .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
                 );
             }
             sidebar.view.group = SidebarGroup::Project;

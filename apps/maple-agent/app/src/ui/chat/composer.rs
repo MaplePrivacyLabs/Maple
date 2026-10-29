@@ -137,25 +137,25 @@ impl ChatScreen {
                             3,
                         ),
                         (
-                            "header-new-task",
-                            "square-pen",
-                            "New task",
-                            &super::NewTask,
-                            ChatCommand::NewTask,
-                            4,
-                        ),
-                        (
                             "header-search",
                             "search",
                             "Search",
                             &super::FocusSearch,
                             ChatCommand::FocusSearch,
+                            4,
+                        ),
+                        (
+                            "header-new-task",
+                            "square-pen",
+                            "New task",
+                            &super::NewTask,
+                            ChatCommand::NewTask,
                             5,
                         ),
                     ]
                     .into_iter()
                     .filter(|(_, _, _, _, command, _)| {
-                        collapsed_progress > 0. || matches!(command, ChatCommand::ToggleSidebar)
+                        collapsed_progress > 0. || !matches!(command, ChatCommand::NewTask)
                     })
                     .map(|(id, name, label, action, command, tab_index)| {
                         widgets::icon_button_for_action(
@@ -168,7 +168,7 @@ impl ChatScreen {
                         )
                         .debug_selector(move || id.to_string())
                         .tab_index(tab_index)
-                        .when(!matches!(command, ChatCommand::ToggleSidebar), |button| {
+                        .when(matches!(command, ChatCommand::NewTask), |button| {
                             button
                                 .opacity(collapsed_progress)
                                 .tab_stop(self.sidebar_collapsed)

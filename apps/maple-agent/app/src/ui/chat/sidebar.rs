@@ -388,8 +388,6 @@ impl TaskRung {
 /// Why the task list has no rows to show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SidebarEmpty {
-    /// No tasks exist yet.
-    NoTasks,
     /// The search filter matched nothing.
     NoMatches,
 }
@@ -607,6 +605,7 @@ pub(super) struct Sidebar {
     filter: String,
     search_input: Entity<TextInput>,
     search_visible: bool,
+    search_pointer_dismissal_pending: bool,
     search_focus_out: Option<Subscription>,
     rename: Option<RenameTarget>,
     rename_input: Option<Entity<TextInput>>,
@@ -929,6 +928,7 @@ impl Sidebar {
             filter: String::new(),
             search_input,
             search_visible: false,
+            search_pointer_dismissal_pending: false,
             search_focus_out: None,
             rename: None,
             rename_input: None,
@@ -1516,20 +1516,47 @@ impl Sidebar {
     }
 
     pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_visible = true;
-        self.reveal_row(1, cx);
-        self.list.remeasure_items(1..2);
+        self.search_pointer_dismissal_pending = false;
+        if !self.search_visible {
+            self.search_visible = true;
+            self.rebuild_entries();
+        }
+        if let Some(row) = self
+            .entries
+            .iter()
+            .position(|entry| *entry == SidebarEntry::Search)
+        {
+            self.reveal_row(row, cx);
+        }
         let handle = self.search_input.read(cx).focus_handle(cx);
         handle.focus(window, cx);
         self.search_focus_out = Some(cx.on_focus_out(&handle, window, |_this, _, window, cx| {
             cx.defer_in(window, |this, window, cx| {
-                if !this.search_input.read(cx).menu_open() && !this.search_input_focused(window, cx)
+                if !this.search_pointer_dismissal_pending
+                    && !this.search_input.read(cx).menu_open()
+                    && !this.search_input_focused(window, cx)
                 {
                     this.hide_empty_search(cx);
                 }
             });
         }));
         cx.notify();
+    }
+
+    fn finish_search_pointer_dismissal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search_pointer_dismissal_pending {
+            return;
+        }
+        // Keep rows in place until the release has activated its original target.
+        cx.defer_in(window, |this, window, cx| {
+            if !this.search_pointer_dismissal_pending {
+                return;
+            }
+            this.search_pointer_dismissal_pending = false;
+            if !this.search_input.read(cx).menu_open() && !this.search_input_focused(window, cx) {
+                this.hide_empty_search(cx);
+            }
+        });
     }
 
     pub(super) fn search_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
@@ -1544,7 +1571,7 @@ impl Sidebar {
             return false;
         }
         self.search_visible = false;
-        self.list.remeasure_items(1..2);
+        self.rebuild_entries();
         cx.notify();
         true
     }
@@ -1719,7 +1746,10 @@ impl Sidebar {
 
     /// Project bounded local-cache rows through the selected grouping.
     fn local_entries(&self) -> Vec<SidebarEntry> {
-        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::Search];
+        let mut entries = vec![SidebarEntry::NewTask];
+        if self.search_visible {
+            entries.push(SidebarEntry::Search);
+        }
         let empty_known = self.filter.is_empty() && self.pages.non_archived_complete();
         let pinned_roots: HashSet<&str> = self
             .pinned_rows
@@ -1788,6 +1818,15 @@ impl Sidebar {
                 }
             }
         }
+        // Folded sections still hold tasks; only an empty list says so.
+        let empty = self.pinned_rows.is_empty()
+            && self.archived_rows.is_empty()
+            && self.sections.iter().all(|(section, rows)| {
+                !matches!(section, SidebarSection::Project(_)) && rows.is_empty()
+            });
+        if empty && !self.pages.any_loading() && !self.filter.is_empty() {
+            entries.push(SidebarEntry::Empty(SidebarEmpty::NoMatches));
+        }
         if !self.archived_rows.is_empty() || (self.pages.enabled && self.filter.is_empty()) {
             entries.push(SidebarEntry::ArchivedHeader);
             if self.archived_expanded {
@@ -1803,19 +1842,6 @@ impl Sidebar {
         }
         if self.archived_expanded && self.pages.has_more(PageKind::Archived) {
             entries.push(SidebarEntry::LoadMore(PageKind::Archived));
-        }
-        // Folded sections still hold tasks; only an empty list says so.
-        let empty = self.pinned_rows.is_empty()
-            && self.archived_rows.is_empty()
-            && self.sections.iter().all(|(section, rows)| {
-                !matches!(section, SidebarSection::Project(_)) && rows.is_empty()
-            });
-        if empty && !self.pages.any_loading() {
-            entries.push(SidebarEntry::Empty(if self.filter.is_empty() {
-                SidebarEmpty::NoTasks
-            } else {
-                SidebarEmpty::NoMatches
-            }));
         }
         entries
     }
@@ -2836,17 +2862,16 @@ impl Sidebar {
         let active = !self.filter.is_empty();
         div()
             .debug_selector(|| "sidebar-search".to_string())
-            // Most of the sidebar takes no focus, so a press anywhere else
-            // must end the search itself: drop the cursor, and return to
-            // the Search row when nothing was typed.
+            // Most rows take no focus. Blur on press, but keep the field in
+            // place until release so the row under the pointer cannot shift.
             .on_mouse_down_out(cx.listener(|this, _event, window, cx| {
                 if this.search_input.read(cx).menu_open() {
                     return;
                 }
+                this.search_pointer_dismissal_pending = true;
                 if this.search_input_focused(window, cx) {
                     window.blur();
                 }
-                this.hide_empty_search(cx);
             }))
             .flex()
             .items_center()
@@ -2936,7 +2961,7 @@ impl Sidebar {
                             "New Task",
                             ChatCommand::NewTask,
                             &super::NewTask,
-                            theme::text_sidebar(),
+                            theme::text_primary(),
                         )
                     };
                 div()
@@ -2960,6 +2985,16 @@ impl Sidebar {
                     .gap_2()
                     .text_sm()
                     .text_color(gpui::rgb(color))
+                    .when(!search, |row| {
+                        row.my_0()
+                            .mb_2()
+                            .px(px(10.))
+                            .h_9()
+                            .rounded(theme::RADIUS_SM)
+                            .border_1()
+                            .border_color(gpui::transparent_black())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                    })
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -3035,44 +3070,35 @@ impl Sidebar {
                     ))
                     .into_any_element()
             }
-            Some(SidebarEntry::Empty(reason)) => {
-                let (title, hint) = match reason {
-                    SidebarEmpty::NoTasks => ("No tasks yet", "Start one with ⌘N"),
-                    SidebarEmpty::NoMatches => ("Nothing matches", "Try another search"),
-                };
-                div()
-                    .mt_6()
-                    .px_4()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .when(reason == SidebarEmpty::NoMatches, |column| {
-                        column.child(icon("search", px(18.), theme::text_faint()))
-                    })
-                    .child(div().mt_1().child(title))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(hint),
-                    )
-                    .when(reason == SidebarEmpty::NoMatches, |column| {
-                        column.child(
-                            widgets::ghost_button("clear-search-empty")
-                                .mt_2()
-                                .text_xs()
-                                .py_1()
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.clear_search(cx);
-                                }))
-                                .child("Clear search"),
-                        )
-                    })
-                    .into_any_element()
-            }
+            Some(SidebarEntry::Empty(SidebarEmpty::NoMatches)) => div()
+                .debug_selector(|| "sidebar-empty".to_string())
+                .px_4()
+                .flex()
+                .flex_col()
+                .mt_6()
+                .items_center()
+                .gap_1()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .child(icon("search", px(18.), theme::text_faint()))
+                .child(div().mt_1().child("Nothing matches"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child("Try another search"),
+                )
+                .child(
+                    widgets::ghost_button("clear-search-empty")
+                        .mt_2()
+                        .text_xs()
+                        .py_1()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.clear_search(cx);
+                        }))
+                        .child("Clear search"),
+                )
+                .into_any_element(),
             Some(SidebarEntry::ArchivedHeader) => {
                 let expanded = self.archived_expanded;
                 let count = if self.uses_computer_projection() && self.project_filter.is_none() {
@@ -3102,12 +3128,12 @@ impl Sidebar {
                     .w_auto()
                     .mx_2()
                     .my(px(1.))
-                    .when(heading_gap, |row| row.mt_3())
+                    .when(heading_gap, |row| row.mt_2())
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
                     .px_2()
-                    .py_1()
+                    .h(px(34.))
                     .rounded(ROW_RADIUS)
                     .hover(|style| {
                         style
@@ -3118,7 +3144,14 @@ impl Sidebar {
                         this.toggle_archived_visibility(cx);
                         this.hover_heading(SidebarEntry::ArchivedHeader, cx);
                     }))
-                    .child(section_label("Archived"))
+                    .child(icon("archive", px(16.), theme::text_muted()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.))
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child("Archived"),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -3382,8 +3415,7 @@ impl Sidebar {
         };
         div()
             .group("projects-header-actions")
-            .mt_3()
-            .mb_1()
+            .h_7()
             .px_4()
             .w_full()
             .flex()
@@ -3407,7 +3439,13 @@ impl Sidebar {
                         this.set_projects_expanded(!this.projects_expanded, cx);
                         this.hover_heading(SidebarEntry::ProjectsHeader, cx);
                     }))
-                    .child(section_label(label))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .child(label),
+                    )
                     .child(self.section_chevron(
                         expanded,
                         "projects-header-actions",
@@ -3432,6 +3470,9 @@ impl Sidebar {
     fn view_button(&self, open: bool) -> gpui::Stateful<Div> {
         header_button("view-options", "list-filter", "View options", open)
             .debug_selector(|| "view-options".into())
+            .tab_index(5)
+            .focus_visible(|style| widgets::focus_ring(style.opacity(1.)))
+            .on_key_down(ChatScreen::sidebar_button_key_down)
             .when(!open, |button| {
                 button
                     .opacity(0.)
@@ -4048,6 +4089,23 @@ impl Render for Sidebar {
         })
         .size_full();
         div()
+            // The search row is virtualized; keep release handling on the root
+            // so scrolling it out of view during a press cannot strand dismissal.
+            .capture_any_mouse_up(cx.listener(|this, _, window, cx| {
+                this.finish_search_pointer_dismissal(window, cx);
+            }))
+            .map(|root| {
+                gpui::MouseButton::all()
+                    .into_iter()
+                    .fold(root, |root, button| {
+                        root.on_mouse_up_out(
+                            button,
+                            cx.listener(|this, _, window, cx| {
+                                this.finish_search_pointer_dismissal(window, cx);
+                            }),
+                        )
+                    })
+            })
             .size_full()
             .flex()
             .flex_col()
@@ -4090,7 +4148,7 @@ impl Render for Sidebar {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .pt_6()
+                    .pt_3()
                     .child(list)
                     .child(crate::ui::scrollbar::scrollbar(
                         "sidebar-scrollbar",
@@ -4098,7 +4156,7 @@ impl Render for Sidebar {
                     )),
             )
             // Settings stays opaque outside this cached, fading subtree.
-            .child(div().h_12().flex_none())
+            .child(div().h(px(54.)).flex_none())
     }
 }
 
