@@ -49,6 +49,8 @@ export type BillingStatus = {
   total_tokens: number | null;
   used_tokens: number | null;
   usage_reset_date: string | null;
+  /** Start of the window `usage_reset_date` ends (Free: today's UTC day). */
+  usage_period_start?: string | null;
   api_credit_balance?: number;
   ios_iap_enabled?: boolean;
   ios_us_external_link_enabled?: boolean;
