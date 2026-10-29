@@ -122,10 +122,14 @@ tao = { path = "patches/tao-0.37.1" }
 # vendored copy only adds that keyword. Remove once upstream publishes the fix.
 tauri-plugin-sign-in-with-apple = { path = "patches/tauri-plugin-sign-in-with-apple-1.0.2" }
 
-# Release builds strip with rustc's rust-objcopy, which can leave a dylib's LINKEDIT
-# string table 4-byte aligned. macOS 27 refuses to load such dylibs when they are
-# linked against its SDK, and the build loads its proc-macros as dylibs. Build
-# scripts and proc-macros never ship, so leave them unstripped. Remove once the
+# Cargo strips build scripts and proc-macros whenever their profile has no debug info
+# (release, and dev under CI's CARGO_PROFILE_DEV_DEBUG=0), using rustc's rust-objcopy,
+# which can leave a dylib's LINKEDIT string table 4-byte aligned. macOS 27 refuses to
+# load such dylibs when they are linked against its SDK, and every build loads its
+# proc-macros as dylibs. They never ship, so leave them unstripped. Remove once the
 # pinned Rust's rust-objcopy includes llvm/llvm-project#203680.
+[profile.dev.build-override]
+strip = false
+
 [profile.release.build-override]
 strip = false
