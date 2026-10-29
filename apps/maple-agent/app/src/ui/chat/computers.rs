@@ -307,12 +307,7 @@ impl ChatScreen {
         if needs_draft && !self.prepare_draft_navigation(cx) {
             return;
         }
-        if self.navigation_only {
-            self.navigation_only = false;
-            self.booting = true;
-            self.refresh_slash_commands(cx);
-            self.start_runtime(cx);
-        }
+        self.leave_catalog(cx);
         match destination {
             Destination::Overview => self
                 .sidebar
@@ -335,12 +330,30 @@ impl ChatScreen {
         self.draft && !self.session_setup_pending && !self.root_selecting
     }
 
+    /// The computer is on screen for work: stop filtering transcript events
+    /// and start its runtime. A catalog drops transcript rows, so any task
+    /// run from it would show nothing until reopened.
+    pub(super) fn leave_catalog(&mut self, cx: &mut Context<Self>) {
+        if !self.navigation_only {
+            return;
+        }
+        self.navigation_only = false;
+        self.booting = true;
+        self.refresh_slash_commands(cx);
+        self.start_runtime(cx);
+    }
+
     pub(super) fn finish_navigation_bootstrap(&mut self, cx: &mut Context<Self>) {
         self.navigation_ready = true;
-        if let Some((generation, destination)) = self.pending_navigation.take()
-            && generation == self.selection_generation
-        {
+        let Some((generation, destination)) = self.pending_navigation.take() else {
+            return;
+        };
+        if generation == self.selection_generation {
             self.navigate(destination, cx);
+        } else if self.visible {
+            // A newer choice on this screen (New Task, a reconnect) replaced
+            // the destination, but the computer was still opened for work.
+            self.leave_catalog(cx);
         }
     }
 
