@@ -344,12 +344,14 @@ LANES: Tuple[Lane, ...] = (
     # Unsigned platform builds: iOS and Android for PRs that touch their native inputs;
     # the desktop bundles (15-45 minutes) only by label, so no PR waits on them.
     # desktop-build.yml, mobile-build.yml and android-build.yml build master.
+    # research-ios downloads the iOS 27.1 Simulator runtime (7.85 GB, about a minute)
+    # on every run: Blacksmith's macOS 27 image ships only iOS 27.0's.
     Lane("research-ios", (TAURI + "gen/apple/**", TAURI + "icons/ios/**", TAURI + "capabilities/mobile-ios.json",
                           TAURI + "tauri.ios-dev.conf.json", TAURI + "Info.plist", TAURI + "Entitlements.plist",
                           # iOS-only sources: the scene manifest tauri-cli merges into the app's
                           # plist, plugin Swift code, and the vendored tao's iOS platform layer.
                           TAURI + "Info.ios.plist", TAURI + "plugins/*/ios/**", TAURI + "patches/*/ios/**",
-                          TAURI + "patches/tao-*/src/platform_impl/ios/**",
+                          TAURI + "patches/tao-*/src/platform_impl/ios/**", TAURI + "patches/tao-*/src/platform/ios.rs",
                           TAURI + "scripts/*ios*", TAURI + "scripts/canonicalize-static-archive.py",
                           TAURI + "scripts/onnxruntime-pins.sh", "scripts/ci/ios-*.sh", "scripts/ci/ios-build-profile.py",
                           "scripts/ci/canonical-ios-app-hash.py", "scripts/ci/_common.sh",
@@ -359,6 +361,10 @@ LANES: Tuple[Lane, ...] = (
          env=(("MAPLE_IOS_DOWNLOAD_SIMULATOR_RUNTIME", "1"),), timeout=120, **PLATFORM),
     Lane("research-android", (TAURI + "gen/android/**", TAURI + "icons/android/**",
                               TAURI + "capabilities/mobile-android.json", TAURI + "scripts/*android*",
+                              # Android-only sources: vendored plugins' Kotlin code and the vendored
+                              # tao's Android layer, which carries Maple's intent hardening.
+                              TAURI + "patches/*/android/**", TAURI + "patches/tao-*/src/platform_impl/android/**",
+                              TAURI + "patches/tao-*/src/platform/android.rs",
                               "scripts/ci/android-*.sh", "scripts/ci/_common.sh"),
          labels=("ci:android", "ci:full"), flake=".#android", run="./scripts/ci/android-pr.sh", timeout=45,
          restore="research-rust", **PLATFORM),
