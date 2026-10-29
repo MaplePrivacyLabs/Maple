@@ -18,7 +18,7 @@ use pi_coding_agent::session::{
 use pi_coding_agent::store::{MemoryStore, SessionStore};
 use rusqlite::{OptionalExtension, Transaction, params};
 
-use super::blobs::PreparedEntryImages;
+use super::attachments::PreparedEntryImages;
 use super::tasks::{TaskKey, task_key_tx, writable_account};
 use super::{
     AccountId, Durability, Store, StoreChange, StoreError, StoreResult, StoredRowChange,
@@ -406,10 +406,8 @@ impl Store {
                 if seq != next || flags & !1 != 0 {
                     return Err(StoreError::InvalidData);
                 }
-                let mut entry = decode_entry(encoded, &payload)?;
-                if flags & 1 != 0 {
-                    self.rehydrate_entry_images(account, uuid, &mut entry)?;
-                }
+                let entry = decode_entry(encoded, &payload)?;
+                // Typed references stay on disk until the effective model context is selected.
                 entries.push(entry);
                 next += 1;
             }
@@ -419,10 +417,13 @@ impl Store {
 }
 
 pub(super) fn decode_entry(encoded: i64, payload: &[u8]) -> StoreResult<SessionEntry> {
-    serde_json::from_slice(&codec::decode(encoded, payload)?).map_err(|_| StoreError::InvalidData)
+    let entry = serde_json::from_slice(&codec::decode(encoded, payload)?)
+        .map_err(|_| StoreError::InvalidData)?;
+    super::attachments::validate_stored_entry_images(&entry)?;
+    Ok(entry)
 }
 
-/// Projector replay uses image markers plus blob-size metadata, never blob bytes.
+/// Projector replay uses image references plus attachment metadata, never file bytes.
 pub(super) fn read_entries_from(
     tx: &Transaction<'_>,
     task: TaskKey,
@@ -447,7 +448,7 @@ pub(super) fn read_entries_from(
 }
 
 /// A source entry for full row-field expansion. The projector restores image
-/// summary lengths from blob metadata; timeline reads never fetch image bytes.
+/// summary lengths from attachment metadata; timeline reads never fetch image bytes.
 pub(super) fn read_entry(
     tx: &Transaction<'_>,
     task: TaskKey,
@@ -529,14 +530,27 @@ impl SqliteSessionStore {
             .prepare_entry_images(self.account, &self.uuid, entry)?;
         let json = serde_json::to_vec(&images.entry).map_err(|_| StoreError::InvalidInput)?;
         let (codec, payload) = codec::encode(&json)?;
+        let projection = self.prepare_projection(&images.entry, seq)?;
         Ok((
             images,
             PreparedEntry {
-                projection: super::projector::prepare_entry(entry, seq)?,
+                projection,
                 codec,
                 payload,
             },
         ))
+    }
+
+    fn prepare_projection(
+        &self,
+        entry: &SessionEntry,
+        seq: i64,
+    ) -> StoreResult<super::projector::PreparedProjection> {
+        let sizes = self.store.read(|tx| {
+            self.guard(tx)?;
+            super::attachments::entry_image_sizes_tx(tx, self.task, entry)
+        })?;
+        super::projector::prepare_stored_entry(entry, seq, &sizes)
     }
 
     fn guard(&self, tx: &Transaction<'_>) -> StoreResult<()> {
@@ -792,10 +806,7 @@ impl SqliteSessionStore {
                     serde_json::to_vec(&images.entry).map_err(|_| StoreError::InvalidInput)?;
                 let (codec, payload) = codec::encode(&raw)?;
                 Ok(PreparedEntry {
-                    projection: super::projector::prepare_entry(
-                        &entries[offset],
-                        start + offset as i64,
-                    )?,
+                    projection: self.prepare_projection(&images.entry, start + offset as i64)?,
                     codec,
                     payload,
                 })

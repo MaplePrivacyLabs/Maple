@@ -64,14 +64,18 @@ Tarball/pure Nix builds without Git report `unknown` for unavailable revisions.
 
 Packaged Prod builds use only the compiled Agent stable feed:
 `https://updates.maple.ai/agent/stable/latest.json` on macOS, or
-`https://updates.maple.ai/agent/stable/linux/latest.json` on Linux. The checked-in
-`update_feed_url` and `linux_update_feed_url` select those targets; embedded
-build-info retains the existing `update_feed_url` field with the effective feed.
+`https://updates.maple.ai/agent/stable/linux/latest.json` on Linux, and
+`https://updates.maple.ai/agent/stable/windows/latest.json` on Windows. The checked-in
+`update_feed_url`, `linux_update_feed_url` and `windows_update_feed_url` select
+those targets; embedded build-info retains the existing `update_feed_url` field
+with the effective feed.
 Older installed packages retain their compiled `updates.trymaple.ai` feeds;
-preserve that hostname and both legacy feed paths. Signed manifest paths and
-trusted keys are unchanged, so the two hostnames can serve the same release.
-Both feeds describe the same Agent version, build and source when publishing both
-platforms. Separate wire schemas preserve installed macOS client compatibility;
+preserve that hostname and both legacy feed paths. Existing macOS/Linux signed
+manifest paths and trusted keys are unchanged, so the two hostnames can serve
+the same release.
+The platform feeds describe the same Agent version, build and source when
+publishing multiple platforms. Separate wire schemas preserve installed macOS
+client compatibility;
 this does not require separate release cadences. The profile pins the
 reviewed primary and backup public keys, enabling packaged Prod discovery after
 launch. Publication is a separate protected operation; invitations
@@ -80,6 +84,30 @@ require the signed update rehearsal for each supported platform. An empty-key pr
 makes no update requests. Active trust requires two distinct public keys; the
 backup supports planned rotation and does not revoke a compromised accepted
 primary.
+
+Windows Dev/Prod installers retain their profile and state identities. Packaged
+Prod uses its separate Windows v3 signed feed, a `.tar.gz` update bundle, and an
+NSIS `.exe` for manual installation. The macOS v1 and Linux v2 feeds cannot
+authorize a Windows update. Windows packages use the existing Authenticode
+signing identity alongside the Agent feed's pinned primary and backup keys.
+Dev and unpackaged Windows builds remain excluded from production updates.
+The final Windows package artifact has exactly five files: the signed manual
+installer, its versioned updater `.tar.gz`, `build-info.json`, `manifest.json`
+and `SHA256SUMS`. The manifest binds the positive decimal Actions build number,
+source, profile, installer and updater names. The bundle's
+`maple-agent-windows/` root contains exactly the signed application, the
+public build and bundle descriptors, and the license. It omits the
+uninstaller.
+
+Windows installations keep a stable signed root launcher and uninstaller, plus
+immutable generation payloads under `versions/<version>-<build>/`. A native
+helper validates the generation before atomically replacing `current.json`;
+the running generation stays intact until shutdown. Manual installation uses
+the same native trust and destination checks before changing installed files.
+Unsigned Prod previews must refuse installation, while Dev previews have no
+production feed or keys. A future change to the stable bootstrap requires an
+explicit manual-installer migration; the normal updater changes only the
+generation payload.
 
 Dev and unpackaged builds contain no updater feed or keys. No runtime override
 can opt either into production updating. `MAPLE_DISABLE_UPDATE_CHECK=1` remains

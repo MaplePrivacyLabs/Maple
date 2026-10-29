@@ -44,10 +44,7 @@ pub enum SalvageTable {
     Entries,
     TimelineRows,
     ToolSummaries,
-    Blobs,
-    BlobChunks,
-    TaskBlobs,
-    Attachments,
+    FileAttachments,
     SendReceipts,
     RemoteIdentities,
 }
@@ -68,10 +65,7 @@ impl SalvageTable {
             Self::Entries => "entries",
             Self::TimelineRows => "timeline_rows",
             Self::ToolSummaries => "tool_summaries",
-            Self::Blobs => "blobs",
-            Self::BlobChunks => "blob_chunks",
-            Self::TaskBlobs => "task_blobs",
-            Self::Attachments => "attachments",
+            Self::FileAttachments => "file_attachments",
             Self::SendReceipts => "send_receipts",
             Self::RemoteIdentities => "remote_identities",
         }
@@ -90,8 +84,7 @@ impl SalvageTable {
                 "mcp_server_secrets INDEXED BY sqlite_autoindex_mcp_server_secrets_1"
             }
             Self::ToolSummaries => "tool_summaries INDEXED BY sqlite_autoindex_tool_summaries_1",
-            Self::TaskBlobs => "task_blobs INDEXED BY sqlite_autoindex_task_blobs_1",
-            Self::Attachments => "attachments INDEXED BY sqlite_autoindex_attachments_1",
+            Self::FileAttachments => "file_attachments NOT INDEXED",
             Self::Accounts => "accounts NOT INDEXED",
             Self::Credentials => "credentials NOT INDEXED",
             Self::AppSettings => "app_settings NOT INDEXED",
@@ -101,17 +94,14 @@ impl SalvageTable {
             Self::Tasks => "tasks NOT INDEXED",
             Self::Entries => "entries NOT INDEXED",
             Self::TimelineRows => "timeline_rows NOT INDEXED",
-            Self::Blobs => "blobs NOT INDEXED",
-            Self::BlobChunks => "blob_chunks NOT INDEXED",
+
             Self::SendReceipts => "send_receipts NOT INDEXED",
             Self::RemoteIdentities => "remote_identities NOT INDEXED",
         }
     }
     fn key_columns(self) -> &'static [usize] {
         match self {
-            Self::AccountSettings | Self::BlobChunks | Self::TaskBlobs | Self::Attachments => {
-                &[0, 1]
-            }
+            Self::AccountSettings => &[0, 1],
             Self::McpServerSecrets | Self::ToolSummaries => &[0, 1, 2],
             _ => &[0],
         }
@@ -119,7 +109,7 @@ impl SalvageTable {
 }
 
 // Derived timeline rows never determine whether authoritative source is readable.
-const TABLES: [SalvageTable; 18] = [
+const TABLES: [SalvageTable; 15] = [
     SalvageTable::StoreMeta,
     SalvageTable::Accounts,
     SalvageTable::Credentials,
@@ -132,10 +122,7 @@ const TABLES: [SalvageTable; 18] = [
     SalvageTable::Tasks,
     SalvageTable::Entries,
     SalvageTable::ToolSummaries,
-    SalvageTable::Blobs,
-    SalvageTable::BlobChunks,
-    SalvageTable::TaskBlobs,
-    SalvageTable::Attachments,
+    SalvageTable::FileAttachments,
     SalvageTable::SendReceipts,
     SalvageTable::RemoteIdentities,
 ];
@@ -161,7 +148,6 @@ pub enum SalvageRowKey {
 #[serde(rename_all = "snake_case")]
 pub enum SalvageReason {
     UnreadableTask,
-    InvalidBlob,
     OrphanedRow,
 }
 
@@ -225,7 +211,6 @@ impl From<LifecycleError> for SalvageError {
 struct Scan {
     preview: SalvagePreview,
     bad_tasks: BTreeSet<i64>,
-    bad_blobs: BTreeSet<i64>,
 }
 
 impl Store {
@@ -376,27 +361,6 @@ fn scan(source: &Connection) -> StoreResult<Scan> {
         })?;
     }
     validate_metadata(source)?;
-    let has_deleted_tasks: bool = source.query_row(
-        "SELECT EXISTS(SELECT 1 FROM tasks NOT INDEXED WHERE deleted_ms IS NOT NULL)",
-        [],
-        |row| row.get(0),
-    )?;
-    let mut bad_blobs = BTreeSet::new();
-    walk(source, SalvageTable::Blobs, |row, _| {
-        let id = row.get(0)?;
-        // A task collector can leave an incomplete blob while deleting its
-        // chunks. Preserve that hidden, resumable state rather than reporting
-        // already requested deletion as new corruption loss. Any live or
-        // orphan ownership still requires full payload validation.
-        // Do the ownership scan only for invalid payloads, avoiding extra
-        // whole-link scans for the normal complete-blob case.
-        if !valid_blob(source, row)?
-            && !(has_deleted_tasks && blob_has_only_deleted_owners(source, id)?)
-        {
-            insert_bad(&mut bad_blobs, id)?;
-        }
-        Ok(())
-    })?;
     let mut bad_tasks = BTreeSet::new();
     walk(source, SalvageTable::Tasks, |row, _| {
         let id = row.get(0)?;
@@ -405,37 +369,18 @@ fn scan(source: &Connection) -> StoreResult<Scan> {
         }
         Ok(())
     })?;
-    for table in [SalvageTable::TaskBlobs, SalvageTable::Attachments] {
-        walk(source, table, |row, _| {
-            let task = row.get(0)?;
-            let blob = row.get(if table == SalvageTable::TaskBlobs {
-                1
-            } else {
-                2
-            })?;
-            let deleted = task_is_deleted(source, task)?;
-            let blob_exists = exists(source, "blobs", blob)?;
-            if deleted && !blob_exists {
-                // Normal collection removes a final link and its blob in one
-                // transaction. A broken FK is additional source corruption,
-                // not proof that this hidden ownership was fully collected.
-                return Err(StoreError::InvalidData);
-            }
-            if !deleted && (bad_blobs.contains(&blob) || !blob_exists) {
-                insert_bad(&mut bad_tasks, task)?;
-            }
-            Ok(())
-        })?;
-    }
     // An orphan source row is still enumerated and explicitly reported.
     for table in [
         SalvageTable::Entries,
         SalvageTable::ToolSummaries,
-        SalvageTable::TaskBlobs,
-        SalvageTable::Attachments,
+        SalvageTable::FileAttachments,
     ] {
         walk(source, table, |row, _| {
-            let task = row.get(if table == SalvageTable::Entries { 1 } else { 0 })?;
+            let task = row.get(match table {
+                SalvageTable::Entries => 1,
+                SalvageTable::FileAttachments => 2,
+                _ => 0,
+            })?;
             if !exists(source, "tasks", task)? {
                 insert_bad(&mut bad_tasks, task)?;
             }
@@ -456,10 +401,7 @@ fn scan(source: &Connection) -> StoreResult<Scan> {
             if table == SalvageTable::StoreMeta {
                 return Ok(());
             }
-            if discard_deleted_blob_link(source, table, row, &bad_blobs)? {
-                return Ok(());
-            }
-            if let Some(reason) = drop_reason(source, table, row, &bad_tasks, &bad_blobs)? {
+            if let Some(reason) = drop_reason(table, row, &bad_tasks)? {
                 if report.dropped_rows.len() >= MAX_LOSS_ROWS {
                     return Err(StoreError::InvalidInput);
                 }
@@ -494,7 +436,6 @@ fn scan(source: &Connection) -> StoreResult<Scan> {
             fingerprint: fingerprint.finalize().into(),
         },
         bad_tasks,
-        bad_blobs,
     })
 }
 
@@ -514,6 +455,10 @@ fn validate_metadata(source: &Connection) -> StoreResult<()> {
             return Err(StoreError::InvalidData);
         }
     }
+    if source.query_row(
+        "SELECT EXISTS(SELECT 1 FROM file_attachments a LEFT JOIN tasks t ON t.id=a.task_id LEFT JOIN accounts owner ON owner.id=a.account_id WHERE owner.id IS NULL OR (t.id IS NOT NULL AND t.account_id<>a.account_id))",
+        [], |row| row.get::<_, bool>(0),
+    )? { return Err(StoreError::InvalidData); }
     // The all-table pragma would also read the disposable derived timeline.
     // Scope each check to owned authoritative tables, keeping every other
     // metadata FK refusal unchanged.
@@ -527,9 +472,7 @@ fn validate_metadata(source: &Connection) -> StoreResult<()> {
                 SalvageTable::Tasks
                     | SalvageTable::Entries
                     | SalvageTable::ToolSummaries
-                    | SalvageTable::BlobChunks
-                    | SalvageTable::TaskBlobs
-                    | SalvageTable::Attachments
+                    | SalvageTable::FileAttachments
             ) {
                 return Err(StoreError::InvalidData);
             }
@@ -697,14 +640,20 @@ fn valid_images(
     };
     let mut moved = false;
     for block in content.into_iter().flatten() {
-        if let Content::Image(image) = block
-            && let Some(marker) = image.data.strip_prefix("maple-blob:")
-        {
-            moved = true;
-            let Some(blob) = marker.parse::<i64>().ok().filter(|id| *id > 0) else {
+        if let Content::Image(image) = block {
+            if image.data == "maple-attachment-unavailable:retired" {
+                continue;
+            }
+            let Some(id) = image.data.strip_prefix("maple-attachment://") else {
                 return Ok(false);
             };
-            if !task_has_blob(source, task, blob)? {
+            moved = true;
+            if id.len() != 32
+                || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !source.query_row(TASK_HAS_ATTACHMENT_SQL, params![task, id], |row| {
+                    row.get::<_, bool>(0)
+                })?
+            {
                 return Ok(false);
             }
         }
@@ -712,97 +661,18 @@ fn valid_images(
     Ok(moved == (flags & 1 != 0))
 }
 
-const TASK_HAS_BLOB_SQL: &str = "SELECT EXISTS(SELECT 1 FROM task_blobs INDEXED BY sqlite_autoindex_task_blobs_1 WHERE task_id=?1 AND blob_id=?2)";
-
-fn task_has_blob(source: &Connection, task: i64, blob: i64) -> StoreResult<bool> {
-    Ok(source.query_row(TASK_HAS_BLOB_SQL, params![task, blob], |row| row.get(0))?)
-}
-
-fn valid_blob(source: &Connection, row: &Row<'_>) -> StoreResult<bool> {
-    let id: i64 = row.get(0)?;
-    let expected: Vec<u8> = row.get(1)?;
-    let size: i64 = row.get(3)?;
-    let complete: i64 = row.get(4)?;
-    if size < 0 || expected.len() != 32 || complete != 1 {
-        return Ok(false);
-    }
-    let mut hash = Sha256::new();
-    let mut length = 0_i64;
-    let mut next = 0_i64;
-    let mut statement = source
-        .prepare("SELECT idx,data FROM blob_chunks NOT INDEXED WHERE blob_id=?1 ORDER BY idx")?;
-    let mut chunks = statement.query([id])?;
-    while let Some(row) = chunks.next()? {
-        let index: i64 = row.get(0)?;
-        let data: Vec<u8> = row.get(1)?;
-        let remaining = size.saturating_sub(length);
-        let expected_length = remaining.min(crate::store::blobs::BLOB_CHUNK_BYTES as i64);
-        if index != next || data.len() as i64 != expected_length || expected_length <= 0 {
-            return Ok(false);
-        }
-        hash.update(&data);
-        length += data.len() as i64;
-        next += 1;
-    }
-    let actual: [u8; 32] = hash.finalize().into();
-    Ok(length == size && actual.as_slice() == expected)
-}
-
-fn task_is_deleted(source: &Connection, task: i64) -> StoreResult<bool> {
-    Ok(source.query_row(
-        "SELECT EXISTS(SELECT 1 FROM tasks NOT INDEXED WHERE id=?1 AND deleted_ms IS NOT NULL)",
-        [task],
-        |row| row.get(0),
-    )?)
-}
-
-fn blob_has_only_deleted_owners(source: &Connection, blob: i64) -> StoreResult<bool> {
-    // Both link scans name the WITHOUT ROWID primary tree. Missing task rows
-    // are not proof of deletion, and shared live ownership must stay validated.
-    Ok(source.query_row(
-        "SELECT (EXISTS(SELECT 1 FROM task_blobs INDEXED BY sqlite_autoindex_task_blobs_1 WHERE blob_id=?1)
-             OR EXISTS(SELECT 1 FROM attachments INDEXED BY sqlite_autoindex_attachments_1 WHERE blob_id=?1))
-         AND NOT EXISTS(SELECT 1 FROM task_blobs AS link INDEXED BY sqlite_autoindex_task_blobs_1
-             LEFT JOIN tasks AS task NOT INDEXED ON task.id=link.task_id
-             WHERE link.blob_id=?1 AND (task.id IS NULL OR task.deleted_ms IS NULL))
-         AND NOT EXISTS(SELECT 1 FROM attachments AS link INDEXED BY sqlite_autoindex_attachments_1
-             LEFT JOIN tasks AS task NOT INDEXED ON task.id=link.task_id
-             WHERE link.blob_id=?1 AND (task.id IS NULL OR task.deleted_ms IS NULL))",
-        [blob],
-        |row| row.get(0),
-    )?)
-}
-
-fn discard_deleted_blob_link(
-    source: &Connection,
-    table: SalvageTable,
-    row: &Row<'_>,
-    bad_blobs: &BTreeSet<i64>,
-) -> StoreResult<bool> {
-    let blob_column = match table {
-        SalvageTable::TaskBlobs => 1,
-        SalvageTable::Attachments => 2,
-        _ => return Ok(false),
-    };
-    let blob = row.get(blob_column)?;
-    // A shared corrupt blob is omitted for its live owners. Its hidden owner
-    // keeps its tombstone/history, but cannot retain an FK to the omitted blob.
-    // That link removal is already authorized deletion, not a new loss row.
-    Ok(bad_blobs.contains(&blob) && task_is_deleted(source, row.get(0)?)?)
-}
+const TASK_HAS_ATTACHMENT_SQL: &str = "SELECT EXISTS(SELECT 1 FROM file_attachments NOT INDEXED WHERE task_id=?1 AND public_id=?2 AND state='ready')";
 
 fn drop_reason(
-    source: &Connection,
     table: SalvageTable,
     row: &Row<'_>,
     tasks: &BTreeSet<i64>,
-    blobs: &BTreeSet<i64>,
 ) -> StoreResult<Option<SalvageReason>> {
-    use SalvageTable::*;
     let task_column = match table {
-        Tasks => Some(0),
-        Entries => Some(1),
-        ToolSummaries | TaskBlobs | Attachments => Some(0),
+        SalvageTable::Tasks => Some(0),
+        SalvageTable::Entries => Some(1),
+        SalvageTable::ToolSummaries => Some(0),
+        SalvageTable::FileAttachments => Some(2),
         _ => None,
     };
     if let Some(column) = task_column {
@@ -811,20 +681,11 @@ fn drop_reason(
             return Ok(Some(SalvageReason::UnreadableTask));
         }
     }
-    if matches!(table, Blobs | BlobChunks) {
-        let id = row.get(0)?;
-        if blobs.contains(&id) {
-            return Ok(Some(SalvageReason::InvalidBlob));
-        }
-        if table == BlobChunks && !exists(source, "blobs", id)? {
-            return Ok(Some(SalvageReason::OrphanedRow));
-        }
-    }
     Ok(None)
 }
 
 fn copy_rows(source: &Connection, destination: &mut Connection, scan: &Scan) -> StoreResult<()> {
-    // FK order differs from DDL order because task blob links follow blobs.
+    // Copy authoritative metadata after its account/task owners.
     let order = [
         SalvageTable::Accounts,
         SalvageTable::Credentials,
@@ -837,10 +698,7 @@ fn copy_rows(source: &Connection, destination: &mut Connection, scan: &Scan) -> 
         SalvageTable::Tasks,
         SalvageTable::Entries,
         SalvageTable::ToolSummaries,
-        SalvageTable::Blobs,
-        SalvageTable::BlobChunks,
-        SalvageTable::TaskBlobs,
-        SalvageTable::Attachments,
+        SalvageTable::FileAttachments,
         SalvageTable::SendReceipts,
         SalvageTable::RemoteIdentities,
     ];
@@ -848,9 +706,7 @@ fn copy_rows(source: &Connection, destination: &mut Connection, scan: &Scan) -> 
     for table in order {
         let mut insert = None;
         walk(source, table, |row, columns| {
-            if discard_deleted_blob_link(source, table, row, &scan.bad_blobs)?
-                || drop_reason(source, table, row, &scan.bad_tasks, &scan.bad_blobs)?.is_some()
-            {
+            if drop_reason(table, row, &scan.bad_tasks)?.is_some() {
                 return Ok(());
             }
             let mut values = (0..columns)

@@ -4,14 +4,14 @@
 use std::sync::Arc;
 
 use gpui::{Context, Div, IntoElement, SharedString, Window, div, prelude::*, px};
-use maple_agent::agent::{AgentSlashCommand, RecentProjectRoot, SideQuestionTurn};
+use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
-    COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftImage, OpenSettingsSection,
-    ROOT_MENU_RECENTS, SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
+    COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
+    SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
@@ -60,46 +60,146 @@ pub(super) fn catalog_model_labels(
         .collect()
 }
 
-/// Recent projects for the header menu. The default Maple workspace stays
-/// listed even when it sits past the recent cap.
-fn header_project_paths(recent_roots: &[RecentProjectRoot]) -> Vec<String> {
-    let mut paths: Vec<String> = recent_roots
-        .iter()
-        .take(ROOT_MENU_RECENTS)
-        .map(|root| root.path.clone())
-        .collect();
-    if let Some(workspace) = recent_roots.iter().find(|root| root.is_default_workspace)
-        && !paths.iter().any(|path| path == &workspace.path)
-    {
-        paths.push(workspace.path.clone());
-    }
-    paths
+/// The composer's button row, left to right. The row renders from this
+/// list and application Vim walks it, so a new control is reachable from
+/// the keyboard once it has an entry here, a rendering, and an action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ComposerControl {
+    Model,
+    Thinking,
+    Integrations,
+    Web,
+    Attachments,
+    Dictate,
+}
+
+impl ComposerControl {
+    const ALL: [Self; 6] = [
+        Self::Model,
+        Self::Thinking,
+        Self::Integrations,
+        Self::Web,
+        Self::Attachments,
+        Self::Dictate,
+    ];
 }
 
 impl ChatScreen {
     pub(super) fn render_header(
         &self,
+        sidebar_expansion: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let title = self.selected_title.clone();
+        let collapsed_progress = 1. - sidebar_expansion;
+        let sidebar_width = super::SIDEBAR_RAIL_WIDTH
+            + (super::SIDEBAR_WIDTH - super::SIDEBAR_RAIL_WIDTH) * sidebar_expansion;
+        // Compensate for the moving pane so the toggle stays beside the
+        // window controls throughout the transition.
+        let toolbar_left = super::SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET - sidebar_width;
+        let toolbar_width = window.rem_size() * 5.75;
+        let header_gap = window.rem_size() * 0.75;
+        let expanded_inset = window.rem_size();
+        let collapsed_inset = SIDEBAR_COLLAPSED_INSET + toolbar_width + header_gap * 2. + px(1.);
+        let inset = expanded_inset + (collapsed_inset - expanded_inset) * collapsed_progress;
         titlebar::drag_region(
             div()
                 .id("chat-header")
+                .debug_selector(|| "chat-header".to_string())
+                .relative()
                 .flex()
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .h(px(40.))
+                .h(super::CHAT_HEADER_HEIGHT)
                 .flex_none()
-                .pl_4()
+                .pl(inset)
                 .pr_3()
-                .when(self.sidebar_collapsed, |row| {
-                    row.pl(SIDEBAR_COLLAPSED_INSET)
-                }),
+                .bg(gpui::rgb(theme::bg_sidebar())),
         )
         .child(
             div()
+                .absolute()
+                .left(toolbar_left)
+                .top((super::CHAT_HEADER_HEIGHT - super::sidebar::TOP_ROW_HEIGHT) / 2.)
+                .flex()
+                .items_center()
+                .gap_1()
+                .children(
+                    [
+                        (
+                            "header-sidebar-toggle",
+                            "panel-left",
+                            "Toggle sidebar",
+                            &super::ToggleSidebar as &dyn gpui::Action,
+                            ChatCommand::ToggleSidebar,
+                            3,
+                        ),
+                        (
+                            "header-search",
+                            "search",
+                            "Search",
+                            &super::FocusSearch,
+                            ChatCommand::FocusSearch,
+                            4,
+                        ),
+                        (
+                            "header-new-task",
+                            "square-pen",
+                            "New task",
+                            &super::NewTask,
+                            ChatCommand::NewTask,
+                            5,
+                        ),
+                    ]
+                    .into_iter()
+                    .filter(|(_, _, _, _, command, _)| {
+                        collapsed_progress > 0. || !matches!(command, ChatCommand::NewTask)
+                    })
+                    .map(|(id, name, label, action, command, tab_index)| {
+                        widgets::icon_button_for_action(
+                            id,
+                            name,
+                            label,
+                            px(16.),
+                            theme::text_secondary(),
+                            action,
+                        )
+                        .debug_selector(move || id.to_string())
+                        .tab_index(tab_index)
+                        .when(matches!(command, ChatCommand::NewTask), |button| {
+                            button
+                                .opacity(collapsed_progress)
+                                .tab_stop(self.sidebar_collapsed)
+                        })
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(Self::sidebar_button_key_down)
+                        .on_click(cx.listener(
+                            move |this, _event, window, cx| {
+                                this.execute_command(command, window, cx);
+                            },
+                        ))
+                    }),
+                ),
+        )
+        .when(collapsed_progress > 0., |row| {
+            row.child(
+                div()
+                    .absolute()
+                    .left(toolbar_left + toolbar_width + header_gap)
+                    .top((super::CHAT_HEADER_HEIGHT - window.rem_size()) / 2.)
+                    .w(px(1.))
+                    .h_4()
+                    .opacity(collapsed_progress)
+                    .bg(gpui::rgb(theme::border())),
+            )
+        })
+        .child(
+            div()
+                .debug_selector(|| "header-title".to_string())
                 // Sized by its text, like the chips: nowrap gives it a
                 // real intrinsic width (a clamped, shrinkable title
                 // measured as 0 px and vanished). The cap keeps a long
@@ -189,19 +289,232 @@ impl ChatScreen {
         }
     }
 
-    /// The header chip's menu: recent projects, then the shared folder chooser.
+    /// The controls the row shows now, in order.
+    pub(super) fn composer_controls(&self) -> impl Iterator<Item = ComposerControl> + '_ {
+        ComposerControl::ALL
+            .into_iter()
+            .filter(|control| match control {
+                ComposerControl::Dictate => self.audio_caps.transcription,
+                _ => true,
+            })
+    }
+
+    /// Press `control` from the keyboard, as a click would. A menu opens on
+    /// its current choice, the way a native popup button does.
+    pub(super) fn activate_composer_control(
+        &mut self,
+        control: ComposerControl,
+        cx: &mut Context<Self>,
+    ) {
+        match control {
+            ComposerControl::Model => match self.selected_model.clone() {
+                Some(model) => {
+                    self.popup
+                        .open_highlighted(ChatPopup::Model, format!("model-{model}"), cx)
+                }
+                None => self.popup.open(ChatPopup::Model, cx),
+            },
+            ComposerControl::Thinking => match self.thinking.as_ref().map(|state| state.current) {
+                Some(level) => self.popup.open_highlighted(
+                    ChatPopup::Thinking,
+                    format!("thinking-{}", level.as_str()),
+                    cx,
+                ),
+                None => self.popup.open(ChatPopup::Thinking, cx),
+            },
+            ComposerControl::Integrations => {
+                self.popup.open(ChatPopup::Integrations, cx);
+                self.refresh_session_mcp(cx);
+            }
+            ComposerControl::Web => {
+                let next = !self.web_enabled;
+                self.set_web_enabled(next, cx);
+            }
+            ComposerControl::Attachments => self.pick_attachments(cx),
+            ComposerControl::Dictate => self.toggle_recording(cx),
+        }
+    }
+
+    /// One control of the button row, underlined while application Vim has
+    /// it selected.
+    fn render_composer_control(
+        &self,
+        control: ComposerControl,
+        selected: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let element = match control {
+            ComposerControl::Model => {
+                let label = self
+                    .selected_model
+                    .as_deref()
+                    .map(|model| self.model_label(model))
+                    .unwrap_or("Model")
+                    .to_string();
+                self.with_menu(
+                    ChatPopup::Model,
+                    chip(
+                        "model-picker",
+                        self.model_locked.then_some("lock"),
+                        label,
+                        true,
+                        self.popup.is_open(&ChatPopup::Model),
+                        false,
+                    ),
+                    Placement::AboveStart,
+                    window,
+                    cx,
+                    |this, _| this.model_menu(),
+                )
+            }
+            ComposerControl::Thinking => self.with_menu(
+                ChatPopup::Thinking,
+                widgets::icon_button(
+                    "thinking-picker",
+                    "brain",
+                    "Thinking",
+                    px(16.),
+                    theme::text_secondary(),
+                )
+                .size_8()
+                .debug_selector(|| "thinking-picker".to_string())
+                .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
+                    button.bg(gpui::rgb(theme::bg_sidebar_pill()))
+                }),
+                Placement::AboveStart,
+                window,
+                cx,
+                |this, _| this.thinking_menu(),
+            ),
+            ComposerControl::Integrations => self.with_menu(
+                ChatPopup::Integrations,
+                chip(
+                    "mcp-menu",
+                    Some("puzzle"),
+                    match self.mcp_enabled_count {
+                        0 => "Integrations".to_string(),
+                        1 => "1 integration".to_string(),
+                        count => format!("{count} integrations"),
+                    },
+                    false,
+                    self.popup.is_open(&ChatPopup::Integrations),
+                    false,
+                ),
+                Placement::AboveStart,
+                window,
+                cx,
+                |this, _| this.integrations_menu(),
+            ),
+            ComposerControl::Web => div().child(
+                chip(
+                    "web-toggle",
+                    Some("globe"),
+                    if self.web_enabled { "Web" } else { "Web off" }.to_string(),
+                    false,
+                    false,
+                    self.web_enabled,
+                )
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.activate_composer_control(ComposerControl::Web, cx);
+                })),
+            ),
+            ComposerControl::Attachments => div().child(
+                div()
+                    .id("add-attachments")
+                    .size_8()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::RADIUS_SM)
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::accent_container()))
+                            .cursor_pointer()
+                    })
+                    .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
+                    .when(self.attachment_picking, |el| el.opacity(0.5))
+                    .tooltip(widgets::tooltip("Attach files or images", None))
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.activate_composer_control(ComposerControl::Attachments, cx);
+                    }))
+                    .child(icon("paperclip", px(16.), theme::text_secondary())),
+            ),
+            ComposerControl::Dictate => {
+                let recording = self.recording;
+                let transcribing = self.transcribing;
+                div().child(
+                    div()
+                        .id("record-voice")
+                        .size_8()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(theme::RADIUS_SM)
+                        .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
+                        .hover(|style| {
+                            style
+                                .bg(gpui::rgb(theme::accent_container()))
+                                .cursor_pointer()
+                        })
+                        .when(transcribing, |el| el.opacity(0.5))
+                        .tooltip(widgets::tooltip(
+                            if recording {
+                                "Stop recording"
+                            } else {
+                                "Dictate"
+                            },
+                            None,
+                        ))
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.activate_composer_control(ComposerControl::Dictate, cx);
+                        }))
+                        .child(if transcribing {
+                            spinner("transcribing", px(16.), theme::text_secondary())
+                        } else if recording {
+                            icon("square", px(14.), theme::on_accent()).into_any_element()
+                        } else {
+                            icon("mic", px(16.), theme::text_secondary()).into_any_element()
+                        }),
+                )
+            }
+        };
+        // The accent bar is the application Vim selection mark, as on
+        // sidebar and transcript rows; under a chip it sits along the
+        // bottom without changing the row's layout.
+        element
+            .relative()
+            .when(selected, |element| {
+                element.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_1()
+                        .right_1()
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(gpui::rgb(theme::accent())),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The header chip's menu: every project, most recent first, then the
+    /// shared folder chooser. A long list scrolls.
     fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
         let mut menu = Menu::new("project-menu", px(480.))
             .label("Projects")
+            .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
         if self.computers.len() > 1 {
             return self.computers_project_menu();
         }
-        let projects = header_project_paths(&self.recent_roots)
-            .into_iter()
-            .map(|path| {
-                let label = self.sidebar.read(cx).root_name(&path);
-                (path, label)
+        let projects = self
+            .recent_roots
+            .iter()
+            .map(|root| {
+                let label = self.sidebar.read(cx).root_name(&root.path);
+                (root.path.clone(), label)
             })
             .collect::<Vec<_>>();
         for (path, label) in &projects {
@@ -748,14 +1061,14 @@ impl ChatScreen {
             "Sending…"
         };
         let has_text = self.composer_has_text;
-        let has_images = !self.draft_images.is_empty();
-        let images_ready = self.draft_images.iter().all(DraftImage::ready);
-        let can_send = !disabled && images_ready && (has_text || has_images);
+        let has_attachments = !self.draft_attachments.is_empty();
+        let attachments_ready = self.draft_attachments.iter().all(DraftAttachment::ready);
+        let can_send = !disabled && attachments_ready && (has_text || has_attachments);
         // One control. Stop only while a run is active and nothing is
-        // waiting to send. Text, or an image that is still encoding,
+        // waiting to send. Text, or an file that is still being prepared,
         // turns it back into Send, which queues behind the run.
-        let drafting = has_text || has_images;
-        let show_stop = running && !disabled && !drafting;
+        let drafting = has_text || has_attachments;
+        let show_stop = running && !self.booting && !pending_create && !drafting;
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
         let composer = self.composer.clone();
@@ -766,6 +1079,7 @@ impl ChatScreen {
                 let label = match status.mode {
                     VimMode::Normal => "NORMAL",
                     VimMode::Insert => "INSERT",
+                    VimMode::Visual if status.visual_linewise => "VISUAL LINE",
                     VimMode::Visual => "VISUAL",
                     VimMode::Disabled => return None,
                 };
@@ -800,14 +1114,17 @@ impl ChatScreen {
                         )
                     })
             });
-        let mcp_enabled = self.mcp_enabled_count;
-        let drafts = &self.draft_images;
-        let model_label = self
-            .selected_model
-            .as_deref()
-            .map(|model| self.model_label(model))
-            .unwrap_or("Model")
-            .to_string();
+        let selected_control = self.application_vim_selected_control(window);
+        let controls = self
+            .composer_controls()
+            .map(|control| {
+                self.render_composer_control(control, selected_control == Some(control), window, cx)
+            })
+            .collect::<Vec<_>>();
+        let drafts = &self.draft_attachments;
+        let upload = self
+            .selected_upload()
+            .map(|(id, upload)| (id.to_string(), upload.label.clone()));
         div()
             .w_full()
             .flex()
@@ -822,7 +1139,7 @@ impl ChatScreen {
             .when(disabled, |container| {
                 container.border_color(gpui::rgb(theme::border()))
             })
-            // Files dragged from the desktop land as image attachments.
+            // Native files are copied locally before any execution-side upload.
             .can_drop(|dragged, _window, _cx| {
                 dragged.downcast_ref::<gpui::ExternalPaths>().is_some()
             })
@@ -834,38 +1151,92 @@ impl ChatScreen {
             })
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
-                    this.add_image_paths(paths.paths().to_vec(), cx);
+                    this.add_attachment_paths(paths.paths().to_vec(), cx);
                 }),
             )
             .children(queue_chips)
+            .when_some(upload, |container, (id, label)| {
+                container.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_4()
+                        .pt_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child(label),
+                        )
+                        .child(
+                            widgets::secondary_button("cancel-attachment-upload")
+                                .text_xs()
+                                .child("Cancel")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cancel_attachment_send(&id, cx)
+                                })),
+                        ),
+                )
+            })
             .when(!drafts.is_empty(), |container| {
                 container.child(div().flex().flex_wrap().gap_2().px_4().pt_4().children(
-                    drafts.iter().enumerate().map(|(index, image)| {
+                    drafts.iter().map(|attachment| {
+                        let id = attachment.id;
                         div()
                             .relative()
-                            .size_16()
+                            .max_w(px(260.))
+                            .h_16()
                             .rounded(theme::RADIUS_LG)
                             .border_1()
                             .border_color(gpui::rgb(theme::border()))
                             .bg(gpui::rgb(theme::bg_elevated()))
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .map(|frame| match &image.thumbnail {
-                                // The thumbnail is already a square crop, so
-                                // it fills the frame and the corners round.
-                                Some(thumbnail) => frame.child(
+                            .gap_2()
+                            .pr_4()
+                            .child(match &attachment.thumbnail {
+                                Some(thumbnail) => div().size_16().flex_none().child(
                                     gpui::img(gpui::ImageSource::Image(Arc::clone(thumbnail)))
                                         .size_full()
                                         .rounded(theme::RADIUS_LG),
                                 ),
-                                None => {
-                                    frame.child(icon("image", px(20.), theme::text_secondary()))
-                                }
+                                None => div()
+                                    .size_12()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon(
+                                        if attachment.mime_type.starts_with("image/") {
+                                            "image"
+                                        } else {
+                                            "paperclip"
+                                        },
+                                        px(20.),
+                                        theme::text_secondary(),
+                                    )),
                             })
                             .child(
                                 div()
-                                    .id(gpui::SharedString::from(format!("draft-remove-{index}")))
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div().truncate().text_sm().child(attachment.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(gpui::rgb(theme::text_muted()))
+                                            .child(attachment.detail.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id(gpui::SharedString::from(format!("draft-remove-{id}")))
                                     .absolute()
                                     .top(px(-4.))
                                     .right(px(-4.))
@@ -879,10 +1250,7 @@ impl ChatScreen {
                                     .border_color(gpui::rgb(theme::border()))
                                     .hover(|style| style.cursor_pointer())
                                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                                        if index < this.draft_images.len() {
-                                            this.draft_images.remove(index);
-                                        }
-                                        cx.notify();
+                                        this.remove_attachment(id, cx);
                                     }))
                                     .child(icon("x", px(10.), theme::text_primary())),
                             )
@@ -947,136 +1315,7 @@ impl ChatScreen {
                     .pb_2()
                     .pt_1()
                     .debug_selector(|| "composer-chips".to_string())
-                    .child(self.with_menu(
-                        ChatPopup::Model,
-                        chip(
-                            "model-picker",
-                            self.model_locked.then_some("lock"),
-                            model_label,
-                            true,
-                            self.popup.is_open(&ChatPopup::Model),
-                            false,
-                        ),
-                        Placement::AboveStart,
-                        window,
-                        cx,
-                        |this, _| this.model_menu(),
-                    ))
-                    .child(
-                        self.with_menu(
-                            ChatPopup::Thinking,
-                            widgets::icon_button(
-                                "thinking-picker",
-                                "brain",
-                                "Thinking",
-                                px(16.),
-                                theme::text_secondary(),
-                            )
-                            .size_8()
-                            .debug_selector(|| "thinking-picker".to_string())
-                            .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
-                                button.bg(gpui::rgb(theme::bg_sidebar_pill()))
-                            }),
-                            Placement::AboveStart,
-                            window,
-                            cx,
-                            |this, _| this.thinking_menu(),
-                        ),
-                    )
-                    .child(self.with_menu(
-                        ChatPopup::Integrations,
-                        chip(
-                            "mcp-menu",
-                            Some("puzzle"),
-                            match mcp_enabled {
-                                0 => "Integrations".to_string(),
-                                1 => "1 integration".to_string(),
-                                count => format!("{count} integrations"),
-                            },
-                            false,
-                            self.popup.is_open(&ChatPopup::Integrations),
-                            false,
-                        ),
-                        Placement::AboveStart,
-                        window,
-                        cx,
-                        |this, _| this.integrations_menu(),
-                    ))
-                    .child(
-                        chip(
-                            "web-toggle",
-                            Some("globe"),
-                            if self.web_enabled { "Web" } else { "Web off" }.to_string(),
-                            false,
-                            false,
-                            self.web_enabled,
-                        )
-                        .on_click(cx.listener(
-                            |this, _event, _window, cx| {
-                                let next = !this.web_enabled;
-                                this.set_web_enabled(next, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        div()
-                            .id("add-images")
-                            .size_8()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(theme::RADIUS_SM)
-                            .hover(|style| {
-                                style
-                                    .bg(gpui::rgb(theme::accent_container()))
-                                    .cursor_pointer()
-                            })
-                            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
-                            .when(self.image_picking, |el| el.opacity(0.5))
-                            .tooltip(widgets::tooltip("Attach images", None))
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.pick_images(cx);
-                            }))
-                            .child(icon("image", px(16.), theme::text_secondary())),
-                    )
-                    .when(self.audio_caps.transcription, |row| {
-                        let recording = self.recording;
-                        let transcribing = self.transcribing;
-                        row.child(
-                            div()
-                                .id("record-voice")
-                                .size_8()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(theme::RADIUS_SM)
-                                .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
-                                .hover(|style| {
-                                    style
-                                        .bg(gpui::rgb(theme::accent_container()))
-                                        .cursor_pointer()
-                                })
-                                .when(transcribing, |el| el.opacity(0.5))
-                                .tooltip(widgets::tooltip(
-                                    if recording {
-                                        "Stop recording"
-                                    } else {
-                                        "Dictate"
-                                    },
-                                    None,
-                                ))
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_recording(cx);
-                                }))
-                                .child(if transcribing {
-                                    spinner("transcribing", px(16.), theme::text_secondary())
-                                } else if recording {
-                                    icon("square", px(14.), theme::on_accent()).into_any_element()
-                                } else {
-                                    icon("mic", px(16.), theme::text_secondary()).into_any_element()
-                                }),
-                        )
-                    })
+                    .children(controls)
                     .children(vim_badge)
                     .when(disabled, |row| {
                         row.child(
@@ -1266,7 +1505,7 @@ fn chip(
 
 #[cfg(test)]
 mod tests {
-    use super::{RecentProjectRoot, catalog_model_labels, header_project_paths};
+    use super::catalog_model_labels;
 
     #[test]
     fn model_labels_follow_research_catalog_precedence() {
@@ -1293,40 +1532,5 @@ mod tests {
         assert_eq!(labels["alias-a"], "Alias");
         assert_eq!(labels["alias-b"], "Automatic");
         assert_eq!(labels["alias-c"], "alias-c");
-    }
-
-    #[test]
-    fn the_header_keeps_the_owners_default_workspace_past_the_recent_cap() {
-        // The owner can redirect Documents. Neither its name nor path shape
-        // tells a controller which project is the built-in workspace.
-        for path in ["/mnt/personal/Maple", r"D:\Documents Redirected\Maple"] {
-            let mut roots: Vec<RecentProjectRoot> = (0..8)
-                .map(|index| RecentProjectRoot {
-                    path: format!("/tmp/project-{index}"),
-                    name: format!("Project {index}"),
-                    last_used_ms: 0,
-                    is_default_workspace: false,
-                    name_revision: 0,
-                })
-                .collect();
-            roots.push(RecentProjectRoot {
-                path: path.into(),
-                name: "My workspace".into(),
-                last_used_ms: 0,
-                is_default_workspace: true,
-                name_revision: 4,
-            });
-            roots.push(RecentProjectRoot {
-                path: "/archive/Documents/Maple".into(),
-                name: "Maple".into(),
-                last_used_ms: 0,
-                is_default_workspace: false,
-                name_revision: 0,
-            });
-            let shown = header_project_paths(&roots);
-            assert!(shown.iter().any(|root| root == path));
-            assert!(!shown.iter().any(|root| root == "/archive/Documents/Maple"));
-            assert!(shown.len() > 6);
-        }
     }
 }

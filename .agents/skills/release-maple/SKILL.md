@@ -19,8 +19,9 @@ commit, external effect, and authority provided by the user.
   number. Its master-only manual dispatch forces a fresh build even without
   app changes. After a duplicate-build rejection, dispatch this full workflow
   from master; retrying only submission reuses the rejected IPA's build number.
-- The independent `Maple Dev TestFlight` workflow also builds every master
-  push and uploads the distinct `cloud.opensecret.maple.dev` application for
+- The independent `Maple Dev TestFlight` workflow builds master pushes that
+  change Research web or iOS inputs, and every master dispatch, and uploads the
+  distinct `cloud.opensecret.maple.dev` application for
   internal testing against the existing development services. Manual dispatch
   accepts master only. Its app identity, credentials, artifact verification,
   internal group setup, and retry contract are documented in
@@ -128,9 +129,10 @@ head_sha="$(printf '%s' "$preflight" | jq -r .head_sha)"
 
 The script requires a clean current `master`, exact manifest version parity, a
 newer version and unused tag, and successful executed master CI jobs.
-CodeQL must run on the exact release commit; canonical master push, nightly,
-or manual CodeQL runs qualify. If the nightly scan has not covered that commit,
-run CodeQL manually from master before preflight. Other workflows still require
+CodeQL must not be red: the newest finished CodeQL run (master push, nightly or
+manual) on the release commit or an ancestor must have succeeded. A scan still
+running does not block the release. If the newest finished scan failed, fix it
+or re-run CodeQL from master before preflight. Other workflows still require
 master-push evidence. Research test/build evidence may
 come from an ancestor only when the complete Git tree diff contains exclusively
 independent Agent, documentation, agent guidance, or release-gate test-harness

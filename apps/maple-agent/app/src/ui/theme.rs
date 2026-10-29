@@ -51,6 +51,29 @@ impl Preference {
 
 static PREFERENCE: AtomicU8 = AtomicU8::new(0);
 static LIGHT_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+static SYSTEM_APPEARANCE: AtomicU8 = AtomicU8::new(0);
+
+/// Linux's protected GUI cannot query the portal itself. The credential-free
+/// helper supplies this value; native appearance remains the fallback.
+#[cfg(target_os = "linux")]
+pub fn set_system_appearance(appearance: gpui::WindowAppearance) {
+    SYSTEM_APPEARANCE.store(
+        if appearance_is_light(appearance) {
+            2
+        } else {
+            1
+        },
+        Ordering::Relaxed,
+    );
+}
+
+fn appearance_is_light(appearance: gpui::WindowAppearance) -> bool {
+    matches!(
+        appearance,
+        gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight
+    )
+}
 
 pub fn set_preference(preference: Preference) {
     PREFERENCE.store(
@@ -88,15 +111,48 @@ pub fn preference() -> Preference {
 /// whether the active palette changed, in which case every view must
 /// render again.
 pub fn resolve(appearance: gpui::WindowAppearance) -> bool {
-    let light = match preference() {
+    #[cfg(target_os = "linux")]
+    let system = match SYSTEM_APPEARANCE.load(Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let system = None;
+    let light = resolved_light(preference(), appearance, system);
+    LIGHT_ACTIVE.swap(light, Ordering::Relaxed) != light
+}
+
+fn resolved_light(
+    preference: Preference,
+    appearance: gpui::WindowAppearance,
+    system: Option<bool>,
+) -> bool {
+    match preference {
         Preference::Dark => false,
         Preference::Light => true,
-        Preference::System => matches!(
-            appearance,
-            gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight
-        ),
-    };
-    LIGHT_ACTIVE.swap(light, Ordering::Relaxed) != light
+        Preference::System => system.unwrap_or_else(|| appearance_is_light(appearance)),
+    }
+}
+
+#[cfg(test)]
+mod system_appearance_tests {
+    use super::*;
+    use gpui::WindowAppearance::{Dark, Light};
+
+    #[test]
+    fn helper_overrides_stale_native_appearance_only_in_system_mode() {
+        assert!(!resolved_light(Preference::System, Light, Some(false)));
+        assert!(resolved_light(Preference::System, Dark, Some(true)));
+        assert!(!resolved_light(Preference::Dark, Light, Some(true)));
+        assert!(resolved_light(Preference::Light, Dark, Some(false)));
+    }
+
+    #[test]
+    fn missing_helper_preserves_native_fallback() {
+        assert!(resolved_light(Preference::System, Light, None));
+        assert!(!resolved_light(Preference::System, Dark, None));
+    }
 }
 
 pub fn is_light() -> bool {
@@ -147,6 +203,8 @@ tokens! {
     // Dark body is Pebble 200 (~12:1 on the well), not Pebble 50, so
     // Regular and SemiBold stay distinct. Headings sit one step brighter.
     text_primary: 0xd1d2dc, 0x171717;
+    /// Sidebar text stays softer than body text in both themes.
+    text_sidebar: 0xbcbdc8, 0x45454b;
     text_heading: 0xe8e8ed, 0x171717;
     text_secondary: 0xbabccb, 0x525252;
     /// Captions. Light sits between neutral-500 and 600: neutral-400 was
@@ -186,6 +244,7 @@ tokens! {
     bg_sidebar_chrome: 0x1e1e24, 0xffffff;
     bg_sidebar_row_hover: 0x32323a, 0xe8e8ed;
     bg_sidebar_row_selected: 0x3a3a44, 0xd1d2dc;
+    bg_sidebar_row_selected_hover: 0x43434e, 0xc5c6d1;
 
     /// Display headings (Array face): pebble-300 on dark, pebble-800 on
     /// light, as the brand kit sets its section titles.

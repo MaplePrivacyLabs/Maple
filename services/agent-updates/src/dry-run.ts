@@ -38,6 +38,18 @@ try {
           bucket_name: "agent-updates-local-dry-run",
         },
       ],
+      d1_databases: [
+        {
+          binding: "DOWNLOAD_DB",
+          database_name: "downloads-local-dry-run",
+          database_id: "00000000-0000-4000-8000-000000000001",
+        },
+      ],
+      queues: {
+        producers: [
+          { binding: "DOWNLOAD_EVENTS", queue: "downloads-local-dry-run" },
+        ],
+      },
     }),
   );
   const result = Bun.spawn(

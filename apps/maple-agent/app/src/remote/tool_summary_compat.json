@@ -1,0 +1,32 @@
+{
+  "legacy_summarize_command": {
+    "id": 7,
+    "method": "summarize_tool_call",
+    "send_id": null,
+    "params": [
+      "account",
+      "task",
+      "Terminal",
+      {
+        "command": "ls"
+      },
+      "main.rs"
+    ]
+  },
+  "peer_info_without_tool_summary_start": {
+    "protocol": {
+      "version": "7.1.0",
+      "capabilities": [
+        "peer_info_v1",
+        "remote_update_install_v1",
+        "remote_update_refresh_v1",
+        "project_folders_v1"
+      ]
+    },
+    "running": {
+      "version": "0.0.9",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "platform": "darwin-aarch64"
+    }
+  }
+}

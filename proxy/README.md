@@ -54,7 +54,7 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
-This checkout prepares proxy `0.4.4`, including `POST /v1/systemone` introduced
+This checkout prepares proxy `0.4.5`, including `POST /v1/systemone` introduced
 in `0.4.2`, with a compatible registry requirement for `maple-sdk`
 starting at `4.0.1`. The published proxy crate in the example above
 predates this Transport V2 update. The standalone binary's lockfile selects its
@@ -587,9 +587,13 @@ environment:
 ### Docker Images & CI/CD
 
 The source lives under [`proxy/`](https://github.com/MaplePrivacyLabs/Maple/tree/master/proxy)
-in the Maple repository. Root, path-scoped workflows run locked Rust checks,
-supply-chain policy, and non-publishing AMD64/ARM64 container builds for proxy
-changes. After every successful stable Maple Release, a separate serialized
+in the Maple repository. The root `ci.yml` workflow runs locked Rust checks
+for proxy changes (lane `proxy`), supply-chain policy when the proxy's
+manifest, lockfile or `deny.toml`, or the Rust SDK manifest, changes
+(`deps-proxy`), and non-publishing container builds: on pull requests only
+when `proxy/Dockerfile` or `.dockerignore` changes (`proxy-container`), and
+on `master` for both architectures whenever container inputs change
+(`proxy-container`, `proxy-container-arm64`). After every successful stable Maple Release, a separate serialized
 publisher compares the checked-in proxy version with the previous stable Maple
 Release and rejects changed container inputs without a version bump. Version
 `0.3.3` remains the explicit unbackfilled migration baseline. A new or missing

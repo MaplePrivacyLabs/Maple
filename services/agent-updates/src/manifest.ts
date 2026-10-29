@@ -29,7 +29,12 @@ export interface ManifestV2 extends ManifestFields {
   artifacts: { "linux-x86_64": Artifact };
   downloads: { "linux-bundle": Artifact };
 }
-export type UpdateManifest = Manifest | ManifestV2;
+export interface ManifestV3 extends ManifestFields {
+  format: "maple-agent-update-v3";
+  artifacts: { "windows-x86_64": Artifact };
+  downloads: { windows: Artifact };
+}
+export type UpdateManifest = Manifest | ManifestV2 | ManifestV3;
 export interface Envelope {
   manifest: string;
   signature: string;
@@ -95,9 +100,11 @@ export function parseManifest(value: unknown): UpdateManifest {
       "artifacts",
       "downloads",
     ]) ||
-    !["maple-agent-update-v1", "maple-agent-update-v2"].includes(
-      value.format as string,
-    ) ||
+    ![
+      "maple-agent-update-v1",
+      "maple-agent-update-v2",
+      "maple-agent-update-v3",
+    ].includes(value.format as string) ||
     value.product !== "maple-agent" ||
     value.channel !== "stable" ||
     typeof value.version !== "string" ||
@@ -133,6 +140,16 @@ export function parseManifest(value: unknown): UpdateManifest {
     )
       throw new Error("invalid Linux bundle manifest");
     return value as unknown as ManifestV2;
+  }
+  if (value.format === "maple-agent-update-v3") {
+    if (
+      !keys(value.artifacts, ["windows-x86_64"]) ||
+      !keys(value.downloads, ["windows"]) ||
+      !artifact(value.artifacts["windows-x86_64"], value.version, ".tar.gz") ||
+      !artifact(value.downloads.windows, value.version, ".exe")
+    )
+      throw new Error("invalid Windows bundle manifest");
+    return value as unknown as ManifestV3;
   }
   // Keep the shipped v1 target/path rules, including optional AppImages.
   if (

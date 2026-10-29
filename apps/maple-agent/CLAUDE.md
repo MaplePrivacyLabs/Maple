@@ -19,11 +19,13 @@ and release verification together when changing the compiled Auth destination.
 
 ## Build, test, run
 
-`just` lists the recipes. `just ci` runs the same checks as CI (format,
-clippy with `-D warnings` for every feature set, tests). Run it before a
+`just` lists the recipes. `just ci` runs the checks of CI's Agent lanes
+together (format, clippy with `-D warnings` for every feature set, tests); root
+`just lane <id>` runs one lane exactly as CI does. Run `just ci` before a
 commit. The repository pre-commit hook (`.githooks/pre-commit` here) runs
-format, one workspace clippy pass, and the workspace tests when Agent files
-are staged; `MAPLE_HOOK_FULL=1` runs the full `just ci`.
+`just ci-lint` and `just ci-test`, the recipes of CI's `agent-lint` and
+`agent-test` lanes, when Agent files are staged; `MAPLE_HOOK_FULL=1` adds
+`just ci-extra`.
 
 Build and test through `just` or `nix develop` so this checkout shares
 Cargo intermediates with other Agent worktrees
@@ -102,6 +104,17 @@ popup before a nested one). The popup handles the rest:
 
 A text field inside a menu that goes away calls `Popup::refocus`, so the
 menu keeps the keyboard. Menu keys live in the keymap's `Menu` context.
+
+## Ordinary forms and application Vim
+
+Ordinary `TextInput` fields use `.application_vim(enabled)` and an
+`.on_application_escape(...)` handoff, as in the project-folder dialog. They
+keep standard text editing; `.composer_vim(...)` belongs only to the composer.
+Propagate changes to application Vim into open forms. Modal typing must leave
+Chat's composer fallback before its application-navigation handling runs.
+Test forms beneath the real Chat key context with `simulate_keystrokes`,
+including literal `i`, `j`, `k`, and `l`; `simulate_input` alone bypasses the
+key bindings that can steal those characters.
 
 ## Performance
 

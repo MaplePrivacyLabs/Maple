@@ -14,5 +14,4 @@ maple-agent = { path = "../maple-agent", default-features = false, features = ["
 pi-ai = { path = "../pi-ai", default-features = false }
 pi-coding-agent = { path = "../pi-coding-agent" }
 sha2 = "0.10"
-base64 = "0.22"
 tempfile = "3"

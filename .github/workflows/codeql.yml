@@ -1,7 +1,12 @@
-# Nightly security analysis stays outside merge CI; manual runs support releases.
+# Security analysis of every master commit, outside ci-ok. The release preflight
+# (.agents/skills/release-maple/scripts/ci_evidence.py) needs the newest finished
+# scan of the release commit or an ancestor to be green; a scan still running
+# does not block. Runs are grouped per SHA and never cancelled.
 name: CodeQL
 
 on:
+  push:
+    branches: [master]
   schedule:
     - cron: "28 5 * * *"
   workflow_dispatch:
@@ -10,8 +15,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: codeql-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: codeql-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   analyze:

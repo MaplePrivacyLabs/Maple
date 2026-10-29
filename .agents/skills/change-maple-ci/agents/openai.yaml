@@ -1,0 +1,4 @@
+interface:
+  display_name: "Change Maple CI"
+  short_description: "Change, trigger and debug the ci.yml lanes"
+  default_prompt: "Use $change-maple-ci to change, trigger or debug this Maple CI check."

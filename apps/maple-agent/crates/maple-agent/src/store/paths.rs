@@ -82,6 +82,10 @@ impl StorePaths {
         Ok(file)
     }
 
+    pub fn attachments(&self) -> PathBuf {
+        self.root.join("attachments")
+    }
+
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }
@@ -431,6 +435,8 @@ fn filesystem_kind(path: &Path) -> StoreResult<FilesystemKind> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
     let prefix = path.components().next().ok_or(StoreError::UnsafePath)?;
+    // Joining a rooted path keeps the prefix: `C:` -> `C:\`, `\\server\share` -> `\\server\share\`.
+    #[allow(clippy::join_absolute_paths)]
     let root = PathBuf::from(prefix.as_os_str()).join("\\");
     let root: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
     Ok(match unsafe { GetDriveTypeW(root.as_ptr()) } {

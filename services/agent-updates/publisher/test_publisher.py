@@ -32,6 +32,7 @@ MACOS_METADATA = (
     "macos-manifest.json", "macos-notarization-log.json", "provenance.json",
 )
 LINUX_METADATA = ("linux-SHA256SUMS", "linux-build-info.json", "linux-manifest.json")
+WINDOWS_METADATA = ("windows-SHA256SUMS", "windows-build-info.json", "windows-manifest.json")
 
 
 def synthetic_envelope(manifest):
@@ -147,6 +148,14 @@ class FixtureOrigin:
             if path == "/download/agent/stable/linux" and method == "GET":
                 return FakeResponse(b"", status=302, headers={"Location": linux["downloads"]["linux-bundle"]["path"]})
             records += list(linux["artifacts"].values())
+        windows_path = self.bundle / "windows-manifest.json"
+        if windows_path.exists():
+            windows = publisher.validate_manifest(windows_path.read_bytes())
+            if path in {"/agent/stable/windows/latest.json", publisher.public_path(windows["version"], "windows-manifest.json")} and method == "GET":
+                return FakeResponse((self.bundle / "windows-envelope.json").read_bytes())
+            if path == "/download/agent/stable/windows" and method == "GET":
+                return FakeResponse(b"", status=302, headers={"Location": windows["downloads"]["windows"]["path"]})
+            records += [*windows["artifacts"].values(), *windows["downloads"].values()]
         record = next((item for item in records if item["path"] == path), None)
         if record:
             data = (self.bundle / "payloads" / path.rsplit("/", 1)[1]).read_bytes()
@@ -177,7 +186,7 @@ class PublicationTests(unittest.TestCase):
         self.store = FakeStore()
         self.bundle, self.manifest, self.envelope = self.make_bundle("1.2.3", "first")
 
-    def make_bundle(self, version, name, notes="Release fixture", linux=False):
+    def make_bundle(self, version, name, notes="Release fixture", linux=False, windows=False):
         bundle = self.root / name
         payloads = bundle / "payloads"
         payloads.mkdir(parents=True)
@@ -185,6 +194,8 @@ class PublicationTests(unittest.TestCase):
         binaries = [("agent.app.tar.gz", b"archive fixture"), ("agent.dmg", b"disk image fixture")]
         if linux:
             binaries.append(("agent-linux.tar.gz", b"Linux tar fixture"))
+        if windows:
+            binaries += [("agent-windows.tar.gz", b"Windows tar fixture"), ("agent-windows.exe", b"Windows installer fixture")]
         for filename, data in binaries:
             (payloads / filename).write_bytes(data)
             artifacts[filename] = {
@@ -204,13 +215,19 @@ class PublicationTests(unittest.TestCase):
                               "downloads": {"linux-bundle": artifacts["agent-linux.tar.gz"]}}
             (bundle / "linux-manifest.json").write_bytes(publisher.encode_json(linux_manifest))
             (bundle / "linux-envelope.json").write_bytes(synthetic_envelope(linux_manifest))
+        if windows:
+            windows_manifest = {**manifest, "format": "maple-agent-update-v3",
+                                "artifacts": {"windows-x86_64": artifacts["agent-windows.tar.gz"]},
+                                "downloads": {"windows": artifacts["agent-windows.exe"]}}
+            (bundle / "windows-manifest.json").write_bytes(publisher.encode_json(windows_manifest))
+            (bundle / "windows-envelope.json").write_bytes(synthetic_envelope(windows_manifest))
         envelope = synthetic_envelope(manifest)
         (bundle / "manifest.json").write_bytes(publisher.encode_json(manifest))
         (bundle / "envelope.json").write_bytes(envelope)
         (bundle / "public-key.pub").write_text(PUBLIC_KEY + "\n")
         metadata = bundle / "metadata"
         metadata.mkdir()
-        for filename in (*MACOS_METADATA, *(LINUX_METADATA if linux else ())):
+        for filename in (*MACOS_METADATA, *(LINUX_METADATA if linux else ()), *(WINDOWS_METADATA if windows else ())):
             data = b"offline checksum fixture\n" if filename.endswith("SHA256SUMS") else \
                 publisher.encode_json({"fixture": filename, "version": version})
             (metadata / filename).write_bytes(data)
@@ -894,12 +911,13 @@ class PublicationTests(unittest.TestCase):
         requests = []
 
         def offline_https(_handler, request):
-            headers = (request.get_header("User-agent"), request.get_header("Accept-encoding"))
+            headers = (request.get_header("User-agent"), request.get_header("Accept-encoding"),
+                       request.get_header("X-maple-download-probe"))
             requests.append((request.get_method(), urlsplit(request.full_url).path,
                              request.get_header("Range"), headers))
             # Model the public edge's client policy through urllib's real
             # request, response and redirect handlers, without network access.
-            response = origin.open(request, request.timeout) if headers == ("Maple-Agent-Updater/1", "identity") \
+            response = origin.open(request, request.timeout) if headers == ("Maple-Agent-Updater/1", "identity", "1") \
                 else FakeResponse(b"client headers required", status=403)
             response_headers = Message()
             for name, value in response.headers.items():
@@ -917,7 +935,7 @@ class PublicationTests(unittest.TestCase):
         # Two metadata GETs, HEAD/range/full GET for each of two payloads, and
         # one installer redirect GET. The redirect must never be followed.
         self.assertEqual(len(requests), 9)
-        self.assertEqual({request[3] for request in requests}, {("Maple-Agent-Updater/1", "identity")})
+        self.assertEqual({request[3] for request in requests}, {("Maple-Agent-Updater/1", "identity", "1")})
         self.assertIn(("GET", "/agent/stable/latest.json", None), origin.calls)
         self.assertIn(("GET", publisher.public_path("1.2.3", "manifest.json"), None), origin.calls)
         self.assertIn(("GET", "/download/agent/stable/macos", None), origin.calls)

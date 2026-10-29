@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import { useOpenAI } from "@/ai/useOpenAi";
+import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 import { accountDeletionBillingErrorMessage } from "@/services/accountDeletionError";
@@ -33,12 +34,6 @@ import {
   quiesceChatRuntimeRunsForHistoryDeletion,
   settleChatRuntimeAfterHistoryCancellation
 } from "@/services/chatHistoryDeletionQuiescence";
-import {
-  clearAgentDataForUser,
-  clearMapleApiAuthForUser,
-  restoreMapleApiAuthForUser
-} from "@/services/agentRuntimeService";
-import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useBillingState } from "@/state/useLocalState";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 
@@ -56,7 +51,6 @@ export function DeleteAccountSettings() {
   const [isAccountDeleted, setIsAccountDeleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPaidPlanWarning, setShowPaidPlanWarning] = useState(false);
-  const cleanupBlockRef = useRef<Awaited<ReturnType<typeof clearAgentDataForUser>> | null>(null);
   const allowProgrammaticUnloadRef = useRef(false);
   const paidPlanWarningAcknowledgedRef = useRef(false);
   const isNavigationLocked = isLoading || isAccountDeleted;
@@ -99,9 +93,7 @@ export function DeleteAccountSettings() {
     const releaseChatFence = beginAllChatRuntimeDeletionFence(runtimeStore);
     let releaseAppleBilling = () => {};
     let deletionConfirmed = isAccountDeleted;
-    let agentDataCleared = cleanupBlockRef.current !== null;
     let proxyReset = false;
-    let nativeAuthCleared = false;
     const userId = os.auth.user?.user.id;
 
     try {
@@ -115,30 +107,17 @@ export function DeleteAccountSettings() {
           settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
       });
 
-      if (!cleanupBlockRef.current) {
-        // Clear local Agent data before the irreversible remote deletion.
-        cleanupBlockRef.current = await clearAgentDataForUser(userId);
-        agentDataCleared = true;
-      }
-
       // Proxy credential reset is required before remote deletion so a crash
       // cannot leave a deleted account's key on disk.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(userId, (name) => {
-        assertChatAccountCredential(userId);
-        return os.deleteApiKey(name);
-      });
+      await proxyService.stopAndResetProxy();
       proxyReset = true;
-
-      await clearMapleApiAuthForUser(userId);
-      nativeAuthCleared = true;
 
       if (!deletionConfirmed) {
         assertChatAccountCredential(userId);
         await os.confirmAccountDeletion(confirmationCode, secret);
         deletionConfirmed = true;
         setIsAccountDeleted(true);
-        cleanupBlockRef.current.retainUntilNextSession();
       }
 
       // The remote account no longer owns any renderable client state. Clear
@@ -161,31 +140,15 @@ export function DeleteAccountSettings() {
       window.location.href = "/";
     } catch (confirmError) {
       console.error("Account deletion confirmation or local cleanup failed.");
-      // If remote deletion did not happen, the authenticated user must be able
-      // to start a fresh Agent runtime after this attempt.
-      if (!deletionConfirmed) {
-        releaseChatFence();
-        if (nativeAuthCleared) {
-          try {
-            await restoreMapleApiAuthForUser(userId);
-          } catch (restoreError) {
-            console.error("Error restoring Maple API authentication:", restoreError);
-          }
-        }
-        cleanupBlockRef.current?.release();
-        cleanupBlockRef.current = null;
-      }
+      // If remote deletion did not happen, the account stays usable after this attempt.
+      if (!deletionConfirmed) releaseChatFence();
       setError(
-        !agentDataCleared
-          ? "Maple could not safely stop and clear local Agent Mode data. Your account was not deleted; please retry."
-          : deletionConfirmed
-            ? "Your account data was deleted, but Maple could not finish resetting local credentials or signing out. Please retry."
-            : !nativeAuthCleared
-              ? "Local Agent Mode history was cleared, but Maple could not reset its native authentication. Your account was not deleted; please retry."
-              : !proxyReset
-                ? "Local Agent Mode history was cleared, but Maple could not reset its proxy credentials. Your account was not deleted; please retry."
-                : (accountDeletionBillingErrorMessage(confirmError) ??
-                  "Local Agent Mode history was cleared, but account deletion was not confirmed. Verify the code and retry if you still want to delete your account.")
+        deletionConfirmed
+          ? "Your account data was deleted, but Maple could not finish resetting local credentials or signing out. Please retry."
+          : !proxyReset
+            ? "Maple could not finish local cleanup before deleting your account. Your account was not deleted; please retry."
+            : (accountDeletionBillingErrorMessage(confirmError) ??
+              "Account deletion was not confirmed. Verify the code and retry if you still want to delete your account.")
       );
       setIsLoading(false);
     } finally {
@@ -221,7 +184,7 @@ export function DeleteAccountSettings() {
       description={
         step === "request"
           ? "Permanently remove your Maple account and all associated data."
-          : "Complete the deletion request using the code sent to your email. Submitting it clears local Agent Mode history and proxy credentials before the final account deletion request, even if the code is rejected."
+          : "Complete the deletion request using the code sent to your email. Submitting it clears local proxy credentials before the final account deletion request, even if the code is rejected."
       }
     >
       <SettingsSection tone="danger">
@@ -229,8 +192,8 @@ export function DeleteAccountSettings() {
           <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription>
-              This action cannot be undone. You will lose access to paid features, chat and task
-              history, and settings.
+              This action cannot be undone. You will lose access to paid features, chat history, and
+              settings.
             </AlertDescription>
           </Alert>
 

@@ -25,7 +25,7 @@ use pi_coding_agent::session::{EntryKind, SessionManager};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::attachments::split_image_prompt;
+use super::attachments::split_attachment_prompt;
 use super::external_agents;
 use super::types::AgentTimelineItem;
 
@@ -271,20 +271,8 @@ pub(crate) fn user_item(
     merge: &str,
 ) -> AgentTimelineItem {
     let text = content_text(content);
-    let (text, input) = match split_image_prompt(&text) {
-        Some((typed, attachments)) => {
-            let attachments: Vec<Value> = attachments
-                .into_iter()
-                .map(|attachment| {
-                    json!({
-                        "id": attachment.id,
-                        "name": attachment.name,
-                        "source": attachment.source,
-                    })
-                })
-                .collect();
-            (typed, Some(json!({ "imageAttachments": attachments })))
-        }
+    let (text, input) = match split_attachment_prompt(&text) {
+        Some((typed, attachments)) => (typed, Some(json!({ "attachments": attachments }))),
         None => (text, None),
     };
     AgentTimelineItem {

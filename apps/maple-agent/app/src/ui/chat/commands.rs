@@ -44,6 +44,15 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(
+            command,
+            ChatCommand::Escape | ChatCommand::ApplicationVim(ApplicationVimCommand::Escape)
+        ) && self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.cancel_sidebar_drag(window, cx))
+        {
+            return;
+        }
         if let Some(dialog) = self.project_folder_dialog.clone() {
             if matches!(
                 command,
@@ -65,6 +74,17 @@ impl ChatScreen {
             }
             ChatCommand::ChooseProject => self.toggle_root_menu(cx),
             ChatCommand::CopySelection => self.copy_selected_text(cx),
+            ChatCommand::Escape
+                if self.sidebar.read(cx).search_input_focused(window, cx)
+                    && self
+                        .sidebar
+                        .update(cx, |sidebar, cx| sidebar.hide_empty_search(cx)) =>
+            {
+                if let Some(composer) = &self.composer {
+                    use gpui::Focusable;
+                    window.focus(&composer.read(cx).focus_handle(cx), cx);
+                }
+            }
             ChatCommand::Escape if self.application_vim_enabled => {
                 self.application_escape(window, cx)
             }
@@ -211,6 +231,7 @@ mod tests {
     }
 
     fn screen(cx: &mut TestAppContext) -> gpui::Entity<ChatScreen> {
+        cx.executor().allow_parking();
         let backend = Arc::new(
             AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),

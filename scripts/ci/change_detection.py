@@ -31,7 +31,7 @@ INERT_FILES = frozenset(
         "apps/maple-research/zapstore.yaml",
     }
 )
-INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/")
+INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/download-tracking/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/")
 PURE_FRONTEND_PREFIXES = ("apps/maple-research/frontend/public/", "apps/maple-research/frontend/src/")
 PURE_FRONTEND_FILES = frozenset({"apps/maple-research/frontend/icon.svg", "apps/maple-research/frontend/index.html"})
 RUST_SDK_PREFIX = "sdk/rust/"
@@ -60,37 +60,27 @@ PROXY_INERT_FILES = frozenset(
 
 WORKFLOW_ROUTES = {
     ".github/workflows/android-build.yml": frozenset({"android"}),
-    ".github/workflows/android-pr-build.yml": frozenset({"android"}),
     ".github/workflows/app-change-detection.yml": NATIVE_PLATFORMS,
     ".github/workflows/desktop-build.yml": DESKTOP_PLATFORMS,
-    ".github/workflows/desktop-pr-build.yml": DESKTOP_PLATFORMS,
     ".github/workflows/mobile-build.yml": frozenset({"ios"}),
-    ".github/workflows/mobile-pr-build.yml": frozenset({"ios"}),
 }
 
 CI_SCRIPT_ROUTES = {
     "scripts/ci/_common.sh": frozenset({"frontend", *NATIVE_PLATFORMS}),
     "scripts/ci/apple-toolchain.json": frozenset({"macos", "ios"}),
-    "scripts/ci/android-pr.sh": frozenset({"android"}),
     "scripts/ci/android-release.sh": frozenset({"android"}),
     "scripts/ci/attestation-manifest.sh": NATIVE_PLATFORMS,
     "scripts/ci/canonical-ios-app-hash.py": frozenset({"ios"}),
     "scripts/ci/canonical-windows-nsis-payload-hash.py": frozenset({"windows"}),
-    "scripts/ci/desktop-pr.sh": DESKTOP_PLATFORMS,
     "scripts/ci/desktop-release.sh": DESKTOP_PLATFORMS,
-    "scripts/ci/desktop-windows-pr.sh": frozenset({"windows"}),
     "scripts/ci/desktop-windows-release.sh": frozenset({"windows"}),
     "scripts/ci/dmg-settings.py": frozenset({"macos"}),
     "scripts/ci/frontend.sh": frozenset({"frontend"}),
     "scripts/ci/install-windows-artifact-signing.ps1": frozenset({"windows"}),
-    "scripts/ci/install-windows-minisign.ps1": frozenset({"windows"}),
     "scripts/ci/ios-onnxruntime.sh": frozenset({"ios"}),
     "scripts/ci/ios-build-profile.py": frozenset({"ios"}),
-    "scripts/ci/ios-pr.sh": frozenset({"ios"}),
     "scripts/ci/ios-release.sh": frozenset({"ios"}),
     "scripts/ci/ios-variant.sh": frozenset({"ios"}),
-    "scripts/ci/research-dev-desktop.sh": frozenset({"macos"}),
-    "scripts/ci/research-dev-profile.py": frozenset({"macos"}),
     "scripts/ci/select-xcode.py": frozenset({"macos", "ios"}),
     "scripts/ci/verify-release-artifacts.sh": NATIVE_PLATFORMS,
     "scripts/ci/web.sh": frozenset({"frontend"}),

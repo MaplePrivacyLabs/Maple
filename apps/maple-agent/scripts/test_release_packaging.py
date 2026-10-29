@@ -18,7 +18,7 @@ import tempfile
 import tarfile
 import unittest
 from test_macos_build_info import macho
-from test_third_party_notices import notice_fixture
+from test_windows_build_info import pe, public_info as windows_info
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -168,6 +168,120 @@ class PrebuiltReleaseTests(unittest.TestCase):
         result = self.verify()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+
+
+@unittest.skipUnless(os.name == "posix", "hermetic shell fixture requires a POSIX host")
+class BuildReleaseMetadataTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.component = Path(temporary.name) / "component with spaces"
+        scripts = self.component / "scripts"
+        scripts.mkdir(parents=True)
+        for name in ("build-release.sh", "windows-build-info.py", "release-info.py"):
+            shutil.copy2(SCRIPTS / name, scripts / name)
+        shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
+        self.env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        for arguments in (("init", "--quiet"), ("add", "."),
+                          ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                           "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                           "commit", "--quiet", "-m", "fixture source")):
+            subprocess.run(["git", "-C", str(self.component), *arguments], env=self.env,
+                           check=True, capture_output=True, text=True)
+        self.source = subprocess.check_output(
+            ["git", "-C", str(self.component), "rev-parse", "HEAD"], env=self.env, text=True,
+        ).strip()
+        self.input = self.component / "fixture-binary"
+        self.metadata = self.component / "fixture-info.json"
+        self.executed = self.component / "fixture-executed"
+        self.commands = self.component / "cargo-commands.jsonl"
+        tools = self.component / "tools"
+        tools.mkdir()
+        for name, source in {
+            "uname": "import os\nprint(os.environ['FIXTURE_OS'])\n",
+            "cargo": """import json, os, shutil, sys
+from pathlib import Path
+arguments = sys.argv[1:]
+with Path(os.environ['FIXTURE_COMMANDS']).open('a') as log:
+    log.write(json.dumps(arguments) + '\\n')
+windows = os.environ['FIXTURE_OS'].startswith(('MINGW', 'MSYS', 'CYGWIN'))
+expected = ['build', '--release', '-p', 'maple-agent-app', '--locked', '--timings']
+if windows:
+    expected += ['--target', 'x86_64-pc-windows-msvc']
+assert arguments == expected, arguments
+target = Path('target/x86_64-pc-windows-msvc/release/maple-agent.exe' if windows else 'target/release/maple-agent')
+target.parent.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(os.environ['FIXTURE_INPUT'], target)
+target.chmod(0o644 if windows else 0o755)
+""",
+        }.items():
+            tool = tools / name
+            tool.write_text(f"#!{sys.executable}\n" + source)
+            tool.chmod(0o755)
+        self.env.update(PATH=str(tools) + os.pathsep + self.env["PATH"],
+                        FIXTURE_INPUT=str(self.input), FIXTURE_COMMANDS=str(self.commands),
+                        FIXTURE_METADATA=str(self.metadata), FIXTURE_EXECUTED=str(self.executed))
+
+    def build(self, operating_system, profile="dev"):
+        self.env["FIXTURE_OS"] = operating_system
+        result = subprocess.run(["bash", str(self.component / "scripts/build-release.sh"), profile],
+                                env=self.env, capture_output=True, text=True)
+        return result
+
+    def test_windows_build_checks_the_staged_pe_without_executing_it(self):
+        for operating_system in ("MINGW64_NT-10.0", "MSYS_NT-10.0", "CYGWIN_NT-10.0"):
+            for profile in ("dev", "prod"):
+                with self.subTest(operating_system=operating_system, profile=profile):
+                    expected = pe(windows_info(profile, self.source))
+                    self.input.write_bytes(expected)
+                    self.input.chmod(0o644)
+                    # This genuine metadata-only PE cannot execute on the
+                    # portable fixture host. Success must come from parsing.
+                    with self.assertRaises(OSError):
+                        subprocess.run([str(self.input), "--build-info"], check=True)
+                    result = self.build(operating_system, profile)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    staged = self.component / "target/release/maple-agent.exe"
+                    self.assertEqual(staged.read_bytes(), expected)
+                    self.assertEqual(staged.stat().st_mode & 0o777, 0o644)
+        commands = [json.loads(line) for line in self.commands.read_text().splitlines()]
+        self.assertEqual(len(commands), 6)
+
+    def test_windows_build_rejects_wrong_profile_source_and_dirty_revision(self):
+        for profile in ("dev", "prod"):
+            wrong_profile = "prod" if profile == "dev" else "dev"
+            for identity, error in (
+                (windows_info(wrong_profile, self.source), "release profile"),
+                (windows_info(profile, "b" * 40), "source commit"),
+                ({**windows_info(profile, self.source), "git_revision": self.source[:8] + "-dirty"}, "revision"),
+            ):
+                with self.subTest(profile=profile, error=error):
+                    self.input.write_bytes(pe(identity))
+                    result = self.build("MINGW64_NT-10.0", profile)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(error, result.stderr)
+                    self.assertIn("static Windows build-info validation failed", result.stderr)
+
+    def test_macos_and_linux_keep_executing_the_existing_build_info_cli(self):
+        self.input.write_text(f"#!{sys.executable}\n" + """import json, os, sys
+from pathlib import Path
+assert sys.argv[1:] == ['--build-info']
+Path(os.environ['FIXTURE_EXECUTED']).write_text(json.dumps(sys.argv[1:]))
+print(Path(os.environ['FIXTURE_METADATA']).read_text())
+""")
+        for operating_system in ("Darwin", "Linux"):
+            for profile in ("dev", "prod"):
+                for reported in ("dev", "prod"):
+                    with self.subTest(operating_system=operating_system, requested=profile, reported=reported):
+                        self.executed.unlink(missing_ok=True)
+                        self.metadata.write_text(json.dumps({"profile": reported}))
+                        result = self.build(operating_system, profile)
+                        self.assertEqual(json.loads(self.executed.read_text()), ["--build-info"])
+                        if reported == profile:
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                        else:
+                            self.assertNotEqual(result.returncode, 0)
+                            self.assertIn("incorrect release profile", result.stderr)
 
 
 class LinuxVerifierExtractionTests(unittest.TestCase):
@@ -488,21 +602,22 @@ class ReleaseMetadataTests(unittest.TestCase):
         profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
         self.info = {**profile_info("prod"), "profile": "prod", "version": "0.1.0",
                      "source_sha": "a" * 40, "git_revision": "a" * 8}
-        self.write_info()
-        release_info.read_info("prod", self.path)
-        release_info.read_info("prod", self.path, platform="macos-aarch64")
-        with self.assertRaisesRegex(ValueError, "update_feed_url"):
-            release_info.read_info("prod", self.path, platform="linux-x86_64")
-        self.info["update_feed_url"] = profiles["prod"]["linux_update_feed_url"]
-        self.write_info()
-        release_info.read_info("prod", self.path, platform="linux-x86_64")
-        for platform in (None, "macos-aarch64"):
-            with self.subTest(platform=platform), self.assertRaisesRegex(ValueError, "update_feed_url"):
-                release_info.read_info("prod", self.path, platform=platform)
-        self.info["update_feed_url"] = "https://wrong.invalid/agent/stable/linux/latest.json"
-        self.write_info()
-        with self.assertRaisesRegex(ValueError, "update_feed_url"):
-            release_info.read_info("prod", self.path, platform="linux-x86_64")
+        feeds = {
+            None: profiles["prod"]["update_feed_url"],
+            "macos-aarch64": profiles["prod"]["update_feed_url"],
+            "linux-x86_64": profiles["prod"]["linux_update_feed_url"],
+            "windows-x86_64": profiles["prod"]["windows_update_feed_url"],
+        }
+        for platform, expected in feeds.items():
+            for feed in {*feeds.values(), None, "https://wrong.invalid/agent/stable/latest.json"}:
+                with self.subTest(platform=platform, feed=feed):
+                    self.info["update_feed_url"] = feed
+                    self.write_info()
+                    if feed == expected:
+                        release_info.read_info("prod", self.path, platform=platform)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "update_feed_url"):
+                            release_info.read_info("prod", self.path, platform=platform)
 
     def test_backup_requires_a_distinct_public_key_not_a_changed_comment_or_id(self):
         def key(point, key_id=b"12345678", comment="fixture"):
@@ -529,6 +644,27 @@ class ReleaseMetadataTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_info.write_plist(self.info, output, "0")
 
+    def test_macos_plist_cli_preserves_its_default_build_number(self):
+        output = self.directory / "Info.plist"
+        for arguments, expected in (([], "1"), (["--build-number", "42"], "42")):
+            with self.subTest(arguments=arguments):
+                subprocess.run(
+                    [sys.executable, str(SCRIPTS / "release-info.py"), "plist", "dev", str(self.path),
+                     "--output", str(output), *arguments], check=True, capture_output=True, text=True,
+                )
+                self.assertEqual(plistlib.loads(output.read_bytes())["CFBundleVersion"], expected)
+
+    def test_macos_plist_cli_rejects_an_explicitly_empty_build_number(self):
+        output = self.directory / "Info.plist"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS / "release-info.py"), "plist", "dev", str(self.path),
+             "--output", str(output), "--build-number", ""], capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("package build number must be a positive integer", result.stderr)
+        self.assertFalse(output.exists())
+        self.assertFalse((self.directory / "Resources").exists())
+
     def package(self, unsigned=True):
         (self.directory / "fixture.dmg").write_bytes(b"package")
         release_info.write_manifest(self.info, self.directory, "macos-aarch64", unsigned)
@@ -538,6 +674,15 @@ class ReleaseMetadataTests(unittest.TestCase):
         release_info.verify_artifacts("dev", self.directory, True)
         with self.assertRaises(ValueError):
             release_info.verify_artifacts("dev", self.directory, False)
+
+    def test_macos_manifest_keeps_its_existing_schema_without_windows_fields(self):
+        self.package(False)
+        manifest = release_info.verify_artifacts("dev", self.directory, False, platform="macos-aarch64")
+        self.assertEqual(set(manifest), {
+            "schema_version", "profile", "platform", "source_sha", "version",
+            "package", "distribution", "macos_signing",
+        })
+        self.assertEqual(manifest["macos_signing"], "developer-id-notarized")
 
     def test_final_downloaded_package_tamper_is_rejected(self):
         self.package(False)
@@ -593,6 +738,10 @@ class LinuxReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(manifest["package"], "maple-agent-dev-0.1.0-aaaaaaaa-linux-x86_64.tar.gz")
         self.assertIsNone(manifest["macos_signing"])
         self.assertEqual(manifest["linux_integrity"], "sha256")
+        self.assertEqual(set(manifest), {
+            "schema_version", "profile", "platform", "source_sha", "version",
+            "package", "distribution", "macos_signing", "linux_integrity",
+        })
         self.assertEqual({path.name for path in self.directory.iterdir()},
                          {"build-info.json", "manifest.json", "SHA256SUMS", package.name})
         self.assertTrue(all(path.stat().st_mode & 0o777 == 0o644 for path in self.directory.iterdir()))
@@ -761,7 +910,8 @@ class NativeSigningBoundaryTests(unittest.TestCase):
 
     def run_packager(self, unsigned=False, failure="", signal=False, search_list=None):
         component = self.directory / "fixture-component"
-        notice_fixture(component, "aarch64-apple-darwin")
+        (component / "scripts").mkdir(parents=True, exist_ok=True)
+        (component / "app").mkdir(exist_ok=True)
         # Nix sources are read-only. Copy bytes into this mutable fixture rather
         # than preserving modes that would prevent a second packaging attempt.
         for name in ("macos-release-app.sh", "release-info.py", "macos-build-info.py"):

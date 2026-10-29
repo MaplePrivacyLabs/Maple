@@ -5,7 +5,7 @@
 // there by design.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -35,6 +35,9 @@ use crate::hosted_oauth::{ATTEMPT_TIMEOUT, HandoffListener};
 mod deletion;
 pub use deletion::AccountDeletionStatus;
 
+#[cfg(feature = "proxy")]
+#[path = "local_api.rs"]
+mod local_api;
 #[path = "project_folders.rs"]
 mod project_folders;
 #[allow(unused_imports)]
@@ -58,6 +61,75 @@ pub use maple_agent::maple_api::{
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AuthSession {
     pub user_id: String,
+}
+
+fn validate_sidebar_order(order: &crate::settings::SidebarOrder) -> Result<(), String> {
+    const MAX_ITEMS: usize = 8192;
+    const MAX_CONNECTIONS: usize = 256;
+    const MAX_ROOT_BYTES: usize = 32768;
+    const MAX_TASK_ID_BYTES: usize = 256;
+    const MAX_ORDER_BYTES: usize = 2 * 1024 * 1024;
+    if order.projects.len() > MAX_ITEMS
+        || order.tasks.len() > MAX_ITEMS
+        || order.pinned_tasks.len() > MAX_ITEMS
+        || order.connections.len() > MAX_CONNECTIONS
+    {
+        return Err("Sidebar order is too large".into());
+    }
+    if order.created_before_ms < 0 {
+        return Err("Invalid sidebar order cutoff".into());
+    }
+    let mut bytes = 0_usize;
+    let mut validate_computer = |computer: &Option<String>| -> Result<(), String> {
+        if let Some(computer) = computer {
+            if computer.is_empty() || computer.len() > 128 || computer.chars().any(char::is_control)
+            {
+                return Err("Invalid sidebar computer".into());
+            }
+            bytes = bytes.saturating_add(computer.len());
+        }
+        Ok(())
+    };
+    for (items, maximum, is_task) in [
+        (&order.projects, MAX_ROOT_BYTES, false),
+        (&order.tasks, MAX_TASK_ID_BYTES, true),
+        (&order.pinned_tasks, MAX_TASK_ID_BYTES, true),
+    ] {
+        let mut seen = HashSet::new();
+        for item in items {
+            validate_computer(&item.computer)?;
+            if item.id.is_empty()
+                || item.id.len() > maximum
+                || item.id.contains('\0')
+                || (is_task && item.id.chars().any(char::is_control))
+                || !seen.insert(item)
+            {
+                return Err("Invalid sidebar order item".into());
+            }
+        }
+    }
+    let mut connections = HashSet::new();
+    for computer in &order.connections {
+        validate_computer(computer)?;
+        if !connections.insert(computer) {
+            return Err("Duplicate sidebar connection".into());
+        }
+    }
+    bytes = order
+        .projects
+        .iter()
+        .chain(&order.tasks)
+        .chain(&order.pinned_tasks)
+        .fold(bytes, |bytes, item| bytes.saturating_add(item.id.len()));
+    if bytes > MAX_ORDER_BYTES
+        || serde_json::to_vec(order)
+            .map_err(|_| "Could not encode sidebar order".to_string())?
+            .len()
+            > MAX_ORDER_BYTES
+    {
+        return Err("Sidebar order is too large".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -107,12 +179,18 @@ pub struct DictionaryPage {
 }
 
 pub struct LocalBackend {
+    #[cfg(feature = "proxy")]
+    pub(crate) local_api: crate::local_api::LocalApiManager,
+    #[cfg(feature = "proxy")]
+    local_api_settings_gate: tokio::sync::Mutex<()>,
+    #[cfg(feature = "proxy")]
+    local_api_control: std::sync::Mutex<local_api::Control>,
     store: Option<Arc<maple_agent::store::Store>>,
     pub(crate) remote_updates: Arc<crate::remote_updates::Broker>,
     row_reader: Option<Arc<maple_agent::store::RowReader>>,
     #[cfg(test)]
     pub(super) ui_fixture: bool,
-    pub(crate) account_gate: tokio::sync::RwLock<()>,
+    pub(crate) account_gate: Arc<tokio::sync::RwLock<()>>,
     restore_lock: tokio::sync::Mutex<()>,
     ui_settings_gate: tokio::sync::Mutex<()>,
     service: MapleAgentService,
@@ -1053,6 +1131,8 @@ impl LocalBackend {
     }
 
     pub(crate) async fn forget_store_session(&self) -> Result<(), String> {
+        #[cfg(feature = "proxy")]
+        self.local_api.stop().await;
         self.service.finish_store_reset().await?;
         self.service.invalidate_store_session();
         if let Some(user) = self.persisted_auth.forget_owner() {
@@ -1138,6 +1218,12 @@ impl LocalBackend {
             .as_ref()
             .map(|store| Arc::new(maple_agent::store::RowReader::new(store.clone())));
         Ok(Self {
+            #[cfg(feature = "proxy")]
+            local_api: crate::local_api::LocalApiManager::new(api_url.clone())?,
+            #[cfg(feature = "proxy")]
+            local_api_settings_gate: tokio::sync::Mutex::new(()),
+            #[cfg(feature = "proxy")]
+            local_api_control: std::sync::Mutex::new(local_api::Control::default()),
             remote_updates: Arc::new(crate::remote_updates::Broker::new(store.clone())),
             store,
             row_reader,
@@ -1145,7 +1231,7 @@ impl LocalBackend {
             ui_fixture: false,
             restore_lock: tokio::sync::Mutex::new(()),
             ui_settings_gate: tokio::sync::Mutex::new(()),
-            account_gate: tokio::sync::RwLock::new(()),
+            account_gate: Arc::new(tokio::sync::RwLock::new(())),
             service,
             auth: MapleApiAuthState::new(),
             api_url,
@@ -1295,6 +1381,54 @@ impl LocalBackend {
         .map_err(|_| "Could not save remote sidebar settings".to_string())?
     }
 
+    /// Sidebar order is account-owned controller presentation state, independent
+    /// of the execution host's project ordering and navigation cursors.
+    pub async fn get_sidebar_order(
+        &self,
+        user_id: &str,
+    ) -> Result<crate::settings::SidebarOrder, String> {
+        let (store, account) = self.presentation_account(user_id)?;
+        tokio::task::spawn_blocking(move || {
+            let order = match store
+                .account_setting(account, "sidebar.order")
+                .map_err(|error| error.to_string())?
+            {
+                Some(value) => serde_json::from_value(value)
+                    .map_err(|_| "Saved sidebar order is invalid".to_string())?,
+                None => crate::settings::SidebarOrder::default(),
+            };
+            validate_sidebar_order(&order)?;
+            Ok(order)
+        })
+        .await
+        .map_err(|_| "Could not read sidebar order".to_string())?
+    }
+
+    pub async fn set_sidebar_order(
+        &self,
+        user_id: &str,
+        order: crate::settings::SidebarOrder,
+    ) -> Result<(), String> {
+        validate_sidebar_order(&order)?;
+        // Host dispatch already holds the account read gate. Reuse the
+        // presentation writer gate without taking a nested account read lock.
+        let _gate = self.ui_settings_gate.lock().await;
+        let (store, account) = self.presentation_account(user_id)?;
+        tokio::task::spawn_blocking(move || {
+            store
+                .set_account_setting(
+                    account,
+                    "sidebar.order",
+                    &serde_json::to_value(order)
+                        .map_err(|_| "Could not encode sidebar order".to_string())?,
+                    crate::settings::timestamp_ms(),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "Could not save sidebar order".to_string())?
+    }
+
     pub async fn set_task_pinned(
         &self,
         user_id: &str,
@@ -1386,9 +1520,50 @@ impl LocalBackend {
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
             .map_err(|_| "Maple API authentication failed".to_string())?;
         let response = client
-            .login(email.clone(), password, self.client_id)
+            .login(email, password, self.client_id)
             .await
             .map_err(|_| "Sign in failed. Check your email and password.".to_string())?;
+        self.install_login(response).await
+    }
+
+    /// Sign in to an anonymous account with its account id and password.
+    /// Anonymous accounts have no email; the server only accepts an id login
+    /// for a guest account in this project.
+    pub async fn login_guest(
+        &self,
+        account_id: String,
+        password: String,
+    ) -> Result<AuthSession, String> {
+        let _account = self.restore_lock.lock().await;
+        self.require_signed_out()?;
+        let account_id = Self::parse_account_id(&account_id)?;
+        if password.is_empty() {
+            return Err("Enter a password".to_string());
+        }
+        self.cancel_oauth();
+        let environment = configured_pcr0_environment()?;
+        let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
+            .map_err(|_| "Maple API authentication failed".to_string())?;
+        let response = client
+            .login_with_id(account_id, password, self.client_id)
+            .await
+            .map_err(|_| "Sign in failed. Check your account ID and password.".to_string())?;
+        self.install_login(response).await
+    }
+
+    fn parse_account_id(account_id: &str) -> Result<Uuid, String> {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return Err("Enter your account ID".to_string());
+        }
+        Uuid::parse_str(account_id).map_err(|_| "That is not a valid account ID".to_string())
+    }
+
+    /// Hand a validated login to the agent runtime and persist it.
+    async fn install_login(
+        &self,
+        response: maple_sdk::LoginResponse,
+    ) -> Result<AuthSession, String> {
         let user_id = response.id.to_string();
         let snapshot = self
             .auth
@@ -1438,7 +1613,7 @@ impl LocalBackend {
 
     /// Validate the saved credentials with the server and install the
     /// session on success. Definitive rejections compare-clear the saved record.
-    pub(super) async fn validate_persisted_auth(&self) -> RestoreOutcome {
+    pub(crate) async fn validate_persisted_auth(&self) -> RestoreOutcome {
         let _restore = self.restore_lock.lock().await;
         if let Some(user_id) = self.saved_user_id()
             && self.auth.session_for(&user_id).await.is_ok()
@@ -1521,6 +1696,8 @@ impl LocalBackend {
     /// Drop the live session and the persisted record. `revoke` also sends
     /// `POST /logout`; a deleted account has no session left to report.
     async fn clear_session(&self, user_id: &str, revoke: bool) -> Result<(), String> {
+        #[cfg(feature = "proxy")]
+        self.local_api.stop().await;
         let _account = self.restore_lock.lock().await;
         let pending = self.pending_deletion_status()?;
         if let Some(pending) = pending.as_ref() {
@@ -2607,7 +2784,7 @@ impl LocalBackend {
             return Ok([
                 ("codex", "Codex"),
                 ("claude", "Claude Code"),
-                ("cua-driver", "Cua"),
+                ("cua-driver", "Computer use"),
             ]
             .into_iter()
             .map(|(id, name)| AgentIntegration {
@@ -2800,7 +2977,7 @@ impl LocalBackend {
         .map_err(|error| format!("Slash command resolve failed: {error}"))?
     }
 
-    /// One-line summary of a completed tool call from the cheap title model.
+    /// One-line summary of a completed tool call from the summary model.
     pub async fn summarize_tool_call(
         &self,
         user_id: &str,
@@ -2816,8 +2993,23 @@ impl LocalBackend {
             .await
     }
 
-    /// One-line summary of a finished thinking block from the cheap title
-    /// model.
+    /// One-line summary of a tool call from its name and input, asked as
+    /// the call starts.
+    pub async fn summarize_tool_call_start(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        tool_name: String,
+        input: Option<serde_json::Value>,
+    ) -> Result<Option<String>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .summarize_tool_call_start(session_id, &tool_name, input.as_ref())
+            .await
+    }
+
+    /// One-line summary of a finished thinking block from the summary model.
     pub async fn summarize_thinking(
         &self,
         user_id: &str,
@@ -3724,6 +3916,24 @@ mod tests {
         let credentials =
             PersistedAuthStore::new(Some(database.clone()), "https://api.example".to_owned());
         (root, database, credentials)
+    }
+
+    #[test]
+    fn guest_account_ids_must_be_uuids() {
+        let id = Uuid::new_v4();
+        assert_eq!(LocalBackend::parse_account_id(&format!("  {id}\n")), Ok(id));
+        assert_eq!(
+            LocalBackend::parse_account_id(&id.to_string().to_uppercase()),
+            Ok(id)
+        );
+        assert_eq!(
+            LocalBackend::parse_account_id(" "),
+            Err("Enter your account ID".to_string())
+        );
+        assert_eq!(
+            LocalBackend::parse_account_id("someone@example.test"),
+            Err("That is not a valid account ID".to_string())
+        );
     }
 
     #[test]

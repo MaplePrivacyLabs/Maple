@@ -109,7 +109,8 @@ tauri.android.versionCode=${version_code}
 EOF
 
 cd "${FRONTEND_DIR}"
-bun tauri android build --debug --apk --config '{"build":{"beforeBuildCommand":null}}'
+# One ABI keeps the PR lane fast; android-build.yml builds and verifies all four on master.
+bun tauri android build --debug --apk --target aarch64 --config '{"build":{"beforeBuildCommand":null}}'
 
 android_artifacts=()
 while IFS= read -r -d '' file; do
@@ -119,7 +120,6 @@ done < <(find "${TAURI_DIR}/gen/android/app/build/outputs/apk" -type f -name '*.
 for artifact in "${android_artifacts[@]}"; do
   verify_android_apk_target_sdk "${artifact}"
   verify_android_artifact_native_libraries "${artifact}"
-  verify_android_onnxruntime_artifact "${artifact}"
 done
 
 repro_dir="${TAURI_DIR}/target/reproducibility"

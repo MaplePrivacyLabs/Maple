@@ -18,6 +18,7 @@ use crate::models::password_reset::NewPasswordResetRequest;
 use crate::models::platform_password_reset::NewPlatformPasswordResetRequest;
 use crate::models::platform_users::PlatformUser;
 use crate::sqs::SqsEventPublisher;
+use crate::web::dev_spend_gate::require_internal;
 use crate::web::openai_auth::{validate_openai_auth, validate_optional_openai_auth};
 use crate::web::platform_login_routes;
 use crate::web::{
@@ -469,6 +470,9 @@ pub enum ApiError {
 
     #[error("Too many requests")]
     TooManyRequests,
+
+    #[error("This environment is limited to internal accounts")]
+    InternalAccountRequired,
 }
 
 impl ApiError {
@@ -520,6 +524,7 @@ impl IntoResponse for ApiError {
             ApiError::UnprocessableEntity => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::InternalAccountRequired => StatusCode::FORBIDDEN,
         };
         // Preserve the legacy flat fields while making these application
         // rejections readable by independently versioned OpenAI clients.
@@ -3796,12 +3801,16 @@ async fn retrieve_kagi_api_key(
 
 fn application_routes(app_state: Arc<AppState>) -> Router<()> {
     protected_routes(app_state.clone())
-        .merge(web::remote::router(app_state.clone()))
+        .merge(
+            web::remote::router(app_state.clone())
+                .route_layer(from_fn_with_state(app_state.clone(), require_internal)),
+        )
         .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
         .merge(web::remote::relay::router(app_state.clone()))
         .merge(login_routes(app_state.clone()))
         .merge(
             openai_routes(app_state.clone())
+                .route_layer(from_fn_with_state(app_state.clone(), require_internal))
                 .route_layer(from_fn_with_state(app_state.clone(), validate_openai_auth)),
         )
         .merge(
@@ -3812,14 +3821,17 @@ fn application_routes(app_state: Arc<AppState>) -> Router<()> {
         )
         .merge(
             system_one_routes(app_state.clone())
+                .route_layer(from_fn_with_state(app_state.clone(), require_internal))
                 .route_layer(from_fn_with_state(app_state.clone(), validate_openai_auth)),
         )
         .merge(
             responses_routes(app_state.clone())
+                .route_layer(from_fn_with_state(app_state.clone(), require_internal))
                 .route_layer(from_fn_with_state(app_state.clone(), validate_jwt)),
         )
         .merge(
             web_routes(app_state.clone())
+                .route_layer(from_fn_with_state(app_state.clone(), require_internal))
                 .route_layer(from_fn_with_state(app_state.clone(), validate_jwt)),
         )
         .merge(

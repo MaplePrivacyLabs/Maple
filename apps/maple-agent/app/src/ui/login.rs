@@ -1,5 +1,5 @@
-//! Sign-in screen: email and password, or OAuth (GitHub, Google, Apple)
-//! against the OpenSecret backend.
+//! Sign-in screen: email and password, an anonymous account id and
+//! password, or OAuth (GitHub, Google, Apple) against the OpenSecret backend.
 
 use std::sync::Arc;
 
@@ -20,6 +20,7 @@ use crate::ui::widgets;
 pub struct LoginSucceeded(pub String);
 
 const EMPTY_CREDENTIALS_ERROR: &str = "Enter your email and password";
+const EMPTY_GUEST_CREDENTIALS_ERROR: &str = "Enter your account ID and password";
 
 /// How the OAuth completion step is presented.
 enum OAuthFlow {
@@ -36,7 +37,11 @@ enum OAuthFlow {
 pub struct LoginScreen {
     backend: Arc<AgentBackend>,
     email_input: Entity<TextInput>,
+    /// Account id of an anonymous account, shown instead of the email field.
+    account_id_input: Entity<TextInput>,
     password_input: Entity<SecretInput>,
+    /// Sign in to an anonymous account with its account id.
+    guest: bool,
     /// Paste field for the OAuth redirect URL.
     callback_input: Entity<TextInput>,
     oauth: OAuthFlow,
@@ -55,6 +60,7 @@ pub struct LoginScreen {
 impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
         let email = cx.new(|cx| TextInput::new("Email", cx).with_tab_index(0));
+        let account_id = cx.new(|cx| TextInput::new("Account ID", cx).with_tab_index(0));
         let password = cx.new(|cx| SecretInput::new("Password", cx).with_tab_index(1));
         let callback = cx.new(|cx| {
             TextInput::new("Paste the URL you were redirected to…", cx).with_tab_index(0)
@@ -67,6 +73,14 @@ impl LoginScreen {
             input.set_on_enter(move |email_text, _, cx| {
                 if let Some(this) = email_weak.upgrade() {
                     this.update(cx, |screen, cx| screen.submit_email(email_text, cx));
+                }
+            });
+        });
+        let account_id_weak = weak.clone();
+        account_id.update(cx, |input, _| {
+            input.set_on_enter(move |account_id, _, cx| {
+                if let Some(this) = account_id_weak.upgrade() {
+                    this.update(cx, |screen, cx| screen.submit_guest(account_id, cx));
                 }
             });
         });
@@ -84,7 +98,9 @@ impl LoginScreen {
             subscriptions: Vec::new(),
             backend,
             email_input: email,
+            account_id_input: account_id,
             password_input: password,
+            guest: false,
             callback_input: callback,
             oauth: OAuthFlow::Idle,
             error: None,
@@ -117,7 +133,7 @@ impl LoginScreen {
     /// must not discard a password typed while another call is pending.
     fn take_credentials(
         &mut self,
-        email: String,
+        identity: String,
         cx: &mut Context<Self>,
     ) -> Option<(String, Zeroizing<String>)> {
         if self.busy {
@@ -127,8 +143,15 @@ impl LoginScreen {
             cx.notify();
             return None;
         }
-        if email.trim().is_empty() || self.password_input.read(cx).is_empty() {
-            self.error = Some(EMPTY_CREDENTIALS_ERROR.to_string());
+        if identity.trim().is_empty() || self.password_input.read(cx).is_empty() {
+            self.error = Some(
+                if self.guest {
+                    EMPTY_GUEST_CREDENTIALS_ERROR
+                } else {
+                    EMPTY_CREDENTIALS_ERROR
+                }
+                .to_string(),
+            );
             cx.notify();
             return None;
         }
@@ -137,7 +160,7 @@ impl LoginScreen {
         let password = self
             .password_input
             .update(cx, |input, cx| input.take_secret(cx));
-        Some((email, password))
+        Some((identity, password))
     }
 
     fn submit_email(&mut self, email: String, cx: &mut Context<Self>) {
@@ -161,9 +184,44 @@ impl LoginScreen {
         );
     }
 
+    fn submit_guest(&mut self, account_id: String, cx: &mut Context<Self>) {
+        let Some((account_id, mut password)) = self.take_credentials(account_id, cx) else {
+            return;
+        };
+        let backend = self.begin(cx);
+        self.call(
+            async move {
+                backend
+                    .login_guest(account_id, std::mem::take(&mut *password))
+                    .await
+            },
+            cx,
+            |this, result, cx| match result {
+                Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
+                Err(message) => this.error = Some(message),
+            },
+        );
+    }
+
     fn submit_current(&mut self, cx: &mut Context<Self>) {
-        let email = self.email_input.read(cx).text();
-        self.submit_email(email, cx);
+        if self.guest {
+            let account_id = self.account_id_input.read(cx).text();
+            self.submit_guest(account_id, cx);
+        } else {
+            let email = self.email_input.read(cx).text();
+            self.submit_email(email, cx);
+        }
+    }
+
+    /// Switch between email and anonymous account sign-in. The typed
+    /// password stays; it belongs to whichever account the user picks.
+    fn set_guest(&mut self, guest: bool, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.guest = guest;
+        self.error = None;
+        cx.notify();
     }
 
     /// Enter the busy state for a backend call and hand back the backend
@@ -345,22 +403,34 @@ impl Render for LoginScreen {
                         .child(self.deletion_notice.clone().unwrap_or_default()),
                 );
             }
+            OAuthFlow::Idle if self.guest => {
+                card = card
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child("Sign in to an anonymous account"),
+                    )
+                    .child(field("Account ID", self.account_id_input.clone()))
+                    .child(field("Password", self.password_input.clone()))
+                    .child(submit_button(busy, cx))
+                    .child(
+                        widgets::ghost_button("guest-cancel")
+                            .debug_selector(|| "guest-cancel".to_string())
+                            .w_full()
+                            .when(!busy, |el| {
+                                el.on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.set_guest(false, cx);
+                                }))
+                            })
+                            .child("Back to email sign in"),
+                    );
+            }
             OAuthFlow::Idle => {
                 card = card
                     .child(field("Email", self.email_input.clone()))
                     .child(field("Password", self.password_input.clone()))
-                    .child(
-                        widgets::primary_button("login-submit")
-                            .w_full()
-                            .mt_1()
-                            .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
-                            .when(!busy, |el| el.on_click(cx.listener(Self::submit_clicked)))
-                            .child(if busy {
-                                "Signing in…".to_string()
-                            } else {
-                                "Sign in".to_string()
-                            }),
-                    )
+                    .child(submit_button(busy, cx))
                     .child(
                         div()
                             .flex()
@@ -391,7 +461,19 @@ impl Render for LoginScreen {
                             .gap_2()
                             .child(oauth_button(OAuthProvider::Github, busy, cx))
                             .child(oauth_button(OAuthProvider::Google, busy, cx))
-                            .child(oauth_button(OAuthProvider::Apple, busy, cx)),
+                            .child(oauth_button(OAuthProvider::Apple, busy, cx))
+                            .child(
+                                widgets::secondary_button("login-guest")
+                                    .debug_selector(|| "login-guest".to_string())
+                                    .flex_1()
+                                    .px_3()
+                                    .when(!busy, |el| {
+                                        el.on_click(cx.listener(|this, _event, _window, cx| {
+                                            this.set_guest(true, cx);
+                                        }))
+                                    })
+                                    .child("Anon"),
+                            ),
                     );
             }
             OAuthFlow::Pending { provider, auth_url } => {
@@ -496,6 +578,21 @@ impl Render for LoginScreen {
     }
 }
 
+fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> gpui::Stateful<Div> {
+    widgets::primary_button("login-submit")
+        .w_full()
+        .mt_1()
+        .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
+        .when(!busy, |el| {
+            el.on_click(cx.listener(LoginScreen::submit_clicked))
+        })
+        .child(if busy {
+            "Signing in…".to_string()
+        } else {
+            "Sign in".to_string()
+        })
+}
+
 fn oauth_button(
     provider: OAuthProvider,
     busy: bool,
@@ -506,6 +603,7 @@ fn oauth_button(
         provider.label().to_lowercase()
     )))
     .flex_1()
+    .px_3()
     .when(!busy, |el| {
         el.on_click({
             cx.listener(move |this, _event, _window, cx| {
@@ -722,6 +820,64 @@ mod tests {
                 screen.busy || screen.error.is_some(),
                 "enter in the filled password field must start the sign-in"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn anonymous_account_signs_in_with_account_id(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let screen = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            LoginScreen::new(backend, cx)
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| LoginHost {
+            screen: screen.clone(),
+        });
+        cx.simulate_resize(size(px(900.), px(700.)));
+        cx.update(|_window, app| {
+            screen.update(app, |screen, cx| {
+                screen.error = Some("stale".into());
+                screen.set_guest(true, cx);
+                assert!(screen.guest);
+                assert!(screen.error.is_none());
+            })
+        });
+        let (account_focus, password_focus) = cx.update(|_window, app| {
+            let screen = screen.read(app);
+            (
+                screen.account_id_input.read(app).focus_handle(app),
+                screen.password_input.read(app).focus_handle(app),
+            )
+        });
+        cx.update(|window, app| window.focus(&account_focus, app));
+        cx.simulate_input("00000000-0000-4000-8000-000000000000");
+        cx.simulate_keystrokes("enter");
+        cx.update(|_window, app| {
+            assert_eq!(
+                screen.read(app).error.as_deref(),
+                Some(EMPTY_GUEST_CREDENTIALS_ERROR)
+            );
+        });
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, _app| assert!(password_focus.is_focused(window)));
+        // The filled form goes to the anonymous sign-in, not the email one:
+        // the unreachable backend either still runs it or reports its error.
+        cx.simulate_input("fixture");
+        cx.simulate_keystrokes("enter");
+        cx.update(|_window, app| {
+            let screen = screen.read(app);
+            assert!(screen.password_input.read(app).is_empty());
+            assert_ne!(screen.error.as_deref(), Some(EMPTY_GUEST_CREDENTIALS_ERROR));
+            assert!(screen.busy || screen.error.is_some());
+        });
+        cx.update(|_window, app| {
+            screen.update(app, |screen, cx| {
+                screen.busy = false;
+                screen.set_guest(false, cx);
+                assert!(!screen.guest);
+            })
         });
     }
 

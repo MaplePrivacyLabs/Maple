@@ -23,83 +23,6 @@ async function copyToClipboard(text: string) {
   }
 }
 
-const THINKING_LABEL_FADE_DURATION_MS = 150;
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
-
-function FadingThinkingLabel({ text, isThinking }: { text: string; isThinking: boolean }) {
-  const [displayedText, setDisplayedText] = useState(text);
-  const [isVisible, setIsVisible] = useState(true);
-  const displayedTextRef = useRef(text);
-
-  useEffect(() => {
-    if (text === displayedTextRef.current) {
-      setIsVisible(true);
-      return;
-    }
-
-    if (prefersReducedMotion()) {
-      displayedTextRef.current = text;
-      setDisplayedText(text);
-      setIsVisible(true);
-      return;
-    }
-
-    setIsVisible(false);
-    let fadeInFrame: number | null = null;
-    const swapTimer = window.setTimeout(() => {
-      displayedTextRef.current = text;
-      setDisplayedText(text);
-      fadeInFrame = window.requestAnimationFrame(() => setIsVisible(true));
-    }, THINKING_LABEL_FADE_DURATION_MS);
-
-    return () => {
-      window.clearTimeout(swapTimer);
-      if (fadeInFrame !== null) window.cancelAnimationFrame(fadeInFrame);
-    };
-  }, [text]);
-
-  const showDots = isThinking || displayedText === "Thinking";
-
-  return (
-    <>
-      <span
-        className={cn(
-          "inline-block transition-opacity duration-150 ease-in-out motion-reduce:transition-none",
-          isVisible ? "opacity-100" : "opacity-0"
-        )}
-        aria-live="polite"
-        aria-atomic="true"
-      >
-        {displayedText}
-      </span>
-      {showDots ? <ThinkingDots /> : null}
-    </>
-  );
-}
-
-function ThinkingDots() {
-  return (
-    <span className="inline-flex items-baseline gap-1">
-      {[0, 150, 300].map((animationDelay) => (
-        <span
-          key={animationDelay}
-          className="inline-block animate-bounce"
-          style={{ animationDelay: `${animationDelay}ms` }}
-        >
-          .
-        </span>
-      ))}
-    </span>
-  );
-}
-
 function ThinkingShimmer() {
   return (
     <span className="thinking-shimmer">
@@ -115,17 +38,9 @@ export interface ThinkingBlockProps {
   content: string;
   isThinking: boolean;
   duration?: number;
-  showDuration?: boolean;
-  label?: string;
 }
 
-export function ThinkingBlock({
-  content,
-  isThinking,
-  duration,
-  showDuration = true,
-  label
-}: ThinkingBlockProps) {
+export function ThinkingBlock({ content, isThinking, duration }: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Use the reported duration when available, otherwise estimate completed thoughts by word count.
@@ -152,20 +67,7 @@ export function ThinkingBlock({
         <Brain className="h-4 w-4 shrink-0 text-muted-foreground" />
         <span className="flex min-w-0 flex-1 items-center gap-2">
           <span className="min-w-0 text-sm font-medium text-muted-foreground">
-            {showDuration ? (
-              isThinking ? (
-                <ThinkingShimmer />
-              ) : (
-                `Thought for ${durationText} seconds`
-              )
-            ) : (
-              <span className="inline-flex items-center gap-2">
-                <FadingThinkingLabel
-                  text={label || (isThinking ? "Thinking" : "Thought")}
-                  isThinking={isThinking}
-                />
-              </span>
-            )}
+            {isThinking ? <ThinkingShimmer /> : `Thought for ${durationText} seconds`}
           </span>
           <span className="shrink-0 text-muted-foreground" aria-hidden>
             {isExpanded ? (
@@ -442,11 +344,11 @@ function escapeBrackets(text: string): string {
   return result;
 }
 
-// Disable Markdown's "4-space indent = code block" rule. Model output (goose via
-// mesh/OpenSecret) frequently indents wrapped lines or list continuations by 4
-// spaces, which CommonMark/GFM turn into an indented code block — so plain text
-// renders inside a <pre><code>. Fenced ``` / ~~~ blocks are unaffected; only the
-// accidental-indentation path is removed.
+// Disable Markdown's "4-space indent = code block" rule. Model output frequently
+// indents wrapped lines or list continuations by 4 spaces, which CommonMark/GFM
+// turn into an indented code block — so plain text renders inside a <pre><code>.
+// Fenced ``` / ~~~ blocks are unaffected; only the accidental-indentation path is
+// removed.
 function remarkNoIndentedCode(this: { data: (key?: string) => Record<string, unknown> }) {
   const data = this.data() as { micromarkExtensions?: unknown[] };
   const micromarkExtensions = (data.micromarkExtensions ||

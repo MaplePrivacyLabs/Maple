@@ -6,8 +6,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub const VERSION: u32 = 3;
 pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), ":", env!("MAPLE_GIT_SOURCE_SHA"));
-// Ten 10 MiB image attachments fit after base64/JSON encoding. Reads check
-// length before allocating. A connection admits only a bounded number of calls.
+// Bounded local history/control replies retain their existing frame budget.
+// Attachments are imported by staged local path, not sent as inline JSON bytes.
+// Reads check length before allocating; connections bound admitted calls.
 pub const MAX_FRAME: usize = 160 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
@@ -321,6 +322,10 @@ pub struct HostStatus {
     pub running_tasks: usize,
     pub remote_controllers: usize,
     pub background_tasks: usize,
+    #[serde(default)]
+    pub local_api_running: bool,
+    #[serde(default)]
+    pub local_api_requests: usize,
 }
 
 pub struct SensitiveMessage(pub Message);

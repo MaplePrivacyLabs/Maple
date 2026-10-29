@@ -7,14 +7,13 @@ import {
 } from "./QueuedComposerMessages";
 
 describe("queued composer messages", () => {
-  test("renders the edit state and Agent action order", () => {
+  test("renders the edit state and action order", () => {
     const markup = renderToStaticMarkup(
       <QueuedComposerMessages
         items={[{ queueId: "q1", text: "queued" }]}
         editingQueueId="q1"
         onRemove={() => {}}
         onEdit={() => {}}
-        onSendNow={() => {}}
       />
     );
 
@@ -22,12 +21,9 @@ describe("queued composer messages", () => {
     expect(markup.indexOf('aria-label="Remove queued message"')).toBeLessThan(
       markup.indexOf('aria-label="Edit queued message"')
     );
-    expect(markup.indexOf('aria-label="Edit queued message"')).toBeLessThan(
-      markup.indexOf('aria-label="Send queued message into the current turn"')
-    );
   });
 
-  test("supports an attachment fallback without adding a send-now action", () => {
+  test("supports an attachment fallback", () => {
     const markup = renderToStaticMarkup(
       <QueuedComposerMessages
         items={[{ queueId: "q1", text: "", attachmentCount: 2 }]}
@@ -38,21 +34,6 @@ describe("queued composer messages", () => {
     );
 
     expect(markup).toContain("2 attachment(s)");
-    expect(markup).not.toContain("Send queued message into the current turn");
-  });
-
-  test("disables only the optional send-now action", () => {
-    const markup = renderToStaticMarkup(
-      <QueuedComposerMessages
-        items={[{ queueId: "q1", text: "queued" }]}
-        onRemove={() => {}}
-        onEdit={() => {}}
-        onSendNow={() => {}}
-        sendNowDisabled
-      />
-    );
-
-    expect(markup.match(/disabled=""/g)).toHaveLength(1);
   });
 
   test("accepts layout clearance for an overlaid composer control", () => {

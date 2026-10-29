@@ -75,7 +75,7 @@ fn the_catalog_lists_cua_then_the_external_agents() {
     let ids: Vec<&str> = cards.iter().map(|card| card.id.as_str()).collect();
     assert_eq!(ids, ["cua-driver", "codex", "claude"]);
     let cua = &cards[0];
-    assert_eq!(cua.name, "Cua");
+    assert_eq!(cua.name, "Computer use");
     assert_eq!(cua.availability, AgentIntegrationAvailability::NotDetected);
     assert_eq!(cua.backend, None);
     assert!(!cua.enabled_for_new_tasks && !cua.setup_available);

@@ -11,11 +11,15 @@ mod billing;
 #[cfg(feature = "desktop")]
 mod desktop;
 mod env;
+#[cfg(feature = "desktop")]
+mod feedback;
 mod framing;
 mod host;
 mod hosted_oauth;
 #[cfg(feature = "desktop")]
 mod keymap;
+#[cfg(feature = "proxy")]
+mod local_api;
 #[cfg(feature = "desktop")]
 mod notify;
 #[cfg(feature = "desktop")]
@@ -33,6 +37,10 @@ mod tray;
 mod ui;
 #[cfg(feature = "desktop")]
 mod update;
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+mod windows_bootstrap;
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+mod windows_integration;
 
 use backend::AgentBackend;
 use clap::{Args, Parser, Subcommand};
@@ -69,6 +77,26 @@ struct Cli {
         conflicts_with = "build_info"
     )]
     internal_store_integrity_check: Option<std::path::PathBuf>,
+    /// Internal Linux desktop-portal watcher; never opens application state.
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args"])]
+    internal_theme_watch: bool,
+    /// Credential-free native installer admission before any installed write.
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, value_name = "INSTALL_ROOT", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    internal_windows_installer_preflight: Option<std::path::PathBuf>,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_preflight", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    internal_windows_installer_prepare: Vec<std::ffi::OsString>,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, value_name = "GENERATION", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    internal_windows_installer_activate: Option<String>,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_restart"])]
+    internal_windows_uninstall_cleanup: bool,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, value_name = "PROCESS_IDENTITY", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args"])]
+    internal_windows_restart: Option<String>,
     #[command(subcommand)]
     mode: Option<Mode>,
     /// Arguments a desktop launcher may append (file paths, `%u` expansions).
@@ -154,10 +182,19 @@ fn run_remote(command: RemoteCommand) -> Result<(), String> {
     let value: serde_json::Value = backend
         .runtime_handle()
         .block_on(backend.remote_setting(method, params))?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).map_err(|_| "Could not display remote status")?
-    );
+    write_remote_output(&mut std::io::stdout().lock(), &value)
+}
+
+fn write_remote_output(
+    output: &mut impl std::io::Write,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    // Mutation commands return null as an acknowledgement, not display data.
+    if !value.is_null() {
+        let json =
+            serde_json::to_string_pretty(value).map_err(|_| "Could not display remote response")?;
+        writeln!(output, "{json}").map_err(|_| "Could not write remote response")?;
+    }
     Ok(())
 }
 
@@ -166,8 +203,11 @@ fn run_remote(command: RemoteCommand) -> Result<(), String> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Args)]
 struct LoginArgs {
     /// Account email; prompted for when omitted.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "account_id")]
     email: Option<String>,
+    /// Sign in to an anonymous account with its account ID instead.
+    #[arg(long)]
+    account_id: Option<String>,
 }
 
 /// Settings for `maple-agent proxy`, from flags with environment fallbacks.
@@ -226,12 +266,115 @@ pub(crate) fn startup_elapsed() -> u128 {
 }
 
 fn main() {
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    if profile::PACKAGED {
+        // Delegate before Clap so the immutable bootstrap does not freeze the
+        // selected generation's CLI grammar or report its own old version.
+        match windows_bootstrap::delegate_before_parse(profile::PROFILE) {
+            Ok(Some(code)) => std::process::exit(code),
+            Ok(None) => {}
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        }
+    }
     let cli = Cli::parse();
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    {
+        // The stable launcher and installer modes never open application data,
+        // credentials or a host. Their paths and code identities are checked
+        // by the updater's native installer before mutation or delegation.
+        let mut internal_exit_code = 1;
+        let internal = if let Some(root) = &cli.internal_windows_installer_preflight {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows installer checker".to_owned())
+                    .and_then(|exe| {
+                        maple_agent_updater::installer::preflight_windows_installation(
+                            &exe,
+                            root,
+                            profile::PROFILE,
+                        )
+                        .map_err(|error| error.to_string())
+                    }),
+            )
+        } else if !cli.internal_windows_installer_prepare.is_empty() {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows installer checker".to_owned())
+                    .and_then(|exe| {
+                        let root =
+                            std::path::PathBuf::from(&cli.internal_windows_installer_prepare[0]);
+                        let generation = cli.internal_windows_installer_prepare[1]
+                            .to_str()
+                            .ok_or_else(|| "Invalid Windows generation".to_owned())?;
+                        maple_agent_updater::installer::prepare_windows_installation(
+                            &exe,
+                            &root,
+                            profile::PROFILE,
+                            generation,
+                        )
+                        .map_err(|error| error.to_string())
+                    }),
+            )
+        } else if let Some(generation) = &cli.internal_windows_installer_activate {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows bootstrap".to_owned())
+                    .and_then(|exe| {
+                        maple_agent_updater::installer::activate_windows_installation(
+                            &exe,
+                            profile::PROFILE,
+                            generation,
+                        )
+                        .map_err(|error| {
+                            internal_exit_code = error.windows_activation_exit_code().unwrap_or(1);
+                            error.to_string()
+                        })
+                    }),
+            )
+        } else if cli.internal_windows_uninstall_cleanup {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows bootstrap".to_owned())
+                    .and_then(|exe| {
+                        maple_agent_updater::installer::cleanup_windows_installation(
+                            &exe,
+                            profile::PROFILE,
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                    }),
+            )
+        } else {
+            cli.internal_windows_restart
+                .as_deref()
+                .map(|identity| windows_bootstrap::run_restart(identity, profile::PROFILE))
+        };
+        if let Some(result) = internal {
+            if let Err(error) = result {
+                eprintln!("{error}");
+                std::process::exit(internal_exit_code);
+            }
+            return;
+        }
+    }
     if cli.build_info {
         println!(
             "{}",
             serde_json::to_string(&profile::build_info()).expect("build metadata")
         );
+        return;
+    }
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    if cli.internal_theme_watch {
+        // The helper is a separate, credential-free process. It must remain
+        // identifiable to the portal, but never reaches normal app startup.
+        if platform::portal::run_helper().is_err() {
+            eprintln!("Desktop theme watcher unavailable.");
+            std::process::exit(1);
+        }
         return;
     }
     if let Err(error) = host::hardening::apply() {
@@ -246,8 +389,8 @@ fn main() {
         }
         return;
     }
-    // SAFETY: argument parsing starts no threads. No other thread exists
-    // yet, so mutating the process environment here cannot race a reader.
+    // SAFETY: argument parsing and hardening start no threads. No other
+    // thread exists yet, so environment mutation cannot race a reader.
     unsafe { maple_agent::prepare_process_environment() };
     #[cfg(feature = "desktop")]
     let _ = PROCESS_START.set(std::time::Instant::now());
@@ -322,6 +465,8 @@ fn main() {
             }
         }
         None => {
+            #[cfg(all(feature = "desktop", target_os = "windows"))]
+            windows_integration::start();
             #[cfg(feature = "desktop")]
             desktop::run();
             #[cfg(not(feature = "desktop"))]
@@ -367,10 +512,6 @@ fn host_error_summary(error: &str) -> &'static str {
 /// enclave, for tools that speak the OpenAI API. Runs until killed.
 #[cfg(feature = "proxy")]
 fn run_proxy(args: ProxyArgs) -> Result<(), String> {
-    use axum::http::{Method, StatusCode, header::ORIGIN};
-    use axum::response::IntoResponse;
-    use tower_http::cors::{AllowHeaders, Any, CorsLayer};
-
     let backend_url = maple_agent::maple_api::validate_api_url(&configured_api_url())?;
     let pcr0 = maple_agent::open_secret_config::configured_pcr0_environment()?;
     let mut config = maple_proxy::Config::new(args.host.clone(), args.port, backend_url)
@@ -386,31 +527,7 @@ fn run_proxy(args: ProxyArgs) -> Result<(), String> {
     let addr = config
         .socket_addr()
         .map_err(|error| format!("Invalid proxy address: {error}"))?;
-    let app = maple_proxy::create_app(config);
-    let app = if args.cors {
-        app.layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                // Authorization is not covered by `*` under Fetch; mirror
-                // the preflight list so bearer keys and SDK headers pass.
-                .allow_headers(AllowHeaders::mirror_request()),
-        )
-    } else {
-        // Disabling CORS alone only hides responses. A no-cors browser POST
-        // can still reach loopback and spend the saved key, so fail closed
-        // on browser-only headers before the body is read.
-        app.layer(axum::middleware::from_fn(
-            |request: axum::extract::Request, next: axum::middleware::Next| async move {
-                if request.headers().contains_key(ORIGIN)
-                    || request.headers().contains_key("sec-fetch-site")
-                {
-                    return StatusCode::FORBIDDEN.into_response();
-                }
-                next.run(request).await
-            },
-        ))
-    };
+    let app = local_api::apply_browser_policy(maple_proxy::create_app(config), args.cors);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -458,15 +575,19 @@ fn run_login(args: LoginArgs) -> Result<(), String> {
         eprintln!("A Maple sign-in is already saved; signing in again replaces it.");
         log::info!("login replaces the saved session for account {user_id}");
     }
-    let email = match args.email {
-        Some(email) => email,
-        None => prompt_line("Email: ")?,
+    let login = match (args.account_id, args.email) {
+        (Some(account_id), _) => Err(account_id),
+        (None, Some(email)) => Ok(email),
+        (None, None) => Ok(prompt_line("Email: ")?),
     };
     let password = rpassword::prompt_password("Password: ")
         .map_err(|error| format!("Could not read the password: {error}"))?;
-    let session = backend
-        .runtime_handle()
-        .block_on(backend.login(email, password))?;
+    let session = backend.runtime_handle().block_on(async {
+        match login {
+            Ok(email) => backend.login(email, password).await,
+            Err(account_id) => backend.login_guest(account_id, password).await,
+        }
+    })?;
     let account = backend
         .runtime_handle()
         .block_on(backend.account(&session.user_id))
@@ -639,6 +760,40 @@ mod tests {
     }
 
     #[test]
+    fn remote_output_is_silent_for_successful_acknowledgements() {
+        let mut output = Vec::new();
+        super::write_remote_output(&mut output, &serde_json::Value::Null).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn remote_output_preserves_json_data_and_trailing_newline() {
+        for value in [
+            serde_json::json!({"enabled": true, "ready": false, "error": null}),
+            serde_json::json!([]),
+            serde_json::json!([{"endpoint": "test-endpoint"}]),
+            serde_json::json!({"code": "TEST-CODE"}),
+        ] {
+            let mut output = Vec::new();
+            super::write_remote_output(&mut output, &value).unwrap();
+            assert_eq!(
+                String::from_utf8(output).unwrap(),
+                format!("{}\n", serde_json::to_string_pretty(&value).unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn remote_output_reports_write_errors() {
+        let error = super::write_remote_output(
+            &mut std::io::Cursor::new(&mut [][..]),
+            &serde_json::json!([]),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Could not write remote response");
+    }
+
+    #[test]
     fn host_error_summaries_include_only_fixed_guidance() {
         let private = "https://fake-user:fake-password@example.invalid/private?token=fake-token account=fake-account";
         for error in [
@@ -737,14 +892,23 @@ mod tests {
     fn login_takes_an_optional_email_and_never_a_password() {
         assert_eq!(
             parse(&["login"]).unwrap(),
-            Some(Mode::Login(LoginArgs { email: None }))
+            Some(Mode::Login(LoginArgs::default()))
         );
         assert_eq!(
             parse(&["login", "--email", "a@b.c"]).unwrap(),
             Some(Mode::Login(LoginArgs {
-                email: Some("a@b.c".into())
+                email: Some("a@b.c".into()),
+                account_id: None,
             }))
         );
+        assert_eq!(
+            parse(&["login", "--account-id", "id"]).unwrap(),
+            Some(Mode::Login(LoginArgs {
+                email: None,
+                account_id: Some("id".into()),
+            }))
+        );
+        assert!(parse(&["login", "--email", "a@b.c", "--account-id", "id"]).is_err());
         assert!(parse(&["login", "--password", "x"]).is_err());
     }
 

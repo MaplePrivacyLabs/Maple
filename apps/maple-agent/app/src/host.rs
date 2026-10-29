@@ -5,6 +5,8 @@ pub(crate) mod hardening;
 pub(crate) mod ipc;
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(all(test, feature = "proxy"))]
+mod local_api_tests;
 mod passwords;
 pub mod protocol;
 pub(crate) mod receipts;
@@ -16,6 +18,8 @@ mod send_receipt_tests;
 pub(crate) mod subscription;
 #[cfg(test)]
 mod subscription_tests;
+#[cfg(windows)]
+mod windows_spawn;
 
 use crate::backend::{self, LocalBackend};
 use maple_agent::agent::AgentServiceEvent;
@@ -600,13 +604,10 @@ fn spawn_host() -> Result<(), String> {
         }
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x00000008 | 0x00000200 | 0x01000000); // detached, new group, break away from client job
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Cannot start Maple host: {e}"))?;
+    let child = windows_spawn::spawn(&mut command);
+    #[cfg(not(windows))]
+    let child = command.spawn();
+    let mut child = child.map_err(|e| format!("Cannot start Maple host: {e}"))?;
     // Reap on Unix while the parent remains alive; the host is not kill-on-drop.
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -885,6 +886,8 @@ fn gate(state: &StoreState, method: &str) -> Result<(), String> {
         "store_status" | "host_status" | "detach" | "cancel_oauth"
     ) || (method == "erase_local_data"
         && !matches!(state, StoreState::Refused { .. }));
+    #[cfg(feature = "proxy")]
+    let control = control || matches!(method, "get_local_api_status" | "stop_local_api");
     let allowed = control
         || match state {
             StoreState::Locked => method == "unlock",
@@ -1021,6 +1024,10 @@ impl OwnerContext {
     }
 
     fn keeps_host(&self, backend: &LocalBackend) -> bool {
+        #[cfg(feature = "proxy")]
+        if backend.local_api.stays_running() {
+            return true;
+        }
         let state = self.state(backend);
         self.retained_failure.load(Ordering::Acquire)
             || self.busy.load(Ordering::Acquire)
@@ -1048,6 +1055,10 @@ impl OwnerContext {
         // Release exposure remains gated on native G3 evidence. Local debug
         // builds permit exact-app validation without shipping this capability.
         value["password_settings_available"] = serde_json::json!(cfg!(debug_assertions));
+        #[cfg(feature = "proxy")]
+        {
+            value["local_api_running"] = serde_json::json!(backend.local_api.stays_running());
+        }
         let persistence = serde_json::to_value(store.persistence_status())
             .map_err(|_| "Could not encode persistence status")?;
         value["persistence_failure"] = persistence
@@ -1087,6 +1098,26 @@ impl OwnerContext {
             running_tasks,
             remote_controllers,
             background_tasks,
+            local_api_running: {
+                #[cfg(feature = "proxy")]
+                {
+                    backend.local_api.stays_running()
+                }
+                #[cfg(not(feature = "proxy"))]
+                {
+                    false
+                }
+            },
+            local_api_requests: {
+                #[cfg(feature = "proxy")]
+                {
+                    backend.local_api.status().active_requests
+                }
+                #[cfg(not(feature = "proxy"))]
+                {
+                    0
+                }
+            },
         })
         .map_err(|_| "Could not encode host status".into())
     }
@@ -1106,6 +1137,10 @@ impl OwnerContext {
             return Err(error.to_owned());
         }
         gate(&self.state(backend), method)?; // Must precede remote_* routing.
+        #[cfg(feature = "proxy")]
+        if matches!(method, "get_local_api_status" | "stop_local_api") {
+            return backend::dispatch(backend, request.into_request()).await;
+        }
         if method == "store_status" {
             let mut status = self.status(backend)?;
             status["connection_rebind_required"] =
@@ -1114,6 +1149,19 @@ impl OwnerContext {
         }
         if method == "host_status" {
             return self.host_status(backend, remote).await;
+        }
+        #[cfg(feature = "proxy")]
+        if matches!(
+            method,
+            "login"
+                | "login_guest"
+                | "logout_and_clear"
+                | "oauth_wait_for_handoff"
+                | "oauth_complete"
+        ) {
+            // Wake a pending proxy restore before waiting for admission. Its
+            // account validation must not hold up a local account transition.
+            backend.local_api.stop().await;
         }
         let store = backend
             .store()
@@ -1202,9 +1250,13 @@ impl OwnerContext {
                     .lock()
                     .map_err(|_| "Store notice is unavailable")? = None;
             }
+            #[cfg(feature = "proxy")]
+            let local_api_control_epoch = backend.local_api_control_epoch();
             let (_exclusive_admission, _shared_admission) = if drain_operation {
                 backend.begin_store_drain();
                 self.drain_acp();
+                #[cfg(feature = "proxy")]
+                backend.local_api.stop().await;
                 remote.shutdown().await;
                 (Some(self.exclusive_admission(backend).await), None)
             } else {
@@ -1232,6 +1284,8 @@ impl OwnerContext {
                 } else {
                     (None, Some(backend.account_gate.read().await))
                 };
+                #[cfg(feature = "proxy")]
+                if drain_operation { backend.local_api.stop().await; }
                 generation.check(backend, method)?;
                 gate(&store.state(), method)?;
                 if drain_operation && !destructive {
@@ -1364,6 +1418,19 @@ impl OwnerContext {
                 remote.shutdown().await;
                 if backend.saved_user_id().is_some() && store.state() == StoreState::Open {
                     remote.restore().await;
+                    #[cfg(feature = "proxy")]
+                    {
+                        let generation = backend.local_api.generation();
+                        let _account = backend.account_gate.read().await;
+                        if backend.local_api_control_epoch() == local_api_control_epoch {
+                            let _ = backend
+                                .local_api_while_current(generation, async {
+                                    Ok(backend.validate_persisted_auth().await)
+                                })
+                                .await;
+                            let _ = backend.resume_local_api(generation).await;
+                        }
+                    }
                 }
             }
             return result;
@@ -1416,6 +1483,8 @@ impl OwnerContext {
                 | "remote_update_publish"
                 | "remote_update_take"
                 | "remote_update_complete"
+                | "remote_update_refresh_take"
+                | "remote_update_refresh_complete"
         ) {
             let account = request
                 .params
@@ -1456,6 +1525,26 @@ impl OwnerContext {
                         .await?,
                 )
                 .map_err(|_| "Could not encode desktop updater response".to_owned()),
+                "remote_update_refresh_take" => serde_json::to_value(
+                    backend
+                        .remote_updates
+                        .take_refresh(
+                            serde_json::from_value(request.params.clone())
+                                .map_err(|_| "Invalid desktop update check poll")?,
+                        )
+                        .await?,
+                )
+                .map_err(|_| "Could not encode desktop updater response".to_owned()),
+                "remote_update_refresh_complete" => {
+                    backend
+                        .remote_updates
+                        .complete_refresh(
+                            serde_json::from_value(request.params.clone())
+                                .map_err(|_| "Invalid desktop update check completion")?,
+                        )
+                        .await?;
+                    Ok(serde_json::Value::Null)
+                }
                 _ => {
                     backend
                         .remote_updates
@@ -1532,6 +1621,8 @@ impl OwnerContext {
             // Administrative local Stop intentionally cancels local work while
             // waiting for its exclusive operation/admission guards.
             backend.cancel_oauth();
+            #[cfg(feature = "proxy")]
+            backend.local_api.stop().await;
             let operation = self.operation.lock();
             tokio::pin!(operation);
             loop {
@@ -1598,12 +1689,16 @@ impl OwnerContext {
         let restore_remote = remote.stays_running();
         backend.begin_store_drain();
         self.drain_acp();
+        #[cfg(feature = "proxy")]
+        backend.local_api.stop().await;
         remote.shutdown().await;
         let _admission = match remote_admission {
             Some(admission) => admission,
             None => self.exclusive_admission(backend).await,
         };
         let _account = backend.account_gate.write().await;
+        #[cfg(feature = "proxy")]
+        backend.local_api.stop().await;
         // An already-admitted account operation may have restored its remote
         // node while Stop waited for admission. Close that late node as well;
         // no account operation can publish another under these exclusive gates.
@@ -1823,6 +1918,38 @@ async fn serve_runtime(
         });
     }
     let owner = Arc::new(OwnerContext::new(backend.store()));
+    #[cfg(feature = "proxy")]
+    let local_api_pump = {
+        let mut updates = backend.local_api.subscribe();
+        let events = events.clone();
+        tokio::spawn(async move {
+            while updates.changed().await.is_ok() {
+                let _ = events.send(Arc::new(AgentServiceEvent::LocalApiChanged));
+            }
+        })
+    };
+    #[cfg(feature = "proxy")]
+    let local_api_restore = {
+        let backend = backend.clone();
+        let owner = owner.clone();
+        let generation = backend.local_api.generation();
+        tokio::spawn(async move {
+            let _admission = owner.admission.read().await;
+            let _account = backend.account_gate.read().await;
+            if owner.state(&backend) == StoreState::Open
+                && matches!(
+                    backend
+                        .local_api_while_current(generation, async {
+                            Ok(backend.validate_persisted_auth().await)
+                        })
+                        .await,
+                    Ok(backend::RestoreOutcome::Valid(_))
+                )
+            {
+                let _ = backend.resume_local_api(generation).await;
+            }
+        })
+    };
     let sink = events.clone();
     let account_remote = remote.clone();
     let pump = tokio::spawn(async move {
@@ -1911,6 +2038,11 @@ async fn serve_runtime(
     clients.abort_all();
     while clients.join_next().await.is_some() {}
     pump.abort();
+    #[cfg(feature = "proxy")]
+    {
+        local_api_pump.abort();
+        local_api_restore.abort();
+    }
     Ok(())
 }
 
@@ -2145,7 +2277,7 @@ async fn serve_client_inner(
                             continue;
                         }
                         let readable = (!stale && owner.state(&backend) == StoreState::Open)
-                            || matches!(&*event, AgentServiceEvent::StoreStateChanged { .. } | AgentServiceEvent::AccountChanged(None) | AgentServiceEvent::PersistenceFailureChanged { .. });
+                            || matches!(&*event, AgentServiceEvent::StoreStateChanged { .. } | AgentServiceEvent::AccountChanged(None) | AgentServiceEvent::PersistenceFailureChanged { .. } | AgentServiceEvent::LocalApiChanged);
                         if readable && task_subscription.allows(&event) {
                             write_event(&mut output, &event).await?;
                         }
@@ -3283,6 +3415,7 @@ mod tests {
         assert!(!owner_is_free(&endpoint).await.unwrap());
         // No listener exists: an unavailable endpoint is insufficient while
         // the authoritative host still holds this exact lock.
+        owner.unlock().unwrap();
         drop(owner);
         assert!(owner_is_free(&endpoint).await.unwrap());
         assert!(paths.owner_lock().exists());
@@ -3429,17 +3562,24 @@ mod tests {
     async fn retired_in_place_repair_refuses_before_runtime_drain_or_source_changes() {
         fn snapshot(
             path: &std::path::Path,
+            shared_memory: &std::path::Path,
         ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
             fn visit(
                 root: &std::path::Path,
                 path: &std::path::Path,
+                shared_memory: &std::path::Path,
                 files: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
             ) {
                 for entry in std::fs::read_dir(path).unwrap() {
                     let entry = entry.unwrap();
                     let path = entry.path();
+                    // SQLite's WAL-index holds transient lock/read marks. Only
+                    // this exact file is excluded; database and WAL bytes stay.
+                    if path == shared_memory {
+                        continue;
+                    }
                     if entry.file_type().unwrap().is_dir() {
-                        visit(root, &path, files);
+                        visit(root, &path, shared_memory, files);
                     } else {
                         assert!(entry.file_type().unwrap().is_file());
                         files.insert(
@@ -3450,7 +3590,7 @@ mod tests {
                 }
             }
             let mut files = std::collections::BTreeMap::new();
-            visit(path, path, &mut files);
+            visit(path, path, shared_memory, &mut files);
             files
         }
         let directory = tempfile::tempdir().unwrap();
@@ -3459,6 +3599,10 @@ mod tests {
         store
             .set_app_setting("repair-refusal-sentinel", &serde_json::json!(true), 1)
             .unwrap();
+        // Drain the seed write's queued checkpoint before comparing physical
+        // bytes. Reopen the same live store without queuing another commit.
+        store.close().unwrap();
+        store.initialize_plain().unwrap();
         let receipts = Arc::new(receipts::Receipts::new(store.clone()));
         let (events, mut observed) = broadcast::channel(16);
         let remote =
@@ -3466,7 +3610,8 @@ mod tests {
         let owner = OwnerContext::new(Some(&store));
         let generation = ConnectionGeneration::capture(&backend).unwrap();
         let drain = owner.draining.subscribe();
-        let before = snapshot(store.paths().root());
+        let shared_memory = store.paths().db().join("maple.db-shm");
+        let before = snapshot(store.paths().root(), &shared_memory);
         // A stale repair request must return without joining the operation or
         // admission queues, including while another operation owns them.
         let _operation = owner.operation.lock().await;
@@ -3493,7 +3638,7 @@ mod tests {
             result.unwrap_err(),
             repair::retired_operation_error("repair_store").unwrap()
         );
-        assert_eq!(snapshot(store.paths().root()), before);
+        assert_eq!(snapshot(store.paths().root(), &shared_memory), before);
         assert_eq!(store.state(), StoreState::Open);
         assert!(!owner.busy.load(Ordering::Acquire));
         assert!(!owner.maintenance.load(Ordering::Acquire));
@@ -4081,6 +4226,7 @@ mod tests {
     fn locked_gate_rejects_data_auth_remote_and_subscription_methods() {
         for method in [
             "login",
+            "login_guest",
             "get_ui_settings",
             "set_ui_settings",
             "subscribe",

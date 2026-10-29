@@ -45,7 +45,15 @@ fn runtime_library_path() -> PathBuf {
         if let Some(directory) = executable.parent() {
             #[cfg(target_os = "linux")]
             {
-                let bundled = directory.join("../lib/maple/libonnxruntime.so");
+                let library_directory = if option_env!("MAPLE_DESKTOP_VARIANT") == Some("dev") {
+                    "maple-research-dev"
+                } else {
+                    "maple"
+                };
+                let bundled = directory
+                    .join("../lib")
+                    .join(library_directory)
+                    .join("libonnxruntime.so");
                 if bundled.exists() {
                     return bundled;
                 }

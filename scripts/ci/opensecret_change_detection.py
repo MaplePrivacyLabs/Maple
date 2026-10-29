@@ -44,8 +44,8 @@ SDK_INTEGRATION_FILES = frozenset({
     ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh",
 })
 KNOWN_INDEPENDENT_PREFIXES = (
-    "apps/", "proxy/", "services/updates/", ".agents/", ".github/",
-    ".githooks/", "docs/", "scripts/",
+    "apps/", "proxy/", "services/updates/", "services/agent-updates/", "services/download-tracking/",
+    ".agents/", ".github/", ".githooks/", "docs/", "scripts/",
 )
 KNOWN_INDEPENDENT_FILES = frozenset({
     "AGENTS.md", "README.md", "LICENSE", ".gitignore", ".dockerignore",
@@ -113,6 +113,14 @@ def classify_paths(paths: Iterable[str]) -> dict[str, bool]:
     for path in paths:
         selected.update(classify_path(path))
     return {name: name in selected for name in OUTPUTS}
+
+
+def classify_pcr(path: str) -> bool:
+    """The `pcr` output for ci.yml's os-pcr lane: the offline PCR tooling and the
+    approvals it verifies. Kept out of OUTPUTS, so the approval workflow's outputs
+    and every classify_path route stay as they are."""
+    relative = path.removeprefix(BACKEND_PREFIX)
+    return path.startswith(BACKEND_PREFIX) and (relative in PCR_INPUTS or relative in APPROVED_PCR_FILES)
 
 
 def main() -> int:

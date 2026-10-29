@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as platform from "@/utils/platform";
 import { fetchPortalUrl } from "./billingApi";
-import { billingReturnOrigin } from "./returnOrigin";
+import { billingPortalReturnOrigin, billingReturnOrigin } from "./returnOrigin";
 
 describe("billing browser returns", () => {
   const previousBillingApi = process.env.VITE_MAPLE_BILLING_API_URL;
@@ -67,6 +67,7 @@ describe("billing browser returns", () => {
       Object.defineProperty(window.location, "origin", { value: origin, configurable: true });
       process.env.VITE_MAPLE_BILLING_API_URL = "https://billing-dev.opensecret.cloud";
       expect(billingReturnOrigin()).toBe(origin);
+      expect(billingPortalReturnOrigin()).toBe(origin);
     });
   }
 
@@ -75,4 +76,26 @@ describe("billing browser returns", () => {
     process.env.VITE_MAPLE_BILLING_API_URL = "https://billing-dev.opensecret.cloud";
     expect(billingReturnOrigin()).toBe("https://trymaple.ai");
   });
+
+  for (const [api, origin] of [
+    ["https://billing-dev.opensecret.cloud", "https://app-dev.maple.ai"],
+    ["https://billing-dev.opensecret.cloud/", "https://app-dev.maple.ai"],
+    ["https://billing.opensecret.cloud", "https://app.maple.ai"]
+  ]) {
+    test(`mobile portal returns directly to ${origin} without changing payment links`, async () => {
+      spyOn(platform, "isMobile").mockReturnValue(true);
+      process.env.VITE_MAPLE_BILLING_API_URL = api;
+      const request = spyOn(globalThis, "fetch").mockResolvedValue(
+        Response.json({ portal_url: "https://billing.stripe.com/p/session/test" })
+      );
+      cleanup.push(() => request.mockRestore());
+
+      await fetchPortalUrl("fixture-token");
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(request.mock.calls[0][1]?.body))).toEqual({
+        return_url: origin
+      });
+      expect(billingReturnOrigin()).toBe("https://trymaple.ai");
+    });
+  }
 });

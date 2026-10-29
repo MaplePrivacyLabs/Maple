@@ -1,7 +1,7 @@
 # Development environments and authentication
 
 Choose the environment for the task before setup, implementation, or smoke
-testing. Keep the chosen lane through API, client/project ID, auth origin,
+testing. Keep the chosen environment through API, client/project ID, auth origin,
 account, billing/flags, and runtime configuration.
 
 | Environment | Use | Required setup/evidence |
@@ -72,7 +72,10 @@ disable verification to make it work.
 Use an account valid for the selected Dev API/project and a supported login
 path. Verify account login before dependent UI validation; a production account
 or retained session from another origin is not a Dev-account setup. Account
-provisioning/access belongs to the environment owner. Ordinary small frontend
+provisioning/access belongs to the environment owner. Hosted Dev serves paid
+routes (inference, embeddings, audio, web search, remote) only to accounts with
+a verified `maple.ai` or `opensecret.cloud` email or the `dev_spend` user flag;
+other accounts can sign in but get 403 there. Ordinary small frontend
 work can use the supported password flow without introducing a provider-login
 rehearsal. When OAuth/native handoff is the changed boundary, explicitly select
 its hosted environment and test the real provider/callback/native path.

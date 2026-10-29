@@ -6,10 +6,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::{Arc, Weak};
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "6.2.0";
+pub const PROTOCOL_VERSION: &str = "7.1.0";
 pub const PEER_INFO_CAPABILITY: &str = "peer_info_v1";
 pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
+pub const REFRESH_CAPABILITY: &str = "remote_update_refresh_v1";
 pub const PROJECT_FOLDERS_CAPABILITY: &str = "project_folders_v1";
+/// The host summarizes a tool call from its input as the call starts.
+pub const TOOL_SUMMARY_START_CAPABILITY: &str = "tool_summary_start_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolInfo {
@@ -25,7 +28,9 @@ impl ProtocolInfo {
             capabilities: vec![
                 PEER_INFO_CAPABILITY.into(),
                 INSTALL_CAPABILITY.into(),
+                REFRESH_CAPABILITY.into(),
                 PROJECT_FOLDERS_CAPABILITY.into(),
+                TOOL_SUMMARY_START_CAPABILITY.into(),
             ],
         }
     }
@@ -84,14 +89,6 @@ pub struct ReleaseIdentity {
 }
 
 impl ReleaseIdentity {
-    /// The same published release can have different platform documents.
-    #[cfg(any(feature = "desktop", test))]
-    pub fn same_release(&self, other: &Self) -> bool {
-        self.version == other.version
-            && self.build == other.build
-            && self.source_sha == other.source_sha
-    }
-
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.version.len() > 64 {
             return Err(invalid_install());
@@ -162,6 +159,7 @@ pub enum BlockedReason {
     Busy,
     DesktopUnavailable,
     CoordinatorUnavailable,
+    PairingConfirmationRequired,
     #[serde(other)]
     Unknown,
 }
@@ -182,6 +180,9 @@ impl BlockedReason {
             Self::DesktopUnavailable => "Open Maple on the remote computer before updating it.",
             Self::CoordinatorUnavailable => {
                 "Remote update controls need attention on this computer. Update it locally."
+            }
+            Self::PairingConfirmationRequired => {
+                "Pair this computer again before updating it remotely. Its saved pairing confirmation is unavailable."
             }
             Self::Unknown => "The remote computer cannot install this update remotely.",
         }
@@ -234,8 +235,16 @@ impl PeerInfo {
         self.protocol.supports(INSTALL_CAPABILITY)
     }
 
+    pub fn supports_remote_refresh(&self) -> bool {
+        self.protocol.supports(REFRESH_CAPABILITY)
+    }
+
     pub fn supports_project_folders(&self) -> bool {
         self.protocol.supports(PROJECT_FOLDERS_CAPABILITY)
+    }
+
+    pub fn supports_tool_summary_start(&self) -> bool {
+        self.protocol.supports(TOOL_SUMMARY_START_CAPABILITY)
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
@@ -343,6 +352,54 @@ pub struct InstallAccepted {
     pub target: ReleaseIdentity,
 }
 
+/// Local controller result. The remote wire receipt remains InstallAccepted;
+/// definite refusal must not be presented as an unconfirmed installation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InstallReply {
+    Accepted { receipt: InstallAccepted },
+    Refused { reason: InstallRefusal },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallRefusal {
+    AuthorizationChanged,
+    UpdateChanged,
+    NotReady,
+    Unsupported,
+    AccountChanged,
+    Busy,
+    Unavailable,
+}
+
+impl InstallRefusal {
+    #[cfg(feature = "desktop")]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::AuthorizationChanged => {
+                "The pairing confirmation changed. Refresh this computer’s status, or pair it again before updating it."
+            }
+            Self::UpdateChanged => {
+                "The remote update changed. Refresh this computer’s status before continuing."
+            }
+            Self::NotReady => {
+                "The remote computer is not ready to install this update. Refresh its status before continuing."
+            }
+            Self::Unsupported => {
+                "This computer does not support this remote update. Update Maple directly on it."
+            }
+            Self::AccountChanged => {
+                "The signed-in account changed. Reopen Remote settings before continuing."
+            }
+            Self::Busy => "The remote computer is busy. Refresh its status after it finishes.",
+            Self::Unavailable => {
+                "The update request was not accepted. Refresh this computer’s status or check it directly."
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct InstallCommand {
@@ -358,26 +415,36 @@ pub(crate) struct RemoteInstallAuthority {
     grant: [u8; 16],
 }
 
+/// The incoming, durable pairing policy used at capture and final consumption.
+/// Authentication/session and lease checks remain with their existing owners.
+pub(super) fn capture_install_grant(
+    store: &super::store::Store,
+    peer: EndpointId,
+    expected_grant: [u8; 16],
+) -> Result<(), String> {
+    if !store.permits(peer)
+        || !store
+            .peers()
+            .get(&peer.to_string())
+            .is_some_and(|value| value.controls_this_computer && value.grant == expected_grant)
+    {
+        return Err("Remote update authorization changed. Reopen this computer.".into());
+    }
+    Ok(())
+}
+
 impl RemoteInstallAuthority {
     pub(super) fn capture(
         node: &Arc<Node>,
         peer: EndpointId,
         expected_grant: [u8; 16],
     ) -> Result<Self, String> {
-        let peer = peer.to_string();
-        let store = node.store.lock().map_err(|_| "Remote grant unavailable")?;
-        if !store.permits(peer.parse().map_err(|_| "Remote grant unavailable")?)
-            || !store
-                .peers()
-                .get(&peer)
-                .is_some_and(|value| value.controls_this_computer && value.grant == expected_grant)
-        {
-            return Err("Remote update authorization changed. Reopen this computer.".into());
-        }
+        let store = node.store.read().map_err(|_| "Remote grant unavailable")?;
+        capture_install_grant(&store, peer, expected_grant)?;
         Ok(Self {
             node: Arc::downgrade(node),
             account: node.account.clone(),
-            peer,
+            peer: peer.to_string(),
             grant: expected_grant,
         })
     }
@@ -409,17 +476,13 @@ impl RemoteInstallAuthority {
     ) -> Result<T, String> {
         let node = self.node.upgrade().ok_or("Remote access ended")?;
         let peer = self.peer.parse().map_err(|_| "Remote access ended")?;
-        let store = node.store.lock().map_err(|_| "Remote grant unavailable")?;
+        let store = node.store.read().map_err(|_| "Remote grant unavailable")?;
         if node.stopped.is_cancelled()
             || node.backend.saved_user_id().as_deref() != Some(&self.account)
-            || !store.permits(peer)
-            || !store
-                .peers()
-                .get(&self.peer)
-                .is_some_and(|value| value.grant == self.grant)
         {
             return Err("Remote update authorization changed. Reopen this computer.".into());
         }
+        capture_install_grant(&store, peer, self.grant)?;
         effect()
     }
 }
@@ -451,6 +514,53 @@ mod tests {
             source_sha: "a".repeat(40),
             manifest_sha256: "b".repeat(64),
         }
+    }
+
+    #[test]
+    fn a_cached_peer_status_is_not_remote_refresh_support() {
+        let mut info = current_peer_for_compatibility();
+        assert!(info.supports_remote_refresh());
+        info.protocol.version = "7.0.0".into();
+        info.protocol
+            .capabilities
+            .retain(|value| value != REFRESH_CAPABILITY);
+        assert!(info.supports_remote_updates());
+        assert!(!info.supports_remote_refresh());
+        info.protocol.capabilities.push(REFRESH_CAPABILITY.into());
+        assert!(info.supports_remote_refresh());
+        info.protocol.version = "6.1.0".into();
+        assert!(!info.supports_remote_refresh());
+    }
+
+    #[test]
+    fn a_definite_local_refusal_cannot_decode_as_an_accepted_wire_receipt() {
+        let refused = InstallReply::Refused {
+            reason: InstallRefusal::AuthorizationChanged,
+        };
+        let encoded = serde_json::to_value(&refused).unwrap();
+        assert!(serde_json::from_value::<InstallAccepted>(encoded.clone()).is_err());
+        assert_eq!(
+            serde_json::from_value::<InstallReply>(encoded).unwrap(),
+            refused
+        );
+        let accepted = InstallAccepted {
+            operation_id: "11111111-1111-4111-8111-111111111111".into(),
+            target: target(),
+        };
+        assert!(
+            serde_json::from_value::<InstallReply>(serde_json::to_value(&accepted).unwrap())
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::from_value::<InstallReply>(
+                serde_json::to_value(InstallReply::Accepted {
+                    receipt: accepted.clone(),
+                })
+                .unwrap()
+            )
+            .unwrap(),
+            InstallReply::Accepted { receipt: accepted },
+        );
     }
 
     #[test]
@@ -499,13 +609,14 @@ mod tests {
             u64::from(super::super::wire::VERSION)
         );
         assert!(current.supports(INSTALL_CAPABILITY));
+        assert!(current.supports(REFRESH_CAPABILITY));
         assert!(current.supports(PROJECT_FOLDERS_CAPABILITY));
     }
 
     #[test]
     fn responses_accept_future_fields_and_unknown_status_without_enabling_mutation() {
         let value = json!({
-            "protocol":{"version":"6.3.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
+            "protocol":{"version":"7.1.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
             "running":{"version":"0.0.6","source_sha":"a".repeat(40),"platform":"linux-x86_64","future":true},
             "update":{"state":"future_state","future":true},
             "future":true
@@ -515,10 +626,10 @@ mod tests {
         assert_eq!(info.update.state, UpdateState::Unknown);
         assert!(info.supports_remote_updates());
         let mut next_major = info.clone();
-        next_major.protocol.version = "7.0.0".into();
+        next_major.protocol.version = "8.0.0".into();
         assert!(!next_major.supports_remote_updates());
         let mut previous_major = info.clone();
-        previous_major.protocol.version = "5.1.0".into();
+        previous_major.protocol.version = "6.2.0".into();
         assert!(!previous_major.supports_remote_updates());
         let mut no_capability = info;
         no_capability.protocol.capabilities.clear();
@@ -743,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn released_v6_1_decoder_preserves_v6_2_updates_and_durable_receipts() {
+    fn released_v6_decoder_recognizes_a_new_major_without_install_authority() {
         let mut current = current_peer_for_compatibility();
         for state in [UpdateState::Ready, UpdateState::RestartRequired] {
             current.update.state = state;
@@ -755,8 +866,11 @@ mod tests {
             );
             let legacy: released_v6_1::PeerInfo = serde_json::from_slice(&bytes).unwrap();
             assert!(legacy.valid());
-            assert_eq!(legacy.protocol.version, "6.2.0");
-            assert!(legacy.supports_remote_updates());
+            assert_eq!(legacy.protocol.version, PROTOCOL_VERSION);
+            assert!(
+                !legacy.supports_remote_updates(),
+                "no cross-major management bridge"
+            );
             assert!(
                 legacy
                     .protocol
@@ -798,31 +912,31 @@ mod tests {
     }
 
     #[test]
-    fn project_folder_support_requires_its_capability_and_wire_six() {
+    fn project_folder_support_requires_its_capability_and_current_major() {
         let mut info = current_peer_for_compatibility();
         assert!(info.supports_project_folders());
-        for version in ["6.1.0", "6.2.0", "6.3.0"] {
+        for version in ["7.0.0", "7.1.0", "7.2.0"] {
             info.protocol.version = version.into();
             assert!(
                 info.supports_project_folders(),
                 "explicit capability in {version}"
             );
         }
-        for version in ["5.2.0", "7.0.0", "invalid"] {
+        for version in ["6.2.0", "8.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_project_folders());
         }
-        info.protocol.version = "6.1.0".into();
+        info.protocol.version = "7.0.0".into();
         info.protocol.capabilities = vec!["peer_info_v1".into(), "remote_update_install_v1".into()];
         assert!(
             info.supports_remote_updates(),
-            "released 6.1 update support remains"
+            "explicit current-major update support remains"
         );
         assert!(
             !info.supports_project_folders(),
-            "6.1 does not advertise folder support"
+            "folder support still requires its capability"
         );
-        info.protocol.version = "6.2.0".into();
+        info.protocol.version = "7.1.0".into();
         assert!(
             !info.supports_project_folders(),
             "a minor version alone is not a capability"
@@ -830,12 +944,34 @@ mod tests {
     }
 
     #[test]
-    fn matching_release_ignores_platform_document_but_honors_known_running_build() {
+    fn input_only_tool_summaries_need_the_capability_and_current_major() {
+        // Agent 0.0.9 (management 7.1.0) answers peer info without the
+        // capability; a viewer keeps the output-based summaries with it.
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("tool_summary_compat.json")).unwrap();
+        let without: PeerInfo =
+            serde_json::from_value(fixtures["peer_info_without_tool_summary_start"].clone())
+                .unwrap();
+        without.validate().unwrap();
+        assert!(without.supports_remote_updates());
+        assert!(!without.supports_tool_summary_start());
+        let mut info = PeerInfo {
+            protocol: ProtocolInfo::current(),
+            ..without
+        };
+        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+            info.protocol.version = version.into();
+            assert!(info.supports_tool_summary_start(), "{version}");
+        }
+        for version in ["6.2.0", "8.0.0", "invalid"] {
+            info.protocol.version = version.into();
+            assert!(!info.supports_tool_summary_start(), "{version}");
+        }
+    }
+
+    #[test]
+    fn running_release_matching_honors_source_and_known_build() {
         let release = target();
-        let mut other_platform = release.clone();
-        other_platform.manifest_sha256 = "c".repeat(64);
-        assert_ne!(release, other_platform);
-        assert!(release.same_release(&other_platform));
         let mut running = RunningApplication {
             version: release.version.clone(),
             source_sha: release.source_sha.clone(),

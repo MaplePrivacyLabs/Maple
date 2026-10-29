@@ -1,0 +1,15 @@
+name: Set up pinned Nix
+description: >-
+  Install Determinate Nix 3.23.3 (pinned by commit) and verify the runtime,
+  exactly as the inline copies in the other workflows do.
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Nix environment
+      uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+      with:
+        source-tag: v3.23.3
+        github-token: ""
+    - name: Verify pinned Nix runtime
+      shell: bash
+      run: bash scripts/ci/verify-nix-runtime.sh

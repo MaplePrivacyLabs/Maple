@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ci_evidence import EvidenceError, eligible_runs, jobs_executed, select_evidence, trees_compatible, unrelated_path
+from ci_evidence import (EvidenceError, eligible_runs, jobs_executed, select_codeql, select_evidence,
+                         trees_compatible, unrelated_path)
 
 
 HEAD = "a" * 40
@@ -71,10 +72,6 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(EvidenceError):
             jobs_executed([job("macos"), job("windows", "skipped")], ("macos", "windows"))
 
-    def test_codeql_cannot_reuse_ancestor(self):
-        with self.assertRaises(EvidenceError):
-            self.select([run(ANCESTOR)], exact_only=True)
-
     def test_codeql_requires_analysis(self):
         with self.assertRaises(EvidenceError):
             jobs_executed([job("changes")], ())
@@ -108,25 +105,39 @@ class EvidenceTests(unittest.TestCase):
                 with self.subTest(event=event, changes=changes):
                     self.assertEqual(eligible_runs([candidate | changes], REPO, "codeql.yml"), [])
 
-    def test_nightly_and_manual_codeql_still_require_exact_successful_analysis(self):
+    def test_codeql_only_needs_the_newest_finished_scan_to_be_green(self):
         analyses = [job(f"Analyze ({language})")
                     for language in ("actions", "javascript-typescript", "python", "rust")]
+        newer = "c" * 40  # a master commit after the release commit
+
+        def codeql(sha=HEAD, **changes):
+            return run(sha, path=".github/workflows/codeql.yml", **changes)
+
+        def select(runs, jobs=analyses):
+            return select_codeql(runs, HEAD, lambda _: jobs, lambda sha: sha in (HEAD, ANCESTOR))
+
+        # The release commit's own scan, or the newest finished ancestor scan.
+        self.assertFalse(select([codeql()])["reused"])
+        self.assertTrue(select([codeql(ANCESTOR)])["reused"])
         for event in ("schedule", "workflow_dispatch"):
-            candidate = run(event=event, path=".github/workflows/codeql.yml")
-            def select(candidate, jobs):
-                return select_evidence(eligible_runs([candidate], REPO, "codeql.yml"),
-                                       HEAD, (), lambda _: jobs, lambda _: True, exact_only=True)
             with self.subTest(event=event):
-                self.assertFalse(select(candidate, analyses)["reused"])
-            for changes, jobs in (
-                ({"head_sha": ANCESTOR}, analyses),
-                ({"conclusion": "failure"}, analyses),
-                ({"status": "in_progress", "conclusion": None}, analyses),
-                ({}, [job("Analyze (rust)", "skipped")]),
-                ({}, [job("Analyze (rust)", "failure")]),
-            ):
-                with self.subTest(event=event, changes=changes, jobs=jobs), self.assertRaises(EvidenceError):
-                    select(candidate | changes, jobs)
+                self.assertTrue(select([codeql(ANCESTOR, event=event)])["reused"])
+        # Still running or cancelled: does not block, the older green scan counts.
+        for changes in ({"status": "in_progress", "conclusion": None}, {"conclusion": "cancelled"}):
+            with self.subTest(changes=changes):
+                self.assertEqual(select([codeql(id=21, **changes), codeql(ANCESTOR)])["head_sha"], ANCESTOR)
+        # A later commit's scan is not part of the release, red or not.
+        self.assertEqual(select([codeql(newer, id=22, conclusion="failure"), codeql()])["head_sha"], HEAD)
+        # Red blocks, even with an older green scan behind it.
+        for conclusion in ("failure", "timed_out", "startup_failure"):
+            with self.subTest(conclusion=conclusion), self.assertRaises(EvidenceError):
+                select([codeql(conclusion=conclusion), codeql(ANCESTOR, id=21)])
+        for jobs in ([job("Analyze (rust)", "skipped")], [job("Analyze (rust)", "failure")]):
+            with self.subTest(jobs=jobs), self.assertRaises(EvidenceError):
+                select([codeql()], jobs)
+        for runs in ([], [codeql(newer)], [codeql(status="in_progress", conclusion=None)], [codeql("not-a-sha")]):
+            with self.subTest(runs=runs), self.assertRaises(EvidenceError):
+                select(runs)
 
     def test_newest_push_orders_before_old_green(self):
         old = run(ANCESTOR, id=19, created_at="2026-10-04T08:00:00Z")

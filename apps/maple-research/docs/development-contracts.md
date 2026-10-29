@@ -12,13 +12,22 @@ OpenSecret is its required backend. Keep these runtime paths distinct:
 - Research chat: React -> OpenAI JavaScript client ->
   `@mapleai/sdk` encrypted custom fetch -> OpenSecret Responses and
   Conversations APIs.
-- Desktop Agent Mode: React -> Maple-owned Tauri commands/events ->
-  `MapleAgentService` -> embedded pinned Goose -> `MapleProvider` -> Rust
-  OpenSecret SDK -> `/v1/chat/completions`.
-- ACP: an external client edge over a protected local socket into the same
-  Maple Agent service. ACP is not Agent Mode's internal abstraction.
-- Local proxy: a separate user-facing OpenAI-compatible relay. Research chat
-  and Agent Mode do not internally route through it.
+- Native OAuth: React -> Tauri `native_oauth` commands -> Rust OpenSecret SDK,
+  on desktop and mobile.
+- Local proxy: a separate user-facing OpenAI-compatible relay (desktop only).
+  Research chat does not internally route through it.
+- Agent: on desktop, the `agent_mode` flag shows the sidebar Chat | Agent
+  switch, and `/agent` renders a static page pointing to Maple Work. Agent
+  features belong in `apps/maple-agent/`; Research has no agent runtime, and
+  its `maple acp` subcommand only prints where agent connections moved and
+  exits with status 1. The page tells users their Agent Mode tasks are still
+  on the computer and open in Maple v3.4.5, so never read, migrate, or delete
+  that data: the `agent/` directories under the app config and local-data
+  roots, the `acp/` directory under local data, and the Agent `localStorage`
+  keys. Sign-out, history clearing, and account deletion leave it in place.
+  The exception is Research's own Chat | Agent preference (`workspaceMode`):
+  it is restored at launch and set back to Chat on sign-out and account
+  deletion.
 
 The OpenSecret SDK source lives under `sdk/`. Research independently selects
 published TypeScript and Rust versions in its manifests and lockfiles; local
@@ -31,10 +40,13 @@ checks for every affected client path.
 The Maple Proxy source lives under `proxy/`. From the repository root,
 run its Rust commands through
 `nix develop --no-update-lock-file ./proxy -c bash -lc 'cd proxy && ...'`;
-root path-scoped workflows own proxy CI. Proxy runtime changes select desktop
-builds; SDK-only changes do not, since Research builds the SDK source its own
-manifests select. Container, test, documentation, and standalone lockfile
-changes remain independent.
+the root `ci.yml` `proxy` lane owns proxy CI. Proxy runtime and Rust SDK build
+changes select `research-rust` on PRs, because the Research shell builds both
+from the tree. On master, Rust SDK build changes select every signed native
+build and proxy runtime changes the signed desktop builds. TypeScript SDK
+changes select no app build, since Research builds the SDK its own manifests
+select. Container, test, documentation, and standalone lockfile changes
+remain independent.
 
 ## Code ownership and placement
 
@@ -42,13 +54,10 @@ changes remain independent.
   presentation, account-scoped UI state, drafts, and interaction behavior.
 - `apps/maple-research/frontend/src/services` owns browser-side API/Tauri bridges and lifecycle
   orchestration. It is not a place to reimplement backend authorization.
-- `apps/maple-research/frontend/src-tauri/src` owns privileged device behavior: filesystem and
-  process access, native networking, local listeners, deep links, PDF/OCR,
-  credential-bearing native clients, and OS integration.
-- `apps/maple-research/frontend/src-tauri/src/agent.rs` and `agent/` own the transport-neutral Agent
-  runtime, provider adapter, developer tools, permissions, trusted project
-  skills, and system-prompt policy. Keep public TypeScript contracts
-  Maple-owned; do not leak Goose, RMCP, or ACP types through the Tauri API.
+- `apps/maple-research/frontend/src-tauri/src` owns privileged device behavior: filesystem
+  access, native networking, the local proxy listener, deep links, native
+  OAuth, PDF/OCR and document extraction, credential storage, the updater, and
+  OS integration.
 - OpenSecret owns authentication and authorization truth, encrypted
   persistence, provider credentials and routing, model canonicalization,
   protected-route enforcement, and inference-usage capture. Maple may present
@@ -91,7 +100,7 @@ For every added or changed privileged Tauri command:
   account identity, paths, URLs, sizes, ports, enum values, and lifecycle
   ownership in Rust before a privileged effect.
 - Never log access or refresh tokens, API keys, raw deep-link URLs, prompts,
-  response contents, MCP headers/environments, or decrypted backend payloads.
+  response contents, or decrypted backend payloads.
   Sanitize native errors before emitting them to the renderer.
 - Credential-bearing backend URLs must be HTTPS, except explicit loopback HTTP
   in development. Reject embedded credentials, unexpected paths, query
@@ -100,22 +109,10 @@ For every added or changed privileged Tauri command:
   pending operation, event, and query key needs an account owner or opaque
   account scope. After every `await`, late work must prove it still owns the
   current account/session/run before publishing state.
-- Account transition and secure logout must stop and drain Agent/ACP, stop and
-  scrub the local proxy, clear billing session tokens, clear native auth, and
-  dispose account-owned UI state in the established order. Do not add a direct
-  sign-out shortcut that bypasses cleanup.
-- Project roots grant context and trust; they are not filesystem containment.
-  Read-only Agent mode is a consent policy, not an OS sandbox.
-- Permission grants are one-use capabilities bound to the exact account,
-  session, run, calling surface, request, and payload. Unknown, duplicate,
-  late, cancelled, or cross-surface responses fail closed.
-- Shell/web permission classifiers fail closed. Cancellation, revocation,
-  timeout, and output overflow must terminate spawned process groups and
-  revoke credential-bearing tool contexts before another launch.
-- STDIO MCP is intentional arbitrary local-code execution. Saving a definition
-  is inert; enabling it launches the executable. Never pass its command through
-  a shell. Treat persisted MCP configuration as sensitive; verify storage,
-  fallback, and deletion guarantees from the implementation.
+- Account transition and secure logout must stop and scrub the local proxy,
+  clear billing session tokens, and dispose account-owned UI state in the
+  established order. Do not add a direct sign-out shortcut that bypasses
+  cleanup.
 - Keep local-proxy defaults loopback-only, CORS-off, and auto-start-off. Browser
   reachability and saved-key fallback must remain mutually exclusive.
 - Model output and remote Markdown are untrusted. Preserve sanitization,
@@ -123,8 +120,8 @@ For every added or changed privileged Tauri command:
 - `VITE_*` is public build-time configuration. Provider credentials and
   administrative billing/flags credentials never belong in Maple.
 
-For auth, proxy, Agent tooling, native capabilities, filesystem or process
-access, deep links, or persistence, load `$review-maple-security` before
+For auth, proxy, native capabilities, filesystem access, deep links, or
+persistence, load `$review-maple-security` before
 changing code. Keep resulting findings in the task's review output or another
 explicitly authorized destination. Keep only durable security standards and
 review methodology in this guide and its skills.
@@ -148,8 +145,6 @@ review methodology in this guide and its skills.
   sufficient ownership proofs for background streams.
 - Clean SSE iterator EOF without the protocol's terminal event is truncation,
   not success. Retry cleanup removes only state created by that attempt.
-- A Goose dependency bump requires re-diffing Maple's system prompt and
-  reviewing the intentional prompt-drift test.
 
 Do not edit generated files by hand, including
 `apps/maple-research/frontend/src/routeTree.gen.ts`. Regenerate platform projects or lockfiles with

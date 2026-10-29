@@ -12,6 +12,7 @@ use maple_agent::agent::AgentTimelineItem;
 
 use super::ChatScreen;
 use super::commands::ChatCommand;
+use super::composer::ComposerControl;
 use super::transcript::{attachment_refs, has_tool_input};
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
 use crate::ui::text_input::vim::VimMode;
@@ -22,13 +23,18 @@ pub(super) enum ChatRegion {
     #[default]
     Transcript,
     Composer,
+    /// The composer's button row, below the text.
+    Controls,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum SidebarTarget {
     Computer(super::computers::Navigate),
     NewTask,
+    Search,
     Projects,
+    /// A folder group's header, by project root.
+    Project(String),
     Task(String),
     Archived,
     LoadMore(String),
@@ -39,6 +45,8 @@ pub(super) struct ApplicationVimState {
     pub(super) region: ChatRegion,
     last_main_region: ChatRegion,
     return_from_composer: ChatRegion,
+    /// The selected button in the composer row, kept while the row is left.
+    control: Option<ComposerControl>,
     pub(super) count: CountState,
     transcript_by_task: HashMap<String, String>,
     follow_by_task: HashMap<String, bool>,
@@ -50,6 +58,7 @@ impl Default for ApplicationVimState {
             region: ChatRegion::Transcript,
             last_main_region: ChatRegion::Transcript,
             return_from_composer: ChatRegion::Transcript,
+            control: None,
             count: CountState::default(),
             transcript_by_task: HashMap::new(),
             follow_by_task: HashMap::new(),
@@ -59,7 +68,10 @@ impl Default for ApplicationVimState {
 
 impl ApplicationVimState {
     fn set_region(&mut self, region: ChatRegion) {
-        if matches!(region, ChatRegion::Transcript | ChatRegion::Composer) {
+        if matches!(
+            region,
+            ChatRegion::Transcript | ChatRegion::Composer | ChatRegion::Controls
+        ) {
             self.last_main_region = region;
         }
         self.region = region;
@@ -130,6 +142,7 @@ impl ChatScreen {
                 dialog.set_application_vim_enabled(enabled, cx)
             });
         }
+        self.set_feedback_application_vim_enabled(enabled, cx);
         for input in [self.composer.as_ref(), self.pending_question_input.as_ref()]
             .into_iter()
             .flatten()
@@ -286,6 +299,18 @@ impl ChatScreen {
                 self.application_vim.count.clear();
                 self.activate_application_selection(window, cx);
             }
+            // The button row runs left to right, so `h` and `l` step along it.
+            ApplicationVimCommand::Collapse | ApplicationVimCommand::Expand
+                if self.application_vim.region == ChatRegion::Controls =>
+            {
+                let count = self.application_vim.count.take();
+                let direction = if command == ApplicationVimCommand::Expand {
+                    1
+                } else {
+                    -1
+                };
+                self.move_control_selection(direction, count, cx);
+            }
             ApplicationVimCommand::Collapse => {
                 self.application_vim.count.clear();
                 self.set_application_expanded(false, cx);
@@ -330,6 +355,7 @@ impl ChatScreen {
         match self.application_vim.region {
             ChatRegion::Sidebar => self.move_sidebar_selection(direction, count, cx),
             ChatRegion::Transcript => self.move_transcript_selection(direction, count, cx),
+            ChatRegion::Controls => self.move_control_selection(direction, count, cx),
             ChatRegion::Composer => {}
         }
     }
@@ -352,6 +378,7 @@ impl ChatScreen {
         match self.application_vim.region {
             ChatRegion::Sidebar => self.select_sidebar_edge(first, cx),
             ChatRegion::Transcript => self.select_transcript_edge(first, !first, cx),
+            ChatRegion::Controls => self.select_control_edge(first, cx),
             ChatRegion::Composer => {}
         }
     }
@@ -377,26 +404,30 @@ impl ChatScreen {
         let current = self.application_vim.region;
         let target = match (current, direction) {
             (ChatRegion::Sidebar, SpatialDirection::Right) => {
-                if self.application_vim.last_main_region == ChatRegion::Transcript
-                    && !self.navigable_timeline_ids().is_empty()
-                {
-                    ChatRegion::Transcript
-                } else {
-                    ChatRegion::Composer
+                match self.application_vim.last_main_region {
+                    ChatRegion::Transcript if !self.navigable_timeline_ids().is_empty() => {
+                        ChatRegion::Transcript
+                    }
+                    ChatRegion::Controls => ChatRegion::Controls,
+                    _ => ChatRegion::Composer,
                 }
             }
-            (ChatRegion::Transcript, SpatialDirection::Left)
-            | (ChatRegion::Composer, SpatialDirection::Left)
-                if !self.sidebar_collapsed =>
-            {
-                ChatRegion::Sidebar
-            }
+            (
+                ChatRegion::Transcript | ChatRegion::Composer | ChatRegion::Controls,
+                SpatialDirection::Left,
+            ) if !self.sidebar_collapsed => ChatRegion::Sidebar,
             (ChatRegion::Transcript, SpatialDirection::Down) => ChatRegion::Composer,
+            (ChatRegion::Composer, SpatialDirection::Down)
+                if self.composer_controls().next().is_some() =>
+            {
+                ChatRegion::Controls
+            }
             (ChatRegion::Composer, SpatialDirection::Up)
                 if !self.navigable_timeline_ids().is_empty() =>
             {
                 ChatRegion::Transcript
             }
+            (ChatRegion::Controls, SpatialDirection::Up) => ChatRegion::Composer,
             // Reaching a spatial boundary is normal Vim behavior.
             _ => return false,
         };
@@ -404,10 +435,13 @@ impl ChatScreen {
             self.focus_composer(window, cx);
         } else {
             self.application_vim.set_region(target);
-            if target == ChatRegion::Sidebar {
-                self.ensure_sidebar_application_selection(cx);
-            } else {
-                self.ensure_transcript_application_selection();
+            match target {
+                ChatRegion::Sidebar => self.ensure_sidebar_application_selection(cx),
+                ChatRegion::Transcript => self.ensure_transcript_application_selection(),
+                ChatRegion::Controls => {
+                    self.application_vim.control = self.selected_composer_control();
+                }
+                ChatRegion::Composer => {}
             }
             if let Some(handle) = &self.application_focus {
                 window.focus(handle, cx);
@@ -530,11 +564,22 @@ impl ChatScreen {
         match self.application_vim.region {
             ChatRegion::Sidebar => match self.sidebar.read(cx).vim_selected().cloned() {
                 Some(SidebarTarget::NewTask) => self.new_session(cx),
+                Some(SidebarTarget::Search) => self.focus_sidebar_search(window, cx),
                 Some(SidebarTarget::Projects) => self.sidebar.update(cx, |sidebar, cx| {
-                    let open = sidebar.switcher_menu_open();
-                    sidebar.set_switcher_menu_open(!open, cx);
+                    let open = sidebar.header_menu_open();
+                    sidebar.set_header_menu_open(!open, cx);
                 }),
-                Some(SidebarTarget::Computer(request)) => cx.emit(request),
+                Some(SidebarTarget::Project(root)) => self.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.set_project_expanded(&root, None, cx);
+                }),
+                Some(SidebarTarget::Computer(request)) => {
+                    let handled = self.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.toggle_computer_group(&request, cx)
+                    });
+                    if !handled {
+                        cx.emit(request);
+                    }
+                }
                 Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
                 Some(SidebarTarget::Archived) => self.toggle_archived_visibility(cx),
                 Some(SidebarTarget::LoadMore(id)) => self
@@ -543,8 +588,64 @@ impl ChatScreen {
                 None => {}
             },
             ChatRegion::Transcript => self.set_application_expanded_toggle(cx),
+            ChatRegion::Controls => {
+                if let Some(control) = self.selected_composer_control() {
+                    self.activate_composer_control(control, cx);
+                }
+            }
             ChatRegion::Composer => {}
         }
+    }
+
+    /// The selected control if the row still shows it, else the first one.
+    pub(super) fn selected_composer_control(&self) -> Option<ComposerControl> {
+        let selected = self.application_vim.control;
+        self.composer_controls()
+            .find(|control| Some(*control) == selected)
+            .or_else(|| self.composer_controls().next())
+    }
+
+    /// The control to mark in the row. Only while application Vim's focus
+    /// is on the row, so a click into the text or an open menu drops it.
+    pub(super) fn application_vim_selected_control(
+        &self,
+        window: &Window,
+    ) -> Option<ComposerControl> {
+        let focused = self
+            .application_focus
+            .as_ref()
+            .is_some_and(|focus| focus.is_focused(window));
+        (self.application_vim_enabled
+            && self.application_vim.region == ChatRegion::Controls
+            && focused)
+            .then(|| self.selected_composer_control())
+            .flatten()
+    }
+
+    fn move_control_selection(&mut self, direction: isize, count: usize, cx: &mut Context<Self>) {
+        let controls = self.composer_controls().collect::<Vec<_>>();
+        if controls.is_empty() {
+            return;
+        }
+        let current = self
+            .selected_composer_control()
+            .and_then(|selected| controls.iter().position(|control| *control == selected));
+        let index = stepped_index(current, controls.len(), direction, count);
+        self.application_vim.control = Some(controls[index]);
+        cx.notify();
+    }
+
+    fn select_control_edge(&mut self, first: bool, cx: &mut Context<Self>) {
+        let control = {
+            let mut controls = self.composer_controls();
+            if first {
+                controls.next()
+            } else {
+                controls.last()
+            }
+        };
+        self.application_vim.control = control;
+        cx.notify();
     }
 
     fn set_application_expanded_toggle(&mut self, cx: &mut Context<Self>) {
@@ -895,9 +996,11 @@ impl ChatScreen {
         self.focus_application_vim(window, cx);
     }
 
-    fn reveal_application_selection(&self, cx: &gpui::App) {
+    fn reveal_application_selection(&self, cx: &mut Context<Self>) {
         match self.application_vim.region {
-            ChatRegion::Sidebar => self.sidebar.read(cx).vim_reveal(),
+            ChatRegion::Sidebar => self
+                .sidebar
+                .update(cx, |sidebar, cx| sidebar.vim_reveal(cx)),
             ChatRegion::Transcript => {
                 if let Some(item_id) = self.selected_transcript_id()
                     && let Some(&(row, _)) = self.timeline_index.get(item_id)
@@ -905,7 +1008,7 @@ impl ChatScreen {
                     self.list_state.scroll_to_reveal_item(row);
                 }
             }
-            ChatRegion::Composer => {}
+            ChatRegion::Composer | ChatRegion::Controls => {}
         }
     }
 

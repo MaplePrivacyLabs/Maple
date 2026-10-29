@@ -730,6 +730,8 @@ fn close_lifecycle(host: &FixtureHost) -> DesktopLifecycle {
         quit_completed: Default::default(),
         quit_requested: Default::default(),
         frontend_detached: Default::default(),
+        #[cfg(target_os = "windows")]
+        update_restart_pending: Default::default(),
     }
 }
 
@@ -784,6 +786,8 @@ fn pending_quit_cannot_finish_an_update_installation(cx: &mut gpui::TestAppConte
             quit_completed: Default::default(),
             quit_requested: Default::default(),
             frontend_detached: Default::default(),
+            #[cfg(target_os = "windows")]
+            update_restart_pending: Default::default(),
         });
         updater.set_test_state(crate::update::State::Ready);
         assert!(may_finish_quit(cx));
@@ -803,7 +807,12 @@ fn committed_restart_retry_quit_and_close_do_not_contact_the_retired_host(
     let host = FixtureHost::with_close_outcome(false, true, "plain", false);
     let app = shell(&host, cx, false, &settings);
     let lifecycle = close_lifecycle(&host);
+    #[cfg(not(target_os = "windows"))]
     let path = PathBuf::from("/Applications/Maple Agent.app");
+    #[cfg(target_os = "windows")]
+    let restart_root = tempfile::tempdir().unwrap();
+    #[cfg(target_os = "windows")]
+    let path = restart_root.path().join("maple-agent.exe");
     lifecycle.backend.retire_after_update();
     lifecycle.updater.set_test_installed(path.clone());
     app.update(cx, |app, cx| {
@@ -813,7 +822,31 @@ fn committed_restart_retry_quit_and_close_do_not_contact_the_retired_host(
     for _ in 0..2 {
         let mut restarted = cx.expect_restart();
         cx.update(|cx| restart_installed_update(path.clone(), cx));
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(restarted.try_recv().unwrap(), Some(Some(path.clone())));
+        #[cfg(target_os = "windows")]
+        {
+            // Windows uses the verified stable bootstrap, never GPUI restart.
+            // This absent executable must fail native admission without a
+            // process spawn, then clear the pending attempt so Retry can run.
+            assert!(!path.exists());
+            assert!(lifecycle.update_restart_pending.get());
+            assert!(!lifecycle.quit_completed.get());
+            for _ in 0..500 {
+                cx.run_until_parked();
+                if !lifecycle.update_restart_pending.get() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                !lifecycle.update_restart_pending.get(),
+                "native restart refusal must leave Retry available"
+            );
+            assert!(!lifecycle.quit_completed.get());
+            assert_eq!(restarted.try_recv().unwrap(), None);
+            assert!(!path.exists());
+        }
     }
     let cx = window(&app, cx);
     host.requests.lock().unwrap().clear();

@@ -135,11 +135,11 @@ pub(super) fn start(service: &MapleAgentService) {
 fn admitted(state: &ServiceState) -> bool {
     state.admission.load(Ordering::Acquire) == AGENT_SERVICE_OPEN
         // Non-runnable does not mean unloaded: pending shutdown still owns
-        // source entries, blob leases and account/session identity. All idle
+        // source entries, attachment leases and account/session identity. All idle
         // effects yield until Retry or another completed shutdown saves them.
         && state
             .shutdown_pending
-            .try_lock()
+            .try_read()
             .is_ok_and(|pending| pending.is_none())
 }
 
@@ -155,7 +155,6 @@ struct Worker {
     account_cursor: Option<AccountId>,
     old_epoch_cursors: HashMap<AccountId, i64>,
     rebuild: Option<RebuildJob>,
-    orphan_pass_done: bool,
     last_warning: Option<Instant>,
     integrity: Option<IntegrityHooks>,
     last_integrity_attempt: Option<Instant>,
@@ -171,7 +170,7 @@ impl Worker {
             ..Self::default()
         };
     }
-    /// At most four deleted-task steps, two account steps, one orphan-blob
+    /// At most four deleted-task steps, two account steps, one unbound-attachment
     /// step, one rebuild commit and one old-epoch step run in a tick. Every
     /// payload mutation uses the store's bounded idle-writer transactions.
     fn tick(
@@ -192,11 +191,12 @@ impl Worker {
         if !admitted(state) {
             return;
         }
-        if !self.orphan_pass_done {
-            match while_service_open(state, || store.collect_orphan_blobs_step()) {
-                Ok(progress) => self.orphan_pass_done = progress.done,
-                Err(error) => self.report("orphan blob collection", error),
-            }
+        // A later cancellation or a newly expired staging upload must be
+        // discovered even after an earlier pass found no work. Each tick only
+        // queries one indexed candidate and removes at most one owned file.
+        match while_service_open(state, || store.collect_unbound_attachments_step()) {
+            Ok(_) => {}
+            Err(error) => self.report("unbound attachment collection", error),
         }
         if !admitted(state) {
             return;
@@ -368,7 +368,7 @@ impl Worker {
     }
 
     fn collect_deleted_tasks(&mut self, state: &ServiceState, store: &Arc<Store>) {
-        let tasks = match store.deleted_tasks(TASK_GC_STEPS) {
+        let tasks = match store.deleted_tasks_for_collection(TASK_GC_STEPS) {
             Ok(tasks) => tasks,
             Err(error) => {
                 self.report("deleted-task discovery", error);
@@ -716,6 +716,42 @@ mod tests {
                 .account_id("maintenance@example.test")
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn later_cancelled_attachments_are_collected_after_an_empty_pass() {
+        use sha2::{Digest, Sha256};
+        let (_directory, store, service, _events, account) = fixture();
+        create_task(&store, account);
+        let mut worker = Worker::default();
+        worker.tick(&service.state, &store, None, &service.host.events);
+        let bytes = b"later cancelled upload";
+        let metadata = crate::store::AttachmentUploadMetadata {
+            name: "notes.txt".into(),
+            mime_type: "text/plain".into(),
+            size: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+        };
+        let crate::store::AttachmentUploadStart::Writing(mut writer) = store
+            .begin_attachment_upload(account, TASK, "later-cancel", &metadata)
+            .unwrap()
+        else {
+            panic!("new upload")
+        };
+        writer.write_chunk(bytes).unwrap();
+        let attachment = writer.finish(&store).unwrap();
+        assert!(std::path::Path::new(&attachment.execution_path).exists());
+        store
+            .cancel_attachment_upload(account, TASK, "later-cancel")
+            .unwrap();
+        worker.tick(&service.state, &store, None, &service.host.events);
+        assert!(!std::path::Path::new(&attachment.execution_path).exists());
+        assert_eq!(
+            store
+                .attachment_upload_status(account, TASK, "later-cancel")
+                .unwrap(),
+            crate::store::AttachmentUploadStatus::Cancelled
         );
     }
 

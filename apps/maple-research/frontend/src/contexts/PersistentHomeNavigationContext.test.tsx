@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useState, type Dispatch, type SetStateAction } from "react";
 
-import { AgentSessionSelectionMemory } from "@/services/agentSessionSelection";
 import {
   PersistentHomeNavigationContext,
   useAccountSidebarOpenState,
@@ -45,12 +44,10 @@ function SidebarProbe() {
 
 function SidebarHarness() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean | null>(null);
-  const [agentSessionSelection] = useState(() => new AgentSessionSelectionMemory());
 
   return (
     <PersistentHomeNavigationContext.Provider
       value={{
-        agentSessionSelection,
         returnToHome: () => {},
         setSidebarOpen,
         sidebarOpen

@@ -16,6 +16,7 @@ use super::{AccountId, Durability, Store, StoreChange, StoreError, StoreResult};
 const MAX_PAGE: u16 = 200;
 const MAX_TEXT_BYTES: usize = 16 * 1024;
 const MAX_SETTINGS_BYTES: usize = 256 * 1024;
+const MAX_SIDEBAR_ORDER_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TaskKey(pub(super) i64);
@@ -511,7 +512,7 @@ impl Store {
                  AND deleted_ms IS NULL AND provisional=1 AND title_user_set=0
                  AND message_count=0 AND last_seq=0
                  AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.task_id=tasks.id)
-                 AND NOT EXISTS (SELECT 1 FROM task_blobs b WHERE b.task_id=tasks.id)",
+                 AND NOT EXISTS (SELECT 1 FROM file_attachments a WHERE a.task_id=tasks.id)",
                 params![account.0, uuid, now_ms],
             )? != 0;
             Ok((changed, changed.then(|| task_change(account, uuid))))
@@ -1131,12 +1132,23 @@ impl Store {
 
     pub fn account_setting(&self, account: AccountId, key: &str) -> StoreResult<Option<Value>> {
         validate_setting_key(key)?;
+        let maximum = account_setting_byte_limit(key);
         self.read(|tx| {
-            read_setting(
-                tx,
-                "SELECT value FROM account_settings WHERE account_id = ?1 AND key = ?2",
-                params![account.0, key],
-            )
+            let encoded: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM account_settings WHERE account_id = ?1 AND key = ?2",
+                    params![account.0, key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            encoded
+                .map(|encoded| {
+                    if encoded.len() > maximum {
+                        return Err(StoreError::InvalidInput);
+                    }
+                    Ok(parse_json(0, &encoded)?)
+                })
+                .transpose()
         })
     }
 
@@ -1148,7 +1160,7 @@ impl Store {
         now_ms: i64,
     ) -> StoreResult<()> {
         validate_setting_key(key)?;
-        let value = encode_settings(value)?;
+        let value = encode_settings_with_limit(value, account_setting_byte_limit(key))?;
         self.write(Durability::Durable, |tx| {
             writable_account(tx, account)?;
             tx.execute("INSERT INTO account_settings (account_id,key,value,updated_ms) VALUES (?1,?2,?3,?4)
@@ -1295,7 +1307,7 @@ impl Store {
     }
 
     /// Remove only untouched provisional tasks. Such tasks contain no source
-    /// entries or blobs; deleting them does not become a payload-sized cascade.
+    /// entries or attachment uploads; deleting them does not orphan staged files.
     pub fn sweep_provisional_tasks(
         &self,
         account: AccountId,
@@ -1309,7 +1321,7 @@ impl Store {
                 WHERE t.account_id=?1 AND t.provisional=1 AND t.title_user_set=0 AND t.last_seq=0 AND t.message_count=0
                 AND t.updated_ms<?2 AND t.deleted_ms IS NULL
                 AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.task_id=t.id)
-                AND NOT EXISTS (SELECT 1 FROM task_blobs b WHERE b.task_id=t.id)
+                AND NOT EXISTS (SELECT 1 FROM file_attachments a WHERE a.task_id=t.id)
                 ORDER BY t.updated_ms,t.id LIMIT ?3)", params![account.0, before_ms, limit])?;
             tx.execute("DELETE FROM projects WHERE id IN (SELECT p.id FROM projects p WHERE p.account_id=?1
                 AND p.position IS NULL AND p.display_name IS NULL AND p.trusted IS NULL
@@ -1681,9 +1693,21 @@ fn validate_generation(generation: &str) -> StoreResult<()> {
     Ok(())
 }
 
+fn account_setting_byte_limit(key: &str) -> usize {
+    if key == "sidebar.order" {
+        MAX_SIDEBAR_ORDER_BYTES
+    } else {
+        MAX_SETTINGS_BYTES
+    }
+}
+
 fn encode_settings(value: &Value) -> StoreResult<String> {
+    encode_settings_with_limit(value, MAX_SETTINGS_BYTES)
+}
+
+fn encode_settings_with_limit(value: &Value, maximum: usize) -> StoreResult<String> {
     let encoded = serde_json::to_string(value).map_err(|_| StoreError::InvalidInput)?;
-    if encoded.len() > MAX_SETTINGS_BYTES {
+    if encoded.len() > maximum {
         return Err(StoreError::InvalidInput);
     }
     Ok(encoded)

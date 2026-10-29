@@ -6,8 +6,8 @@
   "scripts": {
     "check": "bun run format:check && bun run typecheck && bun run test && bun run build:dry-run",
     "build:dry-run": "bun src/dry-run.ts",
-    "format": "prettier --write \"src/**/*.ts\" README.md package.json tsconfig.json wrangler.jsonc",
-    "format:check": "prettier --check \"src/**/*.ts\" README.md package.json tsconfig.json wrangler.jsonc",
+    "format": "prettier --write \"src/**/*.ts\" ../download-tracking/tracking.ts ../download-tracking/README.md README.md package.json tsconfig.json wrangler.jsonc",
+    "format:check": "prettier --check \"src/**/*.ts\" ../download-tracking/tracking.ts ../download-tracking/README.md README.md package.json tsconfig.json wrangler.jsonc",
     "test": "bun --no-env-file test",
     "typecheck": "tsc --noEmit"
   },

@@ -4,8 +4,11 @@
 //! separated by concern for better maintainability and testability.
 
 pub mod builders;
+pub(crate) mod compaction;
 pub mod constants;
 pub mod context_builder;
+mod context_observability;
+mod context_policy;
 pub mod conversation_projects;
 pub mod conversations;
 pub mod conversions;
@@ -15,6 +18,7 @@ mod execution;
 pub mod handlers;
 pub(crate) mod image_describer;
 pub mod instructions;
+mod legacy_context;
 pub mod pagination;
 pub mod storage;
 pub mod tools;
@@ -25,7 +29,6 @@ pub use builders::{
     build_usage, ContentPartBuilder, ConversationBuilder, OutputItemBuilder, ResponseBuilder,
 };
 pub(crate) use context_builder::prompt_token_budget;
-pub use context_builder::{build_prompt, build_prompt_with_token_reserve};
 pub use conversions::{ConversationItem, ConversationItemConverter, MessageContentConverter};
 pub use errors::error_mapping;
 pub use events::{ResponseEvent, SseEventEmitter};

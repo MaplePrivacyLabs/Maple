@@ -29,13 +29,19 @@ pub(super) use detect::{
 };
 
 pub(in crate::agent) const CUA_INTEGRATION_ID: &str = "cua-driver";
-/// The integration's name in errors.
-pub(in crate::agent) const CUA_NAME: &str = "Computer use (CUA)";
-/// Every spelling of the integration's name a custom server could take.
-const CUA_NAMES: [&str; 4] = [CUA_INTEGRATION_ID, CUA_NAME, "Cua Driver", "cua_driver"];
-pub(in crate::agent) const CUA_CARD_NAME: &str = "Cua";
-pub(in crate::agent) const CUA_CARD_DESCRIPTION: &str =
-    "Let Maple see and control apps on this computer.";
+/// The integration's name wherever Maple shows it. Cua, the open-source
+/// project behind it, is credited on the Settings card.
+pub(in crate::agent) const CUA_NAME: &str = "Computer use";
+/// Every spelling of the integration's name a custom server could take,
+/// including the name earlier releases showed.
+const CUA_NAMES: [&str; 5] = [
+    CUA_INTEGRATION_ID,
+    CUA_NAME,
+    "Computer use (CUA)",
+    "Cua Driver",
+    "cua_driver",
+];
+pub(in crate::agent) const CUA_DESCRIPTION: &str = "Let Maple see your screen and use apps on this computer for you: clicking, typing and scrolling.";
 
 /// An external coding agent a task can hand work to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,7 +335,7 @@ impl CuaDetection {
             availability: AgentIntegrationAvailability::NotDetected,
             permissions: None,
             setup_available: false,
-            detail: Some("Built-in CUA is not available on this operating system yet.".to_string()),
+            detail: Some("Computer use is not available on this operating system yet.".to_string()),
         }
     }
 
@@ -361,8 +367,8 @@ impl CuaDetection {
     fn card(&self, stored: Option<&StoredIntegration>) -> AgentIntegration {
         AgentIntegration {
             id: CUA_INTEGRATION_ID.to_string(),
-            name: CUA_CARD_NAME.to_string(),
-            description: CUA_CARD_DESCRIPTION.to_string(),
+            name: CUA_NAME.to_string(),
+            description: CUA_DESCRIPTION.to_string(),
             availability: self.availability,
             backend: stored.map(StoredIntegration::backend),
             version: self
@@ -530,7 +536,7 @@ fn set_cua_default(
         ensure_no_custom_integration_collision(&saved_mcp_servers(paths, user_id)?)?;
         if !detection.ready() {
             return Err(
-                "Set up Maple's Accessibility and Screen Recording permissions before enabling built-in CUA"
+                "Set up Maple's Accessibility and Screen Recording permissions before enabling computer use"
                     .to_string(),
             );
         }

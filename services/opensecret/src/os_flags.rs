@@ -10,11 +10,14 @@ use uuid::Uuid;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const USER_FLAGS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const RESPONSES_COMPACTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+const RESPONSES_COMPACTION_CACHE_TTL: Duration = Duration::from_secs(30);
 
 // Keep canonical feature-flag keys together so callers do not duplicate
 // externally configured identifiers.
 #[allow(dead_code)]
 pub const AGENT_FEATURE_FLAG_KEY: &str = "agent";
+pub const RESPONSES_COMPACTION_FEATURE_FLAG_KEY: &str = "responses_compaction";
 
 #[derive(Debug, thiserror::Error)]
 pub enum OsFlagsError {
@@ -40,6 +43,9 @@ pub struct OsFlagsClient {
     base_url: Url,
     api_key: Option<Arc<String>>,
     cache: UserFlagsCache,
+    // A generic evaluation of the same key must not extend this rollout's
+    // shorter decision lifetime. Keep its entries independently scoped.
+    responses_compaction_cache: UserFlagsCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -79,7 +85,6 @@ impl Default for UserFlagsCache {
 }
 
 impl UserFlagsCache {
-    #[cfg(test)]
     fn new(ttl: Duration) -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
@@ -135,6 +140,7 @@ impl OsFlagsClient {
             base_url,
             api_key: api_key.map(Arc::new),
             cache: UserFlagsCache::default(),
+            responses_compaction_cache: UserFlagsCache::new(RESPONSES_COMPACTION_CACHE_TTL),
         })
     }
 
@@ -143,8 +149,40 @@ impl OsFlagsClient {
         user_uuid: Uuid,
         keys: Option<&[&str]>,
     ) -> Result<UserFlagsResponse, OsFlagsError> {
+        self.get_user_flags_with_cache(user_uuid, keys, &self.cache, REQUEST_TIMEOUT)
+            .await
+    }
+
+    /// A bounded admission-time decision for Responses compaction. This does
+    /// not change the established policy for any other feature-flag consumer.
+    pub(crate) async fn get_responses_compaction_flag(
+        &self,
+        user_uuid: Uuid,
+    ) -> Result<Option<bool>, OsFlagsError> {
+        let keys = [RESPONSES_COMPACTION_FEATURE_FLAG_KEY];
+        let response = self
+            .get_user_flags_with_cache(
+                user_uuid,
+                Some(&keys),
+                &self.responses_compaction_cache,
+                RESPONSES_COMPACTION_REQUEST_TIMEOUT,
+            )
+            .await?;
+        Ok(response
+            .flags
+            .get(RESPONSES_COMPACTION_FEATURE_FLAG_KEY)
+            .copied())
+    }
+
+    async fn get_user_flags_with_cache(
+        &self,
+        user_uuid: Uuid,
+        keys: Option<&[&str]>,
+        cache: &UserFlagsCache,
+        request_timeout: Duration,
+    ) -> Result<UserFlagsResponse, OsFlagsError> {
         let cache_key = UserFlagsCacheKey::new(user_uuid, keys);
-        if let Some(response) = self.cache.get(&cache_key).await {
+        if let Some(response) = cache.get(&cache_key).await {
             return Ok(response);
         }
 
@@ -161,7 +199,7 @@ impl OsFlagsClient {
             }
         }
 
-        let mut req = self.client.get(url);
+        let mut req = self.client.get(url).timeout(request_timeout);
         if let Some(api_key) = &self.api_key {
             req = req.bearer_auth(api_key.as_str());
         }
@@ -171,7 +209,7 @@ impl OsFlagsClient {
 
         if status.is_success() {
             let response = resp.json::<UserFlagsResponse>().await?;
-            self.cache.insert(cache_key, response.clone()).await;
+            cache.insert(cache_key, response.clone()).await;
             Ok(response)
         } else {
             let text = resp.text().await.unwrap_or_default();
@@ -216,6 +254,10 @@ impl std::fmt::Debug for OsFlagsClient {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("cache_ttl", &self.cache.ttl)
+            .field(
+                "responses_compaction_cache_ttl",
+                &self.responses_compaction_cache.ttl,
+            )
             .finish()
     }
 }
@@ -289,6 +331,44 @@ mod tests {
             "flags": { (TEST_FLAG_KEY): true }
         }))
         .into_response()
+    }
+
+    async fn changing_compaction_flag(
+        Path(user_uuid): Path<Uuid>,
+        Query(query): Query<HashMap<String, String>>,
+        State(state): State<FlagServerState>,
+    ) -> Json<serde_json::Value> {
+        assert_eq!(
+            query.get("keys").map(String::as_str),
+            Some(RESPONSES_COMPACTION_FEATURE_FLAG_KEY)
+        );
+        let call = state.calls.fetch_add(1, Ordering::SeqCst);
+        Json(json!({
+            "user_uuid": user_uuid,
+            "flags": { (RESPONSES_COMPACTION_FEATURE_FLAG_KEY): call > 0 }
+        }))
+    }
+
+    async fn transient_compaction_error(
+        Path(user_uuid): Path<Uuid>,
+        State(state): State<FlagServerState>,
+    ) -> Response {
+        if state.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        Json(json!({
+            "user_uuid": user_uuid,
+            "flags": { (RESPONSES_COMPACTION_FEATURE_FLAG_KEY): true }
+        }))
+        .into_response()
+    }
+
+    async fn slow_compaction_flag(Path(user_uuid): Path<Uuid>) -> Json<serde_json::Value> {
+        tokio::time::sleep(Duration::from_millis(1250)).await;
+        Json(json!({
+            "user_uuid": user_uuid,
+            "flags": { (RESPONSES_COMPACTION_FEATURE_FLAG_KEY): true }
+        }))
     }
 
     async fn spawn_flag_server(
@@ -404,6 +484,119 @@ mod tests {
             Some(true)
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn compaction_cache_keeps_false_for_its_short_lifetime_then_refreshes() {
+        let state = FlagServerState::default();
+        let calls = state.calls.clone();
+        let (base_url, server) = spawn_flag_server(state, get(changing_compaction_flag)).await;
+        let client = OsFlagsClient::new(base_url, None).unwrap();
+        let user = Uuid::new_v4();
+        assert_eq!(
+            client.responses_compaction_cache.ttl,
+            Duration::from_secs(30)
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                client.get_responses_compaction_flag(user).await.unwrap(),
+                Some(false)
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Advance this one stored entry instead of sleeping for a rollout TTL.
+        let key = UserFlagsCacheKey::new(user, Some(&[RESPONSES_COMPACTION_FEATURE_FLAG_KEY]));
+        client
+            .responses_compaction_cache
+            .inner
+            .write()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .expires_at = Instant::now() - Duration::from_secs(1);
+        assert_eq!(
+            client.get_responses_compaction_flag(user).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn compaction_and_generic_evaluations_never_reuse_each_others_entries() {
+        let state = FlagServerState::default();
+        let calls = state.calls.clone();
+        let (base_url, server) = spawn_flag_server(state, get(changing_compaction_flag)).await;
+        let client = OsFlagsClient::new(base_url, None).unwrap();
+        let user = Uuid::new_v4();
+        assert_eq!(client.cache.ttl, Duration::from_secs(10 * 60));
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(
+            client
+                .get_bool_flag(user, RESPONSES_COMPACTION_FEATURE_FLAG_KEY)
+                .await
+                .unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            client.get_responses_compaction_flag(user).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            client
+                .get_bool_flag(user, RESPONSES_COMPACTION_FEATURE_FLAG_KEY)
+                .await
+                .unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            client.get_responses_compaction_flag(user).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn compaction_errors_do_not_become_successful_cached_decisions() {
+        let state = FlagServerState::default();
+        let calls = state.calls.clone();
+        let (base_url, server) = spawn_flag_server(state, get(transient_compaction_error)).await;
+        let client = OsFlagsClient::new(base_url, None).unwrap();
+        let user = Uuid::new_v4();
+        assert!(client.get_responses_compaction_flag(user).await.is_err());
+        assert_eq!(
+            client.get_responses_compaction_flag(user).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn compaction_has_a_one_second_timeout_without_shortening_generic_requests() {
+        let (base_url, server) =
+            spawn_flag_server(FlagServerState::default(), get(slow_compaction_flag)).await;
+        let client = OsFlagsClient::new(base_url, None).unwrap();
+        let user = Uuid::new_v4();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(3),
+            client.get_responses_compaction_flag(user),
+        )
+        .await
+        .expect("the scoped request must finish within its bounded timeout");
+        assert!(matches!(outcome, Err(OsFlagsError::Request(error)) if error.is_timeout()));
+        // The same slow endpoint remains valid through the existing ten-second
+        // generic policy; a failed scoped request cannot populate its cache.
+        assert_eq!(
+            client
+                .get_bool_flag(user, RESPONSES_COMPACTION_FEATURE_FLAG_KEY)
+                .await
+                .unwrap(),
+            Some(true)
+        );
         server.abort();
     }
 }

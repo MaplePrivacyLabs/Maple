@@ -2,8 +2,12 @@
 
 Agent uses a fresh `store-v1` namespace. Previous Agent/Research data is neither
 read, adopted, migrated nor deleted by this implementation. Plain mode remains
-the default. Password mode encrypts the SQLite database, WAL, attachments and
-other authoritative records with a random local DEK wrapped by the password.
+the default. Password mode encrypts the SQLite database, WAL, attachment metadata
+and other database records with a random local DEK wrapped by the password.
+Attachment payloads, including images and tool screenshots, are ordinary
+session-owned files outside that encryption boundary. They remain plaintext
+even while the database is locked. See [local storage](local-store.md) for
+their lifecycle, migration and backup rules.
 
 ## Release exposure
 
@@ -75,8 +79,6 @@ From the Agent's pinned Nix shell:
 
 ```sh
 python3 scripts/audit-sqlcipher-dependencies.py
-python3 scripts/generate-third-party-notices.py
-python3 scripts/generate-third-party-notices.py --check
 ```
 
 The dependency audit evaluates each supported target separately. Combining
@@ -84,8 +86,10 @@ macOS's native-TLS activation with Linux's backend selection creates a false
 OpenSSL edge. The build verifier additionally checks each target's actual Cargo
 feature graph. The signed-source verifier regenerates the amalgamation and
 compares its bytes, allowing only the source crate's documented WASM guard.
-CI is configured to run released rusqlite's suite against this static provider
-on all three platforms. Local macOS results do not substitute for Linux or Windows.
+The `Nightly` workflow runs released rusqlite's suite against this static
+provider on Linux, macOS and Windows; pull requests and master pushes that
+change the provider inputs run it on Linux (`agent-provider`). Local macOS
+results do not substitute for Linux or Windows.
 
 On 2026-10-21, the local pinned macOS shell passed the released rusqlite 0.40.2
 `modern-full` suite against the patched provider: 334 passing tests and three
@@ -168,16 +172,3 @@ mode** opt-in; the operating system can retain that text after Maple quits.
 Plain mode retains its existing detailed notifications. An unavailable verified
 store mode keeps notification details private. This policy belongs to the local
 computer even when a remote computer runs the task.
-
-## Notices
-
-The About pane opens the native package's third-party notices. Complete notices
-are generated offline into ignored build output for that application's target
-and features, then distributed alongside the binary and EFF wordlist. Ordinary
-unpackaged builds use a small source/attribution page without invoking a license
-generator during Cargo builds. Regeneration and provenance details are in
-`app/assets/licenses/README.md`. The inventory retains compiled C build
-dependencies and the existing upstream licensing distinctions. SQLCipher
-attribution comes from the exact compiled `sqlcipher-src` license, rather than
-only the fork's uncompiled older codec license; generation checks assert that
-compiled-source attribution is present.

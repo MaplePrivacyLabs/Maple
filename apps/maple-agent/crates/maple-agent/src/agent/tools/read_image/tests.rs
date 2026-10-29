@@ -164,7 +164,7 @@ async fn an_attachment_of_the_task_is_read() {
             }],
         )
         .unwrap();
-    let source = stored[0].attachment.source.clone();
+    let source = stored[0].source.clone();
     assert!(source.starts_with("maple-attachment://"));
     let result = run(&fixture.tool(None), json!({ "source": source })).await;
     assert!(!result.is_error, "{}", text(&result));

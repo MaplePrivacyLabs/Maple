@@ -2,8 +2,8 @@
 # Research app pre-commit checks. Runs from the repository root inside the
 # root flake's ci shell (the orchestrator sets MAPLE_HOOK_SELECTED to
 # research_frontend and/or research_rust).
-# CI equivalents: frontend-tests.yml (scripts/ci/frontend.sh) and
-# rust-tests.yml (scripts/ci/rust.sh).
+# CI equivalents: the ci.yml research-web lane (scripts/ci/frontend.sh) and
+# research-rust lane (scripts/ci/rust.sh).
 
 set -u
 . "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
@@ -32,7 +32,7 @@ if hook_selected research_rust; then
     cd "$TAURI_DIR" || exit 1
     hook_run sh -c 'cargo metadata --locked --format-version 1 >/dev/null'
     hook_run cargo fmt --check
-    # CI (rust-tests.yml) runs no Clippy for src-tauri, and `-D warnings` fails on
+    # CI (research-rust) runs no Clippy for src-tauri, and `-D warnings` fails on
     # the vendored patches/ crates, so the hook matches CI: format and tests only.
     hook_run ./scripts/run-with-desktop-onnxruntime.sh cargo test --locked --all-targets
 fi

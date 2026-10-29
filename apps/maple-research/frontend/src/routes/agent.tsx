@@ -1,10 +1,10 @@
 import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
 import { AppEntryPage } from "@/components/AppEntryPage";
+import { AgentModeMovedPage } from "@/components/AgentModeMovedPage";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { appUrl } from "@/config/domains";
 import { isTauriDesktop } from "@/utils/platform";
-import { AgentMode } from "@/components/AgentMode";
 
 export const Route = createFileRoute("/agent")({
   component: AgentRoute
@@ -12,15 +12,14 @@ export const Route = createFileRoute("/agent")({
 
 function AgentRoute() {
   const os = useOpenSecret();
-  const agentModeAvailable = isTauriDesktop();
 
   useRouteMeta({
-    title: agentModeAvailable && os.auth.user ? "Maple Agent Mode" : "Maple AI",
-    description: "Maple Agent Mode.",
+    title: "Maple",
+    description: "Agent Mode is now Maple Work.",
     canonicalUrl: appUrl("/agent")
   });
 
-  if (!agentModeAvailable) {
+  if (!isTauriDesktop()) {
     return <Navigate to="/" replace />;
   }
 
@@ -28,6 +27,5 @@ function AgentRoute() {
     return <AppEntryPage />;
   }
 
-  const userId = os.auth.user.user.id;
-  return <AgentMode key={userId} userId={userId} />;
+  return <AgentModeMovedPage userId={os.auth.user.user.id} />;
 }

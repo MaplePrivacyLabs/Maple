@@ -17,17 +17,19 @@ are required; the exact item-ID inputs are listed in the [service setup](../READ
 The public key must already be pinned both in the selected build's source profile
 and in the publisher's trusted source profile. An empty key list blocks publication.
 
-Normal publication defaults to both platforms at the same version, build and
-source. Disable Linux only explicitly for a historical macOS-only run. Initial
-unadvertised Linux publications enable the real N-to-N+1 rehearsal; passing
-that rehearsal remains a gate before invitations.
+Normal publication defaults to macOS, Linux and Windows at the same version,
+build and source. Omit a platform only explicitly for a historical producer
+that did not build it. Windows uses the same production setup, protected
+`updates-production` stages and exact-package verification as the other platforms;
+there is no separate Windows activation variable or approval path.
 
 ```sh
 publisher=services/agent-updates/publisher/publisher.py
-python3 "$publisher" trust --run-id BUILD_RUN_ID --linux --output trust.json
-# Both platform packages come from this one verified producer run.
-python3 "$publisher" prepare --run-id BUILD_RUN_ID --version 0.0.4 \
-  --build BUILD_RUN_NUMBER --macos macos-artifacts --linux linux-artifacts --notes-file notes.txt \
+python3 "$publisher" trust --run-id BUILD_RUN_ID --linux --windows --output trust.json
+# All three platform packages come from this one verified producer run.
+python3 "$publisher" prepare --run-id BUILD_RUN_ID --version 0.0.12 \
+  --build BUILD_RUN_NUMBER --macos macos-artifacts --linux linux-artifacts \
+  --windows windows-artifacts --notes-file notes.txt \
   --public-key public-key.pub --output bundle
 python3 "$publisher" reserve --bundle bundle --public-key bundle/public-key.pub \
   --endpoint https://ACCOUNT.r2.cloudflarestorage.com --bucket AGENT_BUCKET
@@ -38,9 +40,15 @@ python3 "$publisher" publish --bundle bundle --public-key bundle/public-key.pub 
   --base-url https://updates.maple.ai
 ```
 
+The low-level CLI selects platform packages explicitly with `--linux` and
+`--windows`, retaining historical bundle preparation. The normal workflow
+supplies both. All included packages must come from that same selected producer
+run, with the same source, version and build.
+
 `trust` returns the source SHA, selected artifact names, exact run attempt,
-publication date and build number as JSON. Only completed trusted master runs of
-`agent-desktop-build.yml` qualify. The selected Prod signing/package and downloaded
+publication date and build number as JSON. Only completed trusted master push or
+dispatched runs of `agent-desktop-build.yml` qualify, never the nightly Dev run.
+The selected Prod signing/package and downloaded
 consumer validation jobs must have succeeded; an aggregate success or skipped job
 is insufficient, while an unrelated Dev failure does not block a qualified Prod
 package. The latest job inventory retains successful producer jobs when only
@@ -54,6 +62,17 @@ checksums are validated before copying the binary payloads into the bundle. The
 macOS archive's bounded regular `Info.plist` member is read without extraction to
 match the selected run's build number, version and application identity. Sparse
 archives are rejected; extension headers and cumulative metadata are bounded.
+Windows additionally requires the concrete successful `Build Windows binary (prod)`,
+`Signed Windows (prod)` and `Verify downloaded Windows (prod)` jobs. Its exact
+five-file final artifact contains the signed NSIS setup `.exe`, generation
+`.tar.gz`, `build-info.json`, `manifest.json` and `SHA256SUMS`. Every file's
+attestation is checked. The bounded Windows archive scan requires the fixed
+ordinary-file/directory layout and exact descriptor, including source, build and
+application identity; embedded build-info bytes must match the attested sidecar.
+Links, extensions, auxiliary entries, malformed end markers and trailing content
+are rejected without extracting or executing downloaded files. The generation
+archive contains the signed application executable and build metadata; the
+stable launcher and NSIS uninstaller remain outside each generation.
 
 The manifest build number is the selected build run's `run_number`, matching the
 packaging workflow's `CFBundleVersion` input and Linux `bundle.json` descriptor.
@@ -76,6 +95,15 @@ same primary key signs both exact documents as `envelope.json` and
 Linux feed in both the selected source profile and trusted publisher profile;
 Mac-only producers do not need that field.
 
+Windows uses its own strict `maple-agent-update-v3` document in
+`windows-manifest.json`. Its sole `windows-x86_64` artifact is the generation
+`.tar.gz`; its sole `windows` download is the signed setup `.exe`. These are
+different payloads. With `--windows`, preparation writes that document and its
+`windows-envelope.json` signed with the same primary key. The canonical compiled
+Windows feed must be pinned in both selected-source and trusted-publisher
+profiles. Version, build, source, date and notes must agree with all included
+documents. macOS v1 and Linux v2 retain their existing wire shapes.
+
 The canonical compiled feeds use `https://updates.maple.ai`; both source and
 trusted-publisher profiles must pin those exact URLs. Packages built before the
 hostname change keep checking `updates.trymaple.ai`, so retain delivery there.
@@ -91,9 +119,11 @@ size inventory of the private audit sidecars. Both digests are bound by the
 reservation receipt. When Linux is included, it separately reserves
 `publication-linux-manifest.json` and binds `linux_manifest_sha256` in that same
 receipt. Linux payload hashes are inside the exact reserved Linux document; its
-sidecars are inside the reserved metadata inventory. All selected bytes are
+sidecars are inside the reserved metadata inventory. Windows equivalently reserves
+`publication-windows-manifest.json` and binds `windows_manifest_sha256` in the
+receipt. All selected bytes are
 reserved before signing. It recovers each existing complete signed manifest into
-the bundle, preserving both envelopes on a retry. `sign` requires the reservation
+the bundle, preserving every envelope on a retry. `sign` requires the reservation
 receipt, signs the exact bytes with prehashed minisign and the exact trusted
 comment `product=maple-agent channel=stable version=V`, then verifies the signature.
 
@@ -125,6 +155,17 @@ the retry; nothing restores or rolls back a pointer automatically. Mac-only
 publication never reads or changes the Linux pointer. The existing four stages
 and three protected environment approvals remain unchanged.
 
+Windows uses immutable `stable/releases/V/windows-manifest.json` and independent
+conditional pointer `stable/windows/latest.json`. The public feed is
+`/agent/stable/windows/latest.json`; `/download/agent/stable/windows` redirects to
+its signed setup executable. Both Windows payloads are immutable and enumerated
+in that signed document. All selected feed pointers are authenticated and
+snapshotted before uploads, and each keeps its own opaque ETag for conditional
+promotion. An interrupted multi-feed promotion can resume only from the same
+reserved and signed bytes. A concurrent Windows pointer change blocks that
+promotion and remains untouched. Publications without Windows never read or
+change its pointer.
+
 The bundle contains raw, provenance-checked build-info, package manifest,
 SHA256SUMS and macOS notarization logs under `metadata/`, prefixed by platform,
 plus the stable run/source/artifact identity and attestation policy in
@@ -133,7 +174,18 @@ it is omitted from durable metadata so a successful verifier-only rerun can reus
 the exact release. A finite filename allowlist and a 4 MiB limit per file
 bound this audit inventory. Reservation, signing and publication require exactly
 the five macOS sidecars and provenance, plus the three Linux sidecars when the
-separate Linux document is included; a missing, empty, partial or extra inventory is rejected. These
+separate Linux document is included and three Windows sidecars when its document
+is included; a missing, empty, partial or extra inventory is rejected. The exact
+bundle file inventories, including payloads, metadata, manifests and key, are:
+
+| Included platforms | Prepared | Reserved | Signed |
+| --- | ---: | ---: | ---: |
+| macOS | 12 | 13 | 14 |
+| macOS + Linux | 17 | 18 | 20 |
+| macOS + Windows | 18 | 19 | 21 |
+| macOS + Linux + Windows | 23 | 24 | 27 |
+
+These
 objects are stored immutably under
 `stable/releases/V/metadata/` and verified before the complete manifest appears.
 They remain private because the Worker serves only artifacts enumerated in the
@@ -150,7 +202,8 @@ Publication finishes by checking the live latest and immutable signed manifest,
 signature, full artifact hashes, HEAD lengths, one-byte ranges, and installer
 redirect destinations. All public requests use the native client's
 `Maple-Agent-Updater/1` identity and `Accept-Encoding: identity`, including full
-payload downloads. Repeat that separately with `verify-live --bundle bundle
+payload downloads. They also send `X-Maple-Download-Probe: 1` so publication
+verification does not inflate private download analytics. Repeat that separately with `verify-live --bundle bundle
 --public-key bundle/public-key.pub --base-url https://updates.maple.ai` after a
 transport failure or operational change. If this final check fails after promotion,
 inspect the live state and retry the identical bundle; publication may already

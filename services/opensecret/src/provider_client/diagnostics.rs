@@ -45,6 +45,9 @@ pub struct UpstreamDiagnostic {
     pub error_type: Option<&'static str>,
     /// A locally generated category summary, never an upstream text snippet.
     pub summary: Option<&'static str>,
+    // Exact input-validation rejection; broader context/output-limit summaries
+    // never authorize recovery. Upstream text and counts are not retained.
+    input_context_overflow: bool,
 }
 
 impl UpstreamDiagnostic {
@@ -54,7 +57,12 @@ impl UpstreamDiagnostic {
             code: None,
             error_type: None,
             summary: None,
+            input_context_overflow: false,
         }
+    }
+
+    pub(crate) fn is_input_context_overflow(&self) -> bool {
+        self.body_state == DiagnosticBodyState::Complete && self.input_context_overflow
     }
 }
 
@@ -130,7 +138,113 @@ fn parse_complete_body(body: &[u8]) -> UpstreamDiagnostic {
         code,
         error_type,
         summary,
+        input_context_overflow: input_validation_labels(error)
+            && message.is_some_and(known_input_context_overflow),
     }
+}
+
+/// The message grammar must not override conflicting structured error metadata.
+/// Missing labels are tolerated for provider wrappers which omit them; present
+/// labels must agree with this specific request-validation rejection.
+fn input_validation_labels(error: &Value) -> bool {
+    let code_matches = match error.get("code").filter(|value| !value.is_null()) {
+        None => true,
+        Some(Value::Number(value)) => value.as_u64() == Some(400),
+        Some(Value::String(value)) => matches!(
+            value.as_str(),
+            "context_length_exceeded"
+                | "invalid_request_error"
+                | "invalid_request"
+                | "invalid_argument"
+        ),
+        Some(_) => false,
+    };
+    let type_matches = error
+        .get("type")
+        .filter(|value| !value.is_null())
+        .is_none_or(|value| {
+            matches!(
+                value.as_str(),
+                Some(
+                    "BadRequestError"
+                        | "invalid_request_error"
+                        | "invalid_request"
+                        | "invalid_argument"
+                )
+            )
+        });
+    let parameter_matches = error
+        .get("param")
+        .filter(|value| !value.is_null())
+        .is_none_or(|value| value.as_str() == Some("input_tokens"));
+    code_matches && type_matches && parameter_matches
+}
+
+/// Recognize the pinned vLLM input-token validator's complete, fixed grammar.
+/// Source: vLLM db9527a46873454610df6dbedf79a36d6bf1a7f6,
+/// `vllm/renderers/params.py::TokenizeParams._token_len_check`.
+/// The API uses `str(VLLMValidationError)`, including its parameter/value suffix:
+/// https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/exceptions.py
+/// https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/entrypoints/serve/exception_handling/error_response.py
+/// Its separate output-limit validator is not eligible: trimming history cannot
+/// repair an output allowance which by itself fills the model's whole window.
+/// Values are used only to validate the relation, never retained or logged.
+fn known_input_context_overflow(message: &str) -> bool {
+    fn number_before(text: &mut &str, separator: &str) -> Option<u64> {
+        let (number, rest) = text.split_once(separator)?;
+        if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        *text = rest;
+        number.parse().ok()
+    }
+
+    let Some(mut rest) = message
+        .trim()
+        .strip_prefix("This model's maximum context length is ")
+    else {
+        return false;
+    };
+    let Some(window) = number_before(&mut rest, " tokens. However, you requested ") else {
+        return false;
+    };
+    let Some(output) = number_before(&mut rest, " output tokens and your prompt contains ") else {
+        return false;
+    };
+    let lower_bound = rest.starts_with("at least ");
+    if lower_bound {
+        rest = &rest["at least ".len()..];
+    }
+    let Some(input) = number_before(&mut rest, " input tokens, for a total of ") else {
+        return false;
+    };
+    if lower_bound {
+        let Some(remainder) = rest.strip_prefix("at least ") else {
+            return false;
+        };
+        rest = remainder;
+    }
+    let Some(total) = number_before(
+        &mut rest,
+        " tokens. Please reduce the length of the input prompt or the number of requested output tokens.",
+    ) else {
+        return false;
+    };
+    // VLLMValidationError.__str__ appends this exact parameter/value suffix
+    // before the API serializes the message. Accept it only when it agrees.
+    let valid_suffix = rest.is_empty()
+        || rest
+            .strip_prefix(" (parameter=input_tokens, value=")
+            .and_then(|suffix| suffix.strip_suffix(')'))
+            .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|value| value.parse::<u64>().ok())
+            == Some(input);
+    valid_suffix
+        && window > 0
+        && input > 0
+        && output < window
+        && input.checked_add(output) == Some(total)
+        && total > window
 }
 
 fn allowlisted_label(value: Option<&Value>) -> Option<&'static str> {
@@ -263,6 +377,82 @@ mod tests {
 
     async fn from_json(value: Value) -> UpstreamDiagnostic {
         read_error_diagnostic(stream::iter([Ok(Bytes::from(value.to_string()))])).await
+    }
+
+    fn input_overflow_message(window: u64, output: u64, input: u64, lower_bound: bool) -> String {
+        let qualifier = if lower_bound { "at least " } else { "" };
+        format!(
+            "This model's maximum context length is {window} tokens. However, you requested {output} output tokens and your prompt contains {qualifier}{input} input tokens, for a total of {qualifier}{} tokens. Please reduce the length of the input prompt or the number of requested output tokens.",
+            input + output
+        )
+    }
+
+    #[tokio::test]
+    async fn only_complete_known_input_validation_can_authorize_context_recovery() {
+        for lower_bound in [false, true] {
+            for suffix in ["", " (parameter=input_tokens, value=1048576)"] {
+                let mut diagnostic = from_json(json!({"error": {
+                "type": "BadRequestError", "code": 400, "param": "input_tokens",
+                "message": format!("{}{suffix}", input_overflow_message(1_048_576, 1, 1_048_576, lower_bound))
+            }}))
+            .await;
+                assert!(diagnostic.is_input_context_overflow());
+                for state in [
+                    DiagnosticBodyState::Truncated,
+                    DiagnosticBodyState::DeadlineExceeded,
+                    DiagnosticBodyState::ReadError,
+                ] {
+                    diagnostic.body_state = state;
+                    assert!(!diagnostic.is_input_context_overflow());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn output_only_unknown_and_inconsistent_limit_errors_cannot_authorize_recovery() {
+        let positive = input_overflow_message(1_048_576, 1, 1_048_576, false);
+        for error in [
+            json!({"code": "max_tokens_limit_exceeded", "message": positive}),
+            json!({"code": "rate_limit_exceeded", "message": positive}),
+            json!({"code": "authentication_error", "message": positive}),
+            json!({"code": 429, "message": positive}),
+            json!({"code": "400", "message": positive}),
+            json!({"type": "RateLimitError", "message": positive}),
+            json!({"type": "unknown-private-type", "message": positive}),
+            json!({"param": {"input_tokens": true}, "message": positive}),
+            json!({"code": "context_length_exceeded", "message": "private-prompt-canary"}),
+            json!({"message": "max_tokens must be at most 32768"}),
+            json!({"message": "This model's maximum context length is 100 tokens."}),
+            json!({"message": input_overflow_message(100, 100, 1, false)}),
+            json!({"message": input_overflow_message(100, 101, 1, false)}),
+            json!({"message": input_overflow_message(100, 1, 99, false)}),
+            json!({"message": input_overflow_message(100, 1, 100, true).replacen("for a total of at least ", "for a total of ", 1)}),
+            json!({"message": input_overflow_message(100, 1, 100, false).replace("total of 101", "total of 102")}),
+            json!({"message": format!("{positive} private-prompt-canary")}),
+            json!({"message": format!("{positive} (parameter=input_tokens, value=7)")}),
+            json!({"message": format!("{positive} (parameter=max_tokens, value=1048576)")}),
+            json!({"param": "max_tokens", "message": positive}),
+        ] {
+            let diagnostic = from_json(json!({"error": error})).await;
+            assert!(!diagnostic.is_input_context_overflow());
+            assert!(!format!("{diagnostic:?}").contains("private-"));
+        }
+    }
+
+    #[tokio::test]
+    async fn recognized_input_validation_keeps_only_the_boolean_signal() {
+        let diagnostic = from_json(json!({"error": {
+            "type": "BadRequestError", "code": 400, "param": "input_tokens",
+            "message": input_overflow_message(1_048_576, 1, 1_048_576, false),
+            "prompt": "private-prompt-canary",
+            "arguments": "private-tool-canary"
+        }}))
+        .await;
+        assert!(diagnostic.is_input_context_overflow());
+        let formatted = format!("{diagnostic:?}");
+        assert!(!formatted.contains("1048576"));
+        assert!(!formatted.contains("private-"));
     }
 
     #[tokio::test]

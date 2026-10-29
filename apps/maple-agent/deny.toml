@@ -9,6 +9,26 @@ all-features = true
 # notices are tracked separately because they often require API migrations.
 unsound = "all"
 unmaintained = "none"
+# Native Agent reachability review: docs/zstd-advisories.md. These exceptions
+# cover only the listed findings in zstd 0.13.3 / zstd-safe 7.2.4 / zstd-sys
+# 2.1.0, used by the store codec and pinned CUA cursor-overlay. Re-review on
+# dependency/pin, feature, call-site, or target changes; remove after upgrading.
+ignore = [
+    { id = "RUSTSEC-2026-0391", reason = "Both consumers create fresh owned contexts; borrowed with_context reuse is unused" },
+    { id = "RUSTSEC-2026-0395", reason = "StableInBuffer is never enabled; ordinary encoders select only CompressionLevel" },
+    { id = "RUSTSEC-2026-0396", reason = "Seekable and seek-table APIs and the seekable feature are unused" },
+    { id = "RUSTSEC-2026-0397", reason = "Consumers use OutBuffer::around at position zero, not around_pos beyond an initialized Vec" },
+    { id = "RUSTSEC-2026-0398", reason = "No seekable decompression or caller-selected seek offsets" },
+    { id = "RUSTSEC-2026-0399", reason = "No experimental init_using_cdict/init_using_ddict or borrowed prepared dictionaries" },
+    { id = "RUSTSEC-2026-0400", reason = "No context mixes one-shot low-level calls with an unfinished stream" },
+    { id = "RUSTSEC-2026-0401", reason = "Dictionary training is unused; no untrusted sample-size arrays reach train_from_buffer" },
+    { id = "RUSTSEC-2026-0402", reason = "No CCtx::try_clone or NbWorkers setting; experimental and zstdmt features are unused" },
+    { id = "RUSTSEC-2026-0403", reason = "Both consumers use read::Decoder, explicitly excluded by the advisory; initialized slice output is used" },
+    { id = "RUSTSEC-2026-0404", reason = "No experimental DCtx::try_clone or prepared-dictionary cloning" },
+    { id = "RUSTSEC-2026-0405", reason = "No SeekableCStream API or invalid caller-selected InBuffer position" },
+    { id = "RUSTSEC-2026-0406", reason = "Only fresh single-worker contexts are configured before streaming; no unfinished multithreaded frame" },
+    { id = "RUSTSEC-2026-0410", reason = "The faulty allocator shim is wasm32-only; Agent targets native macOS, Linux and Windows" },
+]
 
 [bans]
 # Emergency supply-chain containment for the August 2026 crates.io campaign.

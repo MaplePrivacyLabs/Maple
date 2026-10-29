@@ -21,6 +21,11 @@ on:
         required: true
         default: true
         type: boolean
+      include_windows:
+        description: Publish this release for Windows too (disable only for a legacy macOS/Linux run)
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -65,12 +70,15 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_NOTES: ${{ inputs.notes }}
           INCLUDE_LINUX: ${{ inputs.include_linux }}
+          INCLUDE_WINDOWS: ${{ inputs.include_windows }}
         run: |
           nix develop --no-update-lock-file .#ci -c bash -euo pipefail <<'PREPARE'
           linux_args=()
+          windows_args=()
           if [ "$INCLUDE_LINUX" = true ]; then linux_args=(--linux); fi
+          if [ "$INCLUDE_WINDOWS" = true ]; then windows_args=(--windows); fi
           python3 services/agent-updates/publisher/publisher.py trust \
-            --run-id "$BUILD_RUN_ID" "${linux_args[@]}" --output trust.json
+            --run-id "$BUILD_RUN_ID" "${linux_args[@]}" "${windows_args[@]}" --output trust.json
           gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name "$(jq -er .artifacts.macos trust.json)" --dir packages/macos
           linux_args=()
@@ -79,10 +87,16 @@ jobs:
               --name "$(jq -er .artifacts.linux trust.json)" --dir packages/linux
             linux_args=(--linux packages/linux)
           fi
+          windows_args=()
+          if [ "$INCLUDE_WINDOWS" = true ]; then
+            gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "$(jq -er .artifacts.windows trust.json)" --dir packages/windows
+            windows_args=(--windows packages/windows)
+          fi
           printf '%s' "$RELEASE_NOTES" > notes.txt
           python3 services/agent-updates/publisher/publisher.py prepare \
             --run-id "$BUILD_RUN_ID" --version "$RELEASE_VERSION" --build "$(jq -er .build trust.json)" \
-            --macos packages/macos "${linux_args[@]}" --notes-file notes.txt --public-key public-key.pub --output bundle
+            --macos packages/macos "${linux_args[@]}" "${windows_args[@]}" --notes-file notes.txt --public-key public-key.pub --output bundle
           PREPARE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

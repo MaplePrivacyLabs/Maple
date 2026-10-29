@@ -6,28 +6,46 @@ use super::*;
 pub(super) struct SendPreview {
     pub session: Option<String>,
     text: SharedString,
-    images: Vec<(SharedString, Option<Arc<gpui::Image>>)>,
+    attachments: Vec<(SharedString, SharedString, Option<Arc<gpui::Image>>)>,
     show_body: bool,
     acknowledged_run: Option<String>,
     projected_runs: HashSet<String>,
     baseline_user_rows: HashSet<String>,
     snapshot_projected: bool,
+    phase: SendPhase,
+}
+
+enum SendPhase {
+    Uploading,
+    Prepared(Box<uploads::PreparedSend>),
+    Admitting,
 }
 
 impl SendPreview {
-    pub(super) fn new(session: Option<String>, text: &str, images: &[DraftImage]) -> Self {
+    pub(super) fn new(
+        session: Option<String>,
+        text: &str,
+        attachments: &[DraftAttachment],
+    ) -> Self {
         Self {
             session,
             text: text.to_string().into(),
-            images: images
+            attachments: attachments
                 .iter()
-                .map(|image| (image.name.clone().into(), image.thumbnail.clone()))
+                .map(|attachment| {
+                    (
+                        attachment.name.clone().into(),
+                        attachment.detail.clone(),
+                        attachment.thumbnail.clone(),
+                    )
+                })
                 .collect(),
             show_body: true,
             acknowledged_run: None,
             projected_runs: HashSet::new(),
             baseline_user_rows: HashSet::new(),
             snapshot_projected: false,
+            phase: SendPhase::Admitting,
         }
     }
 
@@ -46,7 +64,33 @@ impl SendPreview {
     }
 
     pub(super) fn admitting(&self) -> bool {
-        self.acknowledged_run.is_none()
+        matches!(self.phase, SendPhase::Admitting) && self.acknowledged_run.is_none()
+    }
+
+    pub(super) fn uploading(mut self) -> Self {
+        self.phase = SendPhase::Uploading;
+        self
+    }
+
+    pub(super) fn prepare(&mut self, send: uploads::PreparedSend) {
+        self.phase = SendPhase::Prepared(Box::new(send));
+    }
+
+    pub(super) fn prepared(&self) -> Option<&uploads::PreparedSend> {
+        match &self.phase {
+            SendPhase::Prepared(send) => Some(send),
+            _ => None,
+        }
+    }
+
+    pub(super) fn take_prepared(&mut self) -> Option<uploads::PreparedSend> {
+        if !matches!(self.phase, SendPhase::Prepared(_)) {
+            return None;
+        }
+        match std::mem::replace(&mut self.phase, SendPhase::Admitting) {
+            SendPhase::Prepared(send) => Some(*send),
+            _ => unreachable!(),
+        }
     }
 
     pub(super) fn body_visible(&self) -> bool {
@@ -192,7 +236,7 @@ impl ChatScreen {
                     self.awaiting_first_token = false;
                 }
                 if uncertain {
-                    self.notice = Some("Delivery is uncertain. Your message and images are retained while Maple checks the host; nothing will be resent.".into());
+                    self.notice = Some("Delivery is uncertain. Your message and files are retained while Maple checks the host; nothing will be resent.".into());
                     self.check_unresolved_sends(cx);
                 } else {
                     if self.is_selected(&session) {
@@ -206,6 +250,7 @@ impl ChatScreen {
                 }
             }
         }
+        self.dispatch_prepared_uploads(cx);
         cx.notify();
     }
 
@@ -273,16 +318,26 @@ impl ChatScreen {
                             .border_1()
                             .border_color(gpui::rgb(theme::user_bubble_border()))
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .when(!preview.images.is_empty(), |body| {
+                            .when(!preview.attachments.is_empty(), |body| {
                                 body.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                                    preview.images.iter().map(|(name, image)| {
+                                    preview.attachments.iter().map(|(name, detail, image)| {
                                         match image {
                                             Some(image) => div().child(
                                                 gpui::img(gpui::ImageSource::Image(image.clone()))
                                                     .size_16()
                                                     .rounded(theme::RADIUS_SM),
                                             ),
-                                            None => div().text_xs().child(name.clone()),
+                                            None => div()
+                                                .flex()
+                                                .flex_col()
+                                                .text_xs()
+                                                .gap_1()
+                                                .child(name.clone())
+                                                .child(
+                                                    div()
+                                                        .text_color(gpui::rgb(theme::text_muted()))
+                                                        .child(detail.clone()),
+                                                ),
                                         }
                                     }),
                                 ))
@@ -302,11 +357,17 @@ impl ChatScreen {
                             px(12.),
                             theme::text_muted(),
                         ))
-                        .child(if self.send_pending() {
-                            "Sending…"
-                        } else {
-                            "Waiting for response…"
-                        }),
+                        .child(
+                            self.selected_upload()
+                                .map(|(_, upload)| upload.label.clone())
+                                .unwrap_or_else(|| {
+                                    if self.send_pending() {
+                                        "Sending…".into()
+                                    } else {
+                                        "Waiting for response…".into()
+                                    }
+                                }),
+                        ),
                 ),
         )
     }

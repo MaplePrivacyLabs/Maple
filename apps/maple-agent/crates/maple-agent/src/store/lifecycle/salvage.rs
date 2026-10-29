@@ -169,7 +169,7 @@ impl Store {
         };
         self.lifecycle_control.begin();
         let _operation = ActiveOperation(&self.lifecycle_control);
-        set_state(self, StoreState::Maintenance)?;
+        freeze_attachment_writers(self, true)?;
         // Do not checkpoint or truncate the damaged source, including on close.
         if let Err(error) = self.close_connections_without_checkpoint() {
             set_state(
@@ -240,6 +240,13 @@ impl Store {
                 return Err(StoreError::InvalidData.into());
             }
             validate_replacement(&destination, &journal)?;
+            attachments::copy_retained(
+                &self.paths,
+                &destination,
+                &journal.old_store_id,
+                &journal.new_store_id,
+                &self.lifecycle_control,
+            )?;
             destination
                 .close()
                 .map_err(|(_, error)| StoreError::from(error))?;
@@ -310,6 +317,7 @@ impl Store {
                 if path_present(&temporary)? {
                     discard_temporary(&temporary, &generation)?;
                 }
+                attachments::remove_generation(&self.paths, &journal.new_store_id)?;
                 *self.dek.lock().map_err(|_| StoreError::Busy)? = source_key;
                 set_state(
                     self,

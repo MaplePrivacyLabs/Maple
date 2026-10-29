@@ -20,13 +20,16 @@ fn version_text() -> &'static str {
     concat!("maple ", env!("CARGO_PKG_VERSION"))
 }
 
+/// External agent clients may still be configured to launch `maple acp`.
+/// Answer them on stderr instead of opening or focusing the desktop app.
+const ACP_MOVED_MESSAGE: &str =
+    "Maple agent connections have moved to Maple Work: https://maple.ai/work/download";
+
 fn main() {
     match startup_mode(std::env::args().skip(1)) {
         StartupMode::Acp => {
-            if let Err(error) = app_lib::run_acp_connector() {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
+            eprintln!("{ACP_MOVED_MESSAGE}");
+            std::process::exit(1);
         }
         StartupMode::Version => println!("{}", version_text()),
         StartupMode::Desktop => app_lib::run(),

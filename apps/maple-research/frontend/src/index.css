@@ -104,9 +104,6 @@
     --sidebar-chrome: 0 0% 100%;
     --sidebar-chrome-hover: 0 0% 96%;
     --on-sidebar-chrome: 0 0% 15%;
-    --sidebar-row-hover: var(--neutral-50);
-    --sidebar-row-selected: var(--neutral-200);
-    --sidebar-row-selected-hover: var(--neutral-300);
 
     /* Sidebar scrollbar vs bg-muted (96% L): thumb ≥2:1 (65% ≈ 2.1:1) */
     --sidebar-scrollbar-thumb: 0 0% 65%;
@@ -218,9 +215,6 @@
     --sidebar-chrome: var(--neutral-700);
     --sidebar-chrome-hover: var(--neutral-600);
     --on-sidebar-chrome: 0 0% 98%;
-    --sidebar-row-hover: var(--neutral-700);
-    --sidebar-row-selected: var(--neutral-600);
-    --sidebar-row-selected-hover: var(--neutral-500);
 
     /* vs neutral-800 (~15% L): ~2:1 — neutral-600/500 */
     --sidebar-scrollbar-thumb: var(--neutral-600);

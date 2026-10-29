@@ -647,27 +647,6 @@
         pathShellHook = packages: ''
           export PATH="${lib.makeBinPath packages}:$PATH"
         '';
-
-        mkNixApp =
-          name: shell: script:
-          (flake-utils.lib.mkApp {
-            drv = pkgs.writeShellApplication {
-              inherit name;
-              text = ''
-                # Reuse the Nix that invoked this app. Adding pkgs.nix here would
-                # silently replace a patched host Nix with the nixpkgs-locked version.
-                if ! command -v nix >/dev/null 2>&1; then
-                  echo "error: nix must be available on PATH" >&2
-                  exit 127
-                fi
-                exec nix develop --no-update-lock-file ".#${shell}" -c ${script} "$@"
-              '';
-            };
-          }) // {
-            meta.description = "Run ${script} through nix develop --no-update-lock-file .#${shell}";
-          };
-
-        desktopCiShell = if pkgs.stdenv.isLinux then "desktop-linux" else "ci";
       in
       {
         devShells = {
@@ -739,63 +718,34 @@
           '';
 
           workflows = pkgs.runCommand "maple-github-workflows-check" {
-            nativeBuildInputs = with pkgs; [ actionlint python3 yq-go ];
-            src = ./.github/workflows;
-            tests = ./scripts/ci/test_codeql_workflow.py;
-            nixTests = ./scripts/ci/test_nix_workflows.py;
-            signingTests = ./scripts/ci/test_signing_workflows.py;
+            nativeBuildInputs = [ pkgs.actionlint ];
+            src = ./.;
           } ''
+            # The whole tree, so local actions resolve.
             cd "$src"
             # actionlint 1.7.10 predates GitHub's supported concurrency.queue key.
             # Release-gate tests assert that the only intended value is queue: max.
-            for workflow in ./*.yml; do
-              if [ "$workflow" = ./pages-publish.yml ] || [ "$workflow" = ./auth-pages-publish.yml ] || [ "$workflow" = ./auth-pages-dev-publish.yml ]; then
+            for workflow in .github/workflows/*.yml; do
+              if [ "$workflow" = .github/workflows/pages-publish.yml ] || [ "$workflow" = .github/workflows/auth-pages-publish.yml ] || [ "$workflow" = .github/workflows/auth-pages-dev-publish.yml ]; then
                 # It also predates environment.deployment. Pages tests require
                 # false on the publisher jobs; keep this exception file-scoped.
-                actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
+                actionlint -config-file .github/actionlint.yaml -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
               else
-                actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"
+                actionlint -config-file .github/actionlint.yaml -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"
               fi
             done
-            mkdir -p "$TMPDIR/repo/.github/workflows" "$TMPDIR/repo/scripts/ci"
-            cp -R . "$TMPDIR/repo/.github/workflows/"
-            cp "$tests" "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
-            python3 "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
-            cp "$nixTests" "$TMPDIR/repo/scripts/ci/test_nix_workflows.py"
-            python3 "$TMPDIR/repo/scripts/ci/test_nix_workflows.py"
-            cp "$signingTests" "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
-            python3 "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
             touch "$out"
           '';
 
-          apple-toolchain = pkgs.runCommand "maple-apple-toolchain-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash python3 yq-go ];
+          # Every scripts/ci test (workflow policy, contracts, the planner, the
+          # release and publication scripts) and the Agent update publisher.
+          ci-scripts = pkgs.runCommand "maple-ci-scripts-check" {
+            nativeBuildInputs = with pkgs; [ mapleBash git jq minisign python3 unzip yq-go ];
             src = ./.;
           } ''
             cd "$src"
-            python3 scripts/ci/test_select_xcode.py
-            python3 scripts/ci/test_research_dev_profile.py
-            touch "$out"
-          '';
-
-          change-detection = pkgs.runCommand "maple-ci-change-detection-check" {
-            nativeBuildInputs = with pkgs; [ bash git python3 ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_change_detection.py
-            python3 scripts/ci/test_agent_change_detection.py
-            python3 scripts/ci/test_opensecret_change_detection.py
-            python3 scripts/ci/test_hook_change_detection.py
-            touch "$out"
-          '';
-
-          opensecret-workflows = pkgs.runCommand "maple-opensecret-workflow-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash git jq python3 yq-go ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_opensecret_workflows.py
+            python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'
+            python3 -I -m unittest discover -s services/agent-updates/publisher -p 'test_*.py'
             touch "$out"
           '';
 
@@ -809,67 +759,12 @@
             touch "$out"
           '';
 
-          agent-workflows = pkgs.runCommand "maple-agent-workflow-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash git python3 yq-go ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_agent_workflows.py
-            python3 scripts/ci/test_agent_cache.py
-            python3 scripts/ci/test_agent_windows.py
-            python3 scripts/ci/test_agent_measure.py
-            python3 apps/maple-agent/scripts/test_rusqlite_provider.py
-            python3 scripts/ci/test_agent_master_selection.py
-            python3 scripts/ci/test_agent_rust_deps.py
-            python3 scripts/ci/test_agent_debug_plist.py
-            python3 apps/maple-agent/scripts/test_third_party_notices.py
-            python3 apps/maple-agent/scripts/test_release_packaging.py
-            python3 apps/maple-agent/scripts/test_linux_release_appimage.py
-            python3 apps/maple-agent/scripts/test_linux_release_bundle.py
-            python3 apps/maple-agent/scripts/test_linux_install.py
-            python3 apps/maple-agent/scripts/test_macos_release_dylibs.py
-            python3 apps/maple-agent/scripts/test_macos_build_info.py
-            python3 apps/maple-agent/scripts/test_smoke_macos_release.py
-            python3 apps/maple-agent/scripts/test_smoke_linux_bundle_host.py
-            touch "$out"
-          '';
-
-          agent-updates = pkgs.runCommand "maple-agent-updates-check" {
-            nativeBuildInputs = with pkgs; [ git minisign python3 yq-go ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_agent_updates_workflows.py
-            python3 -I -m unittest discover -s services/agent-updates/publisher -p 'test_*.py'
-            touch "$out"
-          '';
-
-          ios-build-profile = pkgs.runCommand "maple-ios-build-profile-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash python3 unzip ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 scripts/ci/test_ios_build_profile.py
-            python3 scripts/ci/test_ios_release_signing.py
-            touch "$out"
-          '';
-
           pages = pkgs.runCommand "maple-pages-deployment-check" {
             nativeBuildInputs = with pkgs; [ mapleBash python3 yq-go ];
             src = ./.;
           } ''
             cd "$src"
             python3 -I -m unittest discover -s scripts/ci -p 'test_pages_*.py'
-            touch "$out"
-          '';
-
-          sdk-publishing = pkgs.runCommand "maple-sdk-publishing-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash git python3 yq-go ];
-            src = ./.;
-          } ''
-            cd "$src"
-            python3 -I -m unittest discover -s scripts/ci -p 'test_sdk_publish*.py'
-            python3 -I -m unittest discover -s scripts/ci -p 'test_sdk_crates_upload.py'
             touch "$out"
           '';
 
@@ -904,26 +799,17 @@
             touch "$out"
           '';
         };
-
-        apps = {
-          ci-frontend = mkNixApp "maple-ci-frontend" "ci" "./scripts/ci/frontend.sh";
-          ci-rust = mkNixApp "maple-ci-rust" "ci" "./scripts/ci/rust.sh";
-          ci-desktop-pr = mkNixApp "maple-ci-desktop-pr" desktopCiShell "./scripts/ci/desktop-pr.sh";
-          ci-desktop-release = mkNixApp "maple-ci-desktop-release" desktopCiShell "./scripts/ci/desktop-release.sh";
-          ci-signed-desktop-release-rehearsal = mkNixApp "maple-ci-signed-desktop-release-rehearsal" desktopCiShell "./scripts/ci/signed-release-rehearsal.sh desktop";
-          ci-latest-json = mkNixApp "maple-ci-latest-json" "ci" "./scripts/ci/latest-json.sh";
-          ci-verify-release-artifacts = mkNixApp "maple-ci-verify-release-artifacts" "ci" "./scripts/ci/verify-release-artifacts.sh";
-        }
-        // lib.optionalAttrs pkgs.stdenv.isLinux {
-          ci-android-pr = mkNixApp "maple-ci-android-pr" "android" "./scripts/ci/android-pr.sh";
-          ci-android-release = mkNixApp "maple-ci-android-release" "android" "./scripts/ci/android-release.sh";
-          ci-signed-android-release-rehearsal = mkNixApp "maple-ci-signed-android-release-rehearsal" "android" "./scripts/ci/signed-release-rehearsal.sh android";
-        }
-        // lib.optionalAttrs pkgs.stdenv.isDarwin {
-          ci-ios-onnxruntime = mkNixApp "maple-ci-ios-onnxruntime" "apple" "./scripts/ci/ios-onnxruntime.sh";
-          ci-ios-pr = mkNixApp "maple-ci-ios-pr" "apple" "./scripts/ci/ios-pr.sh";
-          ci-ios-release = mkNixApp "maple-ci-ios-release" "apple" "./scripts/ci/ios-release.sh";
-          ci-signed-ios-release-rehearsal = mkNixApp "maple-ci-signed-ios-release-rehearsal" "apple" "./scripts/ci/signed-release-rehearsal.sh ios";
+        apps.research-dev-desktop = flake-utils.lib.mkApp {
+          drv = pkgs.writeShellApplication {
+            name = "maple-research-dev-desktop";
+            text = ''
+              if ! command -v nix >/dev/null 2>&1; then
+                echo "error: nix must be available on PATH" >&2
+                exit 127
+              fi
+              exec nix develop --no-update-lock-file ".#${if pkgs.stdenv.isLinux then "desktop-linux" else "ci"}" -c ./scripts/ci/research-dev-desktop.sh "$@"
+            '';
+          };
         };
       }
     );

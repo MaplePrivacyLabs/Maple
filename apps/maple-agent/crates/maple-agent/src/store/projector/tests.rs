@@ -414,7 +414,7 @@ fn timeline_format_pins_the_canonical_fixture() {
     assert_eq!(
         (TIMELINE_FORMAT, digest.as_str()),
         (
-            1,
+            2,
             "bd6b8487d68c8376bcda6a6d7323a632c5bd942368dbe742a9de26440af852c2"
         )
     );

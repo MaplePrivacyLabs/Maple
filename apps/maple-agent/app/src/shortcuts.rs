@@ -373,6 +373,8 @@ enum KnownContext {
     ComposerNormal,
     ComposerVisual,
     ComposerInsert,
+    /// The composer waiting for the character after `f`, `t`, `r`, `i` or `a`.
+    ComposerWaiting,
     ApplicationVimRoot,
     ApplicationVimMenu,
     ApplicationVimOtherInput,
@@ -391,6 +393,7 @@ fn known_context(context: Option<&str>) -> KnownContext {
         Some(vim_actions::NORMAL_CONTEXT) => KnownContext::ComposerNormal,
         Some(vim_actions::VISUAL_CONTEXT) => KnownContext::ComposerVisual,
         Some(vim_actions::INSERT_CONTEXT) => KnownContext::ComposerInsert,
+        Some(vim_actions::WAITING_CONTEXT) => KnownContext::ComposerWaiting,
         Some(application_vim::ROOT_CONTEXT) => KnownContext::ApplicationVimRoot,
         Some(application_vim::MENU_CONTEXT) => KnownContext::ApplicationVimMenu,
         Some(application_vim::OTHER_INPUT_CONTEXT) => KnownContext::ApplicationVimOtherInput,
@@ -497,6 +500,7 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
             KnownContext::ComposerNormal
                 | KnownContext::ComposerVisual
                 | KnownContext::ComposerInsert
+                | KnownContext::ComposerWaiting
         )
         || matches!(right, KnownContext::TextInput)
             && matches!(
@@ -504,11 +508,12 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
                 KnownContext::ComposerNormal
                     | KnownContext::ComposerVisual
                     | KnownContext::ComposerInsert
+                    | KnownContext::ComposerWaiting
             )
     {
         return Some(ShortcutContextOverlap::Scoped);
     }
-    // A menu, the transcript, ordinary TextInput, and the three mutually
+    // A menu, the transcript, ordinary TextInput, and the four mutually
     // exclusive composer modes cannot otherwise be active focus contexts
     // together. A menu is never inside a text field: a field's own
     // right-click menu renders beside the field's key context. Application

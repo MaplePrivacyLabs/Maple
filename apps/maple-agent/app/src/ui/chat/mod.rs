@@ -10,7 +10,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentImageUpload, AgentIntegration, AgentIntegrationAvailability,
+    AgentCreateSessionRequest, AgentIntegration, AgentIntegrationAvailability,
     AgentIntegrationBackend, AgentMcpServer, AgentMcpTransport, AgentProjectTrustStatus,
     AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent, AgentSessionIntegrationKind,
     AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentSubagent, AgentTaskState,
@@ -19,7 +19,7 @@ use maple_agent::agent::{
 };
 
 use crate::backend::{AgentBackend, PendingQuestion};
-use crate::ui::icons::{icon, spinner, wordmark};
+use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
@@ -27,6 +27,7 @@ use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::titlebar;
 use crate::ui::widgets;
 
 mod cache;
@@ -34,8 +35,9 @@ mod commands;
 mod composer;
 pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
+mod attachments;
 mod dialogs;
-mod images;
+mod feedback;
 mod navigation;
 mod paging;
 mod project_folder;
@@ -43,11 +45,15 @@ mod queue;
 mod sending;
 mod sidebar;
 mod speech;
+mod staging;
 mod summaries;
 #[cfg(test)]
 mod tests;
 mod thinking;
 mod transcript;
+#[cfg(test)]
+mod upload_tests;
+mod uploads;
 
 use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind};
 use self::commands::ChatCommand;
@@ -88,6 +94,11 @@ pub struct PickQuestionOption {
 
 pub struct LoggedOut;
 
+pub(crate) struct SignOutFailed {
+    pub(crate) user_id: String,
+    pub(crate) message: String,
+}
+
 /// Emitted when the user opens app settings from the chat header.
 pub struct OpenSettings;
 
@@ -102,9 +113,36 @@ struct QueueEdit {
 
 /// Width of the task sidebar.
 const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
-/// Left inset that keeps the header and its menus clear of the floating
-/// sidebar toggle while the sidebar is collapsed.
-const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = px(220.);
+/// Width of the rail that stands in for the sidebar while it is collapsed.
+const SIDEBAR_RAIL_WIDTH: gpui::Pixels = px(48.);
+const SIDEBAR_TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// One reversible transition. Sampling the current position when retargeting
+/// avoids jumping back to an endpoint on a second press.
+struct SidebarTransition {
+    from: f32,
+    to: f32,
+    started: std::time::Instant,
+    duration: std::time::Duration,
+}
+
+impl SidebarTransition {
+    fn value(&self, now: std::time::Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
+        let t = (elapsed / self.duration.as_secs_f32()).clamp(0., 1.);
+        let eased = 1. - (1. - t).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+}
+/// Height of the task header and the clear strip above the collapsed rail.
+const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
+/// Left inset for the header beside the rail: the traffic lights reach
+/// 30 px past it, followed by an 8 px gap when the bar is transparent.
+const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = if titlebar::TRANSPARENT_TITLEBAR {
+    px(38.)
+} else {
+    px(16.)
+};
 /// Reading width shared by the transcript and the composer; they must
 /// stay in one column.
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
@@ -152,9 +190,6 @@ mod notification_policy_tests {
     }
 }
 
-/// Recent projects the project menu lists above "New project…".
-pub(super) const ROOT_MENU_RECENTS: usize = 6;
-
 /// How long a notice stays before it clears itself.
 const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 
@@ -168,32 +203,14 @@ const PROMPT_HISTORY_LIMIT: usize = 50;
 /// elapsed time. It runs only while a subagent works.
 const SUBAGENT_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// An image staged in the composer: the data URL the runtime stores with
-/// the message and a square thumbnail, both built off the UI thread.
-#[derive(Clone)]
-struct DraftImage {
-    /// Unique per staged draft, so a late thumbnail finds its owner even
-    /// after other drafts were removed.
-    id: u64,
-    name: String,
-    /// `None` while the base64 encode is still running; the send waits
-    /// for it. Shared so the send does not copy up to 13 MB per image.
-    data_url: Option<Arc<str>>,
-    /// `None` until the crop finishes (or if the image did not decode).
-    thumbnail: Option<Arc<gpui::Image>>,
-}
-
-impl DraftImage {
-    fn ready(&self) -> bool {
-        self.data_url.is_some()
-    }
-}
+use self::attachments::DraftAttachment;
 
 /// Shared read-only state the transcript rows render from.
 struct TranscriptCtx<'a> {
     markdown_cache: &'a MarkdownCache,
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
+    attachment_failures: &'a HashSet<String>,
     chat: &'a gpui::WeakEntity<ChatScreen>,
     tool_summaries: &'a HashMap<String, SharedString>,
     render: &'a RenderCtx,
@@ -228,6 +245,7 @@ pub(super) enum ChatPopup {
     Model,
     Thinking,
     Integrations,
+    Settings,
     /// The transcript's right-click menu, at a window position.
     Transcript(gpui::Point<gpui::Pixels>),
 }
@@ -237,7 +255,7 @@ pub(super) enum ChatPopup {
 /// showing the text meanwhile; it clears when the send goes out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FirstSend {
-    /// Plain text (with the staged images) for the new task.
+    /// Plain text (with the staged attachments) for the new task.
     Message { text: String, steer: bool },
     /// A `/command` that needs a task, as typed.
     Command(String),
@@ -387,11 +405,19 @@ fn draft_mcp_rows(
     rows
 }
 
+struct SendReceiptQuery {
+    id: String,
+    outcome: Option<crate::host::receipts::Outcome>,
+    backend: Arc<AgentBackend>,
+}
+
+#[derive(Clone)]
 struct UnresolvedSend {
+    backend: Arc<AgentBackend>,
     outcome: Option<crate::host::receipts::Outcome>,
     session: String,
     text: String,
-    images: Vec<DraftImage>,
+    attachments: Vec<DraftAttachment>,
     from_composer: bool,
 }
 
@@ -554,6 +580,7 @@ pub struct ChatScreen {
     dialog_focus: Option<gpui::FocusHandle>,
     /// A dialog just opened; the next render moves focus into it.
     dialog_focus_pending: bool,
+    feedback: Option<feedback::FeedbackForm>,
     /// Whether the project-trust question may open its dialog. Tests that
     /// drive typing turn it off, since the dialog rightly takes focus.
     trust_prompts: bool,
@@ -576,14 +603,19 @@ pub struct ChatScreen {
     watched_git_dir: Option<std::path::PathBuf>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
-    /// Images staged for the next message.
-    draft_images: Vec<DraftImage>,
+    sidebar_transition: Option<SidebarTransition>,
+    /// Files staged for the next message.
+    draft_attachments: Vec<DraftAttachment>,
     unresolved_sends: HashMap<String, UnresolvedSend>,
+    attachment_uploads: HashMap<String, uploads::PendingUpload>,
+    accept_send_results: bool,
+    sign_out_pending: bool,
+    discarded_sends: HashSet<String>,
     checking_sends: bool,
-    /// Source of `DraftImage::id`.
+    /// Source of `DraftAttachment::id`.
     draft_counter: u64,
     /// True while the native file dialog is open.
-    image_picking: bool,
+    attachment_picking: bool,
     /// The catalog's vision and context window per model id, looked up
     /// when a model is chosen.
     model_catalog: HashMap<String, CatalogEntry>,
@@ -652,6 +684,7 @@ pub struct ChatScreen {
     /// Attachment ids with a read in flight or already failed; never asked
     /// for twice.
     attachment_requests: HashSet<String>,
+    attachment_failures: HashSet<String>,
     attachment_queue: std::collections::VecDeque<String>,
     pending_attachments: usize,
     attachment_viewport: std::ops::Range<usize>,
@@ -701,12 +734,22 @@ pub struct ChatScreen {
     slash_selected: Option<usize>,
     /// Set when a pending question should steal focus at the next render.
     question_focus_pending: bool,
-    /// One-line model summaries per completed tool item id.
+    /// One-line model summaries per tool item id.
     tool_summaries: HashMap<String, SharedString>,
     /// Item ids with a summary request sent; never asked twice.
     summary_requests: HashSet<String>,
-    /// Summary requests in flight; caps how many ride at once.
-    pending_summaries: usize,
+    /// Item ids whose summary landed before their row was durable; each is
+    /// stored when its row gains a persisted identity.
+    unsaved_summaries: HashSet<String>,
+    /// Summary requests in flight by token, each with its row's current
+    /// key; caps how many ride at once.
+    summary_inflight: HashMap<u64, String>,
+    next_summary_token: u64,
+    /// Tool rows the host could not summarize from their input; each is
+    /// summarized from its output once it completes.
+    output_summaries: HashSet<String>,
+    #[cfg(test)]
+    summary_probe: Option<summaries::SummaryProbe>,
     /// Item ids waiting for a free summary slot, oldest first.
     summary_queue: std::collections::VecDeque<String>,
     /// Bumped on session switch; results from an older generation are
@@ -927,8 +970,46 @@ impl ChatScreen {
         if self.sidebar_collapsed == collapsed {
             return;
         }
+        let now = std::time::Instant::now();
+        let from = self
+            .sidebar_transition
+            .as_ref()
+            .map(|transition| transition.value(now))
+            .unwrap_or(if self.sidebar_collapsed { 0. } else { 1. });
+        let to = if collapsed { 0. } else { 1. };
         self.sidebar_collapsed = collapsed;
+        let distance = (to - from).abs();
+        self.sidebar_transition =
+            (!cx.reduce_motion() && distance > f32::EPSILON).then(|| SidebarTransition {
+                from,
+                to,
+                started: now,
+                duration: SIDEBAR_TRANSITION_DURATION.mul_f32(distance),
+            });
+        if self.popup.is_open(&ChatPopup::Settings) {
+            self.popup.close(cx);
+        }
+        if collapsed {
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.close_popups(cx);
+            });
+        }
         cx.notify();
+    }
+
+    fn sidebar_expansion(&mut self, window: &mut Window, cx: &Context<Self>) -> f32 {
+        if cx.reduce_motion() {
+            self.sidebar_transition = None;
+        }
+        let now = std::time::Instant::now();
+        if let Some(transition) = &self.sidebar_transition {
+            if now.saturating_duration_since(transition.started) < transition.duration {
+                window.request_animation_frame();
+                return transition.value(now);
+            }
+            self.sidebar_transition = None;
+        }
+        if self.sidebar_collapsed { 0. } else { 1. }
     }
 
     pub(super) fn toggle_sidebar_visibility(&mut self, cx: &mut Context<Self>) {
@@ -973,10 +1054,10 @@ impl ChatScreen {
     }
 
     #[cfg(test)]
-    fn switcher_root_paths(&self, cx: &gpui::App) -> Vec<String> {
+    fn project_root_paths(&self, cx: &gpui::App) -> Vec<String> {
         self.sidebar
             .read(cx)
-            .switcher_root_paths()
+            .project_root_paths()
             .into_iter()
             .map(str::to_owned)
             .collect()
@@ -1281,13 +1362,19 @@ impl ChatScreen {
             popup: Popup::new(|this| &mut this.popup, cx),
             dialog_focus: None,
             dialog_focus_pending: false,
+            feedback: None,
             trust_prompts: true,
             sidebar_collapsed: false,
-            draft_images: Vec::new(),
+            sidebar_transition: None,
+            draft_attachments: Vec::new(),
             unresolved_sends: HashMap::new(),
+            attachment_uploads: HashMap::new(),
+            accept_send_results: true,
+            sign_out_pending: false,
+            discarded_sends: HashSet::new(),
             checking_sends: false,
             draft_counter: 0,
-            image_picking: false,
+            attachment_picking: false,
             model_catalog: HashMap::new(),
             model_labels: HashMap::new(),
             session_mcp: Vec::new(),
@@ -1313,6 +1400,7 @@ impl ChatScreen {
             reload_generation: 0,
             attachment_images: HashMap::new(),
             attachment_requests: HashSet::new(),
+            attachment_failures: HashSet::new(),
             attachment_queue: std::collections::VecDeque::new(),
             pending_attachments: 0,
             attachment_viewport: 0..0,
@@ -1341,7 +1429,12 @@ impl ChatScreen {
             question_focus_pending: false,
             tool_summaries: HashMap::new(),
             summary_requests: HashSet::new(),
-            pending_summaries: 0,
+            unsaved_summaries: HashSet::new(),
+            summary_inflight: HashMap::new(),
+            next_summary_token: 0,
+            output_summaries: HashSet::new(),
+            #[cfg(test)]
+            summary_probe: None,
             summary_queue: std::collections::VecDeque::new(),
             summary_generation: 0,
             summaries_enabled: settings.tool_summaries,
@@ -1499,7 +1592,10 @@ impl ChatScreen {
                         );
                         this.runtime_error = None;
                         // Runtime root is only the fallback used at startup.
-                        if this.selected_session.is_none()
+                        // A draft may have selected its folder before this
+                        // start, including a catalog's first remote activation.
+                        if !this.draft
+                            && this.selected_session.is_none()
                             && this.selection_generation == generation
                         {
                             this.set_project_context(status.project_root, cx);
@@ -1511,6 +1607,7 @@ impl ChatScreen {
                     }
                 }
                 this.booting = false;
+                this.dispatch_prepared_uploads(cx);
                 cx.notify();
                 this.refresh_models(cx);
                 this.refresh_roots(cx);
@@ -1869,7 +1966,7 @@ impl ChatScreen {
                 if self.backend.remote_host().is_some() {
                     "Remote computer".into()
                 } else {
-                    "This computer".into()
+                    "This Computer".into()
                 }
             });
         let dialog = cx.new(|cx| {
@@ -2200,7 +2297,7 @@ impl ChatScreen {
             return;
         };
         self.first_send_preview = matches!(action, FirstSend::Message { .. }).then(|| {
-            sending::SendPreview::new(None, &action.text(), &self.draft_images).status_only()
+            sending::SendPreview::new(None, &action.text(), &self.draft_attachments).status_only()
         });
         self.pending_first_send = Some(action);
         cx.notify();
@@ -3143,6 +3240,7 @@ impl ChatScreen {
         self.tool_summaries.clear();
         self.attachment_images.clear();
         self.attachment_requests.clear();
+        self.attachment_failures.clear();
         self.attachment_queue.clear();
         self.attachment_viewport = 0..0;
         self.toggled_tools.clear();
@@ -3177,9 +3275,11 @@ impl ChatScreen {
         // Summaries in flight belong to the previous screen state; their
         // results are dropped and the queue restarts.
         self.summary_generation += 1;
-        self.pending_summaries = 0;
+        self.summary_inflight.clear();
         self.summary_queue.clear();
         self.summary_requests.clear();
+        self.unsaved_summaries.clear();
+        self.output_summaries.clear();
         self.list_state.scroll_to_end();
         self.awaiting_first_token = false;
         self.lightbox = None;
@@ -4017,7 +4117,8 @@ impl ChatScreen {
         let Some((row, request)) = self.task_step_target(delta, cx) else {
             return;
         };
-        self.sidebar.read(cx).reveal_row(row);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.reveal_row(row, cx));
         if request.computer.as_deref() == self.backend.remote_host() {
             if let Destination::Task(id) = request.destination {
                 self.select_session(&id, cx);
@@ -4058,6 +4159,10 @@ impl ChatScreen {
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
+        if self.feedback.is_some() {
+            self.close_feedback(cx);
+            return;
+        }
         // A rename ends first. A project's rename field sits in the
         // switcher, which passes Escape on and stays open.
         if self
@@ -4138,7 +4243,7 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.project_folder_dialog.is_some() {
+        if self.project_folder_dialog.is_some() || self.feedback.is_some() {
             return;
         }
         let Some(composer) = self.composer.clone() else {
@@ -4378,12 +4483,12 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        if text.trim().is_empty() && self.draft_images.is_empty() {
+        if text.trim().is_empty() && self.draft_attachments.is_empty() {
             return;
         }
-        if !self.draft_images.iter().all(DraftImage::ready) {
-            // The encode is still on its way; keep the text for the retry.
-            self.notice = Some("Images are still being prepared; try again in a moment".into());
+        if !self.draft_attachments.iter().all(DraftAttachment::ready) {
+            // The stable copy is still being prepared; keep the text for the retry.
+            self.notice = Some("Files are still being prepared; try again in a moment".into());
             if let Some(composer) = self.composer.clone() {
                 composer.update(cx, |input, cx| input.set_text(&text, cx));
             }
@@ -4672,6 +4777,17 @@ impl ChatScreen {
         queue_id: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if queue_id.is_none()
+            && !self.draft_attachments.is_empty()
+            && self
+                .attachment_uploads
+                .values()
+                .any(|upload| upload.session == session_id && !upload.fence.handed_off())
+        {
+            self.notice = Some("Wait for the current file upload or cancel it before sending more files. Text can still be queued or sent to the running task.".into());
+            cx.notify();
+            return false;
+        }
         if self
             .sending_previews
             .values()
@@ -4694,7 +4810,6 @@ impl ChatScreen {
             return false;
         }
         let send_id = uuid::Uuid::new_v4().to_string();
-        let outgoing_id = send_id.clone();
         let session_id = session_id.to_string();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -4702,17 +4817,20 @@ impl ChatScreen {
         let vision_capable = self.selected_model_supports_vision();
         let context_limit = self.selected_model_context_window();
         let run_active = self.active_runs.contains_key(&session_id);
-        // A queued chip keeps its own attachments; new images stay staged.
-        let drafts = if queue_id.is_some() {
+        // A queued chip keeps its own attachments; new files stay staged.
+        let mut drafts = if queue_id.is_some() {
             Vec::new()
         } else {
-            std::mem::take(&mut self.draft_images)
+            std::mem::take(&mut self.draft_attachments)
         };
+        for draft in &mut drafts {
+            draft.prepare_upload_for(&session_id);
+        }
         let editing = self
             .queue_edit
             .as_ref()
             .is_some_and(|edit| Some(&edit.queue_id) == queue_id.as_ref());
-        let request = AgentSendMessageRequest {
+        let mut request = AgentSendMessageRequest {
             session_id: session_id.clone(),
             // A steer identifies the queued item atomically. A fetched preview
             // must never overwrite another client's intervening queue edit.
@@ -4726,16 +4844,7 @@ impl ChatScreen {
             vision_capable,
             steer: steer && (run_active || queue_id.is_some()),
             queue_id,
-            attachments: drafts
-                .iter()
-                .filter_map(|image| {
-                    let data_url = image.data_url.as_deref()?;
-                    Some(AgentImageUpload {
-                        name: image.name.clone(),
-                        data_url: data_url.to_string(),
-                    })
-                })
-                .collect(),
+            attachments: Vec::new(),
         };
         self.notice = None;
 
@@ -4760,6 +4869,11 @@ impl ChatScreen {
         }
         let preview = sending::SendPreview::new(Some(session_id.clone()), &text, &drafts)
             .capture_timeline(&self.timeline);
+        let preview = if drafts.is_empty() {
+            preview
+        } else {
+            preview.uploading()
+        };
         self.sending_previews.insert(
             send_id.clone(),
             if run_active || request.queue_id.is_some() {
@@ -4769,29 +4883,103 @@ impl ChatScreen {
             },
         );
         cx.notify();
+        let retained_send = UnresolvedSend {
+            backend: backend.clone(),
+            outcome: None,
+            session: session_id.clone(),
+            text: text.clone(),
+            attachments: drafts.clone(),
+            from_composer,
+        };
+        let (upload_fence, progress) = self.begin_uploads(&send_id, &session_id, &drafts, cx);
+        if drafts.is_empty() {
+            self.admit_prepared_send(
+                send_id,
+                uploads::PreparedSend {
+                    request,
+                    send: retained_send,
+                    fence: upload_fence,
+                },
+                cx,
+            );
+            return true;
+        }
         self.call(
             async move {
-                backend
-                    .send_message_identified(&user_id, request, outgoing_id)
-                    .await
-            },
-            cx,
-            move |this, result, cx| {
-                this.finish_send(
-                    send_id,
+                let result = match uploads::commit_attachments(
+                    &backend,
+                    &user_id,
+                    &session_id,
+                    &mut drafts,
+                    &upload_fence,
+                    progress,
+                )
+                .await
+                {
+                    Ok(ids) => {
+                        request.attachments = ids;
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                };
+                Ok((
                     UnresolvedSend {
+                        backend: backend.clone(),
                         outcome: None,
                         session: session_id,
                         text,
-                        images: drafts,
+                        attachments: drafts,
                         from_composer,
                     },
                     result,
-                    cx,
-                );
+                    request,
+                    upload_fence,
+                ))
+            },
+            cx,
+            move |this, result, cx| {
+                match result {
+                    Ok((send, Ok(()), request, fence))
+                        if this.accept_send_results && !this.discarded_sends.remove(&send_id) =>
+                    {
+                        if let Some(preview) = this.sending_previews.get_mut(&send_id) {
+                            preview.prepare(uploads::PreparedSend {
+                                request,
+                                send,
+                                fence,
+                            });
+                            this.dispatch_prepared_uploads(cx);
+                        }
+                    }
+                    Ok((send, Err(error), _, _)) => this.finish_attachment_send(
+                        send_id,
+                        retained_send,
+                        Ok((send, Err(error))),
+                        cx,
+                    ),
+                    Err(error) => {
+                        this.finish_attachment_send(send_id, retained_send, Err(error), cx)
+                    }
+                    Ok(_) => {}
+                }
+                cx.notify();
             },
         );
         true
+    }
+
+    fn pending_receipt_queries(&self) -> Vec<SendReceiptQuery> {
+        self.unresolved_sends
+            .iter()
+            .map(|(id, send)| SendReceiptQuery {
+                id: id.clone(),
+                outcome: send
+                    .outcome
+                    .clone()
+                    .filter(|o| !matches!(o, crate::host::receipts::Outcome::Pending)),
+                backend: send.backend.clone(),
+            })
+            .collect()
     }
 
     fn check_unresolved_sends(&mut self, cx: &mut Context<Self>) {
@@ -4800,22 +4988,16 @@ impl ChatScreen {
             return;
         }
         self.checking_sends = true;
-        let ids: Vec<_> = self
-            .unresolved_sends
-            .iter()
-            .map(|(id, send)| {
-                let settled = send
-                    .outcome
-                    .clone()
-                    .filter(|o| !matches!(o, crate::host::receipts::Outcome::Pending));
-                (id.clone(), settled)
-            })
-            .collect();
-        let backend = self.backend.clone();
+        let queries = self.pending_receipt_queries();
         self.call(
             async move {
                 let mut results = Vec::new();
-                for (id, settled) in ids {
+                for SendReceiptQuery {
+                    id,
+                    outcome: settled,
+                    backend,
+                } in queries
+                {
                     if settled.is_some() {
                         results.push((id, settled));
                         continue;
@@ -4849,6 +5031,16 @@ impl ChatScreen {
         outcome: Option<crate::host::receipts::Outcome>,
         cx: &mut Context<Self>,
     ) {
+        self.apply_send_receipt_result(id, outcome, cx);
+        self.dispatch_prepared_uploads(cx);
+    }
+
+    fn apply_send_receipt_result(
+        &mut self,
+        id: &str,
+        outcome: Option<crate::host::receipts::Outcome>,
+        cx: &mut Context<Self>,
+    ) {
         use crate::host::receipts::Outcome;
         let Some(send) = self.unresolved_sends.get_mut(id) else {
             return;
@@ -4875,13 +5067,13 @@ impl ChatScreen {
                     .composer
                     .as_ref()
                     .is_some_and(|c| c.read(cx).text_ref().trim().is_empty())
-                    && self.draft_images.is_empty();
+                    && self.draft_attachments.is_empty();
                 if self.selected_session.as_deref() == Some(&send.session) && empty {
                     let send = self.unresolved_sends.remove(id).unwrap();
                     if let Some(composer) = self.composer.clone() {
                         composer.update(cx, |input, cx| input.set_text(&send.text, cx));
                     }
-                    self.draft_images = send.images;
+                    self.draft_attachments = send.attachments;
                     self.notice = Some(if matches!(outcome, Some(Outcome::Interrupted)) {
                         "The host restarted before recording this send’s result. It may have taken effect. Your draft is restored; check the task before sending again."
                     } else {
@@ -4896,7 +5088,7 @@ impl ChatScreen {
                 }
             }
             _ => {
-                self.notice = Some("Send outcome is still unknown. Your message and images are retained; Maple will check again after reconnecting.".into());
+                self.notice = Some("Send outcome is still unknown. Your message and files are retained; Maple will check again after reconnecting.".into());
             }
         }
     }
@@ -5215,6 +5407,58 @@ impl ChatScreen {
     }
 
     pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
+        if self.sign_out_pending {
+            return;
+        }
+        self.sign_out_pending = true;
+        // Pending upload completions cannot admit a prompt while saving the
+        // account's final presentation edits before sign-out. Those edits are
+        // best effort: a failed flush must never keep an account signed in.
+        self.accept_send_results = false;
+        self.call(
+            async {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    crate::settings::flush_pending(),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        log::warn!("Could not save UI preferences before sign-out: {error}")
+                    }
+                    Err(_) => log::warn!("Saving UI preferences before sign-out timed out"),
+                }
+                Ok(())
+            },
+            cx,
+            |this, _, cx| this.sign_out_after_settings_flush(cx),
+        );
+    }
+
+    fn sign_out_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.sign_out_pending = false;
+        self.accept_send_results = true;
+        self.notice = Some(message.clone().into());
+        cx.emit(SignOutFailed {
+            user_id: self.user_id.clone(),
+            message,
+        });
+        cx.notify();
+    }
+
+    fn sign_out_after_settings_flush(&mut self, cx: &mut Context<Self>) {
+        // A logout during upload must win before prompt admission, even while
+        // the host is still shutting down an earlier run.
+        self.accept_send_results = false;
+        let uploads: Vec<_> = self.attachment_uploads.keys().cloned().collect();
+        for id in uploads {
+            self.cancel_attachment_send(&id, cx);
+        }
+        self.attachment_uploads.clear();
+        self.draft_attachments.clear();
+        self.unresolved_sends.clear();
+        self.sending_previews.clear();
         self.stop_speech(cx);
         if self.recording {
             self.recording = false;
@@ -5228,8 +5472,13 @@ impl ChatScreen {
                 backend.logout_and_clear(&user_id).await
             },
             cx,
-            |_this, _result, cx| {
-                cx.emit(LoggedOut);
+            |this, result, cx| match result {
+                Ok(()) => {
+                    this.sign_out_pending = false;
+                    crate::settings::retire_sidebar_account(&this.user_id);
+                    cx.emit(LoggedOut);
+                }
+                Err(message) => this.sign_out_failed(message, cx),
             },
         );
     }
@@ -5353,9 +5602,7 @@ impl ChatScreen {
             self.timeline_index.remove(&old);
             self.timeline[index].id = item.id.clone();
             self.timeline_index.insert(item.id.clone(), (index, 0));
-            if let Some(summary) = self.tool_summaries.remove(&old) {
-                self.tool_summaries.insert(item.id.clone(), summary);
-            }
+            self.rekey_summary(&old, &item.id);
         }
         if let Some((index, _)) = self.timeline_index.get(&item.id)
             && let (Some(old), Some(new)) = (&self.timeline[*index].persisted, &item.persisted)
@@ -5504,7 +5751,7 @@ impl ChatScreen {
             self.awaiting_first_token = false;
         }
         // Cheap gates first so the common streaming chunk does no extra
-        // work; the summary check reads the stored item after the merge.
+        // work; the summary checks read the stored item after the merge.
         let completed = item.status.as_deref() == Some("completed");
         let is_tool = matches!(item.item_type.as_str(), "tool" | "toolCall");
         self.load_attachment_images_for(&item, cx);
@@ -5528,10 +5775,15 @@ impl ChatScreen {
         {
             self.maybe_summarize_thinking(previous, cx);
         }
+        // A tool call is summarized from its input as soon as the call
+        // starts; the request-once gate makes later updates cheap.
+        if is_tool && self.summaries_enabled {
+            self.maybe_summarize_tool(index, cx);
+        }
+        if !self.unsaved_summaries.is_empty() {
+            self.save_summary(index, cx);
+        }
         if completed {
-            if is_tool && self.summaries_enabled {
-                self.maybe_summarize_tool(index, cx);
-            }
             // A finished item marks a turn boundary: the usage ledger has
             // a new row.
             self.refresh_context_usage(cx);
@@ -5730,6 +5982,7 @@ impl ChatScreen {
                         this.runtime_error = None;
                         this.booting = !running && !this.navigation_only;
                         this.check_unresolved_sends(cx);
+                        this.dispatch_prepared_uploads(cx);
                         cx.emit(NavigationChanged);
                         if !this.navigation_only {
                             this.refresh_models(cx);
@@ -5739,7 +5992,8 @@ impl ChatScreen {
                         if this.booting {
                             // A host another client restarted may not have a
                             // runtime yet. Restore catalog/tool availability;
-                            // this does not resume or submit any prompt.
+                            // this never replays an admitted prompt. Prepared
+                            // uploads still wait for this readiness result.
                             this.start_runtime(cx);
                         }
                         this.finish_navigation_bootstrap(cx);
@@ -5928,7 +6182,8 @@ impl ChatScreen {
             self.loading_timeline.insert(item.id.clone(), item.clone());
         }
         match event {
-            AgentServiceEvent::AccountChanged(_)
+            AgentServiceEvent::LocalApiChanged
+            | AgentServiceEvent::AccountChanged(_)
             | AgentServiceEvent::StoreStateChanged { .. }
             | AgentServiceEvent::PersistenceFailureChanged { .. } => {
                 return false;
@@ -6298,6 +6553,7 @@ impl ChatScreen {
 
 impl EventEmitter<crate::update::UpdateRequested> for ChatScreen {}
 impl EventEmitter<LoggedOut> for ChatScreen {}
+impl EventEmitter<SignOutFailed> for ChatScreen {}
 
 impl EventEmitter<OpenSettings> for ChatScreen {}
 impl EventEmitter<OpenSettingsSection> for ChatScreen {}
@@ -6389,6 +6645,8 @@ impl Render for ChatScreen {
                 window.focus(&handle, cx);
             }
         }
+        self.focus_feedback(window, cx);
+        let feedback = self.render_feedback(cx);
         let confirm = self
             .confirm
             .clone()
@@ -6398,7 +6656,7 @@ impl Render for ChatScreen {
             .clone()
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
-        let collapsed = self.sidebar_collapsed;
+        let sidebar_expansion = self.sidebar_expansion(window, cx);
         let loading_overlay = self.render_loading_overlay();
         let main = if empty {
             self.render_empty_state(window, cx)
@@ -6412,12 +6670,6 @@ impl Render for ChatScreen {
                 // Whatever the pointer is over, a wheel that nothing there
                 // takes scrolls the transcript.
                 .on_scroll_wheel(cx.listener(Self::scroll_transcript_from_pane))
-                .child(
-                    // The header is the window's title bar; a wheel over it
-                    // scrolls nothing.
-                    self.render_header(window, cx)
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
-                )
                 .child(self.render_transcript(window, cx))
                 .children(self.render_send_preview())
                 .when(
@@ -6534,18 +6786,7 @@ impl Render for ChatScreen {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .when(!collapsed, |row| {
-                        // Cached: the sidebar's subtree is reused until the
-                        // sidebar entity is notified, whatever this screen does.
-                        row.child(
-                            self.sidebar.clone().cached(
-                                gpui::StyleRefinement::default()
-                                    .w(SIDEBAR_WIDTH)
-                                    .h_full()
-                                    .flex_none(),
-                            ),
-                        )
-                    })
+                    .child(self.render_sidebar(sidebar_expansion, window, cx))
                     .child(
                         div()
                             .relative()
@@ -6554,20 +6795,23 @@ impl Render for ChatScreen {
                             .flex_1()
                             .h_full()
                             .min_w_0()
-                            .when(collapsed, |pane| {
-                                pane.child(
-                                    div()
-                                        .absolute()
-                                        .top_2()
-                                        .left(crate::ui::titlebar::top_row_inset(px(12.)))
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(self.render_sidebar_toggle(cx))
-                                        .child(wordmark(px(14.), theme::text_primary())),
-                                )
-                            })
-                            .child(main),
+                            .bg(gpui::rgb(theme::bg_sidebar()))
+                            .child(
+                                // The header is the window's title bar; a wheel
+                                // over it scrolls nothing.
+                                self.render_header(sidebar_expansion, window, cx)
+                                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .rounded_tl(theme::RADIUS_LG)
+                                    .bg(gpui::rgb(theme::bg_app()))
+                                    .child(main),
+                            ),
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
@@ -6618,6 +6862,7 @@ impl Render for ChatScreen {
                 ))
             })
             .children(confirm)
+            .children(feedback)
             .children(trust_prompt)
             .children(self.project_folder_dialog.clone().map(|dialog| {
                 dialog.cached(
@@ -6631,6 +6876,225 @@ impl Render for ChatScreen {
 }
 
 impl ChatScreen {
+    fn render_sidebar(
+        &mut self,
+        expansion: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let width = SIDEBAR_RAIL_WIDTH + (SIDEBAR_WIDTH - SIDEBAR_RAIL_WIDTH) * expansion;
+        div()
+            .relative()
+            .flex_none()
+            .w(width)
+            .h_full()
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            // Clip only during motion: settled sidebar menus may extend
+            // into the content pane as before.
+            .when(expansion > 0. && expansion < 1., |column| {
+                column.overflow_hidden()
+            })
+            .when(expansion < 1., |column| {
+                column.child(self.render_sidebar_rail(cx))
+            })
+            .when(expansion > 0., |column| {
+                column.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(SIDEBAR_WIDTH)
+                        .h_full()
+                        .opacity(expansion)
+                        // Fixed bounds keep labels from wrapping as the
+                        // outer column narrows; settled frames stay cached.
+                        .child(
+                            self.sidebar.clone().cached(
+                                gpui::StyleRefinement::default()
+                                    .w(SIDEBAR_WIDTH)
+                                    .h_full()
+                                    .flex_none(),
+                            ),
+                        ),
+                )
+            })
+            .child(self.render_sidebar_settings(expansion, window, cx))
+    }
+
+    fn render_sidebar_settings(
+        &mut self,
+        expansion: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let expanded = expansion > 0.95;
+        let open = self.popup.is_open(&ChatPopup::Settings);
+        let button = widgets::ghost_button("open-settings")
+            .aria_label("Settings menu")
+            .a11y_synthetic_children(|tree| {
+                tree.parent_node()
+                    .set_has_popup(gpui::accesskit::HasPopup::Menu);
+            })
+            .debug_selector(|| "open-settings".to_string())
+            .w_full()
+            .h(px(40.))
+            .px_2()
+            .rounded(theme::RADIUS_SM)
+            .tab_index(6)
+            .on_key_down(Self::sidebar_button_key_down)
+            .when(open, |button| {
+                button.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+            })
+            .child(icon("settings", px(16.), theme::text_secondary()))
+            .when(expanded, |button| {
+                button
+                    .justify_start()
+                    .gap_2()
+                    .child(div().flex_1().child("Settings"))
+                    .child(
+                        icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
+                            icon.with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                std::f32::consts::PI,
+                            )))
+                        }),
+                    )
+            });
+        let button = self
+            .popup
+            .trigger(ChatPopup::Settings, button, cx, |this, _, cx| {
+                this.popup.toggle(ChatPopup::Settings, cx);
+            });
+        let mut footer = div()
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .w(if expanded {
+                SIDEBAR_WIDTH
+            } else {
+                SIDEBAR_RAIL_WIDTH
+            })
+            .h(px(54.))
+            .px_2()
+            .py(px(6.))
+            .border_t_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            .child(button);
+        if open {
+            let usage_label = self.sidebar_plan.as_ref().map_or_else(
+                || "Usage unavailable. Open Usage settings".to_string(),
+                |plan| {
+                    format!(
+                        "Usage, {} percent used. {}, resets {}. Open Usage settings",
+                        plan.percent_used, plan.plan_label, plan.resets_label
+                    )
+                },
+            );
+            let usage = div()
+                .w_full()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child("Usage"),
+                        )
+                        .children(self.sidebar_plan.as_ref().map(|plan| {
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(format!("{}% used", plan.percent_used))
+                        }))
+                        .child(icon("chevron-right", px(12.), theme::text_muted())),
+                )
+                .when_some(self.sidebar_plan.as_ref(), |usage, plan| {
+                    usage
+                        .child(
+                            div()
+                                .debug_selector(|| "settings-usage-meter".to_string())
+                                .h(px(6.))
+                                .w_full()
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::border()))
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(gpui::relative(
+                                            (f32::from(plan.percent_used) / 100.).clamp(0., 1.),
+                                        ))
+                                        .rounded_full()
+                                        .bg(gpui::rgb(theme::accent())),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .gap_2()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child(plan.plan_label.clone())
+                                .child(format!("Resets {}", plan.resets_label)),
+                        )
+                })
+                .when(self.sidebar_plan.is_none(), |usage| {
+                    usage.child(
+                        div()
+                            .debug_selector(|| "settings-usage-unavailable".to_string())
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child("Usage unavailable"),
+                    )
+                });
+            let menu = Menu::new("settings-menu", SIDEBAR_WIDTH - px(16.))
+                .label("Settings")
+                .application_vim(self.application_vim_enabled)
+                .item(
+                    MenuItem::new("settings-menu-usage", usage_label, |_: &mut Self, _, cx| {
+                        cx.emit(OpenSettingsSection(Section::Usage));
+                    })
+                    .content(usage),
+                )
+                .separator()
+                .item(
+                    MenuItem::new("settings-menu-account", "Account", |_: &mut Self, _, cx| {
+                        cx.emit(OpenSettingsSection(Section::Account));
+                    })
+                    .icon("user"),
+                )
+                .item(
+                    MenuItem::new(
+                        "settings-menu-all",
+                        "All settings",
+                        |this: &mut Self, window, cx| {
+                            this.execute_command(ChatCommand::OpenSettings, window, cx);
+                        },
+                    )
+                    .icon("settings"),
+                )
+                .item(
+                    MenuItem::new(
+                        "send-feedback",
+                        "Send feedback",
+                        |this: &mut Self, window, cx| {
+                            this.open_feedback(window, cx);
+                        },
+                    )
+                    .icon("message-square"),
+                );
+            footer = footer.child(self.popup.render(menu, Placement::AboveStart, window, cx));
+        }
+        footer
+    }
+
     /// Keep unsaved-work feedback beside the composer that produced it.
     /// The desktop owns retries so the local store's lifecycle guards still apply.
     fn render_persistence_failure(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -6665,34 +7129,102 @@ impl ChatScreen {
         )
     }
 
-    /// Panel icon that hides or shows the sidebar.
-    fn render_sidebar_toggle(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    /// Tab moves among the rail and header buttons. Space presses the
+    /// focused button on release, rather than typing into the composer.
+    fn sidebar_button_key_down(
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        if event.keystroke.key == "space" {
+            cx.stop_propagation();
+        } else if event.keystroke.key == "tab"
+            && event
+                .keystroke
+                .modifiers
+                .is_subset_of(&gpui::Modifiers::shift())
+        {
+            if event.keystroke.modifiers.shift {
+                window.focus_prev(cx);
+            } else {
+                window.focus_next(cx);
+            }
+            cx.stop_propagation();
+        }
+    }
+
+    /// The collapsed sidebar: a slim rail in the sidebar's color whose
+    /// Maple mark shows the sidebar again.
+    fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let mark_padding = (sidebar::TOP_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
+        let rail = titlebar::drag_region(
+            div()
+                .id("sidebar-rail")
+                .debug_selector(|| "sidebar-rail".to_string())
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .bg(gpui::rgb(theme::bg_sidebar())),
+        )
+        .child(
+            div()
+                .id("show-sidebar")
+                .debug_selector(|| "show-sidebar".to_string())
+                .absolute()
+                .left(sidebar::WORDMARK_LEFT - mark_padding)
+                .top(sidebar::wordmark_row_top() - CHAT_HEADER_HEIGHT)
+                .role(gpui::Role::Button)
+                .aria_label("Show sidebar")
+                // The search field's place in the tab order, which the rail
+                // holds while the sidebar is collapsed.
+                .tab_index(2)
+                .flex_none()
+                .size(sidebar::TOP_ROW_HEIGHT)
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .pl(mark_padding)
+                .rounded(theme::RADIUS_SM)
+                .focus_visible(widgets::focus_ring)
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+                .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                // Inside a drag region: a press here is a click, not a drag.
+                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .on_key_down(Self::sidebar_button_key_down)
+                .tooltip_show_delay(widgets::ICON_TOOLTIP_DELAY)
+                .tooltip(widgets::tooltip_for_action("Show sidebar", &ToggleSidebar))
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.execute_command(ChatCommand::ToggleSidebar, window, cx);
+                }))
+                .child(
+                    crate::ui::icons::wordmark(sidebar::WORDMARK_HEIGHT, theme::text_sidebar())
+                        .path("icons/maple-mark.svg")
+                        .debug_selector(|| "sidebar-rail-mark".to_string()),
+                ),
+        );
         div()
-            .id("sidebar-toggle")
+            .id("sidebar-rail-column")
             .flex_none()
-            .size_7()
+            .w(SIDEBAR_RAIL_WIDTH)
+            .h_full()
             .flex()
-            .items_center()
-            .justify_center()
-            .rounded(theme::RADIUS_SM)
-            .hover(|style| {
-                style
-                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    .cursor_pointer()
-            })
-            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            // Inside a drag region: a press here is a click, not a drag.
-            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
-            .tooltip(widgets::tooltip_for_action(
-                "Toggle sidebar",
-                &ToggleSidebar,
+            .flex_col()
+            .child(titlebar::drag_region(
+                div()
+                    .id("sidebar-rail-titlebar")
+                    .h(CHAT_HEADER_HEIGHT)
+                    .flex_none()
+                    .bg(gpui::rgb(theme::bg_sidebar())),
             ))
-            .on_click(cx.listener(|this, _event, window, cx| {
-                this.execute_command(ChatCommand::ToggleSidebar, window, cx);
-            }))
-            .child(icon("panel-left", px(16.), theme::text_secondary()))
+            .child(rail)
     }
 
     /// Hero layout for a task with no messages: display heading, composer,
@@ -6767,7 +7299,6 @@ impl ChatScreen {
             .flex_1()
             .h_full()
             .min_w_0()
-            .child(self.render_header(window, cx))
             .child(body)
     }
 
@@ -6836,8 +7367,8 @@ impl ChatScreen {
         crate::notify::notify(cx, tag, title, &body, &[]);
     }
 
-    /// Load the plan card from the Maple billing API. Failures keep the
-    /// previous card; the token-total fallback covers the first load.
+    /// Load the usage preview from the Maple billing API. Failures keep
+    /// the previous value; without one, the menu shows usage as unavailable.
     fn refresh_sidebar_plan(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -6914,12 +7445,10 @@ fn head_change_event(event: &notify::Event) -> bool {
         .any(|path| path.file_name().is_some_and(|name| name == "HEAD"))
 }
 
-/// Last path component of a project root, for chips and the sidebar.
-/// Upper-case section heading in the sidebar.
+/// Section heading in the sidebar.
 fn section_label(text: &'static str) -> Div {
     div()
-        .text_xs()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_sm()
         .text_color(gpui::rgb(theme::text_muted()))
         .child(text)
 }

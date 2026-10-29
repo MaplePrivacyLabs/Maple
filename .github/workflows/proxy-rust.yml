@@ -1,5 +1,8 @@
 name: Proxy Rust CI
 
+# Rehearses release.yml's native proxy builds (test-release-gates.sh keeps the
+# two matrices equal). The proxy's own checks are ci.yml's `proxy` lane. No
+# cache: three of the four runners are GitHub-hosted.
 permissions:
   contents: read
 
@@ -9,80 +12,27 @@ on:
     paths:
       - ".github/workflows/proxy-rust.yml"
       - "proxy/Cargo.toml"
+      - "proxy/Cargo.lock"
+      - "proxy/rust-toolchain.toml"
+      - "proxy/src/**"
       - "sdk/rust/Cargo.toml"
       - "sdk/rust/build.rs"
       - "sdk/rust/src/**"
       - "sdk/rust/assets/**"
-      - "proxy/Cargo.lock"
-      - "proxy/clippy.toml"
-      - "proxy/flake.nix"
-      - "proxy/flake.lock"
-      - "proxy/rust-toolchain.toml"
-      - "proxy/rustfmt.toml"
-      - "proxy/src/**"
-      - "proxy/tests/**"
-      - "proxy/examples/**"
       - "scripts/ci/proxy-release.sh"
   pull_request:
+    # A PR that changes the release script or toolchain rehearses it before merge.
     paths:
       - ".github/workflows/proxy-rust.yml"
-      - "proxy/Cargo.toml"
-      - "sdk/rust/Cargo.toml"
-      - "sdk/rust/build.rs"
-      - "sdk/rust/src/**"
-      - "sdk/rust/assets/**"
-      - "proxy/Cargo.lock"
-      - "proxy/clippy.toml"
-      - "proxy/flake.nix"
-      - "proxy/flake.lock"
       - "proxy/rust-toolchain.toml"
-      - "proxy/rustfmt.toml"
-      - "proxy/src/**"
-      - "proxy/tests/**"
-      - "proxy/examples/**"
       - "scripts/ci/proxy-release.sh"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  proxy-rust:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
-        with:
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
-        with:
-          source-tag: v3.23.3
-          github-token: ""
-
-      - name: Verify pinned Nix runtime
-        run: bash scripts/ci/verify-nix-runtime.sh
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # was v2
-        with:
-          workspaces: proxy -> target
-          add-rust-environment-hash-key: "false"
-          key: ${{ hashFiles('proxy/Cargo.lock', 'proxy/rust-toolchain.toml', 'proxy/flake.lock') }}
-
-      - name: Run credential-free proxy checks
-        run: |
-          nix develop --no-update-lock-file ./proxy -c bash -lc '
-            set -euo pipefail
-            cd proxy
-            cargo fmt --all -- --check
-            cargo clippy --locked --all-targets --all-features -- -D warnings
-            cargo test --locked --all-features
-            RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
-            cargo machete
-          '
-
   proxy-native-release:
     name: proxy-native-release (${{ matrix.archive }})
     runs-on: ${{ matrix.runner }}
@@ -108,13 +58,6 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
         with:
           toolchain: 1.89.0
-
-      - name: Cache proxy Rust dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # was v2
-        with:
-          workspaces: proxy -> target
-          add-rust-environment-hash-key: "false"
-          key: native-release-${{ matrix.archive }}-${{ hashFiles('proxy/Cargo.lock') }}
 
       - name: Rehearse native proxy release asset
         shell: bash

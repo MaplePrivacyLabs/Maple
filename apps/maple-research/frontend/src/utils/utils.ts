@@ -89,35 +89,6 @@ export function useIsLandscapeMobile() {
   return matches;
 }
 
-export function useIsCoarsePointer() {
-  const QUERY = "(pointer: coarse), (any-pointer: coarse), (hover: none)";
-
-  const [matches, setMatches] = useState(() =>
-    typeof window !== "undefined" ? window.matchMedia(QUERY).matches : false
-  );
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia(QUERY);
-    const handleMediaChange = (event: MediaQueryListEvent) => setMatches(event.matches);
-
-    if ("addEventListener" in mediaQuery) {
-      mediaQuery.addEventListener("change", handleMediaChange);
-    } else {
-      (mediaQuery as MediaQueryList).addListener(handleMediaChange);
-    }
-
-    return () => {
-      if ("removeEventListener" in mediaQuery) {
-        mediaQuery.removeEventListener("change", handleMediaChange);
-      } else {
-        (mediaQuery as MediaQueryList).removeListener(handleMediaChange);
-      }
-    };
-  }, []);
-
-  return matches;
-}
-
 export function useClickOutside(
   ref: React.RefObject<HTMLElement>,
   callback: (event: MouseEvent | TouchEvent) => void

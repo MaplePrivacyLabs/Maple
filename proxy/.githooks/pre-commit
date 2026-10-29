@@ -1,7 +1,7 @@
 #!/bin/sh
 # Proxy pre-commit checks. Runs from proxy/ inside the proxy flake.
-# CI equivalent: proxy-rust.yml (the proxy-rust job; the native release
-# rehearsal and cargo-deny stay in CI).
+# CI equivalent: the ci.yml proxy lane (the native release rehearsal in
+# proxy-rust.yml and cargo-deny stay in CI).
 
 set -u
 . "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"

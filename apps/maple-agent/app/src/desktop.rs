@@ -16,7 +16,7 @@ use crate::ui;
 use crate::ui::chat::computers::{
     Computer, Destination, Navigate, NavigationChanged, ProjectRenameRequest, ProjectTarget,
 };
-use crate::ui::chat::{ChatScreen, LoggedOut};
+use crate::ui::chat::{ChatScreen, LoggedOut, SignOutFailed};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
     AccountDeleted, Section, SettingsClosed, SettingsScreen, ShortcutSettingsChange,
@@ -75,12 +75,21 @@ impl RemoteComputer {
             && match &self.attempt {
                 ConnectionAttempt::Idle => true,
                 ConnectionAttempt::Connecting(_) => false,
-                ConnectionAttempt::Failed { retry_at, .. } => now >= *retry_at,
+                ConnectionAttempt::Failed { message, retry_at } => {
+                    !crate::remote::wire::is_protocol_incompatibility_refusal(message)
+                        && now >= *retry_at
+                }
             }
     }
     fn error(&self) -> Option<String> {
         match &self.attempt {
-            ConnectionAttempt::Failed { message, .. } => Some(message.clone()),
+            ConnectionAttempt::Failed { message, .. } => Some(
+                if crate::remote::wire::is_protocol_incompatibility_refusal(message) {
+                    "Update required — select to retry after updating".into()
+                } else {
+                    message.clone()
+                },
+            ),
             _ => None,
         }
     }
@@ -110,6 +119,9 @@ struct MapleApp {
     local_chat: Option<Entity<ChatScreen>>,
     selected_host: Option<String>,
     remote_computers: std::collections::BTreeMap<String, RemoteComputer>,
+    /// An empty startup projection is provisional until this account's first
+    /// paired-computer status arrives. It must not replace saved grouping.
+    remote_inventory_loaded: bool,
     next_connection_attempt: u64,
     requested_navigation: Option<PendingNavigation>,
     computers_sync_pending: bool,
@@ -128,6 +140,14 @@ struct MapleApp {
     password_settings_refreshing: bool,
     persistence_status: maple_agent::store::PersistenceStatus,
     persistence_retrying: bool,
+    #[cfg(feature = "proxy")]
+    local_api_revision: u64,
+    #[cfg(feature = "proxy")]
+    local_api_host_epoch: u64,
+    #[cfg(feature = "proxy")]
+    local_api_refreshing: bool,
+    #[cfg(feature = "proxy")]
+    local_api_refresh_again: bool,
     pending_store_attention: std::collections::VecDeque<StoreAttention>,
     store_attention_open: bool,
     restore_window_geometry: bool,
@@ -611,6 +631,14 @@ impl MapleApp {
     ) {
         let mut batch = Vec::new();
         for event in events {
+            #[cfg(feature = "proxy")]
+            if matches!(
+                event,
+                maple_agent::agent::AgentServiceEvent::LocalApiChanged
+            ) {
+                self.refresh_local_api(cx);
+                continue;
+            }
             if let maple_agent::agent::AgentServiceEvent::PersistenceFailureChanged { status } =
                 &event
             {
@@ -624,6 +652,17 @@ impl MapleApp {
             ) {
                 // A restarted host has a new in-memory revision baseline.
                 self.persistence_status.revision = 0;
+                #[cfg(feature = "proxy")]
+                {
+                    self.local_api_revision = 0;
+                    self.local_api_host_epoch = self.local_api_host_epoch.wrapping_add(1);
+                    self.local_api_refreshing = false;
+                    self.local_api_refresh_again = false;
+                    if let Screen::Settings(settings) = &self.screen {
+                        settings.update(cx, |settings, cx| settings.local_api_host_reconnected(cx));
+                    }
+                    self.refresh_local_api(cx);
+                }
                 self.verify_current_store_state(cx);
                 batch.push(event);
             } else if let maple_agent::agent::AgentServiceEvent::StoreStateChanged { state } =
@@ -683,6 +722,7 @@ impl MapleApp {
         self.parked_chat = None;
         self.local_chat = None;
         self.remote_computers.clear();
+        self.remote_inventory_loaded = false;
         self.requested_navigation = None;
         self.selected_host = None;
         self.user_id = None;
@@ -904,6 +944,50 @@ impl MapleApp {
         cx.notify();
     }
 
+    #[cfg(feature = "proxy")]
+    fn refresh_local_api(&mut self, cx: &mut Context<Self>) {
+        if self.local_api_refreshing {
+            self.local_api_refresh_again = true;
+            return;
+        }
+        self.local_api_refreshing = true;
+        let backend = self.backend.clone();
+        let epoch = self.store_load_epoch;
+        let host_epoch = self.local_api_host_epoch;
+        let bridge = ui::task::call(
+            &self.backend,
+            async move {
+                let status = backend.get_local_api_status().await?;
+                let store = backend
+                    .local_control::<DesktopStoreStatus>("store_status", ())
+                    .await?;
+                Ok((status, store))
+            },
+            cx,
+            move |app, result, cx| {
+                if app.local_api_host_epoch != host_epoch {
+                    return;
+                }
+                app.local_api_refreshing = false;
+                if app.store_load_epoch == epoch
+                    && let Ok((status, store)) = result
+                    && status.revision >= app.local_api_revision
+                {
+                    app.local_api_revision = status.revision;
+                    app.set_store_resident(store.keeps_resident(), cx);
+                    if let Screen::Settings(settings) = &app.screen {
+                        settings
+                            .update(cx, |settings, cx| settings.set_local_api_status(status, cx));
+                    }
+                }
+                if std::mem::take(&mut app.local_api_refresh_again) {
+                    app.refresh_local_api(cx);
+                }
+            },
+        );
+        ui::task::retain(&self.remote_bridges, bridge);
+    }
+
     fn update_tray(&self) {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(tray) = &self.tray {
@@ -1079,12 +1163,15 @@ impl MapleApp {
     /// is reported twice (Settings button, then the backend) keeps the
     /// form the user may already be typing in.
     fn show_login(&mut self, cx: &mut Context<Self>) {
-        self.user_id = None;
+        if let Some(user_id) = self.user_id.take() {
+            crate::settings::retire_sidebar_account(&user_id);
+        }
         self.settings.remote_sidebars.clear();
         self.set_remote_enabled(false, cx);
         self.parked_chat = None;
         self.local_chat = None;
         self.remote_computers.clear();
+        self.remote_inventory_loaded = false;
         self.requested_navigation = None;
         self.selected_host = None;
         if matches!(self.screen, Screen::Login(_)) {
@@ -1110,6 +1197,11 @@ impl MapleApp {
 
     /// Show the chat screen for a signed-in account and wire its events.
     fn open_chat(&mut self, user_id: String, cx: &mut Context<Self>) {
+        if self.user_id.as_deref() != Some(user_id.as_str())
+            && let Some(previous) = self.user_id.as_deref()
+        {
+            crate::settings::retire_sidebar_account(previous);
+        }
         log::debug!(
             "startup: chat screen open at {} ms",
             crate::startup_elapsed()
@@ -1123,6 +1215,7 @@ impl MapleApp {
         self.screen = Screen::Chat(chat.clone());
         self.local_chat = Some(chat.clone());
         self.remote_computers.clear();
+        self.remote_inventory_loaded = false;
         self.requested_navigation = None;
         self.selected_host = None;
         self.subscribe_chat(&chat, cx);
@@ -1213,7 +1306,9 @@ impl MapleApp {
                 (key, (label, peer.grant))
             })
             .collect::<std::collections::BTreeMap<_, _>>();
-        let mut changed = self.remote_computers.len() != computers.len();
+        let mut changed =
+            !self.remote_inventory_loaded || self.remote_computers.len() != computers.len();
+        self.remote_inventory_loaded = true;
         let mut selected_grant_changed = false;
         self.remote_computers
             .retain(|key, _| computers.contains_key(key));
@@ -1281,10 +1376,13 @@ impl MapleApp {
     }
 
     fn sync_computers(&mut self, cx: &mut Context<Self>) {
+        if !self.remote_inventory_loaded {
+            return;
+        }
         let Some(local) = &self.local_chat else {
             return;
         };
-        let mut computers = vec![local.read(cx).computer_snapshot("This computer".into(), cx)];
+        let mut computers = vec![local.read(cx).computer_snapshot("This Computer".into(), cx)];
         for (key, computer) in &self.remote_computers {
             computers.push(match &computer.chat {
                 Some(chat) => chat
@@ -1503,6 +1601,8 @@ impl MapleApp {
         let Some(computer) = self.remote_computers.get_mut(&peer) else {
             return;
         };
+        // Explicit navigation may retry after either computer was upgraded.
+        // Only background discovery uses should_connect's incompatibility gate.
         if matches!(computer.attempt, ConnectionAttempt::Connecting(_)) {
             return;
         }
@@ -1627,8 +1727,10 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             &screen,
-            |app, _, event: &ui::remote::ComputersChanged, cx| {
-                app.update_computers(event.0.clone(), cx);
+            |app, emitter, event: &ui::remote::ComputersChanged, cx| {
+                if app.is_current_settings_screen(&emitter) {
+                    app.update_computers(event.0.clone(), cx);
+                }
             },
         )
         .detach();
@@ -1703,17 +1805,22 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             &screen,
-            |app: &mut MapleApp, _emitter, _event: &SignOutRequested, cx| {
-                if let Some(chat) = app.local_chat.take() {
+            |app: &mut MapleApp, emitter, _event: &SignOutRequested, cx| {
+                if !app.is_current_settings_screen(&emitter) {
+                    return;
+                }
+                if let Some(chat) = app.local_chat.clone() {
                     chat.update(cx, |chat, cx| chat.sign_out(cx));
                 }
-                app.show_login(cx);
             },
         )
         .detach();
         cx.subscribe(
             &screen,
-            |app: &mut MapleApp, _emitter, _event: &AccountDeleted, cx| {
+            |app: &mut MapleApp, emitter, _event: &AccountDeleted, cx| {
+                if !app.is_current_settings_screen(&emitter) {
+                    return;
+                }
                 // The runtime stopped and the credentials went before the
                 // event; the parked chat has nothing left to sign out of.
                 app.parked_chat = None;
@@ -1754,8 +1861,33 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             chat,
-            |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
-                app.show_login(cx);
+            |app: &mut MapleApp, emitter, _event: &LoggedOut, cx| {
+                if app
+                    .local_chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.entity_id() == emitter.entity_id())
+                {
+                    app.show_login(cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe(
+            chat,
+            |app: &mut MapleApp, emitter, event: &SignOutFailed, cx| {
+                if app.user_id.as_deref() == Some(event.user_id.as_str())
+                    && app
+                        .local_chat
+                        .as_ref()
+                        .is_some_and(|chat| chat.entity_id() == emitter.entity_id())
+                {
+                    app.present_store_attention(
+                        event.message.clone(),
+                        StoreAttentionKind::Persistence,
+                        true,
+                        cx,
+                    );
+                }
             },
         )
         .detach();
@@ -1924,6 +2056,8 @@ impl Render for MapleApp {
     }
 }
 
+#[cfg(all(test, feature = "proxy"))]
+mod local_api_tests;
 #[cfg(target_os = "macos")]
 mod native_quit;
 #[cfg(target_os = "macos")]
@@ -1952,6 +2086,8 @@ struct DesktopStoreStatus {
     mode_change_notice: Option<ModeChangeNotice>,
     #[serde(default)]
     persistence_status: maple_agent::store::PersistenceStatus,
+    #[serde(default)]
+    local_api_running: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -2054,7 +2190,8 @@ impl DesktopStoreStatus {
     }
 
     fn keeps_resident(&self) -> bool {
-        (self.mode == "password" && self.state == maple_agent::store::StoreState::Open)
+        self.local_api_running
+            || (self.mode == "password" && self.state == maple_agent::store::StoreState::Open)
             || self.state == maple_agent::store::StoreState::Maintenance
             || self.setup_operation_id.is_some()
     }
@@ -2067,6 +2204,10 @@ struct HostActivity {
     remote_controllers: usize,
     #[serde(default)]
     background_tasks: usize,
+    #[serde(default)]
+    local_api_running: bool,
+    #[serde(default)]
+    local_api_requests: usize,
 }
 impl HostActivity {
     fn needs_confirmation(&self) -> bool {
@@ -2074,6 +2215,8 @@ impl HostActivity {
             || self.running_tasks > 0
             || self.remote_controllers > 0
             || self.background_tasks > 0
+            || self.local_api_running
+            || self.local_api_requests > 0
     }
 }
 
@@ -2088,6 +2231,8 @@ struct DesktopLifecycle {
     quit_completed: std::rc::Rc<std::cell::Cell<bool>>,
     quit_requested: std::rc::Rc<std::cell::Cell<bool>>,
     frontend_detached: std::rc::Rc<std::cell::Cell<bool>>,
+    #[cfg(target_os = "windows")]
+    update_restart_pending: std::rc::Rc<std::cell::Cell<bool>>,
 }
 impl gpui::Global for DesktopLifecycle {}
 
@@ -2100,7 +2245,7 @@ fn may_finish_quit(cx: &App) -> bool {
 }
 
 fn restart_installed_update(path: PathBuf, cx: &mut App) {
-    let Some(state) = cx.try_global::<DesktopLifecycle>() else {
+    let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
         return;
     };
     if state.updater.restart_path().as_ref() != Some(&path)
@@ -2108,13 +2253,47 @@ fn restart_installed_update(path: PathBuf, cx: &mut App) {
     {
         return;
     }
-    state.quit_completed.set(true);
-    #[cfg(target_os = "macos")]
-    native_quit::allow_update_restart();
-    cx.set_restart_path(path);
-    cx.restart();
-    #[cfg(target_os = "macos")]
-    native_quit::finish_update_restart();
+    #[cfg(target_os = "windows")]
+    {
+        if state.update_restart_pending.replace(true) {
+            return;
+        }
+        // Signature/tree verification can touch disk and trust services. Keep
+        // it off the UI thread; repeated clicks share this one restart attempt.
+        // Native argv and exact process waiting avoid shell path interpolation.
+        let restart_path = path.clone();
+        let restart = cx.background_executor().spawn(async move {
+            crate::windows_bootstrap::schedule_restart(&restart_path, crate::profile::PROFILE)
+        });
+        cx.spawn(async move |cx| {
+            let result = restart.await;
+            cx.update(|cx| {
+                if let Err(error) = result {
+                    state.update_restart_pending.set(false);
+                    log::error!("Windows update restart could not start: {error}");
+                    show_update_about(cx);
+                    return;
+                }
+                if state.updater.restart_path().as_ref() == Some(&path)
+                    && state.backend.is_retired_after_update()
+                {
+                    state.quit_completed.set(true);
+                    cx.quit();
+                }
+            });
+        })
+        .detach();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        state.quit_completed.set(true);
+        #[cfg(target_os = "macos")]
+        native_quit::allow_update_restart();
+        cx.set_restart_path(path);
+        cx.restart();
+        #[cfg(target_os = "macos")]
+        native_quit::finish_update_restart();
+    }
 }
 
 fn finish_quit(cx: &mut App) {
@@ -2381,7 +2560,7 @@ impl Render for QuitPrompt {
         let (title, message, retry) = match &self.kind {
             QuitPromptKind::Confirm(activity) => (
                 "Stop this computer's Maple host?",
-                format!("Quitting stops {} running tasks, {} attached editors, {} remote controllers and {} background jobs. Maple waits for them to drain before closing.", activity.running_tasks, activity.acp_clients, activity.remote_controllers, activity.background_tasks),
+                format!("Quitting stops {} running tasks, {} attached editors, {} remote controllers and {} background jobs. It also stops this computer's local API and its {} active requests. Maple waits for them to drain before closing.", activity.running_tasks, activity.acp_clients, activity.remote_controllers, activity.background_tasks, activity.local_api_requests),
                 false,
             ),
             QuitPromptKind::Failed(message) => ("Maple is still open", message.clone(), true),
@@ -3003,6 +3182,8 @@ pub fn run() {
                 cx,
             );
             ui::theme::apply_preference(ui::theme::Preference::parse(&startup_settings.theme), cx);
+            #[cfg(target_os = "linux")]
+            crate::platform::portal::start(&backend, cx);
             ui::typography::apply(
                 ui::typography::ChatFontFamily::parse(&startup_settings.chat_font_family),
                 startup_settings.chat_font_size,
@@ -3065,6 +3246,8 @@ pub fn run() {
                 quit_completed: Default::default(),
                 quit_requested: Default::default(),
                 frontend_detached: Default::default(),
+                #[cfg(target_os = "windows")]
+                update_restart_pending: Default::default(),
             });
             #[cfg(target_os = "macos")]
             if let Err(error) = native_quit::install(cx) {
@@ -3147,6 +3330,7 @@ pub fn run() {
                         local_chat: None,
                         selected_host: None,
                         remote_computers: Default::default(),
+                        remote_inventory_loaded: false,
                         next_connection_attempt: 0,
                         requested_navigation: None,
                         computers_sync_pending: false,
@@ -3165,6 +3349,14 @@ pub fn run() {
                         password_settings_refreshing: false,
                         persistence_status: maple_agent::store::PersistenceStatus::default(),
                         persistence_retrying: false,
+                        #[cfg(feature = "proxy")]
+                        local_api_revision: 0,
+                        #[cfg(feature = "proxy")]
+                        local_api_host_epoch: 0,
+                        #[cfg(feature = "proxy")]
+                        local_api_refreshing: false,
+                        #[cfg(feature = "proxy")]
+                        local_api_refresh_again: false,
                         pending_store_attention: Default::default(),
                         store_attention_open: false,
                         restore_window_geometry: true,
@@ -3229,11 +3421,18 @@ pub fn run() {
             let update_bridge = remote_updates::Bridge::default();
             cx.spawn(async move |cx| {
                 loop {
-                    let account = status_root.update(cx, |app, _| app.user_id.clone());
+                    let (account, epoch, owner) = status_root.update(cx, |app, _| {
+                        (
+                            app.user_id.clone(),
+                            app.store_load_epoch,
+                            app.local_chat.as_ref().map(Entity::entity_id),
+                        )
+                    });
                     let backend = status_backend.clone();
                     let expected_account = account.clone();
                     let bridge = update_bridge.clone();
                     let update_status = remote_updater.remote_status();
+                    let check_updater = remote_updater.clone();
                     let task = status_backend.spawn(async move {
                         tokio::join!(
                             backend.remote_setting::<crate::remote::manager::Status>(
@@ -3241,7 +3440,12 @@ pub fn run() {
                                 ()
                             ),
                             backend.local_control::<DesktopStoreStatus>("store_status", ()),
-                            bridge.poll(backend.clone(), expected_account, update_status),
+                            bridge.poll(
+                                backend.clone(),
+                                expected_account,
+                                update_status,
+                                check_updater
+                            ),
                         )
                     });
                     if let Ok((remote, store, update_command)) = task.await {
@@ -3260,7 +3464,13 @@ pub fn run() {
                                 app.begin_remote_install(command, cx);
                             }
                             let Ok(status) = remote else { return };
-                            if app.user_id == account && account.is_some() {
+                            if app.user_id == account
+                                && account.is_some()
+                                && app.store_load_epoch == epoch
+                                && app.local_chat.as_ref().map(Entity::entity_id) == owner
+                                && app.store_ready
+                                && app.backend.store_state() == maple_agent::store::StoreState::Open
+                            {
                                 if let Screen::Settings(settings) = &app.screen {
                                     settings.update(cx, |settings, cx| {
                                         settings.update_remote_status(status.clone(), cx)
@@ -3457,6 +3667,88 @@ mod tests {
     }
 
     #[test]
+    fn cold_catalog_protocol_refusal_stops_only_automatic_mismatch_retries() {
+        use crate::remote::wire::{Error, Refusal};
+
+        let now = std::time::Instant::now();
+        for (message, mismatch) in [
+            (
+                Refusal::terminal(Error::Incompatible.to_string()).into_error(),
+                true,
+            ),
+            (Error::Disconnected.to_string(), false),
+            (
+                Refusal::terminal("Remote control grant is missing or revoked").into_error(),
+                false,
+            ),
+            (
+                Refusal::terminal(Error::InvalidFrame.to_string()).into_error(),
+                false,
+            ),
+        ] {
+            let computer = super::RemoteComputer {
+                name: "Office".into(),
+                grant: [7; 16],
+                chat: None,
+                attempt: super::ConnectionAttempt::Failed {
+                    message: message.clone(),
+                    retry_at: now + std::time::Duration::from_secs(30),
+                },
+            };
+            assert!(!computer.should_connect(now));
+            assert_eq!(
+                computer.should_connect(now + std::time::Duration::from_secs(3600)),
+                !mismatch,
+                "{message}"
+            );
+            assert_eq!(
+                computer.error().as_deref(),
+                Some(if mismatch {
+                    "Update required — select to retry after updating"
+                } else {
+                    &message
+                })
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn cold_catalog_protocol_refusal_allows_explicit_navigation_retry(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            let computer = app.remote_computers.get_mut("east").unwrap();
+            computer.chat = None;
+            computer.attempt = ConnectionAttempt::Failed {
+                message: crate::remote::wire::Refusal::terminal(
+                    crate::remote::wire::Error::Incompatible.to_string(),
+                )
+                .into_error(),
+                retry_at: std::time::Instant::now(),
+            };
+            assert!(!computer.should_connect(std::time::Instant::now()));
+            // Exercise dispatch, without allowing this fixture to connect to
+            // a developer's host: the backend rejects before any IPC or spawn.
+            app.backend.retire_after_update();
+            app.navigate(
+                Navigate {
+                    computer: Some("east".into()),
+                    destination: Destination::Overview,
+                },
+                cx,
+            );
+            assert_eq!(app.next_connection_attempt, 1);
+            assert!(matches!(
+                app.remote_computers["east"].attempt,
+                ConnectionAttempt::Connecting(1)
+            ));
+            assert!(app.requested_navigation.is_some());
+            assert_eq!(app.remote_computers["east"].grant, [1; 16]);
+        });
+    }
+
+    #[test]
     fn password_and_incomplete_setup_remain_resident_when_window_closes() {
         use maple_agent::store::StoreState;
         let mut status = super::DesktopStoreStatus {
@@ -3467,6 +3759,7 @@ mod tests {
             completion_notice: None,
             mode_change_notice: None,
             persistence_status: maple_agent::store::PersistenceStatus::default(),
+            local_api_running: false,
         };
         assert!(status.keeps_resident());
         status.state = StoreState::Locked;
@@ -3786,6 +4079,7 @@ mod tests {
                     ),
                 ]
                 .into(),
+                remote_inventory_loaded: true,
                 next_connection_attempt: 0,
                 requested_navigation: None,
                 computers_sync_pending: false,
@@ -3804,6 +4098,14 @@ mod tests {
                 password_settings_refreshing: false,
                 persistence_status: Default::default(),
                 persistence_retrying: false,
+                #[cfg(feature = "proxy")]
+                local_api_revision: 0,
+                #[cfg(feature = "proxy")]
+                local_api_host_epoch: 0,
+                #[cfg(feature = "proxy")]
+                local_api_refreshing: false,
+                #[cfg(feature = "proxy")]
+                local_api_refresh_again: false,
                 pending_store_attention: Default::default(),
                 store_attention_open: false,
                 restore_window_geometry: false,

@@ -1,8 +1,9 @@
 # Research Dev desktop package
 
-This manual macOS package rehearses Research's native OAuth handoff through the
-standalone Auth Dev site. It is separate from the ordinary `just desktop-dev`
-Local workflow and from the existing iOS Dev TestFlight build.
+These manual macOS and Linux packages use hosted Dev and rehearse Research's
+native OAuth handoff through the standalone Auth Dev site. They install beside
+production Maple. They are separate from the ordinary `just desktop-dev` Local
+workflow and from the existing iOS Dev TestFlight build.
 
 ## Fixed profile
 
@@ -26,6 +27,61 @@ profile are unchanged.
 
 ## Build locally
 
+Run this from the repository root on Linux or macOS (with pinned Xcode on macOS):
+
+```bash
+nix run --no-update-lock-file .#research-dev-desktop
+```
+
+Nix supplies the pinned build tools; the script selects the fixed hosted Dev
+profile. Stop running frontend development servers first: this script reinstalls
+frontend dependencies and rebuilds `dist`. It does not change `.env.local` or
+publish, upload, sign, or install the result. A Dev account is required; a
+production account is not automatically available on hosted Dev.
+
+### Fedora / Linux RPM
+
+The Linux build produces an unsigned host-architecture RPM:
+
+```text
+apps/maple-research/frontend/src-tauri/target/research-dev/maple-research-dev-<version>-1.<arch>.rpm
+apps/maple-research/frontend/src-tauri/target/research-dev/build-profile.json
+```
+
+Install the exact RPM printed at the end of the build, for example on x86_64:
+
+```bash
+sudo dnf install ./apps/maple-research/frontend/src-tauri/target/research-dev/maple-research-dev-<version>-1.x86_64.rpm
+```
+
+Replace `<version>` with the built version. DNF installs WebKitGTK automatically.
+The Dev profile declares its own `libwebkit2gtk-4.1.so.0()(64bit)` RPM capability;
+it does not inherit or require a change to the production RPM dependency policy.
+This capability is provided by Fedora's `webkit2gtk4.1` and openSUSE's
+`libwebkit2gtk-4_1-0` packages. Package metadata compatibility is not a substitute
+for install-and-launch validation on each target distribution.
+Launch **Maple Research Dev** from KDE's application launcher or run
+`maple-research-dev`. Production keeps the `maple` RPM and command; Dev uses
+`maple-research-dev` for the package, command, desktop entry, icon, and private
+ONNX Runtime directory. Config/data and single-instance routing use the separate
+`cloud.opensecret.maple.dev` app ID. The script verifies the final RPM's package
+name, dependencies, ELF metadata, callback registration, and isolated file paths.
+
+The intermediate DEB is not a supported install artifact. Linux build files live
+under `target/research-dev/cargo` rather than replacing ordinary desktop outputs.
+Only this explicit local command builds the Dev RPM; existing PR/release package
+jobs and production identities are unchanged.
+
+Ordinary Research PR package RPMs (the `research-desktop-linux` lane) use Dev
+services but retain the production `maple` package identity. They do **not**
+install beside production. Restore the website RPM to that slot separately;
+for equal versions use `sudo dnf reinstall ./<rpm>`, or
+`sudo dnf downgrade ./<rpm>` if the website version is older. Sign in again
+if needed; do not copy credentials between the two apps. No automatic data
+migration or deletion is performed by the Dev build.
+
+### macOS
+
 From the repository root on macOS, with the pinned Xcode installed:
 
 ```bash
@@ -45,17 +101,16 @@ apps/maple-research/frontend/src-tauri/target/research-dev/build-profile.json
 apps/maple-research/frontend/src-tauri/target/research-dev/maple-research-dev-macos.tar.gz
 ```
 
-The unprivileged Desktop App PR Build workflow runs this same script as a
-separate macOS job and uploads `maple-research-dev-macos-pr` for review. That
-artifact is a local-install rehearsal package, not a signed release or deployment.
-The Dev job checks out the exact PR head; tie the downloaded package and its
-profile hashes to that source run and checkout log when recording test evidence.
+CI's unprivileged `research-dev-macos` lane runs this same script on a macOS
+runner and uploads `maple-research-dev-macos-pr` for review. That artifact is a
+local-install rehearsal package, not a signed release or deployment. The lane
+checks out the exact PR head; tie the downloaded package and its profile hashes
+to that source run and checkout log when recording test evidence.
 
-Frontend-only changes normally skip desktop packages. A maintainer can add
-`ci:research-dev-macos` to a PR to request just this Dev package immediately and
-on later source updates while the label remains. Adding other labels does not
-build packages or interrupt source-validation runs. Normal native-change jobs
-continue to use the existing platform selectors.
+The lane runs when a PR carries `ci:research-dev-macos` (or `ci:package` or
+`ci:full`). Labels are read when the run's `plan` job starts: add the label,
+then push or use **Re-run all jobs** on a finished run (**Re-run failed jobs**
+keeps the old plan). `ci:package` also runs the `research-desktop-*` bundles.
 
 The different bundle ID separates the WebView's stored credentials and Tauri's
 app config/data directories from the production app. Dev does not run the old

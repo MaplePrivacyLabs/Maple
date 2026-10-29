@@ -101,7 +101,7 @@ export function DownloadSettings({
   return (
     <SettingsSection
       title="Get the Maple app"
-      description="Install Maple on your computer or phone. Native apps include document upload; the desktop app also has Agent Mode and automatic updates."
+      description="Install Maple on your computer or phone. Native apps include document upload; the desktop app also has automatic updates."
     >
       <div className="space-y-5">
         <p className="text-xs leading-relaxed text-muted-foreground">

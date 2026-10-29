@@ -205,9 +205,14 @@ pub struct RemoteNamespace {
 #[serde(deny_unknown_fields)]
 pub struct RemotePeer {
     pub name: String,
+    /// Incoming controller authority; never used as an outgoing host grant.
     pub grant: [u8; 16],
     pub controls_this_computer: bool,
     pub can_connect: bool,
+    /// Confirmed outgoing authority, independent of the incoming direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_grant: Option<[u8; 16]>,
+    /// Durable CPace/lost-ack intent, not confirmed outgoing authority.
     #[serde(default)]
     pub pending_confirmation: Option<[u8; 16]>,
 }
@@ -1196,8 +1201,13 @@ impl Store {
         checked_computer_name(&peer.name)?;
         self.edit_remote(account, namespace, Durability::Durable, |identity| {
             let mut peer = peer;
+            // Incoming pairing cannot introduce or replace outgoing authority.
+            peer.can_connect = false;
+            peer.host_grant = None;
+            peer.pending_confirmation = None;
             if let Some(previous) = identity.peers.get(peer_key) {
-                peer.can_connect |= previous.can_connect;
+                peer.can_connect = previous.can_connect;
+                peer.host_grant = previous.host_grant;
                 peer.pending_confirmation = previous.pending_confirmation;
             }
             identity.peers.insert(peer_key.to_owned(), peer);
@@ -1224,6 +1234,7 @@ impl Store {
                     grant: [0; 16],
                     controls_this_computer: false,
                     can_connect: false,
+                    host_grant: None,
                     pending_confirmation: None,
                 });
             peer.name = name;
@@ -1241,6 +1252,9 @@ impl Store {
         window: [u8; 16],
     ) -> StoreResult<()> {
         checked_peer_key(peer_key)?;
+        if window == [0; 16] {
+            return Err(StoreError::InvalidInput);
+        }
         self.edit_remote(account, namespace, Durability::Durable, |identity| {
             let peer = identity
                 .peers
@@ -1249,8 +1263,52 @@ impl Store {
             if peer.pending_confirmation != Some(window) {
                 return Err(StoreError::Conflict);
             }
+            peer.host_grant = Some(window);
             peer.pending_confirmation = None;
             peer.can_connect = true;
+            Ok(())
+        })
+    }
+
+    /// Persist an authenticated host confirmation for an existing legacy peer.
+    /// The caller verifies the exact endpoint and acknowledgement before this
+    /// compare-and-set; attempt history supplies candidates, never authority.
+    pub fn recover_remote_host_grant(
+        &self,
+        account: AccountId,
+        namespace: &RemoteNamespace,
+        peer_key: &str,
+        expected_peer: &RemotePeer,
+        expected_attempts: &[[u8; 16]],
+        window: [u8; 16],
+    ) -> StoreResult<()> {
+        checked_peer_key(peer_key)?;
+        if window == [0; 16] {
+            return Err(StoreError::InvalidInput);
+        }
+        self.edit_remote(account, namespace, Durability::Durable, |identity| {
+            let attempts = identity.attempted_windows.get(peer_key).map(Vec::as_slice);
+            if attempts != Some(expected_attempts) || !expected_attempts.contains(&window) {
+                return Err(StoreError::Conflict);
+            }
+            let peer = identity
+                .peers
+                .get_mut(peer_key)
+                .ok_or(StoreError::Conflict)?;
+            // Discovery may rename a peer while the host confirms its binding.
+            // Only authority fields participate in this compare-and-set.
+            if peer.grant != expected_peer.grant
+                || peer.controls_this_computer != expected_peer.controls_this_computer
+                || peer.can_connect != expected_peer.can_connect
+                || peer.host_grant != expected_peer.host_grant
+                || peer.pending_confirmation != expected_peer.pending_confirmation
+                || !peer.can_connect
+                || peer.host_grant.is_some()
+                || peer.pending_confirmation.is_some()
+            {
+                return Err(StoreError::Conflict);
+            }
+            peer.host_grant = Some(window);
             Ok(())
         })
     }
@@ -1423,6 +1481,9 @@ fn validate_remote_identity(identity: &RemoteIdentity) -> StoreResult<()> {
     for (key, peer) in &identity.peers {
         checked_peer_key(key)?;
         checked_computer_name(&peer.name)?;
+        if peer.host_grant == Some([0; 16]) || (peer.host_grant.is_some() && !peer.can_connect) {
+            return Err(StoreError::InvalidInput);
+        }
     }
     for (key, windows) in &identity.attempted_windows {
         checked_peer_key(key)?;

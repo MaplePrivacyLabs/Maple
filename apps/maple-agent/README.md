@@ -51,10 +51,9 @@ untouched, with no import, fallback reads or cleanup. General Markdown
 instructions, skills and prompt resources retain their file-loading behavior.
 Password-setting controls remain debug-only pending native release qualification.
 
-The runtime began as a copy of Research’s Tauri agent (now
-`apps/maple-research/frontend/src-tauri/src`) with Tauri removed, and now runs
-tasks on the pi-* crates instead of an embedded Goose. Research keeps its own
-Goose, with an independent dependency graph.
+The runtime began as a copy of Research’s Tauri agent with Tauri removed, and
+now runs tasks on the pi-* crates instead of an embedded Goose. Research has no
+agent runtime; its desktop Agent page points users to Maple Work.
 
 ## Features
 
@@ -110,9 +109,10 @@ Goose, with an independent dependency graph.
 - Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
 - Optional composer-only Vim editing provides Normal, Insert, and characterwise
-  Visual modes, Unicode-aware motions and text objects, operators and counts,
-  an unnamed register, undo/redo transactions, and structured dot repeat.
-  Enable it under General settings; every other text field stays standard.
+  and linewise Visual modes, Unicode-aware motions and text objects, operators
+  and counts, an unnamed register, undo/redo transactions, and structured dot
+  repeat. Enable it under General settings; every other text field stays
+  standard.
 - Optional application Vim navigation moves a stable semantic selection through
   Chat sidebar and transcript rows, modal choices, and Settings controls. It is
   independent of composer Vim and leaves ordinary text fields unchanged.
@@ -125,13 +125,29 @@ Goose, with an independent dependency graph.
   Renaming from its desktop or a paired controller updates connected views and
   persists across restarts without changing the folder path. The owner supplies
   the default workspace label too. Personal pins remain desktop preferences.
-- Sessions grouped by project, with rename, archive, and restore.
+- Sidebar organization by Project, Connection, Status, or In one list, with
+  Last updated or Manual order for tasks. Connection becomes available after
+  another computer is added, including while it is offline. Project views keep
+  known empty projects visible. Project and connection order stays stable;
+  dragging rearranges the sidebar without changing a task's project, computer
+  or status. Dragging a task silently selects Manual order, which persists
+  across grouping changes and restarts; new tasks appear at the top. Pinned
+  tasks sit above the grouping header; their own drag order does not change
+  the position they return to when unpinned. Sidebar menus open toward the
+  main pane so the list stays visible. Tasks also support rename, archive,
+  and restore. Unknown or malformed View preferences fall back to defaults.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
   speech voice and speed), Keyboard Shortcuts, System prompt, Integrations
   (detected built-ins and custom MCP servers), Usage (the plan meter from
   the billing API), and About.
 - Dark and light themes; the default follows the system.
+  On Linux, the protected GUI starts a portal-only child of the same executable
+  (`--internal-theme-watch`). The child receives only desktop-bus environment,
+  never opens Maple state, disables core dumps, and exits when its parent pipe
+  closes. Only the child remains debugger-accessible for portal identification.
+  Setup has a two-second background deadline; unavailable portals do not block
+  launch. Explicit Dark/Light settings override system updates.
 - Billing status from the Maple billing API.
 - Desktop notifications when a task finishes or asks a question while the
   window is not focused.
@@ -229,15 +245,31 @@ wrote. Codex needs version 0.143 or newer. See
 ### Composer Vim preview
 
 Turn on **Vim mode in composer** in General settings. The composer opens in
-Normal mode and shows a small `NORMAL`, `INSERT`, or `VISUAL` badge; login,
-search, rename, settings, prompt, question, and MCP fields keep their ordinary
-editing behavior.
+Normal mode and shows a small `NORMAL`, `INSERT`, `VISUAL`, or `VISUAL LINE`
+badge; login, search, rename, settings, prompt, question, and MCP fields keep
+their ordinary editing behavior.
 
-The preview includes `h/j/k/l`, `w/b/e`, `0/$`, `gg/G`, `i/a/I/A/o/O`,
-`d/c/y` with motions or `iw`/`aw`, `dd/cc/yy`, counts, `v`, `x`, `p/P`,
-`u`, `Ctrl-R`, and structured `.` repeat. Arrow keys also move in Normal and
-Visual modes. Escape leaves Insert or Visual for Normal; Enter sends in Insert
-or Normal, while Shift-Enter inserts a newline only in Insert.
+- Motions: `h/j/k/l`, `w/b/e`, `W/B/E`, `ge/gE`, `0/^/$`, `gg/G`, `{`/`}`,
+  `%`, and `f/F/t/T` with `;` and `,`.
+- Operators: `d`, `c`, `y`, `g~`, `gu`, and `gU` with any motion or text
+  object, doubled for lines (`dd`, `cc`, `yy`, `g~~`, `guu`, `gUU`).
+- Text objects after `i` or `a`: `w`, `W`, `p`, quotes (`"`, `'`, `` ` ``),
+  and brackets (`(`/`b`, `[`, `{`/`B`, `<`).
+- Edits: `i/a/I/A/o/O`, `x/X`, `s/S`, `C/D/Y`, `r`, `~`, `J`, `p/P`, `u`,
+  `Ctrl-R`, and structured `.` repeat, all with counts.
+- Visual: `v` and `V`, `o` to swap ends, and the operators above plus `r`,
+  `~`, `u`, `U`, and `J`. The capital `S/C/D/X/Y` act on whole lines.
+- Insert: `Ctrl-W` deletes a word, `Ctrl-U` deletes to the indentation, and
+  `Ctrl-H` deletes a character.
+
+Arrow keys also move in Normal and Visual modes. Escape leaves Insert or
+Visual for Normal and cancels a pending `f`, `r`, or text object; Enter sends
+in Insert or Normal, while Shift-Enter inserts a newline only in Insert.
+
+Behavior follows Neovim. `app/src/ui/text_input/vim_neovim_cases.json` holds
+key sequences with the result Neovim produced for each, and a test replays
+them through the composer's real keymap. Add a case and run `just vim-cases`
+to record it with the Neovim version pinned by this component's flake.
 
 Composer Vim uses the same customizable shortcut catalog as the rest of the
 app. It can be enabled with or without application Vim.
@@ -252,7 +284,10 @@ and tasks by stable IDs rather than virtual-list indices. Direct clicks update
 the same selection state.
 
 The preview includes `j/k`, `gg/G`, counts, `Enter`, `h/l`, `y`, `/`, `ga`,
-`[a`/`]a`, `gi`, and `Ctrl-W h/j/k/l`. `Space s n` starts a task and `Space ,`
+`[a`/`]a`, `gi`, and `Ctrl-W h/j/k/l`. `Ctrl-W j` from the composer reaches its
+button row, where `h/l` (or `j/k`) and `gg/G` move between the model, thinking,
+integrations, web, attachment, and dictation controls and `Enter` presses one; a menu
+opens on its current choice. `Space s n` starts a task and `Space ,`
 opens Settings. The Settings page itself is navigable, including its shortcut
 search and editable binding rows. Annotation motions are registered and report
 that no annotation source is available in the current app. A root action
@@ -305,17 +340,21 @@ just release                    # local release build only
 
 For hosted Dev and Prod packages, see [desktop builds](docs/desktop-builds.md)
 and [build profiles](docs/release-profiles.md). The desktop build workflow
-produces both profiles on protected `master`; macOS packages use Developer ID
-signing and notarization, and Linux packages are portable user-local tar bundles.
+builds signed Prod packages on `master` pushes that change Agent inputs, Dev
+packages nightly, and both on a manual dispatch from `master`; macOS packages
+use Developer ID signing and notarization, and Linux packages are portable
+user-local tar bundles.
 
 The root also offers `just agent-check`, `just agent-build`, and
 `just agent-dev`. Native development on macOS requires full Xcode at
-`/Applications/Xcode.app`; Linux libraries come from Nix. Windows CI uses the
-same Rust version resolved by the component’s pinned `flake.lock`, with
-Cargo commands from this directory. The statically linked SQLCipher/OpenSSL
-build needs Perl; Nix supplies it on macOS/Linux. Windows needs native Windows
-Perl (for example Strawberry Perl), rather than MSYS Perl. NASM enables the
-provider's assembly path when available; its build supports a no-assembly fallback.
+`/Applications/Xcode.app`; Linux libraries come from Nix. Windows has no Nix:
+`.github/actions/setup-agent-windows` pins the Rust version that the
+component's `flake.lock` resolves, and the `agent-lint` lane fails if the two
+differ. Cargo commands run from this directory. The statically linked
+SQLCipher/OpenSSL build needs Perl; Nix supplies it on macOS/Linux. Windows
+needs native Windows Perl (for example Strawberry Perl), rather than MSYS
+Perl. NASM enables the provider's assembly path when available; its build
+supports a no-assembly fallback.
 
 For an OpenSecret managed workspace, run its `bin/maple-agent` launcher
 instead of launching the binary directly. It sources private
@@ -428,7 +467,8 @@ maple-agent --version       Print the version.
 ### `maple-agent login`
 
 Prompts for the account email (or takes `--email`) and the password, signs
-in, and saves the session the same way the desktop app does. Use it on a
+in, and saves the session the same way the desktop app does. An anonymous
+account signs in with `--account-id <ID>` instead of an email. Use it on a
 machine that never opens the window so `maple-agent acp` has a sign-in. The
 password is always prompted for; there is no flag for it. OAuth sign-in is
 desktop-only for now.
@@ -478,6 +518,16 @@ compatibility](docs/local-host.md) before configuring an ACP launcher.
 
 ### `maple-agent proxy`
 
+The desktop also offers **Settings → Local API**. It starts this computer's
+loopback endpoint in the shared local host, including while a remote computer
+is selected. Create a key under API keys, enable Local API, then configure your
+client with the displayed `/v1` base URL and that key. See
+[Local API ownership and lifecycle](docs/local-api.md).
+
+The command below remains an independent foreground server. It cannot share a
+port with an enabled desktop listener; an occupied port is reported without
+stopping or adopting the other server.
+
 ```
 --host HOST     bind address (default 127.0.0.1, env MAPLE_PROXY_HOST)
 --port PORT     bind port (default 8080, env MAPLE_PORT)
@@ -501,7 +551,7 @@ window and its display libraries:
 | --- | --- |
 | `desktop` | The gpui window. Without it the binary is headless. |
 | `acp` | `maple-agent acp` and `maple_agent::acp`. |
-| `proxy` | `maple-agent proxy`. |
+| `proxy` | `maple-agent proxy` and the local host's optional API service. |
 
 ```sh
 cargo build --release -p maple-agent-app --no-default-features --features acp
@@ -573,12 +623,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-Root `.github/workflows/agent-ci.yml` selects this component when Agent or
-its shared Rust dependencies change. It builds and tests Linux, macOS, and
-Windows; Linux additionally runs the feature-matrix lint/headless checks and
-a release build. `just ci` is the full local format, lint, build and test gate;
-`just release` separately validates the optimized binary. PR jobs have no
-signing or publishing credentials. See the root agent guide for shared checks.
+On a Linux desktop with a live Settings portal, run the opt-in helper lifecycle
+regression from the same component shell:
+
+```sh
+cargo test --locked -p maple-agent-app --test system_theme_helper -- --ignored
+```
+
+It launches the real executable in helper mode and verifies theme output,
+parent-pipe shutdown, and absence of application-state writes. It does not
+change the desktop theme. Parser, environment-scrubbing and palette precedence
+tests run in the ordinary app test suite.
+
+The root `ci.yml` runs this component's lanes (`scripts/ci/lanes.py`) when
+Agent or its shared Rust dependencies change; [CI](../../docs/ci.md) lists the
+tiers and labels. Root `just lane <id>` runs one lane as CI does. `just ci` is
+the full local format, lint, build and test gate; `just release` separately
+validates the optimized binary. PR jobs have no signing or publishing
+credentials. See the root agent guide for shared checks.
 
 Two by-hand checks complement the automated ones: the
 [scenario checklist](docs/scenario-checklist.md), one scenario per feature
@@ -587,6 +649,10 @@ with the results of each run, and the
 check.
 
 ## Update and release boundary
+
+Packaged Prod updates support macOS, Linux and Windows through separate signed
+platform feeds. Windows also provides a signed per-user manual installer;
+see [desktop builds](docs/desktop-builds.md).
 
 Packaged Prod builds use the independent signed Agent update feed. Dev and
 unpackaged/MDE builds do not check a production updater. The Prod profile pins
@@ -637,3 +703,15 @@ See [remote access](docs/remote-access.md) for pairing, host selection, recovery
 local-only account controls and the separate infrastructure/native trial gates.
 Remote access is off by default; the initial development configuration has no
 implicit public-relay fallback.
+
+### Feedback
+
+The quiet **Send feedback** button at the bottom of the expanded sidebar opens
+an anonymous form. It sends only the chosen category, message, app version,
+platform and build profile to the shared `/v1/feedback` service. Dev and Prod
+use the same endpoint. No account, conversation, logs or attachments are added.
+The Rust client is owned by this product (`app/src/feedback.rs`); it has no
+submission credential. Failed submissions retain the draft, and an unchanged
+retry reuses its random submission ID to avoid duplicate rows. Shift+Enter adds
+a line; Escape or Cancel closes the form when no submission is in flight.
+Feedback is conventional Cloudflare-hosted storage; avoid sensitive content.

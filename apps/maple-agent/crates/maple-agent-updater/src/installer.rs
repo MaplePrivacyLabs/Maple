@@ -29,6 +29,20 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt};
 
 mod linux_bundle;
+mod windows_bundle;
+
+#[cfg(windows)]
+pub use windows_bundle::refresh_windows_shell_integration;
+pub use windows_bundle::{
+    activate_windows_installation, cleanup_current_windows_bundle, cleanup_windows_installation,
+    discover_windows_installation, preflight_windows_installation, prepare_windows_installation,
+    resolve_windows_launcher, validate_windows_bundle_archive,
+};
+#[cfg(windows)]
+pub(crate) use windows_bundle::{
+    windows_atomic_replace, windows_open_private, windows_open_readonly, windows_private_directory,
+    windows_read_bounded, windows_sync_directory,
+};
 
 pub use linux_bundle::{
     cleanup_current_linux_bundle, discover_linux_installation, validate_linux_bundle_archive,
@@ -48,6 +62,39 @@ const MAX_EXTENSION_BYTES: u64 = 16 * 1024;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 const CODESIGN_REQUIREMENT: &str = "=anchor apple generic and identifier \"cloud.opensecret.maple.agent\" and certificate leaf[subject.OU] = \"X773Y823TN\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
 
+/// Fixed public operation labels for the native Windows installer child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WindowsActivationStage {
+    Input = 1,
+    RootStorage = 2,
+    Registration = 3,
+    BootstrapIdentity = 4,
+    InstallLock = 5,
+    IntentIdentity = 6,
+    GenerationIdentity = 7,
+    GenerationVerification = 8,
+    GenerationGuards = 9,
+    PointerCommit = 10,
+}
+
+impl std::fmt::Display for WindowsActivationStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Input => "activation-input",
+            Self::RootStorage => "root-storage",
+            Self::Registration => "registration",
+            Self::BootstrapIdentity => "bootstrap-identity",
+            Self::InstallLock => "install-lock",
+            Self::IntentIdentity => "intent-identity",
+            Self::GenerationIdentity => "generation-identity",
+            Self::GenerationVerification => "generation-verification",
+            Self::GenerationGuards => "generation-guards",
+            Self::PointerCommit => "pointer-commit",
+        })
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum InstallError {
     #[error("This installation needs a manual download: {0}")]
@@ -60,6 +107,12 @@ pub enum InstallError {
     CodeSignature,
     #[error("The update could not be installed: {0}")]
     Io(#[from] io::Error),
+    #[error("Windows activation failed during {stage}: {source}")]
+    WindowsActivation {
+        stage: WindowsActivationStage,
+        #[source]
+        source: Box<InstallError>,
+    },
 }
 
 impl InstallError {
@@ -69,12 +122,105 @@ impl InstallError {
         match self {
             Self::NotifyOnly(_) => true,
             Self::Io(error) => permission_error(error),
+            Self::WindowsActivation { source, .. } => source.requires_manual_installation(),
             _ => false,
         }
+    }
+
+    /// Encode only an activation failure, without paths, SIDs or error text.
+    /// The original typed source remains available to direct callers.
+    pub fn windows_activation_exit_code(&self) -> Option<i32> {
+        let Self::WindowsActivation { stage, source } = self else {
+            return None;
+        };
+        let raw = match source.as_ref() {
+            Self::Io(error) => error
+                .raw_os_error()
+                .and_then(|code| u16::try_from(code).ok())
+                .unwrap_or(0),
+            _ => 0,
+        };
+        Some(0x4D00_0000 | ((*stage as i32) << 16) | i32::from(raw))
     }
 }
 
 type Result<T> = std::result::Result<T, InstallError>;
+
+#[cfg(test)]
+mod windows_activation_error_tests {
+    use super::*;
+
+    #[test]
+    fn activation_status_preserves_fixed_stage_and_original_native_error() {
+        for (stage, number, label) in [
+            (WindowsActivationStage::Input, 1, "activation-input"),
+            (WindowsActivationStage::RootStorage, 2, "root-storage"),
+            (WindowsActivationStage::Registration, 3, "registration"),
+            (
+                WindowsActivationStage::BootstrapIdentity,
+                4,
+                "bootstrap-identity",
+            ),
+            (WindowsActivationStage::InstallLock, 5, "install-lock"),
+            (WindowsActivationStage::IntentIdentity, 6, "intent-identity"),
+            (
+                WindowsActivationStage::GenerationIdentity,
+                7,
+                "generation-identity",
+            ),
+            (
+                WindowsActivationStage::GenerationVerification,
+                8,
+                "generation-verification",
+            ),
+            (
+                WindowsActivationStage::GenerationGuards,
+                9,
+                "generation-guards",
+            ),
+            (WindowsActivationStage::PointerCommit, 10, "pointer-commit"),
+        ] {
+            let error = InstallError::WindowsActivation {
+                stage,
+                source: Box::new(InstallError::Io(io::Error::from_raw_os_error(32))),
+            };
+            assert_eq!(
+                error.windows_activation_exit_code(),
+                Some(0x4D00_0020 | (number << 16))
+            );
+            assert!(error.to_string().contains(label));
+            let InstallError::WindowsActivation { source, .. } = error else {
+                unreachable!()
+            };
+            let InstallError::Io(source) = *source else {
+                unreachable!()
+            };
+            assert_eq!(source.raw_os_error(), Some(32));
+        }
+    }
+
+    #[test]
+    fn activation_status_keeps_error_policy_and_never_encodes_unrelated_errors() {
+        for source in [
+            InstallError::Busy,
+            InstallError::CodeSignature,
+            InstallError::Invalid("public fixture"),
+            InstallError::NotifyOnly("public fixture"),
+            InstallError::Io(io::Error::from(io::ErrorKind::PermissionDenied)),
+            InstallError::Io(io::Error::from_raw_os_error(-1)),
+            InstallError::Io(io::Error::from_raw_os_error(65536)),
+        ] {
+            assert_eq!(source.windows_activation_exit_code(), None);
+            let manual = source.requires_manual_installation();
+            let error = InstallError::WindowsActivation {
+                stage: WindowsActivationStage::Input,
+                source: Box::new(source),
+            };
+            assert_eq!(error.requires_manual_installation(), manual);
+            assert_eq!(error.windows_activation_exit_code(), Some(0x4D01_0000));
+        }
+    }
+}
 
 /// The on-disk values are untrusted on restoration. Keep the authenticated
 /// `PreparedUpdate` separately and pass it to every revalidation/replacement.
@@ -151,6 +297,9 @@ pub fn discover_installation(executable: &Path, _appimage: Option<&Path>) -> Res
 /// stopping the host. This is a preflight, not authority: permissions may still
 /// change, and callers must handle a failed atomic replacement safely.
 pub fn preflight_installation(installed: &Path) -> Result<()> {
+    if cfg!(windows) {
+        return windows_bundle::preflight(installed);
+    }
     #[cfg(target_os = "linux")]
     if linux_bundle::is_bundle_path(installed) {
         return linux_bundle::preflight(installed);
@@ -203,7 +352,9 @@ fn replacement_access(path: &Path, rights: libc::c_int) -> Result<()> {
 }
 
 pub fn acquire_install_lock(installed: &Path) -> Result<InstallLock> {
-    if linux_bundle::is_bundle_path(installed) {
+    if cfg!(windows) {
+        windows_bundle::validate_destination(installed)?;
+    } else if linux_bundle::is_bundle_path(installed) {
         linux_bundle::validate_destination(installed)?;
     } else {
         validate_destination(installed)?;
@@ -223,9 +374,17 @@ pub fn acquire_install_lock(installed: &Path) -> Result<InstallLock> {
         }
     })?;
     validate_install_lock_path(installed, &file)?;
+    #[cfg(windows)]
+    windows_bundle::validate_destination(installed)?;
     Ok(InstallLock { _file: file })
 }
 
+#[cfg(windows)]
+fn install_lock_path(installed: &Path) -> Result<PathBuf> {
+    Ok(installed.join(".install.lock"))
+}
+
+#[cfg(not(windows))]
 fn install_lock_path(installed: &Path) -> Result<PathBuf> {
     let parent = installed
         .parent()
@@ -245,6 +404,14 @@ fn install_lock_path(installed: &Path) -> Result<PathBuf> {
     Ok(parent.join(format!(".maple-agent-install-{digest}.lock")))
 }
 
+#[cfg(windows)]
+fn open_install_lock(installed: &Path) -> Result<File> {
+    let file = windows_open_private(&install_lock_path(installed)?, false)?;
+    validate_install_lock_path(installed, &file)?;
+    Ok(file)
+}
+
+#[cfg(not(windows))]
 fn open_install_lock(installed: &Path) -> Result<File> {
     let path = install_lock_path(installed)?;
     let mut create = OpenOptions::new();
@@ -311,7 +478,9 @@ fn validate_install_lock_path(installed: &Path, file: &File) -> Result<()> {
 /// The caller retains the application lock for this preparation's entire
 /// lifetime, including while Ready, until it is installed or discarded.
 pub fn prepare(update: &PreparedUpdate) -> Result<InstallPreparation> {
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        windows_bundle::prepare(update)
+    } else if cfg!(target_os = "linux") {
         linux_bundle::prepare(update)
     } else {
         preflight_installation(&update.installed_path)?;
@@ -320,7 +489,9 @@ pub fn prepare(update: &PreparedUpdate) -> Result<InstallPreparation> {
 }
 
 pub fn revalidate(preparation: &InstallPreparation, update: &PreparedUpdate) -> Result<()> {
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        windows_bundle::revalidate(preparation, update)
+    } else if cfg!(target_os = "linux") {
         linux_bundle::revalidate(preparation, update)
     } else {
         preflight_installation(&update.installed_path)?;
@@ -338,6 +509,9 @@ pub fn validate_archive(payload: &Path) -> Result<()> {
 /// receipt exists the directory may contain the prior app, so only a verified
 /// new startup may clear it through checkpoint cleanup.
 pub fn discard_preparation(preparation: &InstallPreparation) -> Result<()> {
+    if cfg!(windows) {
+        return windows_bundle::discard(preparation);
+    }
     if linux_bundle::is_bundle_path(&preparation.installed_path) {
         return linux_bundle::discard(preparation);
     }
@@ -362,7 +536,9 @@ pub fn replace(
     preparation: &InstallPreparation,
     update: &PreparedUpdate,
 ) -> Result<InstalledUpdate> {
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        windows_bundle::replace(preparation, update)
+    } else if cfg!(target_os = "linux") {
         linux_bundle::replace(preparation, update)
     } else {
         ensure_supported()?;
@@ -410,7 +586,9 @@ fn replace_inner(
 impl InstalledUpdate {
     /// The installed directory remains state identity; Linux executes AppRun.
     pub fn restart_path(&self) -> PathBuf {
-        if linux_bundle::is_bundle_path(&self.installed_path) {
+        if cfg!(windows) {
+            self.installed_path.join("maple-agent.exe")
+        } else if linux_bundle::is_bundle_path(&self.installed_path) {
             self.installed_path.join("AppRun")
         } else {
             self.installed_path.clone()
@@ -737,6 +915,10 @@ fn validate_staging(installed: &Path, root: &Path) -> Result<()> {
 }
 
 fn open_regular(path: &Path, create: bool, exclusive: bool) -> Result<File> {
+    #[cfg(windows)]
+    if !create {
+        return windows_open_readonly(path);
+    }
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -964,7 +1146,11 @@ fn scan_archive_with_alias(
             if expanded > MAX_EXPANDED_BYTES {
                 return Err(InstallError::Invalid("archive expansion limit exceeded"));
             }
-            let digest = if app_name != APP_NAME && name == format!("{app_name}/bundle.json") {
+            let digest = if app_name != APP_NAME
+                && (name == format!("{app_name}/bundle.json")
+                    || (app_name == "maple-agent-windows"
+                        && name == format!("{app_name}/bundle-info.json")))
+            {
                 if size > 16 * 1024 {
                     return Err(InstallError::Invalid("bundle descriptor is too large"));
                 }
@@ -1459,9 +1645,16 @@ fn write_receipt(installed: &InstalledUpdate) -> Result<()> {
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
-    let file = File::open(path)?;
-    file.sync_all()?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        windows_sync_directory(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let file = File::open(path)?;
+        file.sync_all()?;
+        Ok(())
+    }
 }
 
 fn swap_bundles(installed: &Path, staged: &Path) -> Result<()> {
@@ -1619,6 +1812,7 @@ mod tests {
                         macos: Some(dmg),
                         linux_appimage: None,
                         linux_bundle: None,
+                        windows: None,
                     },
                 },
                 envelope: "test-only authenticated caller fixture".into(),
@@ -2399,8 +2593,12 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod portable_lock_tests {
+// This fixture exercises the Unix bundle path contract. Windows public lock
+// admission additionally requires a registered, signed versioned installation;
+// its native storage/locking primitive is exercised by the required Windows
+// native_install_lock_rejects_concurrent_writers test.
+#[cfg(all(test, unix))]
+mod unix_lock_tests {
     use super::*;
 
     #[test]

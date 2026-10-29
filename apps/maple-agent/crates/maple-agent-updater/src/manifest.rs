@@ -15,6 +15,7 @@ pub const MAX_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub enum Target {
     DarwinAarch64,
     LinuxX86_64,
+    WindowsX86_64,
 }
 
 impl Target {
@@ -22,6 +23,7 @@ impl Target {
         match self {
             Self::DarwinAarch64 => "darwin-aarch64",
             Self::LinuxX86_64 => "linux-x86_64",
+            Self::WindowsX86_64 => "windows-x86_64",
         }
     }
 
@@ -29,6 +31,7 @@ impl Target {
         match self {
             Self::DarwinAarch64 => "/agent/stable/latest.json",
             Self::LinuxX86_64 => "/agent/stable/linux/latest.json",
+            Self::WindowsX86_64 => "/agent/stable/windows/latest.json",
         }
     }
 
@@ -36,6 +39,7 @@ impl Target {
         match self {
             Self::DarwinAarch64 => "manifest.json",
             Self::LinuxX86_64 => "linux-manifest.json",
+            Self::WindowsX86_64 => "windows-manifest.json",
         }
     }
 
@@ -50,6 +54,7 @@ impl Target {
         match self {
             Self::DarwinAarch64 => "maple-agent-update-v1",
             Self::LinuxX86_64 => "maple-agent-update-v2",
+            Self::WindowsX86_64 => "maple-agent-update-v3",
         }
     }
 }
@@ -71,6 +76,8 @@ pub struct Downloads {
     pub linux_appimage: Option<Artifact>,
     #[serde(rename = "linux-bundle", skip_serializing_if = "Option::is_none")]
     pub linux_bundle: Option<Artifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows: Option<Artifact>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -201,7 +208,7 @@ fn lowercase_hex(value: &str, len: usize) -> bool {
 
 fn validate_download_fields(text: &str, format: &str) -> Result<()> {
     // Optional fields cannot distinguish omission from an explicit null. Keep
-    // legacy v1's exact field contract, and require a Linux-only v2 inventory
+    // legacy v1's exact field contract, and require platform-only inventories
     // even when a forbidden download field has a null value.
     let value: serde_json::Value = serde_json::from_str(text)?;
     let downloads = value["downloads"]
@@ -209,12 +216,16 @@ fn validate_download_fields(text: &str, format: &str) -> Result<()> {
         .context("invalid download inventory")?;
     match format {
         "maple-agent-update-v1" => ensure!(
-            !downloads.contains_key("linux-bundle"),
-            "Linux bundles require update format v2"
+            !downloads.contains_key("linux-bundle") && !downloads.contains_key("windows"),
+            "platform downloads require their own update format"
         ),
         "maple-agent-update-v2" => ensure!(
             downloads.len() == 1 && downloads.contains_key("linux-bundle"),
             "update format v2 requires only the Linux bundle download"
+        ),
+        "maple-agent-update-v3" => ensure!(
+            downloads.len() == 1 && downloads.contains_key("windows"),
+            "update format v3 requires only the Windows installer download"
         ),
         _ => bail!("unsupported update format"),
     }
@@ -225,7 +236,7 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
     ensure!(
         matches!(
             manifest.format.as_str(),
-            "maple-agent-update-v1" | "maple-agent-update-v2"
+            "maple-agent-update-v1" | "maple-agent-update-v2" | "maple-agent-update-v3"
         ),
         "unsupported update format"
     );
@@ -260,14 +271,15 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
     match manifest.format.as_str() {
         "maple-agent-update-v1" => validate_v1_inventory(manifest),
         "maple-agent-update-v2" => validate_v2_inventory(manifest),
+        "maple-agent-update-v3" => validate_v3_inventory(manifest),
         _ => unreachable!("update format was validated above"),
     }
 }
 
 fn validate_v1_inventory(manifest: &Manifest) -> Result<()> {
     ensure!(
-        manifest.downloads.linux_bundle.is_none(),
-        "Linux bundles require update format v2"
+        manifest.downloads.linux_bundle.is_none() && manifest.downloads.windows.is_none(),
+        "platform downloads require their own update format"
     );
     ensure!(
         manifest.artifacts.contains_key("darwin-aarch64"),
@@ -311,7 +323,9 @@ fn validate_v2_inventory(manifest: &Manifest) -> Result<()> {
         "update format v2 requires only the Linux artifact"
     );
     ensure!(
-        manifest.downloads.macos.is_none() && manifest.downloads.linux_appimage.is_none(),
+        manifest.downloads.macos.is_none()
+            && manifest.downloads.linux_appimage.is_none()
+            && manifest.downloads.windows.is_none(),
         "update format v2 requires only the Linux bundle download"
     );
     let artifact = &manifest.artifacts["linux-x86_64"];
@@ -320,6 +334,34 @@ fn validate_v2_inventory(manifest: &Manifest) -> Result<()> {
         manifest.downloads.linux_bundle.as_ref() == Some(artifact),
         "Linux bundle download differs from updater payload"
     );
+    Ok(())
+}
+
+fn validate_v3_inventory(manifest: &Manifest) -> Result<()> {
+    ensure!(
+        manifest.artifacts.len() == 1 && manifest.artifacts.contains_key("windows-x86_64"),
+        "update format v3 requires only the Windows artifact"
+    );
+    ensure!(
+        manifest.downloads.macos.is_none()
+            && manifest.downloads.linux_appimage.is_none()
+            && manifest.downloads.linux_bundle.is_none(),
+        "update format v3 requires only the Windows installer download"
+    );
+    validate_artifact(
+        &manifest.artifacts["windows-x86_64"],
+        &manifest.version,
+        ".tar.gz",
+    )?;
+    validate_artifact(
+        manifest
+            .downloads
+            .windows
+            .as_ref()
+            .context("Windows installer download is required")?,
+        &manifest.version,
+        ".exe",
+    )?;
     Ok(())
 }
 
@@ -348,4 +390,106 @@ fn validate_artifact(artifact: &Artifact, version: &str, suffix: &str) -> Result
         "invalid artifact filename"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod windows_tests {
+    use super::*;
+
+    fn fixture() -> VerifiedRelease {
+        verify_envelope(
+            include_bytes!("../tests/fixtures/signed-windows-v3-envelope.json"),
+            &"https://updates.example.test".parse().unwrap(),
+            &[include_str!("../tests/fixtures/public-test-key.pub").to_owned()],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn signed_windows_v3_fixture_keeps_its_exact_bytes_and_platform() {
+        let release = fixture();
+        assert_eq!(
+            serde_json::to_vec(&release.manifest).unwrap(),
+            include_bytes!("../tests/fixtures/windows-v3-manifest.json")
+        );
+        assert!(release.artifact(Target::WindowsX86_64).is_ok());
+        assert!(release.artifact(Target::DarwinAarch64).is_err());
+        assert!(release.artifact(Target::LinuxX86_64).is_err());
+        assert_ne!(
+            release.artifact(Target::WindowsX86_64).unwrap().path,
+            release.manifest.downloads.windows.as_ref().unwrap().path
+        );
+    }
+
+    #[test]
+    fn windows_v3_requires_exact_independent_bundle_and_installer_inventory() {
+        let mutations: Vec<fn(&mut Manifest)> = vec![
+            |m| m.format = "maple-agent-update-v2".into(),
+            |m| m.product = "maple-research".into(),
+            |m| m.channel = "dev".into(),
+            |m| m.artifacts.clear(),
+            |m| {
+                m.artifacts
+                    .insert("linux-x86_64".into(), m.artifacts["windows-x86_64"].clone());
+            },
+            |m| m.downloads.windows = None,
+            |m| m.downloads.macos = m.downloads.windows.clone(),
+            |m| m.downloads.linux_appimage = m.downloads.windows.clone(),
+            |m| m.downloads.linux_bundle = m.downloads.windows.clone(),
+            |m| m.artifacts.get_mut("windows-x86_64").unwrap().size = 0,
+            |m| {
+                m.artifacts.get_mut("windows-x86_64").unwrap().size = MAX_ARTIFACT_BYTES + 1;
+            },
+            |m| m.artifacts.get_mut("windows-x86_64").unwrap().sha256 = "A".repeat(64),
+            |m| m.downloads.windows.as_mut().unwrap().sha256 = "bad".into(),
+            |m| m.downloads.windows.as_mut().unwrap().size = 0,
+            |m| {
+                m.downloads.windows.as_mut().unwrap().path =
+                    "/agent/stable/releases/0.0.1/Maple-Agent-setup.exe".into();
+            },
+            |m| {
+                m.downloads.windows.as_mut().unwrap().path =
+                    "/agent/stable/releases/0.0.2/Maple-Agent.tar.gz".into();
+            },
+            |m| {
+                m.artifacts.get_mut("windows-x86_64").unwrap().path =
+                    "/agent/stable/releases/0.0.2/Maple-Agent-setup.exe".into();
+            },
+        ];
+        for mutation in mutations {
+            let mut manifest = fixture().manifest;
+            mutation(&mut manifest);
+            assert!(
+                validate_manifest(&manifest).is_err(),
+                "accepted {manifest:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn platform_download_fields_are_rejected_even_when_explicitly_null() {
+        let windows = serde_json::to_string(&fixture().manifest).unwrap();
+        for field in ["macos", "linux-appimage", "linux-bundle", "unknown"] {
+            let mut value: serde_json::Value = serde_json::from_str(&windows).unwrap();
+            value["downloads"][field] = serde_json::Value::Null;
+            assert!(validate_download_fields(&value.to_string(), "maple-agent-update-v3").is_err());
+        }
+        for (bytes, format) in [
+            (
+                include_str!("../tests/fixtures/manifest.json"),
+                "maple-agent-update-v1",
+            ),
+            (
+                include_str!("../tests/fixtures/linux-v2-manifest.json"),
+                "maple-agent-update-v2",
+            ),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(bytes).unwrap();
+            value["downloads"]["windows"] = serde_json::Value::Null;
+            assert!(validate_download_fields(&value.to_string(), format).is_err());
+            value["downloads"]["windows"] =
+                serde_json::to_value(fixture().manifest.downloads.windows.unwrap()).unwrap();
+            assert!(validate_download_fields(&value.to_string(), format).is_err());
+        }
+    }
 }

@@ -602,7 +602,33 @@ fn mid_capture_cancellation_drains_the_worker_before_releasing_scratch() {
                 release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
             }));
             let worker = std::thread::spawn(move || registration.run());
-            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            if let Err(entered) = entered_rx.recv_timeout(Duration::from_secs(10)) {
+                // A failed capture drops the hook sender. Preserve the actual
+                // worker result instead of reporting only Disconnected, and
+                // release a late hook before joining after a timeout.
+                let _ = release_tx.send(());
+                match worker.join() {
+                    Ok(Err(error)) => panic!(
+                        "capture did not reach its first-row hook: {entered:?}; \
+                         keyed={keyed}, close_store={close_store}; worker failed: {error:?}"
+                    ),
+                    Ok(Ok(snapshot)) => {
+                        let closed = snapshot.close();
+                        panic!(
+                            "capture did not reach its first-row hook: {entered:?}; \
+                             keyed={keyed}, close_store={close_store}; \
+                             worker completed without the hook; close={closed:?}"
+                        );
+                    }
+                    Err(panic) => {
+                        eprintln!(
+                            "capture worker panicked before its first-row hook: {entered:?}; \
+                             keyed={keyed}, close_store={close_store}"
+                        );
+                        std::panic::resume_unwind(panic);
+                    }
+                }
+            }
             assert!(
                 files_below(store.paths().root())
                     .difference(&before)

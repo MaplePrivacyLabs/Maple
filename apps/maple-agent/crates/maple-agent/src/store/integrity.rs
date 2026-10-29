@@ -108,10 +108,9 @@ pub enum IntegrityTable {
     Entries,
     TimelineRows,
     ToolSummaries,
+    /// Read-only diagnostics for a pre-file-store schema.
     Blobs,
-    BlobChunks,
-    TaskBlobs,
-    Attachments,
+    FileAttachments,
     SendReceipts,
     RemoteIdentities,
 }
@@ -934,10 +933,7 @@ fn classify(message: &str, cipher: bool) -> IntegrityFinding {
         ("entries", IntegrityTable::Entries),
         ("timeline_rows", IntegrityTable::TimelineRows),
         ("tool_summaries", IntegrityTable::ToolSummaries),
-        ("blob_chunks", IntegrityTable::BlobChunks),
-        ("task_blobs", IntegrityTable::TaskBlobs),
-        ("blobs", IntegrityTable::Blobs),
-        ("attachments", IntegrityTable::Attachments),
+        ("file_attachments", IntegrityTable::FileAttachments),
         ("send_receipts", IntegrityTable::SendReceipts),
         ("remote_identities", IntegrityTable::RemoteIdentities),
     ]

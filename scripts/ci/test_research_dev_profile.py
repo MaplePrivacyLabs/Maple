@@ -3,7 +3,6 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -49,80 +48,120 @@ class ResearchDevProfileTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 profile_module.verify_bundle(bundle, self.profile)
 
-    def test_pr_artifact_job_has_no_publication_or_signing_authority(self):
-        workflow = json.loads(subprocess.check_output([
-            "yq", "-o=json", ".", str(profile_module.ROOT / ".github/workflows/desktop-pr-build.yml")
-        ], text=True))
-        self.assertEqual(set(workflow["on"]), {"pull_request"})
-        self.assertEqual(workflow["permissions"], {"contents": "read"})
-        job = workflow["jobs"]["build-research-dev-macos"]
-        self.assertEqual(job["needs"], "changes")
-        self.assertIn("needs.changes.outputs.macos", job["if"])
-        self.assertNotIn("environment", job)
-        self.assertNotIn("secrets.", json.dumps(job))
-        self.assertTrue(any("./scripts/ci/research-dev-desktop.sh" in step.get("run", "") for step in job["steps"]))
-        artifact = next(step["with"] for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
-        self.assertEqual(artifact["name"], "maple-research-dev-macos-pr")
-        self.assertEqual(artifact["if-no-files-found"], "error")
-        self.assertIn("build-profile.json", artifact["path"])
-        self.assertIn("maple-research-dev-macos.tar.gz", artifact["path"])
+    def test_linux_configuration_is_isolated_without_changing_production(self):
+        base = json.loads((profile_module.TAURI / "tauri.conf.json").read_text())
+        original = copy.deepcopy(base)
+        config = profile_module.linux_config(self.profile, base, self.overlay, "fixture/libonnxruntime.so")
+        self.assertEqual(base, original)
+        self.assertEqual(config["mainBinaryName"], "maple-research-dev")
+        self.assertEqual(config["identifier"], self.profile["identifier"])
+        self.assertEqual(config["bundle"]["targets"], ["deb"])
+        self.assertEqual(config["bundle"]["linux"]["deb"]["files"],
+                         {"/usr/lib/maple-research-dev/libonnxruntime.so": "fixture/libonnxruntime.so"})
+        self.assertEqual(config["bundle"]["linux"]["rpm"]["depends"], ["libwebkit2gtk-4.1.so.0()(64bit)"])
+        self.assertIn("linux", config["app"]["security"]["capabilities"][0]["platforms"])
+        profile_module.validate_config(self.profile, config)
 
-    def test_pr_dev_opt_in_event_selection_and_concurrency(self):
-        workflow = json.loads(subprocess.check_output([
-            "yq", "-o=json", ".", str(profile_module.ROOT / ".github/workflows/desktop-pr-build.yml")
-        ], text=True))
-        self.assertEqual(workflow["on"]["pull_request"]["types"], ["opened", "synchronize", "reopened", "labeled"])
-        jobs = workflow["jobs"]
-        for name, job in jobs.items():
-            self.assertEqual(job["name"], name + "${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}")
-        dev = "build-research-dev-macos"
-        native = {"build-macos", "build-linux", "build-windows", dev}
-        label = "ci:research-dev-macos"
+    def test_dev_requirements_do_not_depend_on_production_rpm_policy(self):
+        for production_requires in (None, ["webkit2gtk4.1"], ["future-production-only-requirement"]):
+            with self.subTest(production_requires=production_requires):
+                base = json.loads((profile_module.TAURI / "tauri.conf.json").read_text())
+                if production_requires is None:
+                    base["bundle"]["linux"].pop("rpm", None)
+                else:
+                    base["bundle"]["linux"]["rpm"] = {"depends": production_requires}
+                original = copy.deepcopy(base)
+                config = profile_module.linux_config(self.profile, base, self.overlay, "fixture/libonnxruntime.so")
+                self.assertEqual(base, original)
+                self.assertEqual(config["bundle"]["linux"]["rpm"]["depends"], self.profile["linux"]["runtimeDependencies"])
 
-        def selected(action, added_label="", labels=(), result="success", changed="false", cancelled=False):
-            # Evaluate the actual job expressions with the same boolean semantics.
-            context = {
-                "github.event.action": action,
-                "github.event.label.name": added_label,
-                "github.event.pull_request.labels.*.name": list(labels),
-                "needs.changes.result": result,
-                **{f"needs.changes.outputs.{platform}": changed for platform in ("macos", "linux", "windows")},
-            }
-            selected_jobs = set()
-            for name in native | {"changes"}:
-                expression = jobs[name]["if"].strip().removeprefix("${{").removesuffix("}}").strip()
-                expression = expression.replace("&&", " and ").replace("||", " or ")
-                expression = expression.replace("!cancelled()", str(not cancelled)).replace("always()", "True")
-                for key, value in context.items():
-                    expression = expression.replace(key, repr(value))
-                if eval(" ".join(expression.split()), {"__builtins__": {}},
-                        {"contains": lambda items, value: value in items}):
-                    selected_jobs.add(name)
-            return selected_jobs
+    def test_dev_rpm_verifies_its_own_runtime_capability(self):
+        capability = "libwebkit2gtk-4.1.so.0()(64bit)"
+        for package_name, requires, valid in (
+            ("maple-research-dev", capability + "\n", True),
+            ("maple-research-dev", "webkit2gtk4.1\n", False),
+            ("maple-research-dev", "", False),
+            ("maple", capability + "\n", False),
+        ):
+            with self.subTest(package_name=package_name, requires=requires):
+                with patch.object(profile_module.subprocess, "check_output", side_effect=[package_name, requires]):
+                    if valid:
+                        self.assertEqual(profile_module.verify_linux_rpm_requirements(Path("dev.rpm"), self.profile),
+                                         {"runtime_requirements": [capability]})
+                    else:
+                        with self.assertRaises(ValueError):
+                            profile_module.verify_linux_rpm_requirements(Path("dev.rpm"), self.profile)
 
-        for action in ("opened", "synchronize", "reopened"):
-            with self.subTest(action=action):
-                self.assertEqual(selected(action), {"changes"})
-                self.assertEqual(selected(action, labels=[label]), {"changes", dev})
-                self.assertEqual(selected(action, changed="true"), {"changes"} | native)
-                self.assertEqual(selected(action, result="failure"), {"changes"} | native)
-                self.assertEqual(selected(action, changed="true", cancelled=True), {"changes"})
-        self.assertEqual(selected("labeled", label, [label], "skipped"), {dev})
-        self.assertEqual(selected("labeled", "unrelated", [label], "skipped", "true"), set())
-        self.assertEqual(selected("labeled", label, [label], "skipped", cancelled=True), set())
+    def linux_payload(self, root):
+        files = {
+            "usr/bin/maple-research-dev": b"fixture executable",
+            "usr/lib/maple-research-dev/libonnxruntime.so": b"fixture library",
+            "usr/share/icons/hicolor/128x128/apps/maple-research-dev.png": b"fixture icon",
+            "usr/share/applications/maple-research-dev.desktop": b"""[Desktop Entry]
+Name=Maple Research Dev
+Exec=maple-research-dev %U
+Icon=maple-research-dev
+MimeType=x-scheme-handler/cloud.opensecret.maple.dev;
+""",
+        }
+        for name, content in files.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        (root / "usr/bin/maple-research-dev").chmod(0o755)
 
-        # Metadata runs cannot cancel source runs or runs for other labels.
-        self.assertEqual(workflow["concurrency"]["group"],
-                         "${{ github.workflow }}-pr-${{ github.event.pull_request.number }}"
-                         "${{ github.event.action == 'labeled' && format('-label-{0}', github.event.label.name) || '' }}")
-        self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
-        self.assertEqual(jobs[dev]["concurrency"], {
-            "group": "research-dev-macos-pr-${{ github.event.pull_request.number }}",
-            "cancel-in-progress": True,
-        })
-        checkout = next(step for step in jobs[dev]["steps"] if step.get("uses", "").startswith("actions/checkout@"))
-        self.assertEqual(checkout["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
-        self.assertFalse(checkout["with"]["persist-credentials"])
+    def test_linux_payload_checks_installed_names_and_rejects_collisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.linux_payload(root)
+            self.assertEqual(profile_module.verify_linux_payload(root, self.profile)["package_name"], "maple-research-dev")
+            for collision in ("usr/bin/maple", "usr/lib/maple/libonnxruntime.so", "usr/share/applications/maple.desktop"):
+                with self.subTest(collision=collision):
+                    path = root / collision
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"production collision")
+                    with self.assertRaisesRegex(ValueError, "production-owned"):
+                        profile_module.verify_linux_payload(root, self.profile)
+                    path.unlink()
+
+    def test_linux_staging_normalizes_tauri_launcher_and_inherited_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.linux_payload(root)
+            desktop = root / "usr/share/applications/maple-research-dev.desktop"
+            desktop.write_text(desktop.read_text().replace("Exec=maple-research-dev %U", "Exec=maple-research-dev"))
+            desktop.rename(desktop.with_name("Maple Research Dev.desktop"))
+            inherited = root / "usr/lib/maple/libonnxruntime.so"
+            inherited.parent.mkdir(parents=True)
+            inherited.write_bytes(b"inherited production mapping")
+            evidence = profile_module.normalize_linux_payload(root, self.profile)
+            self.assertEqual(evidence["package_name"], "maple-research-dev")
+            self.assertFalse(inherited.exists())
+            self.assertIn("Exec=maple-research-dev %u", desktop.read_text())
+
+    def test_linux_payload_rejects_links_into_another_installation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.linux_payload(root)
+            icon = root / "usr/share/icons/hicolor/128x128/apps/maple-research-dev.png"
+            icon.unlink()
+            icon.symlink_to("/usr/share/icons/maple.png")
+            with self.assertRaisesRegex(ValueError, "another installation"):
+                profile_module.verify_linux_payload(root, self.profile)
+
+    def test_linux_payload_rejects_production_launcher_and_scheme(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.linux_payload(root)
+            path = root / "usr/share/applications/maple-research-dev.desktop"
+            original = path.read_text()
+            for old, new in (("Exec=maple-research-dev", "Exec=maple"),
+                             ("cloud.opensecret.maple.dev", "cloud.opensecret.maple"),
+                             ("Icon=maple-research-dev", "Icon=maple")):
+                with self.subTest(replacement=new):
+                    path.write_text(original.replace(old, new))
+                    with self.assertRaises(ValueError):
+                        profile_module.verify_linux_payload(root, self.profile)
 
     def test_runtime_audit_rejects_host_dependencies_and_search_paths(self):
         system_loads = "maple:\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n"

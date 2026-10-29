@@ -15,7 +15,8 @@ use crate::{
         text_input::{
             self,
             vim::{
-                ContextualToken, InsertEntry, Motion, OpenLinePlacement, Operator, PastePlacement,
+                CaseChange, ContextualToken, FindKind, InsertEntry, Motion, OpenLinePlacement,
+                Operator, OperatorShortcut, PastePlacement,
             },
             vim_actions,
         },
@@ -70,6 +71,8 @@ enum SlotAction {
     MenuLast,
     MenuConfirm,
     MenuCancel,
+    MenuOpenSubmenu,
+    MenuCloseSubmenu,
     Backspace,
     Delete,
     Left,
@@ -112,10 +115,19 @@ enum SlotAction {
     VimBeginOperator(Operator),
     VimCountDigit(u8),
     VimToggleVisual,
+    VimToggleVisualLine,
+    VimSwapVisualEnds,
     VimDeleteChars,
     VimPaste(PastePlacement),
     VimEnterInsert(InsertEntry),
     VimOpenLine(OpenLinePlacement),
+    VimBeginFind(FindKind),
+    VimBeginReplace,
+    VimShortcut(OperatorShortcut),
+    VimChangeCase(CaseChange),
+    VimJoinLines,
+    VimInsertDeleteWord,
+    VimInsertDeleteLine,
     VimUndo,
     VimRedo,
     VimRepeat,
@@ -164,6 +176,8 @@ impl SlotAction {
             Self::MenuLast => Box::new(popup::SelectLast),
             Self::MenuConfirm => Box::new(popup::Confirm),
             Self::MenuCancel => Box::new(popup::Cancel),
+            Self::MenuOpenSubmenu => Box::new(popup::OpenSubmenu),
+            Self::MenuCloseSubmenu => Box::new(popup::CloseSubmenu),
             Self::Backspace => Box::new(text_input::Backspace),
             Self::Delete => Box::new(text_input::Delete),
             Self::Left => Box::new(text_input::Left),
@@ -208,10 +222,19 @@ impl SlotAction {
             }
             Self::VimCountDigit(digit) => Box::new(vim_actions::VimCountDigit { digit }),
             Self::VimToggleVisual => Box::new(vim_actions::VimToggleVisual),
+            Self::VimToggleVisualLine => Box::new(vim_actions::VimToggleVisualLine),
+            Self::VimSwapVisualEnds => Box::new(vim_actions::VimSwapVisualEnds),
             Self::VimDeleteChars => Box::new(vim_actions::VimDeleteChars),
             Self::VimPaste(placement) => Box::new(vim_actions::VimPaste { placement }),
             Self::VimEnterInsert(placement) => Box::new(vim_actions::VimEnterInsert { placement }),
             Self::VimOpenLine(placement) => Box::new(vim_actions::VimOpenLine { placement }),
+            Self::VimBeginFind(kind) => Box::new(vim_actions::VimBeginFind { kind }),
+            Self::VimBeginReplace => Box::new(vim_actions::VimBeginReplace),
+            Self::VimShortcut(shortcut) => Box::new(vim_actions::VimShortcut { shortcut }),
+            Self::VimChangeCase(change) => Box::new(vim_actions::VimChangeCase { change }),
+            Self::VimJoinLines => Box::new(vim_actions::VimJoinLines),
+            Self::VimInsertDeleteWord => Box::new(vim_actions::VimInsertDeleteWord),
+            Self::VimInsertDeleteLine => Box::new(vim_actions::VimInsertDeleteLine),
             Self::VimUndo => Box::new(vim_actions::VimUndo),
             Self::VimRedo => Box::new(vim_actions::VimRedo),
             Self::VimRepeat => Box::new(vim_actions::VimRepeat),
@@ -293,11 +316,12 @@ pub(crate) const RENAMED_SLOT_IDS: &[(&str, &str)] = &[
 ];
 
 /// Word and line shortcuts while Vim is off or in Insert. Normal and
-/// Visual keep `b`/`w`/`e`/`$`. A plain `TextInput` predicate would still
-/// match those modes, and Vim does not bind Option or Command arrows, so
-/// the exclusion has to live in the predicate.
-pub(crate) const STANDARD_TEXT_CONTEXT: &str =
-    "TextInput && editor_vim_mode != normal && editor_vim_mode != visual";
+/// Visual keep `b`/`w`/`e`/`$`, and a key awaited after `f` or `r` is text.
+/// A plain `TextInput` predicate would still match those modes, and Vim
+/// does not bind Option or Command arrows, so the exclusion has to live in
+/// the predicate.
+pub(crate) const STANDARD_TEXT_CONTEXT: &str = "TextInput && editor_vim_mode != normal \
+    && editor_vim_mode != visual && editor_vim_mode != waiting";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HostOs {
@@ -359,7 +383,7 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             "Focus task search",
             ShortcutCategory::Chat,
             Some("Chat"),
-            "secondary-k",
+            "secondary-f",
             SlotAction::FocusSearch,
         ),
         slot(
@@ -571,6 +595,22 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             Some(popup::MENU_CONTEXT),
             "escape",
             SlotAction::MenuCancel,
+        ),
+        slot(
+            "menu.open_submenu",
+            "Open submenu",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
+            "right",
+            SlotAction::MenuOpenSubmenu,
+        ),
+        slot(
+            "menu.close_submenu",
+            "Return to parent menu",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
+            "left",
+            SlotAction::MenuCloseSubmenu,
         ),
     ]);
 
@@ -815,8 +855,330 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             SlotAction::VimCancel,
         ),
     ]);
+    add_vim_motion_and_edit_slots(&mut slots);
     add_platform_text_slots(&mut slots, os);
     slots
+}
+
+/// Motions and edits beyond the first composer Vim set. Keys shared by
+/// Normal and Visual get one slot per mode, so either can be rebound on
+/// its own.
+fn add_vim_motion_and_edit_slots(slots: &mut Vec<ShortcutSlot>) {
+    let normal = Some(vim_actions::NORMAL_CONTEXT);
+    let visual = Some(vim_actions::VISUAL_CONTEXT);
+    for (normal_id, visual_id, sequence, label, action) in [
+        (
+            "composer_vim.normal.motion.big_word_forward",
+            "composer_vim.visual.motion.big_word_forward",
+            "W",
+            "Move WORD forward",
+            SlotAction::VimMotion(Motion::BigWordForward),
+        ),
+        (
+            "composer_vim.normal.motion.big_word_backward",
+            "composer_vim.visual.motion.big_word_backward",
+            "B",
+            "Move WORD backward",
+            SlotAction::VimMotion(Motion::BigWordBackward),
+        ),
+        (
+            "composer_vim.normal.motion.big_word_end",
+            "composer_vim.visual.motion.big_word_end",
+            "E",
+            "Move to WORD end",
+            SlotAction::VimMotion(Motion::BigWordEnd),
+        ),
+        (
+            "composer_vim.normal.motion.word_end_backward",
+            "composer_vim.visual.motion.word_end_backward",
+            "g e",
+            "Move to previous word end",
+            SlotAction::VimMotion(Motion::WordEndBackward),
+        ),
+        (
+            "composer_vim.normal.motion.big_word_end_backward",
+            "composer_vim.visual.motion.big_word_end_backward",
+            "g E",
+            "Move to previous WORD end",
+            SlotAction::VimMotion(Motion::BigWordEndBackward),
+        ),
+        (
+            "composer_vim.normal.motion.first_non_blank",
+            "composer_vim.visual.motion.first_non_blank",
+            "^",
+            "Move to first non-blank",
+            SlotAction::VimMotion(Motion::FirstNonWhitespace),
+        ),
+        (
+            "composer_vim.normal.motion.matching_bracket",
+            "composer_vim.visual.motion.matching_bracket",
+            "%",
+            "Move to matching bracket",
+            SlotAction::VimMotion(Motion::MatchingBracket),
+        ),
+        (
+            "composer_vim.normal.motion.paragraph_backward",
+            "composer_vim.visual.motion.paragraph_backward",
+            "{",
+            "Move to previous paragraph",
+            SlotAction::VimMotion(Motion::ParagraphBackward),
+        ),
+        (
+            "composer_vim.normal.motion.paragraph_forward",
+            "composer_vim.visual.motion.paragraph_forward",
+            "}",
+            "Move to next paragraph",
+            SlotAction::VimMotion(Motion::ParagraphForward),
+        ),
+        (
+            "composer_vim.normal.motion.repeat_find",
+            "composer_vim.visual.motion.repeat_find",
+            ";",
+            "Repeat last find",
+            SlotAction::VimMotion(Motion::RepeatFind),
+        ),
+        (
+            "composer_vim.normal.motion.repeat_find_reversed",
+            "composer_vim.visual.motion.repeat_find_reversed",
+            ",",
+            "Repeat last find backward",
+            SlotAction::VimMotion(Motion::RepeatFindReversed),
+        ),
+        (
+            "composer_vim.normal.find.forward",
+            "composer_vim.visual.find.forward",
+            "f",
+            "Find character",
+            SlotAction::VimBeginFind(FindKind::Forward),
+        ),
+        (
+            "composer_vim.normal.find.backward",
+            "composer_vim.visual.find.backward",
+            "F",
+            "Find character backward",
+            SlotAction::VimBeginFind(FindKind::Backward),
+        ),
+        (
+            "composer_vim.normal.find.till_forward",
+            "composer_vim.visual.find.till_forward",
+            "t",
+            "Move to before character",
+            SlotAction::VimBeginFind(FindKind::TillForward),
+        ),
+        (
+            "composer_vim.normal.find.till_backward",
+            "composer_vim.visual.find.till_backward",
+            "T",
+            "Move to after character backward",
+            SlotAction::VimBeginFind(FindKind::TillBackward),
+        ),
+        (
+            "composer_vim.normal.replace",
+            "composer_vim.visual.replace",
+            "r",
+            "Replace with character",
+            SlotAction::VimBeginReplace,
+        ),
+        (
+            "composer_vim.normal.toggle_case",
+            "composer_vim.visual.toggle_case",
+            "~",
+            "Toggle case",
+            SlotAction::VimChangeCase(CaseChange::Toggle),
+        ),
+        (
+            "composer_vim.normal.join_lines",
+            "composer_vim.visual.join_lines",
+            "J",
+            "Join lines",
+            SlotAction::VimJoinLines,
+        ),
+        (
+            "composer_vim.normal.toggle_visual_line",
+            "composer_vim.visual.toggle_visual_line",
+            "V",
+            "Toggle linewise Visual mode",
+            SlotAction::VimToggleVisualLine,
+        ),
+    ] {
+        slots.push(slot(
+            normal_id,
+            label,
+            ShortcutCategory::ComposerVim,
+            normal,
+            sequence,
+            action,
+        ));
+        slots.push(slot(
+            visual_id,
+            label,
+            ShortcutCategory::ComposerVim,
+            visual,
+            sequence,
+            action,
+        ));
+    }
+
+    // Single-key operator forms. Visual mode applies them to the selection
+    // (`s`) or to its whole lines (the capitals).
+    for (normal_id, normal_label, visual_id, visual_label, sequence, shortcut) in [
+        (
+            "composer_vim.normal.substitute",
+            "Substitute characters",
+            "composer_vim.visual.substitute",
+            "Change selection",
+            "s",
+            OperatorShortcut::SubstituteChars,
+        ),
+        (
+            "composer_vim.normal.substitute_lines",
+            "Substitute lines",
+            "composer_vim.visual.substitute_lines",
+            "Change selected lines",
+            "S",
+            OperatorShortcut::SubstituteLines,
+        ),
+        (
+            "composer_vim.normal.change_to_line_end",
+            "Change to line end",
+            "composer_vim.visual.change_lines",
+            "Change selected lines (C)",
+            "C",
+            OperatorShortcut::ChangeToLineEnd,
+        ),
+        (
+            "composer_vim.normal.delete_to_line_end",
+            "Delete to line end",
+            "composer_vim.visual.delete_lines",
+            "Delete selected lines",
+            "D",
+            OperatorShortcut::DeleteToLineEnd,
+        ),
+        (
+            "composer_vim.normal.yank_to_line_end",
+            "Yank to line end",
+            "composer_vim.visual.yank_lines",
+            "Yank selected lines",
+            "Y",
+            OperatorShortcut::YankToLineEnd,
+        ),
+        (
+            "composer_vim.normal.delete_before",
+            "Delete before cursor",
+            "composer_vim.visual.delete_lines_x",
+            "Delete selected lines (X)",
+            "X",
+            OperatorShortcut::DeleteBefore,
+        ),
+    ] {
+        slots.push(slot(
+            normal_id,
+            normal_label,
+            ShortcutCategory::ComposerVim,
+            normal,
+            sequence,
+            SlotAction::VimShortcut(shortcut),
+        ));
+        slots.push(slot(
+            visual_id,
+            visual_label,
+            ShortcutCategory::ComposerVim,
+            visual,
+            sequence,
+            SlotAction::VimShortcut(shortcut),
+        ));
+    }
+
+    for (id, label, context, sequence, action) in [
+        (
+            "composer_vim.normal.operator.toggle_case",
+            "Toggle case operator",
+            normal,
+            "g ~",
+            SlotAction::VimBeginOperator(Operator::Case(CaseChange::Toggle)),
+        ),
+        (
+            "composer_vim.normal.operator.lowercase",
+            "Lowercase operator",
+            normal,
+            "g u",
+            SlotAction::VimBeginOperator(Operator::Case(CaseChange::Lower)),
+        ),
+        (
+            "composer_vim.normal.operator.uppercase",
+            "Uppercase operator",
+            normal,
+            "g U",
+            SlotAction::VimBeginOperator(Operator::Case(CaseChange::Upper)),
+        ),
+        // After `gU`, `U` uppercases the line, as `u` and `~` complete
+        // `guu` and `g~~` through their own bindings.
+        (
+            "composer_vim.normal.uppercase_line",
+            "Uppercase line (gUU)",
+            normal,
+            "U",
+            SlotAction::VimChangeCase(CaseChange::Upper),
+        ),
+        (
+            "composer_vim.visual.swap_ends",
+            "Go to other end of selection",
+            visual,
+            "o",
+            SlotAction::VimSwapVisualEnds,
+        ),
+        (
+            "composer_vim.visual.lowercase",
+            "Lowercase selection",
+            visual,
+            "u",
+            SlotAction::VimChangeCase(CaseChange::Lower),
+        ),
+        (
+            "composer_vim.visual.uppercase",
+            "Uppercase selection",
+            visual,
+            "U",
+            SlotAction::VimChangeCase(CaseChange::Upper),
+        ),
+        (
+            "composer_vim.insert.delete_word_backward",
+            "Delete previous word",
+            Some(vim_actions::INSERT_CONTEXT),
+            "ctrl-w",
+            SlotAction::VimInsertDeleteWord,
+        ),
+        (
+            "composer_vim.insert.delete_to_line_start",
+            "Delete to line start",
+            Some(vim_actions::INSERT_CONTEXT),
+            "ctrl-u",
+            SlotAction::VimInsertDeleteLine,
+        ),
+        (
+            "composer_vim.insert.backspace",
+            "Delete previous character",
+            Some(vim_actions::INSERT_CONTEXT),
+            "ctrl-h",
+            SlotAction::Backspace,
+        ),
+        (
+            "composer_vim.waiting.cancel",
+            "Vim cancel pending key",
+            Some(vim_actions::WAITING_CONTEXT),
+            "escape",
+            SlotAction::VimCancel,
+        ),
+    ] {
+        slots.push(slot(
+            id,
+            label,
+            ShortcutCategory::ComposerVim,
+            context,
+            sequence,
+            action,
+        ));
+    }
 }
 
 /// Platform text motions. `secondary` is Command on macOS and Control
@@ -1459,7 +1821,7 @@ fn add_vim_mode_slots(slots: &mut Vec<ShortcutSlot>, mode: &'static str, context
         .into_iter()
         .zip(["w", "i", "a"])
         .zip([
-            "Move by word / complete text object",
+            "Move word forward",
             "Inner text object / insert",
             "Around text object / append",
         ])
@@ -1612,7 +1974,7 @@ mod tests {
                     .iter()
                     .filter(|slot| slot.category == ShortcutCategory::ComposerVim)
                     .count(),
-                76
+                137
             );
             assert_eq!(
                 catalog

@@ -1419,7 +1419,7 @@ impl Render for PasswordForm {
         let (title, description, submit_label) = match self.action {
             PasswordAction::Set | PasswordAction::Setup => (
                 "Enable encryption",
-                "Protect the tasks, attachments, settings and sign-in saved on this computer.",
+                "Protect saved conversation text, settings and sign-in. Attached files and images remain unencrypted on this computer.",
                 "Enable encryption",
             ),
             PasswordAction::Change => (

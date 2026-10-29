@@ -304,9 +304,6 @@ def stage_metadata(appdir, component, metadata):
     (appdir / ".DirIcon").symlink_to(staged_icon.name)
     data = appdir / "usr/share/maple-agent"
     data.mkdir(parents=True, exist_ok=True)
-    subprocess.run([sys.executable, str(component / "scripts/stage-third-party-notices.py"),
-                    str(data / "licenses"), "--component", str(component),
-                    "--target", "x86_64-unknown-linux-gnu"], check=True)
     (data / "fonts.conf").write_text(FONTS_CONF)
     (data / "package-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (appdir / "AppRun").write_text(APPRUN)

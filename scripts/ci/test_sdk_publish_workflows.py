@@ -81,7 +81,7 @@ class SDKPublishingWorkflowTests(unittest.TestCase):
                 self.assertEqual(job["outputs"]["artifact_id"], "${{ steps.bundle.outputs.artifact-id }}")
 
     def test_all_actions_are_pinned_and_checkout_cannot_change_source(self):
-        for kind in ("npm", "rust", "tests"):
+        for kind in ("npm", "rust"):
             for job in workflow(kind)["jobs"].values():
                 for step in job["steps"]:
                     self.assertNotIn("${{", step.get("run", ""))
@@ -93,8 +93,7 @@ class SDKPublishingWorkflowTests(unittest.TestCase):
                     if action.startswith("actions/checkout@"):
                         self.assertIs(step["with"]["persist-credentials"], False)
                         self.assertNotIn("submodules", step["with"])
-                        if kind != "tests":
-                            self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
+                        self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
                     if action.startswith("DeterminateSystems/determinate-nix-action@"):
                         self.assertEqual(step["with"]["github-token"], "")
 
@@ -132,27 +131,11 @@ class SDKPublishingWorkflowTests(unittest.TestCase):
                             self.assertNotIn("secrets.", text)
 
     def test_no_workflow_creates_releases_tags_or_write_contents(self):
-        for kind in ("npm", "rust", "tests"):
+        for kind in ("npm", "rust"):
             config = workflow(kind)
             for text in strings(config):
                 self.assertNotRegex(text, r"contents: write|gh release|git (?:push|tag)|releases/latest|softprops/action-gh-release")
             self.assertEqual(config["permissions"], {"contents": "read"})
-
-    def test_pr_boundary_tests_cannot_publish(self):
-        config = workflow("tests")
-        self.assertEqual(set(config["on"]), {"push", "pull_request"})
-        self.assertEqual(config["on"]["push"]["branches"], ["master"])
-        for job in config["jobs"].values():
-            self.assertNotIn("environment", job)
-            self.assertNotIn("permissions", job)
-            for text in strings(job):
-                self.assertNotRegex(text, r"\bsecrets\b|id-token|sdk_publish.py (?:source|verify|confirm)|npm publish")
-            for step in job["steps"]:
-                if "sdk_crates_upload.py" in step.get("run", ""):
-                    self.assertIn("--validate-only", step["run"])
-        packages = config["jobs"]["packages"]
-        self.assertEqual(packages["strategy"]["matrix"]["kind"], ["npm", "rust"])
-        self.assertTrue(any("build-sdk-publish.sh" in step.get("run", "") for step in packages["steps"]))
 
 
 class NPMPublishCommandTests(unittest.TestCase):

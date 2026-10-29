@@ -5766,7 +5766,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent"
-version = "0.0.7"
+version = "0.0.13"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -5818,19 +5818,25 @@ dependencies = [
 
 [[package]]
 name = "maple-agent-app"
-version = "0.0.7"
+version = "0.0.13"
 dependencies = [
+ "ashpd",
  "axum",
  "base64 0.22.1",
  "chrono",
  "clap",
  "cpal",
  "dirs 6.0.0",
+ "embed-resource",
  "env_logger",
+ "futures-lite",
+ "futures-util",
  "gpui",
  "gpui_platform",
  "hostname",
  "httparse",
+ "hyper",
+ "hyper-util",
  "image",
  "iroh",
  "libc",
@@ -5874,7 +5880,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent-updater"
-version = "0.0.7"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5898,11 +5904,13 @@ dependencies = [
  "time",
  "tokio",
  "url",
+ "windows 0.61.3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "maple-billing"
-version = "0.0.7"
+version = "0.0.13"
 dependencies = [
  "reqwest 0.13.4",
  "serde",
@@ -5912,7 +5920,7 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5933,7 +5941,7 @@ dependencies = [
 
 [[package]]
 name = "maple-sdk"
-version = "4.1.2"
+version = "4.1.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7680,7 +7688,7 @@ dependencies = [
 
 [[package]]
 name = "pi-agent-core"
-version = "0.0.7"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -7693,7 +7701,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "0.0.7"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7710,7 +7718,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "0.0.7"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -8279,9 +8287,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.4"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
+checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
 dependencies = [
  "bitflags 2.13.1",
  "memchr",
@@ -10103,10 +10111,9 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "store-bench"
-version = "0.0.7"
+version = "0.0.13"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "maple-agent",
  "pi-ai",
  "pi-coding-agent",

@@ -15,8 +15,8 @@ export function AccountMenu() {
   const isCompactSettingsLayout = useCompactSettingsLayout();
   const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team") ?? false;
 
-  // Keep the shared sidebar billing badge current on every authenticated route,
-  // including Agent Mode. Some routes do not own a route-level billing refresh.
+  // Keep the shared sidebar billing badge current on every authenticated route.
+  // Some routes do not own a route-level billing refresh.
   useQuery({
     queryKey: ["billingStatus"],
     queryFn: async () => {

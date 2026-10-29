@@ -143,12 +143,36 @@ impl From<&str> for InstallationFailure {
         message.to_owned().into()
     }
 }
+
+#[cfg(not(test))]
+type HeldInstallLock = maple_agent_updater::installer::InstallLock;
+#[cfg(test)]
+enum HeldInstallLock {
+    Native {
+        _lock: maple_agent_updater::installer::InstallLock,
+    },
+    Fixture {
+        _lock: tests::FixtureInstallLock,
+    },
+}
+
+fn hold_install_lock(lock: maple_agent_updater::installer::InstallLock) -> HeldInstallLock {
+    #[cfg(test)]
+    {
+        HeldInstallLock::Native { _lock: lock }
+    }
+    #[cfg(not(test))]
+    {
+        lock
+    }
+}
+
 #[derive(Default)]
 struct ReleaseState {
     release: Option<VerifiedRelease>,
     prepared: Option<PreparedUpdate>,
     installation: Option<maple_agent_updater::installer::InstallPreparation>,
-    install_lock: Option<maple_agent_updater::installer::InstallLock>,
+    install_lock: Option<HeldInstallLock>,
     deferred: Option<String>,
 }
 struct Inner {
@@ -423,11 +447,51 @@ impl Controller {
         let Ok(_operation) = self.0.operation.try_lock() else {
             return;
         };
-        self.check_inner().await;
+        self.check_inner(true).await;
     }
-    async fn check_inner(&self) {
+    /// A remote check must actually acquire the updater and read its signed
+    /// feed. A busy operation or failed recheck cannot turn cached Ready into
+    /// a successful fresh response. Downloads resume separately after the reply.
+    pub(crate) async fn refresh_remote(
+        &self,
+    ) -> Result<crate::remote::update::RemoteUpdateStatus, crate::remote_updates::RefreshFailure>
+    {
+        self.refresh_remote_with(|| self.check_inner(false)).await
+    }
+
+    async fn refresh_remote_with<C, F>(
+        &self,
+        check: C,
+    ) -> Result<crate::remote::update::RemoteUpdateStatus, crate::remote_updates::RefreshFailure>
+    where
+        C: FnOnce() -> F,
+        F: std::future::Future<Output = bool>,
+    {
+        use crate::remote_updates::RefreshFailure;
+        if self.0.cancel.is_cancelled() || self.restart_path().is_some() {
+            return Err(RefreshFailure::Unavailable);
+        }
         if self.snapshot().state == State::Disabled {
-            return;
+            return Err(RefreshFailure::Disabled);
+        }
+        let Ok(_operation) = self.0.operation.try_lock() else {
+            return Err(RefreshFailure::Busy);
+        };
+        // The broker bounds the remote caller's wait. Keep this operation
+        // owned until it finishes: a caller timeout must not abandon a blocking
+        // package validation and let a second updater operation overlap it.
+        tokio::select! {
+            _ = self.0.cancel.cancelled() => Err(RefreshFailure::Unavailable),
+            checked = check() => match checked {
+                true => Ok(self.remote_status()),
+                false => Err(RefreshFailure::CheckFailed),
+            },
+        }
+    }
+
+    async fn check_inner(&self, automatic_download: bool) -> bool {
+        if self.snapshot().state == State::Disabled {
+            return false;
         }
         let previous = self.snapshot();
         self.begin_check();
@@ -435,7 +499,7 @@ impl Controller {
             Ok(service) => service,
             Err(error) => {
                 self.fail(error);
-                return;
+                return false;
             }
         };
         match service.updater.check().await {
@@ -454,12 +518,29 @@ impl Controller {
                 snapshot.primary = Some(UpdateAction::Check);
                 snapshot.primary_label = "Check for Updates";
                 self.publish(snapshot);
+                true
             }
-            Ok(CheckOutcome::Available(release)) => self.accept_release(service, *release).await,
-            Err(_) => self.recheck_failed(previous),
+            Ok(CheckOutcome::Available(release)) => {
+                self.accept_release_with_policy(service, *release, automatic_download)
+                    .await;
+                true
+            }
+            Err(_) => {
+                self.recheck_failed(previous);
+                false
+            }
         }
     }
     async fn accept_release(&self, service: &Service, release: VerifiedRelease) {
+        self.accept_release_with_policy(service, release, true)
+            .await;
+    }
+    async fn accept_release_with_policy(
+        &self,
+        service: &Service,
+        release: VerifiedRelease,
+        automatic_download: bool,
+    ) {
         let (prepared, previous_staging, previous_lock) = {
             let mut releases = self.0.releases.lock().await;
             let prepared = releases
@@ -484,7 +565,10 @@ impl Controller {
                 Ok(()) => self.release_snapshot(service, &release, State::Ready).await,
                 Err(error) => self.installation_failed(service, &release, error).await,
             }
-        } else if self.0.automatic.load(Ordering::Relaxed) && !service.manual_only() {
+        } else if automatic_download
+            && self.0.automatic.load(Ordering::Relaxed)
+            && !service.manual_only()
+        {
             self.download_inner(service, release).await;
         } else {
             self.release_snapshot(service, &release, State::Available)
@@ -503,6 +587,7 @@ impl Controller {
                 Some(lock) => lock,
                 None => {
                     maple_agent_updater::installer::acquire_install_lock(&prepared.installed_path)
+                        .map(hold_install_lock)
                         .map_err(InstallationFailure::from)?
                 }
             };
@@ -761,6 +846,7 @@ impl Controller {
             let lock = match saved_lock {
                 Some(lock) => lock,
                 None => maple_agent_updater::installer::acquire_install_lock(&installed_path)
+                    .map(hold_install_lock)
                     .map_err(InstallationFailure::from)?,
             };
             let preparation = match saved {
@@ -943,12 +1029,17 @@ async fn discard_preparation(preparation: maple_agent_updater::installer::Instal
 
 async fn cleanup_installed_update(service: &Service) {
     let installed = service.installed_path.clone();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         if service.manual_only() {
             return;
         }
-        let Ok(origin) = compiled_feed_url(Target::LinuxX86_64) else {
+        let target = if cfg!(target_os = "windows") {
+            Target::WindowsX86_64
+        } else {
+            Target::LinuxX86_64
+        };
+        let Ok(origin) = compiled_feed_url(target) else {
             return;
         };
         let keys = crate::profile::UPDATE_PUBLIC_KEYS
@@ -959,7 +1050,11 @@ async fn cleanup_installed_update(service: &Service) {
         // restore. Authenticate the install receipt against this running build
         // and the compiled feed/key pins before removing its retained backup.
         let _ = tokio::task::spawn_blocking(move || {
-            maple_agent_updater::installer::cleanup_current_linux_bundle(
+            #[cfg(target_os = "linux")]
+            let cleanup = maple_agent_updater::installer::cleanup_current_linux_bundle;
+            #[cfg(target_os = "windows")]
+            let cleanup = maple_agent_updater::installer::cleanup_current_windows_bundle;
+            cleanup(
                 &installed,
                 env!("CARGO_PKG_VERSION"),
                 env!("MAPLE_GIT_SOURCE_SHA"),
@@ -969,7 +1064,7 @@ async fn cleanup_installed_update(service: &Service) {
         })
         .await;
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = tokio::task::spawn_blocking(move || {
             maple_agent_updater::installer::cleanup_current_installation(
@@ -983,7 +1078,7 @@ async fn cleanup_installed_update(service: &Service) {
 
 async fn discard_preparation_with_lock(
     preparation: maple_agent_updater::installer::InstallPreparation,
-    lock: Option<maple_agent_updater::installer::InstallLock>,
+    lock: Option<HeldInstallLock>,
 ) {
     let _ = tokio::task::spawn_blocking(move || {
         let _lock = lock;
@@ -995,6 +1090,8 @@ async fn discard_preparation_with_lock(
 fn manual_download_url(release: &VerifiedRelease) -> Option<String> {
     let target = if cfg!(target_os = "linux") {
         Target::LinuxX86_64
+    } else if cfg!(target_os = "windows") {
+        Target::WindowsX86_64
     } else {
         Target::DarwinAarch64
     };
@@ -1005,6 +1102,7 @@ fn manual_download_url_for_target(release: &VerifiedRelease, target: Target) -> 
     let artifact = match target {
         Target::DarwinAarch64 => release.manifest.downloads.macos.as_ref()?,
         Target::LinuxX86_64 => release.manifest.downloads.linux_bundle.as_ref()?,
+        Target::WindowsX86_64 => release.manifest.downloads.windows.as_ref()?,
     };
     release
         .origin
@@ -1022,6 +1120,8 @@ fn build_service() -> Result<Service, String> {
         Target::DarwinAarch64
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Target::LinuxX86_64
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Target::WindowsX86_64
     } else {
         return Err("Updates are not supported on this platform".into());
     };
@@ -1110,7 +1210,23 @@ fn installation() -> Result<Installation, String> {
             maple_agent::self_launch::executable(),
         ))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        Ok(
+            match maple_agent_updater::installer::discover_windows_installation(
+                &exe,
+                env!("CARGO_PKG_VERSION"),
+                env!("MAPLE_GIT_SOURCE_SHA"),
+            ) {
+                Ok(installed_path) => Installation {
+                    installed_path,
+                    manual_only: false,
+                },
+                Err(_) => Installation::manual(&exe),
+            },
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         Ok(Installation::manual(&exe))
     }
@@ -1148,11 +1264,86 @@ fn manual_macos_path(path: &Path) -> bool {
 mod tests {
     use super::*;
 
+    // These controller tests begin after native installation admission has
+    // completed. Keep a real OS file lock without asking a synthetic bundle to
+    // satisfy a platform's installed-path, registry or code-signature policy.
+    pub(super) struct FixtureInstallLock {
+        file: std::fs::File,
+    }
+    impl Drop for FixtureInstallLock {
+        fn drop(&mut self) {
+            let _ = self.file.unlock();
+        }
+    }
+
+    fn acquire_fixture_install_lock(
+        installed: &Path,
+    ) -> Result<FixtureInstallLock, std::fs::TryLockError> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(installed.join(".fixture-install.lock"))
+            .map_err(std::fs::TryLockError::Error)?;
+        // Like the installer's fs2 guard, std uses flock on Unix and whole-file
+        // LockFileEx on Windows. A separately opened handle must still contend.
+        file.try_lock()?;
+        Ok(FixtureInstallLock { file })
+    }
+
+    #[tokio::test]
+    async fn remote_refresh_invokes_a_new_check_even_for_cached_current_or_ready() {
+        use std::sync::atomic::AtomicUsize;
+        for cached in [State::Idle, State::Current, State::Ready, State::Error] {
+            let controller = Controller::new(false);
+            controller.set_test_state(cached);
+            let calls = AtomicUsize::new(0);
+            let result = controller
+                .refresh_remote_with(|| async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    controller.publish(Snapshot::new(State::Available, "New signed offer"));
+                    true
+                })
+                .await
+                .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(result.state, crate::remote::update::UpdateState::Available);
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_refresh_failure_never_reports_cached_ready_as_fresh() {
+        let controller = Controller::new(false);
+        controller.set_test_state(State::Ready);
+        let result = controller.refresh_remote_with(|| async { false }).await;
+        assert_eq!(
+            result,
+            Err(crate::remote_updates::RefreshFailure::CheckFailed)
+        );
+        assert_eq!(controller.snapshot().state, State::Ready);
+        let operation = controller.0.operation.lock().await;
+        assert_eq!(
+            controller
+                .refresh_remote_with(|| async { panic!("busy check must not run") })
+                .await,
+            Err(crate::remote_updates::RefreshFailure::Busy)
+        );
+        drop(operation);
+        controller.set_test_state(State::Disabled);
+        assert_eq!(
+            controller
+                .refresh_remote_with(|| async { panic!("disabled check must not run") })
+                .await,
+            Err(crate::remote_updates::RefreshFailure::Disabled)
+        );
+    }
+
     // Model the controller after preparation has passed, without replacing an
     // application or bypassing the installer's separate validation tests.
-    async fn ready_remote_fixture(root: &Path) -> (Controller, Snapshot) {
+    async fn ready_remote_fixture(root: &Path) -> (Controller, Snapshot, PathBuf) {
         let root = root.canonicalize().unwrap();
-        let installed = root.join("Maple Agent.app");
+        let installed = root.join("installed application");
         std::fs::create_dir(&installed).unwrap();
         std::fs::write(installed.join("sentinel"), b"current application").unwrap();
         let feed = "https://updates.trymaple.ai/agent/stable/latest.json"
@@ -1184,14 +1375,15 @@ mod tests {
                 installed_path: installed.clone(),
                 staging_dir: staging.clone(),
                 payload_path: payload,
-                staged_path: staging.join("Maple Agent.app"),
+                staged_path: staging.join("staged application"),
                 version: release.manifest.version.clone(),
                 build: release.manifest.build.clone(),
                 size: artifact.size,
                 sha256: artifact.sha256,
             });
-            releases.install_lock =
-                Some(maple_agent_updater::installer::acquire_install_lock(&installed).unwrap());
+            releases.install_lock = Some(HeldInstallLock::Fixture {
+                _lock: acquire_fixture_install_lock(&installed).unwrap(),
+            });
         }
         let mut ready = Snapshot::new(State::Ready, "v0.0.2 is ready to install");
         ready.version = Some(release.manifest.version.clone());
@@ -1200,7 +1392,7 @@ mod tests {
         ready.primary_label = "Restart to Update";
         ready.show_banner = true;
         controller.publish(ready.clone());
-        (controller, ready)
+        (controller, ready, installed)
     }
 
     #[tokio::test]
@@ -1211,7 +1403,7 @@ mod tests {
             "Could not revalidate the update. Maple is still running.",
         ] {
             let root = tempfile::tempdir().unwrap();
-            let (controller, ready) = ready_remote_fixture(root.path()).await;
+            let (controller, ready, installed) = ready_remote_fixture(root.path()).await;
             let target = ready.remote_candidate.clone().unwrap();
             controller.publish(Snapshot::new(State::Installing, "Preparing update"));
             controller
@@ -1233,24 +1425,22 @@ mod tests {
             );
             assert!(controller.remote_status().blocked.is_none());
             assert_eq!(controller.remote_status().offered, Some(target));
-            let installed = root.path().canonicalize().unwrap().join("Maple Agent.app");
-            let contention = match maple_agent_updater::installer::acquire_install_lock(&installed)
-            {
+            let contention = match acquire_fixture_install_lock(&installed) {
                 Ok(_) => panic!("a refused remote update released its installation lock"),
                 Err(error) => error,
             };
             assert!(
-                matches!(
-                    &contention,
-                    maple_agent_updater::installer::InstallError::Busy
-                ),
+                matches!(&contention, std::fs::TryLockError::WouldBlock),
                 "unexpected retained-lock result: {contention:?}"
             );
             assert_eq!(
-                std::fs::read(root.path().join("Maple Agent.app/sentinel")).unwrap(),
+                std::fs::read(installed.join("sentinel")).unwrap(),
                 b"current application"
             );
             assert!(!controller.snapshot().label.contains("Quit and reopen"));
+            drop(controller);
+            acquire_fixture_install_lock(&installed)
+                .expect("dropping the controller must release its fixture lock");
         }
     }
 
@@ -1260,10 +1450,11 @@ mod tests {
             "uncertain",
             "different candidate",
             "missing staging",
+            "missing install lock",
             "local install",
         ] {
             let root = tempfile::tempdir().unwrap();
-            let (controller, ready) = ready_remote_fixture(root.path()).await;
+            let (controller, ready, _installed) = ready_remote_fixture(root.path()).await;
             let target = ready.remote_candidate.clone().unwrap();
             {
                 let mut releases = controller.0.releases.lock().await;
@@ -1277,6 +1468,8 @@ mod tests {
                         .push('\n');
                 } else if scenario == "missing staging" {
                     releases.installation = None;
+                } else if scenario == "missing install lock" {
+                    releases.install_lock = None;
                 }
             }
             controller.publish(Snapshot::new(State::Installing, "Preparing update"));
@@ -1449,7 +1642,7 @@ mod tests {
                 size: 20,
                 sha256: "0".repeat(64),
             });
-            releases.install_lock = Some(lock);
+            releases.install_lock = Some(hold_install_lock(lock));
         }
         let backend = Arc::new(
             crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())

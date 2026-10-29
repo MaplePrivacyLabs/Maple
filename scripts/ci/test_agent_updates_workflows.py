@@ -2,9 +2,13 @@
 
 import functools
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 
 
@@ -20,15 +24,6 @@ def workflow(name):
 
 
 class AgentUpdatesWorkflows(unittest.TestCase):
-    def test_delivery_checks_follow_imported_profile_and_package_contracts(self):
-        config = workflow("agent-updates-tests.yml")
-        for event in ("push", "pull_request"):
-            self.assertTrue({
-                "apps/maple-agent/scripts/release-info.py",
-                "apps/maple-agent/release-profiles.json",
-                "services/agent-updates/**",
-            } <= set(config["on"][event]["paths"]))
-
     def test_manual_master_only_and_separate_authority(self):
         config = workflow("agent-updates-publish.yml")
         self.assertEqual(set(config["on"]), {"workflow_dispatch"})
@@ -38,9 +33,10 @@ class AgentUpdatesWorkflows(unittest.TestCase):
         self.assertEqual(config["concurrency"], {
             "group": "agent-updates-production", "cancel-in-progress": False,
         })
-        # Normal releases keep both platforms on one version. Historical
-        # macOS-only runs remain available through an explicit override.
+        # Normal releases keep all three platforms on one version. Historical
+        # producers remain available through explicit platform overrides.
         self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["include_linux"]["default"], True)
+        self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["include_windows"]["default"], True)
         jobs = config["jobs"]
         self.assertEqual(set(jobs), {"verify", "reserve", "sign", "publish"})
         self.assertNotIn("environment", jobs["verify"])
@@ -126,9 +122,81 @@ class AgentUpdatesWorkflows(unittest.TestCase):
         self.assertIn("--version", source)
         self.assertIn("--run-id", source)
         self.assertIn("--linux", source)
+        self.assertIn("--windows", source)
+        self.assertIn('"$(jq -er .artifacts.windows trust.json)"', source)
         self.assertNotIn("secrets.", str(verify))
         self.assertNotIn("--unsigned", source)
         self.assertNotIn("gh release", source)
+
+    def test_common_production_setup_needs_no_windows_activation(self):
+        steps = workflow("agent-updates-publish.yml")["jobs"]["verify"]["steps"]
+        setup = next(step for step in steps if "PUBLIC_KEY" in step.get("env", {}))
+        self.assertEqual(set(setup["env"]), {"ACTIVATED", "PUBLIC_KEY"})
+        key = "public fixture key"
+        for activated, public_key, succeeds in (("true", key, True), ("false", key, False), ("true", "", False)):
+            with self.subTest(activated=activated, public_key=bool(public_key)), tempfile.TemporaryDirectory() as directory:
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", setup["run"]],
+                                        cwd=directory, env={"PATH": os.environ["PATH"],
+                                        "ACTIVATED": activated, "PUBLIC_KEY": public_key},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                output = Path(directory) / "public-key.pub"
+                self.assertEqual(output.exists(), succeeds)
+                if succeeds:
+                    self.assertEqual(output.read_text(), key + "\n")
+
+    def test_default_dispatch_prepares_windows_from_the_selected_producer(self):
+        config = workflow("agent-updates-publish.yml")
+        defaults = config["on"]["workflow_dispatch"]["inputs"]
+        prepare = next(step for step in config["jobs"]["verify"]["steps"]
+                       if "BUILD_RUN_ID" in step.get("env", {}))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "bin"
+            binary.mkdir()
+            nix = binary / "nix"
+            bash = shutil.which("bash")
+            self.assertIsNotNone(bash)
+            nix.write_text(f'#!{bash}\nset -euo pipefail\n'
+                           'while [[ "$1" != -c ]]; do shift; done\nshift\nexec "$@"\n')
+            nix.chmod(0o755)
+            fixture = f"#!{sys.executable}\n" + '''import json, os, pathlib, sys
+tool = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+with open(os.environ["TRACE"], "a") as stream:
+    stream.write(json.dumps({"tool": tool, "args": args}) + "\\n")
+if tool == "python3" and args[1] == "trust":
+    pathlib.Path(args[args.index("--output") + 1]).write_text(json.dumps({
+        "build": "42", "artifacts": {"macos": "selected-macos", "linux": "selected-linux", "windows": "selected-windows"}}))
+elif tool == "gh":
+    pathlib.Path(args[args.index("--dir") + 1]).mkdir(parents=True)
+elif tool != "python3" or args[1] != "prepare":
+    raise SystemExit("Unexpected fixture command")
+'''
+            for name in ("python3", "gh"):
+                path = binary / name
+                path.write_text(fixture)
+                path.chmod(0o755)
+            trace = root / "trace.jsonl"
+            result = subprocess.run(["bash", "-euo", "pipefail", "-c", prepare["run"]], cwd=root,
+                                    env={"PATH": f"{binary}{os.pathsep}{os.environ['PATH']}", "TRACE": str(trace),
+                                         "BUILD_RUN_ID": "42", "RELEASE_VERSION": "0.0.12", "RELEASE_NOTES": "Windows release",
+                                         "GITHUB_REPOSITORY": "MaplePrivacyLabs/Maple",
+                                         "INCLUDE_LINUX": str(defaults["include_linux"]["default"]).lower(),
+                                         "INCLUDE_WINDOWS": str(defaults["include_windows"]["default"]).lower()},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = [json.loads(line) for line in trace.read_text().splitlines()]
+            trust, prepared = [call["args"] for call in calls if call["tool"] == "python3"]
+            self.assertIn("--windows", trust)
+            self.assertEqual(trust[trust.index("--run-id") + 1], "42")
+            downloads = [call["args"] for call in calls if call["tool"] == "gh"]
+            self.assertEqual({args[args.index("--name") + 1] for args in downloads},
+                             {"selected-macos", "selected-linux", "selected-windows"})
+            self.assertTrue(all(args[:3] == ["run", "download", "42"] for args in downloads))
+            self.assertEqual(prepared[prepared.index("--windows") + 1], "packages/windows")
+            self.assertEqual(prepared[prepared.index("--build") + 1], "42")
+            self.assertEqual((root / "notes.txt").read_text(), "Windows release")
 
     def test_retry_transfers_keep_stable_artifact_names(self):
         jobs = workflow("agent-updates-publish.yml")["jobs"]

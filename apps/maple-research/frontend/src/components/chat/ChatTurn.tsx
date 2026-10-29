@@ -95,7 +95,7 @@ export function ChatAssistantTurn({ children, actions, containerRef, className }
   );
 }
 
-export function ChatAssistantPendingIndicator() {
+function ChatAssistantPendingIndicator() {
   return (
     <div className="flex items-center gap-1" role="status" aria-label="Maple is responding">
       <div className="h-2 w-2 animate-pulse rounded-full bg-foreground/60" />
@@ -117,13 +117,11 @@ export function ChatDesktopConversationHeader({
   title,
   isSidebarOpen,
   onNewChat,
-  newItemLabel = "New chat",
   titleClassName
 }: {
   title: string;
   isSidebarOpen: boolean;
   onNewChat: () => void;
-  newItemLabel?: string;
   titleClassName?: string;
 }) {
   return (
@@ -143,7 +141,7 @@ export function ChatDesktopConversationHeader({
             size="icon"
             className="absolute right-0 h-9 w-9 border-0"
             onClick={onNewChat}
-            aria-label={newItemLabel}
+            aria-label="New chat"
           >
             <SquarePen className="h-4 w-4" />
           </Button>

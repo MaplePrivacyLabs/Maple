@@ -1,0 +1,55 @@
+name: Set up the Agent's Windows toolchain
+description: >-
+  Windows has no Nix: pinned Rust and MSVC, native Perl for the static crypto
+  build and a smoke-tested linker. Release builds also select the GPUI shader
+  compiler.
+inputs:
+  release:
+    description: Also select fxc for release packages
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Windows Rust
+      uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable action, exact toolchain below
+      with:
+        # Equal to AGENT_WINDOWS_RUST in scripts/ci/lanes.py; agent-lint checks
+        # that the Agent flake's rustc still reports this version.
+        toolchain: 1.98.0
+        components: clippy
+
+    - name: Select Windows MSVC and SDK
+      uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
+      with:
+        arch: x64
+
+    - name: Select native Windows Perl for the static crypto build
+      shell: bash
+      run: |
+        native_perl=/c/Strawberry/perl/bin/perl.exe
+        if [ ! -x "$native_perl" ]; then
+          echo 'Native Windows Perl is missing from the runner' >&2
+          exit 1
+        fi
+        "$native_perl" -MLocale::Maketext::Simple -MIPC::Cmd -e 'die "OpenSSL requires native Windows Perl\n" unless $^O eq "MSWin32"; print "$^V\n"'
+        # Pin the native executable across later Git Bash steps and Rust's
+        # process resolver instead of depending on their PATH ordering.
+        native_perl_windows="$(cygpath -m "$native_perl")"
+        printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
+        # openssl-src uses NASM if available and otherwise selects no-asm.
+
+    - name: Pin and smoke-test the selected Windows linker
+      shell: bash
+      working-directory: apps/maple-agent
+      run: python3 ../../scripts/ci/agent_windows.py
+
+    - name: Select the SDK shader compiler for release GPUI
+      if: inputs.release == 'true'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (-not $env:WindowsSdkVerBinPath) { throw 'Selected Windows SDK binary path is missing' }
+        $fxc = Join-Path $env:WindowsSdkVerBinPath 'x64/fxc.exe'
+        if (-not (Test-Path -LiteralPath $fxc -PathType Leaf)) { throw "Windows SDK shader compiler is missing: $fxc" }
+        Write-Host "Selected HLSL compiler: $fxc"
+        "GPUI_FXC_PATH=$fxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

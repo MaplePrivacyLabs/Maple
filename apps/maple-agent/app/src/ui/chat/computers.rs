@@ -128,6 +128,9 @@ impl ChatScreen {
     ) {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.restore_browse_state(state, cx));
+        // The keyboard focus stayed on the computer this one replaced, which
+        // is no longer drawn.
+        self.screen_focus_pending = true;
     }
 
     /// Name updates are pushed. Refresh the small folder list periodically for
@@ -171,10 +174,12 @@ impl ChatScreen {
         if !visible {
             self.project_folder_dialog = None;
         }
-        if changed && visible {
+        if changed && visible && !self.computers.is_empty() {
             // Only the mounted sidebar projects every computer. Background
             // views keep their own summaries and the shared catalog handle;
             // they do not rebuild all foreign rows on every update.
+            // An empty list is provisional startup state; an authoritative
+            // inventory always includes This computer.
             let computers = self.computers.clone();
             self.sidebar
                 .update(cx, |sidebar, cx| sidebar.set_computers(computers, cx));
@@ -230,7 +235,15 @@ impl ChatScreen {
             loading: !self.navigation_ready && self.host_recovery.events.is_some(),
             error: self.host_recovery.unavailable.then(|| {
                 if self.host_recovery.ended {
-                    "Offline — select to reconnect"
+                    if self
+                        .runtime_error
+                        .as_deref()
+                        .is_some_and(crate::remote::wire::is_protocol_incompatibility_refusal)
+                    {
+                        "Update required — select to retry after updating"
+                    } else {
+                        "Offline — select to reconnect"
+                    }
                 } else {
                     "Connecting…"
                 }
@@ -412,5 +425,57 @@ impl ChatScreen {
             )
             .icon("settings"),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::wire::{Error, Refusal};
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn catalog_marks_only_actual_protocol_refusal_as_update_required(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let cases = [
+            (
+                Refusal::terminal(Error::Incompatible.to_string()).into_error(),
+                "Update required — select to retry after updating",
+            ),
+            (
+                Refusal::terminal("This computer is no longer paired").into_error(),
+                "Offline — select to reconnect",
+            ),
+            (
+                Refusal::terminal(Error::InvalidFrame.to_string()).into_error(),
+                "Offline — select to reconnect",
+            ),
+            (
+                Error::Disconnected.to_string(),
+                "Offline — select to reconnect",
+            ),
+        ];
+        for (reason, expected) in cases {
+            let chat = {
+                let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+                let backend = Arc::new(
+                    AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
+                );
+                cx.new(|cx| ChatScreen::new_inner(backend, "account".into(), cx))
+            };
+            chat.update(cx, |chat, cx| {
+                chat.handle_service_event(AgentServiceEvent::RemoteAccessEnded(reason), cx);
+                let snapshot = chat.computer_snapshot("Office".into(), cx);
+                assert_eq!(snapshot.error.as_deref(), Some(expected));
+                assert!(!snapshot.loading);
+                // The generic disconnect following a terminal refusal must
+                // not hide the reason the authenticated connection ended.
+                chat.handle_service_event(AgentServiceEvent::HostDisconnected, cx);
+                assert_eq!(
+                    chat.computer_snapshot("Office".into(), cx).error.as_deref(),
+                    Some(expected)
+                );
+            });
+        }
     }
 }

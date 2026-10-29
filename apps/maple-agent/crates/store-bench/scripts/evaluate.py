@@ -25,8 +25,8 @@ PLAN_INDEXES = {
     "list": "tasks_section", "source": "entries_seq", "project-section": "tasks_project_section",
     "pinned": "tasks_pinned", "title-search": "tasks_recent", "projects": "projects_navigation",
     "history": "timeline_rows_seq", "merge": "timeline_rows_key", "call": "timeline_rows_call",
-    "hide": "timeline_rows_entry", "plan": "timeline_rows_plan", "blob-links": "task_blobs",
-    "attachment-collection": "attachments_task_blob",
+    "hide": "timeline_rows_entry", "plan": "timeline_rows_plan", "attachment-unbound": "file_attachments_unbound",
+    "attachment-collection": "file_attachments_task",
 }
 REPEATED = {
     "raw_connection_open", "list_50_warm", "open_100_warm", "project_groups_warm",
@@ -37,7 +37,7 @@ FIXED_SAMPLES = {
     "model_context_boundary_cold": 5, "model_context_full_cold": 5,
     "durable_append_held_reader": 100, "passive_checkpoint_held_reader": 1,
     "truncate_checkpoint_after_reader": 1, "attachment_10mib_first_read": 1,
-    "attachment_10mib_warm": 5, "durable_chunked_upload_10mib": 1,
+    "attachment_10mib_warm": 5, "durable_file_upload_10mib": 1,
     "durable_20mib_write": 1, "oversized_row_first_range": 1, "oversized_row_cached_range": 5,
     "timeline_rebuild_writer_chunk": 1, "timeline_rebuild_prepare_chunk": 1,
     "old_epoch_collection_chunk": 1, "oversized_task_collection_chunk": 1,
@@ -46,7 +46,7 @@ FIXED_SAMPLES = {
 }
 GAPS = [
     "open_100_cold measures Store paging and plan lookup; UI and live overlay merge are unmeasured",
-    "attachment first read uses fresh SQLite reader caches with the OS cache warm; cold disk and network are unmeasured",
+    "attachment first read assembles plaintext file ranges with database metadata checks and the OS cache warm; cold disk and network are unmeasured",
     "the 20k-entry context fixture is identified, but its individual uncompressed payload byte count is not reported",
     "per-chunk WAL file-length deltas are observed growth/reuse, not physical WAL bytes written",
     "append median/p99/p99.9/maximum and over-5ms count are evidence; absolute FULL/platform-sync append budgets await review",
@@ -87,13 +87,11 @@ def validate_wal(chunk):
 
 
 def attachment_collection_plan(details):
-    # WITHOUT ROWID appends the (task_id, public_id) primary key to the
-    # blob-only index, so either index can cover this two-equality lookup.
+    # Payload unlinking is separate; metadata collection must seek one task.
     if any("USE TEMP B-TREE" in detail or re.search(r"\bSCAN\b", detail) for detail in details):
         return False
     return any(re.fullmatch(
-        r"SEARCH attachments USING COVERING INDEX (?:attachments_task_blob|attachments_blob) "
-        r"\((?:task_id=\? AND blob_id=\?|blob_id=\? AND task_id=\?)\)", detail)
+        r"SEARCH file_attachments USING INDEX file_attachments_task \(task_id=\?\)", detail)
         for detail in details)
 
 
@@ -184,6 +182,8 @@ def validate_observations(run, samples, full):
         raise ValueError("required history depth missing (full run requires depth >=40000)")
     if obs.get("attachment_bytes") != 10 * MIB or not integer(obs.get("oversized_row_total_bytes"), 20 * MIB):
         raise ValueError("attachment/oversized-row fixture size differs")
+    if obs.get("attachment_storage") != "plaintext session-owned file; database metadata only":
+        raise ValueError("attachment storage boundary differs")
     for name in ("model_context_full_cold", "model_context_boundary_cold"):
         counts = obs.get(f"{name}_entries", [])
         if len(counts) != samples[name]["samples"] or not all(integer(count, 1) for count in counts):
@@ -224,12 +224,21 @@ def validate_observations(run, samples, full):
         stages.add(chunk.get("stage"))
         if not all(integer(chunk.get(key)) for key in ("rows", "bytes", "elapsed_micros")):
             raise ValueError("collection chunk measurements missing")
+        if chunk["stage"] == "Attachments":
+            # One owned attachment subtree: at most 128 filesystem mutations
+            # plus its metadata row. Bytes count the declared payload only on
+            # final removal, not adjacent model outputs or rewritten SQL bytes.
+            if not 1 <= chunk["rows"] <= 129 or chunk["bytes"] > 30 * MIB or chunk.get("oversized_row") is not False:
+                raise ValueError("attachment cleanup exceeds its bounded subtree step")
+            continue
         oversized = chunk["bytes"] > MIB
         if (type(chunk.get("oversized_row")) is not bool or chunk["oversized_row"] != oversized
                 or chunk["rows"] > 1000 or (oversized and (chunk["rows"] != 1 or chunk["stage"] not in {"Timeline", "Entries", "Summaries"}))):
             raise ValueError("collection chunk exceeds caps without an isolated row")
-    if not {"Timeline", "Entries", "Blobs", "TaskMetadata"} <= stages or not any(chunk["oversized_row"] for chunk in collection):
-        raise ValueError("collection lost its oversized source-row/blob fixture")
+    if not {"Timeline", "Entries", "Attachments", "TaskMetadata"} <= stages or not any(chunk["oversized_row"] for chunk in collection):
+        raise ValueError("collection lost its oversized source-row/file fixture")
+    if sum(chunk["bytes"] for chunk in collection if chunk["stage"] == "Attachments") != 10 * MIB:
+        raise ValueError("collection lost its complete 10 MiB file fixture")
     summary = samples["oversized_task_collection_chunk"]
     if summary["samples"] != len(collection) or summary["maximum"] < max(chunk["elapsed_micros"] for chunk in collection):
         raise ValueError("collection summary lost a measured chunk")
@@ -258,7 +267,7 @@ def absolute_results(report):
                     ("open_100_cold", 2000, "Store page and plan lookup; UI/live overlay unmeasured"),
                     ("raw_connection_open", 1000, "one raw-key SQLite connection; excludes host startup/password KDF"),
                     ("model_context_boundary_cold", 50000, "first partial context load including parse; OS cache warm"),
-                    ("attachment_10mib_first_read", 25000, "first SQLite-reader range assembly; OS cache warm, no network")):
+                    ("attachment_10mib_first_read", 25000, "first plaintext-file range assembly with keyed metadata; OS cache warm, no network")):
                 check(mode, name, samples[name]["median"], budget, scope)
             if report["profile"] == "full":
                 check(mode, "history_200_deep_cold", samples["history_200_deep_cold"]["median"], 3000,
@@ -270,11 +279,11 @@ def absolute_results(report):
                 ("timeline_rebuild_writer_chunk", obs["timeline_rebuild_chunks"], "writer_micros"),
                 ("old_epoch_collection_chunk", obs["old_epoch_collection_chunks"], "writer_micros"),
                 ("oversized_task_collection_chunk", obs["oversized_collection_chunks"], "elapsed_micros")):
-            capped = [chunk[field] for chunk in chunks if chunk["bytes"] <= MIB]
-            oversized = [chunk[field] for chunk in chunks if chunk["bytes"] > MIB]
+            capped = [chunk[field] for chunk in chunks if chunk["bytes"] <= MIB or chunk.get("stage") == "Attachments"]
+            oversized = [chunk[field] for chunk in chunks if chunk["bytes"] > MIB and chunk.get("stage") != "Attachments"]
             if capped:
                 check(mode, f"{name}/capped", max(capped), 50000,
-                      "maximum capped chunk Store call; includes admission/commit, bounds writer hold", "maximum")
+                      "maximum capped chunk or bounded attachment-subtree cleanup call; includes admission/commit, bounds writer hold", "maximum")
             if oversized:
                 check(mode, f"{name}/isolated_oversized_row", max(oversized), 50000,
                       "isolated oversized row; miss requires chunk storage or an approved measured alternative",

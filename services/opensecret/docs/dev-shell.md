@@ -27,6 +27,14 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   nix develop --no-write-lock-file '.?submodules=1' -c cargo fmt --all -- --check
 ```
 
+Backend Rust CI and SDK integration use `'.?submodules=1#ci'`. This shell keeps
+the same pinned Rust compiler and native build environment, PostgreSQL/Diesel
+tools, and Python, without local container, credential, editor, or proxy tools.
+It has no database startup, `.env` creation, container configuration, or secret
+resolution hooks. SDK integration still owns its PostgreSQL service, migrations,
+disposable OAuth/database suites, and encrypted SDK tests. The default shell
+continues to provide the local development environment above.
+
 For concurrent live checkouts, choose distinct `PGDATA`, `PGSOCKETS`, `PGPORT`,
 `DATABASE_URL`, and backend bind addresses. Verify the database identity before
 running migrations or destructive tests; never assume that a responding port

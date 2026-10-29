@@ -68,6 +68,7 @@ impl ChatScreen {
                         markdown_cache: &chat.markdown_cache,
                         derived: &chat.derived,
                         attachment_images: &chat.attachment_images,
+                        attachment_failures: &chat.attachment_failures,
                         chat: &entity,
                         tool_summaries: &chat.tool_summaries,
                         render: &render_ctx,
@@ -389,19 +390,57 @@ pub(super) fn render_timeline_item(
     }
 }
 
-/// Attachment `(id, name)` pairs stored on a user message.
-pub(super) fn attachment_refs(item: &AgentTimelineItem) -> impl Iterator<Item = (&str, &str)> {
+pub(super) struct AttachmentRef<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub mime: &'a str,
+    pub size: u64,
+    pub unavailable: bool,
+}
+
+pub(super) fn attachment_metadata(
+    item: &AgentTimelineItem,
+) -> impl Iterator<Item = AttachmentRef<'_>> {
     item.input
         .as_ref()
-        .and_then(|input| input.get("imageAttachments"))
+        .and_then(|input| input.get("attachments"))
         .and_then(|items| items.as_array())
         .into_iter()
         .flatten()
         .filter_map(|entry| {
-            let id = entry.get("id").and_then(|id| id.as_str())?;
-            let name = entry.get("name").and_then(|name| name.as_str())?;
-            Some((id, name))
+            let id = entry.get("id")?.as_str()?;
+            let name = entry.get("name")?.as_str()?;
+            let mime = entry
+                .get("mimeType")
+                .and_then(|value| value.as_str())
+                .unwrap_or("application/octet-stream");
+            let size = entry
+                .get("size")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            Some(AttachmentRef {
+                id,
+                name,
+                mime,
+                size,
+                unavailable: mime == "image/unknown",
+            })
         })
+}
+
+/// All file references count as message content, including retired images.
+pub(super) fn attachment_refs(item: &AgentTimelineItem) -> impl Iterator<Item = (&str, &str)> {
+    attachment_metadata(item).map(|attachment| (attachment.id, attachment.name))
+}
+
+/// Only renderable image references need bytes. Generic files and known retired
+/// images never occupy the thumbnail request queue.
+pub(super) fn image_attachment_refs(
+    item: &AgentTimelineItem,
+) -> impl Iterator<Item = (&str, &str)> {
+    attachment_metadata(item)
+        .filter(|attachment| attachment.mime.starts_with("image/") && !attachment.unavailable)
+        .map(|attachment| (attachment.id, attachment.name))
 }
 
 /// Hover-revealed button that copies one message's text.
@@ -444,9 +483,9 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
     let chat = transcript.chat;
     let is_user = item.role.as_deref() == Some("user");
     let text = item.text.as_deref().unwrap_or("");
-    let mut attachments = attachment_refs(item).peekable();
-    let has_images = attachments.peek().is_some();
-    if text.trim().is_empty() && !(is_user && has_images) {
+    let derived = transcript.derived.get(item, revision);
+    let has_attachments = !derived.attachments.is_empty();
+    if text.trim().is_empty() && !(is_user && has_attachments) {
         return div();
     }
     let group = SharedString::from(format!("message-{}", item.id));
@@ -480,9 +519,12 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .border_1()
                     .border_color(gpui::rgb(theme::user_bubble_border()))
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .when(has_images, |bubble| {
+                    .when(has_attachments, |bubble| {
                         bubble.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                            attachments.map(|(id, name)| {
+                            derived.attachments.iter().map(|attachment| {
+                                let id = attachment.id.as_str();
+                                let unavailable = attachment.unavailable
+                                    || transcript.attachment_failures.contains(id);
                                 match attachment_images.get(id) {
                                     // The picture itself, scaled to fit; click
                                     // opens it full size. gpui keeps the aspect
@@ -534,7 +576,22 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                                         .text_xs()
                                         .text_color(gpui::rgb(theme::text_secondary()))
                                         .child(icon("paperclip", px(12.), theme::text_secondary()))
-                                        .child(name.to_string()),
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap_0p5()
+                                                .child(attachment.name.clone())
+                                                .child(
+                                                    div()
+                                                        .text_color(gpui::rgb(theme::text_muted()))
+                                                        .child(if unavailable {
+                                                            SharedString::from("Image unavailable")
+                                                        } else {
+                                                            attachment.detail.clone()
+                                                        }),
+                                                ),
+                                        ),
                                 }
                             }),
                         ))
@@ -1062,8 +1119,11 @@ fn render_tool(
     );
     let item_id = item.id.clone();
     let chat_header = transcript.chat.clone();
-    let summary = transcript.tool_summaries.get(&item.id).cloned();
-    let has_summary = summary.is_some();
+    // An external agent's row draws its own activity; a summary asked
+    // when its call started would hide what it did.
+    let summary = (!has_external_agent_activity(item))
+        .then(|| transcript.tool_summaries.get(&item.id).cloned())
+        .flatten();
     // The model summary stands in for the title; until it lands, show just
     // the tool label ("Terminal"), not the raw `tool: args` title.
     let title = summary.clone().unwrap_or_else(|| {
@@ -1154,8 +1214,8 @@ fn render_tool(
     }
     // A click anywhere on the card, payload included, toggles it.
     let mut payload = div().flex().flex_col().gap_1();
-    // Expanded: the call arguments and, until a summary exists, the raw
-    // output.
+    // Expanded: the call arguments and the raw output. The summary is
+    // made from the input alone, so it never stands in for the output.
     if let Some(input) = &derived.input_line {
         payload = payload.child(
             div()
@@ -1166,7 +1226,7 @@ fn render_tool(
                 .child(input.clone()),
         );
     }
-    if !has_summary && let Some(output) = &derived.output_text {
+    if let Some(output) = &derived.output_text {
         payload = payload.child(
             typography::chat_reading(div())
                 .mt_1()

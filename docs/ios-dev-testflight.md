@@ -68,12 +68,13 @@ and retain hosted-flow-before-native-build ordering for future handoff changes.
 
 ## Build and upload workflow
 
-`.github/workflows/ios-dev-testflight.yml` starts for every push to `master`,
-including documentation-only pushes. A manual dispatch is also available from
-`master`. Other branches, forks, pull requests, tags, and GitHub Releases cannot
-enter this workflow's signing or upload jobs. The independent production
+`.github/workflows/ios-dev-testflight.yml` builds and uploads on pushes to
+`master` that change Research web or iOS inputs, chosen by the same
+`app-change-detection.yml` selector as production. A manual dispatch from
+`master` always builds. Other branches, forks, pull requests, tags, and GitHub
+Releases cannot enter this workflow's signing or upload jobs. The independent production
 `mobile-build.yml` keeps its change selection,
-artifact names, and TestFlight destination. Its own serial lane also supports
+artifact names, and TestFlight destination. Its own serial queue also supports
 a master-only manual dispatch to force a fresh production build.
 
 The development workflow calls the shared `scripts/ci/ios-release.sh` with

@@ -24,15 +24,38 @@ attempt. A failed attempt requires a new, locally opened window. Leaving Setting
 keeps the current window alive; returning shows the same code and remaining time,
 with Cancel available. Navigation never renews its deadline or attempt.
 
-Paired computers appear alongside local projects in the sidebar and project
-menus. Each group is **computer · folder**, with its tasks beneath it; a globe
-marks remote folders. The sidebar only shows folders with visible tasks; empty
-folders remain available in the project menus. Selecting a task or project also
-selects its execution computer. Select a **This computer** project to return to
-local work. Local-only installations retain the existing sidebar layout.
+The sidebar's **View options** menu groups tasks by **Project**, **Connection**,
+**Status**, or **In one list**. Connection becomes available after another
+computer is added, including while it is offline; enabling remote access on
+this computer alone does not add that choice. Project and Connection views keep
+known empty projects visible. Project view shows the computer name beside remote
+projects; Connection view places projects under their computer heading. Selecting
+a task or project also selects its execution computer; select a **This Computer**
+project to return to local work.
+
+**Sort tasks by** offers **Last updated** and **Manual order**, independently of
+grouping. Project and connection positions stay stable in either mode and can
+be rearranged by dragging. Dragging a task silently selects Manual order; this
+changes only presentation order, preserving its project, execution computer and
+status. The manual task order carries across grouping changes and restarts on
+the viewing desktop. New tasks appear at the top; activity on existing tasks
+does not reshuffle their manual order. Manual ranks and personal pins belong
+to the viewing desktop's signed-in account; grouping and sorting choices are
+saved on that desktop.
+
+Pinned tasks have their own presentation order, so dragging them does not
+change where they return when unpinned. Dragging in Status or In one list
+moves only that task; the relative order of other tasks stays intact. The
+initial Manual order includes loaded tasks in folded groups too.
+
+Manual refreshes coalesce repeated activity into one trailing reload, and
+replacing a reload cancels its stale scans. Pagination exposes a complete
+sorted prefix across Active and Settled; loading more extends that prefix
+instead of inserting older-state pages into gaps above existing rows. These
+are viewing-desktop behaviors and do not require a different remote protocol.
 
 Project display names belong to the execution computer and the signed-in account.
-**Rename project** in the sidebar project switcher updates that one name from
+**Rename project** in a sidebar project's menu updates that one name from
 either its desktop or a paired controller. Every computer's folders have this
 action, so renaming does not switch the current conversation or draft. Every
 connected desktop receives the change, including computers whose projects are
@@ -67,8 +90,15 @@ every thirty seconds also discovers empty projects selected by another desktop.
 This is an in-memory navigation cache, not offline transcript replication. Search,
 sidebar position and each computer's composer remain intact when switching.
 
-**New project…** opens the operating system's folder picker for this computer.
-Remote computers use the built-in browser, starting at that computer's home.
+With another computer added, the sidebar's **New project** button first asks
+which computer should own the project, independently of the task being viewed.
+Choose **This Computer** for the operating system's local folder picker, or a
+remote computer for its built-in folder browser. Without another computer added,
+the button opens the local picker directly. The remote browser starts at that
+computer's home.
+
+In Connection view, hover a computer heading and choose its **New project**
+folder-plus button to open that computer's folder selector directly.
 Browse folders, use the left arrow to go to the parent, enter an absolute path,
 or create one new folder, then choose **Use folder**. The built-in browser also
 serves as a fallback if the local platform picker is unavailable.
@@ -77,9 +107,10 @@ when requested, and selecting a folder uses the existing project trust flow.
 The execution daemon resolves paths and performs filesystem operations. Folder
 lists are paged and bounded, and hidden folders can be shown explicitly. This is
 a folder picker, not a filesystem sandbox for an already paired controller.
-Images picked
-on the controller are explicit uploads. Remote frames are limited to 16 MiB,
-including JSON/base64 overhead; reduce attachments if a send exceeds that bound.
+Files picked on the controller are explicit uploads to the execution computer.
+Remote control frames remain limited to 16 MiB, including encoding overhead;
+file uploads use separate bounded raw-byte streams and do not count against a
+send's control frame.
 Microphone, playback, billing and account operations stay on the controller.
 The Integrations pane manages the selected execution computer and labels it;
 account and application preference panes still use this computer. Native
@@ -98,6 +129,11 @@ CLI equivalents: `remote status`, `remote enable`, `remote disable`,
 `remote discover`, `remote begin-pairing`, `remote cancel-pairing`,
 `remote pair <endpoint>` (hidden code prompt), and `remote revoke <endpoint>`.
 These administer only the local computer. Never put a pairing code in argv or logs.
+Successful `enable`, `disable`, `cancel-pairing`, `pair`, and `revoke` commands
+produce no stdout output. `status`, `discover`, and `begin-pairing` print JSON.
+Errors go to stderr with a nonzero exit status. Enabling saves the setting;
+network startup happens in the background. Use `remote status` to check `enabled`,
+`ready`, and `error`.
 
 A password-protected execution host starts locked and does not load remote
 credentials or its identity until a local unlock succeeds. Unlock in its desktop
@@ -110,12 +146,19 @@ Quit or `maple-agent host stop` completes local shutdown.
 
 In **Settings → Remote computers**, each paired execution computer can report
 its running application version and update status. **Refresh update status**
-queries that computer; it does not check or update the controller's installation.
-It reads the remote updater's existing state; checks and automatic downloads
-continue to follow that computer's own schedule and saved preference.
+requests a new check by that computer's running desktop. Opening the view or
+reading status in the background only reads its last reported updater state.
+The explicit check requires a compatible peer with remote-refresh support;
+older peers need a local check. Automatic downloads still follow the execution
+computer's saved preference. Neither action installs an update or checks the
+controller's installation. A failed check retains the last reported values as
+history and cannot make a cached offer eligible for installation.
 When available, the row shows the offered version and whether its verified
 download is ready. Numeric package build numbers may be absent from running
 executable metadata; the UI does not infer them from the protocol version.
+Status reads remain available while a confirmed pairing from an older version
+is recovered. If confirmation cannot be recovered, ordinary access is preserved
+but remote installation requires confirming or pairing that computer again.
 
 Installation requires the remote computer's running desktop updater and its
 exact prepared, signed candidate. A daemon without its desktop reports that
@@ -123,13 +166,15 @@ installation is unavailable. Password-protected computers cannot install
 remotely, including while unlocked. Update those computers locally; this feature
 does not send passwords, transfer unlock keys or add an unlock handoff.
 
-The controller also needs the same release available through its own verified
-updater, or must already be running that release. Cross-platform release matching
-uses the version, build and source, with a missing running build left unknown;
-the execution computer separately binds its exact signed platform document.
-This is recovery readiness, not proof that a future protocol will remain
-compatible. The controller's own update and restart always remain manual, since
-it may be connected to other computers.
+The controller does not need to run or download the execution computer's target
+release first. Different reported application versions show a nonblocking warning;
+they do not disable remote installation. The confirmation also names the target
+and client versions when the update would leave them different. Version equality
+does not prove protocol compatibility, and unknown versions do not imply a match.
+The execution computer still binds its exact prepared, signed platform document
+and checks its current authority and installation state. The controller's own
+update and restart always remain manual, since it may be connected to other
+computers.
 
 The experimental confirmation names the execution computer and target version.
 It warns that updating stops its work and remote access, that reconnecting can
@@ -146,6 +191,11 @@ after a restart. The restarted host records success only when it observes the
 requested version and source running, checking the package build when known.
 That recorded outcome survives later updates. A changed or withdrawn offer needs
 a fresh confirmation.
+An explicit refusal before acceptance is shown as a declined request, rather
+than an unconfirmed installation. Check the remote's status again before
+reviewing another request. A transport failure that could have followed sending
+the request remains uncertain and retains the original operation ID, even when
+no receipt is visible yet.
 
 A refusal before shutdown leaves the same verified download ready to try again;
 it does not require quitting a healthy execution host. Uncertain shutdowns still
@@ -166,25 +216,52 @@ Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
 protocol keeps the `maple-agent/remote/1` ALPN family and currently advertises
-wire version 6 with minimum version 6, independent of application builds. Its
+wire version 7 with minimum version 7, independent of application builds. Its
 shared project names, bounded navigation/history pages, stable row identities,
 attachment ranges, and per-connection task subscriptions remain unchanged.
 Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
-Version 5 and earlier peers receive an explicit version refusal. Bounded frames
+Version 6 and earlier peers receive an explicit version refusal. Bounded frames
 and an explicit task-operation allowlist apply.
+The viewing desktop applies sidebar grouping and manual ordering to summaries
+received through the existing navigation and project APIs. These preferences
+stay on that desktop; no ordering parameters, commands, or capabilities are
+added to the remote protocol.
 Account operations and arbitrary whole-host administration cannot be forwarded.
 The narrow experimental update capability uses the host's own signed updater;
 it does not expose the ordinary host-stop command.
 
-Optional discovery reports protocol version `6.2.0` and explicit capabilities
-over separate request streams; the wire-6 handshake, acknowledgement shape and
-ALPN remain unchanged. Bounded folder browsing and single-folder creation require
+Optional discovery reports protocol version `7.1.0` and explicit capabilities
+over separate request streams. The acknowledgement shape and ALPN remain
+readable across the required version transition. Bounded folder browsing and single-folder creation require
 the `project_folders_v1` capability. The controller checks support before sending
-either folder command. An older host without that capability keeps ordinary
+either folder command. A compatible host without that capability keeps ordinary
 project/task access and its existing remote-update support; only the folder
-browser reports that support is unavailable or an update is needed. Older
-controllers can still use newer hosts through their existing commands.
+browser reports that support is unavailable or an update is needed.
+
+Since wire 7, task sends require attachment references. Images, ordinary files and archives
+are copied into the execution daemon's session-owned plaintext file store;
+SQLite contains metadata. Local imports use a controller-local staged path.
+Remote imports send bounded metadata followed by raw bytes on a dedicated
+low-priority stream, with admission before the body and a durable upload receipt
+after finalization. The remote daemon never interprets a controller's local path.
+The existing identified `send_message` then carries attachment IDs. An upload
+retry cannot replay a prompt. Each authenticated connection has two bulk slots
+separate from ordinary requests, range reads and urgent replies; generic files
+are limited to 30 MiB each, while
+composer images retain their 10 MiB limit. See [local storage](local-store.md).
+
+Both computers must use wire 7 for remote access, including remote update
+management. Upgrade the execution computer first while the old pair is still
+compatible, then update the controller locally. A wire-7 controller stops
+automatic reconnection after an explicit version refusal and shows **Update
+required**, without treating ordinary offline errors as version mismatches.
+Released wire-6 controllers keep their shipped behavior during the gap: cold
+computer discovery can retry, and Settings can report the peer as unreachable.
+Existing pairing records are retained. A disconnect alone does not confirm an
+installation; check the running identity and retained receipt after reconnecting.
+If the controller was updated first, update the execution computer directly,
+then select that computer again to reconnect.
 
 A bounded capability probe can fail without ending ordinary task requests.
 Responses tolerate future optional fields and capability names. Experimental
@@ -195,17 +272,21 @@ reconnecting checks it again. Failed discovery remains retryable rather than
 being remembered as an unsupported host. Folder dispatch rechecks account and
 grant authority after discovery, including when support was cached. Update
 offers and installation readiness are always read afresh.
+Input-only tool summaries require `tool_summary_start_v1`; without it, the
+controller summarizes that call from its output once it finishes, as earlier
+versions did, and the next call checks support again.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps
 separate capacity for cancellation/questions. Each request/reply uses an
 independent bidirectional QUIC stream; the authenticated initial stream carries
 ordered events. A bounded header admits each request before its attachment body
-is read. Stop and question answers have reserved capacity and higher native stream
+is read. Header parsing has an overall queue-and-read deadline. Stop and question
+answers have reserved capacity and higher native stream
 priority, so an incomplete upload or unread image reply cannot hold their dispatch
 loop. Streams still share the connection's bandwidth; this is not a latency
 guarantee on a saturated or unavailable network. Transfers use bounded frames and
-inactivity deadlines, allowing slow transfers that keep making progress. Image
+inactivity deadlines. Uploads also have a ten-minute total deadline. Image
 readback uses base64 on the remote wire.
 A request failure or oversized reply returns a request error, while authority loss
 or incompatible framing ends the connection. A failed connection recovers from an
@@ -214,7 +295,7 @@ the host or cause an automatic prompt replay; explicit host shutdown still stops
 its work. A stable send identity
 crosses both IPC and Iroh; only the execution daemon records its admission and
 result, account-bound in its application database. An uncertain send keeps its original
-identity, text and draft images in the desktop view and queries the execution
+identity, text and draft attachments in the desktop view and queries the execution
 host's receipt after reconnecting. It never replays the command or overwrites a
 newer draft. If the execution daemon restarts before recording a send's result,
 it marks that receipt interrupted, preserving the identity against replay. The

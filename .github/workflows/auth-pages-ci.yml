@@ -6,27 +6,31 @@ permissions:
 on:
   workflow_dispatch:
   pull_request:
-    # Include stacked PRs and forks; this job has no publishing authority.
+    # Include stacked PRs and forks; this job has no publishing authority. The
+    # Pages and publisher tests run in ci.yml's repo lane.
     paths:
-      - ".github/workflows/auth-pages-*.yml"
-      - ".github/workflows/pages-tests.yml"
+      - ".github/workflows/auth-pages-ci.yml"
       - "apps/maple-auth/**"
       - "scripts/ci/auth-*.sh"
-      - "scripts/ci/pages_*.py"
-      - "scripts/ci/test_pages_*.py"
+      - "scripts/ci/pages_artifact.py"
+      - "scripts/ci/pages_auth_build.py"
       - "flake.nix"
       - "flake.lock"
   push:
     branches: [master]
+    # Publisher edits also run, so master's Dev deployment rehearses them before Prod.
     paths:
       - ".github/workflows/auth-pages-*.yml"
-      - ".github/workflows/pages-tests.yml"
       - "apps/maple-auth/**"
       - "scripts/ci/auth-*.sh"
       - "scripts/ci/pages_*.py"
-      - "scripts/ci/test_pages_*.py"
       - "flake.nix"
       - "flake.lock"
+
+concurrency:
+  # A newer PR head replaces an older build; master builds never cancel.
+  group: auth-pages-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   auth:
@@ -53,9 +57,6 @@ jobs:
 
       - name: Verify pinned Nix runtime
         run: bash scripts/ci/verify-nix-runtime.sh
-
-      - name: Test Pages artifact and deployment boundaries
-        run: nix build --no-update-lock-file --no-link --print-build-logs .#checks.x86_64-linux.pages
 
       - name: Test the standalone auth app
         run: nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-ci.sh

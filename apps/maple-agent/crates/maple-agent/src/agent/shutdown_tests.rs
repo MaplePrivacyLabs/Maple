@@ -45,7 +45,7 @@ async fn failed_shutdown_retains_source_writes_and_retry_starts_a_fresh_runtime(
                 .service
                 .state
                 .shutdown_pending
-                .lock()
+                .read()
                 .await
                 .is_some()
         );
@@ -69,7 +69,7 @@ async fn failed_shutdown_retains_source_writes_and_retry_starts_a_fresh_runtime(
                 .service
                 .state
                 .shutdown_pending
-                .lock()
+                .read()
                 .await
                 .is_some()
         );
@@ -82,7 +82,7 @@ async fn failed_shutdown_retains_source_writes_and_retry_starts_a_fresh_runtime(
                 .service
                 .state
                 .shutdown_pending
-                .lock()
+                .read()
                 .await
                 .is_none()
         );
@@ -152,7 +152,7 @@ async fn cancelling_a_shutdown_request_keeps_the_drain_and_retained_sessions_own
                 .service
                 .state
                 .shutdown_pending
-                .lock()
+                .read()
                 .await
                 .is_some()
             {
@@ -171,7 +171,7 @@ async fn cancelling_a_shutdown_request_keeps_the_drain_and_retained_sessions_own
         .service
         .state
         .shutdown_pending
-        .lock()
+        .read()
         .await
         .clone()
         .unwrap();
@@ -267,7 +267,7 @@ async fn confirmed_reset_retains_unsaved_source_until_the_store_reset_succeeds()
             .service
             .state
             .shutdown_pending
-            .lock()
+            .read()
             .await
             .is_some()
     );
@@ -293,7 +293,7 @@ async fn confirmed_reset_retains_unsaved_source_until_the_store_reset_succeeds()
             .service
             .state
             .shutdown_pending
-            .lock()
+            .read()
             .await
             .is_none()
     );
@@ -363,7 +363,7 @@ async fn confirmed_reset_intent_failure_can_stop_and_recover_without_replaying_r
             .service
             .state
             .shutdown_pending
-            .lock()
+            .read()
             .await
             .is_some()
     );
@@ -400,7 +400,7 @@ async fn confirmed_reset_intent_failure_can_stop_and_recover_without_replaying_r
             .service
             .state
             .shutdown_pending
-            .lock()
+            .read()
             .await
             .is_none()
     );

@@ -187,6 +187,10 @@ impl ChatScreen {
         self.derived.clear();
         self.tool_summaries
             .retain(|id, _| self.timeline_index.contains_key(id));
+        self.unsaved_summaries
+            .retain(|id| self.timeline_index.contains_key(id));
+        self.output_summaries
+            .retain(|id| self.timeline_index.contains_key(id));
         self.pages
             .weights
             .retain(|id, _| self.timeline_index.contains_key(id));
@@ -227,6 +231,7 @@ impl ChatScreen {
         if changed {
             self.attachment_images.clear();
             self.attachment_requests.clear();
+            self.attachment_failures.clear();
             self.attachment_queue.clear();
         }
     }

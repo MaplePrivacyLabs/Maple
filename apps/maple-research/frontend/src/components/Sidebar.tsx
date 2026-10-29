@@ -2,7 +2,6 @@ import {
   Search,
   SquarePenIcon,
   PanelLeft,
-  Loader2,
   Menu,
   XCircle,
   Trash2,
@@ -10,35 +9,20 @@ import {
   FolderInput
 } from "lucide-react";
 import { Button } from "./ui/button";
-import { SidebarNewItemButton } from "./SidebarNewItemButton";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { ChatHistoryList } from "./ChatHistoryList";
 import { AccountMenu } from "./AccountMenu";
-import {
-  useRef,
-  useEffect,
-  KeyboardEvent,
-  useCallback,
-  useLayoutEffect,
-  useState,
-  type ReactNode
-} from "react";
+import { useRef, useEffect, KeyboardEvent, useCallback, useLayoutEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { cn, useClickOutside, useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { Input } from "./ui/input";
-import {
-  useBillingState,
-  useSelectedProjectState,
-  useSidebarSearchState
-} from "@/state/useLocalState";
+import { useSelectedProjectState, useSidebarSearchState } from "@/state/useLocalState";
 import { SIDEBAR_MAX_WIDTH_CLASS, SIDEBAR_WIDTH_CLASS } from "@/constants/layout";
 import { isTauriDesktop } from "@/utils/platform";
 import { useOpenSecret } from "@mapleai/sdk";
-import { FEATURE_FLAGS, flagsClient, isForcedOn } from "@/services/flags";
+import { FEATURE_FLAGS, flagsClient } from "@/services/flags";
 import { rememberWorkspaceMode } from "@/services/workspaceModePreference";
-import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
-import { hasApiAccess } from "@/billing/billingAccess";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "@/components/WorkspaceModeSwitch";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
@@ -47,27 +31,16 @@ import {
   createChatHistoryEntryForDraft,
   type NewChatNavigationDetail
 } from "@/services/chatRuntimeNavigation";
-import {
-  agentSidebarToggleLabel,
-  agentSidebarVisualStatus,
-  type AgentSidebarAggregateStatus
-} from "@/services/agentSidebarPresentation";
 
 export function Sidebar({
   chatId,
   isOpen,
   mode = "chat",
-  navigationContent,
-  isNewItemTemporarilyDisabled = false,
-  onNewItem,
   onToggle
 }: {
   chatId?: string;
   isOpen: boolean;
   mode?: WorkspaceMode;
-  navigationContent?: ReactNode;
-  isNewItemTemporarilyDisabled?: boolean;
-  onNewItem?: () => void;
   onToggle: () => void;
 }) {
   const router = useRouter();
@@ -79,13 +52,11 @@ export function Sidebar({
   const { searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible } =
     useSidebarSearchState();
   const { setSelectedProjectId } = useSelectedProjectState();
-  const { billingStatus } = useBillingState();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Multi-select state
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [agentModeUpgradeOpen, setAgentModeUpgradeOpen] = useState(false);
   const [pendingWorkspaceMode, setPendingWorkspaceMode] = useState<WorkspaceMode | null>(null);
   const workspaceModeNavigationStartedRef = useRef(false);
 
@@ -173,17 +144,10 @@ export function Sidebar({
 
     if (nextMode === mode) return;
 
-    if (nextMode === "agent" && !agentModeForced) {
-      if (billingStatus === null) return;
-
-      if (!hasApiAccess(billingStatus)) {
-        setAgentModeUpgradeOpen(true);
-        return;
-      }
-    }
-
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      void completeWorkspaceModeChange(nextMode);
+      // Navigate after the radio's change event. A history push from inside that
+      // handler changes the URL without the router matching the new location.
+      window.setTimeout(() => void completeWorkspaceModeChange(nextMode), 0);
       return;
     }
 
@@ -233,25 +197,8 @@ export function Sidebar({
     agentModeFlag !== null && agentModeFlag.userId === userId
       ? agentModeFlag.enabled
       : cachedAgentModeEnabled;
-  // When agent_mode is force-enabled locally (VITE_FORCE_FEATURE_FLAGS), don't
-  // require billing to have loaded — billingStatus is often null for local/dev
-  // accounts and would otherwise keep the toggle permanently hidden.
-  const agentModeForced = isForcedOn(FEATURE_FLAGS.AGENT_MODE);
-  const showAgentMode =
-    agentModeAvailable && (agentModeForced || billingStatus !== null) && agentModeEnabled === true;
+  const showAgentMode = agentModeAvailable && agentModeEnabled === true;
   const isAgentMode = mode === "agent";
-
-  async function addItem() {
-    if (!isAgentMode) {
-      await addChat();
-      return;
-    }
-
-    if (isOpen && isCompactLayout) {
-      onToggle();
-    }
-    onNewItem?.();
-  }
 
   useEffect(() => {
     if (!agentModeAvailable || !userId) return;
@@ -354,7 +301,7 @@ export function Sidebar({
               type="button"
               className="flex h-9 w-9 shrink-0 items-center justify-center text-foreground transition-colors hover:text-foreground/70"
               onClick={onToggle}
-              aria-label={isAgentMode ? "Collapse Agent sidebar" : "Close sidebar"}
+              aria-label="Close sidebar"
             >
               <PanelLeft className="h-4 w-4" />
             </button>
@@ -372,17 +319,16 @@ export function Sidebar({
               />
             </div>
           )}
-          <div className="flex flex-col gap-2 px-4">
-            <SidebarNewItemButton
-              hasAction={Boolean(onNewItem)}
-              isAgentMode={isAgentMode}
-              isTemporarilyDisabled={isNewItemTemporarilyDisabled}
-              onClick={() => void addItem()}
-            >
-              <SquarePenIcon className="h-4 w-4 shrink-0" />
-              {isAgentMode ? "New Task" : "New Chat"}
-            </SidebarNewItemButton>
-            {!isAgentMode && (
+          {!isAgentMode && (
+            <div className="flex flex-col gap-2 px-4">
+              <button
+                type="button"
+                className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-[hsl(var(--maple-primary-strong))] transition-colors hover:text-[hsl(var(--maple-primary))] dark:text-[hsl(var(--maple-primary))] dark:hover:text-[hsl(var(--maple-primary-strong))]"
+                onClick={() => void addChat()}
+              >
+                <SquarePenIcon className="h-4 w-4 shrink-0" />
+                New Chat
+              </button>
               <button
                 type="button"
                 className="flex w-full items-center justify-start gap-2 py-1.5 pr-1 pl-0 text-sm text-foreground hover:text-foreground/70 transition-colors"
@@ -392,8 +338,8 @@ export function Sidebar({
                 <Search className="h-4 w-4" />
                 Search
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
         {!isAgentMode && isSelectionMode && (
           <div className="mb-2 space-y-2 px-4">
@@ -459,12 +405,14 @@ export function Sidebar({
             )}
           </div>
         )}
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-          <nav
-            ref={historyContainerRef}
-            className="sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pl-4 pr-2 pt-5 md:px-4"
-          >
-            {navigationContent || (
+        {isAgentMode ? (
+          <div className="flex-1" />
+        ) : (
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            <nav
+              ref={historyContainerRef}
+              className="sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pl-4 pr-2 pt-5 md:px-4"
+            >
               <ChatHistoryList
                 currentChatId={chatId}
                 searchQuery={searchQuery}
@@ -475,64 +423,33 @@ export function Sidebar({
                 onSelectionChange={setSelectedIds}
                 containerRef={historyContainerRef}
               />
-            )}
-            {/* Real empty tail so the last row sits in clear space — no overlay on hit targets */}
-            <div aria-hidden className="min-h-[7.5rem] shrink-0 bg-transparent" />
-          </nav>
-          {/* Bottom scroll fade */}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]"
-          />
-        </div>
+              {/* Real empty tail so the last row sits in clear space — no overlay on hit targets */}
+              <div aria-hidden className="min-h-[7.5rem] shrink-0 bg-transparent" />
+            </nav>
+            {/* Bottom scroll fade */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]"
+            />
+          </div>
+        )}
         <div className="w-full border-t border-border/25 px-4 pb-4 pt-2">
           <AccountMenu />
         </div>
       </div>
-      <UpgradePromptDialog
-        open={agentModeUpgradeOpen}
-        onOpenChange={setAgentModeUpgradeOpen}
-        feature="agent"
-      />
     </div>
   );
 }
 
-export function SidebarToggle({
-  onToggle,
-  agentStatus
-}: {
-  onToggle: () => void;
-  agentStatus?: AgentSidebarAggregateStatus;
-}) {
-  const visualStatus = agentSidebarVisualStatus(agentStatus);
-
+export function SidebarToggle({ onToggle }: { onToggle: () => void }) {
   return (
     <button
       type="button"
-      className={cn(
-        "h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors",
-        agentStatus && "relative"
-      )}
+      className="h-9 w-9 flex items-center justify-center text-foreground hover:text-foreground/70 transition-colors"
       onClick={onToggle}
-      aria-label={agentSidebarToggleLabel(agentStatus)}
-      aria-live={agentStatus ? "polite" : undefined}
-      aria-atomic={agentStatus ? "true" : undefined}
+      aria-label="Open sidebar"
     >
       <Menu className="h-4 w-4" />
-      {visualStatus === "running" ? (
-        <Loader2
-          aria-hidden="true"
-          data-agent-sidebar-status="running"
-          className="absolute right-1 top-1 h-2.5 w-2.5 text-[hsl(var(--maple-primary))] motion-safe:animate-spin"
-        />
-      ) : visualStatus === "unread" ? (
-        <span
-          aria-hidden="true"
-          data-agent-sidebar-status="unread"
-          className="absolute right-1 top-1 h-2 w-2 rounded-full bg-maple-success"
-        />
-      ) : null}
     </button>
   );
 }

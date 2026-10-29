@@ -153,6 +153,10 @@ impl Drop for ResponseExecutionRegistration {
 }
 
 impl ResponseExecution {
+    pub(crate) fn response_id(&self) -> Uuid {
+        self.inner.response_id
+    }
+
     /// Acquire task ownership synchronously before spawning the child.
     pub(crate) fn begin_task(&self) -> Result<ResponseExecutionTaskGuard, ClosedResponseExecution> {
         let mut state = self
@@ -178,6 +182,10 @@ impl ResponseExecution {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .accepting_tasks = false;
         self.inner.cancellation.send_replace(true);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        *self.inner.cancellation.borrow()
     }
 
     pub(crate) async fn cancelled(&self) {
@@ -283,7 +291,9 @@ mod tests {
         let registration = registry.register(response_id, user_id).unwrap();
         let execution = registration.execution();
 
+        assert!(!execution.is_cancelled());
         execution.cancel();
+        assert!(execution.is_cancelled());
 
         timeout(Duration::from_millis(50), execution.cancelled())
             .await

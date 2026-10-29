@@ -9,7 +9,7 @@ Branch protection on `master` alone does not protect repository-level secrets.
 | `desktop-signing` | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`, `KEYCHAIN_PASSWORD` | Research macOS/Linux master and release builds; Agent macOS Dev/Prod packages from trusted master |
 | `apple-signing` | `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_PRIVATE_KEY`, `APPLE_TEAM_ID` | Shared production iOS and Maple Dev builds and TestFlight submission |
 | `android-signing` | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | Android master and release builds |
-| `windows-signing` | `AZURE_*` signing configuration and both `TAURI_SIGNING_PRIVATE_KEY*` secrets | Windows master and release builds |
+| `windows-signing` | `AZURE_*` signing configuration and both `TAURI_SIGNING_PRIVATE_KEY*` secrets | Research Windows master/release builds; Agent Windows Dev/Prod packages from trusted master |
 | `zapstore-publishing` | `ZAPSTORE_SIGN_WITH` | Existing best-effort publisher after a successful release |
 
 Configure each environment with **selected branches and tags**: branch `master`
@@ -46,6 +46,17 @@ the step receiving Apple credentials. App launches and Swift runtime checks run
 only on verifiers without Apple
 or updater signing secrets. Agent builds upload separately named Actions artifacts.
 
+Agent Windows Dev/Prod packaging likewise reuses `windows-signing`, its existing
+Azure login identity, Artifact Signing account/profile and generic signing
+helpers. Preserve the environment name and current Azure configuration. The
+signer reads the downloaded executable's bounded PE metadata section and validates
+its profile/source before Azure login; it never runs downloaded app code or
+restores compilation caches. It signs the app, embedded NSIS uninstaller and
+finished installer, then attests the final files. Native installation and CLI
+smoke checks run on a fresh verifier without signing credentials. Agent Windows
+does not consume Research's Tauri updater private key. Windows update publication
+is outside this package workflow.
+
 The macOS signing job has `contents: read`, `id-token: write`, and
 `attestations: write` to mint GitHub build provenance after packaging. Linux
 compilation keeps a read-only token; a separate trusted `master` job has those
@@ -81,11 +92,11 @@ and bucket remain independent; Research's workflow and configuration are unchang
 
 `apple-signing` remains automatic for now because Maple Dev and production iOS
 share its credentials. Gating this environment would also interrupt the
-automatic Maple Dev TestFlight lane, potentially at both its build and upload
+automatic Maple Dev TestFlight workflow, potentially at both its build and upload
 jobs. Production iOS therefore remains an explicit exception until the
 credentials are separated. A second GitHub environment containing a copy of
 the same production-capable key would not close that boundary: the automatic
-development lane must lose access to production-capable credentials first.
+development workflow must lose access to production-capable credentials first.
 Do not switch a workflow to a new environment before its credentials and
 policies are ready.
 
@@ -101,12 +112,12 @@ or incomplete migration must leave the working source credentials intact.
 Rerunning an old workflow revision that predates these environment declarations
 will no longer have signing access; use a current reviewed revision instead.
 
-`nix flake check --no-update-lock-file` checks workflow syntax and the signing
-job boundaries. The manual `Check app signing credentials` workflow checks
-credential availability without signing, building, or publishing anything. Only
-jobs using an environment with required reviewers, such as `zapstore-publishing`,
-pause for approval. Run it on `master`; a run from a feature branch should be
-rejected by the environment policies.
+`just lane repo` (the root `nix flake check`) checks workflow syntax and the
+signing job boundaries. The manual `Check app signing credentials` workflow
+checks credential availability without signing, building, or publishing
+anything. Only jobs using an environment with required reviewers, such as
+`zapstore-publishing`, pause for approval. Run it on `master`; a run from a
+feature branch should be rejected by the environment policies.
 
 Server-side environment policies and secret placement must also
 be verified through GitHub; a source test cannot enforce repository settings.

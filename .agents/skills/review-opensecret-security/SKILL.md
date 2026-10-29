@@ -132,25 +132,29 @@ Load `$validate-opensecret` and run the tiers reached by the diff. Report local,
 database, provider, client, build/artifact, and live evidence separately.
 
 Local artifact builds and read-only PCR comparison are validation when in
-scope. Root backend CI validates Rust, Nix checks/default binary, and SDK
-compatibility. A separate ARM64 workflow compares dev/prod EIF
-measurements on explicit approved-PCR JSON edits in PRs, relevant master
-changes, and manual runs. Do not require ordinary backend PRs to update
-approvals, and do not suppress meaningful master mismatches. Master push/manual
-runs and same-repository PR comparisons receive OIDC for FlakeHub caching;
-fork PRs and non-master manual refs use GitHub's branch-scoped cache without
-OIDC. Review event/ref guards and the PR head-repository equality check,
-including missing metadata, cache provenance, and default-branch versus PR
-cache scope. Same-repository PR code is intentionally trusted to write FlakeHub.
-Cache writes never authorize approval changes, signing, EIF releases, or
-deployment. A passing comparison is not live
+scope. Root backend CI validates Rust, Nix checks, and SDK compatibility.
+`ci.yml`'s `os-eif` lane builds dev/prod EIF candidates for same-repository
+PRs to `master` and reports whether approval is needed, without failing on a
+mismatch. `opensecret-eif.yml` compares dev/prod EIF measurements on explicit
+approved-PCR JSON edits in PRs, relevant master changes, and manual runs. Do
+not require ordinary backend PRs to update approvals. A master mismatch is a
+pending-approval notice with the built PCRs; do not hide it or turn it into a
+pass without that notice. Master push/manual runs, same-repository PR
+comparisons and the `os-eif` candidate receive OIDC for FlakeHub caching; fork
+PRs and non-master manual refs use GitHub's branch-scoped cache without OIDC.
+Review event/ref guards and the PR head-repository equality check, including
+missing metadata, cache provenance, and default-branch versus PR cache scope.
+For `os-eif`, the planner's candidate rule in `scripts/ci/plan.py` and the
+job's `if:` in `ci.yml` must agree. Same-repository PR code is intentionally
+trusted to write FlakeHub. Cache writes never authorize approval changes,
+signing, EIF releases, or deployment. A passing comparison is not live
 deployment evidence or proof that both public PCR locations are synchronized.
 Use `docs/pcr-compatibility.md` for manual signed-PCR validation and legacy
-publication. Require explicit authorization for PCR
-reference/history mutation, signing, KMS/IAM changes, shared or remote
-migrations, artifact transfer, enclave or remote-service lifecycle, secret
-writes, staging, deployment, or release actions. Inspect recipes before
-deciding whether they are read-only.
+publication. Require explicit authorization for PCR reference/history
+mutation, signing, KMS/IAM changes, shared or remote migrations, artifact
+transfer, enclave or remote-service lifecycle, secret writes, staging,
+deployment, or release actions. Inspect recipes before deciding whether they
+are read-only.
 
 ## Report the review
 

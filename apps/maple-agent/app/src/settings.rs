@@ -13,6 +13,66 @@ pub struct RemoteSidebarSettings {
     pub pinned_tasks: Vec<String>,
 }
 
+/// How the sidebar groups and orders tasks: its View options menu.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SidebarView {
+    #[serde(deserialize_with = "view_preference_or_default")]
+    pub group: SidebarGroup,
+    #[serde(deserialize_with = "view_preference_or_default")]
+    pub sort: SidebarSort,
+}
+
+// View state is optional presentation data. Unknown values (for example after
+// a downgrade) or malformed fields must not prevent the host from starting.
+fn view_preference_or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde::Deserialize::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarGroup {
+    Connection,
+    Status,
+    List,
+    #[default]
+    #[serde(other)]
+    Project,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarSort {
+    Manual,
+    #[default]
+    #[serde(other)]
+    Updated,
+}
+
+/// Stable presentation identity; a remote task or project belongs to its computer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct SidebarItemKey {
+    pub computer: Option<String>,
+    pub id: String,
+}
+
+/// Account-owned controller state. Project paths never enter global UI settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SidebarOrder {
+    pub projects: Vec<SidebarItemKey>,
+    pub connections: Vec<Option<String>>,
+    pub tasks: Vec<SidebarItemKey>,
+    /// Pinned presentation order is independent of each task's ordinary slot.
+    pub pinned_tasks: Vec<SidebarItemKey>,
+    pub created_before_ms: i64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppSettings {
     /// Whether tool cards show input/output payloads by default.
@@ -47,6 +107,8 @@ pub struct AppSettings {
     /// `/work/project` is not the same project as that path on this computer.
     #[serde(default)]
     pub remote_sidebars: std::collections::HashMap<String, RemoteSidebarSettings>,
+    #[serde(default, deserialize_with = "view_preference_or_default")]
+    pub sidebar_layout: SidebarView,
     /// Whether run completion and questions raise desktop notifications
     /// while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
@@ -246,6 +308,7 @@ impl Default for AppSettings {
             pinned_tasks: Vec::new(),
             project_names: std::collections::HashMap::new(),
             remote_sidebars: std::collections::HashMap::new(),
+            sidebar_layout: SidebarView::default(),
             desktop_notifications: default_desktop_notifications(),
             automatic_update_downloads: default_automatic_update_downloads(),
             password_notification_details: false,
@@ -270,11 +333,21 @@ enum SettingsSink {
     Test(std::sync::Arc<maple_agent::store::Store>),
 }
 
+#[derive(Clone)]
+struct PendingSidebarOrder {
+    backend: std::sync::Arc<crate::backend::AgentBackend>,
+    order: SidebarOrder,
+}
+
 struct SettingsCache {
     generation: u64,
     value: AppSettings,
     pending: serde_json::Map<String, serde_json::Value>,
     words: std::collections::BTreeSet<String>,
+    /// Shared account snapshots keep cached screens from replaying stale order.
+    sidebar_orders: std::collections::BTreeMap<String, SidebarOrder>,
+    /// Account-owned writes stay in memory and never enter global UI settings.
+    pending_sidebar_orders: std::collections::BTreeMap<String, PendingSidebarOrder>,
     sink: Option<SettingsSink>,
 }
 
@@ -285,6 +358,8 @@ static CACHE: std::sync::LazyLock<std::sync::Mutex<SettingsCache>> =
             value: AppSettings::default(),
             pending: Default::default(),
             words: Default::default(),
+            sidebar_orders: Default::default(),
+            pending_sidebar_orders: Default::default(),
             sink: None,
         })
     });
@@ -306,6 +381,10 @@ pub fn attach_backend(backend: std::sync::Arc<crate::backend::AgentBackend>, val
 pub fn clear_decrypted_cache() {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.value = AppSettings::default();
+    // Account-owned paths cannot survive losing the verified account/store
+    // context. Normal navigation and Quit flush them before this boundary.
+    cache.pending_sidebar_orders.clear();
+    cache.sidebar_orders.clear();
     // Retain unsynchronized edits privately for this generation, but stop
     // retries until an Open snapshot supplies a fresh host attachment.
     cache.sink = None;
@@ -319,6 +398,8 @@ pub fn discard_decrypted_cache() {
     cache.value = AppSettings::default();
     cache.pending.clear();
     cache.words.clear();
+    cache.pending_sidebar_orders.clear();
+    cache.sidebar_orders.clear();
     cache.sink = None;
     cache.generation = cache.generation.wrapping_add(1);
 }
@@ -406,6 +487,51 @@ fn edit_cache(update: impl FnOnce(&mut AppSettings)) {
 pub fn update_settings_in_background(update: impl FnOnce(&mut AppSettings) + Send + 'static) {
     edit_cache(update);
     queue_flush(None);
+}
+
+pub(crate) fn cached_sidebar_order(user: &str) -> Option<SidebarOrder> {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .sidebar_orders
+        .get(user)
+        .cloned()
+}
+
+/// A late host reply cannot replace ordering already edited by another screen.
+pub(crate) fn install_sidebar_order(user: String, order: SidebarOrder) -> SidebarOrder {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .sidebar_orders
+        .entry(user)
+        .or_insert(order)
+        .clone()
+}
+
+/// Retire only this account's decrypted presentation state and queued writes.
+pub(crate) fn retire_sidebar_account(user: &str) {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.sidebar_orders.remove(user);
+    cache.pending_sidebar_orders.remove(user);
+}
+
+/// Queue account-owned ordering through the same Quit barrier as
+/// ordinary settings. The captured account/backend are never rebound on retry.
+pub(crate) fn save_sidebar_order(
+    backend: std::sync::Arc<crate::backend::AgentBackend>,
+    user: String,
+    order: SidebarOrder,
+) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.sidebar_orders.insert(user.clone(), order.clone());
+    cache
+        .pending_sidebar_orders
+        .insert(user, PendingSidebarOrder { backend, order });
+    drop(cache);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    queue_flush(Some(SettingsAck::Async(sender)));
+    receiver
 }
 
 /// A synchronous barrier for existing GUI state tests. Runtime callers use
@@ -496,9 +622,12 @@ fn queue_flush(ack: Option<SettingsAck>) {
 }
 
 fn synchronize_once() -> Result<(), String> {
-    let (generation, sink, patch, words) = {
+    let (generation, sink, patch, words, sidebar_orders) = {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.pending.is_empty() && cache.words.is_empty() {
+        if cache.pending.is_empty()
+            && cache.words.is_empty()
+            && cache.pending_sidebar_orders.is_empty()
+        {
             return Ok(());
         }
         (
@@ -506,6 +635,7 @@ fn synchronize_once() -> Result<(), String> {
             cache.sink.clone(),
             cache.pending.clone(),
             cache.words.clone(),
+            cache.pending_sidebar_orders.clone(),
         )
     };
     match sink.ok_or("Maple host is unavailable; settings edits remain pending")? {
@@ -537,19 +667,66 @@ fn synchronize_once() -> Result<(), String> {
             }
         }
     }
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if cache.generation != generation {
-        return Ok(());
-    }
-    for (key, value) in patch {
-        if cache.pending.get(&key) == Some(&value) {
-            cache.pending.remove(&key);
+    {
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.generation != generation {
+            return if sidebar_orders.is_empty() {
+                Ok(())
+            } else {
+                Err("Maple settings state changed; sidebar order edits remain pending".into())
+            };
+        }
+        for (key, value) in patch {
+            if cache.pending.get(&key) == Some(&value) {
+                cache.pending.remove(&key);
+            }
+        }
+        for word in words {
+            cache.words.remove(&word);
         }
     }
-    for word in words {
-        cache.words.remove(&word);
+    let mut first_error = None;
+    for (user, pending) in sidebar_orders {
+        {
+            let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.generation != generation || cache.sink.is_none() {
+                first_error.get_or_insert_with(|| {
+                    "Maple settings state changed; sidebar order edits remain pending".to_string()
+                });
+                break;
+            }
+        }
+        let result = pending.backend.runtime_handle().block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                pending
+                    .backend
+                    .set_sidebar_order(&user, pending.order.clone()),
+            )
+            .await
+            .map_err(|_| "Maple sidebar order synchronization timed out".to_string())?
+        });
+        match result {
+            Ok(()) => {
+                let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                if cache.generation == generation
+                    && cache
+                        .pending_sidebar_orders
+                        .get(&user)
+                        .is_some_and(|current| {
+                            current.order == pending.order
+                                && std::sync::Arc::ptr_eq(&current.backend, &pending.backend)
+                        })
+                {
+                    cache.pending_sidebar_orders.remove(&user);
+                }
+            }
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 fn merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
@@ -782,6 +959,8 @@ pub(crate) fn install_test_settings(value: AppSettings) {
         value,
         pending: Default::default(),
         words: Default::default(),
+        sidebar_orders: Default::default(),
+        pending_sidebar_orders: Default::default(),
         sink: None,
     };
 }
@@ -796,6 +975,8 @@ pub(crate) fn install_test_store(store: std::sync::Arc<maple_agent::store::Store
         value,
         pending: Default::default(),
         words: Default::default(),
+        sidebar_orders: Default::default(),
+        pending_sidebar_orders: Default::default(),
         sink: Some(SettingsSink::Test(store)),
     };
 }
@@ -803,6 +984,88 @@ pub(crate) fn install_test_store(store: std::sync::Arc<maple_agent::store::Store
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sidebar_layout_round_trips_and_defaults_to_projects() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.sidebar_layout, SidebarView::default());
+        assert_eq!(settings.sidebar_layout.group, SidebarGroup::Project);
+        let view = SidebarView {
+            group: SidebarGroup::List,
+            sort: SidebarSort::Manual,
+        };
+        let json = serde_json::to_value(AppSettings {
+            sidebar_layout: view,
+            ..AppSettings::default()
+        })
+        .unwrap();
+        assert_eq!(json["sidebar_layout"]["group"], "list");
+        let settings: AppSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(settings.sidebar_layout, view);
+    }
+
+    #[test]
+    fn sidebar_layout_defaults_unknown_and_invalid_choices_independently() {
+        for invalid in [
+            serde_json::json!("future-choice"),
+            serde_json::json!(null),
+            serde_json::json!(false),
+            serde_json::json!(42),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "sidebar_layout": {"group": invalid, "sort": "manual"},
+                "theme": "dark"
+            }))
+            .unwrap();
+            assert_eq!(settings.sidebar_layout.group, SidebarGroup::Project);
+            assert_eq!(settings.sidebar_layout.sort, SidebarSort::Manual);
+            assert_eq!(settings.theme, "dark");
+
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "sidebar_layout": {"group": "connection", "sort": invalid}
+            }))
+            .unwrap();
+            assert_eq!(settings.sidebar_layout.group, SidebarGroup::Connection);
+            assert_eq!(settings.sidebar_layout.sort, SidebarSort::Updated);
+
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "sidebar_layout": invalid
+            }))
+            .unwrap();
+            assert_eq!(settings.sidebar_layout, SidebarView::default());
+        }
+    }
+
+    #[test]
+    fn invalid_view_preferences_do_not_block_host_settings_or_later_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        for invalid in [
+            serde_json::json!({"group": "future-group", "sort": "future-sort"}),
+            serde_json::json!({"group": 7, "sort": {"invalid": true}}),
+            serde_json::Value::Null,
+        ] {
+            store
+                .set_app_setting(
+                    "ui",
+                    &serde_json::json!({"sidebar_layout": invalid, "theme": "dark"}),
+                    1,
+                )
+                .unwrap();
+            let loaded = load_host_settings(&store, None).unwrap();
+            assert_eq!(loaded.sidebar_layout, SidebarView::default());
+            assert_eq!(loaded.theme, "dark");
+            apply_host_patch(&store, None, &serde_json::json!({"reduce_motion": true})).unwrap();
+            let loaded = load_host_settings(&store, None).unwrap();
+            assert!(loaded.reduce_motion);
+            assert_eq!(loaded.theme, "dark");
+            assert_eq!(loaded.sidebar_layout, SidebarView::default());
+        }
+    }
 
     #[test]
     fn remote_sidebar_preferences_cannot_override_owner_project_names() {
@@ -958,6 +1221,11 @@ mod tests {
         install_test_store(store.clone());
         update_settings_in_background(|settings| settings.tts_voice = "neutral_male".into());
         update_settings_in_background(|settings| settings.tts_speed = 1.5);
+        let view = SidebarView {
+            group: SidebarGroup::List,
+            sort: SidebarSort::Manual,
+        };
+        update_settings_in_background(move |settings| settings.sidebar_layout = view);
         update_settings_in_background(|settings| settings.automatic_update_downloads = false);
         update_settings_in_background(|settings| {
             settings
@@ -967,6 +1235,7 @@ mod tests {
         update_settings_and_wait(|_| {});
         let reloaded = load_host_settings(&store, None).unwrap();
         assert_eq!(reloaded.tts_voice, "neutral_male");
+        assert_eq!(reloaded.sidebar_layout, view);
         assert!((reloaded.tts_speed - 1.5).abs() < 0.01);
         assert!(!reloaded.automatic_update_downloads);
         assert_eq!(
@@ -999,6 +1268,8 @@ mod tests {
             value: AppSettings::default(),
             pending: Default::default(),
             words: Default::default(),
+            sidebar_orders: Default::default(),
+            pending_sidebar_orders: Default::default(),
             sink: None,
         };
         edit_cache(|settings| settings.theme = "dark".into());

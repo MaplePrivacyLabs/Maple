@@ -5,7 +5,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 
 use super::super::{
     CheckIncomplete, IntegrityCancellation, IntegrityKind, IntegrityOutcome, check_connection,
@@ -106,14 +106,7 @@ fn expressions(sql: &str) -> Vec<String> {
 fn catalog_matches_every_check_in_each_accepted_owned_schema() {
     for version in 1..=schema::VERSION {
         let mut reference = Connection::open_in_memory().unwrap();
-        if version == 1 {
-            reference.execute_batch(schema::REFERENCE_DDL).unwrap();
-        } else {
-            reference
-                .pragma_update(None, "application_id", schema::APPLICATION_ID)
-                .unwrap();
-            schema::migrate(&mut reference, 1).unwrap();
-        }
+        schema::migrate_to_version(&mut reference, 1, version).unwrap();
         let mut statement = reference
             .prepare("SELECT name,sql FROM sqlite_schema WHERE type='table'")
             .unwrap();
@@ -131,6 +124,8 @@ fn catalog_matches_every_check_in_each_accepted_owned_schema() {
             .collect::<BTreeMap<_, _>>();
         let actual = CONSTRAINTS
             .iter()
+            .filter(|table| table.removed.is_none_or(|removed| version < removed))
+            .filter(|table| table.checks.iter().any(|(since, _)| *since <= version))
             .map(|table| {
                 let mut checks = table
                     .checks
@@ -194,20 +189,18 @@ fn readonly_plain_and_keyed_checks_detect_json_and_integer_constraints() {
 #[test]
 fn readonly_checks_accept_nullable_checks_and_version_one_without_new_column() {
     for version in [1, 2] {
-        let (_directory, store) = fixture(false);
-        let account = store.upsert_account("nullable-fixture", 1).unwrap();
-        {
-            let guard = store.writer.lock().unwrap();
-            let writer = guard.as_ref().unwrap();
-            if version == 1 {
-                writer
-                    .execute_batch(
-                        "ALTER TABLE projects DROP COLUMN name_revision; PRAGMA user_version=1",
-                    )
-                    .unwrap();
-            }
-            writer.execute("INSERT INTO projects(account_id,root,last_used_ms,trusted,mcp_defaults) VALUES (?1,'nullable-fixture',1,NULL,'{}')", params![account.0]).unwrap();
-        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = StorePaths::new(directory.path()).prepare().unwrap();
+        paths.precreate_database().unwrap();
+        let mut writer = Connection::open(paths.database()).unwrap();
+        writer
+            .pragma_update(None, "application_id", schema::APPLICATION_ID)
+            .unwrap();
+        schema::migrate_to_version(&mut writer, 1, version).unwrap();
+        writer.execute("INSERT INTO accounts(id,user_key,user_id,created_ms,last_seen_ms) VALUES (1,'nullable-fixture','nullable-fixture',1,1)",[]).unwrap();
+        writer.execute("INSERT INTO projects(account_id,root,last_used_ms,trusted,mcp_defaults) VALUES (1,'nullable-fixture',1,NULL,'{}')", []).unwrap();
+        drop(writer);
+        let store = Store::unavailable(paths, crate::store::StoreState::Maintenance).unwrap();
         let connection = open_readonly(&store.paths, None).unwrap();
         let report = check_connection(
             &connection,

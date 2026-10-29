@@ -12,7 +12,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-from test_third_party_notices import notice_fixture
 
 
 spec = importlib.util.spec_from_file_location(
@@ -109,7 +108,6 @@ class AppImageTests(unittest.TestCase):
             requires=("GLIBC_2.42",),
         )
         self.component = self.root / "component"
-        notice_fixture(self.component)
         icons = self.component / "app/packaging"
         icons.mkdir(parents=True)
         (icons / "maple-agent.png").write_bytes(b"prod-icon")

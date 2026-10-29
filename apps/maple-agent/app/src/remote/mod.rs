@@ -1,9 +1,12 @@
 //! Desktop remote access is owned by the profile's local daemon.
 mod network;
 mod pairing;
+#[cfg(test)]
+mod pairing_lifecycle_tests;
 mod store;
 pub(crate) mod streams;
 pub(crate) mod update;
+mod uploads;
 pub(crate) mod wire;
 
 pub mod control;

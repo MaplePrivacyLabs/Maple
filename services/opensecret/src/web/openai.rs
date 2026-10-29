@@ -1344,6 +1344,7 @@ async fn completion_consumer_cancelled(
     }
 }
 
+#[cfg(test)]
 async fn process_completion_stream(
     response: ProviderResponse,
     response_model_id: &str,
@@ -1352,6 +1353,33 @@ async fn process_completion_stream(
     chunk_timeout: Duration,
     response_execution: Option<&ResponseExecution>,
     require_provider_done: bool,
+) -> StreamProcessResult {
+    process_completion_stream_with_frame_limit(
+        response,
+        response_model_id,
+        attempt,
+        tx_consumer,
+        chunk_timeout,
+        response_execution,
+        require_provider_done,
+        None,
+    )
+    .await
+}
+
+/// Internal bounded helpers use the ordinary stream/usage machinery, while
+/// preventing one untrusted SSE frame from growing without a delimiter. Normal
+/// client streaming behavior is unchanged (`frame_limit = None`).
+#[allow(clippy::too_many_arguments)]
+async fn process_completion_stream_with_frame_limit(
+    response: ProviderResponse,
+    response_model_id: &str,
+    attempt: InferenceAttempt,
+    tx_consumer: &mpsc::Sender<CompletionChunk>,
+    chunk_timeout: Duration,
+    response_execution: Option<&ResponseExecution>,
+    require_provider_done: bool,
+    frame_limit: Option<usize>,
 ) -> StreamProcessResult {
     let mut body_stream = response.bytes_stream();
     let mut buffer = Vec::new();
@@ -1378,81 +1406,105 @@ async fn process_completion_stream(
         };
         match next_chunk {
             Ok(Some(Ok(bytes))) => {
-                buffer.extend_from_slice(bytes.as_ref());
-
-                while let Some(frame) = extract_sse_frame(&mut buffer) {
-                    if frame == b"[DONE]" {
+                let mut unread = bytes.as_ref();
+                loop {
+                    let append_len = frame_limit.map_or(unread.len(), |limit| {
+                        limit.saturating_sub(buffer.len()).min(unread.len())
+                    });
+                    if append_len == 0 && !unread.is_empty() {
                         return finish_stream_processing(
                             &mut usage_accumulator,
-                            StreamUsageFinalization::ProviderDone,
-                            AttemptTerminal::Completed {
+                            StreamUsageFinalization::InvalidData,
+                            AttemptTerminal::Failed {
                                 attempt,
-                                evidence: CompletionEvidence::ProviderDone,
+                                failure: AttemptFailure::new(
+                                    AttemptFailureKind::InvalidResponse,
+                                    AttemptStage::Stream,
+                                    ReplaySafety::NotProvenPreAcceptance,
+                                ),
                             },
                         );
                     }
+                    buffer.extend_from_slice(&unread[..append_len]);
+                    unread = &unread[append_len..];
 
-                    let mut json = match serde_json::from_slice::<Value>(&frame) {
-                        Ok(json) => json,
-                        Err(error) => {
-                            error!(
+                    while let Some(frame) = extract_sse_frame(&mut buffer) {
+                        if frame == b"[DONE]" {
+                            return finish_stream_processing(
+                                &mut usage_accumulator,
+                                StreamUsageFinalization::ProviderDone,
+                                AttemptTerminal::Completed {
+                                    attempt,
+                                    evidence: CompletionEvidence::ProviderDone,
+                                },
+                            );
+                        }
+
+                        let mut json = match serde_json::from_slice::<Value>(&frame) {
+                            Ok(json) => json,
+                            Err(error) => {
+                                error!(
                                 "Received invalid inference stream data: request_id={}, execution_id={}, attempt_id={}, error={}",
                                 attempt.request_id,
                                 attempt.execution_id,
                                 attempt.attempt_id,
                                 error
                             );
-                            return finish_stream_processing(
-                                &mut usage_accumulator,
-                                StreamUsageFinalization::InvalidData,
-                                AttemptTerminal::Failed {
-                                    attempt,
-                                    failure: AttemptFailure::new(
-                                        AttemptFailureKind::InvalidResponse,
-                                        AttemptStage::Stream,
-                                        ReplaySafety::NotProvenPreAcceptance,
-                                    ),
-                                },
-                            );
-                        }
-                    };
+                                return finish_stream_processing(
+                                    &mut usage_accumulator,
+                                    StreamUsageFinalization::InvalidData,
+                                    AttemptTerminal::Failed {
+                                        attempt,
+                                        failure: AttemptFailure::new(
+                                            AttemptFailureKind::InvalidResponse,
+                                            AttemptStage::Stream,
+                                            ReplaySafety::NotProvenPreAcceptance,
+                                        ),
+                                    },
+                                );
+                            }
+                        };
 
-                    if let Some(failure) = upstream_stream_failure(&json) {
-                        warn!(
+                        if let Some(failure) = upstream_stream_failure(&json) {
+                            warn!(
                             "Inference provider emitted an error stream frame: request_id={}, execution_id={}, attempt_id={}, upstream_code={:?}",
                             attempt.request_id,
                             attempt.execution_id,
                             attempt.attempt_id,
                             failure.upstream_code
                         );
-                        return finish_stream_processing(
-                            &mut usage_accumulator,
-                            StreamUsageFinalization::ProviderError,
-                            AttemptTerminal::Failed { attempt, failure },
-                        );
+                            return finish_stream_processing(
+                                &mut usage_accumulator,
+                                StreamUsageFinalization::ProviderError,
+                                AttemptTerminal::Failed { attempt, failure },
+                            );
+                        }
+
+                        usage_accumulator.observe(&json);
+                        canonicalize_completion_response(&mut json, response_model_id);
+
+                        let sent = tokio::select! {
+                            biased;
+                            _ = completion_consumer_cancelled(tx_consumer, response_execution) => false,
+                            result = tx_consumer.send(CompletionChunk::StreamChunk(json)) => result.is_ok(),
+                        };
+                        if !sent {
+                            return finish_stream_processing(
+                                &mut usage_accumulator,
+                                StreamUsageFinalization::ConsumerDropped,
+                                AttemptTerminal::Failed {
+                                    attempt,
+                                    failure: AttemptFailure::new(
+                                        AttemptFailureKind::ConsumerDropped,
+                                        AttemptStage::Stream,
+                                        ReplaySafety::NotProvenPreAcceptance,
+                                    ),
+                                },
+                            );
+                        }
                     }
-
-                    usage_accumulator.observe(&json);
-                    canonicalize_completion_response(&mut json, response_model_id);
-
-                    let sent = tokio::select! {
-                        biased;
-                        _ = completion_consumer_cancelled(tx_consumer, response_execution) => false,
-                        result = tx_consumer.send(CompletionChunk::StreamChunk(json)) => result.is_ok(),
-                    };
-                    if !sent {
-                        return finish_stream_processing(
-                            &mut usage_accumulator,
-                            StreamUsageFinalization::ConsumerDropped,
-                            AttemptTerminal::Failed {
-                                attempt,
-                                failure: AttemptFailure::new(
-                                    AttemptFailureKind::ConsumerDropped,
-                                    AttemptStage::Stream,
-                                    ReplaySafety::NotProvenPreAcceptance,
-                                ),
-                            },
-                        );
+                    if unread.is_empty() {
+                        break;
                     }
                 }
             }
@@ -2620,6 +2672,7 @@ pub(crate) struct StartedCompletion {
     is_streaming: bool,
     billing_context: BillingContext,
     non_streaming_body_limit: Option<usize>,
+    stream_frame_limit: Option<usize>,
     require_provider_done: bool,
     response_execution: Option<ResponseExecution>,
     response_execution_guard: Option<ResponseExecutionTaskGuard>,
@@ -2671,9 +2724,10 @@ pub(crate) async fn start_chat_completion_response_for_execution(
     .await
 }
 
-/// Run an entitled internal completion with a bounded response body. Provider
-/// selection follows the request's ordinary routing policy; plan checks,
-/// provider-managed fields, and billing are shared with other completions.
+/// Run an entitled internal completion with a bounded non-streaming body or
+/// streaming frame. A streaming consumer separately bounds retained output.
+/// Provider selection follows the request's ordinary routing policy; plan
+/// checks, provider-managed fields, and billing are shared with other completions.
 pub(crate) async fn get_bounded_chat_completion_response(
     state: &Arc<AppState>,
     user: &User,
@@ -2711,15 +2765,32 @@ pub(crate) async fn get_bounded_chat_completion_response(
         &pinned,
         CompletionExecutionOptions {
             non_streaming_body_limit: Some(MAX_BOUNDED_PROVIDER_RESPONSE_BYTES),
+            stream_frame_limit: Some(MAX_BOUNDED_PROVIDER_RESPONSE_BYTES),
         },
     )
     .await?;
     finish_started_completion(state, user, started).await
 }
 
+/// A bounded internal completion owned by the same durable Responses execution.
+/// This shares provider routing, attestation and usage publication with ordinary
+/// helpers while preserving cancellation/task ownership across context compaction.
+pub(crate) async fn get_bounded_chat_completion_response_for_execution(
+    state: &Arc<AppState>,
+    user: &User,
+    body: Value,
+    headers: &HeaderMap,
+    execution: CompletionExecutionContext<'_>,
+    response_execution: ResponseExecution,
+) -> Result<CompletionStream, CompletionExecutionError> {
+    let execution = execution.with_response_execution(response_execution)?;
+    get_bounded_chat_completion_response(state, user, body, headers, execution).await
+}
+
 #[derive(Default)]
 struct CompletionExecutionOptions {
     non_streaming_body_limit: Option<usize>,
+    stream_frame_limit: Option<usize>,
 }
 
 /// Emit the route that actually won the send-time claim, not the provisional
@@ -2997,6 +3068,7 @@ async fn get_chat_completion_response_with_options(
         is_streaming,
         billing_context: billing,
         non_streaming_body_limit: options.non_streaming_body_limit,
+        stream_frame_limit: options.stream_frame_limit,
         require_provider_done,
         response_execution,
         response_execution_guard,
@@ -3024,6 +3096,7 @@ pub(crate) async fn finish_started_completion(
     let is_streaming = started.is_streaming;
     let billing_context = started.billing_context.clone();
     let non_streaming_body_limit = started.non_streaming_body_limit;
+    let stream_frame_limit = started.stream_frame_limit;
     let require_provider_done = started.require_provider_done;
     let response_execution = started.response_execution.take();
     let response_execution_guard = started.response_execution_guard.take();
@@ -3096,7 +3169,11 @@ pub(crate) async fn finish_started_completion(
 
     // STREAMING: Complex case - spawn internal processor
     debug!("Processing streaming response with internal billing");
-    let (tx_consumer, rx_consumer) = mpsc::channel(100);
+    // Bounded helpers consume continuously and need no large queue of retained
+    // reasoning frames. Keep their retained upstream data small independently
+    // of the eventual visible summary; ordinary streams keep their capacity.
+    let (tx_consumer, rx_consumer) =
+        mpsc::channel(if stream_frame_limit.is_some() { 2 } else { 100 });
 
     // Spawn INTERNAL task that handles billing
     let state_clone = state.clone();
@@ -3108,7 +3185,7 @@ pub(crate) async fn finish_started_completion(
 
     tokio::spawn(async move {
         let _response_execution_guard = response_execution_guard;
-        let result = process_completion_stream(
+        let result = process_completion_stream_with_frame_limit(
             response,
             &response_model_id,
             stream_attempt,
@@ -3116,6 +3193,7 @@ pub(crate) async fn finish_started_completion(
             Duration::from_secs(STREAM_CHUNK_TIMEOUT_SECS),
             response_execution.as_ref(),
             require_provider_done,
+            stream_frame_limit,
         )
         .await;
         let terminal = result.terminal.clone();
@@ -4835,6 +4913,7 @@ mod tests {
             is_streaming: false,
             billing_context: BillingContext::new(AuthMethod::Jwt, "kimi-k3".to_string()),
             non_streaming_body_limit: None,
+            stream_frame_limit: None,
             require_provider_done: false,
             response_execution: None,
             response_execution_guard: None,
@@ -5974,6 +6053,163 @@ mod tests {
         assert_eq!(failure.kind, AttemptFailureKind::InvalidResponse);
         assert_eq!(failure.stage, AttemptStage::ResponseBody);
         assert_eq!(failure.replay_safety, ReplaySafety::NotProvenPreAcceptance);
+    }
+
+    async fn process_bounded_mock_sse(
+        body: String,
+        frame_limit: usize,
+    ) -> (StreamProcessResult, usize) {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let body = body.clone();
+                async move {
+                    axum::http::Response::builder()
+                        .status(axum::http::StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(axum::body::Body::from(body))
+                        .unwrap()
+                }
+            }),
+        );
+        let (trace, server) = call_mock_provider(app).await;
+        let response = trace.result.expect("bounded mock response start");
+        let pinned = pinned_test_completion();
+        let attempt = pinned
+            .begin_execution()
+            .begin_attempt(pinned.route.identity());
+        let (tx, mut rx) = mpsc::channel(64);
+        let result = process_completion_stream_with_frame_limit(
+            response,
+            "kimi-k3",
+            attempt,
+            &tx,
+            Duration::from_secs(1),
+            None,
+            true,
+            Some(frame_limit),
+        )
+        .await;
+        drop(tx);
+        let mut chunks = 0;
+        while rx.recv().await.is_some() {
+            chunks += 1;
+        }
+        server.abort();
+        (result, chunks)
+    }
+
+    #[tokio::test]
+    async fn bounded_internal_stream_rejects_one_oversized_reasoning_frame() {
+        let body = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices": [{"delta": {"reasoning": "x".repeat(1024)}}]})
+        );
+        let (result, chunks) = process_bounded_mock_sse(body, 128).await;
+        assert_eq!(chunks, 0);
+        assert!(matches!(
+            result.terminal,
+            AttemptTerminal::Failed {
+                failure: AttemptFailure {
+                    kind: AttemptFailureKind::InvalidResponse,
+                    stage: AttemptStage::Stream,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn bounded_internal_stream_accepts_coalesced_small_frames_beyond_the_frame_limit() {
+        let frame = format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {"reasoning": "brief"}}]})
+        );
+        assert!(frame.len() < 128);
+        let body = format!("{}data: [DONE]\n\n", frame.repeat(32));
+        assert!(body.len() > 128);
+        let (result, chunks) = process_bounded_mock_sse(body, 128).await;
+        assert_eq!(chunks, 32);
+        assert!(matches!(
+            result.terminal,
+            AttemptTerminal::Completed {
+                evidence: CompletionEvidence::ProviderDone,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn bounded_internal_stream_starts_before_generation_finishes_and_finalizes_usage_once() {
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let resume_provider = Arc::clone(&resume);
+        let app = Router::new().route("/v1/chat/completions", post(move || {
+            let resume = Arc::clone(&resume_provider);
+            async move {
+                let body = async_stream::stream! {
+                    yield Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                        b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"reasoning\":\"still thinking\"},\"finish_reason\":null}]}\n\n"
+                    ));
+                    // Hold final generation behind an explicit gate. The HTTP
+                    // response and ordinary stream processing must already be
+                    // live; no total non-streaming generation timeout is used.
+                    resume.notified().await;
+                    yield Ok(bytes::Bytes::from_static(
+                        b"data: {\"choices\":[{\"delta\":{\"content\":\"checkpoint\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n"
+                    ));
+                    yield Ok(bytes::Bytes::from_static(
+                        b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3}}\n\n"
+                    ));
+                    yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
+                };
+                axum::http::Response::builder()
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .body(axum::body::Body::from_stream(body))
+                    .unwrap()
+            }
+        }));
+        let (trace, server) = call_mock_provider(app).await;
+        let response = trace.result.expect("stream begins before final generation");
+        let pinned = pinned_test_completion();
+        let attempt = pinned
+            .begin_execution()
+            .begin_attempt(pinned.route.identity());
+        let (tx, mut rx) = mpsc::channel(2);
+        let processing = tokio::spawn(async move {
+            process_completion_stream_with_frame_limit(
+                response,
+                "kimi-k3",
+                attempt,
+                &tx,
+                Duration::from_secs(1),
+                None,
+                true,
+                Some(1024),
+            )
+            .await
+        });
+        let first = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(first, CompletionChunk::StreamChunk(_)));
+        assert!(!processing.is_finished());
+        resume.notify_one();
+        while rx.recv().await.is_some() {}
+        let result = processing.await.unwrap();
+        server.abort();
+        assert!(matches!(
+            result.terminal,
+            AttemptTerminal::Completed {
+                evidence: CompletionEvidence::ProviderDone,
+                ..
+            }
+        ));
+        let usage = result.usage.expect("one final cumulative usage record");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 3);
+        assert_eq!(result.finalization, StreamUsageFinalization::ProviderDone);
     }
 
     #[tokio::test]

@@ -131,6 +131,37 @@
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux linuxOnlyInputs
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinOnlyInputs;
 
+        # CI builds the backend and runs disposable database tests. Local
+        # containers, credential providers, editors and proxy toolchains are
+        # not inputs to those gates and can have expensive Linux closures.
+        ciInputs = [
+          rust
+          pkgs.bash
+          pkgs.coreutils
+          pkgs.git
+          pkgs.pkg-config
+          pkgs.openssl
+          pkgs.zlib
+          pkgs.gcc
+          pkgs.clang
+          pkgs.postgresql
+          pkgs.diesel-cli
+          pkgs.python3
+        ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinOnlyInputs;
+
+        nativeBuildEnvironment = ''
+          export LIBCLANG_PATH=${pkgs.libclang.lib}/lib/
+          export LD_LIBRARY_PATH=${pkgs.openssl}/lib:$LD_LIBRARY_PATH
+          export CC_wasm32_unknown_unknown=${pkgs.llvmPackages.clang-unwrapped}/bin/clang
+          export CFLAGS_wasm32_unknown_unknown="-I ${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.lib.versions.major pkgs.llvmPackages.libclang.version}/include/"
+          export PKG_CONFIG_PATH=${pkgs.openssl.dev}/lib/pkgconfig
+
+          ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+            export CC=clang
+            export CXX=clang++
+          ''}
+        '';
+
         setupPostgresScript = pkgs.writeShellScript "setup-postgres" ''
           case "''${OPENSECRET_DEV_POSTGRES:-1}" in
             0|false|False|FALSE|no|No|NO|skip|Skip|SKIP)
@@ -644,6 +675,13 @@
           ];
         };
 
+        # No database startup, .env creation, container configuration or
+        # credential resolution. CI owns its disposable database lifecycle.
+        devShells.ci = pkgs.mkShell {
+          packages = ciInputs;
+          shellHook = nativeBuildEnvironment;
+        };
+
         devShells.default = pkgs.mkShell {
           packages = inputs ++ [ secretsPkgs.secretspec secretsPkgs.bws ];
           shellHook = ''
@@ -652,16 +690,7 @@
             export PGSOCKETS="''${PGSOCKETS:-$PGDATA/sockets}"
             export OPENSECRET_DEV_DATABASE_URL="''${OPENSECRET_DEV_DATABASE_URL:-postgres://opensecret_user:password@localhost:$PGPORT/opensecret}"
 
-            export LIBCLANG_PATH=${pkgs.libclang.lib}/lib/
-            export LD_LIBRARY_PATH=${pkgs.openssl}/lib:$LD_LIBRARY_PATH
-            export CC_wasm32_unknown_unknown=${pkgs.llvmPackages.clang-unwrapped}/bin/clang
-            export CFLAGS_wasm32_unknown_unknown="-I ${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.lib.versions.major pkgs.llvmPackages.libclang.version}/include/"
-            export PKG_CONFIG_PATH=${pkgs.openssl.dev}/lib/pkgconfig
-
-            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-              export CC=clang
-              export CXX=clang++
-            ''}
+            ${nativeBuildEnvironment}
 
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               alias docker='podman'

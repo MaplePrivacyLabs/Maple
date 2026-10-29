@@ -5,10 +5,13 @@ It runs as a web application and as native desktop/mobile applications, and uses
 [OpenSecret](../../services/opensecret/README.md) for confidential
 authentication, inference, conversations, and related APIs.
 
-Research chat and desktop Agent Mode are different client paths. Research chat
-uses the TypeScript Maple SDK with the Responses and Conversations APIs;
-Agent Mode embeds Goose and uses the Rust Maple SDK through Tauri. The
-local OpenAI-compatible proxy is a separate user-facing service.
+Research chat uses the TypeScript Maple SDK with the Responses and
+Conversations APIs on web, desktop, and mobile; native OAuth uses the Rust Maple
+SDK through Tauri. The local OpenAI-compatible proxy is a separate user-facing
+desktop service. Agent work lives in Maple Work
+([`apps/maple-agent/`](../maple-agent/README.md)). On desktop, users with the
+`agent_mode` flag see a sidebar Chat | Agent switch; its Agent page only points
+them to Maple Work.
 
 The Maple SDK source and its upstream Git history live under
 [`sdk/`](../../sdk/README.md). Research selects published TypeScript and Rust
@@ -18,8 +21,8 @@ supported during development. See the
 The proxy source and its upstream history live under
 [`proxy/`](../../proxy/README.md); desktop Maple consumes that in-tree crate too.
 
-The source directory name does not change the shipped Maple application identity
-or remove desktop Agent Mode. Commands and code paths below are relative to the
+The source directory name does not change the shipped Maple application identity.
+Commands and code paths below are relative to the
 **monorepo root**, unless a command explicitly changes directory. Shared Nix,
 Just, CI, and release entry points remain there.
 
@@ -67,15 +70,16 @@ Start the runtime you intend to exercise:
 
 ```bash
 just dev          # Browser/web development only
-just desktop-dev  # Tauri desktop, including Agent Mode and native features
+just desktop-dev  # Tauri desktop and native features
 ```
 
 `just desktop-dev` is preferred over a raw `bun tauri dev`: it provisions the
 pinned ONNX Runtime and applies a local Tauri configuration overlay when one is
 present.
 
-For a separately installed macOS package targeting the standalone Auth Dev site,
-use the [Research Dev desktop package](docs/research-dev-desktop.md). It has its
+For a separately installed desktop package targeting the standalone Auth Dev site,
+use the [Research Dev desktop package](docs/research-dev-desktop.md), built with
+`nix run --no-update-lock-file .#research-dev-desktop` on Linux or macOS. It has its
 own bundle identity, callback scheme, storage, and disabled updater; the ordinary
 Local workflow and iOS Dev TestFlight profile remain separate.
 
@@ -230,15 +234,13 @@ PR/release endpoints; read a script before running it locally.
 
 ## Architecture and feature documentation
 
-- [`docs/agent-mode-mcp.md`](docs/agent-mode-mcp.md) explains MCP configuration
-  and includes a deterministic feature smoke test.
-- [`docs/agent-mode-acp.md`](docs/agent-mode-acp.md) documents the ACP edge and
-  its trust model.
+- [`docs/development-contracts.md`](docs/development-contracts.md) records
+  runtime placement, native-command, security, and concurrency contracts.
 - [`docs/pdf-ocr.md`](docs/pdf-ocr.md) covers the local PDF/OCR pipeline.
 - [`AGENTS.md`](AGENTS.md) defines Research placement and runtime standards;
   the [root guide](../../AGENTS.md) defines shared repository policy.
 - [`.agents/skills/`](../../.agents/skills/) contains task-specific development,
-  validation, security, Agent Mode, and release procedures.
+  validation, security, and release procedures.
 
 `apps/maple-research/frontend/src/routeTree.gen.ts` and native platform projects contain generated
 content. Use their generators and review the resulting diff rather than editing

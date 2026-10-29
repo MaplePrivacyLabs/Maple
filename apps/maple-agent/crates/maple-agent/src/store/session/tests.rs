@@ -288,8 +288,21 @@ fn cache_parity(store: &Store, account: AccountId, manager: &SessionManager) {
 #[test]
 fn all_entry_kinds_and_message_variants_round_trip_exactly() {
     let (_directory, store, account) = fixture();
+    let stored = store
+        .store_image_uploads(
+            account,
+            UUID,
+            &[crate::store::ImageUpload {
+                name: "fixture.png".into(),
+                data_url: format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nfixture")
+                ),
+            }],
+        )
+        .unwrap();
     let image = ImageContent {
-        data: base64::engine::general_purpose::STANDARD.encode(b"one copy of image bytes"),
+        data: stored[0].source.clone(),
         mime_type: "image/png".into(),
     };
     let mut first_user = UserMessage {
@@ -420,20 +433,22 @@ fn all_entry_kinds_and_message_variants_round_trip_exactly() {
         serde_json::to_vec(&source).unwrap()
     );
     assert!(adapter.contains_entry("00000000").unwrap());
-    let (compressed, blobs): (i64, i64) = store
+    let (compressed, files): (i64, i64) = store
         .read(|tx| {
             Ok((
                 tx.query_row("SELECT count(*) FROM entries WHERE codec=1", [], |r| {
                     r.get(0)
                 })?,
-                tx.query_row("SELECT count(*) FROM blobs WHERE complete=1", [], |r| {
-                    r.get(0)
-                })?,
+                tx.query_row(
+                    "SELECT count(*) FROM file_attachments WHERE state='ready' AND bound=1",
+                    [],
+                    |r| r.get(0),
+                )?,
             ))
         })
         .unwrap();
     assert!(compressed > 0);
-    assert_eq!(blobs, 1);
+    assert_eq!(files, 1);
 }
 
 #[test]
@@ -449,7 +464,7 @@ fn third_party_images_survive_failed_append_retry_and_cold_plain_or_keyed_reopen
         let mut manager = loaded.into_manager("/projects/test");
         manager.append_message(user("saved before a third-party tool result"));
         receipts.drain();
-        let canonical = STANDARD.encode([0xfb, 0xff]);
+        let canonical = STANDARD.encode(b"\x89PNG\r\n\x1a\n\xfb\xff");
         let mut content = vec![
             Content::image("not base64!", "image/png"),
             Content::image("", "image/png"),
@@ -464,7 +479,7 @@ fn third_party_images_survive_failed_append_retry_and_cold_plain_or_keyed_reopen
         ];
         content.extend([
             Content::image(canonical.clone(), "image/png"),
-            Content::image(canonical, "image/png"),
+            Content::image(canonical.clone(), "image/png"),
         ]);
         // Keep the exact formerly poisoning entry in Pi's retry slice while an
         // unrelated transaction failure forces write_all instead of append.
@@ -504,15 +519,97 @@ fn third_party_images_survive_failed_append_retry_and_cold_plain_or_keyed_reopen
         );
         assert_eq!(manager.entries(), retained);
         cache_parity(&store, account, &manager);
-        let (blobs, links): (i64, i64) = store
+        let persisted = store
+            .load_session(account, UUID, SessionLoad::Full)
+            .unwrap()
+            .entries;
+        let original = retained.iter().find(|entry| entry.id == image_id).unwrap();
+        let saved = persisted.iter().find(|entry| entry.id == image_id).unwrap();
+        assert_eq!(
+            (&saved.id, &saved.parent_id, saved.timestamp),
+            (&original.id, &original.parent_id, original.timestamp)
+        );
+        let EntryKind::Message {
+            message: SessionMessage::Llm(Message::ToolResult(result)),
+        } = &saved.kind
+        else {
+            panic!("tool result must retain its entry kind");
+        };
+        assert!(!result.is_error);
+        assert_eq!(result.tool_call_id, "third-party-image");
+        assert_eq!(result.tool_name, "mcp__fixture__screenshot");
+        assert_eq!(
+            result.details,
+            Some(json!({"data":"maple-inline-image:opaque-details"}))
+        );
+        assert_eq!(result.content.len(), 12);
+        for block in &result.content {
+            let Content::Image(image) = block else {
+                panic!("typed image marker must remain typed");
+            };
+            assert!(
+                image.data.starts_with("maple-attachment://")
+                    || image.data == "maple-attachment-unavailable:retired"
+            );
+            assert!(
+                !image.data.contains(&canonical),
+                "source rows must not retain image bytes"
+            );
+        }
+        for index in [0, 1, 6, 7, 8, 9] {
+            let Content::Image(image) = &result.content[index] else {
+                unreachable!()
+            };
+            assert_eq!(image.data, "maple-attachment-unavailable:retired");
+        }
+        for index in [2, 3, 10, 11] {
+            let Content::Image(image) = &result.content[index] else {
+                unreachable!()
+            };
+            assert!(
+                image.data.starts_with("maple-attachment://"),
+                "valid wrapped/native media must be retained"
+            );
+        }
+        let mut model_messages = vec![Message::ToolResult(result.clone())];
+        store
+            .materialize_message_images(account, UUID, &mut model_messages)
+            .unwrap();
+        let Message::ToolResult(materialized) = &model_messages[0] else {
+            unreachable!()
+        };
+        for index in [2, 3, 10, 11] {
+            let Content::Image(image) = &materialized.content[index] else {
+                panic!("valid image lost");
+            };
+            assert_eq!(image.data, canonical);
+        }
+        for index in [0, 1, 6, 7, 8, 9] {
+            assert!(
+                matches!(&materialized.content[index], Content::Text(text) if text.text.contains("no longer available"))
+            );
+        }
+        let (files, bound): (i64, i64) = store
             .read(|tx| {
                 Ok((
-                    tx.query_row("SELECT count(*) FROM blobs", [], |row| row.get(0))?,
-                    tx.query_row("SELECT count(*) FROM task_blobs", [], |row| row.get(0))?,
+                    tx.query_row(
+                        "SELECT count(*) FROM file_attachments WHERE state='ready'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    tx.query_row(
+                        "SELECT count(*) FROM file_attachments WHERE state='ready' AND bound=1",
+                        [],
+                        |row| row.get(0),
+                    )?,
                 ))
             })
             .unwrap();
-        assert_eq!((blobs, links), (1, 1));
+        assert!(files >= 4);
+        assert_eq!(
+            files, bound,
+            "retry must not leave duplicate unbound copies"
+        );
         let page_request = crate::store::paging::OpenTaskPageRequest {
             task: UUID.into(),
             limit_rows: None,
@@ -542,7 +639,7 @@ fn third_party_images_survive_failed_append_retry_and_cold_plain_or_keyed_reopen
         assert_eq!(
             items(&store),
             before_rebuild,
-            "metadata rebuild preserves raw image lengths"
+            "metadata rebuild preserves canonical image lengths"
         );
         drop(manager);
         store.close_for_shutdown().unwrap();
@@ -551,7 +648,7 @@ fn third_party_images_survive_failed_append_retry_and_cold_plain_or_keyed_reopen
         let cold = reopened
             .load_session(account, UUID, SessionLoad::Full)
             .unwrap();
-        assert_eq!(cold.entries, retained);
+        assert_eq!(cold.entries, persisted);
         let mut manager = cold.into_manager("/projects/test");
         manager.append_message(user("continues after reopening"));
         assert!(manager.take_persist_error().is_none());

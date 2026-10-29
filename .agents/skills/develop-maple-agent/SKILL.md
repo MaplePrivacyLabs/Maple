@@ -1,6 +1,6 @@
 ---
 name: develop-maple-agent
-description: Develop the GPUI Maple Agent desktop-v2 prototype, transport-neutral runtime, ACP/proxy modes, component Nix builds, and Agent-specific update discovery under apps/maple-agent. Use develop-maple or change-maple-agent-mode for the shipped Research Tauri app instead.
+description: Develop the GPUI Maple Agent desktop-v2 prototype, transport-neutral runtime, ACP/proxy modes, component Nix builds, and Agent-specific update discovery under apps/maple-agent. Use develop-maple for the shipped Research Tauri app instead.
 ---
 
 # Develop Maple Agent
@@ -33,20 +33,23 @@ just ci
 and warning-denied workspace builds/tests. Use `just release` for optimized
 build and performance evidence. Root `just agent-check`, `agent-build`, and
 `agent-dev` enter this component environment. The repository pre-commit hook
-runs `cargo fmt`, one workspace Clippy pass, and the workspace tests in this
-shell when Agent files are staged; set `MAPLE_HOOK_FULL=1` for the complete
-`just ci`. Root `nix flake check
---no-update-lock-file` additionally validates workflow selection and security
-contracts when CI, Nix, or routing changes.
+runs `just ci-lint` and `just ci-test` (the `agent-lint` and `agent-test` CI
+lanes) in this shell when Agent files are staged; `MAPLE_HOOK_FULL=1` adds
+`just ci-extra`, the rest of `just ci`. Root `just lane repo` additionally
+validates workflow selection and security contracts when CI, Nix, or routing
+changes.
 
 Agent has its own Cargo and Nix lockfiles. CI selects Agent for proxy runtime
 changes and for Rust SDK build inputs, both path dependencies it builds from
-the tree, but not for TypeScript SDK changes. Component-only
-changes should not unnecessarily select Research packaging. Maintain the root
-selectors, their tests, `.github/workflows/agent-ci.yml`, and unsigned PR
-selection in `.github/workflows/agent-desktop-build.yml` together. The desktop
-workflow compares `master` with the last fully verified ancestor package run;
-unrelated pushes skip packages, while manual master dispatch forces both profiles.
+the tree, but not for TypeScript SDK changes. Agent lanes live in
+`scripts/ci/lanes.py`; root `just lane <id>` runs one locally. Every Agent PR
+runs Linux lint and tests plus macOS and Windows Clippy; updater and
+dependency inputs add the native Windows updater tests and supply-chain
+checks. Packaging rehearsals and the full suites run by label (`ci:package`,
+`ci:windows`, `ci:full`), nightly, or on master. Load
+`$change-maple-ci` for what each label adds and how to trigger it, and
+[desktop builds](../../../apps/maple-agent/docs/desktop-builds.md) for the
+signed master packages.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including
 the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency
@@ -104,6 +107,13 @@ feed; publication is a separate protected operation. Invitations require the
 platform-specific signed installed-update rehearsal. Linux uses user-owned tar
 bundles and a separate v2 wire schema, preserving the shipped macOS v1 feed;
 one release may update both platforms to the same version.
+Windows x64 Dev/Prod installers are built by the same desktop workflow, with
+master Authenticode signing through the existing `windows-signing` environment.
+Windows Prod uses its signed v3 update feed and generation tar bundle; its
+signed NSIS setup remains the manual installation download. Normal publication
+includes Windows through the same protected publisher as macOS and Linux,
+without a separate Windows activation variable. Built-in Windows CUA remains
+unsupported.
 Dev and unpackaged builds have no production updater. Empty-key profiles still
 disable update traffic. Do not substitute a test key or inherit feed/key overrides
 from the launch environment. Embedded profiles, bundle IDs and state namespaces

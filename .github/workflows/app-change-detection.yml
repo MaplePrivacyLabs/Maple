@@ -28,6 +28,7 @@ permissions:
 jobs:
   detect:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       frontend: ${{ steps.classify.outputs.frontend }}
       macos: ${{ steps.classify.outputs.macos }}

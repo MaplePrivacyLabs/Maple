@@ -35,12 +35,15 @@ mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
-mod licenses;
+#[cfg(feature = "proxy")]
+mod local_api;
 mod mcp;
 mod navigation;
 use self::account::AccountState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
+#[cfg(feature = "proxy")]
+use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
 
@@ -60,6 +63,8 @@ pub enum Section {
     Account,
     Billing,
     ApiKeys,
+    #[cfg(feature = "proxy")]
+    LocalApi,
     Shortcuts,
     Prompt,
     Integrations,
@@ -76,6 +81,8 @@ impl Section {
             Self::Account => "Account",
             Self::Billing => "Billing",
             Self::ApiKeys => "API keys",
+            #[cfg(feature = "proxy")]
+            Self::LocalApi => "Local API",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Integrations => "Integrations",
@@ -86,11 +93,13 @@ impl Section {
         }
     }
 
-    const ALL: [Self; 11] = [
+    const ALL: &[Self] = &[
         Self::General,
         Self::Account,
         Self::Billing,
         Self::ApiKeys,
+        #[cfg(feature = "proxy")]
+        Self::LocalApi,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -148,6 +157,8 @@ pub struct SettingsScreen {
     account: AccountState,
     billing: BillingState,
     api_keys: ApiKeysState,
+    #[cfg(feature = "proxy")]
+    local_api: LocalApiUiState,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
     /// Account MCP servers; None until loaded.
@@ -176,7 +187,6 @@ pub struct SettingsScreen {
     application_reveal_pending: bool,
     pane_scroll: ScrollHandle,
     application_anchor: ScrollAnchor,
-    license_notice: Option<String>,
     advanced: advanced::AdvancedState,
     advanced_subscriptions: Vec<Subscription>,
 }
@@ -265,11 +275,14 @@ impl SettingsScreen {
 
     pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
         if self.update != snapshot {
-            self.update = snapshot.clone();
-            self.remote_screen
-                .update(cx, |screen, cx| screen.set_local_update(snapshot, cx));
+            self.update = snapshot;
             cx.notify();
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn remote_screen_for_test(&self) -> Entity<super::remote::RemoteScreen> {
+        self.remote_screen.clone()
     }
 
     pub(crate) fn settings_snapshot(&self) -> AppSettings {
@@ -422,6 +435,8 @@ impl SettingsScreen {
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(),
             api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
+            #[cfg(feature = "proxy")]
+            local_api: LocalApiUiState::new(application_vim_enabled, application_focus.clone(), cx),
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
@@ -446,7 +461,6 @@ impl SettingsScreen {
             application_reveal_pending: false,
             pane_scroll,
             application_anchor,
-            license_notice: None,
             advanced: advanced::AdvancedState::new(cx),
             advanced_subscriptions: Vec::new(),
         };
@@ -457,6 +471,12 @@ impl SettingsScreen {
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
         this.load_advanced_status(cx);
+        #[cfg(feature = "proxy")]
+        let this = {
+            let mut this = this;
+            this.refresh_local_api_status(cx);
+            this
+        };
         this
     }
 
@@ -1501,6 +1521,10 @@ impl SettingsScreen {
         // A dropdown belongs to the pane that opened it.
         self.close_setting_menu(cx);
         self.section = section;
+        #[cfg(feature = "proxy")]
+        if section == Section::LocalApi {
+            self.refresh_local_api_status(cx);
+        }
         self.remote_screen.update(cx, |screen, cx| {
             screen.set_active(section == Section::Remote, cx)
         });
@@ -1817,7 +1841,7 @@ impl SettingsScreen {
                         toggle_row(
                             "Summarize tool calls",
                             "Completed tool calls with long output get a one-line \
-                             summary from the title model on their cards.",
+                             summary on their cards.",
                             self.settings.tool_summaries,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_tool_summaries(cx);
@@ -1877,6 +1901,10 @@ impl SettingsScreen {
             }
             Section::ApiKeys => {
                 pane = pane.child(self.render_api_keys_pane(cx));
+            }
+            #[cfg(feature = "proxy")]
+            Section::LocalApi => {
+                pane = pane.child(self.render_local_api_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));
@@ -1953,17 +1981,6 @@ impl SettingsScreen {
                                 .child("Later")
                         ))
                     )
-                    .child(
-                        widgets::secondary_button("third-party-notices")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.license_notice = licenses::open().err();
-                                cx.notify();
-                            }))
-                            .child("Third-party notices"),
-                    )
-                    .when_some(self.license_notice.clone(), |pane, notice| {
-                        pane.child(info_row("Notices", notice))
-                    })
                     .child(info_row("Backend", self.backend.api_url().to_string()))
                     .child(info_row(
                         "Instruction directory",
@@ -2635,6 +2652,31 @@ impl SettingsScreen {
                 )
             });
         if cua_driver {
+            details = details.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(CUA_CREDIT)
+                    .child(
+                        div()
+                            .flex()
+                            .child(
+                                div()
+                                    .id("cua-project-link")
+                                    .text_color(gpui::rgb(theme::link()))
+                                    .hover(|style| style.underline().cursor_pointer())
+                                    .on_click(|_, _, _| {
+                                        crate::ui::rich_text::open_link(CUA_PROJECT_URL)
+                                    })
+                                    .child("Cua team"),
+                            )
+                            .child("."),
+                    ),
+            );
             let mut metadata = div().flex().flex_wrap().items_center().gap_2();
             metadata = metadata.child(integration_metadata_badge(cua_backend_label(integration)));
             for permission in integration
@@ -3050,6 +3092,11 @@ fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option
     Some(format!("{}: {guidance}", missing.label()))
 }
 
+/// Credit for the open-source project behind computer use, whose mark is
+/// the card's icon. The card follows it with "Cua team", linked.
+const CUA_CREDIT: &str = "Powered by Cua, an open-source project from the";
+const CUA_PROJECT_URL: &str = "https://cua.ai";
+
 fn cua_backend_label(_integration: &AgentIntegration) -> &'static str {
     "Built into Maple"
 }
@@ -3180,6 +3227,7 @@ fn shortcut_context_label(context: Option<&str>) -> &str {
         Some(crate::ui::text_input::vim_actions::NORMAL_CONTEXT) => "Composer — Normal",
         Some(crate::ui::text_input::vim_actions::VISUAL_CONTEXT) => "Composer — Visual",
         Some(crate::ui::text_input::vim_actions::INSERT_CONTEXT) => "Composer — Insert",
+        Some(crate::ui::text_input::vim_actions::WAITING_CONTEXT) => "Composer — Pending key",
         Some(context) => context,
     }
 }
@@ -3380,7 +3428,7 @@ mod tests {
 
         AgentIntegration {
             id: "cua-driver".to_string(),
-            name: "Computer use (CUA)".to_string(),
+            name: "Computer use".to_string(),
             description: "Computer use".to_string(),
             availability,
             version: Some("1.0.0".to_string()),

@@ -105,7 +105,7 @@ async fn a_stale_observer_cannot_retire_a_reloaded_session_with_the_same_id() {
     let stale = context.session_operations.lock().await[&task].clone();
     // Install a replacement generation while retaining the old worker's Arc.
     // Its late cleanup must not remove the new maps, lease, or session count.
-    let replacement = AcpSessionOperation::new(&context.lifetime);
+    let replacement = AcpSessionOperation::new(&context.lifetime, stale.history_epoch);
     context
         .session_operations
         .lock()
@@ -125,6 +125,73 @@ async fn a_stale_observer_cannot_retire_a_reloaded_session_with_the_same_id() {
         context.stats.active_sessions.load(Ordering::Acquire),
         active
     );
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+#[tokio::test]
+async fn delayed_history_replacements_at_or_before_the_registered_epoch_are_ignored() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    append_test_messages(
+        &harness.handle,
+        &task,
+        harness.project.path(),
+        &["Saved history".to_owned()],
+    );
+    let (store, account) = harness.handle.test_persistence().unwrap();
+    store.retire_task_timeline_for_test(account, &task).unwrap();
+    harness
+        .handle
+        .ensure_task_history_ready(&task)
+        .await
+        .unwrap();
+    let (mut client, serving, context) = connect_with_context(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    client
+        .call(
+            "session/load",
+            json!({"sessionId":task,"cwd":harness.project.path(),"mcpServers":[]}),
+        )
+        .await;
+    let operation = context.session_operations.lock().await[&task].clone();
+    assert!(operation.history_epoch > 0);
+    assert_eq!(
+        operation.history_epoch,
+        store.task_history_stamp(account, &task).unwrap().rows_epoch
+    );
+    let replay = Arc::clone(&operation.replay_gate).lock_owned().await;
+    operation.replaying.store(true, Ordering::Release);
+    // Deliberately dispatch after registration, while replay owns its gate.
+    // These are the notifications a completed preparation can leave queued.
+    for rows_epoch in [operation.history_epoch - 1, operation.history_epoch] {
+        let before = context.observer_dispatches.load(Ordering::Acquire);
+        harness.emit_service_event(crate::agent::AgentServiceEvent::HistoryReplaced {
+            user_id: context.agent.user_id().to_owned(),
+            session_id: task.clone(),
+            rows_epoch,
+        });
+        eventually(|| context.observer_dispatches.load(Ordering::Acquire) > before).await;
+        assert!(!operation.cancellation.is_cancelled());
+        assert_eq!(operation.failure_message(), None);
+        assert!(
+            context
+                .session_operation_is_current(&task, &operation)
+                .await
+        );
+    }
+    operation.replaying.store(false, Ordering::Release);
+    drop(replay);
+    harness.faux.push_text("The session remains attached.");
+    assert_eq!(
+        client.prompt(&task, "Continue.").await["stopReason"],
+        "end_turn"
+    );
+    assert_eq!(
+        client.texts("agent_message_chunk")[0].1,
+        "The session remains attached."
+    );
+    assert!(!context.lifetime.is_cancelled());
     client.shutdown().await;
     finish(serving).await;
 }
@@ -153,7 +220,7 @@ async fn a_history_replacement_invalidates_only_its_own_operation() {
     let event = crate::agent::AgentServiceEvent::HistoryReplaced {
         user_id: context.agent.user_id().to_owned(),
         session_id: changed.clone(),
-        rows_epoch: 2,
+        rows_epoch: changed_operation.history_epoch + 1,
     };
     // The private fixture emitter exposes timeline events only. Publish through
     // the same host dispatcher the runtime uses for this event variant.

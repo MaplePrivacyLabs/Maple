@@ -1,13 +1,24 @@
 """Backend, client-compatibility, and application-packaging routing regressions."""
 
+import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
-from agent_change_detection import affects_agent
 from change_detection import classify_path as research_routes
-from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS, classify_paths
+from lanes import PUSH
+from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS, classify_pcr, classify_paths
+from test_plan import AGENT_PUSH, selected
+from test_workflow_policy import ROOT
+
+
+def affects_agent(path):
+    """Whether a master push of `path` runs any Agent lane in ci.yml."""
+    return bool(selected([path], PUSH) & AGENT_PUSH)
 
 
 class OpenSecretChangeDetectionTests(unittest.TestCase):
@@ -105,6 +116,16 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_routes([path])
 
+    def test_update_services_are_independent_but_a_new_service_selects_every_check(self):
+        for path in ("services/agent-updates/src/worker.ts", "services/agent-updates/publisher/publisher.py",
+                     "services/agent-updates/wrangler.jsonc", "services/agent-updates/README.md",
+                     "services/download-tracking/tracking.ts", "services/updates/wrangler.jsonc"):
+            with self.subTest(path=path):
+                self.assert_routes([path])
+        for path in ("services/new-service/src/main.ts", "services/agent-updates-v2/src/worker.ts"):
+            with self.subTest(path=path):
+                self.assert_routes([path], *CHECK_OUTPUTS)
+
     def test_disposable_database_harness_selects_integration_without_app_packaging(self):
         path = ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh"
         self.assert_routes([path], "integration")
@@ -170,6 +191,146 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
 
     def test_component_hook_scripts_select_nothing(self):
         self.assert_routes(["services/opensecret/.githooks/pre-commit"])
+
+    def test_pcr_tooling_and_approvals_select_the_offline_pcr_check(self):
+        for relative in ("pcrPreview.json", "pcrPreviewHistory.json", "pcr_sign.js", "pcr_verify.js",
+                         "scripts/pcr_compatibility.py", "scripts/test_pcr_compatibility.py",
+                         "pcrDev.json", "pcrDevHistory.json", "pcrProd.json", "pcrProdHistory.json"):
+            with self.subTest(path=relative):
+                self.assertTrue(classify_pcr("services/opensecret/" + relative))
+        for path in ("services/opensecret/src/main.rs", "services/opensecret/docs/pcr-compatibility.md",
+                     "services/opensecret/scripts/ci_sign_pcr.sh", "pcrDev.json", "sdk/pcrDev.json"):
+            with self.subTest(path=path):
+                self.assertFalse(classify_pcr(path))
+
+
+class OpenSecretDiffSelectionTests(unittest.TestCase):
+    """opensecret-eif.yml's changes job (`plan.py opensecret`), run against fixture histories."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.git("init", "-q", "-b", "master")
+        self.git("config", "user.email", "ci@example.invalid")
+        self.git("config", "user.name", "CI fixture")
+        self.git("config", "core.hooksPath", "/dev/null")
+        scripts = self.root / "scripts/ci"
+        scripts.mkdir(parents=True)
+        for name in ("plan.py", "lanes.py", "opensecret_change_detection.py"):
+            shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
+        self.base = self.commit_file("README.md", "initial\n")
+
+    def git(self, *arguments):
+        result = subprocess.run(["git", *arguments], cwd=self.root, check=True,
+                                capture_output=True, text=True)
+        return result.stdout.strip()
+
+    def commit_file(self, path, text):
+        file = self.root / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(text)
+        self.git("add", "--", path)
+        self.git("commit", "-qm", "fixture change")
+        return self.git("rev-parse", "HEAD")
+
+    def select(self, event, base, head, *, succeeds=True):
+        output, payload = self.root / "output", self.root / "event.json"
+        output.unlink(missing_ok=True)
+        payload.write_text(json.dumps({"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
+                                      if event == "pull_request" else {"before": base, "after": head}))
+        env = {**os.environ, "GITHUB_EVENT_NAME": event, "GITHUB_EVENT_PATH": str(payload),
+               "GITHUB_OUTPUT": str(output)}
+        result = subprocess.run([sys.executable, "scripts/ci/plan.py", "opensecret"], cwd=self.root, env=env,
+                                capture_output=True, text=True)
+        if succeeds:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Cannot determine the PR's approved-PCR changes", result.stdout)
+        return dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
+
+    def expected(self, *selected):
+        return {name: "true" if name in selected else "false" for name in OUTPUTS}
+
+    def test_docs_only_push_backend_runtime_push_and_signed_pcr_push(self):
+        docs = self.commit_file("services/opensecret/docs/design.md", "design\n")
+        self.assertEqual(self.select("push", self.base, docs), self.expected())
+        runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
+        self.assertEqual(self.select("push", docs, runtime), self.expected("rust", "nix", "integration", "eif"))
+        pcr = self.commit_file("services/opensecret/pcrDevHistory.json", "[]\n")
+        self.assertEqual(self.select("push", runtime, pcr), self.expected("eif", "pcr_approvals"))
+
+    def test_parent_helper_only_diff_skips_eif_while_enclave_input_retains_it(self):
+        helper = self.commit_file("services/opensecret/nitro-toolkit/logging/Dockerfile", "FROM scratch\n")
+        for event in ("push", "pull_request"):
+            with self.subTest(event=event):
+                self.assertEqual(self.select(event, self.base, helper), self.expected("helpers"))
+        docs = self.commit_file("services/opensecret/nitro-toolkit/README.md", "helper docs\n")
+        self.assertEqual(self.select("push", helper, docs), self.expected())
+        enclave = self.commit_file("services/opensecret/nitro-toolkit/vsock_helper.py", "# enclave input\n")
+        self.assertEqual(self.select("push", docs, enclave), self.expected("nix", "eif"))
+
+    def test_pull_request_uses_merge_base_instead_of_unrelated_base_changes(self):
+        master = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
+        self.git("checkout", "-qb", "contributor", self.base)
+        docs = self.commit_file("services/opensecret/docs/design.md", "design\n")
+        self.assertEqual(self.select("pull_request", master, docs), self.expected())
+
+    def test_unrelated_master_approvals_do_not_count_as_pr_approval_edits(self):
+        master = self.commit_file("services/opensecret/pcrDev.json", "approved on master\n")
+        self.git("checkout", "-qb", "contributor", self.base)
+        runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
+        self.assertEqual(self.select("pull_request", master, runtime),
+                         self.expected("rust", "nix", "integration", "eif"))
+
+    def test_pr_approval_edit_selects_comparison_even_with_backend_changes(self):
+        runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
+        approvals = self.commit_file("services/opensecret/pcrProdHistory.json", "[]\n")
+        self.assertEqual(self.select("pull_request", self.base, approvals),
+                         self.expected("rust", "nix", "integration", "eif", "pcr_approvals"))
+        self.assertEqual(self.select("pull_request", runtime, approvals),
+                         self.expected("eif", "pcr_approvals"))
+
+    def test_deletion_or_rename_out_of_backend_still_selects_contract_checks(self):
+        runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
+        self.git("mv", "services/opensecret/src/main.rs", "LICENSE")
+        self.git("commit", "-qam", "rename fixture")
+        self.assertEqual(self.select("push", runtime, self.git("rev-parse", "HEAD")),
+                         self.expected("rust", "nix", "integration", "eif"))
+
+    def test_deletion_or_rename_of_an_approval_file_is_an_explicit_edit(self):
+        for rename in (False, True):
+            with self.subTest(rename=rename):
+                before = self.commit_file("services/opensecret/pcrProd.json", "approval\n")
+                if rename:
+                    (self.root / "services/opensecret/docs").mkdir(exist_ok=True)
+                    self.git("mv", "services/opensecret/pcrProd.json", "services/opensecret/docs/old-approval.json")
+                else:
+                    self.git("rm", "services/opensecret/pcrProd.json")
+                self.git("commit", "-qam", "remove approval fixture")
+                self.assertEqual(self.select("pull_request", before, self.git("rev-parse", "HEAD")),
+                                 self.expected("eif", "pcr_approvals"))
+
+    def test_missing_history_manual_event_classifier_failure_and_partial_output_fail_safe(self):
+        for event, base, head in (("push", "0" * 40, self.base), ("push", "a" * 40, self.base),
+                                  ("workflow_dispatch", "", "")):
+            with self.subTest(event=event, base=base):
+                self.assertEqual(self.select(event, base, head), self.expected(*CHECK_OUTPUTS))
+        classifier = self.root / "scripts/ci/opensecret_change_detection.py"
+        classifier.write_text("print('rust=false')\nraise RuntimeError('fixture')\n")
+        self.assertEqual(self.select("push", self.base, self.base), self.expected(*CHECK_OUTPUTS))
+        self.assertEqual(self.select("pull_request", self.base, self.base, succeeds=False), {})
+
+    def test_pr_missing_history_fails_routing_without_inventing_approval_changes(self):
+        self.assertEqual(self.select("pull_request", "a" * 40, self.base, succeeds=False), {})
+
+    def test_successful_but_incomplete_classifier_output_is_rejected(self):
+        classifier = self.root / "scripts/ci/opensecret_change_detection.py"
+        classifier.write_text(
+            "OUTPUTS = " + repr(OUTPUTS) + "\nprint('rust=false')\n"
+        )
+        self.assertEqual(self.select("pull_request", self.base, self.base, succeeds=False), {})
+        self.assertEqual(self.select("push", self.base, self.base), self.expected(*CHECK_OUTPUTS))
 
 
 if __name__ == "__main__":

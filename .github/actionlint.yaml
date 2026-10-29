@@ -1,7 +1,10 @@
 # Custom labels for managed runners used by GitHub Actions.
 self-hosted-runner:
   labels:
-    - blacksmith-8vcpu-ubuntu-2404-arm
+    - blacksmith-16vcpu-ubuntu-2404-arm
     - blacksmith-8vcpu-windows-2025
     - blacksmith-6vcpu-macos-26
     - blacksmith-8vcpu-ubuntu-2404
+    - blacksmith-32vcpu-ubuntu-2404
+    # GitHub-hosted larger runner (org runner group "Maple"); actionlint only knows standard labels.
+    - maple-windows-2025-16core

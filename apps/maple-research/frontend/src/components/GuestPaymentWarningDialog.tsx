@@ -11,15 +11,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
 import { AlertTriangle, LogOut, CreditCard } from "lucide-react";
-import {
-  clearMapleApiAuthForUser,
-  restoreMapleApiAuthForUser,
-  stopAgentRuntimeForUser
-} from "@/services/agentRuntimeService";
-import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useState } from "react";
 import { getBillingService } from "@/billing/billingService";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 import { isAndroid, isIOS } from "@/utils/platform";
@@ -45,9 +40,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
     setLogoutError(null);
     setIsLoggingOut(true);
     const releaseChatFence = beginAllChatRuntimeDeletionFence(runtimeStore);
-    let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
     let signedOut = false;
-    let nativeAuthCleared = false;
     const userId = os.auth.user?.user.id;
 
     try {
@@ -62,24 +55,10 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
 
     const releaseAppleBilling = suspendAppleBillingForAccount(userId);
     try {
-      operationBlock = await stopAgentRuntimeForUser(userId);
-    } catch (error) {
-      releaseAppleBilling();
-      console.error("Error stopping Agent Mode:", error);
-      releaseChatFence();
-      setLogoutError("Maple couldn't stop Agent Mode. Please try logging out again.");
-      setIsLoggingOut(false);
-      return;
-    }
-
-    try {
       assertChatAccountCredential(userId);
       // Credential reset is a required part of logout.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(userId, (name) => {
-        assertChatAccountCredential(userId);
-        return os.deleteApiKey(name);
-      });
+      await proxyService.stopAndResetProxy();
 
       assertChatAccountCredential(userId);
       // Third-party billing tokens outlive the OpenSecret browser session. If
@@ -91,8 +70,6 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
         sessionStorage.removeItem("maple_billing_token");
       }
 
-      await clearMapleApiAuthForUser(userId);
-      nativeAuthCleared = true;
       assertChatAccountCredential(userId);
       await os.signOut();
       signedOut = true;
@@ -100,24 +77,12 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
       queryClient.clear();
     } catch (error) {
       console.error("Error during sign out:", error);
-      setLogoutError(
-        "Maple couldn't securely reset Agent Mode or finish logging out. Please try again."
-      );
+      setLogoutError("Maple couldn't finish logging out. Please try again.");
     } finally {
       releaseAppleBilling();
       if (!signedOut) {
         releaseChatFence();
-        if (nativeAuthCleared) {
-          try {
-            await restoreMapleApiAuthForUser(userId);
-          } catch (error) {
-            console.error("Error restoring Maple API authentication:", error);
-          }
-        }
-        operationBlock.release();
         setIsLoggingOut(false);
-      } else {
-        operationBlock.retainUntilNextSession();
       }
     }
   };

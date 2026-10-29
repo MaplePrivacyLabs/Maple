@@ -48,6 +48,7 @@ store-v1/
     keys.json                password-wrapped data key, password mode only
     keys.backup.json         second key-file copy, password mode only
   logs/maple-agent.log        plaintext operational diagnostics
+  attachments/               plaintext session-owned files and images
   resources/                 generated instruction Markdown, skills and prompts
   setup.json                 only while an erase/setup operation is unfinished
   db.tmp/ db.new/ db.old/     temporary generation replacement/recovery only
@@ -58,11 +59,11 @@ ownership, permissions, links and nonregular database files. Windows creates a
 protected owner-only directory ACL. The authoritative lock is inside the store,
 so removal of a temporary IPC socket cannot create a second database owner.
 
-New app state includes task metadata, complete source entries, derived timeline
-rows, attachments/images, preferences and dictionary words, sign-in credentials,
+New database state includes task metadata, complete source entries, derived timeline
+rows, attachment metadata, preferences and dictionary words, sign-in credentials,
 MCP definitions/secrets, send receipts and remote identities/grants. Sign-out
 keeps local history. Account deletion removes only that account's new-store
-records after server success is confirmed. If the outcome is ambiguous, Maple
+records and owned attachment files after server success is confirmed. If the outcome is ambiguous, Maple
 keeps the data and pending deletion intent. Automatic reconciliation is not
 implemented in this version; ordinary sign-in may remain blocked by that intent.
 An authentication failure by itself does not prove that the server account was
@@ -74,16 +75,46 @@ attachments, remote identities or temporary spill files. Existing installations
 therefore begin with fresh application state in this namespace. There is no
 migration or automatic cleanup of previous data.
 
+Within `store-v1`, attachments use ordinary session-owned files. Attaching makes
+a stable copy on the execution computer, including when the desktop is local.
+Moving or editing the original does not change an accepted attachment. The
+database keeps ownership and metadata; normal files and archives are given to
+the model by their execution-side path. Archives are not automatically unpacked.
+Images retain the model's existing vision and `read_image` behavior.
+
+Before sending, the desktop keeps a temporary plaintext copy under its profile's
+`draft-attachments/` directory, outside `store-v1`. This lets a draft survive
+changes to the selected original and lets an uncertain upload be retried with
+the same operation identity. Live copies are released when the draft is removed,
+sent, signed out or its view is torn down. A bounded sweep removes unlocked
+crash leftovers after seven days. Store reset does not manage this desktop-owned
+temporary directory, and database encryption does not protect these copies.
+
+Deleting a session schedules deletion of its owned files; interrupted cleanup
+retries without starving other sessions. Ordinary read-only owned folders can be
+reclaimed, but inaccessible permissions or foreign ownership still require repair;
+Maple does not follow links or report incomplete erasure as success.
+Compaction alone retains historical attachments. A stopped-store backup
+must include both the database and the attachment tree. Unlock passwords do not
+encrypt these files, and no password change converts them to encrypted payloads.
+
+The attachment schema migration retires the former SQLite image payloads instead
+of exporting them as plaintext. Conversation text and tool results remain, with
+explicit unavailable-image markers where needed. Existing captions are retained
+when present; an image does not necessarily have a caption. This migration is
+restartable and does not reset the database. It cannot be undone by launching an
+older binary, and reclaimed SQLite pages may not immediately shrink the database
+file. Existing backups and filesystem snapshots are not erased.
+Opening or continuing an older task prioritizes rebuilding its derived history.
+If that bounded preparation is still pending, Maple reports it instead of showing
+an empty conversation. Missing historical image files become unavailable; new
+outgoing images still require successful preparation.
+
 General project/workspace Markdown, `AGENTS.md`/`CLAUDE.md`, `SYSTEM.md`, skills
 and prompt templates retain their resource-loading behavior. They remain files
 and are outside database encryption and application-data erasure. Newly
 generated delegation resources use the new `resources/` location; this does not
 authorize reading old application JSON or databases.
-
-Opening third-party notices reads the public HTML shipped beside the executable.
-An unpackaged developer binary instead writes its small embedded source and
-attribution page to a fresh random temporary file for the browser. Neither page
-contains account or task data; they are outside the encrypted store.
 
 ## History display and replay limits
 
@@ -123,6 +154,7 @@ local unlock password, separate from the Maple account password. It is not saved
 an OS keychain, passed in argv/environment variables, or sent to a remote peer.
 
 The password protects the current database while its host is stopped. It does
+not encrypt attachment files, including images and tool screenshots. It does
 not protect against code running as the same user while the host is unlocked,
 root/administrator access, screenshots, clipboard contents, the project files
 tools edit, instruction files, or copies kept by external agents. File sizes,
@@ -263,9 +295,9 @@ For a manual copy of this version's store:
    commands alone do not acquire this lock.
 3. Copy the complete `store-v1/` directory to a separate destination. Include
    the complete `db/` generation, any WAL still present, both key files when
-   present, and `generation.json`. Never combine a database and key/generation
+   present, `generation.json`, and the complete `attachments/` tree. Never combine a database and key/generation
    files from different copies. Preserve private permissions and appropriate
-   ownership; instructions/resources and logs in that directory remain plaintext.
+   ownership; attachments, instructions/resources and logs remain plaintext.
 4. Verify the copy independently while retaining the original. A file-transfer
    success is not an integrity or password-unlock check. Reopen the original
    only after the copy has finished.
@@ -281,8 +313,8 @@ an ownership, generation or wrong-password refusal.
 
 Maple cannot reset a forgotten local unlock password. **Forgot password?** opens
 **Erase this version's local data**, requiring the exact text `ERASE`. This
-removes this version's saved app-state database, including tasks/history,
-attachments, settings, sign-in, MCP secrets and this store's local remote
+removes this version's saved app-state database and owned attachment files,
+including tasks/history, settings, sign-in, MCP secrets and this store's local remote
 pairings. It does not delete a server account, other computers' state, external
 agents' own copies, backups, snapshots, old app data, or the instruction-file
 exception above. Setup then requires an explicit new password or **Continue
@@ -352,9 +384,11 @@ Append schema migrations; changes to item builders/derivation require a
 Generation changes revoke cached account/task-store handles; numeric account IDs
 cannot carry ownership into a replacement database. Credential writes compare
 the exact stored owner even when its row is hidden from the current API view.
-Malformed or empty tool-result images remain lossless inline source when they
-cannot be stored as blobs, so a blob conversion failure does not permanently
-poison persistence retries.
+Image payloads are never retained as inline database fallback data. Invalid or
+unavailable media becomes an explicit unavailable marker without changing a tool
+result's success status. Valid image references are resolved only when needed
+for a preview or effective model context; ordinary history reads do not load
+every image payload.
 
 Idle maintenance reclaims at most 64 freelist pages per chunk and periodically
 runs bounded `PRAGMA optimize`, yielding to foreground work. Idle full-integrity

@@ -93,8 +93,6 @@ macos_release_main() {
     local icon=maple-agent.icns
     [[ "$profile" != dev ]] || icon=maple-agent-dev.icns
     cp "$component/app/packaging/$icon" "$app/Contents/Resources/MapleAgent.icns"
-    python3 "$component/scripts/stage-third-party-notices.py" "$app/Contents/Resources/licenses" \
-        --target aarch64-apple-darwin
     python3 "$component/scripts/release-info.py" plist "$profile" "$output_dir/build-info.json" \
         --build-number "$build_number" --output "$app/Contents/Info.plist"
     macos_embed_dylibs "$component" "$binary" "$app"

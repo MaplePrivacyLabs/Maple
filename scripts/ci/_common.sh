@@ -1876,7 +1876,9 @@ extract_appimage_tool() {
   tmp="$(mktemp -d)"
   rm -rf "${out}"
 
-  if ! unsquashfs -d "${tmp}/squashfs-root" -o "${offset}" "${appimage}" >/dev/null; then
+  # Host SELinux labels and other privileged attributes must not be restored
+  # from an AppImage during an unprivileged build.
+  if ! unsquashfs -xattrs-include '^user\.' -d "${tmp}/squashfs-root" -o "${offset}" "${appimage}" >/dev/null; then
     rm -rf "${tmp}"
     return 1
   fi
@@ -3826,10 +3828,22 @@ verify_linux_appimage_executable_metadata() {
   return "${status}"
 }
 
+verify_linux_rpm_package_dependencies() {
+  local package="$1"
+  local requires
+
+  requires="$(rpm -qp --requires "${package}")" || return 1
+  if ! grep -Fxq 'libwebkit2gtk-4.1.so.0()(64bit)' <<< "${requires}"; then
+    echo "RPM is missing the required libwebkit2gtk-4.1.so.0()(64bit) capability: ${package}" >&2
+    return 1
+  fi
+}
+
 verify_linux_rpm_package_executable_metadata() {
   local rpm="$1"
   local tmp status
 
+  verify_linux_rpm_package_dependencies "${rpm}" || return 1
   tmp="$(mktemp -d)"
   status=0
   (
@@ -3922,8 +3936,9 @@ rpm_arch() {
 build_rpm_package_from_payload() {
   local rpm="$1"
   local payload="$2"
+  local config="${3:-${TAURI_DIR}/tauri.conf.json}"
   local topdir spec built_rpm
-  local version release arch rpm_build_shell
+  local version release arch rpm_build_shell requires name summary
 
   command -v rpmbuild >/dev/null 2>&1 || {
     echo "rpmbuild is required to build RPM packages. Run through the flake CI shell." >&2
@@ -3931,8 +3946,13 @@ build_rpm_package_from_payload() {
   }
   rpm_build_shell="$(command -v bash)"
 
-  version="$(jq -r '.version' "${TAURI_DIR}/tauri.conf.json")"
-  release="$(jq -r '.bundle.linux.rpm.release // "1"' "${TAURI_DIR}/tauri.conf.json")"
+  version="$(jq -r '.version' "${config}")"
+  release="$(jq -r '.bundle.linux.rpm.release // "1"' "${config}")"
+  name="$(jq -r '.mainBinaryName // "maple"' "${config}")"
+  summary="$(jq -r 'if .mainBinaryName then .productName else "Maple AI" end' "${config}")"
+  # The normalized RPM bypasses Tauri's bundler and automatic RPM requirements.
+  # Preserve the explicit runtime dependencies from the shared bundle config.
+  requires="$(jq -r '.bundle.linux.rpm.depends // [] | map("Requires: " + .) | join("\n")' "${config}")"
   arch="$(rpm_arch)"
   topdir="$(mktemp -d)"
   spec="${topdir}/SPECS/maple.spec"
@@ -3941,17 +3961,18 @@ build_rpm_package_from_payload() {
   mkdir -p "${topdir}/BUILD" "${topdir}/BUILDROOT" "${topdir}/RPMS" "${topdir}/SOURCES" "${topdir}/SPECS" "${topdir}/SRPMS" "${topdir}/tmp"
 
   cat > "${spec}" <<EOF
-Name: maple
+Name: ${name}
 Epoch: 0
 Version: ${version}
 Release: ${release}
-Summary: Maple AI
+Summary: ${summary}
 License: MIT
 BuildArch: ${arch}
 AutoReqProv: no
+${requires}
 
 %description
-Maple AI
+${summary}
 
 %prep
 

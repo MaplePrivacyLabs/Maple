@@ -26,7 +26,8 @@ does not establish live publisher settings or deployed state.
 `MAPLE_WEB_ENVIRONMENT=pr` for both PRs and master. It builds the PR head SHA,
 not a production-configured master artifact. A separate unprivileged checkout
 at the workflow/merge SHA supplies manifest tooling for older PR heads.
-Path filters cover the existing web build inputs and the Pages CI files.
+Path filters cover the existing web build inputs and the Pages CI files; a
+newer PR head cancels an older preview build.
 Fork PRs retain ordinary CI but receive no hosted preview. Pushes to other
 branches without a qualifying PR do not get automatic previews from this path.
 
@@ -155,7 +156,7 @@ Offline checks from the repository root (use the host system for a local check):
 
 ```bash
 nix build --no-update-lock-file --no-link --print-build-logs .#checks.x86_64-linux.pages
-nix flake check --no-update-lock-file
+just lane repo
 MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
 ```
 
@@ -170,20 +171,23 @@ maintained and tested within Auth. Research retains its built-in web auth,
 existing SDK pin, and native entry URLs. Neither an Auth change nor an Auth
 publication requires a Research release.
 
-| Lane | Source and configuration | Result |
+| Workflow | Source and configuration | Result |
 | --- | --- | --- |
-| `Auth Pages CI` | PRs targeting any base, including forks and stacked branches; relevant master pushes; optional master dispatch; `dev` profile | Publisher checks, standalone Auth checks/build; internal PR and master runs produce `maple-auth-development-RUN-ATTEMPT` with manifest profile `auth-dev` |
+| `Auth Pages CI` | PRs targeting any base, including forks and stacked branches; relevant master pushes; optional master dispatch; `dev` profile | Standalone Auth checks/build; internal PR and master runs produce `maple-auth-development-RUN-ATTEMPT` with manifest profile `auth-dev` |
 | `Auth Pages build` | Manual dispatch on protected `master`; `release` profile | `maple-auth-production-RUN-ATTEMPT` artifact with manifest profile `auth-release` |
 | `Publish Auth Pages` | Manual protected-master dispatch selecting the exact successful production build run/attempt | `maple-auth` / `maple-auth.pages.dev`, ref and environment `auth-pages-production`, public URL `https://auth.maple.ai` |
 | `Publish Auth Dev Pages` — stable | Automatically follows successful master `Auth Pages CI`; optional manual recovery selecting run/attempt | `maple-auth-dev` / `maple-auth-dev.pages.dev`, ref and environment `auth-pages-development`, public URL `https://auth-dev.maple.ai` |
 | `Publish Auth Dev Pages` — PR | Automatically follows a successful current internal PR head, including stacked PRs | `pr-N` preview on `maple-auth-dev`, a distinct Auth deployment status and PR comment; does not advance either Auth production ref |
 
-The Dev producer reuses the existing Auth CI job rather than running a second
-test/build lane. Push and PR path filters cover Auth source, its build scripts,
-Pages tooling/workflows and shared Nix inputs. Unrelated application changes
-alone do not trigger it. PR checkout and manifest use the exact PR head SHA,
-not GitHub's synthetic merge SHA. Forks retain the unprivileged CI checks but
-do not produce a publishable artifact. Each publisher executes trusted master
+The Dev producer is `Auth Pages CI` itself: its job runs `auth-ci.sh` and
+builds the artifact. On pull requests, `ci.yml`'s `auth` lane runs the same
+`auth-ci.sh` for `ci-ok`, so the checks run twice by design. Push and PR path
+filters cover Auth source, its build scripts, the artifact tooling and shared
+Nix inputs; a newer PR head cancels an older build. The Pages and publisher
+tests run in `ci.yml`'s `repo` lane. Unrelated application changes alone do
+not trigger it. PR checkout and manifest use the exact PR head SHA, not
+GitHub's synthetic merge SHA. Forks retain the unprivileged CI checks but do
+not produce a publishable artifact. Each publisher executes trusted master
 tooling in a separate `workflow_run` job; PR code never receives publication
 credentials.
 

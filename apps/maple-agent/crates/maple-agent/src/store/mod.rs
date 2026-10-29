@@ -3,9 +3,11 @@
 //! Only typed APIs leave this module. Raw connections and transactions are
 //! restricted to the store subtree, and errors never retain SQL or row values.
 
+mod attachment_cleanup;
+mod attachment_migration;
+mod attachments;
 #[cfg(feature = "store-bench")]
 pub mod bench;
-mod blobs;
 mod codec;
 mod connection;
 #[cfg(test)]
@@ -45,9 +47,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-pub use blobs::{
-    AttachmentRange, BlobCollectionProgress, ImageUpload, MAX_ATTACHMENT_RANGE_BYTES,
-    StoredAttachment,
+pub use attachments::{
+    ATTACHMENT_SOURCE_PREFIX, AttachmentCollectionProgress, AttachmentRange,
+    AttachmentUploadMetadata, AttachmentUploadStart, AttachmentUploadStatus,
+    AttachmentUploadWriter, ImageUpload, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_RANGE_BYTES,
+    MAX_ATTACHMENTS, MAX_UPLOAD_IMAGE_BYTES, PreparedAttachmentUpload, StoredAttachment,
+    UNAVAILABLE_IMAGE_SOURCE,
 };
 pub use error::{DamageReason, RefusalReason, StoreError, StoreResult};
 pub use gc::{CollectionProgress, CollectionStage, DeletedTask};
@@ -149,7 +154,8 @@ pub struct Store {
     lifecycle_control: lifecycle::LifecycleControl,
     next_reader: AtomicUsize,
     foreground_waiters: AtomicUsize,
-    pub(super) blob_locks: Arc<blobs::BlobLocks>,
+    pub(super) attachment_locks: Arc<attachments::AttachmentLocks>,
+    collection_cursors: Mutex<gc::CollectionCursors>,
     changes: tokio::sync::broadcast::Sender<StoreChange>,
     persistence: persistence::PersistenceState,
     replays: replay::ReplayRegistry,
@@ -187,7 +193,8 @@ impl Store {
             lifecycle_control: lifecycle::LifecycleControl::default(),
             next_reader: AtomicUsize::new(0),
             foreground_waiters: AtomicUsize::new(0),
-            blob_locks: Arc::new(blobs::BlobLocks::default()),
+            attachment_locks: Arc::new(attachments::AttachmentLocks::default()),
+            collection_cursors: Mutex::new(gc::CollectionCursors::default()),
             changes: tokio::sync::broadcast::channel(256).0,
             persistence: persistence::PersistenceState::default(),
             replays: replay::ReplayRegistry::default(),

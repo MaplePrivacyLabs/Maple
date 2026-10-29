@@ -25,11 +25,11 @@
             "main"
           ],
           "platforms": [
-            "macOS"
+            "macOS",
+            "linux"
           ],
           "permissions": [
             "core:default",
-            "dialog:default",
             "fs:default",
             {
               "identifier": "fs:allow-read-file",
@@ -100,7 +100,6 @@
                 }
               ]
             },
-            "opener:allow-reveal-item-in-dir",
             "sign-in-with-apple:default",
             "deep-link:allow-get-current"
           ]
