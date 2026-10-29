@@ -114,6 +114,11 @@ signed NSIS setup remains the manual installation download. Normal publication
 includes Windows through the same protected publisher as macOS and Linux,
 without a separate Windows activation variable. Built-in Windows CUA remains
 unsupported.
+Use the [reusable release operator](../../../services/agent-updates/publisher/release_helpers/README.md)
+for routine releases. Record changing release facts in pinned data snapshots;
+do not copy helpers, edit release literals or add repeated helper-code reviews.
+Review changed helper logic or policy through the normal process. Actual
+artifact, signature, fresh-state and separate protected approval checks remain.
 Dev and unpackaged builds have no production updater. Empty-key profiles still
 disable update traffic. Do not substitute a test key or inherit feed/key overrides
 from the launch environment. Embedded profiles, bundle IDs and state namespaces

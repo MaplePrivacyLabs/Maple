@@ -1,5 +1,11 @@
 # Agent release publisher
 
+For routine operator releases, use the checked-in
+[reusable release CLI](release_helpers/README.md). Release identities, artifact
+digests and private operator policy are hash-bound data; do not copy these
+helpers or edit executable constants for each version. The existing publisher
+workflow and its separate protected approvals remain unchanged.
+
 This tooling publishes the independent Agent feed. It does not change Research,
 create Cloudflare resources, generate keys, create GitHub releases or execute
 downloaded applications. Run it from a trusted checkout with the root pinned
