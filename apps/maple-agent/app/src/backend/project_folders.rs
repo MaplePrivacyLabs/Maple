@@ -48,6 +48,19 @@ pub struct ProjectFolderPage {
 }
 
 impl LocalBackend {
+    pub async fn recent_project_roots(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<maple_agent::agent::RecentProjectRoot>, String> {
+        self.authorize_account(user_id)?;
+        self.open_store()?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .recent_project_roots()
+            .await
+    }
+
     pub async fn browse_project_folders(
         &self,
         user_id: &str,

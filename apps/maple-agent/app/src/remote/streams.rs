@@ -131,6 +131,7 @@ pub struct Client {
     connection: Connection,
     project_folders: OnceCell<bool>,
     scratch_project: OnceCell<bool>,
+    recent_projects: OnceCell<bool>,
     discovery_timeout: Duration,
 }
 
@@ -140,6 +141,7 @@ impl Client {
             connection,
             project_folders: OnceCell::new(),
             scratch_project: OnceCell::new(),
+            recent_projects: OnceCell::new(),
             discovery_timeout: DISCOVERY_TIMEOUT,
         }
     }
@@ -164,9 +166,13 @@ impl Client {
             Method::BrowseProjectFolders
                 | Method::CreateProjectFolder
                 | Method::CreateScratchProject
+                | Method::RecentProjectRoots
         ) {
             let scratch = command.method == Method::CreateScratchProject;
-            let support = if scratch {
+            let recent = command.method == Method::RecentProjectRoots;
+            let support = if recent {
+                &self.recent_projects
+            } else if scratch {
                 &self.scratch_project
             } else {
                 &self.project_folders
@@ -180,7 +186,9 @@ impl Client {
                     peer_info(&self.connection)
                         .await
                         .map(|info| {
-                            if scratch {
+                            if recent {
+                                info.supports_recent_projects()
+                            } else if scratch {
                                 info.supports_scratch_project()
                             } else {
                                 info.supports_project_folders()
@@ -192,7 +200,9 @@ impl Client {
             .await
             .map_err(|_| FOLDERS_UNCONFIRMED.to_owned())??;
             if !supported {
-                return Err(if scratch {
+                return Err(if recent {
+                    "Update Maple on the remote computer to show recent projects."
+                } else if scratch {
                     "Update Maple on the remote computer to start a project from scratch."
                 } else {
                     FOLDERS_UNSUPPORTED

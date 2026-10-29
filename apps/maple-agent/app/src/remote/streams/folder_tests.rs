@@ -435,3 +435,64 @@ async fn scratch_creation_requires_its_own_capability_and_fresh_authorization() 
         b.close().await;
     }
 }
+
+#[tokio::test]
+async fn recent_projects_require_their_own_capability_and_fresh_authorization() {
+    for supported in [false, true] {
+        let (a, b, connection, server) = endpoints().await;
+        let client = Client::new(connection);
+        let peer = async {
+            let (probe, mut tx) = request(&server).await;
+            assert_eq!(probe.method, Method::PeerInfo);
+            let mut info = information(true);
+            if !supported {
+                info.protocol
+                    .capabilities
+                    .retain(|cap| cap != crate::remote::update::RECENT_PROJECTS_CAPABILITY);
+            }
+            response(&mut tx, probe.id, serde_json::to_value(info).unwrap()).await;
+            // An unsupported or revoked request cannot reach the execution host.
+            let (call, mut tx) = request(&server).await;
+            assert_eq!(
+                call.method,
+                if supported {
+                    Method::RecentProjectRoots
+                } else {
+                    Method::ListTasks
+                }
+            );
+            response(&mut tx, call.id, json!("accepted")).await;
+        };
+        let viewer = async {
+            let error = client
+                .call(command(1, Method::RecentProjectRoots), async {
+                    assert!(supported, "unsupported peers must not authorize");
+                    Err("account changed".into())
+                })
+                .await
+                .err()
+                .unwrap();
+            assert!(error.contains(if supported {
+                "account changed"
+            } else {
+                "Update Maple"
+            }));
+            let method = if supported {
+                Method::RecentProjectRoots
+            } else {
+                Method::ListTasks
+            };
+            assert!(
+                matches!(client.call(command(2, method), async { Ok(()) }).await.unwrap(),
+                Message::Response { result: Ok(value), .. } if value == json!("accepted"))
+            );
+        };
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(peer, viewer);
+        })
+        .await
+        .unwrap();
+        a.close().await;
+        b.close().await;
+    }
+}

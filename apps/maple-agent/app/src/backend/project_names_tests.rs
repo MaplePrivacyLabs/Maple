@@ -131,10 +131,19 @@ async fn project_rename_ipc_preserves_account_boundary_and_recovery_metadata() {
     assert_eq!(renamed.name, "Owner project");
     assert!(renamed.name_revision > 0);
     project_event(&mut events, &path, "Owner project").await;
+    let value = crate::backend::dispatch(&backend, request("recent_project_roots", json!([USER])))
+        .await
+        .unwrap();
+    let recent: Vec<RecentProjectRoot> = serde_json::from_value(value).unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].path, path);
+    assert_eq!(recent[0].name, "Owner project");
+    assert!(recent[0].last_used_ms > 0);
 
     for method in [
         "rename_project_root",
         "navigation_bootstrap",
+        "recent_project_roots",
         "list_projects",
     ] {
         let params = match method {

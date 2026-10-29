@@ -369,6 +369,103 @@ impl ChatScreen {
         cx.notify();
     }
 
+    pub(super) fn install_picker_projects(
+        &mut self,
+        mut projects: Vec<(Option<String>, RecentProjectRoot)>,
+    ) {
+        projects.sort_by(|(a_host, a), (b_host, b)| {
+            b.last_used_ms
+                .cmp(&a.last_used_ms)
+                .then_with(|| a_host.cmp(b_host))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        let mut seen = HashSet::new();
+        projects.retain(|(host, project)| seen.insert((host.clone(), project.path.clone())));
+        projects.truncate(3);
+        self.picker_projects = projects;
+    }
+
+    pub(super) fn refresh_picker_projects(&mut self, cx: &mut Context<Self>) {
+        self.picker_projects_generation += 1;
+        self.picker_projects.clear();
+        #[cfg(test)]
+        if let Some(projects) = self.picker_projects_fixture.clone() {
+            self.install_picker_projects(projects);
+            cx.notify();
+            return;
+        }
+        let generation = self.picker_projects_generation;
+        let user = self.user_id.clone();
+        let epoch = self.host_recovery.epoch;
+        let multiple = self.computers.len() > 1;
+        let sources = if multiple {
+            self.computers
+                .iter()
+                .filter_map(|computer| {
+                    Some((
+                        computer.key.clone(),
+                        computer.backend.clone()?,
+                        computer.host_epoch,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![(
+                self.backend.remote_host().map(str::to_owned),
+                self.backend.clone(),
+                epoch,
+            )]
+        };
+        for (key, backend, source_epoch) in sources {
+            let user = user.clone();
+            let request_user = user.clone();
+            let request_backend = backend.clone();
+            self.call(
+                async move { request_backend.recent_project_roots(&request_user).await },
+                cx,
+                move |this, result, cx| {
+                    if this.user_id != user
+                        || this.host_recovery.epoch != epoch
+                        || this.picker_projects_generation != generation
+                        || (this.computers.len() > 1) != multiple
+                    {
+                        return;
+                    }
+                    let current = if multiple {
+                        this.computers.iter().any(|computer| {
+                            computer.key == key
+                                && computer.host_epoch == source_epoch
+                                && computer
+                                    .backend
+                                    .as_ref()
+                                    .is_some_and(|active| Arc::ptr_eq(active, &backend))
+                        })
+                    } else {
+                        Arc::ptr_eq(&this.backend, &backend)
+                    };
+                    if !current {
+                        return;
+                    }
+                    match result {
+                        Ok(roots) => this.merge_picker_projects(key, roots),
+                        Err(error) => this.notice = Some(error.into()),
+                    }
+                    cx.notify();
+                },
+            );
+        }
+    }
+
+    pub(super) fn merge_picker_projects(
+        &mut self,
+        key: Option<String>,
+        roots: Vec<RecentProjectRoot>,
+    ) {
+        let mut projects = std::mem::take(&mut self.picker_projects);
+        projects.extend(roots.into_iter().map(|root| (key.clone(), root)));
+        self.install_picker_projects(projects);
+    }
+
     pub(super) fn computers_project_menu(&self) -> Menu<Self> {
         let mut menu = Menu::new("computer-project-menu", px(320.))
             .label("Projects")
@@ -404,10 +501,19 @@ impl ChatScreen {
                 )
                 .icon("folder-open"),
             );
-            if !computer.projects.is_empty() {
+            if self
+                .picker_projects
+                .iter()
+                .any(|(key, _)| key == &computer.key)
+            {
                 menu = menu.separator().header("Recent projects");
             }
-            for (project_index, project) in computer.projects.iter().enumerate() {
+            for (project_index, (_, project)) in self
+                .picker_projects
+                .iter()
+                .filter(|(key, _)| key == &computer.key)
+                .enumerate()
+            {
                 let request = Navigate {
                     computer: computer.key.clone(),
                     destination: if self.draft {
@@ -418,7 +524,7 @@ impl ChatScreen {
                 };
                 let mut item = MenuItem::new(
                     SharedString::from(format!("computer-{index}-project-{project_index}")),
-                    project.label.clone(),
+                    project.name.clone(),
                     move |_: &mut Self, _, cx| cx.emit(request.clone()),
                 )
                 .icon(if computer.key.is_some() {
@@ -430,10 +536,10 @@ impl ChatScreen {
                     computer.key.as_deref() == self.backend.remote_host()
                         && self.project_root.as_deref() == Some(project.path.as_str()),
                 );
-                if computer
-                    .projects
+                if self
+                    .picker_projects
                     .iter()
-                    .filter(|peer| peer.label == project.label)
+                    .filter(|(key, peer)| key == &computer.key && peer.name == project.name)
                     .count()
                     > 1
                 {

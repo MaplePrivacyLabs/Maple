@@ -501,8 +501,8 @@ impl ChatScreen {
             .into_any_element()
     }
 
-    /// Explicit new-project choices, followed by recent projects. A long list scrolls.
-    fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
+    /// Explicit new-project choices, followed by at most three recent projects.
+    fn project_menu(&self, _cx: &mut Context<Self>) -> Menu<Self> {
         let mut menu = Menu::new("project-menu", px(320.))
             .label("Projects")
             .max_height(px(440.))
@@ -521,18 +521,12 @@ impl ChatScreen {
             )
             .icon("folder-open"),
         );
-        if !self.recent_roots.is_empty() {
+        if !self.picker_projects.is_empty() {
             menu = menu.separator().header("Recent projects");
         }
-        let projects = self
-            .recent_roots
-            .iter()
-            .map(|root| {
-                let label = self.sidebar.read(cx).root_name(&root.path);
-                (root.path.clone(), label)
-            })
-            .collect::<Vec<_>>();
-        for (path, label) in &projects {
+        for (_, root) in &self.picker_projects {
+            let path = &root.path;
+            let label = &root.name;
             let pick = path.clone();
             let mut item = MenuItem::new(
                 SharedString::from(format!("root-{path}")),
@@ -543,7 +537,13 @@ impl ChatScreen {
             )
             .truncate_start()
             .current(self.project_root.as_deref() == Some(path.as_str()));
-            if projects.iter().filter(|(_, name)| name == label).count() > 1 {
+            if self
+                .picker_projects
+                .iter()
+                .filter(|(_, peer)| &peer.name == label)
+                .count()
+                > 1
+            {
                 item = item.note(path.clone());
             }
             menu = menu.item(item);

@@ -882,7 +882,21 @@ impl AgentRuntimeHandle {
         self.ensure_accepting_new_work()?;
         self.ensure_task_history_ready(&request.session_id).await?;
         let runtime = self.runtime().await?;
-        runtime.send_desktop(request).await
+        let session_id = request.session_id.clone();
+        let run = runtime.send_desktop(request).await?;
+        let tasks = runtime.store.clone();
+        // Admission already succeeded. A metadata failure must not tell the
+        // caller to resend a message which is running, queued, or steering.
+        let recorded = tokio::task::spawn_blocking(move || {
+            tasks
+                .store()
+                .touch_task_project(tasks.account(), &session_id, pi_ai::now_ms())
+        })
+        .await;
+        if !matches!(recorded, Ok(Ok(()))) {
+            log::warn!("Could not update recent project use after accepting a message");
+        }
+        Ok(run)
     }
 
     /// Drop a message that waits behind the task's run.

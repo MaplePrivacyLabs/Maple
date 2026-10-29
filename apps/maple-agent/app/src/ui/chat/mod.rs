@@ -573,6 +573,10 @@ pub struct ChatScreen {
     /// Navigation that owns the outstanding folder creation.
     scratch_creation: Option<u64>,
     recent_roots: Vec<RecentProjectRoot>,
+    picker_projects: Vec<(Option<String>, RecentProjectRoot)>,
+    picker_projects_generation: u64,
+    #[cfg(test)]
+    picker_projects_fixture: Option<Vec<(Option<String>, RecentProjectRoot)>>,
     /// Which of the chat's popup menus is open: the header's project menu,
     /// a composer chip's menu, or the transcript's right-click menu.
     popup: Popup<ChatScreen, ChatPopup>,
@@ -1361,6 +1365,10 @@ impl ChatScreen {
             scratch_project: false,
             scratch_creation: None,
             recent_roots: Vec::new(),
+            picker_projects: Vec::new(),
+            picker_projects_generation: 0,
+            #[cfg(test)]
+            picker_projects_fixture: None,
             popup: Popup::new(|this| &mut this.popup, cx),
             dialog_focus: None,
             dialog_focus_pending: false,
@@ -2121,7 +2129,9 @@ impl ChatScreen {
 
     /// Open or close the project menu from the header chip.
     pub fn toggle_root_menu(&mut self, cx: &mut Context<Self>) {
-        self.popup.toggle(ChatPopup::Project, cx);
+        if self.popup.toggle(ChatPopup::Project, cx) {
+            self.refresh_picker_projects(cx);
+        }
     }
 
     /// Open or close one of the composer chips' menus. Opening the
@@ -2980,8 +2990,18 @@ impl ChatScreen {
                 let live_has_more = detail.live_has_more;
                 match mode {
                     LoadMode::Select => {
+                        let root = detail.session.project_root.clone();
+                        let needs_recent_touch = this
+                            .project_root
+                            .as_ref()
+                            .is_none_or(|current| current == &root);
                         this.upsert_session(detail.session.clone(), cx);
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
+                        // A different existing root is persisted by set_active_session;
+                        // explicit opens in the same root also count as recent use.
+                        if needs_recent_touch {
+                            this.persist_project_root(root, cx);
+                        }
                         this.set_queue(detail.queue.items);
                     }
                     LoadMode::Reload => {

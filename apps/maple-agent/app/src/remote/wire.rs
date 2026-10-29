@@ -136,6 +136,7 @@ pub enum Method {
     BrowseProjectFolders,
     CreateProjectFolder,
     CreateScratchProject,
+    RecentProjectRoots,
     SelectProjectRoot,
     RenameProjectRoot,
     CreateSession,
@@ -207,7 +208,10 @@ impl Method {
             MAX_MANAGEMENT_REPLY
         } else if matches!(
             self,
-            Self::BrowseProjectFolders | Self::CreateProjectFolder | Self::CreateScratchProject
+            Self::BrowseProjectFolders
+                | Self::CreateProjectFolder
+                | Self::CreateScratchProject
+                | Self::RecentProjectRoots
         ) {
             256 * 1024
         } else if matches!(
@@ -496,6 +500,7 @@ mod tests {
             "browse_project_folders",
             "create_project_folder",
             "create_scratch_project",
+            "recent_project_roots",
         ] {
             assert_eq!(Method::parse(name).unwrap().name(), name);
         }
@@ -507,6 +512,7 @@ mod tests {
             Method::BrowseProjectFolders,
             Method::CreateProjectFolder,
             Method::CreateScratchProject,
+            Method::RecentProjectRoots,
         ] {
             assert_eq!(Method::parse(&method.name()).unwrap(), method);
             assert_eq!(method.reply_limit(), 256 * 1024);

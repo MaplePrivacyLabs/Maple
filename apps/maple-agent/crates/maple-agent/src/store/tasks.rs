@@ -879,6 +879,10 @@ impl Store {
                 )
                 .optional()?;
             if let Some((id, Some(_), None)) = existing {
+                tx.execute(
+                    "UPDATE projects SET last_used_ms=?3 WHERE account_id=?1 AND id=?2",
+                    params![account.0, id, now_ms],
+                )?;
                 return Ok((ProjectKey(id), None));
             }
             // Prepending uses one indexed seek and one point update, regardless
@@ -910,6 +914,31 @@ impl Store {
                     ..StoreChange::default()
                 }),
             ))
+        })
+    }
+
+    /// An accepted user message counts as use without selecting a new default,
+    /// changing navigation order, or restoring a removed project.
+    pub fn touch_task_project(
+        &self,
+        account: AccountId,
+        task: &str,
+        now_ms: i64,
+    ) -> StoreResult<()> {
+        validate_uuid(task)?;
+        if now_ms < 0 {
+            return Err(StoreError::InvalidInput);
+        }
+        self.write(Durability::Durable, |tx| {
+            writable_account(tx, account)?;
+            tx.execute(
+                "UPDATE projects SET last_used_ms=max(last_used_ms,?3)
+                WHERE account_id=?1 AND position IS NOT NULL AND removed_ms IS NULL
+                AND id=(SELECT project_id FROM tasks WHERE account_id=?1 AND uuid=?2
+                    AND deleted_ms IS NULL)",
+                params![account.0, task, now_ms],
+            )?;
+            Ok(())
         })
     }
 
@@ -1092,6 +1121,23 @@ impl Store {
                 AND state = 'archived' AND provisional = 0 AND message_count > 0 AND deleted_ms IS NULL",
                 [account.0], |row| row.get(0))?;
             Ok(ProjectPage { projects, next, archived_count: archived_count as u64 })
+        })
+    }
+
+    /// Picker recency is independent of the manually arranged navigation list.
+    /// Read only three metadata records, including roots beyond its first page.
+    pub fn recently_used_projects(&self, account: AccountId) -> StoreResult<Vec<ProjectRecord>> {
+        self.read(|tx| {
+            writable_account(tx, account)?;
+            let sql = format!(
+                "SELECT {PROJECT_COLUMNS} FROM projects AS p WHERE account_id = ?1
+                AND removed_ms IS NULL AND position IS NOT NULL AND last_used_ms > 0
+                ORDER BY last_used_ms DESC, root, id LIMIT 3"
+            );
+            let mut statement = tx.prepare_cached(&sql)?;
+            Ok(statement
+                .query_map([account.0], read_project)?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 

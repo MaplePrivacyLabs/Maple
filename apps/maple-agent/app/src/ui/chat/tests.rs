@@ -822,6 +822,10 @@ mod state_tests {
         chat.update(cx, |this, cx| {
             let mut catalog = this.computers.as_ref().clone();
             catalog[1].projects[0].label = "Renamed remote project".into();
+            this.picker_projects_fixture = Some(vec![(
+                Some("peer".into()),
+                named_root("/tmp/proj", "Renamed remote project", 2),
+            )]);
             set_computer_snapshots(this, Arc::new(catalog), cx);
             assert_eq!(
                 this.project_label(cx),
@@ -10309,6 +10313,7 @@ mod state_tests {
     fn test_application_vim_escape_assistant_focus_and_plain_command_count(
         cx: &mut TestAppContext,
     ) {
+        cx.executor().allow_parking();
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -10699,6 +10704,100 @@ mod state_tests {
         });
     }
 
+    #[gpui::test]
+    fn project_picker_shows_only_three_most_recent_roots(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, _| {
+            let roots = [
+                ("old", 1),
+                ("second", 40),
+                ("oldest", 0),
+                ("newest", 50),
+                ("third", 30),
+            ]
+            .into_iter()
+            .map(|(name, last_used_ms)| {
+                let mut root = recent_root(&absolute_fixture_root(name));
+                root.last_used_ms = last_used_ms;
+                root
+            })
+            .collect::<Vec<_>>();
+            this.recent_roots = roots.clone();
+            this.picker_projects_fixture =
+                Some(roots.into_iter().map(|root| (None, root)).collect());
+        });
+        press(cx, "root-picker");
+        assert!(cx.debug_bounds("root-choose").is_some());
+        cx.simulate_keystrokes("down down");
+        for name in ["newest", "second", "third"] {
+            cx.simulate_keystrokes("down");
+            assert_eq!(
+                cx.update(|_, app| chat.read(app).popup.highlighted().cloned()),
+                Some(gpui::ElementId::from(SharedString::from(format!(
+                    "root-{}",
+                    absolute_fixture_root(name)
+                ))))
+            );
+        }
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            cx.update(|_, app| chat.read(app).popup.highlighted().cloned()),
+            Some(gpui::ElementId::from("root-scratch"))
+        );
+        chat.update(cx, |this, _| {
+            assert_eq!(this.recent_roots.len(), 5);
+            assert_eq!(this.recent_roots[0].path, absolute_fixture_root("old"));
+        });
+    }
+
+    #[gpui::test]
+    fn project_picker_caps_recents_across_computers(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        chat.update(cx, |this, _| {
+            let roots = [
+                (None, "local-old", 10),
+                (Some("remote"), "remote-new", 50),
+                (None, "local-new", 40),
+                (Some("remote"), "remote-next", 30),
+                (Some("remote"), "remote-old", 20),
+                (None, "local-new", 39),
+            ]
+            .into_iter()
+            .map(|(host, name, last_used_ms)| {
+                let mut root = recent_root(name);
+                root.last_used_ms = last_used_ms;
+                (host.map(str::to_owned), root)
+            })
+            .collect();
+            // Local results are immediately usable while a remote has not replied.
+            let roots: Vec<_> = roots;
+            this.merge_picker_projects(
+                None,
+                roots
+                    .iter()
+                    .filter(|(host, _)| host.is_none())
+                    .map(|(_, root)| root.clone())
+                    .collect(),
+            );
+            assert_eq!(this.picker_projects[0].1.path, "local-new");
+            assert_eq!(this.picker_projects.len(), 2);
+            this.merge_picker_projects(
+                Some("remote".into()),
+                roots
+                    .into_iter()
+                    .filter(|(host, _)| host.is_some())
+                    .map(|(_, root)| root)
+                    .collect(),
+            );
+            assert_eq!(
+                this.picker_projects
+                    .iter()
+                    .map(|(_, root)| root.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["remote-new", "local-new", "remote-next"]
+            );
+        });
+    }
+
     /// Ctrl-P opens the project menu, takes the focus off the composer,
     /// and walks its rows with plain arrow keys. Closing the menu gives
     /// the composer its focus back.
@@ -10734,6 +10833,13 @@ mod state_tests {
                 recent_root(&absolute_fixture_root("one")),
                 recent_root(&absolute_fixture_root("two")),
             ];
+            chat.picker_projects_fixture = Some(
+                chat.recent_roots
+                    .iter()
+                    .cloned()
+                    .map(|root| (None, root))
+                    .collect(),
+            );
             chat.booting = false;
             chat
         });
@@ -11347,6 +11453,17 @@ mod state_tests {
                         error: None,
                     })
                     .collect();
+                this.picker_projects_fixture = Some(
+                    [None, Some("remote-one"), Some("remote-two")]
+                        .into_iter()
+                        .map(|key| {
+                            (
+                                key.map(str::to_owned),
+                                recent_root(&absolute_fixture_root("project")),
+                            )
+                        })
+                        .collect(),
+                );
                 this.set_computers(Arc::new(computers), cx);
             });
             cx.update(|_, cx| {
