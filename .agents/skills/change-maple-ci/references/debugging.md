@@ -15,7 +15,7 @@ Start with the facts the run already has:
 | --- | --- | --- |
 | Push a commit | Yes | Code fixes; also picks up new labels and variables |
 | **Re-run all jobs** | Yes: `plan` reads the PR's current labels and repository variables | After adding a label, or changing `CI_QUARANTINE` or a `CI_*_RUNNER` variable. GitHub offers it only on a finished run: cancel a running PR run first, never a master run |
-| **Re-run failed jobs** | No: reuses the old `plan` outputs (lanes, matrix runners, quarantine) | Infrastructure flakes in a lane |
+| **Re-run failed jobs** | No: reuses the old `plan` outputs (lanes, matrix runners, quarantine) | Infrastructure flakes in a lane. A job that imports the Metal Toolchain (`agent-package-macos`) re-run more than a day later fails at the download, because the `metal-toolchain` artifact lives one day: re-run `metal-toolchain` too, or all jobs |
 | Dispatch `ci.yml` | Its own plan from the `lanes` input | Running lanes on a branch outside a PR. It never saves caches |
 
 Adding a label never starts a run by itself. That is deliberate: a label
@@ -32,7 +32,7 @@ the cancellation to finish, so rapid re-pushes each add some delay.
 | Signature | Cause | Response |
 | --- | --- | --- |
 | Nix setup fails: `HTTP error 416`, `SSL_read`, or "is required, but there is no substituter" | Transient `cache.nixos.org` error. Setup has no automatic retry | Re-run the failed job |
-| "lost communication with the server", or a job that vanished mid-run | Lost runner | Re-run failed jobs. On `agent-desktop-build.yml` (signed builds), ask the release owner first; a re-run in the same run keeps the build number |
+| "lost communication with the server", or a job that vanished mid-run | Lost runner | Re-run failed jobs. On `agent-desktop-build.yml` (signed builds), ask the release owner first; a re-run in the same run keeps the build number. A macOS build re-run more than a day later also needs **Export the Metal Toolchain** re-run, since its artifact lives one day |
 | `plan` fails with `lane selection failed` on a PR | A label read through `gh api` failed, or the event payload was unusable | **Re-run all jobs** |
 | `plan` fails on every event, master included | `CI_QUARANTINE` names an unknown lane or `repo` | Fix or clear the variable |
 | `plan` succeeds but selects every lane | An unclassified path, or no usable diff (new branch, force-push) | Own or mark inert the path in `lanes.py`; `plan.py lint` lists it |
@@ -62,7 +62,8 @@ the cancellation to finish, so rapid re-pushes each add some delay.
   lanes save only from the 04:17 UTC nightly run. A labelled run right after
   a lockfile change restores by prefix and is slower.
 - **Agent master builds.** The exact-key release cache misses when a
-  third-party package, a dependency edge or `flake.lock` changes (a version
+  third-party package, a dependency edge, `flake.lock` or, for macOS,
+  `scripts/ci/apple-toolchain.json` changes (a version
   bump of workspace or path crates keeps it), and fat LTO bounds the link. The
   master Agent build is slow by design; it does not gate PRs.
 - **Queued jobs.** If `agent-lint` or `agent-test` sit queued while other

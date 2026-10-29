@@ -77,8 +77,8 @@ branches in step with the lane table.
   keys. `scripts/ci/cargo_graph_key.py` hashes the Agent's `flake.lock` and
   its `Cargo.lock` without the versions of workspace and path crates, which
   Cargo rebuilds anyway: a release version bump keeps the key, and a change
-  to any third-party package or dependency edge, or to the toolchain, makes
-  the next build cold. Pushes build only Prod; the nightly Dev and dispatched
+  to any third-party package or dependency edge, or to the toolchain (for
+  macOS also `scripts/ci/apple-toolchain.json`), makes the next build cold. Pushes build only Prod; the nightly Dev and dispatched
   builds restore the same key without saving (the profile changes only Agent
   workspace crates, which Cargo rebuilds). No `ci.yml` lane reads it. The
   Agent packaging lanes build thin LTO into their own
@@ -123,7 +123,8 @@ the other side of each contract. A failure means the workflow change is wrong:
    ancestor succeeded (a scan still running does not block). These run on every
    relevant master push and are never cancelled.
 4. The signed master builds write the release cache keys above (the Agent's
-   is `cargo_graph_key.py`'s hash of its lockfiles, with no fallback), and
+   is `cargo_graph_key.py`'s hash of its lockfiles, plus the Xcode pin on
+   macOS, with no fallback), and
    `ios-dev-testflight.yml`'s run number is the Maple Dev build number: never
    rename that file.
 5. Every OpenSecret EIF builder that uses FlakeHub (`ci.yml`'s `os-eif`,
@@ -253,6 +254,14 @@ release workflows use:
 | Artifact verifiers, TestFlight submission, the Agent's signing and attestation, CodeQL, web and frontend evidence | Other GitHub-hosted runners |
 | Proxy release builds and their PR rehearsal (`proxy-rust.yml`) | GitHub-hosted Linux and Windows, Blacksmith macOS |
 | EIF builders that use FlakeHub | `blacksmith-16vcpu-ubuntu-2404-arm` |
+
+The Agent's signing and attestation, both TestFlight submissions, the macOS
+release verifiers and the Metal Toolchain export need the pinned Xcode, so they
+run on GitHub's `xcode-27` label, a public-preview image without an SLA. If
+GitHub renames or retires it, move them to the label that carries Xcode 27.1,
+such as `macos-27` once that image ships it. Jobs that launch or inspect
+artifacts without selecting Xcode stay on `macos-26`, an older macOS than the
+builds link against.
 
 The Agent's signing and attestation, `windows-signing` jobs and every artifact
 verifier stay GitHub-hosted: the Agent publisher rejects self-hosted signers,

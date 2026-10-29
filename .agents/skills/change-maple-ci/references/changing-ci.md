@@ -23,7 +23,7 @@ Paths are relative to the repository root. `scripts/ci/lanes.py` and
 | `submodules` | Recursive submodules with full blobless history (Nix needs `revCount`) |
 | `hook` | Pre-commit component that runs the same checks locally |
 | `restore` | Read-only restore of a cache another workflow writes |
-| `requires` | Lanes whose jobs this lane's special job needs. The planner adds them to every plan that selects the lane, dispatches included; a required lane has no paths, labels or gate of its own, so nothing else selects it (lint). `metal-toolchain` is the example: GitHub's xcode-27 image exports Xcode's Metal Toolchain for `agent-package-macos` |
+| `requires` | Lanes whose jobs this lane's special job needs. The planner adds them to every plan that selects the lane, dispatches included; a required lane has no paths, labels, gate or OpenSecret selector of its own and runs on no event its requirers lack, so nothing else selects it (lint). `metal-toolchain` is the example: GitHub's xcode-27 image exports Xcode's Metal Toolchain for `agent-package-macos` |
 
 Event sets:
 

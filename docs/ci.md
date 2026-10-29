@@ -172,7 +172,7 @@ org's 16-core GitHub runner are billed by the minute.
 | --- | --- | --- |
 | `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-6vcpu-macos-27`, `blacksmith-8vcpu-windows-2025` | Most compiling lanes, for example Research Rust, OpenSecret Rust, every macOS lane and the Agent's Windows Clippy | Fast, with warm caches in Blacksmith's store |
 | `blacksmith-32vcpu-ubuntu-2404` | `agent-lint`, `agent-test` | The heaviest cold builds |
-| `xcode-27` | `metal-toolchain` | GitHub's Xcode 27 image ships Xcode's Metal Toolchain, which Blacksmith's macOS image lacks and cannot download; it exports it for the macOS packaging rehearsal, the only lane that compiles gpui's shaders. The Agent's other macOS lanes build with runtime shaders |
+| `xcode-27` | `metal-toolchain` | GitHub's Xcode 27 image ships Xcode's Metal Toolchain, which Blacksmith's macOS image lacks and cannot download; it exports it for the macOS packaging rehearsal, the only lane that compiles gpui's shaders. The Agent's other macOS lanes build with runtime shaders. It is a public-preview label without an SLA; if GitHub retires it, use the label that carries Xcode 27.1 |
 | `ubuntu-latest`, `ubuntu-24.04-arm` | Lighter lanes, for example `repo`, SDK, proxy, Research web, services, `deps-*` and `os-pcr` | Free, and fast enough without Blacksmith |
 | `windows-2025` | `agent-windows-updater`, `agent-full-windows` | Blacksmith's Windows workspace inherits a foreign write ACE that the updater's storage validation rejects, and the reparse tests need the symlink privilege GitHub's runner grants |
 | `maple-windows-2025-16core` | `agent-package-windows` (its install smoke needs GitHub's image), `research-desktop-windows` (for speed) | Same image and cache store as `windows-2025`, with more cores |
