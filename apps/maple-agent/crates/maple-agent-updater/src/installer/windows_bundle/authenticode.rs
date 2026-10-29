@@ -40,7 +40,7 @@ use windows_sys::Win32::{
     },
 };
 
-use super::super::{InstallError, Result};
+use super::{InstallError, Result};
 
 const EXPECTED_PUBLISHER: &str = "Mutiny Wallet Inc. dba OpenSecret";
 const MAX_NAME_UNITS: u32 = 512;

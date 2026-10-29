@@ -2,6 +2,11 @@
 //! executable is never launched; this is not installed-update qualification.
 
 #[cfg(windows)]
+use maple_agent_updater::installer::InstallError;
+#[cfg(windows)]
+type Result<T> = std::result::Result<T, InstallError>;
+
+#[cfg(windows)]
 #[allow(dead_code)]
 #[path = "../src/installer/windows_bundle/authenticode.rs"]
 mod authenticode;
