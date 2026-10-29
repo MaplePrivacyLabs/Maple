@@ -1901,6 +1901,13 @@ impl Sidebar {
             SidebarEntry::OtherTask(index) => !self.other_tasks[*index].archived,
             _ => false,
         };
+        let project_header = |entry: &SidebarEntry| {
+            matches!(
+                entry,
+                SidebarEntry::SectionLabel(SidebarSection::Project(_))
+                    | SidebarEntry::ComputerProject(_)
+            )
+        };
         let row_spacing = entries
             .iter()
             .enumerate()
@@ -1912,17 +1919,20 @@ impl Sidebar {
                     ix.checked_sub(1).and_then(|ix| entries.get(ix)),
                     Some(SidebarEntry::SectionLabel(_) | SidebarEntry::ArchivedHeader)
                 ),
-                after: match entry {
-                    SidebarEntry::SectionLabel(SidebarSection::Project(index)) => self
-                        .collapsed_projects
-                        .contains(&self.project_roots[*index].target),
-                    SidebarEntry::ComputerProject(index) => self
-                        .collapsed_projects
-                        .contains(&self.computer_projects[*index].target),
-                    _ => {
-                        unarchived_task(entry) && !entries.get(ix + 1).is_some_and(unarchived_task)
-                    }
-                },
+                after: (project_header(entry) && entries.get(ix + 1).is_some_and(project_header))
+                    || match entry {
+                        SidebarEntry::SectionLabel(SidebarSection::Project(index)) => self
+                            .collapsed_projects
+                            .contains(&self.project_roots[*index].target),
+                        SidebarEntry::ComputerProject(index) => self
+                            .collapsed_projects
+                            .contains(&self.computer_projects[*index].target),
+                        SidebarEntry::ProjectEmpty(_) => true,
+                        _ => {
+                            unarchived_task(entry)
+                                && !entries.get(ix + 1).is_some_and(unarchived_task)
+                        }
+                    },
             })
             .collect();
         let old_spacing = std::mem::replace(&mut self.row_spacing, row_spacing);
@@ -4423,6 +4433,121 @@ fn remote_root_display_name(root: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{remote_root_display_name, root_display_name};
+
+    #[gpui::test]
+    fn collapsed_and_empty_projects_keep_the_expanded_task_gap(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
+        let folded = Navigate {
+            computer: Some("remote".into()),
+            destination: Destination::Project("/tmp/b".into()),
+        };
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view.sort = SidebarSort::Manual;
+            let mut computer = Computer::pending("remote".into(), "Remote".into(), None);
+            computer.backend = Some(Arc::new(AgentBackend::for_remote_test("remote").unwrap()));
+            computer.loading = false;
+            computer.projects = ["a", "b", "c", "d"]
+                .into_iter()
+                .map(|name| super::super::computers::Project {
+                    path: format!("/tmp/{name}"),
+                    label: name.into(),
+                })
+                .collect();
+            computer.sessions = ["a", "b", "d"]
+                .into_iter()
+                .map(|name| AgentSessionSummary {
+                    id: name.into(),
+                    title: format!("Task {name}"),
+                    project_root: format!("/tmp/{name}"),
+                    created_ms: 0,
+                    updated_ms: 0,
+                    message_count: 1,
+                    model: None,
+                    web_enabled: true,
+                    state: AgentTaskState::Active,
+                    acp: false,
+                })
+                .collect();
+            sidebar.computers = Arc::new(vec![computer]);
+            sidebar.collapsed_projects.insert(ProjectTarget {
+                computer: folded.computer.clone(),
+                path: "/tmp/b".into(),
+            });
+            sidebar.seed_computer_snapshot_pages_for_test();
+            sidebar.list =
+                gpui::ListState::new(sidebar.entries.len(), gpui::ListAlignment::Top, px(0.));
+        });
+        struct Host(Entity<Sidebar>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let list = sidebar.update(cx, |sidebar, _| sidebar.list.clone());
+        let (_host, cx) = cx.add_window_view(|_, _| Host(sidebar.clone()));
+        cx.simulate_resize(gpui::size(px(300.), px(700.)));
+        let rows = |cx: &mut gpui::VisualTestContext| {
+            sidebar.update(cx, |sidebar, _| {
+                let task = sidebar.entries.iter().position(|entry| {
+                    matches!(entry, SidebarEntry::OtherTask(index)
+                        if sidebar.other_tasks[*index].session.id == "a")
+                });
+                let project = |path| {
+                    sidebar.entries.iter().position(|entry| {
+                        matches!(entry, SidebarEntry::ComputerProject(index)
+                            if sidebar.computer_projects[*index].root == path)
+                    })
+                };
+                [
+                    task.unwrap(),
+                    project("/tmp/b").unwrap(),
+                    project("/tmp/c").unwrap(),
+                ]
+            })
+        };
+        for group in [SidebarGroup::Project, SidebarGroup::Connection] {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.view.group = group;
+                sidebar.rebuild_entries();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            for (step, expanded) in [false, true, false, true, false].into_iter().enumerate() {
+                if step > 0 {
+                    sidebar.update(cx, |sidebar, cx| {
+                        assert!(sidebar.toggle_computer_group(&folded, cx));
+                    });
+                    cx.run_until_parked();
+                }
+                let [task, folded_row, empty] = rows(cx);
+                let task_height = list.bounds_for_item(task).unwrap().size.height;
+                let folded_height = list.bounds_for_item(folded_row).unwrap().size.height;
+                let empty_height = list.bounds_for_item(empty).unwrap().size.height;
+                assert_eq!(
+                    empty_height, task_height,
+                    "empty project ends with the task gap"
+                );
+                if expanded {
+                    assert!(
+                        folded_height < task_height,
+                        "expanded header stays beside its task"
+                    );
+                } else {
+                    assert_eq!(
+                        folded_height, task_height,
+                        "collapsed project ends with the task gap"
+                    );
+                }
+            }
+        }
+    }
 
     #[gpui::test]
     fn sidebar_remeasures_an_offscreen_heading_when_its_gap_changes(cx: &mut gpui::TestAppContext) {
