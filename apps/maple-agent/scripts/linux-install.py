@@ -254,7 +254,9 @@ def main():
              "unsafe installer lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         paths = install(source, home)
-        print("Installed " + PROFILES[descriptor["profile"]][3] + ". Launch " + str(paths["wrapper"]))
+        display = PROFILES[descriptor["profile"]][3]
+        print("Installed " + display + ". Open your application menu and search for " + display + ".")
+        print("Or launch from a terminal: " + shlex.quote(str(paths["wrapper"])))
         print("Updates are managed by the app. Profile data was not changed.")
 
 

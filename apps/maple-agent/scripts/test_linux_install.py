@@ -118,6 +118,26 @@ class LinuxInstallTests(unittest.TestCase):
         self.assertIn("Name=Maple Work Dev\n", dev["desktop"].read_text())
         self.assertTrue(set(prod.values()).isdisjoint(dev.values()))
 
+    @unittest.skipUnless(sys.platform == "linux" and shutil.which("gio"),
+                         "GLib's desktop launcher is required")
+    def test_gnome_desktop_entry_launches_installed_bundle_after_download_is_removed(self):
+        home = self.root / "desktop home with 'quotes'"
+        home.mkdir()
+        for profile in ("prod", "dev"):
+            with self.subTest(profile=profile):
+                source = bundle_fixture(self.root / ("desktop-" + profile), profile)
+                paths = installer.install(source, home)
+                shutil.rmtree(source)
+                # Use the same desktop-entry implementation as GNOME, not a
+                # shell approximation of Exec. The fixture AppRun only echoes
+                # arguments; no real app, account or desktop session is used.
+                result = subprocess.run(
+                    ["gio", "launch", str(paths["desktop"]), "https://example.invalid/launch"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "https://example.invalid/launch\n")
+
     def test_every_preexisting_managed_path_is_refused_without_replacement(self):
         for kind in ("bundle", "wrapper", "desktop", "icon", "receipt"):
             with self.subTest(kind=kind):
