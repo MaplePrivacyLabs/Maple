@@ -3536,3 +3536,95 @@ async fn history_preparation_rechecks_completion_before_starting_another_epoch()
         "waiting foreground open must not schedule a redundant rebuild"
     );
 }
+
+/// A new task starts on the user's pick while the catalog offers it, then
+/// on the catalog's suggestion. Disabled, deprecated, alias and non-chat
+/// entries are never offered, and the list survives a restart on the disk
+/// cache alone.
+#[tokio::test]
+async fn new_tasks_default_to_the_pick_then_the_catalogs_suggestion() {
+    let mut harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({
+            "object": "list",
+            "data": [
+                {"id": "glm-5-3"},
+                {"id": "kimi-k3"},
+                {"id": "deepseek-v4-1-flash"},
+                {"id": "retired", "enabled": false},
+                {"id": "old", "deprecated": true},
+                {"id": "nomic-embed-text"},
+            ],
+            "aliases": [{"id": "auto:quick", "target_model": "glm-5-3"}],
+            "defaults": {"quick": "auto:quick", "agent": "kimi-k3"},
+        }))
+        .await;
+    // The harness starts on glm-5-3, the old built-in default: not a pick.
+    assert_eq!(harness.handle.model_choice().await.unwrap(), None);
+    assert_eq!(
+        harness.handle.available_model_ids().await.unwrap(),
+        ["kimi-k3", "glm-5-3", "deepseek-v4-1-flash"]
+    );
+
+    harness
+        .handle
+        .save_model_choice("deepseek-v4-1-flash".into())
+        .await
+        .unwrap();
+    harness.restart().await;
+    harness.start().await;
+    assert_eq!(
+        harness.handle.model_choice().await.unwrap().as_deref(),
+        Some("deepseek-v4-1-flash")
+    );
+    assert_eq!(
+        harness.handle.available_model_ids().await.unwrap(),
+        ["deepseek-v4-1-flash", "glm-5-3", "kimi-k3"]
+    );
+}
+
+/// A pick or suggestion the catalog no longer offers falls through to the
+/// next source; with no catalog at all, the pick or the started model stands.
+#[test]
+fn a_default_the_catalog_no_longer_offers_falls_through() {
+    use super::catalog::resolve_default_model;
+    let models = ["glm-5-3", "kimi-k3"].map(String::from);
+    assert_eq!(
+        resolve_default_model(&models, Some("removed"), Some("kimi-k3"), "started"),
+        "kimi-k3"
+    );
+    assert_eq!(
+        resolve_default_model(&models, Some("removed"), Some("also-removed"), "started"),
+        "glm-5-3"
+    );
+    let with_built_in = ["glm-5-3", DEFAULT_AGENT_MODEL].map(String::from);
+    assert_eq!(
+        resolve_default_model(&with_built_in, None, None, "started"),
+        DEFAULT_AGENT_MODEL
+    );
+    assert_eq!(
+        resolve_default_model(&[], Some("pick"), Some("x"), "started"),
+        "pick"
+    );
+    assert_eq!(resolve_default_model(&[], None, None, "started"), "started");
+}
+
+/// An older build kept a pick only as `defaultModel`. Anything but its
+/// built-in default is adopted as the pick, once.
+#[tokio::test]
+async fn an_older_builds_saved_model_is_adopted_as_the_pick_once() {
+    let harness = Harness::new().await;
+    let mut config = harness.handle.load_config().await.unwrap();
+    config.default_model = "kimi-k3".into();
+    harness.handle.save_config(config.clone()).await.unwrap();
+    assert_eq!(
+        harness.handle.model_choice().await.unwrap().as_deref(),
+        Some("kimi-k3")
+    );
+    config.default_model = "glm-5-3-flash".into();
+    harness.handle.save_config(config).await.unwrap();
+    assert_eq!(
+        harness.handle.model_choice().await.unwrap().as_deref(),
+        Some("kimi-k3")
+    );
+}

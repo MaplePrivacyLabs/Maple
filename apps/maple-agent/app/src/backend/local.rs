@@ -3115,17 +3115,17 @@ impl LocalBackend {
 
     /// Persist the UI's model choice as the account's default model.
     pub async fn save_default_model(&self, user_id: &str, model: String) -> Result<(), String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let mut config = handle.load_config().await?;
-        config.default_model = model;
-        handle.save_config(config).await
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .save_model_choice(model)
+            .await
     }
 
-    /// The account's saved default model, if any.
+    /// The model the user last picked, if any.
     pub async fn saved_model(&self, user_id: &str) -> Option<String> {
         let handle = self.service.handle_for_user(user_id).await.ok()?;
-        let config = handle.load_config().await.ok()?;
-        Some(config.default_model).filter(|model| !model.is_empty())
+        handle.model_choice().await.ok().flatten()
     }
 }
 

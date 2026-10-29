@@ -753,6 +753,11 @@ pub struct CatalogModel {
     /// reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ModelReasoning>,
+    /// `false` while the server lists a model it does not serve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<bool>,
 }
 
 /// Capability flags a catalog entry advertises.
@@ -798,6 +803,29 @@ pub struct CatalogDefaults {
     pub quick: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub powerful: Option<String>,
+    /// The concrete model Maple Work suggests for a new task; absent on
+    /// servers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// One voice endpoint the catalog advertises.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogAudioEndpoint {
+    #[serde(default)]
+    pub available: bool,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// The catalog's voice endpoints.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CatalogAudio {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcription: Option<CatalogAudioEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech: Option<CatalogAudioEndpoint>,
 }
 
 /// The full model catalog from `/v1/models/catalog`.
@@ -809,6 +837,8 @@ pub struct ModelCatalogResponse {
     pub aliases: Vec<CatalogAlias>,
     #[serde(default)]
     pub defaults: CatalogDefaults,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<CatalogAudio>,
 }
 
 fn default_model_object() -> String {

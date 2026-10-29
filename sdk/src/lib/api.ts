@@ -1357,6 +1357,8 @@ export type ModelCatalogResponse = {
   defaults: {
     quick: ModelAliasId;
     powerful: ModelAliasId;
+    /** Concrete model Maple Work suggests for new tasks; absent on older servers. */
+    agent?: string;
   };
   audio?: {
     transcription?: {
