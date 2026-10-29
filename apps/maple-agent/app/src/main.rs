@@ -296,7 +296,10 @@ fn main() {
                             root,
                             profile::PROFILE,
                         )
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| {
+                            internal_exit_code = error.windows_installer_exit_code();
+                            error.to_string()
+                        })
                     }),
             )
         } else if !cli.internal_windows_installer_prepare.is_empty() {
@@ -315,7 +318,10 @@ fn main() {
                             profile::PROFILE,
                             generation,
                         )
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| {
+                            internal_exit_code = error.windows_installer_exit_code();
+                            error.to_string()
+                        })
                     }),
             )
         } else if let Some(generation) = &cli.internal_windows_installer_activate {

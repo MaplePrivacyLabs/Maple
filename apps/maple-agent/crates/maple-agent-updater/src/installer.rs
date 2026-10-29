@@ -105,6 +105,8 @@ pub enum InstallError {
     Invalid(&'static str),
     #[error("The update does not have the required Maple code signature and identity")]
     CodeSignature,
+    #[error("Windows could not verify Maple's code signature (WinTrust error 0x{status:08X})")]
+    WindowsCodeSignature { status: u32 },
     #[error("The update could not be installed: {0}")]
     Io(#[from] io::Error),
     #[error("Windows activation failed during {stage}: {source}")]
@@ -124,6 +126,26 @@ impl InstallError {
             Self::Io(error) => permission_error(error),
             Self::WindowsActivation { source, .. } => source.requires_manual_installation(),
             _ => false,
+        }
+    }
+
+    /// Report a failed preflight/preparation through NSIS without losing a
+    /// native error's high bits. Every category remains a nonzero failure;
+    /// activation keeps its existing separately decoded stage contract.
+    pub fn windows_installer_exit_code(&self) -> i32 {
+        match self {
+            Self::WindowsCodeSignature { status } if *status != 0 => *status as i32,
+            Self::CodeSignature | Self::WindowsCodeSignature { .. } => 0x4E00_0001,
+            Self::Busy => 0x4E00_0002,
+            Self::Invalid(_) => 0x4E00_0003,
+            Self::NotifyOnly(_) => 0x4E00_0004,
+            Self::Io(error) => error
+                .raw_os_error()
+                .filter(|code| *code != 0)
+                .unwrap_or(0x4E00_0005),
+            Self::WindowsActivation { .. } => {
+                self.windows_activation_exit_code().unwrap_or(0x4E00_0003)
+            }
         }
     }
 
@@ -149,6 +171,92 @@ type Result<T> = std::result::Result<T, InstallError>;
 #[cfg(test)]
 mod windows_activation_error_tests {
     use super::*;
+
+    #[test]
+    fn installer_status_retains_full_native_bits_including_negative_trust_errors() {
+        for status in [1, 0x800B_0109, 0x8009_2013, u32::MAX] {
+            let error = InstallError::WindowsCodeSignature { status };
+            let code = error.windows_installer_exit_code();
+            assert_eq!(code as u32, status);
+            assert_ne!(code, 0);
+        }
+        for code in [5, 32, 65_536, i32::MIN, i32::MAX, -1] {
+            let error = InstallError::Io(io::Error::from_raw_os_error(code));
+            assert_eq!(error.windows_installer_exit_code(), code);
+        }
+    }
+
+    #[test]
+    fn installer_status_fallbacks_never_return_success_or_change_activation_status() {
+        for (error, code) in [
+            (InstallError::CodeSignature, 0x4E00_0001),
+            (
+                InstallError::WindowsCodeSignature { status: 0 },
+                0x4E00_0001,
+            ),
+            (InstallError::Busy, 0x4E00_0002),
+            (InstallError::Invalid("public fixture"), 0x4E00_0003),
+            (InstallError::NotifyOnly("public fixture"), 0x4E00_0004),
+            (
+                InstallError::Io(io::Error::from(io::ErrorKind::PermissionDenied)),
+                0x4E00_0005,
+            ),
+            (
+                InstallError::Io(io::Error::from_raw_os_error(0)),
+                0x4E00_0005,
+            ),
+        ] {
+            assert_eq!(error.windows_installer_exit_code(), code);
+            assert_ne!(code, 0);
+        }
+        for source in [
+            InstallError::WindowsCodeSignature {
+                status: 0x800B_0109,
+            },
+            InstallError::Io(io::Error::from_raw_os_error(32)),
+            InstallError::Invalid("public fixture"),
+        ] {
+            let error = InstallError::WindowsActivation {
+                stage: WindowsActivationStage::GenerationVerification,
+                source: Box::new(source),
+            };
+            assert_eq!(
+                Some(error.windows_installer_exit_code()),
+                error.windows_activation_exit_code()
+            );
+            assert_ne!(error.windows_installer_exit_code(), 0);
+        }
+    }
+
+    #[test]
+    fn windows_signature_status_survives_activation_context_without_changing_error_policy() {
+        for status in [0x800B_0109, 0x8009_2013, 0x800B_0100, u32::MAX] {
+            let source = InstallError::WindowsCodeSignature { status };
+            assert_eq!(
+                source.to_string(),
+                format!(
+                    "Windows could not verify Maple's code signature (WinTrust error 0x{status:08X})"
+                )
+            );
+            assert!(!source.requires_manual_installation());
+            let error = InstallError::WindowsActivation {
+                stage: WindowsActivationStage::BootstrapIdentity,
+                source: Box::new(source),
+            };
+            assert!(error.to_string().contains("bootstrap-identity"));
+            assert!(error.to_string().contains(&format!("0x{status:08X}")));
+            // The existing bounded activation status is not repurposed to
+            // truncate or disguise a full WinTrust DWORD.
+            assert_eq!(error.windows_activation_exit_code(), Some(0x4D04_0000));
+            assert!(!error.requires_manual_installation());
+            let InstallError::WindowsActivation { source, .. } = error else {
+                unreachable!()
+            };
+            assert!(
+                matches!(*source, InstallError::WindowsCodeSignature { status: actual } if actual == status)
+            );
+        }
+    }
 
     #[test]
     fn activation_status_preserves_fixed_stage_and_original_native_error() {

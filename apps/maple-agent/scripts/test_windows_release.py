@@ -550,22 +550,31 @@ class PackageBoundaryTests(unittest.TestCase):
             )
             with self.subTest(command=command):
                 # NSIS leaves the output variable undefined on launch error.
-                # Test its error flag before ever reading a stale zero in $0.
+                # Test its error flag before ever reading a stale child status.
                 self.assertEqual(instructions[index - 1], 'ClearErrors')
                 self.assertEqual(instructions[index + 1], 'IfErrors ' + destination)
                 child = {'refused': (22, 24), 'failed': (41,), 'refuse': (52,)}[destination]
-                self.assertIn(instructions[index + 2], ['StrCpy $FailureCode ' + str(code) for code in child])
-                self.assertEqual(instructions[index + 3], 'StrCmp $0 0 0 ' + destination)
+                following = instructions[index + 2:]
+                compare = next(index for index, line in enumerate(following) if line.startswith('StrCmp '))
+                metadata = following[:compare]
+                self.assertTrue(all(line.startswith('StrCpy ') for line in metadata))
+                output = command.rsplit(' ', 1)[1]
+                self.assertNotIn(output, [line.split(maxsplit=2)[1] for line in metadata])
+                self.assertEqual([line for line in metadata if line.startswith('StrCpy $FailureCode ')],
+                                 [next(line for line in metadata if line in ['StrCpy $FailureCode ' + str(code) for code in child])])
+                self.assertEqual(following[compare], 'StrCmp ' + output + ' 0 0 ' + destination)
 
     def test_nsis_exit_codes_identify_probe_phase_and_launch_vs_child_failures(self):
-        source = (SCRIPTS / "windows-installer.nsi").read_text()
+        source = "\n".join(line for line in (SCRIPTS / "windows-installer.nsi").read_text().splitlines()
+                           if not line.lstrip().startswith(';'))
         codes = {int(value) for value in re.findall(r'StrCpy \$FailureCode ([0-9]+)', source)}
         self.assertEqual(codes, set(release.NSIS_FAILURE_PHASES))
         for flag, launch, child in (("installer-preflight", 21, 22), ("installer-prepare", 23, 24),
                                     ("installer-activate", 40, 41), ("uninstall-cleanup", 51, 52)):
             with self.subTest(flag=flag):
-                pattern = (r'StrCpy \$FailureCode ' + str(launch) + r'\s+ClearErrors\s+ExecWait [^\n]*--internal-windows-' + flag
-                           + r'[^\n]*\n\s+IfErrors \w+\s+StrCpy \$FailureCode ' + str(child))
+                metadata = r'(?:\s+StrCpy (?!\$FailureCode)[^\n]+)*'
+                pattern = (r'StrCpy \$FailureCode ' + str(launch) + metadata + r'\s+ClearErrors\s+ExecWait [^\n]*--internal-windows-' + flag
+                           + r'[^\n]*\n\s+IfErrors \w+' + metadata + r'\s+StrCpy \$FailureCode ' + str(child))
                 self.assertRegex(source, pattern)
         self.assertRegex(source, r'ClearErrors\s+GetDLLVersion [^\n]+\n\s+IfErrors unsupported')
         self.assertIn('SetErrorLevel 0', source)
@@ -1282,7 +1291,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
         instructions = [line.strip() for line in branch.splitlines()
                         if line.strip() and not line.lstrip().startswith(";")]
         def propagated(phase, code):
-            registers = {"$FailureCode": str(phase), "$0": str(code)}
+            registers = {"$FailureCode": str(phase), "$NativeStatus": str(code)}
             index = 0
             def value(token):
                 return registers.get(token, token)

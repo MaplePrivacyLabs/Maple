@@ -452,15 +452,15 @@ fn verify_identity_metadata(directory: &Path, bundle: &Bundle) -> Result<PathBuf
 fn verify_identity_for(directory: &Path, bundle: &Bundle, purpose: IdentityPurpose) -> Result<()> {
     let executable = verify_identity_metadata(directory, bundle)?;
     #[cfg(windows)]
-    if !match purpose {
+    match purpose {
         IdentityPurpose::Admission => {
-            authenticode::verify_or_unsigned(&executable, bundle.profile == "dev")
+            authenticode::verify_or_unsigned_detailed(&executable, bundle.profile == "dev")?;
         }
         IdentityPurpose::Startup => {
-            authenticode::verify_startup_or_unsigned(&executable, bundle.profile == "dev")
+            if !authenticode::verify_startup_or_unsigned(&executable, bundle.profile == "dev") {
+                return Err(InstallError::CodeSignature);
+            }
         }
-    } {
-        return Err(InstallError::CodeSignature);
     }
     #[cfg(not(windows))]
     let _ = (purpose, executable);
@@ -1168,10 +1168,10 @@ fn trusted_installer(executable: &Path, profile: &str) -> Result<serde_json::Val
             .as_str()
             .is_some_and(|v| manifest::stable_version(v).is_ok())
         || !info["source_sha"].as_str().is_some_and(valid_source)
-        || !authenticode::verify_or_unsigned(executable, profile == "dev")
     {
         return Err(InstallError::CodeSignature);
     }
+    authenticode::verify_or_unsigned_detailed(executable, profile == "dev")?;
     Ok(info)
 }
 
@@ -1870,11 +1870,10 @@ pub fn prepare_windows_installation(
                 .tempfile_in(&root)?
                 .into_temp_path();
             fs::copy(&checker, &temporary)?;
-            if exact_file_digest(&temporary)? != intent.executable_sha256
-                || !authenticode::verify_or_unsigned(&temporary, profile == "dev")
-            {
+            if exact_file_digest(&temporary)? != intent.executable_sha256 {
                 return Err(InstallError::CodeSignature);
             }
+            authenticode::verify_or_unsigned_detailed(&temporary, profile == "dev")?;
             windows_atomic_replace(&temporary, &root.join("maple-agent.exe"))?;
         }
         windows_sync_directory(&root)?;
@@ -2051,11 +2050,10 @@ pub fn cleanup_windows_installation(executable: &Path, profile: &str) -> Result<
             .ok_or(InstallError::Invalid("Windows uninstall parent"))?;
         windows_fs::validate_path(root)?;
         registered_root(root, profile)?;
-        if pe_build_info(&executable)?["profile"] != profile
-            || !authenticode::verify_or_unsigned(&executable, profile == "dev")
-        {
+        if pe_build_info(&executable)?["profile"] != profile {
             return Err(InstallError::CodeSignature);
         }
+        authenticode::verify_or_unsigned_detailed(&executable, profile == "dev")?;
         let lock = open_install_lock(root)?;
         lock.try_lock_exclusive().map_err(|_| InstallError::Busy)?;
         let owner = installer_owner()?;
