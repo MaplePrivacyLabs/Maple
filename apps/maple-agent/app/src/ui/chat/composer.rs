@@ -218,7 +218,9 @@ impl ChatScreen {
                 ChatPopup::Project,
                 chip(
                     "root-picker",
-                    Some(if self.backend.remote_host().is_some() {
+                    Some(if self.scratch_project {
+                        "plus"
+                    } else if self.backend.remote_host().is_some() {
                         "globe"
                     } else {
                         "folder-open"
@@ -499,15 +501,28 @@ impl ChatScreen {
             .into_any_element()
     }
 
-    /// The header chip's menu: every project, most recent first, then the
-    /// shared folder chooser. A long list scrolls.
+    /// Explicit new-project choices, followed by recent projects. A long list scrolls.
     fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
-        let mut menu = Menu::new("project-menu", px(480.))
+        let mut menu = Menu::new("project-menu", px(320.))
             .label("Projects")
             .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
         if self.computers.len() > 1 {
             return self.computers_project_menu();
+        }
+        menu = menu.item(self.scratch_project_item("root-scratch", true));
+        menu = menu.item(
+            MenuItem::new(
+                "root-choose",
+                "Choose folder…",
+                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.choose_root_dialog(cx);
+                },
+            )
+            .icon("folder-open"),
+        );
+        if !self.recent_roots.is_empty() {
+            menu = menu.separator().header("Recent projects");
         }
         let projects = self
             .recent_roots
@@ -533,17 +548,25 @@ impl ChatScreen {
             }
             menu = menu.item(item);
         }
-        menu = menu.item(
-            MenuItem::new(
-                "root-choose",
-                "New project…",
-                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    this.choose_root_dialog(cx);
-                },
-            )
-            .icon("folder-plus"),
-        );
         menu
+    }
+
+    pub(super) fn scratch_project_item(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        active: bool,
+    ) -> MenuItem<Self> {
+        MenuItem::new(id, "Start from scratch", |this: &mut Self, _, cx| {
+            this.select_scratch_project(cx);
+        })
+        .icon("plus")
+        .current(active && self.scratch_project)
+        .enabled(active)
+        .note(if active {
+            "Creates a folder on first send."
+        } else {
+            "Switch to this computer first."
+        })
     }
 
     fn model_menu(&self) -> Menu<Self> {

@@ -3097,6 +3097,152 @@ mod state_tests {
         });
     }
 
+    #[gpui::test]
+    fn missing_project_does_not_implicitly_create_a_scratch_folder(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.new_session(cx);
+            this.set_project_context(None, cx);
+            this.send_text("A draft without a project".into(), cx);
+            assert!(!this.scratch_project);
+            assert!(this.scratch_creation.is_none());
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert!(this.new_session_request().is_none());
+            assert_eq!(
+                this.notice.as_deref(),
+                Some("Choose a project before creating a task")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn scratch_selection_is_only_intent_and_first_send_creates_once(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.new_session(cx);
+            this.selected_model = Some("chosen-model".into());
+            this.select_scratch_project(cx);
+            assert!(this.scratch_project);
+            assert_eq!(this.project_root, None);
+            assert_eq!(this.project_label(cx), "Start from scratch");
+            assert_eq!(this.selected_model.as_deref(), Some("chosen-model"));
+            assert!(!this.session_setup_pending);
+            assert!(this.scratch_creation.is_none());
+            assert!(this.pending_first_send.is_none());
+            assert!(this.screen_focus_pending);
+            assert!(this.new_session_request().is_none());
+
+            this.send_text("Make a timer".into(), cx);
+            let generation = this.selection_generation;
+            assert_eq!(this.scratch_creation, Some(generation));
+            assert!(this.session_setup_pending);
+            this.send_text("duplicate".into(), cx);
+            assert_eq!(
+                this.pending_first_send.as_ref().unwrap().text(),
+                "Make a timer"
+            );
+            this.finish_scratch_project(
+                generation,
+                this.host_recovery.epoch,
+                &this.user_id.clone(),
+                Ok(crate::backend::SelectedProject {
+                    project_root: absolute_fixture_root("scratch"),
+                    project: recent_root(&absolute_fixture_root("scratch")),
+                }),
+                cx,
+            );
+            assert!(!this.scratch_project);
+            assert_eq!(this.project_root, Some(absolute_fixture_root("scratch")));
+            assert!(this.scratch_creation.is_none());
+            assert!(
+                this.session_setup_pending,
+                "the existing session pipeline takes over"
+            );
+            assert_eq!(
+                this.new_session_request().unwrap().model.as_deref(),
+                Some("chosen-model")
+            );
+            assert_eq!(
+                this.pending_first_send.as_ref().unwrap().text(),
+                "Make a timer"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn scratch_failure_keeps_intent_and_never_uses_previous_project(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.project_root = Some(absolute_fixture_root("previous"));
+            this.select_scratch_project(cx);
+            this.send_text("Make a timer".into(), cx);
+            this.finish_scratch_project(
+                this.selection_generation,
+                this.host_recovery.epoch,
+                &this.user_id.clone(),
+                Err("Cannot create folder".into()),
+                cx,
+            );
+            assert!(this.scratch_project);
+            assert!(this.project_root.is_none());
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert!(this.selected_session.is_none());
+            assert_eq!(this.notice.as_deref(), Some("Cannot create folder"));
+            this.send_text("Make a timer".into(), cx);
+            assert!(
+                this.scratch_creation.is_some(),
+                "an explicit retry can create"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn late_scratch_result_cannot_send_after_navigation_account_or_host_change(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        for change in 0..4 {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.booting = false;
+                this.select_scratch_project(cx);
+                this.send_text("Do not send later".into(), cx);
+                let generation = this.selection_generation;
+                let epoch = this.host_recovery.epoch;
+                let owner = this.user_id.clone();
+                match change {
+                    0 => this.begin_navigation(),
+                    1 => this.host_recovery.epoch += 1,
+                    2 => this.user_id = "another-account".into(),
+                    _ => this.set_visible(false, cx),
+                }
+                this.finish_scratch_project(
+                    generation,
+                    epoch,
+                    &owner,
+                    Ok(crate::backend::SelectedProject {
+                        project_root: absolute_fixture_root("late"),
+                        project: recent_root(&absolute_fixture_root("late")),
+                    }),
+                    cx,
+                );
+                assert!(this.selected_session.is_none());
+                assert!(this.project_root.is_none());
+                assert!(this.pending_first_send.is_none());
+                assert!(!this.session_setup_pending);
+                assert!(!this.awaiting_first_token);
+            });
+        }
+    }
+
     /// The first send on the empty screen creates the task, carrying the
     /// draft's mode and model, and sends once the task lands.
     #[gpui::test]
@@ -6925,6 +7071,72 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn scratch_menu_preserves_draft_and_returns_keyboard_focus(cx: &mut TestAppContext) {
+        for application_vim in [false, true] {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.set_application_vim_enabled(false, cx);
+                this.new_session(cx);
+                this.set_application_vim_enabled(application_vim, cx);
+                this.composer_vim_enabled = false;
+                this.selected_model = Some("chosen-model".into());
+                this.composer.as_ref().unwrap().update(cx, |input, cx| {
+                    input.set_vim_enabled(false, cx);
+                    input.set_text("My unsent draft", cx);
+                });
+                this.draft_attachments
+                    .push(attachments::DraftAttachment::preparing(
+                        1,
+                        "notes.txt".into(),
+                    ));
+            });
+            press(cx, "root-picker");
+            cx.simulate_keystrokes(if application_vim {
+                "j enter"
+            } else {
+                "down enter"
+            });
+            cx.run_until_parked();
+            cx.update(|window, app| {
+                let this = chat.read(app);
+                assert!(this.scratch_project);
+                assert!(!this.popup.is_open(&ChatPopup::Project));
+                assert!(!this.session_setup_pending);
+                let composer = this.composer.as_ref().unwrap().read(app);
+                assert_eq!(composer.text(), "My unsent draft");
+                let expected_focus = if application_vim {
+                    // Project selection follows the same navigation-mode
+                    // focus handoff as the existing folder picker.
+                    this.application_focus.clone()
+                } else {
+                    Some(composer.focus_handle(app))
+                };
+                assert_eq!(window.focused(app), expected_focus);
+                assert_eq!(this.draft_attachments.len(), 1);
+                assert_eq!(this.selected_model.as_deref(), Some("chosen-model"));
+            });
+            if application_vim {
+                // Use the shipped region command, not a direct focus call:
+                // the closed popup must relinquish its keyboard context.
+                cx.simulate_keystrokes("ctrl-w l");
+            }
+            cx.update(|window, app| {
+                let this = chat.read(app);
+                assert_eq!(
+                    window.focused(app),
+                    Some(this.composer.as_ref().unwrap().focus_handle(app))
+                );
+            });
+            cx.simulate_keystrokes("end space j k l");
+            cx.update(|_, app| {
+                assert_eq!(
+                    chat.read(app).composer.as_ref().unwrap().read(app).text(),
+                    "My unsent draft jkl"
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
     fn feedback_form_accepts_normal_typing_with_application_vim(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.set_application_vim_enabled(true, cx);
@@ -10540,8 +10752,7 @@ mod state_tests {
             "the open menu must hold the focus, or the arrows type instead"
         );
 
-        // Two recent roots and the "New project…" row: down, down, down
-        // wraps back to the first.
+        // Scratch and Choose folder come before recent roots.
         let highlighted = |cx: &mut gpui::VisualTestContext| {
             cx.update(|_window, app| chat.read(app).popup.highlighted().cloned())
         };
@@ -10551,19 +10762,20 @@ mod state_tests {
                 absolute_fixture_root(name)
             ))))
         };
-        let choose = || Some(gpui::ElementId::from("root-choose"));
         cx.simulate_keystrokes("down");
-        assert_eq!(highlighted(cx), root("one"));
+        assert_eq!(highlighted(cx), Some(gpui::ElementId::from("root-scratch")));
+        cx.simulate_keystrokes("down");
+        assert_eq!(highlighted(cx), Some(gpui::ElementId::from("root-choose")));
         cx.simulate_keystrokes("down down");
-        assert_eq!(highlighted(cx), choose());
+        assert_eq!(highlighted(cx), root("two"));
         cx.simulate_keystrokes("down");
-        assert_eq!(highlighted(cx), root("one"));
+        assert_eq!(highlighted(cx), Some(gpui::ElementId::from("root-scratch")));
         cx.simulate_keystrokes("up");
-        assert_eq!(highlighted(cx), choose());
+        assert_eq!(highlighted(cx), root("two"));
 
         // Enter on a recent root asks for the switch and closes the menu;
         // the composer takes the typing back.
-        cx.simulate_keystrokes("up up");
+        cx.simulate_keystrokes("up");
         assert_eq!(highlighted(cx), root("one"));
         cx.simulate_keystrokes("enter");
         assert!(!cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
@@ -10578,7 +10790,7 @@ mod state_tests {
         chat.update(cx, |this, cx| this.set_application_vim_enabled(true, cx));
         cx.simulate_keystrokes("secondary-p");
         assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
-        cx.simulate_keystrokes("j j");
+        cx.simulate_keystrokes("j j j j");
         assert_eq!(highlighted(cx), root("two"));
         cx.simulate_keystrokes("k");
         assert_eq!(highlighted(cx), root("one"));
@@ -11162,6 +11374,26 @@ mod state_tests {
                 ),
             ] {
                 press(cx, "root-picker");
+                // With multiple computers, later rows can be below the
+                // viewport. Keyboard navigation reveals the real row before
+                // clicking; a clipped debug rectangle is not a click target.
+                let target = gpui::ElementId::from(row);
+                for _ in 0..16 {
+                    cx.simulate_keystrokes("down");
+                    if cx.update(|_, app| chat.read(app).popup.highlighted() == Some(&target)) {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    cx.update(|_, app| chat.read(app).popup.highlighted().cloned()),
+                    Some(target)
+                );
+                cx.run_until_parked();
+                let viewport = cx
+                    .debug_bounds("computer-project-menu")
+                    .expect("menu viewport");
+                let item = cx.debug_bounds(row).expect("revealed project row");
+                assert!(item.center().y >= viewport.top() && item.center().y <= viewport.bottom());
                 press(cx, row);
                 assert_eq!(
                     requests.borrow_mut().pop(),

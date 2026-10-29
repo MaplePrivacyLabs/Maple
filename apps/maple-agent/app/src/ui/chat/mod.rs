@@ -568,6 +568,10 @@ pub struct ChatScreen {
     /// Project context shown by the UI and used explicitly for new tasks.
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
+    /// Explicit intent; a missing root alone must never create a folder.
+    scratch_project: bool,
+    /// Navigation that owns the outstanding folder creation.
+    scratch_creation: Option<u64>,
     recent_roots: Vec<RecentProjectRoot>,
     /// Which of the chat's popup menus is open: the header's project menu,
     /// a composer chip's menu, or the transcript's right-click menu.
@@ -1354,6 +1358,8 @@ impl ChatScreen {
             painted_rows: std::rc::Rc::default(),
             tool_details: settings.tool_details,
             project_root: None,
+            scratch_project: false,
+            scratch_creation: None,
             recent_roots: Vec::new(),
             popup: Popup::new(|this| &mut this.popup, cx),
             dialog_focus: None,
@@ -1541,7 +1547,7 @@ impl ChatScreen {
             sidebar.reconcile_default_project(workspace, cx)
         });
         self.handle_service_events(boot.questions, cx);
-        if !self.set_project_context(boot.project_root, cx) {
+        if !self.scratch_project && !self.set_project_context(boot.project_root, cx) {
             self.project_root_changed(cx);
             self.check_project_trust(cx);
         }
@@ -1819,7 +1825,9 @@ impl ChatScreen {
         project_root: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.project_root == project_root {
+        let was_scratch = self.scratch_project;
+        self.scratch_project = false;
+        if self.project_root == project_root && !was_scratch {
             return false;
         }
         self.project_root = project_root;
@@ -2126,6 +2134,9 @@ impl ChatScreen {
 
     /// Text for the header project chip.
     pub fn project_label(&self, cx: &gpui::App) -> String {
+        if self.scratch_project {
+            return "Start from scratch".to_string();
+        }
         self.project_root
             .as_deref()
             .map(|root| self.sidebar.read(cx).root_name(root))
@@ -2273,6 +2284,91 @@ impl ChatScreen {
         cx.notify();
     }
 
+    /// Choose a fresh project without touching the filesystem or saving a task.
+    fn select_scratch_project(&mut self, cx: &mut Context<Self>) {
+        if self.session_setup_pending || self.root_selecting {
+            return;
+        }
+        if !self.draft {
+            self.new_session(cx);
+        } else {
+            self.begin_navigation();
+        }
+        self.popup.close(cx);
+        self.set_project_context(None, cx);
+        self.scratch_project = true;
+        self.refresh_project_caption(cx);
+        self.notice = None;
+        self.screen_focus_pending = true;
+        cx.notify();
+    }
+
+    fn create_scratch_for_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
+        if self.session_setup_pending {
+            return;
+        }
+        let generation = self.selection_generation;
+        let epoch = self.host_recovery.epoch;
+        let user_id = self.user_id.clone();
+        let owner = user_id.clone();
+        let backend = self.backend.clone();
+        self.scratch_creation = Some(generation);
+        self.session_setup_pending = true;
+        self.pending_first_send = Some(action);
+        self.notice = None;
+        cx.notify();
+        self.call(
+            async move { backend.create_scratch_project(&user_id).await },
+            cx,
+            move |this, result, cx| {
+                this.finish_scratch_project(generation, epoch, &owner, result, cx);
+            },
+        );
+    }
+
+    fn finish_scratch_project(
+        &mut self,
+        generation: u64,
+        epoch: u64,
+        user_id: &str,
+        result: Result<crate::backend::SelectedProject, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.scratch_creation != Some(generation) {
+            return;
+        }
+        self.scratch_creation = None;
+        self.session_setup_pending = false;
+        let action = self.pending_first_send.take();
+        // A different task, computer, account, or recovered host wins. Never
+        // send the old draft from a late folder result into its new context.
+        if self.selection_generation != generation
+            || self.host_recovery.epoch != epoch
+            || self.user_id != user_id
+            || !self.scratch_project
+            || !self.draft
+        {
+            cx.notify();
+            return;
+        }
+        match result {
+            Ok(registration) => {
+                self.restore_selected_project(registration.project, cx);
+                self.set_project_context(Some(registration.project_root), cx);
+                self.refresh_roots(cx);
+                if let Some(action) = action {
+                    self.create_for_first_send(action, cx);
+                }
+            }
+            Err(message) => {
+                self.notice = Some(message.into());
+                // The composer and attachments never left the draft. Retrying
+                // explicitly repeats the failed host operation.
+            }
+        }
+        cx.notify();
+    }
+
     /// Create the task the draft describes, then run `action` against it.
     /// The text stays in the composer, which shows the create in
     /// progress, until the send goes out; a create that does not happen
@@ -2285,6 +2381,10 @@ impl ChatScreen {
         if self.root_selecting {
             self.notice = Some("Wait for the project selection to finish, then try again".into());
             cx.notify();
+            return;
+        }
+        if self.scratch_project {
+            self.create_scratch_for_first_send(action, cx);
             return;
         }
         let Some(request) = self.new_session_request() else {
@@ -2720,6 +2820,9 @@ impl ChatScreen {
     /// Build an explicit request so new-task placement never depends on the
     /// runtime's startup fallback.
     fn new_session_request(&self) -> Option<AgentCreateSessionRequest> {
+        if self.scratch_project {
+            return None;
+        }
         Some(AgentCreateSessionRequest {
             project_root: Some(self.project_root.clone()?),
             title: None,
@@ -3248,6 +3351,7 @@ impl ChatScreen {
         self.selected_session = None;
         // Leaving a draft ends it; "New Task" starts the next one itself.
         self.draft = false;
+        self.scratch_project = false;
         self.draft_mcp_defaults = None;
         self.draft_mcp_changes.clear();
         // The lock belongs to the task; the empty screen uses the default.

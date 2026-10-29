@@ -395,6 +395,25 @@ async fn project_folder_ipc_and_iroh_use_owner_paths_and_preserve_account_guards
                 .is_err()
         );
     }
+    assert!(
+        crate::backend::dispatch(
+            &backend,
+            request("create_scratch_project", json!(["another-account"]))
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        remote_call(
+            &backend,
+            &client,
+            &server,
+            wire::Method::CreateScratchProject,
+            json!(["another-account"])
+        )
+        .await
+        .is_err()
+    );
     assert!(!folder.path().join("unauthorized").exists());
     assert!(
         remote_call(
@@ -433,6 +452,7 @@ async fn project_folder_operations_require_an_open_store() {
             json!([USER, {"path":path,"after":null,"limit":10}]),
         ),
         ("create_project_folder", json!([USER, path, "locked-child"])),
+        ("create_scratch_project", json!([USER])),
     ] {
         assert!(
             crate::backend::dispatch(&backend, request(method, params))

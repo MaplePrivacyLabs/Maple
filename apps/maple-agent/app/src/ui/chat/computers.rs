@@ -96,6 +96,19 @@ impl ChatScreen {
     }
 
     #[cfg(test)]
+    pub(crate) fn begin_scratch_send_for_test(&mut self, cx: &mut Context<Self>) {
+        self.booting = false;
+        self.navigation_ready = true;
+        self.select_scratch_project(cx);
+        self.send_text("Create a new project".into(), cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scratch_send_pending_for_test(&self) -> bool {
+        self.scratch_creation.is_some() && self.pending_first_send.is_some()
+    }
+
+    #[cfg(test)]
     pub(crate) fn seed_projects_for_test(
         &mut self,
         roots: Vec<RecentProjectRoot>,
@@ -173,6 +186,13 @@ impl ChatScreen {
         self.visible = visible;
         if !visible {
             self.project_folder_dialog = None;
+            if changed && self.scratch_creation.is_some() {
+                self.begin_navigation();
+                self.pending_first_send = None;
+                self.notice = Some(
+                    "Message not sent: you switched computers. Send again to continue.".into(),
+                );
+            }
         }
         if changed && visible && !self.computers.is_empty() {
             // Only the mounted sidebar projects every computer. Background
@@ -350,7 +370,7 @@ impl ChatScreen {
     }
 
     pub(super) fn computers_project_menu(&self) -> Menu<Self> {
-        let mut menu = Menu::new("computer-project-menu", px(440.))
+        let mut menu = Menu::new("computer-project-menu", px(320.))
             .label("Projects")
             .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
@@ -364,6 +384,29 @@ impl ChatScreen {
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(computer.label.clone()),
             );
+            menu = menu.item(self.scratch_project_item(
+                SharedString::from(format!("computer-{index}-scratch")),
+                computer.key.as_deref() == self.backend.remote_host(),
+            ));
+            let request = Navigate {
+                computer: computer.key.clone(),
+                destination: if self.draft {
+                    Destination::DraftNewProject
+                } else {
+                    Destination::NewProject
+                },
+            };
+            menu = menu.item(
+                MenuItem::new(
+                    SharedString::from(format!("computer-{index}-new-project")),
+                    "Choose folder…",
+                    move |_: &mut Self, _, cx| cx.emit(request.clone()),
+                )
+                .icon("folder-open"),
+            );
+            if !computer.projects.is_empty() {
+                menu = menu.separator().header("Recent projects");
+            }
             for (project_index, project) in computer.projects.iter().enumerate() {
                 let request = Navigate {
                     computer: computer.key.clone(),
@@ -398,22 +441,6 @@ impl ChatScreen {
                 }
                 menu = menu.item(item);
             }
-            let request = Navigate {
-                computer: computer.key.clone(),
-                destination: if self.draft {
-                    Destination::DraftNewProject
-                } else {
-                    Destination::NewProject
-                },
-            };
-            menu = menu.item(
-                MenuItem::new(
-                    SharedString::from(format!("computer-{index}-new-project")),
-                    "New project…",
-                    move |_: &mut Self, _, cx| cx.emit(request.clone()),
-                )
-                .icon("folder-plus"),
-            );
         }
         menu.separator().item(
             MenuItem::new(
