@@ -1115,6 +1115,18 @@ tree_hash_digest() {
   )
 }
 
+# iOS 27 SDK builds abort at launch unless the app adopts the UIScene life cycle.
+# tauri-cli merges the manifest from src-tauri/Info.ios.plist at build time; the
+# committed gen/apple plist has none, so check the built app itself.
+require_ios_scene_manifest() {
+  local app="$1" delegate
+  delegate="$(plutil -extract UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName raw "${app}/Info.plist" 2>/dev/null || true)"
+  if [ "${delegate}" != "TaoSceneDelegate" ]; then
+    echo "${app} declares no TaoSceneDelegate scene (found '${delegate:-nothing}'); iOS 27 SDK builds abort at launch without it. tauri-cli merges it from src-tauri/Info.ios.plist." >&2
+    return 1
+  fi
+}
+
 print_canonical_ios_app_hash() {
   local bundle="$1"
   local label="${2:-$(repo_relative_path "${bundle}")}"

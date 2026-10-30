@@ -77,6 +77,7 @@ rm -rf "${TAURI_DIR}/gen/apple/build/arm64-sim" "${TAURI_DIR}/gen/apple/build/ma
 
 cd "${FRONTEND_DIR}"
 bun tauri ios build --debug --target aarch64-sim --ci --config '{"build":{"beforeBuildCommand":null}}'
+require_ios_scene_manifest "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app"
 strip_apple_debug_symbols "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app"
 adhoc_resign_apple_bundle "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app"
 scrub_host_metadata_files "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app"
