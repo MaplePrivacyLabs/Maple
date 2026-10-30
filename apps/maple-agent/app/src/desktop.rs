@@ -34,6 +34,36 @@ enum Screen {
     Login(Entity<LoginScreen>),
     Chat(Entity<ChatScreen>),
     Settings(Entity<SettingsScreen>),
+    /// A signed-in account on the Free plan, which Maple Work does not
+    /// support. It replaces the chat rather than covering it, so nothing
+    /// beneath can take input. The local chat stays alive for Sign out
+    /// and for a paid reading to return to.
+    PlanGate(Entity<ui::plan_gate::PlanGate>),
+}
+
+/// When a plan is re-read on returning to the window without the gate up.
+/// With the gate up, every return checks: the user may have just paid.
+const PLAN_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// The billing reading behind [`Screen::PlanGate`] for the signed-in account.
+#[derive(Default)]
+struct PlanCheck {
+    /// Bumped per request; only the newest reading applies.
+    seq: u64,
+    pending: bool,
+    answered_at: Option<std::time::Instant>,
+    /// The window's activation as of the last render, to notice a return.
+    window_active: bool,
+    task: Option<gpui::Task<()>>,
+}
+
+impl PlanCheck {
+    /// Forget the previous account's reading and drop its request.
+    fn restart(&mut self) {
+        self.pending = false;
+        self.answered_at = None;
+        self.task = None;
+    }
 }
 
 /// One cache and one initial connection attempt per paired endpoint. Once
@@ -164,6 +194,7 @@ struct MapleApp {
     shortcuts: crate::shortcuts::ShortcutRuntime,
     /// Created once; re-creating it per render leaked an entity per frame.
     titlebar: Entity<TitleBar>,
+    plan_check: PlanCheck,
 }
 
 impl MapleApp {
@@ -1179,6 +1210,7 @@ impl MapleApp {
         self.remote_inventory_loaded = false;
         self.requested_navigation = None;
         self.selected_host = None;
+        self.plan_check.restart();
         if matches!(self.screen, Screen::Login(_)) {
             return;
         }
@@ -1225,7 +1257,158 @@ impl MapleApp {
         self.selected_host = None;
         self.subscribe_chat(&chat, cx);
         self.load_remote_sidebars(cx);
+        self.plan_check.restart();
+        self.check_plan(false, cx);
         cx.notify();
+    }
+
+    /// Read the signed-in account's plan from the billing service. The chat
+    /// opens first and the gate replaces it only on a Free reading, so a
+    /// slow or unreachable billing service never delays or blocks a paid
+    /// plan. `explicit` is the gate's Check again, which answers in place.
+    fn check_plan(&mut self, explicit: bool, cx: &mut Context<Self>) {
+        let (Some(user_id), Some(owner)) = (
+            self.user_id.clone(),
+            self.local_chat.as_ref().map(Entity::entity_id),
+        ) else {
+            return;
+        };
+        if !matches!(
+            self.screen,
+            Screen::Chat(_) | Screen::Settings(_) | Screen::PlanGate(_)
+        ) || (self.plan_check.pending && !explicit)
+        {
+            return;
+        }
+        if explicit && let Screen::PlanGate(gate) = &self.screen {
+            gate.update(cx, |gate, cx| gate.set_checking(cx));
+        }
+        self.plan_check.seq += 1;
+        self.plan_check.pending = true;
+        let seq = self.plan_check.seq;
+        let backend = self.backend.clone();
+        let account = user_id.clone();
+        // Replacing an older request drops its bridge, so it never answers.
+        self.plan_check.task = Some(ui::task::call(
+            &self.backend,
+            async move {
+                let status = backend.billing_status(&account).await;
+                if let Err(error) = &status {
+                    log::warn!("plan check unavailable: {error}");
+                }
+                let access = crate::billing::PlanAccess::from_status(&status);
+                // Only a gated guest needs its sign-in method: the dialog
+                // shows the Account ID it signs in with on the website.
+                let guest = access == crate::billing::PlanAccess::Blocked
+                    && backend.account(&account).await.is_ok_and(|account| {
+                        account.login_method == maple_agent::maple_api::MapleLoginMethod::Guest
+                    });
+                Ok((access, guest))
+            },
+            cx,
+            move |app, result, cx| {
+                if app.plan_check.seq != seq
+                    || app.user_id.as_deref() != Some(user_id.as_str())
+                    || app.local_chat.as_ref().map(Entity::entity_id) != Some(owner)
+                {
+                    return;
+                }
+                app.plan_check.pending = false;
+                app.plan_check.answered_at = Some(std::time::Instant::now());
+                let (access, guest) =
+                    result.unwrap_or((crate::billing::PlanAccess::Unknown, false));
+                app.apply_plan_reading(access, guest, explicit, cx);
+            },
+        ));
+    }
+
+    fn apply_plan_reading(
+        &mut self,
+        access: crate::billing::PlanAccess,
+        guest: bool,
+        explicit: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let gated = match &self.screen {
+            Screen::PlanGate(_) => true,
+            Screen::Chat(_) | Screen::Settings(_) => false,
+            // Login, the store gate and the restoring placeholder have no
+            // account to gate; the next chat opening checks again.
+            _ => return,
+        };
+        match (gated, access.gated(gated)) {
+            (false, true) => self.show_plan_gate(guest, cx),
+            (true, false) => self.close_plan_gate(cx),
+            (true, true) => {
+                if let Screen::PlanGate(gate) = &self.screen {
+                    let notice =
+                        explicit.then_some(if access == crate::billing::PlanAccess::Blocked {
+                            ui::plan_gate::STILL_FREE
+                        } else {
+                            ui::plan_gate::CHECK_FAILED
+                        });
+                    gate.update(cx, |gate, cx| gate.finish_check(notice, cx));
+                }
+            }
+            (false, false) => {}
+        }
+    }
+
+    fn show_plan_gate(&mut self, guest: bool, cx: &mut Context<Self>) {
+        // Settings closes the way its Back does, keeping what it changed.
+        if let Screen::Settings(settings) = &self.screen {
+            let snapshot = settings.read(cx).settings_snapshot();
+            self.close_settings(snapshot, cx);
+        }
+        if let Screen::Chat(chat) = &self.screen {
+            chat.update(cx, |chat, cx| chat.set_visible(false, cx));
+        }
+        let account_id = guest.then(|| self.user_id.clone()).flatten();
+        let gate = cx.new(|cx| ui::plan_gate::PlanGate::new(account_id, cx));
+        cx.subscribe(
+            &gate,
+            |app: &mut MapleApp, emitter, event: &ui::plan_gate::PlanGateEvent, cx| {
+                if !matches!(&app.screen, Screen::PlanGate(active) if active.entity_id() == emitter.entity_id())
+                {
+                    return;
+                }
+                match event {
+                    ui::plan_gate::PlanGateEvent::CheckAgain => app.check_plan(true, cx),
+                    // The hidden chat owns sign-out: it saves preferences,
+                    // stops the runtime, and reports LoggedOut or a failure.
+                    ui::plan_gate::PlanGateEvent::SignOut => match app.local_chat.clone() {
+                        Some(chat) => chat.update(cx, |chat, cx| chat.sign_out(cx)),
+                        None => app.show_login(cx),
+                    },
+                }
+            },
+        )
+        .detach();
+        self.screen = Screen::PlanGate(gate);
+        cx.notify();
+    }
+
+    /// A paid reading returns to this computer's chat.
+    fn close_plan_gate(&mut self, cx: &mut Context<Self>) {
+        let Some(chat) = self.local_chat.clone() else {
+            return;
+        };
+        self.selected_host = None;
+        chat.update(cx, |chat, cx| chat.set_visible(true, cx));
+        self.screen = Screen::Chat(chat);
+        cx.notify();
+    }
+
+    /// Returning to the window is when a plan most likely changed: after
+    /// paying on the website, or after a subscription ended elsewhere.
+    fn recheck_plan_on_activation(&mut self, cx: &mut Context<Self>) {
+        let stale = self
+            .plan_check
+            .answered_at
+            .is_none_or(|at| at.elapsed() >= PLAN_RECHECK_INTERVAL);
+        if matches!(self.screen, Screen::PlanGate(_)) || stale {
+            self.check_plan(false, cx);
+        }
     }
 
     /// Nicknames and remote pins belong to this desktop's signed-in account,
@@ -1536,6 +1719,11 @@ impl MapleApp {
     }
 
     fn navigate(&mut self, request: Navigate, cx: &mut Context<Self>) {
+        // A notification click or a computer connecting must not reach a
+        // task past the plan gate.
+        if matches!(self.screen, Screen::PlanGate(_)) {
+            return;
+        }
         self.requested_navigation = Some(PendingNavigation {
             request: request.clone(),
             source: self.navigation_source(cx),
@@ -1886,6 +2074,9 @@ impl MapleApp {
                         .as_ref()
                         .is_some_and(|chat| chat.entity_id() == emitter.entity_id())
                 {
+                    if let Screen::PlanGate(gate) = &app.screen {
+                        gate.update(cx, |gate, cx| gate.sign_out_failed(cx));
+                    }
                     app.present_store_attention(
                         event.message.clone(),
                         StoreAttentionKind::Persistence,
@@ -1993,6 +2184,14 @@ impl Render for MapleApp {
             log::debug!("startup: first render at {} ms", crate::startup_elapsed());
         });
         self.present_pending_store_attention(window, cx);
+        // Activation changes force a redraw, so a return shows up here.
+        let was_active = std::mem::replace(
+            &mut self.plan_check.window_active,
+            window.is_window_active(),
+        );
+        if self.plan_check.window_active && !was_active {
+            self.recheck_plan_on_activation(cx);
+        }
         remember_window_state(window, cx);
         if ui::theme::resolve(window.appearance()) {
             // Every view reads the palette in render; make them all redo it.
@@ -2052,6 +2251,7 @@ impl Render for MapleApp {
                             Screen::Login(login) => login.clone().into_any_element(),
                             Screen::Chat(chat) => chat.clone().into_any_element(),
                             Screen::Settings(screen) => screen.clone().into_any_element(),
+                            Screen::PlanGate(gate) => gate.clone().into_any_element(),
                         }
                     }),
             );
@@ -3375,6 +3575,7 @@ pub fn run() {
                         restart_confirmation: None,
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
+                        plan_check: PlanCheck::default(),
                     })
                 })
                 .expect("failed to open main window");
@@ -4124,6 +4325,7 @@ mod tests {
                 restart_confirmation: None,
                 shortcuts,
                 titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
+                plan_check: PlanCheck::default(),
             }
         })
     }
@@ -4290,6 +4492,96 @@ mod tests {
             assert_eq!(app.selected_host.as_deref(), Some("east"));
             assert!(app.settings.store_password_mode);
             assert_chat_notification_policy(app, false, cx);
+        });
+    }
+
+    #[gpui::test]
+    fn a_free_reading_holds_every_screen_until_a_paid_one(cx: &mut gpui::TestAppContext) {
+        use crate::billing::PlanAccess;
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        app.update(cx, |app, cx| {
+            // No reading never blocks.
+            app.apply_plan_reading(PlanAccess::Unknown, false, false, cx);
+            assert!(matches!(app.screen, Screen::Chat(_)));
+            app.show_settings(Section::General, cx);
+            app.apply_plan_reading(PlanAccess::Blocked, false, false, cx);
+            let Screen::PlanGate(gate) = &app.screen else {
+                panic!("a Free reading must gate the account");
+            };
+            assert_eq!(gate.read(cx).guest_account_id(), None);
+            assert!(app.parked_chat.is_none());
+            // A notification click, a connected computer and Settings all
+            // stay behind the gate.
+            for computer in [None, Some("east".to_string())] {
+                app.navigate(
+                    Navigate {
+                        computer,
+                        destination: Destination::Overview,
+                    },
+                    cx,
+                );
+            }
+            app.show_settings(Section::General, cx);
+            assert!(matches!(app.screen, Screen::PlanGate(_)));
+            // A failed re-check keeps the gate; a paid reading opens the
+            // local chat.
+            app.apply_plan_reading(PlanAccess::Unknown, false, true, cx);
+            assert!(matches!(app.screen, Screen::PlanGate(_)));
+            app.apply_plan_reading(PlanAccess::Allowed, false, false, cx);
+            let local = app.local_chat.clone().unwrap().entity_id();
+            assert!(matches!(&app.screen, Screen::Chat(chat) if chat.entity_id() == local));
+        });
+    }
+
+    #[gpui::test]
+    fn returning_to_the_window_rereads_only_a_gated_or_stale_plan(cx: &mut gpui::TestAppContext) {
+        struct Host(Entity<MapleApp>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        let (_, cx) = cx.add_window_view(|_, _| Host(app.clone()));
+        cx.run_until_parked();
+        let return_to_window = |answered: bool, cx: &mut gpui::VisualTestContext| {
+            let before = app.update(cx, |app, _| {
+                // The previous reading has answered, just now.
+                app.plan_check.pending = false;
+                app.plan_check.answered_at = answered.then(std::time::Instant::now);
+                app.plan_check.seq
+            });
+            cx.deactivate_window();
+            cx.update(|window, _| window.activate_window());
+            cx.run_until_parked();
+            app.read_with(cx, |app, _| app.plan_check.seq) > before
+        };
+        // A fresh reading for an open app is not re-read on every return.
+        assert!(!return_to_window(true, cx));
+        assert!(return_to_window(false, cx));
+        app.update(cx, |app, cx| {
+            app.apply_plan_reading(crate::billing::PlanAccess::Blocked, false, false, cx)
+        });
+        // With the gate up, the user may have just paid on the website.
+        assert!(return_to_window(true, cx));
+    }
+
+    #[gpui::test]
+    fn a_free_guest_gets_its_account_id_in_the_gate(cx: &mut gpui::TestAppContext) {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        app.update(cx, |app, cx| {
+            app.apply_plan_reading(crate::billing::PlanAccess::Blocked, true, false, cx);
+            let Screen::PlanGate(gate) = &app.screen else {
+                panic!("a Free guest must be gated");
+            };
+            assert_eq!(gate.read(cx).guest_account_id(), Some("user"));
+            // Signed out, a late reading has no account to gate.
+            app.show_login(cx);
+            app.apply_plan_reading(crate::billing::PlanAccess::Blocked, true, false, cx);
+            assert!(matches!(app.screen, Screen::Login(_)));
         });
     }
 
