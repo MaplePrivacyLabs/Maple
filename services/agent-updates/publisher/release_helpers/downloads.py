@@ -19,7 +19,7 @@ import subprocess
 import zipfile
 
 from .bundle import BundleVerifier
-from .context import need, sha, decode
+from .context import OperatorError, need, sha, decode
 
 
 SCHEMA_BINDINGS = "agent-release-bindings-v1"
@@ -36,6 +36,7 @@ MAX_METADATA = 4 * 1024**2
 MAX_ZIP = MAX_FILE = 512 * 1024**2
 MAX_TOTAL = 1024**3
 CHUNK = 1024**2
+TRANSFER_TIMEOUT_SECONDS = 900
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -90,11 +91,16 @@ class DownloadBase:
 
     def download(self, artifact_id, output, maximum, timeout):
         need(type(artifact_id) is int and 0 < artifact_id < 2**64, "invalid artifact ID")
-        result = subprocess.run(
-            [str(self.ctx.tool("gh")), "api", "--hostname", "github.com", "--method", "GET",
-             f"repos/{self.ctx.core.REPOSITORY}/actions/artifacts/{artifact_id}/zip"],
-            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
-            timeout=timeout, check=False, preexec_fn=cap(maximum))
+        try:
+            result = subprocess.run(
+                [str(self.ctx.tool("gh")), "api", "--hostname", "github.com", "--method", "GET",
+                 f"repos/{self.ctx.core.REPOSITORY}/actions/artifacts/{artifact_id}/zip"],
+                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
+                timeout=timeout, check=False, preexec_fn=cap(maximum))
+        except subprocess.TimeoutExpired:
+            raise OperatorError(
+                f"GitHub GET exceeded the {timeout}-second transfer timeout; partial archive retained"
+            ) from None
         need(result.returncode == 0, "GitHub GET failed or exceeded its bound")
 
 
@@ -218,7 +224,7 @@ class ProducerDownloader(DownloadBase):
              and not directory.exists() and not directory.is_symlink(), "producer destination already exists")
         fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as output:
-            self.download(artifact_id, output, size + 1, 180)
+            self.download(artifact_id, output, size + 1, TRANSFER_TIMEOUT_SECONDS)
             output.flush()
             os.fsync(output.fileno())
         actual, _ = read_record(archive, MAX_ZIP)
@@ -455,7 +461,7 @@ class StageDownloader(DownloadBase):
         archive = output / "artifact.zip"
         fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as stream:
-            self.download(artifact["id"], stream, args.zip_size + 1, 900)
+            self.download(artifact["id"], stream, args.zip_size + 1, TRANSFER_TIMEOUT_SECONDS)
             stream.flush()
             os.fsync(stream.fileno())
         actual, _ = read_record(archive, MAX_ZIP)

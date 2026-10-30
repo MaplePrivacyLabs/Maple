@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import stat
 import struct
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -317,6 +318,57 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(receipt["tooling_sha256"], self.ctx.tooling_sha256)
         self.assertEqual(receipt["bindings_sha256"], self.ctx.bindings_sha256)
         self.assertTrue((self.root / "producer-linux-download.json").is_file())
+
+    def test_slow_producer_transfer_can_finish_before_the_shared_bounded_timeout(self):
+        zip_bytes, files, responses = self.producer_remote()
+        self.ctx.gh_get = Mock(side_effect=responses)
+
+        def transfer(command, **options):
+            simulated_seconds = 300
+            if simulated_seconds > options["timeout"]:
+                raise subprocess.TimeoutExpired(command, options["timeout"])
+            options["stdout"].write(zip_bytes)
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(d.subprocess, "run", side_effect=transfer) as request:
+            receipt = d.ProducerDownloader(self.ctx).run(SimpleNamespace(network=True, platform="linux"))
+        request.assert_called_once()
+        self.assertLessEqual(request.call_args.kwargs["timeout"], 900)
+        self.assertEqual(receipt["files"], self.records(files))
+        self.assertEqual(receipt["actual_zip_sha256"], d.sha(zip_bytes))
+        self.assertTrue((self.root / "producer-linux-download.json").is_file())
+
+    def test_producer_timeout_retains_partial_without_retry_extraction_or_success_receipt(self):
+        _, _, responses = self.producer_remote()
+        self.ctx.gh_get = Mock(side_effect=responses)
+        partial = b"incomplete archive"
+
+        def transfer(command, **options):
+            simulated_seconds = 901
+            if simulated_seconds > options["timeout"]:
+                options["stdout"].write(partial)
+                raise subprocess.TimeoutExpired(command, options["timeout"])
+            return subprocess.CompletedProcess(command, 0)
+
+        downloader = d.ProducerDownloader(self.ctx)
+        args = SimpleNamespace(network=True, platform="linux")
+        selected = self.ctx.bindings["artifacts"]["linux"]
+        archive = self.root / f"producer-linux-{selected['id']}.zip"
+        with patch.object(d.subprocess, "run", side_effect=transfer) as request, \
+             patch.object(downloader, "extract") as extract:
+            with self.assertRaisesRegex(OperatorError, "transfer timeout; partial archive retained"):
+                downloader.run(args)
+            self.assertEqual(archive.read_bytes(), partial)
+            self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o600)
+            self.assertFalse((self.root / f"packages-linux-{selected['id']}").exists())
+            self.assertFalse((self.root / "producer-linux-download.json").exists())
+            self.ctx.gh_get = Mock(side_effect=responses[:2])
+            with self.assertRaisesRegex(OperatorError, "producer destination already exists"):
+                downloader.run(args)
+            request.assert_called_once()
+            extract.assert_not_called()
+            self.assertLessEqual(request.call_args.kwargs["timeout"], 900)
+        self.assertEqual(archive.read_bytes(), partial)
 
     def test_producer_attempt_change_during_download_fails_without_receipt(self):
         zip_bytes, _, responses = self.producer_remote()
