@@ -519,6 +519,11 @@ const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversatio
 const TOOL_RESULT_MAX_CHARS: usize = 2_000;
 
 /// Render messages as labelled text, so the summarizer reads them instead of continuing them.
+///
+/// Thinking is left out, as in Pi. Replayed thinking is often not part of the model's
+/// live context (another model's is dropped, for one), and with it the request could be
+/// larger than the context it summarizes. Text, tool calls and tool results record what
+/// happened.
 pub fn serialize_conversation(messages: &[Message]) -> String {
     let mut parts = Vec::new();
     for message in messages {
@@ -530,25 +535,17 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                 }
             }
             Message::Assistant(assistant) => {
-                let mut thinking = Vec::new();
-                let mut calls = Vec::new();
-                for block in &assistant.content {
-                    match block {
-                        AssistantContent::Thinking(block) => thinking.push(block.thinking.as_str()),
-                        AssistantContent::ToolCall(call) => {
-                            let args: Vec<String> = call
-                                .arguments
-                                .iter()
-                                .map(|(key, value)| format!("{key}={value}"))
-                                .collect();
-                            calls.push(format!("{}({})", call.name, args.join(", ")));
-                        }
-                        AssistantContent::Text(_) => {}
-                    }
-                }
-                if !thinking.is_empty() {
-                    parts.push(format!("[Assistant thinking]: {}", thinking.join("\n")));
-                }
+                let calls: Vec<String> = assistant
+                    .tool_calls()
+                    .map(|call| {
+                        let args: Vec<String> = call
+                            .arguments
+                            .iter()
+                            .map(|(key, value)| format!("{key}={value}"))
+                            .collect();
+                        format!("{}({})", call.name, args.join(", "))
+                    })
+                    .collect();
                 let text = assistant.text();
                 if !text.is_empty() {
                     parts.push(format!("[Assistant]: {text}"));
@@ -1232,6 +1229,31 @@ mod tests {
                 model.id
             );
         }
+    }
+
+    #[test]
+    fn the_conversation_for_a_summary_leaves_thinking_out() {
+        let reply = Message::Assistant(AssistantMessage {
+            content: vec![
+                AssistantContent::thinking("the user probably means the parser"),
+                AssistantContent::text("Reading the parser."),
+                faux_tool_call("read", json!({ "path": "src/parser.rs" })),
+            ],
+            ..AssistantMessage::empty(&FauxProvider::default_model())
+        });
+        let thought_only = Message::Assistant(AssistantMessage {
+            content: vec![AssistantContent::thinking("nothing to add")],
+            ..AssistantMessage::empty(&FauxProvider::default_model())
+        });
+        let text = serialize_conversation(&[
+            Message::User(UserMessage::text("fix it")),
+            reply,
+            thought_only,
+        ]);
+        assert_eq!(
+            text,
+            "[User]: fix it\n\n[Assistant]: Reading the parser.\n\n[Assistant tool calls]: read(path=\"src/parser.rs\")"
+        );
     }
 
     #[tokio::test]
