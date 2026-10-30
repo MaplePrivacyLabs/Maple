@@ -443,6 +443,46 @@ async fn invalid_arguments_unknown_tools_and_panics_become_error_results() {
     );
 }
 
+#[tokio::test]
+async fn malformed_argument_text_fails_the_call_without_running_it() {
+    let faux = FauxProvider::new();
+    faux.push_text("done");
+    // The first reply streams arguments that are not JSON; the faux provider only sends
+    // valid ones.
+    let replies = faux.clone();
+    let first = AtomicUsize::new(0);
+    let stream_fn =
+        move |model: &pi_ai::Model, context: pi_ai::Context, options: pi_ai::StreamOptions| {
+            if first.fetch_add(1, Ordering::SeqCst) > 0 {
+                return pi_ai::StreamFn::stream(&replies, model, context, options);
+            }
+            let (sender, stream) = pi_ai::AssistantMessageStream::channel();
+            let mut builder = pi_ai::AssistantMessageBuilder::new(sender, model);
+            builder.start();
+            let index = builder.tool_call_start("c1", "explode");
+            builder.tool_call_delta(index, "{\"a\":.5}");
+            builder.finish(StopReason::ToolUse, pi_ai::Usage::default());
+            stream
+        };
+    // The tool panics if it runs.
+    let explode = Arc::new(Explode {
+        declaration: Tool::new("explode", "Panics", json!({ "type": "object" })),
+    });
+    let config = AgentLoopConfig::new(faux.model(), Arc::new(stream_fn));
+    let (messages, _) = run(&faux, config, context(vec![explode]), "go").await;
+    let text = result_text(&messages[3]);
+    assert!(
+        text.starts_with("Invalid arguments for tool \"explode\": ")
+            && text.ends_with("\n\nReceived arguments:\n{\"a\":.5}"),
+        "{text}"
+    );
+    assert!(matches!(&messages[3], Message::ToolResult(result) if result.is_error));
+    assert_eq!(
+        roles(&messages),
+        ["system", "user", "assistant", "toolResult", "assistant"]
+    );
+}
+
 fn sleeper(
     name: &str,
     millis: u64,
@@ -890,6 +930,7 @@ async fn run_tool_call_applies_the_same_gates_outside_the_loop() {
         id: "nested/1".into(),
         name: "echo".into(),
         arguments: json!({ "text": "hi" }).as_object().cloned().unwrap(),
+        arguments_error: None,
         partial_json: None,
     };
     let allowed = run_tool_call(
