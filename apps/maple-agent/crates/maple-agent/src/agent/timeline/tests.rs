@@ -224,6 +224,27 @@ async fn a_failed_reply_shows_its_error_and_a_retried_attempt_does_not() {
     assert_eq!(error.text.as_deref(), Some("Maple credits are exhausted"));
 }
 
+#[tokio::test]
+async fn a_usage_limit_reply_drops_the_status_wrapper() {
+    use crate::agent::provider::USAGE_LIMIT_MESSAGE;
+
+    let wrapped = format!("403: {{\"message\":\"{USAGE_LIMIT_MESSAGE}\"}}");
+    for raw in [USAGE_LIMIT_MESSAGE, wrapped.as_str()] {
+        let faux = FauxProvider::new();
+        faux.push_error(raw);
+        let session = new_session(&faux).await;
+        session
+            .prompt("Hi", PromptOptions::default())
+            .await
+            .unwrap();
+        let stored = session.with_session(session_timeline);
+        let error = stored.last().unwrap();
+        assert_eq!(error.item_type, "error");
+        assert_eq!(error.title.as_deref(), Some("Out of usage"));
+        assert_eq!(error.text.as_deref(), Some(USAGE_LIMIT_MESSAGE));
+    }
+}
+
 #[test]
 fn notices_and_compactions_have_their_own_rows() {
     let mut session = SessionManager::in_memory("/project");

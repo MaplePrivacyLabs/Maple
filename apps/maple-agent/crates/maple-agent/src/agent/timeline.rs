@@ -427,6 +427,7 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
         .error_message
         .clone()
         .unwrap_or_else(|| "The model's reply failed".to_string());
+    let (title, text) = error_row_copy(&message);
     AgentTimelineItem {
         persisted: None,
         live: None,
@@ -435,13 +436,29 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
         id: reply_row_id(reply.timestamp, "error"),
         item_type: "error".to_string(),
         role: Some("system".to_string()),
-        title: Some(error_title(&message).to_string()),
-        text: Some(bounded_timeline_text(&message, MAX_AGENT_ERROR_CHARS)),
+        title: Some(title.to_string()),
+        text: Some(text),
         status: Some("failed".to_string()),
         input: None,
         output: None,
         created_ms: created_ms(reply.timestamp),
         merge: "replace".to_string(),
+    }
+}
+
+/// The row heading and body for a failed reply. An out-of-usage refusal
+/// drops Pi's status wrapper so the transcript shows the sentence itself.
+fn error_row_copy(message: &str) -> (&'static str, String) {
+    if message.contains(super::provider::USAGE_LIMIT_MESSAGE) {
+        (
+            "Out of usage",
+            super::provider::USAGE_LIMIT_MESSAGE.to_string(),
+        )
+    } else {
+        (
+            error_title(message),
+            bounded_timeline_text(message, MAX_AGENT_ERROR_CHARS),
+        )
     }
 }
 
@@ -488,6 +505,7 @@ pub(crate) fn notice_item(
 /// An error row that belongs to no message, such as a run that could not start.
 pub(crate) fn error_item(message: String) -> AgentTimelineItem {
     let now = pi_ai::now_ms();
+    let (title, text) = error_row_copy(&message);
     AgentTimelineItem {
         persisted: None,
         live: None,
@@ -496,8 +514,8 @@ pub(crate) fn error_item(message: String) -> AgentTimelineItem {
         id: format!("error-{now}"),
         item_type: "error".to_string(),
         role: Some("system".to_string()),
-        title: Some("Agent error".to_string()),
-        text: Some(bounded_timeline_text(&message, MAX_AGENT_ERROR_CHARS)),
+        title: Some(title.to_string()),
+        text: Some(text),
         status: Some("failed".to_string()),
         input: None,
         output: None,

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
 use maple_agent::agent::{
     AgentTimelineItem, EXTERNAL_AGENT_ACTIVITY_KEY, ExternalAgentActivity, ExternalAgentRef,
+    USAGE_LIMIT_MESSAGE,
 };
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
@@ -18,6 +19,7 @@ use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
+use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::typography;
@@ -366,7 +368,7 @@ pub(super) fn render_timeline_item(
                 render_tool(item, revision, expanded, transcript)
             }
         }
-        "error" => render_error(item),
+        "error" => render_error(item, transcript),
         "permission" => render_permission_row(item),
         _ => render_system(item),
     };
@@ -1457,7 +1459,7 @@ fn extract_output_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn render_error(item: &AgentTimelineItem) -> Div {
+fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
     let text = item
         .text
         .clone()
@@ -1466,7 +1468,34 @@ fn render_error(item: &AgentTimelineItem) -> Div {
     if text.trim().is_empty() {
         return div();
     }
-    widgets::banner(theme::status_error()).child(text)
+    if !text.contains(USAGE_LIMIT_MESSAGE) {
+        return widgets::banner(theme::status_error()).child(text);
+    }
+    let chat = transcript.chat.clone();
+    let button_id = format!("open-billing-{}", item.id);
+    widgets::banner(theme::status_error())
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap_2()
+        .child(USAGE_LIMIT_MESSAGE)
+        .child(
+            widgets::secondary_button(button_id.clone())
+                .debug_selector({
+                    let button_id = button_id.clone();
+                    move || button_id.clone()
+                })
+                .child("Open Billing")
+                .on_click(move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    let Some(chat) = chat.upgrade() else {
+                        return;
+                    };
+                    chat.update(cx, |_chat, cx| {
+                        cx.emit(OpenSettingsSection(Section::Billing));
+                    });
+                }),
+        )
 }
 
 /// The row for an MCP elicitation ("Input requested"). It has no answer
