@@ -3586,6 +3586,26 @@ async fn new_tasks_default_to_the_pick_then_the_catalogs_suggestion() {
     );
 }
 
+/// The server keeps a model out of Maple Work with `available_in_agent:
+/// false`. A server that predates the field offers every model.
+#[test]
+fn only_models_the_catalog_offers_maple_work_are_selectable() {
+    use super::catalog::selectable_catalog_models;
+    let catalog: maple_sdk::ModelCatalogResponse = serde_json::from_value(json!({
+        "object": "list",
+        "data": [
+            {"id": "deepseek-v4-1-flash", "available_in_agent": true},
+            {"id": "gpt-oss-120b", "available_in_agent": false},
+            {"id": "glm-5-3"},
+        ],
+    }))
+    .unwrap();
+    assert_eq!(
+        selectable_catalog_models(&catalog),
+        ["deepseek-v4-1-flash", "glm-5-3"]
+    );
+}
+
 /// A pick or suggestion the catalog no longer offers falls through to the
 /// next source; with no catalog at all, the pick or the started model stands.
 #[test]

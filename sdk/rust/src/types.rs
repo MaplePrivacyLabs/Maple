@@ -758,6 +758,10 @@ pub struct CatalogModel {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<bool>,
+    /// `false` for a model Maple Work does not offer for new tasks; absent on
+    /// servers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_in_agent: Option<bool>,
 }
 
 /// Capability flags a catalog entry advertises.
