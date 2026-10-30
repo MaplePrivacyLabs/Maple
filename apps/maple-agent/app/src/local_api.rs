@@ -35,6 +35,20 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Keep this host's proxy traffic attributed to Work, independently of the API key.
+pub(crate) fn work_proxy_config(
+    host: String,
+    port: u16,
+    backend_url: String,
+    pcr0: maple_sdk::Pcr0Environment,
+) -> maple_proxy::Config {
+    maple_proxy::Config::new(host, port, backend_url)
+        .with_client_app(maple_proxy::ClientApp::Work)
+        .with_pcr0_environment(pcr0)
+        .with_debug(false)
+        .with_cors(false)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalApiConfig {
@@ -318,16 +332,12 @@ impl LocalApiManager {
             }
         };
         let router = router.unwrap_or_else(|| {
-            maple_proxy::create_app(
-                maple_proxy::Config::new(
-                    "127.0.0.1".into(),
-                    config.port,
-                    self.inner.api_url.clone(),
-                )
-                .with_pcr0_environment(self.inner.pcr0)
-                .with_debug(false)
-                .with_cors(false),
-            )
+            maple_proxy::create_app(work_proxy_config(
+                "127.0.0.1".into(),
+                config.port,
+                self.inner.api_url.clone(),
+                self.inner.pcr0,
+            ))
         });
         let requests = Arc::new(Semaphore::new(MAX_REQUESTS));
         let request_state = RequestState {
@@ -615,6 +625,20 @@ mod tests {
         net::TcpStream,
         sync::Notify,
     };
+
+    #[test]
+    fn local_api_and_proxy_cli_keep_work_identity_with_an_api_key() {
+        let config = work_proxy_config(
+            "127.0.0.1".into(),
+            8080,
+            "http://127.0.0.1:3000".into(),
+            maple_sdk::Pcr0Environment::Development,
+        )
+        .with_api_key("fixture-key".into());
+        assert_eq!(config.client_app, Some(maple_proxy::ClientApp::Work));
+        assert!(config.default_api_key.is_some());
+        assert!(!config.enable_cors);
+    }
 
     fn config() -> LocalApiConfig {
         let socket = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();

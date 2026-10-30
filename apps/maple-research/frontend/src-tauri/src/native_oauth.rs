@@ -1,8 +1,8 @@
 use crate::native_transport_root::TransportRootState;
 use crate::open_secret_config::{configured_pcr0_environment, normalize_api_url};
 use maple_sdk::{
-    LoginResponse, NativeOAuthHandoffGrant, OpenSecretClient, PreparedNativeOAuthHandoff,
-    TransportV2CacheNamespaceRoot,
+    ClientApp, LoginResponse, NativeOAuthHandoffGrant, OpenSecretClient,
+    PreparedNativeOAuthHandoff, TransportV2CacheNamespaceRoot,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,18 @@ use tokio::sync::Mutex;
 
 const NATIVE_OAUTH_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const NATIVE_OAUTH_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn build_native_oauth_client(
+    api_url: String,
+    cache_root: TransportV2CacheNamespaceRoot,
+) -> Result<OpenSecretClient, String> {
+    Ok(
+        OpenSecretClient::new_with_pcr0_environment(api_url, configured_pcr0_environment()?)
+            .map_err(|error| map_sdk_error("prepare", &error))?
+            .with_client_app(ClientApp::Chat)
+            .with_cache_namespace_root(cache_root),
+    )
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -89,11 +101,7 @@ impl NativeOAuthState {
         // publish over a newer local attempt.
         let mut current = self.attempt.lock().await;
         let api_url = normalize_api_url(&request.api_url)?;
-        let client = Arc::new(
-            OpenSecretClient::new_with_pcr0_environment(api_url, configured_pcr0_environment()?)
-                .map_err(|error| map_sdk_error("prepare", &error))?
-                .with_cache_namespace_root(cache_root),
-        );
+        let client = Arc::new(build_native_oauth_client(api_url, cache_root)?);
         let prepared = tokio::time::timeout(
             NATIVE_OAUTH_NETWORK_TIMEOUT,
             client.prepare_native_oauth_handoff(),
@@ -272,6 +280,17 @@ pub async fn native_oauth_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_oauth_uses_the_chat_host_identity() {
+        let client = build_native_oauth_client(
+            "http://127.0.0.1:3000".to_string(),
+            TransportV2CacheNamespaceRoot::from_bytes([0; 32]),
+        )
+        .unwrap();
+
+        assert_eq!(client.client_app(), Some(ClientApp::Chat));
+    }
 
     #[test]
     fn sdk_errors_map_to_safe_messages_with_clock_guidance_when_applicable() {

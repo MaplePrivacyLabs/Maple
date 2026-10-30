@@ -520,13 +520,8 @@ fn host_error_summary(error: &str) -> &'static str {
 fn run_proxy(args: ProxyArgs) -> Result<(), String> {
     let backend_url = maple_agent::maple_api::validate_api_url(&configured_api_url())?;
     let pcr0 = maple_agent::open_secret_config::configured_pcr0_environment()?;
-    let mut config = maple_proxy::Config::new(args.host.clone(), args.port, backend_url)
-        .with_pcr0_environment(pcr0)
-        .with_debug(false)
-        // The browser boundary is owned below so the Authorization header
-        // can be allowed explicitly and browser requests rejected when CORS
-        // is off; maple-proxy's permissive layer stays out.
-        .with_cors(false);
+    // The host owns the browser boundary; the shared config keeps proxy CORS off.
+    let mut config = local_api::work_proxy_config(args.host.clone(), args.port, backend_url, pcr0);
     if let Some(api_key) = args.api_key.clone() {
         config = config.with_api_key(api_key);
     }

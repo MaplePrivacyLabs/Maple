@@ -624,6 +624,7 @@ mod tests {
     };
 
     include!("oauth_callback_tests.rs");
+    include!("client_app_tests.rs");
 
     struct TestSession {
         client: SessionSecrets,

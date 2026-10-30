@@ -1799,6 +1799,7 @@ async fn probe_number_tokens(
 
 async fn system_one(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     axum::Extension(session_id): axum::Extension<TransportSession>,
     axum::Extension(user): axum::Extension<User>,
     axum::Extension(auth_method): axum::Extension<AuthMethod>,
@@ -1822,7 +1823,11 @@ async fn system_one(
     .await?;
     let model_id = prepared.model.id();
     ensure_completion_model_access(model_id, model_plan)?;
-    let billing_context = BillingContext::new(auth_method, model_id.to_string());
+    let billing_context = BillingContext::new(
+        auth_method,
+        model_id.to_string(),
+        crate::client_app::ClientApp::from_headers(&headers),
+    );
     let execution = InferenceIntent::new(
         user.uuid,
         model_id,

@@ -1,7 +1,7 @@
 use crate::open_secret_config::configured_pcr0_environment;
 use maple_sdk::{
-    InferenceRequest, InferenceResponse, OpenSecretClient, WebExtractRequest, WebExtractResponse,
-    WebSearchRequest, WebSearchResponse,
+    ClientApp, InferenceRequest, InferenceResponse, OpenSecretClient, WebExtractRequest,
+    WebExtractResponse, WebSearchRequest, WebSearchResponse,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -954,7 +954,8 @@ fn build_client(
         api_url.to_string(),
         configured_pcr0_environment()?,
     )
-    .map_err(map_sdk_error)?;
+    .map_err(map_sdk_error)?
+    .with_client_app(ClientApp::Work);
     client
         .set_tokens(access_token, refresh_token)
         .map_err(map_sdk_error)?;
@@ -1137,6 +1138,13 @@ impl MapleApiAuthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authenticated_clients_report_work_without_replacing_account_credentials() {
+        let client = build_client("http://127.0.0.1:3000", "fixture-access".into(), None).unwrap();
+        assert_eq!(client.client_app(), Some(ClientApp::Work));
+        assert!(client.get_tokens().unwrap().is_some());
+    }
 
     #[test]
     fn api_key_created_requires_the_complete_shape_before_releasing_its_key() {

@@ -25,7 +25,7 @@ libsqlite3-sys = { version = "=0.38.2", features = ["bundled-sqlcipher-openssl4"
 zeroize = { version = "1.9", features = ["alloc", "serde"] }
 # Shared monorepo crates retain their independent package names and versions.
 maple-sdk = { path = "../../sdk/rust" }
-maple-proxy = { version = "0.4.0", path = "../../proxy" }
+maple-proxy = { version = "0.5.0", path = "../../proxy" }
 
 [profile.dev]
 opt-level = 1

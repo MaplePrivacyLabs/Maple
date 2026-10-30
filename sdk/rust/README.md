@@ -16,6 +16,26 @@ Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, a
 - ↔️ **Lossless Inference Transport**: Provider-specific request and response fields pass through as raw bytes
 - 🛡️ **Secure by Default**: No plaintext data transmission
 
+## Optional application context (4.2.0)
+
+Configure `ClientApp::Chat`, `ClientApp::Proxy`, or `ClientApp::Work` when an
+application owns the SDK client:
+
+```rust
+use maple_sdk::{ClientApp, OpenSecretClient};
+
+fn work_client(api_url: &str) -> maple_sdk::Result<OpenSecretClient> {
+    Ok(OpenSecretClient::new(api_url)?.with_client_app(ClientApp::Work))
+}
+```
+
+Unconfigured clients add no application context. A configured value overrides
+caller-supplied `x-maple-client-app` headers and travels inside encrypted
+Transport V2 logical requests, including API-key requests, streams, and System
+One. It is client-reported context, independent of credentials, authorization,
+provider routing, and pricing. Embedded proxies should retain their host's
+application; the standalone proxy identifies itself as `proxy`.
+
 ## Installation
 
 `maple-sdk` is the published replacement for the `opensecret` crate. Add the

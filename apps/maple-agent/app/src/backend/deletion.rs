@@ -54,7 +54,8 @@ impl SdkTransport {
     fn prepare(api_url: &str, tokens: &CredentialTokens) -> Result<Self, String> {
         let environment = maple_agent::open_secret_config::configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(api_url.to_owned(), environment)
-            .map_err(|_| "Could not prepare account deletion".to_string())?;
+            .map_err(|_| "Could not prepare account deletion".to_string())?
+            .with_client_app(maple_sdk::ClientApp::Work);
         client
             .set_tokens(
                 tokens.access_token.expose().to_owned(),

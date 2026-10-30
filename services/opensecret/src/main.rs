@@ -95,6 +95,7 @@ mod apple_signin;
 mod aws_credentials;
 mod billing;
 mod bounded_ttl_cache;
+mod client_app;
 #[cfg(test)]
 mod crypto_property_tests;
 mod db;

@@ -1,5 +1,5 @@
 use clap::Parser;
-use maple_sdk::{Pcr0Environment, TransportV2CacheNamespaceRoot};
+use maple_sdk::{ClientApp, Pcr0Environment, TransportV2CacheNamespaceRoot};
 use serde::Serialize;
 use std::{net::SocketAddr, time::Duration};
 
@@ -12,6 +12,14 @@ pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 360;
 #[command(about = "Lightweight OpenAI-compatible proxy server for Maple/OpenSecret")]
 #[command(version)]
 pub struct Config {
+    /// Application attribution for encrypted inference requests.
+    ///
+    /// The standalone CLI identifies itself as Proxy. Library hosts should set
+    /// their own application with `with_client_app`; `Config::new` leaves it
+    /// unspecified rather than attributing every embedded relay to Proxy.
+    #[arg(skip = Some(ClientApp::Proxy))]
+    pub client_app: Option<ClientApp>,
+
     /// Host to bind the server to
     #[arg(long, env = "MAPLE_HOST", default_value = "127.0.0.1")]
     pub host: String,
@@ -97,6 +105,7 @@ impl Config {
     /// Create a new Config programmatically (for library usage)
     pub fn new(host: String, port: u16, backend_url: String) -> Self {
         Self {
+            client_app: None,
             host,
             port,
             backend_url,
@@ -116,6 +125,15 @@ impl Config {
 
     pub fn stream_idle_timeout(&self) -> Duration {
         Duration::from_secs(self.stream_idle_timeout_secs)
+    }
+
+    /// Attribute requests to the application embedding this relay.
+    ///
+    /// This metadata is independent of the per-request API key and does not
+    /// affect authentication, model routing, or pricing.
+    pub fn with_client_app(mut self, client_app: ClientApp) -> Self {
+        self.client_app = Some(client_app);
+        self
     }
 
     /// Builder-style method to select the backend PCR0 trust-root environment
@@ -252,6 +270,7 @@ mod tests {
         assert_eq!(config.request_timeout_secs, DEFAULT_REQUEST_TIMEOUT_SECS);
         assert_eq!(config.pcr0_environment, Pcr0Environment::Production);
         assert!(config.cache_namespace_root.is_none());
+        assert_eq!(config.client_app, None);
         assert_eq!(
             config.stream_idle_timeout_secs,
             DEFAULT_STREAM_IDLE_TIMEOUT_SECS
@@ -264,6 +283,18 @@ mod tests {
             config.stream_idle_timeout(),
             Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS)
         );
+    }
+
+    #[test]
+    fn standalone_cli_identifies_proxy_and_library_hosts_can_select_their_app() {
+        let standalone = Config::try_parse_from(["maple-proxy"]).unwrap();
+        assert_eq!(standalone.client_app, Some(ClientApp::Proxy));
+
+        for host_app in [ClientApp::Chat, ClientApp::Work] {
+            let embedded = Config::new("127.0.0.1".into(), 0, "http://localhost:3000".into())
+                .with_client_app(host_app);
+            assert_eq!(embedded.client_app, Some(host_app));
+        }
     }
 
     #[test]
