@@ -250,6 +250,12 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"),
          run="cargo test -p maple-agent-updater --locked --no-fail-fast -- --test-threads=1",
          cache="agent-windows-updater", timeout=30, **dict(AGENT_WIN, runner=GITHUB_WINDOWS_FREE)),
+    # Temporary diagnostic branch only: execute the already published 0.0.15
+    # installer under disposable Windows tokens, without compiling or signing it.
+    Lane("agent-windows-015-repro", ("scripts/ci/windows015-customer-repro.ps1",),
+         labels=(), events=frozenset({DISPATCH}), gate=False, job="windows",
+         runner=Runner("maple-windows-2025-16core"), timeout=15,
+         run="pwsh -NoLogo -NoProfile -NonInteractive -File scripts/ci/windows015-customer-repro.ps1"),
     # The rest of `just ci` and the native macOS suite (with runtime shaders, see
     # RUNTIME_SHADERS): master, nightly and ci:full.
     Lane("agent-full-linux", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), run="just ci-extra",

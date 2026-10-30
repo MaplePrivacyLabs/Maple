@@ -631,6 +631,17 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual({lane for lane, on in outputs["lanes"].items() if on},
                          {"agent-package-macos", "metal-toolchain"})
 
+    def test_customer_windows_diagnostic_is_explicit_dispatch_only(self):
+        lane_id = "agent-windows-015-repro"
+        _, outputs = self.github(DISPATCH, {}, LANES_INPUT=lane_id)
+        self.assertEqual({lane for lane, on in outputs["lanes"].items() if on}, {lane_id})
+        self.assertEqual([entry["id"] for entry in outputs["windows"]], [lane_id])
+        path = "scripts/ci/windows015-customer-repro.ps1"
+        self.assertTrue(plan.classified(path))
+        for event in (PR, PUSH, QUEUE, NIGHTLY):
+            with self.subTest(event=event):
+                self.assertNotIn(lane_id, selected([path], event))
+
     def test_quarantined_lanes_still_run_and_an_unknown_id_fails_the_plan(self):
         code, outputs = self.github(NIGHTLY, {}, CI_QUARANTINE=" research-ios,agent-test, ")
         self.assertEqual((code, outputs["quarantine"]), (0, ["agent-test", "research-ios"]))
