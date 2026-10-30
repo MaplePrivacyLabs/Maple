@@ -1,6 +1,6 @@
 # Agent localization
 
-The first implementation follows the Fluent design in PR #1370 and its review.
+The localization foundation uses embedded Fluent catalogs.
 It currently covers the update confirmation dialog (including accessibility
 text) and the language setting. English is the only enabled catalog. Most of
 the app is still English; this is infrastructure for incremental extraction,
