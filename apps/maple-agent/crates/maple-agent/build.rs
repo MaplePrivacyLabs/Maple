@@ -18,7 +18,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(embedded_cua)");
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if matches!(target_os.as_str(), "macos" | "linux") {
+    if matches!(target_os.as_str(), "macos" | "linux" | "windows") {
         println!("cargo::rustc-cfg=embedded_cua");
     }
 }

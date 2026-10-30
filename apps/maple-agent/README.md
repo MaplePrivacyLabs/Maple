@@ -158,7 +158,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
 
 ### Integrations preview
 
-On macOS and Linux, Settings > Integrations can set up computer use inside
+On macOS, Linux and Windows, Settings > Integrations can set up computer use inside
 Maple itself. The embedded CUA runtime uses the pinned Cua Driver Rust SDK; it
 does not need a separate daemon, executable, or MCP child process.
 
@@ -169,7 +169,8 @@ first time a task captures the screen or sends input. Under GNOME on Wayland
 the `winrects@cua` GNOME Shell extension that ships with the SDK is required,
 because Mutter exposes no window geometry or screen capture to an ordinary
 client; Settings reports it as an unmet requirement until it is installed and
-the session has been restarted once.
+the session has been restarted once. Windows asks for no permission at all, so
+enabling computer use in Settings is the only consent step there.
 
 A desktop task with CUA on gets its tools as `cua-driver__<tool>`, bound
 anew at each run. CUA keeps its native screenshot defaults. Every model

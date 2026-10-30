@@ -72,7 +72,7 @@ checks do not establish interactive rendering, browser sign-in or tray behavior.
 The host detaches from the client's console and process group. If an enclosing
 Windows job forbids breakaway, the host retains that job's limits and lifetime;
 terminating the enclosing job also terminates its host.
-Built-in Windows computer-use remains tracked separately in
+Windows builds embed computer use; its interactive validation is tracked in
 [issue #1295](https://github.com/MaplePrivacyLabs/Maple/issues/1295).
 
 ## Download and install
