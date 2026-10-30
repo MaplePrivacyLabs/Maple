@@ -235,6 +235,7 @@ fn near_miss_questions_take_the_schema_shape() {
         ask.declaration(),
         &pi_ai::ToolCall {
             id: "call-1".to_string(),
+            arguments_error: None,
             partial_json: None,
             name: "request_user_input".to_string(),
             arguments: match expected {

@@ -1164,7 +1164,7 @@ impl HttpTransport for ReqwestTransport {
 mod tests {
     use super::*;
     use crate::overflow::{is_context_overflow, is_retryable_error};
-    use crate::types::{SystemMessage, ThinkingContent, Tool, ToolChoice, UserMessage};
+    use crate::types::{SystemMessage, ThinkingContent, Tool, ToolCall, ToolChoice, UserMessage};
     use futures_util::FutureExt;
     use std::sync::Mutex;
 
@@ -1292,6 +1292,44 @@ mod tests {
         assert_eq!(
             body["messages"][1],
             json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_final_arguments_are_reported_instead_of_a_parsed_prefix() {
+        let transport = transport(
+            200,
+            vec![
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"a\\\",\\\"offset\\\":.5}\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"\\\\usepackage\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n",
+            ],
+        );
+        let provider = OpenAiCompletions::new(transport);
+        let context = Context::new(
+            "sys",
+            vec![tool()],
+            vec![Message::User(UserMessage::text("hi"))],
+        );
+        let options = StreamOptions {
+            api_key: Some("key".into()),
+            ..StreamOptions::default()
+        };
+        let message = provider.stream(&model(), context, options).result().await;
+        let calls: Vec<&ToolCall> = message.tool_calls().collect();
+        assert!(calls[0].arguments.is_empty());
+        let error = calls[0].arguments_error.as_deref().unwrap();
+        assert!(
+            error.ends_with("\n\nReceived arguments:\n{\"path\":\"a\",\"offset\":.5}"),
+            "{error}"
+        );
+        // A repairable escape is no error.
+        assert_eq!(calls[1].arguments["path"], "\\usepackage");
+        assert_eq!(calls[1].arguments_error, None);
+        let error = crate::validate_tool_arguments(&tool(), calls[0]).unwrap_err();
+        assert!(
+            error.starts_with("Invalid arguments for tool \"read\": "),
+            "{error}"
         );
     }
 

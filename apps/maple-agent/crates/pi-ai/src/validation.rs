@@ -10,6 +10,12 @@ use crate::types::{Tool, ToolCall};
 /// `anyOf` and `oneOf` too. Returns the arguments to execute with, or an error message
 /// written for the model.
 pub fn validate_tool_arguments(tool: &Tool, call: &ToolCall) -> Result<Value, String> {
+    if let Some(error) = &call.arguments_error {
+        return Err(format!(
+            "Invalid arguments for tool \"{}\": {error}",
+            call.name
+        ));
+    }
     let mut args = Value::Object(call.arguments.clone());
     normalize_optional_nulls(&mut args, &tool.parameters);
     coerce(&mut args, &tool.parameters);
@@ -290,6 +296,7 @@ mod tests {
             id: "c1".into(),
             name: "read".into(),
             arguments: arguments.as_object().cloned().unwrap(),
+            arguments_error: None,
             partial_json: None,
         }
     }
@@ -298,6 +305,16 @@ mod tests {
     fn valid_arguments_pass_through() {
         let args = validate_tool_arguments(&tool(), &call(json!({ "path": "a" }))).unwrap();
         assert_eq!(args, json!({ "path": "a" }));
+    }
+
+    #[test]
+    fn malformed_argument_text_fails_with_its_error() {
+        let mut malformed = call(json!({}));
+        malformed.arguments_error = Some("Unexpected token".into());
+        assert_eq!(
+            validate_tool_arguments(&tool(), &malformed),
+            Err("Invalid arguments for tool \"read\": Unexpected token".into())
+        );
     }
 
     #[test]
