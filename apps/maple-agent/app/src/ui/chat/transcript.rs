@@ -1487,6 +1487,7 @@ fn render_system(item: &AgentTimelineItem) -> Div {
 pub(super) fn render_question_card(
     question: &crate::backend::PendingQuestion,
     step: usize,
+    collapsed: bool,
     input: Option<Entity<TextInput>>,
     selected: &HashMap<usize, QuestionSelection>,
     cx: &mut Context<ChatScreen>,
@@ -1508,14 +1509,67 @@ pub(super) fn render_question_card(
         .border_color(gpui::rgb(theme::status_running()))
         .flex()
         .flex_col()
+        .gap_2();
+    let step = step.min(question.questions.len().saturating_sub(1));
+    // Folding works like the Plan card: the header stays, naming the
+    // question, so the transcript above can be read before answering.
+    let header = div()
+        .id("question-card-header")
+        .debug_selector(|| "question-card-header".to_string())
+        .role(gpui::Role::DisclosureTriangle)
+        .aria_label("Question from Maple")
+        .aria_expanded(!collapsed)
+        .flex()
+        .items_center()
         .gap_2()
+        .min_w_0()
+        .cursor_pointer()
+        .on_click(cx.listener(|this, _event, _window, cx| {
+            this.toggle_question_collapsed(cx);
+        }))
+        .child(icon(
+            if collapsed {
+                "chevron-right"
+            } else {
+                "chevron-down"
+            },
+            px(14.),
+            theme::text_secondary(),
+        ))
         .child(
             div()
+                .flex_none()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::rgb(theme::text_primary()))
                 .child("Question from Maple"),
+        )
+        .when_some(
+            collapsed
+                .then(|| question.questions.get(step))
+                .flatten()
+                .map(|entry| {
+                    if entry.header.trim().is_empty() {
+                        entry.question.clone()
+                    } else {
+                        entry.header.clone()
+                    }
+                }),
+            |header, summary| {
+                header.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(summary),
+                )
+            },
         );
-    let step = step.min(question.questions.len().saturating_sub(1));
+    card = card.child(header);
+    if collapsed {
+        return card;
+    }
     let has_more = step + 1 < question.questions.len();
     for (question_index, entry) in question
         .questions

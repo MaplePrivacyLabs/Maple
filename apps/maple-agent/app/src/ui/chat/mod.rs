@@ -716,6 +716,9 @@ pub struct ChatScreen {
     question_step: usize,
     /// Answers recorded for earlier steps of the current card, by index.
     question_step_answers: HashMap<usize, Vec<String>>,
+    /// The question card is folded to its header so the transcript above
+    /// it can be read; a new question or any answer key unfolds it.
+    question_collapsed: bool,
     /// Full-size image shown over the chat until dismissed.
     lightbox: Option<Arc<gpui::Image>>,
     /// Sent prompts, oldest first, for Up/Down recall in the composer.
@@ -1425,6 +1428,7 @@ impl ChatScreen {
             question_selected: HashMap::new(),
             question_step: 0,
             question_step_answers: HashMap::new(),
+            question_collapsed: false,
             lightbox: None,
             prompt_history: Vec::new(),
             history_index: None,
@@ -3372,6 +3376,7 @@ impl ChatScreen {
         self.question_selected.clear();
         self.question_step = 0;
         self.question_step_answers.clear();
+        self.question_collapsed = false;
         if let Some(input) = self.pending_question_input.take() {
             input.update(cx, |input, cx| input.clear(cx));
         }
@@ -4088,6 +4093,10 @@ impl ChatScreen {
         let Some(question) = self.current_question() else {
             return;
         };
+        if self.question_collapsed {
+            self.toggle_question_collapsed(cx);
+            return;
+        }
         let step = self
             .question_step
             .min(question.questions.len().saturating_sub(1));
@@ -4431,6 +4440,7 @@ impl ChatScreen {
             // The run is blocked on the question; sending here would queue a
             // message nobody reads and look like a stall.
             self.notice = Some("Answer the question above first".into());
+            self.question_collapsed = false;
             self.question_focus_pending = true;
             cx.notify();
             return;
@@ -5237,6 +5247,14 @@ impl ChatScreen {
     }
     /// Dismiss a question: cancel the run like the Stop button and
     /// unblock the tool with an empty answer if it is still waiting.
+    pub(super) fn toggle_question_collapsed(&mut self, cx: &mut Context<Self>) {
+        self.question_collapsed = !self.question_collapsed;
+        if !self.question_collapsed {
+            self.question_focus_pending = true;
+        }
+        cx.notify();
+    }
+
     fn skip_question(&mut self, cx: &mut Context<Self>) {
         let Some(question) = self.current_question().cloned() else {
             return;
@@ -5303,6 +5321,8 @@ impl ChatScreen {
 
     /// Vim navigation moves the cursor without checking multi-select options.
     fn focus_question_option(&mut self, step: usize, index: usize, cx: &mut Context<Self>) {
+        // Keys never change a choice the user cannot see.
+        self.question_collapsed = false;
         if self
             .current_question()
             .and_then(|q| q.questions.get(step))
@@ -6258,6 +6278,7 @@ impl ChatScreen {
                     // A fresh question takes the card; follow-ups queue
                     // behind it and keep the user's picks on this one.
                     self.question_selected.clear();
+                    self.question_collapsed = false;
                     self.ensure_question_input(cx);
                     self.question_focus_pending = true;
                 }
@@ -6666,6 +6687,7 @@ impl Render for ChatScreen {
                     container.child(render_question_card(
                         question,
                         step,
+                        self.question_collapsed,
                         input,
                         &self.question_selected,
                         cx,
