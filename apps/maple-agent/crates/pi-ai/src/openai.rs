@@ -663,7 +663,9 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                 if has_images {
                     images_from_tools.extend(content.iter().filter_map(image_part));
                 }
-                let text = match (text.is_empty(), has_images) {
+                // Some servers reject output that is only whitespace, such as a bare
+                // line break, so it counts as none.
+                let text = match (text.trim().is_empty(), has_images) {
                     (false, _) => text,
                     (true, true) => "(see attached image)".to_string(),
                     (true, false) => "(no tool output)".to_string(),
@@ -2511,6 +2513,20 @@ mod tests {
         // A user message with nothing in it is not sent.
         assert_eq!(messages[2]["content"][0]["text"], "look");
         assert_eq!(messages[4]["content"], "(no tool output)");
+    }
+
+    #[test]
+    fn whitespace_only_tool_output_counts_as_none() {
+        let model = model();
+        let messages = tool_exchange(vec![
+            vec![Content::text("\r\n")],
+            vec![Content::text(" \t"), Content::image("AAAA", "image/png")],
+            vec![Content::text("  kept as is \n")],
+        ]);
+        let messages = convert_messages(&model, &Context::from_messages(messages));
+        assert_eq!(messages[2]["content"], "(no tool output)");
+        assert_eq!(messages[3]["content"], "(see attached image)");
+        assert_eq!(messages[4]["content"], "  kept as is \n");
     }
 
     #[test]
