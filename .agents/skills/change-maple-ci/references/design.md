@@ -176,7 +176,9 @@ and the others have no better fallback.
   prefix fallback could carry a removed crate's build output into a signed
   binary. `scripts/ci/cargo_graph_key.py` hashes the Agent's `flake.lock` and
   every third-party package and dependency edge in its `Cargo.lock`, but not
-  the versions of workspace and path crates. Cargo rebuilds those anyway, so a
+  the versions of workspace and path crates; the macOS builder also hashes
+  `scripts/ci/apple-toolchain.json`, so an Xcode pin change makes its next
+  build cold. Cargo rebuilds the local crates anyway, so a
   version bump of them, the commonest Agent lockfile change, keeps the fat-LTO
   build warm. Any other lockfile change makes it fully cold; that cost is
   known and accepted. Only Prod pushes save it; the nightly Dev and dispatch

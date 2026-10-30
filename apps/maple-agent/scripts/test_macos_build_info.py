@@ -163,7 +163,13 @@ class StaticMetadataTests(unittest.TestCase):
 static MAPLE_AGENT_BUILD_INFO: [u8; include_bytes!("build-info.json").len()] = *include_bytes!("build-info.json");
 fn main() { panic!("the signing preflight must never execute an artifact"); }
 ''')
+        # Link with the linker Cargo would use. The Nix shell sets it to Xcode's clang,
+        # because its own `cc` cannot read the macOS 27 SDK.
+        host = subprocess.run(["rustc", "--print", "host-tuple"], check=True, capture_output=True,
+                              text=True).stdout.strip()
+        linker = os.environ.get(f"CARGO_TARGET_{host.upper().replace('-', '_')}_LINKER")
         subprocess.run(["rustc", "--edition=2024", "-C", "opt-level=3", "-C", "lto=fat", "-C", "strip=symbols",
+                        *(["-C", f"linker={linker}"] if linker else []),
                         "-C", "link-arg=-Wl,-u,_MAPLE_AGENT_BUILD_INFO", str(source), "-o", str(self.binary)],
                        check=True, capture_output=True, text=True)
         self.assertEqual(metadata.validated_build_info("dev", self.binary, SOURCE_SHA), info)

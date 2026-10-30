@@ -417,8 +417,12 @@ class ContractTests(unittest.TestCase):
                     if step["uses"].startswith("actions/cache/save@"):
                         self.assertIn("refs/heads/master' && github.event_name == 'schedule'", step["if"])
                     else:
-                        self.assertTrue(step["with"]["key"].startswith("ci-v1-agent-package-${{ runner.os }}-"))
-                        self.assertEqual(step["with"]["restore-keys"], "ci-v1-agent-package-${{ runner.os }}-")
+                        # macOS also leads with the Xcode pin, so a prefix restore never
+                        # brings back objects built against another SDK.
+                        prefix = "ci-v1-agent-package-${{ runner.os }}-" + (
+                            "${{ hashFiles('scripts/ci/apple-toolchain.json') }}-" if job_id == "agent-package-macos" else "")
+                        self.assertTrue(step["with"]["key"].startswith(prefix))
+                        self.assertEqual(step["with"]["restore-keys"], prefix)
             elif name == "ci.yml":
                 with self.subTest(job=job_id):
                     self.assertTrue(step["uses"].startswith("actions/cache/restore@"))
@@ -459,7 +463,12 @@ class ContractTests(unittest.TestCase):
         # empty or misnamed output would turn the exact key into a prefix that restores any
         # entry of the family.
         agent = ROOT / "apps/maple-agent"
-        expected = cargo_graph_key.key((agent / "Cargo.lock").read_text(), (agent / "flake.lock").read_text())
+        lockfiles = ((agent / "Cargo.lock").read_text(), (agent / "flake.lock").read_text())
+        # The macOS builder also hashes the Xcode pin, so an Xcode upgrade never restores
+        # objects built against the previous SDK.
+        apple = ((ROOT / "scripts/ci/apple-toolchain.json").read_text(),)
+        expected = {job: cargo_graph_key.key(*lockfiles, apple if job == "macos-build" else ())
+                    for _, job in AGENT_RELEASE_WRITERS}
         pattern = r"ci-v1-agent-release-\$\{\{ runner\.os \}\}-\$\{\{ steps\.([\w-]+)\.outputs\.([\w-]+) \}\}"
         with tempfile.TemporaryDirectory() as temporary:
             working = Path(temporary) / "bin/python3"
@@ -497,7 +506,7 @@ class ContractTests(unittest.TestCase):
                     output = Path(temporary) / f"{job_id}.output"
                     result = run(step, directory, working, output)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(output.read_text().splitlines(), [f"{reference[2]}={expected}"])
+                    self.assertEqual(output.read_text().splitlines(), [f"{reference[2]}={expected[job_id]}"])
                     failed = Path(temporary) / f"{job_id}.failed"
                     self.assertNotEqual(run(step, directory, failing, failed).returncode, 0)
                     self.assertEqual(failed.read_text() if failed.exists() else "", "")

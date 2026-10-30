@@ -26,8 +26,9 @@ re-signs/verifies them, and generates the local experiment scheme. Source plist
 and entitlements are restored. Preserve the existing frozen artifact when
 comparing toolchains; rebuilding Maple is a separate action.
 
-These test commands explicitly select installed Xcode 26.6 **after entering** the
-pinned Apple shell, without changing repository pins or global Xcode selection.
+These test commands use the Xcode selected by the pinned Apple shell
+(`scripts/ci/apple-toolchain.json`). The dated notes below record earlier runs on
+Xcode 26.5 and 26.6.
 Use `run.sh`, which prepares native linker variables; do not invoke `run.py`
 directly from an unprepared Nix shell. Substitute the exact frozen app path and
 intended simulator UDID when different from these examples.
@@ -35,9 +36,7 @@ intended simulator UDID when different from these examples.
 First build the small runner and run the catalog canary, which needs no fixture:
 
 ```sh
-nix develop --no-update-lock-file .#apple -c env \
-  MAPLE_NIX_XCODE_VERSION=26.6 MAPLE_NIX_XCODE_BUILD_VERSION=17F113 \
-  DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+nix develop --no-update-lock-file .#apple -c \
   bash scripts/testing/storekit/run.sh \
   --app apps/maple-research/frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app \
   --udid "<YOUR_BOOTED_SIMULATOR_UDID>" \
@@ -47,9 +46,7 @@ nix develop --no-update-lock-file .#apple -c env \
 Then run the certificate canary with a fresh runner-owned bootstrap fixture:
 
 ```sh
-nix develop --no-update-lock-file .#apple -c env \
-  MAPLE_NIX_XCODE_VERSION=26.6 MAPLE_NIX_XCODE_BUILD_VERSION=17F113 \
-  DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+nix develop --no-update-lock-file .#apple -c \
   bash scripts/testing/storekit/run.sh --skip-build --fixture-bootstrap \
   --app apps/maple-research/frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app \
   --udid "<YOUR_BOOTED_SIMULATOR_UDID>" \
@@ -69,9 +66,7 @@ Pass that certificate to the remaining cases. They reuse the runner build but
 each gets a separate XCTest invocation, fixture process and journal:
 
 ```sh
-nix develop --no-update-lock-file .#apple -c env \
-  MAPLE_NIX_XCODE_VERSION=26.6 MAPLE_NIX_XCODE_BUILD_VERSION=17F113 \
-  DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+nix develop --no-update-lock-file .#apple -c \
   bash scripts/testing/storekit/run.sh --skip-build \
   --fixture-certificate /absolute/path/to/MapleStoreKitSigningCertificate.cer \
   --app apps/maple-research/frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app \
@@ -175,9 +170,7 @@ To export metadata from an already running purchased diagnostic screen without
 reinstalling or restarting Maple, pass the exact GUI-built DerivedData app:
 
 ```sh
-nix develop --no-update-lock-file .#apple -c env \
-  MAPLE_NIX_XCODE_VERSION=26.6 MAPLE_NIX_XCODE_BUILD_VERSION=17F113 \
-  DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+nix develop --no-update-lock-file .#apple -c \
   bash scripts/testing/storekit/run.sh --app /absolute/path/to/Maple.app \
   --udid "<YOUR_BOOTED_SIMULATOR_UDID>" \
   --only MapleStoreKitCaptureUITests/testExportPublicSigningCertificate
@@ -202,7 +195,7 @@ The exact Foundation-only parser can also be checked on the host, without
 building an app or operating a simulator:
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer \
   python3 scripts/testing/storekit/check-snapshot-parser.py
 ```
 

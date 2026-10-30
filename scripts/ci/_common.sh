@@ -2858,7 +2858,7 @@ verify_ios_onnxruntime_pinned_hashes() {
   local version xcode_build xcframework manifest file expected actual status
 
   version="$(ios_onnxruntime_version)"
-  xcode_build="${MAPLE_XCODE_BUILD_VERSION:-17F42}"
+  xcode_build="${MAPLE_XCODE_BUILD_VERSION:-27A9275}"
   xcframework="$(ios_onnxruntime_xcframework_dir)"
   manifest="$(ios_onnxruntime_manifest_file)"
   status=0

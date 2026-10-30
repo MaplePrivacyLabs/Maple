@@ -229,11 +229,27 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Blacksmith's macOS image cannot download Xcode's Metal Toolchain, so GitHub's
+  # xcode-27 image exports it for the lanes that compile gpui's shaders.
+  metal-toolchain:
+    name: metal-toolchain
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['metal-toolchain']
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/export-metal-toolchain
+
   agent-package-macos:
     name: agent-package-macos
-    needs: plan
+    needs: [plan, metal-toolchain]
     if: fromJSON(needs.plan.outputs.lanes)['agent-package-macos']
-    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -242,13 +258,15 @@ jobs:
       - uses: ./.github/actions/setup-nix
       - name: Select pinned Xcode
         run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/import-metal-toolchain
       - name: Restore the packaging rehearsal cache
         id: package-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
-          key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
-          restore-keys: ci-v1-agent-package-${{ runner.os }}-
+          # The Xcode pin leads, so a prefix restore never brings back another SDK's objects.
+          key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('scripts/ci/apple-toolchain.json') }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          restore-keys: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('scripts/ci/apple-toolchain.json') }}-
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
@@ -355,7 +373,7 @@ jobs:
     name: research-ios
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['research-ios']
-    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 120 # a missed ONNX Runtime cache builds it from source
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -388,7 +406,7 @@ jobs:
     name: research-desktop-macos
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['research-desktop-macos']
-    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -498,7 +516,7 @@ jobs:
     name: research-dev-macos
     needs: plan
     if: fromJSON(needs.plan.outputs.lanes)['research-dev-macos']
-    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-26' }}
+    runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -655,7 +673,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [plan, nix, windows, agent-package-linux, agent-package-macos, agent-package-windows, research-rust,
+    needs: [plan, nix, windows, agent-package-linux, metal-toolchain, agent-package-macos, agent-package-windows, research-rust,
             research-ios, research-desktop-macos, research-desktop-linux, research-desktop-windows,
             research-dev-macos, os-sdk-e2e, os-helpers, os-eif]
     runs-on: ubuntu-latest

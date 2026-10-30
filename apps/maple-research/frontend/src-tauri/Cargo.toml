@@ -121,3 +121,16 @@ tao = { path = "patches/tao-0.37.1" }
 # to link (Tauri 2.12.3 made its own public: tauri-apps/tauri#16130); the
 # vendored copy only adds that keyword. Remove once upstream publishes the fix.
 tauri-plugin-sign-in-with-apple = { path = "patches/tauri-plugin-sign-in-with-apple-1.0.2" }
+
+# Cargo strips build scripts and proc-macros whenever their profile has no debug info
+# (release, and dev under CI's CARGO_PROFILE_DEV_DEBUG=0), using rustc's rust-objcopy,
+# which can leave a dylib's LINKEDIT string table 4-byte aligned. macOS 27 refuses to
+# load such dylibs when they are linked against its SDK, and every build loads its
+# proc-macros as dylibs. They never ship, so leave them unstripped. Remove once the
+# root flake pins Rust 1.98 or newer: its stripped proc-macros stay 8-byte aligned,
+# which is why the Agent needs no override (llvm/llvm-project#203680).
+[profile.dev.build-override]
+strip = false
+
+[profile.release.build-override]
+strip = false

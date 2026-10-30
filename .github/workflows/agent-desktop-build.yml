@@ -51,11 +51,31 @@ jobs:
         # Dispatch, the nightly run, an unusable push base and selector errors all build.
         run: python3 scripts/ci/plan.py only agent-desktop >> "$GITHUB_OUTPUT"
 
-  macos-build:
-    name: Build macOS binary (${{ matrix.variant }})
+  # Blacksmith's macOS image cannot download Xcode's Metal Toolchain, so GitHub's
+  # xcode-27 image exports it for the macOS build, which compiles gpui's shaders.
+  metal-toolchain:
+    name: Export the Metal Toolchain
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: xcode-27
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Select pinned Xcode
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/export-metal-toolchain
+
+  macos-build:
+    name: Build macOS binary (${{ matrix.variant }})
+    needs: [changes, metal-toolchain]
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    runs-on: blacksmith-6vcpu-macos-27
     permissions:
       contents: read
     timeout-minutes: 120
@@ -82,17 +102,18 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
+      - uses: ./.github/actions/import-metal-toolchain
       - name: Hash the Agent's third-party dependency graph and toolchain
         id: graph
-        run: python3 ../../scripts/ci/cargo_graph_key.py Cargo.lock flake.lock >> "$GITHUB_OUTPUT"
+        run: python3 ../../scripts/ci/cargo_graph_key.py Cargo.lock flake.lock ../../scripts/ci/apple-toolchain.json >> "$GITHUB_OUTPUT"
       - name: Restore the exact-key Agent release cache
         id: cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # No restore-keys: a master build never starts from another dependency
-          # graph's artifacts. The hash covers flake.lock and every third-party
-          # package and edge in Cargo.lock, not workspace or path crate versions
-          # (Cargo rebuilds those anyway). Prod pushes save it; Dev builds only
+          # graph's artifacts. The hash covers flake.lock, every third-party
+          # package and edge in Cargo.lock and, on macOS, the Xcode pin, not workspace
+          # or path crate versions (Cargo rebuilds those anyway). Prod pushes save it; Dev builds only
           # restore it (Cargo rebuilds what the profile changes).
           key: ci-v1-agent-release-${{ runner.os }}-${{ steps.graph.outputs.hash }}
           path: |
@@ -138,7 +159,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -513,6 +534,9 @@ jobs:
     permissions:
       contents: read
       attestations: read
+    # Launch the signed app on macOS 26, where most users run it, rather than on
+    # the macOS 27 it was built on. The job builds nothing, so it uses the image's
+    # default Xcode: the pinned 27.1 exists only on xcode-27.
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
@@ -535,9 +559,6 @@ jobs:
       - name: Verify pinned Nix runtime
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
-      - name: Select pinned Xcode
-        working-directory: .
-        run: python3 scripts/ci/select-xcode.py
       - name: Download exact Agent packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:

@@ -87,6 +87,19 @@ def everything(event: str, why: str) -> Selection:
     return {lane.id: [why] for lane in active(event)}
 
 
+def with_requirements(selected: Selection) -> Selection:
+    """Add every lane a selected lane requires, transitively: the requiring lane's job needs theirs."""
+    by_id = {lane.id: lane for lane in LANES}
+    pending = list(selected)
+    while pending:
+        lane = by_id.get(pending.pop())
+        for name in lane.requires if lane else ():
+            if name not in selected:
+                pending.append(name)
+            selected.setdefault(name, []).append(f"required by {lane.id}")
+    return selected
+
+
 def select(event: str, paths: Iterable[str], labels: Sequence[str] = ()) -> Selection:
     """Active lanes that the changed paths and PR labels select for `event`."""
     lanes = active(event)
@@ -115,7 +128,7 @@ def select(event: str, paths: Iterable[str], labels: Sequence[str] = ()) -> Sele
                 chosen.setdefault(lane.id, []).append(f"label {label}")
     if approvals:  # opensecret-eif.yml compares the edited approvals instead
         chosen.pop("os-eif", None)
-    return chosen
+    return with_requirements(chosen)
 
 
 def hook_components(paths: Iterable[str]) -> List[str]:
@@ -170,7 +183,7 @@ def plan_event(event: str, payload: dict) -> Selection:
         unknown = sorted(set(names) - {lane.id for lane in active(event)})
         if unknown:
             raise ValueError(f"not an active lane: {', '.join(unknown)}")
-        return {name: ["dispatch"] for name in names}
+        return with_requirements({name: ["dispatch"] for name in names})
     if event == NIGHTLY:
         return everything(event, "nightly")
     labels: List[str] = []
@@ -496,6 +509,38 @@ def lint_problems(files: Sequence[str]) -> List[str]:
             problems.append(f"ci.yml plan: {variable} is not passed to plan.py")
     if f"toolchain: {AGENT_WINDOWS_RUST}\n" not in WINDOWS_SETUP.read_text():
         problems.append(f"setup-agent-windows does not pin Rust {AGENT_WINDOWS_RUST}")
+    # A lane's requirements run only for it: they exist, form no cycle, select nothing on their
+    # own, and the requiring lane's special job waits for theirs.
+    by_id = {lane.id: lane for lane in LANES}
+    for lane in LANES:
+        for name in lane.requires:
+            required = by_id.get(name)
+            if required is None:
+                problems.append(f"{lane.id}: requires unknown lane {name}")
+                continue
+            if required.paths or required.pr_paths or required.labels or required.gate or required.opensecret:
+                problems.append(f"{name}: a required lane must have no paths, labels, gate or OpenSecret selector")
+            if lane.job in MATRIX_JOBS or lane.job not in blocks:
+                problems.append(f"{lane.id}: a lane with requirements needs its own ci.yml job")
+                continue
+            needs = re.search(r"^    needs: \[?([^\]\n]*)\]?$", blocks[lane.job], re.M)
+            if not needs or required.job not in {n.strip() for n in needs[1].split(",")}:
+                problems.append(f"ci.yml {lane.job}: needs does not include {required.job}")
+    # A fallback plan (everything()) must never run a required lane without a lane that needs it.
+    for name in sorted({name for lane in LANES for name in lane.requires} & set(by_id)):
+        requirers = set().union(*(lane.events for lane in LANES if name in lane.requires))
+        if not by_id[name].events <= requirers:
+            problems.append(f"{name}: a required lane's events must be a subset of its requirers' events")
+    for lane in LANES:
+        seen, stack = set(), list(lane.requires)
+        while stack:
+            name = stack.pop()
+            if name == lane.id:
+                problems.append(f"{lane.id}: requirement cycle")
+                break
+            if name not in seen and name in by_id:
+                seen.add(name)
+                stack.extend(by_id[name].requires)
     declared = set(re.findall(r"^\s+- (\S+)$", (ROOT / ".github/actionlint.yaml").read_text(), re.M))
     problems += [f"{lane.id}: {lane.opensecret} is no opensecret_change_detection.py output" for lane in LANES
                  if lane.opensecret and lane.opensecret not in OPENSECRET_OUTPUTS + ("pcr",)]

@@ -36,9 +36,12 @@ def cache_store(label: str) -> str:
 # The override variables are unset; set one to fail over during an outage.
 LINUX = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_RUNNER")
 LINUX_HEAVY = Runner("blacksmith-32vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
-MACOS = Runner("blacksmith-6vcpu-macos-26", "CI_MACOS_RUNNER")
+MACOS = Runner("blacksmith-6vcpu-macos-27", "CI_MACOS_RUNNER")
 WINDOWS = Runner("blacksmith-8vcpu-windows-2025", "CI_WINDOWS_RUNNER")
 GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile nothing heavy
+# GitHub's Xcode 27 image ships Xcode's Metal Toolchain, which Blacksmith's macOS image
+# lacks and cannot download (its MobileAsset catalog fetch fails).
+GITHUB_XCODE = Runner("xcode-27")
 # The Agent updater's native Windows tests and the installer smoke test need GitHub's
 # runner: Blacksmith's workspace inherits a foreign write ACE the updater rejects, and
 # master's Windows install smoke (agent-desktop-build.yml verify-windows) runs there too.
@@ -107,10 +110,13 @@ AGENT_WINDOWS_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "release_profile.rs",
 )) + WINDOWS_TOOLCHAIN
 APPLE_TOOLCHAIN = ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py")
+# The composite actions that carry Xcode's Metal Toolchain from GitHub's xcode-27 image
+# to Blacksmith macOS jobs (agent-desktop-build.yml macos-build, agent-package-macos).
+METAL_TOOLCHAIN = (".github/actions/export-metal-toolchain/**", ".github/actions/import-metal-toolchain/**")
 # What agent-desktop-build.yml builds and signs on master (`plan.py only agent-desktop`).
 AGENT_DESKTOP = AGENT + RUST_SDK + PROXY_RUNTIME + (
     ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/**",
-    "scripts/ci/verify-agent-rust-deps.py", *APPLE_TOOLCHAIN, "scripts/ci/agent_windows.py",
+    "scripts/ci/verify-agent-rust-deps.py", *APPLE_TOOLCHAIN, *METAL_TOOLCHAIN, "scripts/ci/agent_windows.py",
     "scripts/ci/cargo_graph_key.py", "scripts/ci/install-windows-artifact-signing.ps1",
     "scripts/ci/windows-artifact-sign.ps1",
 )
@@ -144,6 +150,7 @@ class Lane:
     submodules: bool = False                    # check out submodules, with the full (blobless) history Nix needs
     hook: Optional[str] = None                  # the pre-commit component that runs these checks
     restore: str = ""                           # read-only restore of a cache another workflow writes
+    requires: Tuple[str, ...] = ()              # lanes whose jobs this lane's job needs; selected with it
 
 
 AGENT_DIR = dict(
@@ -152,6 +159,14 @@ AGENT_DIR = dict(
     env=(("RUSTFLAGS", "-D warnings"),),
 )
 AGENT_FLAKE = dict(flake="./apps/maple-agent", **AGENT_DIR)
+# The macOS lanes also key their caches on the Xcode pin, so an Xcode upgrade never
+# restores objects built against the previous SDK.
+AGENT_MACOS = dict(AGENT_FLAKE, runner=MACOS,
+                   cache_files=AGENT_DIR["cache_files"] + ("scripts/ci/apple-toolchain.json",))
+# gpui compiles its Metal shaders at run time instead of build time, so these lanes need
+# no Metal Toolchain (Blacksmith's macOS image has none). Compiled shaders are proven by
+# master's signed Prod build on every Agent push, the nightly Dev build and ci:package.
+RUNTIME_SHADERS = "-F gpui-platform/runtime_shaders"
 # Lanes that only resolve the Agent's graph share its Cargo home, without a target
 # directory, so they stop cloning the zed and cua git dependencies on every run.
 AGENT_CARGO_HOME = dict(AGENT_FLAKE, cache="agent-cargo-home", cache_targets=False)
@@ -220,8 +235,8 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-test", AGENT, also=RUST_SDK + PROXY_RUNTIME, runner=LINUX_HEAVY,
          run="just ci-test", cache="agent-test", timeout=40, hook="agent", **AGENT_FLAKE),
     Lane("agent-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME + APPLE_TOOLCHAIN,
-         runner=MACOS, run="cargo clippy --workspace --all-targets --locked -- -D warnings",
-         cache="agent-macos", timeout=25, **AGENT_FLAKE),
+         run=f"cargo clippy --workspace --all-targets --locked {RUNTIME_SHADERS} -- -D warnings",
+         cache="agent-macos", timeout=25, **AGENT_MACOS),
     # Windows Clippy and the native PE-metadata and host-spawn fixtures, on every Agent change.
     Lane("agent-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/agent_windows.py",),
          labels=("ci:windows", "ci:full"),
@@ -235,13 +250,15 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-windows-updater", AGENT_WINDOWS_UPDATER, labels=("ci:windows", "ci:full"),
          run="cargo test -p maple-agent-updater --locked --no-fail-fast -- --test-threads=1",
          cache="agent-windows-updater", timeout=30, **dict(AGENT_WIN, runner=GITHUB_WINDOWS_FREE)),
-    # The rest of `just ci` and the native macOS suite: master, nightly and ci:full.
+    # The rest of `just ci` and the native macOS suite (with runtime shaders, see
+    # RUNTIME_SHADERS): master, nightly and ci:full.
     Lane("agent-full-linux", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), run="just ci-extra",
          cache="agent-full-linux", timeout=30, gate=False, **AGENT_FLAKE),
-    Lane("agent-full-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), runner=MACOS,
-         run="python3 scripts/test_git_metadata.py && cargo build --workspace --all-targets --locked"
-             " && ./scripts/macos-debug-app.sh && cargo test --workspace --locked",
-         cache="agent-full-macos", timeout=45, gate=False, **AGENT_FLAKE),
+    Lane("agent-full-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME + APPLE_TOOLCHAIN, pr_paths=(),
+         run="python3 scripts/test_git_metadata.py"
+             f" && cargo build --workspace --all-targets --locked {RUNTIME_SHADERS}"
+             f" && ./scripts/macos-debug-app.sh && cargo test --workspace --locked {RUNTIME_SHADERS}",
+         cache="agent-full-macos", timeout=45, gate=False, **AGENT_MACOS),
     # The native Windows suite: nightly (which saves its cache) and by label, on the free runner.
     Lane("agent-full-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), labels=("ci:windows", "ci:full"),
          events=PR_AND_NIGHTLY,
@@ -265,9 +282,14 @@ LANES: Tuple[Lane, ...] = (
     # and master's real builds in agent-desktop-build.yml.
     Lane("agent-package-linux", AGENT_PACKAGING, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-linux", run="just package-rehearsal", timeout=60, gate=False, **AGENT_PACKAGE_FLAKE),
-    Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN, pr_paths=(), labels=("ci:package", "ci:full"),
+    Lane("agent-package-macos", AGENT_PACKAGING + APPLE_TOOLCHAIN + METAL_TOOLCHAIN, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-macos", runner=MACOS, run="just package-rehearsal", timeout=60,
-         gate=False, **AGENT_PACKAGE_FLAKE),
+         gate=False, requires=("metal-toolchain",), **AGENT_PACKAGE_FLAKE),
+    # Exports Xcode's Metal Toolchain as a one-day artifact for the macOS packaging rehearsal,
+    # which compiles gpui's shaders like the signed builds. Nothing selects it by path or
+    # label: the planner adds it to every plan with a lane that requires it.
+    Lane("metal-toolchain", (), pr_paths=(), labels=(), gate=False, job="metal-toolchain",
+         events=PR_AND_NIGHTLY, runner=GITHUB_XCODE, timeout=15),
     Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),) + FAST_RELEASE, timeout=90, gate=False),
@@ -322,8 +344,14 @@ LANES: Tuple[Lane, ...] = (
     # Unsigned platform builds: iOS and Android for PRs that touch their native inputs;
     # the desktop bundles (15-45 minutes) only by label, so no PR waits on them.
     # desktop-build.yml, mobile-build.yml and android-build.yml build master.
+    # research-ios downloads the iOS 27.1 Simulator runtime (7.85 GB, about a minute)
+    # on every run: Blacksmith's macOS 27 image ships only iOS 27.0's.
     Lane("research-ios", (TAURI + "gen/apple/**", TAURI + "icons/ios/**", TAURI + "capabilities/mobile-ios.json",
                           TAURI + "tauri.ios-dev.conf.json", TAURI + "Info.plist", TAURI + "Entitlements.plist",
+                          # iOS-only sources: the scene manifest tauri-cli merges into the app's
+                          # plist, plugin Swift code, and the vendored tao's iOS platform layer.
+                          TAURI + "Info.ios.plist", TAURI + "plugins/*/ios/**", TAURI + "patches/*/ios/**",
+                          TAURI + "patches/tao-*/src/platform_impl/ios/**", TAURI + "patches/tao-*/src/platform/ios.rs",
                           TAURI + "scripts/*ios*", TAURI + "scripts/canonicalize-static-archive.py",
                           TAURI + "scripts/onnxruntime-pins.sh", "scripts/ci/ios-*.sh", "scripts/ci/ios-build-profile.py",
                           "scripts/ci/canonical-ios-app-hash.py", "scripts/ci/_common.sh",
@@ -333,6 +361,10 @@ LANES: Tuple[Lane, ...] = (
          env=(("MAPLE_IOS_DOWNLOAD_SIMULATOR_RUNTIME", "1"),), timeout=120, **PLATFORM),
     Lane("research-android", (TAURI + "gen/android/**", TAURI + "icons/android/**",
                               TAURI + "capabilities/mobile-android.json", TAURI + "scripts/*android*",
+                              # Android-only sources: vendored plugins' Kotlin code and the vendored
+                              # tao's Android layer, which carries Maple's intent hardening.
+                              TAURI + "patches/*/android/**", TAURI + "patches/tao-*/src/platform_impl/android/**",
+                              TAURI + "patches/tao-*/src/platform/android.rs",
                               "scripts/ci/android-*.sh", "scripts/ci/_common.sh"),
          labels=("ci:android", "ci:full"), flake=".#android", run="./scripts/ci/android-pr.sh", timeout=45,
          restore="research-rust", **PLATFORM),

@@ -77,8 +77,8 @@ branches in step with the lane table.
   keys. `scripts/ci/cargo_graph_key.py` hashes the Agent's `flake.lock` and
   its `Cargo.lock` without the versions of workspace and path crates, which
   Cargo rebuilds anyway: a release version bump keeps the key, and a change
-  to any third-party package or dependency edge, or to the toolchain, makes
-  the next build cold. Pushes build only Prod; the nightly Dev and dispatched
+  to any third-party package or dependency edge, or to the toolchain (for
+  macOS also `scripts/ci/apple-toolchain.json`), makes the next build cold. Pushes build only Prod; the nightly Dev and dispatched
   builds restore the same key without saving (the profile changes only Agent
   workspace crates, which Cargo rebuilds). No `ci.yml` lane reads it. The
   Agent packaging lanes build thin LTO into their own
@@ -123,7 +123,8 @@ the other side of each contract. A failure means the workflow change is wrong:
    ancestor succeeded (a scan still running does not block). These run on every
    relevant master push and are never cancelled.
 4. The signed master builds write the release cache keys above (the Agent's
-   is `cargo_graph_key.py`'s hash of its lockfiles, with no fallback), and
+   is `cargo_graph_key.py`'s hash of its lockfiles, plus the Xcode pin on
+   macOS, with no fallback), and
    `ios-dev-testflight.yml`'s run number is the Maple Dev build number: never
    rename that file.
 5. Every OpenSecret EIF builder that uses FlakeHub (`ci.yml`'s `os-eif`,
@@ -247,12 +248,20 @@ release workflows use:
 
 | Work | Runner |
 | --- | --- |
-| Research macOS, Linux, Android and iOS builds, which compile and sign (master and release); `rust-tests.yml`; the Agent's unsigned master builds | Blacksmith (`blacksmith-6vcpu-macos-26`, `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`) |
+| Research macOS, Linux, Android and iOS builds, which compile and sign (master and release); `rust-tests.yml`; the Agent's unsigned master builds | Blacksmith (`blacksmith-6vcpu-macos-27`, `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`) |
 | Release `build-windows` | `maple-windows-2025-16core` |
 | Signed Research Windows master build; Agent Windows signing and verification | `windows-2025` |
 | Artifact verifiers, TestFlight submission, the Agent's signing and attestation, CodeQL, web and frontend evidence | Other GitHub-hosted runners |
 | Proxy release builds and their PR rehearsal (`proxy-rust.yml`) | GitHub-hosted Linux and Windows, Blacksmith macOS |
 | EIF builders that use FlakeHub | `blacksmith-16vcpu-ubuntu-2404-arm` |
+
+The Agent's signing and attestation, both TestFlight submissions, the macOS
+release verifiers and the Metal Toolchain export need the pinned Xcode, so they
+run on GitHub's `xcode-27` label, a public-preview image without an SLA. If
+GitHub renames or retires it, move them to the label that carries Xcode 27.1,
+such as `macos-27` once that image ships it. Jobs that launch or inspect
+artifacts without selecting Xcode stay on `macos-26`, an older macOS than the
+builds link against.
 
 The Agent's signing and attestation, `windows-signing` jobs and every artifact
 verifier stay GitHub-hosted: the Agent publisher rejects self-hosted signers,
@@ -268,13 +277,17 @@ PowerShell Gallery and its CDN and accepts only the pinned SHA-256. Rust,
 MSVC, Perl and the linker are pinned by `.github/actions/setup-agent-windows`
 for the Agent.
 
-Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
+Research desktop and iOS builds select Xcode 27.1 (`27A9275`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
 `scripts/ci/select-xcode.py`; the root Nix shell exports the same version for
 its Apple recipes. Do not rely on a runner's default Xcode. The
 [iOS ONNX pins](../apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh)
 verify artifacts against that exact build, so an Xcode upgrade means rebuilding
-and reviewing those hashes and validating desktop and iOS packaging. A newer
+and reviewing those hashes and validating desktop and iOS packaging. The
+Agent's signed macOS build compiles gpui's Metal shaders: Blacksmith's macOS
+image has no Metal Toolchain and cannot download one, so a GitHub `xcode-27`
+job exports it as a one-day artifact that the build imports, and the build's
+release cache key hashes the Xcode pin. A newer
 CI image does not raise the shipped deployment targets: Research supports
 macOS 13.4 and iOS 16.0.
 

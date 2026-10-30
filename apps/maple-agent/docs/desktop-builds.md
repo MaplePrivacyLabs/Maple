@@ -42,7 +42,10 @@ Research state. The development launcher retains its existing workspace
 configuration and uses a separate debug app identity.
 
 macOS compiles each profile in a job without signing credentials and uploads
-its prebuilt binary. Packaging runs on a fresh runner that downloads that
+its prebuilt binary. That job runs on Blacksmith's macOS 27 image, which has no
+Metal Toolchain: a GitHub `xcode-27` job exports Xcode's toolchain as a one-day
+artifact that the build imports before compiling gpui's shaders, so a retry more
+than a day later must re-run that export job too. Packaging runs on a fresh runner that downloads that
 binary and checks its embedded profile and source commit against the run's
 checkout before the signing step receives Apple credentials. It reads a dedicated
 Mach-O JSON section without executing artifact code, including before signing.

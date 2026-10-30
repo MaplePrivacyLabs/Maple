@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 import lanes
@@ -28,9 +29,10 @@ NIX_INPUTS = {"source-tag": "v3.23.3", "github-token": ""}
 VERIFY_NIX = "bash scripts/ci/verify-nix-runtime.sh"
 SETUP_NIX = "./.github/actions/setup-nix"
 PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}")
-# Standard images, and the org's one GitHub-hosted larger runner, by its exact label:
-# a pattern would also admit a self-hosted runner that borrowed the name.
-GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|maple-windows-2025-16core")
+# GitHub-hosted labels: the standard image families (ubuntu-*, macos-*, windows-*) and the
+# per-Xcode macOS images (xcode-N), plus the org's larger Windows runner by its exact label,
+# since a pattern would also admit a self-hosted runner that borrowed the name.
+GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|xcode-[0-9]+|maple-windows-2025-16core")
 # The workflows that run on pull requests or the merge queue. Every other check is a
 # ci.yml lane (scripts/ci/lanes.py), so ci-ok judges it; adding one here is an owner call.
 PULL_REQUEST_WORKFLOWS = frozenset({
@@ -93,6 +95,16 @@ def load(path: Path) -> dict:
 
 def workflows() -> dict:
     return {path.name: load(path) for path in sorted(WORKFLOWS.glob("*.yml"))}
+
+
+def expanded_steps(steps, root: Path = ROOT, seen: frozenset = frozenset()):
+    """A job's steps, each local composite action followed by the steps it runs in that job."""
+    for step in steps:
+        yield step
+        uses = step.get("uses", "")
+        if uses.startswith("./.github/actions/") and uses not in seen:
+            action = load(root / uses.removeprefix("./") / "action.yml")
+            yield from expanded_steps(action.get("runs", {}).get("steps", []), root, seen | {uses})
 
 
 def jobs():
@@ -267,8 +279,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         for name, config in workflows().items():
             pr = bool({"pull_request", "merge_group"} & triggers(config))
             for job_id, job in config["jobs"].items():
-                for step in job.get("steps", []):
+                for step in expanded_steps(job.get("steps", [])):
                     self.assertNotIn("run-id", step.get("with", {}), (name, job_id))
+                    if step.get("uses", "").startswith("actions/download-artifact@"):
+                        self.assertNotIn("github-token", step.get("with", {}), (name, job_id))
                     guard = " ".join(str(value) for value in (
                         job.get("if", ""), step.get("if", ""), step.get("with", {}).get("save-if", "")))
                     if pr and cache_writer(step) and (name, job_id) in BRANCH_SCOPED_NIX:
@@ -283,11 +297,26 @@ class WorkflowPolicyTests(unittest.TestCase):
                             self.assertTrue(events and events <= {"push", "schedule"}, (job_id, guard))
         self.assertEqual(scoped, BRANCH_SCOPED_NIX)  # the exemption lapses with its job
 
+    def test_steps_inside_local_composite_actions_are_checked_too(self):
+        # A composite action's steps run in the job that uses it, so a cache save or another
+        # run's artifact inside one must reach the checks above.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            action = root / ".github/actions/fixture/action.yml"
+            action.parent.mkdir(parents=True)
+            action.write_text(json.dumps({"runs": {"using": "composite", "steps": [
+                {"uses": "actions/download-artifact@" + "0" * 40, "with": {"name": "x", "run-id": "1"}},
+                {"uses": "actions/cache@" + "0" * 40, "with": {"path": "x", "key": "y"}},
+            ]}}))
+            steps = list(expanded_steps([{"uses": "./.github/actions/fixture"}], root))
+        self.assertTrue(any("run-id" in step.get("with", {}) for step in steps))
+        self.assertTrue(any(cache_writer(step) for step in steps))
+
     def test_only_listed_jobs_fill_githubs_cache_store_and_failovers_never_save(self):
         # Blacksmith runners cannot read GitHub's store, nor GitHub's runners Blacksmith's.
         writers = set()
         for name, job_id, job in jobs():
-            for step in job.get("steps", []):
+            for step in expanded_steps(job.get("steps", [])):
                 if name in SACRED or not cache_writer(step):
                     continue
                 guard = " ".join(str(value) for value in (step.get("if", ""), step["with"].get("save-if", "")))
