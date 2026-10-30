@@ -4236,6 +4236,8 @@ mod tests {
             "open_task_page",
             "browse_project_folders",
             "create_project_folder",
+            "create_scratch_project",
+            "recent_project_roots",
             "generate_store_passphrase",
             "setup_store",
             "retry_store_persistence",

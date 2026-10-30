@@ -1749,7 +1749,11 @@ impl MapleApp {
                     .values()
                     .filter_map(|c| c.chat.as_ref()),
             ) {
-                other.update(cx, |other, cx| other.set_visible(false, cx));
+                // Same-computer navigation must not look like leaving the
+                // screen: the target decides whether to admit the request.
+                if other.entity_id() != chat.entity_id() {
+                    other.update(cx, |other, cx| other.set_visible(false, cx));
+                }
             }
             self.selected_host = request.computer;
             self.screen = Screen::Chat(chat.clone());
@@ -4210,6 +4214,40 @@ mod tests {
     }
 
     use super::*;
+
+    #[gpui::test]
+    fn scratch_first_send_survives_same_computer_navigation_but_not_a_switch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let shell = project_shell(cx);
+        shell.update(cx, |app, cx| {
+            let local = app.local_chat.clone().unwrap();
+            local.update(cx, |chat, cx| chat.begin_scratch_send_for_test(cx));
+            let generation = local.read(cx).navigation_generation();
+            assert!(local.read(cx).scratch_send_pending_for_test());
+
+            app.navigate(
+                Navigate {
+                    computer: None,
+                    destination: Destination::DraftProject("/another/project".into()),
+                },
+                cx,
+            );
+            assert_eq!(local.read(cx).navigation_generation(), generation);
+            assert!(local.read(cx).scratch_send_pending_for_test());
+
+            app.navigate(
+                Navigate {
+                    computer: Some("east".into()),
+                    destination: Destination::Overview,
+                },
+                cx,
+            );
+            assert_ne!(local.read(cx).navigation_generation(), generation);
+            assert!(!local.read(cx).scratch_send_pending_for_test());
+            assert_eq!(app.selected_host.as_deref(), Some("east"));
+        });
+    }
 
     fn project_roots(name: &str) -> Vec<maple_agent::agent::RecentProjectRoot> {
         vec![maple_agent::agent::RecentProjectRoot {

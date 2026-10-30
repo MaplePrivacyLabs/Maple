@@ -10,6 +10,8 @@ pub const PROTOCOL_VERSION: &str = "7.1.0";
 pub const PEER_INFO_CAPABILITY: &str = "peer_info_v1";
 pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
 pub const REFRESH_CAPABILITY: &str = "remote_update_refresh_v1";
+pub const RECENT_PROJECTS_CAPABILITY: &str = "recent_projects_v1";
+pub const SCRATCH_PROJECT_CAPABILITY: &str = "scratch_project_v1";
 pub const PROJECT_FOLDERS_CAPABILITY: &str = "project_folders_v1";
 /// The host summarizes a tool call from its input as the call starts.
 pub const TOOL_SUMMARY_START_CAPABILITY: &str = "tool_summary_start_v1";
@@ -30,6 +32,8 @@ impl ProtocolInfo {
                 INSTALL_CAPABILITY.into(),
                 REFRESH_CAPABILITY.into(),
                 PROJECT_FOLDERS_CAPABILITY.into(),
+                SCRATCH_PROJECT_CAPABILITY.into(),
+                RECENT_PROJECTS_CAPABILITY.into(),
                 TOOL_SUMMARY_START_CAPABILITY.into(),
             ],
         }
@@ -241,6 +245,14 @@ impl PeerInfo {
 
     pub fn supports_project_folders(&self) -> bool {
         self.protocol.supports(PROJECT_FOLDERS_CAPABILITY)
+    }
+
+    pub fn supports_recent_projects(&self) -> bool {
+        self.protocol.supports(RECENT_PROJECTS_CAPABILITY)
+    }
+
+    pub fn supports_scratch_project(&self) -> bool {
+        self.protocol.supports(SCRATCH_PROJECT_CAPABILITY)
     }
 
     pub fn supports_tool_summary_start(&self) -> bool {
@@ -611,6 +623,13 @@ mod tests {
         assert!(current.supports(INSTALL_CAPABILITY));
         assert!(current.supports(REFRESH_CAPABILITY));
         assert!(current.supports(PROJECT_FOLDERS_CAPABILITY));
+        assert!(current.supports(SCRATCH_PROJECT_CAPABILITY));
+        let mut legacy = current.clone();
+        legacy
+            .capabilities
+            .retain(|value| value != SCRATCH_PROJECT_CAPABILITY);
+        assert!(!legacy.supports(SCRATCH_PROJECT_CAPABILITY));
+        assert!(legacy.supports(PROJECT_FOLDERS_CAPABILITY));
     }
 
     #[test]
@@ -909,6 +928,21 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&current).unwrap()).unwrap();
         assert!(legacy.valid());
         assert!(!legacy.supports_remote_updates());
+    }
+
+    #[test]
+    fn recent_projects_require_their_own_capability_and_current_major() {
+        let mut info = current_peer_for_compatibility();
+        assert!(info.supports_recent_projects());
+        info.protocol
+            .capabilities
+            .retain(|value| value != RECENT_PROJECTS_CAPABILITY);
+        assert!(!info.supports_recent_projects());
+        info.protocol
+            .capabilities
+            .push(RECENT_PROJECTS_CAPABILITY.into());
+        info.protocol.version = "6.1.0".into();
+        assert!(!info.supports_recent_projects());
     }
 
     #[test]
