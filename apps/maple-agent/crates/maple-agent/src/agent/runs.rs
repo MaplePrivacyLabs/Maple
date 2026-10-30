@@ -41,7 +41,9 @@ use super::{
 };
 
 mod live;
+mod shell_progress;
 use live::LiveSnapshot;
+use shell_progress::ShellProgress;
 
 const AGENT_RUN_EVENT_CAPACITY: usize = 256;
 const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
@@ -1588,7 +1590,11 @@ impl AgentRuntime {
         } = run;
         let attachments =
             AgentAttachmentStore::new(Arc::clone(self.store.store()), self.store.account());
-        let watch = RunWatch::default();
+        let watch = RunWatch {
+            state: Arc::default(),
+            shells: ShellProgress::new(session.extension_context().cwd()),
+        };
+        let shell_status = watch.shells.start(events.clone());
         let listener = session.subscribe({
             let events = events.clone();
             let watch = watch.clone();
@@ -1749,6 +1755,7 @@ impl AgentRuntime {
             run.accepting = false;
         }
         session.unsubscribe(listener);
+        shell_status.stop().await;
 
         let cancelled = stopped.is_cancelled();
         if cancelled || failure.is_some() || deferred.failure.is_some() {
@@ -1982,9 +1989,10 @@ struct DrivenRun {
 
 /// What a run's listener saw: the usage of its replies and whether Pi
 /// retried.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RunWatch {
     state: Arc<Mutex<RunWatchState>>,
+    shells: Arc<ShellProgress>,
 }
 
 #[derive(Default)]
@@ -2030,6 +2038,7 @@ impl RunWatch {
                 } else {
                     let tool = match event {
                         pi_agent_core::AgentEvent::ToolExecutionStart { tool_call_id, .. }
+                        | pi_agent_core::AgentEvent::ToolExecutionUpdate { tool_call_id, .. }
                         | pi_agent_core::AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
                             Some(tool_call_id.as_str())
                         }
@@ -2037,9 +2046,7 @@ impl RunWatch {
                     };
                     (projected, tool, false)
                 };
-                for row in rows {
-                    events.publish_row(AgentRunEvent::TimelineItem(row), tool, completed);
-                }
+                self.shells.publish(event, rows, tool, completed, events);
             }
             AgentSessionEvent::EntryAppended { entry } => events.note_source(entry),
             AgentSessionEvent::RetryStart { .. } => lock(&self.state).retried = true,

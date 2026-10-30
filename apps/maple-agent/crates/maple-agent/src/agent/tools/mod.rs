@@ -13,6 +13,7 @@
 
 mod desktop;
 mod read_image;
+pub(super) mod shell;
 pub(crate) mod web;
 
 pub(super) use desktop::parse_user_questions;
@@ -24,7 +25,8 @@ use std::sync::Arc;
 use pi_coding_agent::AgentSession;
 use pi_coding_agent::extensions::{Extension, RegisteredTool};
 use pi_coding_agent::tools::{
-    BashSpawnContext, BashSpawnHook, PowerShellToolOptions, ToolsOptions, set_env_var,
+    BashSpawnContext, BashSpawnHook, LocalShellOperations, PowerShellToolOptions, ToolsOptions,
+    set_env_var,
 };
 
 use super::questions::QuestionBroker;
@@ -67,9 +69,13 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
         .map(PathBuf::from);
     let hook = spawn_hook(task.session_id.clone(), task.login_path);
     let mut options = ToolsOptions::default();
+    options.bash.operations = Some(shell::bounded(LocalShellOperations::bash(
+        shell_path.clone(),
+    )));
     options.bash.shell_path = shell_path.clone();
     options.bash.spawn_hook = Some(hook.clone());
     options.powershell = PowerShellToolOptions {
+        operations: Some(shell::bounded(LocalShellOperations::powershell())),
         spawn_hook: Some(hook),
         ..PowerShellToolOptions::default()
     };

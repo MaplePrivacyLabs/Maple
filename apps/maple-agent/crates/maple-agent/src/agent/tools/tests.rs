@@ -128,6 +128,8 @@ fn the_model_gets_read_a_shell_edit_and_write() {
     };
     assert_eq!(tools.builtin, ["read", shell, "edit", "write"]);
     assert!(tools.options.powershell.spawn_hook.is_some());
+    assert!(tools.options.bash.operations.is_some());
+    assert!(tools.options.powershell.operations.is_some());
 }
 
 fn tool(tools: &TaskTools, name: &str) -> Arc<dyn pi_agent_core::AgentTool> {

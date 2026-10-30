@@ -1130,7 +1130,7 @@ fn render_tool(
         let raw = item.title.as_deref().unwrap_or(&item.item_type);
         SharedString::from(tool_label_title(raw).to_string())
     });
-    let card = div()
+    let mut card = div()
         .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
         .debug_selector(|| "tool-card".to_string())
         .role(gpui::Role::DisclosureTriangle)
@@ -1201,8 +1201,20 @@ fn render_tool(
                     theme::text_muted(),
                 )),
         );
-    // Collapsed: the header alone; the summary takes over the title when
-    // it lands. Only expanded cards pay for the derived payload strings.
+    if running
+        && shell_execution(item).is_some()
+        && let Some(status) = &transcript.derived.get(item, revision).shell_status
+    {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .debug_selector(|| "shell-execution-status".to_string())
+                .child(status.clone()),
+        );
+    }
+    // Collapsed: the header and live shell status; the summary takes over the title when
+    // it lands. Expanded cards also show the cached arguments and output.
     if !details {
         return div().child(card);
     }
@@ -1388,6 +1400,30 @@ pub(super) fn tool_output_markdown(item: &AgentTimelineItem) -> Option<String> {
     let text = extract_output_text(value)?;
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn shell_execution(item: &AgentTimelineItem) -> Option<&serde_json::Value> {
+    item.output
+        .as_ref()?
+        .get("structuredContent")?
+        .get("shellExecution")
+}
+
+pub(super) fn shell_execution_status(item: &AgentTimelineItem) -> Option<String> {
+    let execution = shell_execution(item)?;
+    let cwd = execution.get("cwd")?.as_str()?;
+    let elapsed = execution.get("elapsedSeconds")?.as_u64()?;
+    let idle = execution.get("outputIdleSeconds")?.as_u64()?;
+    let deadline = execution
+        .get("timeoutSeconds")
+        .and_then(serde_json::Value::as_f64)
+        .map_or_else(
+            || "no deadline".to_string(),
+            |seconds| format!("deadline {seconds}s"),
+        );
+    Some(format!(
+        "Started in {cwd}\nRunning {elapsed}s · no output for {idle}s · {deadline} · Stop cancels command"
+    ))
 }
 
 fn extract_output_text(value: &serde_json::Value) -> Option<String> {

@@ -793,7 +793,11 @@ impl AgentRuntime {
     /// delivered together, the saved thinking default, and the host's opening
     /// instructions after Pi's own.
     fn settings(&self) -> Settings {
-        let appended = self.host.harness_instructions().trim().to_string();
+        let appended = format!(
+            "{}\n\n{}",
+            tools::shell::GUIDANCE,
+            self.host.harness_instructions().trim()
+        );
         Settings {
             retry: RETRY,
             // The transport times out a response that does not start or
