@@ -165,6 +165,13 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .min_h_0()
+            .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if event.button == gpui::MouseButton::Right
+                    && let Some(selection) = &this.selection
+                {
+                    selection.update(cx, |selection, _| selection.clear_context_link());
+                }
+            }))
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -378,7 +385,9 @@ pub(super) fn render_timeline_item(
     match role {
         Some(role) => {
             let (position, count) = transcript.position;
-            row.id(SharedString::from(format!("timeline-row-{item_id}")))
+            let row_id = SharedString::from(format!("timeline-row-{item_id}"));
+            row.id(row_id.clone())
+                .debug_selector(move || row_id.to_string())
                 .role(role)
                 .when_some(label, |row, label| row.aria_label(label))
                 .accessibility_id(item_id)

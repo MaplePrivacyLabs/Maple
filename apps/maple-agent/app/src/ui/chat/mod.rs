@@ -4283,7 +4283,7 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// Right-click menu over the transcript: copy the selection, select all.
+    /// Right-click menu over the transcript: copy a link or the selection, select all.
     fn render_transcript_menu(
         &self,
         window: &mut Window,
@@ -4301,9 +4301,23 @@ impl ChatScreen {
                 this.execute_command(command, window, cx);
             }
         };
-        let menu = Menu::new("transcript-menu", px(160.))
+        let mut menu = Menu::new("transcript-menu", px(160.))
             .label("Transcript")
-            .application_vim(self.application_vim_enabled)
+            .application_vim(self.application_vim_enabled);
+        if let Some(url) = self
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.read(cx).context_link())
+        {
+            let url = url.to_owned();
+            menu = menu.item(
+                MenuItem::new("transcript-menu-copy-link", "Copy Link", move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+                })
+                .icon("copy"),
+            );
+        }
+        let menu = menu
             .item(
                 MenuItem::new(
                     "transcript-menu-copy",
