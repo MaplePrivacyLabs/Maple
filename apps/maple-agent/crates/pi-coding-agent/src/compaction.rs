@@ -25,7 +25,8 @@ use crate::session::{
 #[serde(rename_all = "camelCase", default)]
 pub struct CompactionSettings {
     pub enabled: bool,
-    /// Room kept free for the response and the summary request.
+    /// Room kept free in the context window: compaction starts when less is left. Summary
+    /// requests use the model's output limit, as in Pi.
     pub reserve_tokens: u64,
     pub keep_recent_tokens: u64,
     /// Token settings for particular models, by `provider/model-id`, as Pi's
@@ -519,6 +520,11 @@ const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversatio
 const TOOL_RESULT_MAX_CHARS: usize = 2_000;
 
 /// Render messages as labelled text, so the summarizer reads them instead of continuing them.
+///
+/// Thinking is left out, as in Pi. Replayed thinking is often not part of the model's
+/// live context (another model's is dropped, for one), and with it the request could be
+/// larger than the context it summarizes. Text, tool calls and tool results record what
+/// happened.
 pub fn serialize_conversation(messages: &[Message]) -> String {
     let mut parts = Vec::new();
     for message in messages {
@@ -530,25 +536,17 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                 }
             }
             Message::Assistant(assistant) => {
-                let mut thinking = Vec::new();
-                let mut calls = Vec::new();
-                for block in &assistant.content {
-                    match block {
-                        AssistantContent::Thinking(block) => thinking.push(block.thinking.as_str()),
-                        AssistantContent::ToolCall(call) => {
-                            let args: Vec<String> = call
-                                .arguments
-                                .iter()
-                                .map(|(key, value)| format!("{key}={value}"))
-                                .collect();
-                            calls.push(format!("{}({})", call.name, args.join(", ")));
-                        }
-                        AssistantContent::Text(_) => {}
-                    }
-                }
-                if !thinking.is_empty() {
-                    parts.push(format!("[Assistant thinking]: {}", thinking.join("\n")));
-                }
+                let calls: Vec<String> = assistant
+                    .tool_calls()
+                    .map(|call| {
+                        let args: Vec<String> = call
+                            .arguments
+                            .iter()
+                            .map(|(key, value)| format!("{key}={value}"))
+                            .collect();
+                        format!("{}({})", call.name, args.join(", "))
+                    })
+                    .collect();
                 let text = assistant.text();
                 if !text.is_empty() {
                     parts.push(format!("[Assistant]: {text}"));
@@ -585,10 +583,13 @@ fn llm_messages(messages: &[SessionMessage]) -> Vec<Message> {
 
 /// Run one summary request. Transient failures are retried; a cut-off or tool-calling
 /// response is an error, since a partial summary must not become a checkpoint.
+///
+/// As in Pi, the request sets no output limit: the provider fits the model's own to the
+/// request, which is usually much smaller than the context it summarizes, so reasoning
+/// does not use up a fixed budget before the summary is written.
 async fn summarize(
     summarizer: &Summarizer<'_>,
     prompt: String,
-    max_tokens: u64,
     label: &str,
 ) -> Result<(String, Usage), String> {
     let context = Context::new(
@@ -596,11 +597,6 @@ async fn summarize(
         Vec::new(),
         vec![Message::User(UserMessage::text(prompt))],
     );
-    let max_tokens = if summarizer.model.max_tokens > 0 {
-        max_tokens.min(summarizer.model.max_tokens)
-    } else {
-        max_tokens
-    };
     let report = |event: SummaryRetry| {
         if let Some(on_retry) = summarizer.on_retry {
             on_retry(event);
@@ -609,7 +605,7 @@ async fn summarize(
     let mut attempt = 0;
     loop {
         let options = StreamOptions {
-            max_tokens: Some(max_tokens),
+            max_tokens: None,
             reasoning: summarizer
                 .options
                 .reasoning
@@ -673,7 +669,6 @@ pub async fn compact(
     summarizer: &Summarizer<'_>,
     custom_instructions: Option<&str>,
 ) -> Result<CompactionResult, String> {
-    let reserve = preparation.settings.reserve_tokens;
     let focus = custom_instructions
         .map(|instructions| format!("\n\nAdditional focus: {instructions}"))
         .unwrap_or_default();
@@ -691,7 +686,7 @@ pub async fn compact(
             None => SUMMARY_PROMPT,
         };
         prompt.push_str(&format!("{instructions}{focus}"));
-        summarize(summarizer, prompt, reserve * 4 / 5, "Summarization").await
+        summarize(summarizer, prompt, "Summarization").await
     };
     let (mut summary, usage) = if preparation.turn_prefix_messages.is_empty() {
         history.await?
@@ -706,10 +701,12 @@ pub async fn compact(
             history.await?
         };
         let conversation = serialize_conversation(&llm_messages(&preparation.turn_prefix_messages));
-        let prompt =
-            format!("# Conversation\n{conversation}\n\n# Instructions\n{TURN_PREFIX_PROMPT}");
+        // The focus applies to the turn's start too, as in Pi.
+        let prompt = format!(
+            "# Conversation\n{conversation}\n\n# Instructions\n{TURN_PREFIX_PROMPT}{focus}"
+        );
         let (prefix, prefix_usage) =
-            summarize(summarizer, prompt, reserve / 2, "Turn prefix summarization").await?;
+            summarize(summarizer, prompt, "Turn prefix summarization").await?;
         (
             format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix}"),
             history_usage.add(&prefix_usage),
@@ -807,7 +804,7 @@ pub async fn summarize_branch(
         None => BRANCH_PROMPT.to_string(),
     };
     let prompt = format!("<conversation>\n{conversation}\n</conversation>\n\n{instructions}");
-    let (text, usage) = summarize(summarizer, prompt, 4_096, "Branch summarization").await?;
+    let (text, usage) = summarize(summarizer, prompt, "Branch summarization").await?;
     let (read_files, modified_files) = file_operations.lists();
     let files = format_file_operations(&read_files, &modified_files);
     Ok(BranchSummaryResult {
@@ -1234,6 +1231,87 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_conversation_for_a_summary_leaves_thinking_out() {
+        let reply = Message::Assistant(AssistantMessage {
+            content: vec![
+                AssistantContent::thinking("the user probably means the parser"),
+                AssistantContent::text("Reading the parser."),
+                faux_tool_call("read", json!({ "path": "src/parser.rs" })),
+            ],
+            ..AssistantMessage::empty(&FauxProvider::default_model())
+        });
+        let thought_only = Message::Assistant(AssistantMessage {
+            content: vec![AssistantContent::thinking("nothing to add")],
+            ..AssistantMessage::empty(&FauxProvider::default_model())
+        });
+        let text = serialize_conversation(&[
+            Message::User(UserMessage::text("fix it")),
+            reply,
+            thought_only,
+        ]);
+        assert_eq!(
+            text,
+            "[User]: fix it\n\n[Assistant]: Reading the parser.\n\n[Assistant tool calls]: read(path=\"src/parser.rs\")"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_requests_set_no_output_cap_and_the_turn_start_keeps_the_focus() {
+        // With history before the split turn, and with only the split turn since the last
+        // compaction.
+        for history in [vec![user("an older question")], Vec::new()] {
+            let preparation = CompactionPreparation {
+                first_kept_entry_id: "kept".into(),
+                messages_to_summarize: history.clone(),
+                turn_prefix_messages: vec![user("the start of a long task")],
+                tokens_before: 100,
+                previous_summary: Some("## Goal\nthe old goal".into()),
+                file_operations: FileOperations::default(),
+                // A small reserve no longer limits the summary.
+                settings: CompactionSettings {
+                    reserve_tokens: 100,
+                    ..settings(20)
+                },
+            };
+            let faux = FauxProvider::new();
+            if !history.is_empty() {
+                faux.push_text("## Goal\nhistory");
+            }
+            faux.push_text("## Original Request\ntask");
+            let model = faux.model();
+            let summarizer = Summarizer {
+                model: &model,
+                stream_fn: &faux,
+                // The session's own output limit does not carry over either.
+                options: StreamOptions {
+                    max_tokens: Some(64),
+                    ..StreamOptions::default()
+                },
+                max_retries: 0,
+                retry_base_ms: 1,
+                retry_max_ms: 60_000,
+                on_retry: None,
+            };
+            compact(&preparation, &summarizer, Some("keep paths"))
+                .await
+                .unwrap();
+            let requests = faux.requests();
+            assert_eq!(requests.len(), 1 + usize::from(!history.is_empty()));
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.options.max_tokens.is_none())
+            );
+            let prompt = last_prompt(&faux);
+            assert!(prompt.starts_with("# Conversation\n[User]: the start of a long task"));
+            assert!(
+                prompt.ends_with("\n\nAdditional focus: keep paths"),
+                "{prompt}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_branch_summary_sees_the_branch_as_the_context_did() {
         let mut session = SessionManager::in_memory("/work");
@@ -1367,26 +1445,8 @@ mod tests {
             "{prompt}"
         );
         assert!(!prompt.contains("[Tool result]") && !prompt.contains("fn parse"));
-        assert_eq!(faux.requests()[0].options.max_tokens, Some(4_096));
-
-        // The output cap is the model's when that is lower.
-        let mut small = FauxProvider::default_model();
-        small.max_tokens = 1_024;
-        let faux = FauxProvider::with_model(small.clone());
-        faux.push_text("## Goal\nFix the parser");
-        let summarizer = Summarizer {
-            model: &small,
-            stream_fn: &faux,
-            options: StreamOptions::default(),
-            max_retries: 0,
-            retry_base_ms: 1,
-            retry_max_ms: 60_000,
-            on_retry: None,
-        };
-        summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None, false)
-            .await
-            .unwrap();
-        assert_eq!(faux.requests()[0].options.max_tokens, Some(1_024));
+        // No fixed output cap: the provider fits the model's own to the request.
+        assert_eq!(faux.requests()[0].options.max_tokens, None);
     }
 
     #[tokio::test]

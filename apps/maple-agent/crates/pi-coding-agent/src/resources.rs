@@ -123,8 +123,17 @@ pub fn load_context_files(cwd: &Path, agent_dir: &Path) -> Vec<ContextFile> {
     let shadowed = shadowed_context_file(cwd);
     let mut ancestors: Vec<ContextFile> = cwd
         .ancestors()
-        .filter_map(context_file_in)
-        .filter(|file| shadowed.as_ref() != Some(&canonical(&file.path)))
+        .filter_map(|dir| {
+            let file = context_file_in(dir)?;
+            // The folder's real path names the file, not the file's own: a worktree's
+            // file that links to the main checkout's resolves to the shadowed one.
+            let is_shadowed = shadowed.as_ref().is_some_and(|shadowed| {
+                file.path
+                    .file_name()
+                    .is_some_and(|name| canonical(dir).join(name) == *shadowed)
+            });
+            (!is_shadowed).then_some(file)
+        })
         .collect();
     ancestors.reverse();
     for file in ancestors {
@@ -877,21 +886,30 @@ pub fn parse_skill_block(text: &str) -> Option<ParsedSkillBlock> {
 pub fn parse_command_args(input: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
+    // Whether an argument has started, so empty quotes (`""` or `''`) keep their place,
+    // as in Pi.
+    let mut started = false;
     let mut quote = None;
     for ch in input.chars() {
         match quote {
             Some(open) if ch == open => quote = None,
             Some(_) => current.push(ch),
-            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+                started = true;
+            }
             None if ch.is_whitespace() => {
-                if !current.is_empty() {
+                if std::mem::take(&mut started) {
                     args.push(std::mem::take(&mut current));
                 }
             }
-            None => current.push(ch),
+            None => {
+                current.push(ch);
+                started = true;
+            }
         }
     }
-    if !current.is_empty() {
+    if started {
         args.push(current);
     }
     args
@@ -1177,6 +1195,16 @@ mod tests {
         assert_eq!(contents(&cwd), ["main", "worktree"]);
         // The main checkout itself loads its own.
         assert_eq!(contents(&repo), ["main"]);
+        // A worktree file that links to the main checkout's is the worktree's own.
+        #[cfg(unix)]
+        {
+            fs::remove_file(worktree.join("CLAUDE.md")).unwrap();
+            std::os::unix::fs::symlink(repo.join("AGENTS.md"), worktree.join("AGENTS.md")).unwrap();
+            let files = load_context_files(&cwd, &paths.agent_dir);
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].path, worktree.join("AGENTS.md"));
+            assert_eq!(files[0].content, "main");
+        }
     }
 
     #[test]
@@ -1359,6 +1387,21 @@ mod tests {
         assert_eq!(substitute_args("${ARGUMENTS:-empty}", &[]), "empty");
         assert_eq!(substitute_args("$1", &["$2".into(), "x".into()]), "$2");
         assert_eq!(substitute_args("${@:99999999999999999999}", &args), "");
+    }
+
+    #[test]
+    fn empty_quoted_arguments_keep_their_place() {
+        assert_eq!(parse_command_args(r#""" " ""#), ["", " "]);
+        assert_eq!(parse_command_args("a '' c"), ["a", "", "c"]);
+        assert_eq!(parse_command_args(r#"a """#), ["a", ""]);
+        // So a positional default applies and later arguments do not shift.
+        let template = "Review $2. Focus: ${1:-correctness}.";
+        for args in [r#""" src/index.ts"#, "'' src/index.ts"] {
+            assert_eq!(
+                substitute_args(template, &parse_command_args(args)),
+                "Review src/index.ts. Focus: correctness."
+            );
+        }
     }
 
     #[test]

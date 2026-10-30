@@ -40,10 +40,36 @@ impl ShellConfig {
 }
 
 fn is_legacy_wsl_bash(path: &Path) -> bool {
-    let normalized = path
-        .to_string_lossy()
-        .replace('/', "\\")
-        .to_ascii_lowercase();
+    is_legacy_wsl_bash_in(path, system_root().as_deref())
+}
+
+/// Whether `path` is the WSL launcher in the Windows folder `system_root`, or, when that
+/// is unknown, in the conventional one on any drive.
+fn is_legacy_wsl_bash_in(path: &Path, system_root: Option<&str>) -> bool {
+    let normalize = |path: &str| -> String {
+        let mut normalized = String::with_capacity(path.len());
+        for ch in path.chars() {
+            let ch = if ch == '/' { '\\' } else { ch };
+            // Repeated separators are one, as Node's `win32.normalize` reads them.
+            if !(ch == '\\' && normalized.ends_with('\\')) {
+                normalized.push(ch.to_ascii_lowercase());
+            }
+        }
+        normalized
+    };
+    let normalized = normalize(&path.to_string_lossy());
+    if let Some(root) = system_root {
+        let root = normalize(root);
+        let bytes = root.as_bytes();
+        // Only a drive path names the Windows folder.
+        if !(bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":\\") {
+            return false;
+        }
+        let root = root.trim_end_matches('\\');
+        return ["system32", "sysnative"]
+            .iter()
+            .any(|dir| normalized == format!("{root}\\{dir}\\bash.exe"));
+    }
     let Some((drive, rest)) = normalized.split_once(':') else {
         return false;
     };
@@ -55,19 +81,37 @@ fn is_legacy_wsl_bash(path: &Path) -> bool {
         )
 }
 
-/// The first file named `name` on PATH.
+/// The Windows folder, when the environment names one.
+fn system_root() -> Option<String> {
+    std::env::var("SystemRoot")
+        .ok()
+        .filter(|root| !root.is_empty())
+}
+
+/// Whether `path` is a Microsoft Store alias: a link that runs the app, which cannot be
+/// opened through as an ordinary file or link can. Only Windows has them.
+fn is_store_alias(path: &Path) -> bool {
+    cfg!(windows) && std::fs::metadata(path).is_err() && std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Whether a shell exists at `path`, as Pi checks it, Microsoft Store aliases included.
+fn shell_path_exists(path: &Path) -> bool {
+    path.exists() || is_store_alias(path)
+}
+
+/// The first file named `name` on PATH, a Microsoft Store alias included.
 pub(crate) fn find_executable_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| candidate.is_file() || is_store_alias(candidate))
 }
 
 /// The shell for `bash`: `custom_path` when given, else on Windows Git Bash, then
 /// `bash.exe` on PATH; elsewhere `/bin/bash`, then `bash` on PATH, then `sh`.
 pub fn shell_config(custom_path: Option<&Path>) -> Result<ShellConfig, String> {
     if let Some(path) = custom_path {
-        if path.exists() {
+        if shell_path_exists(path) {
             return Ok(ShellConfig::bash(path.to_path_buf()));
         }
         return Err(format!("Custom shell path not found: {}", path.display()));
@@ -79,7 +123,7 @@ pub fn shell_config(custom_path: Option<&Path>) -> Result<ShellConfig, String> {
                 searched.push(PathBuf::from(dir).join("Git").join("bin").join("bash.exe"));
             }
         }
-        if let Some(found) = searched.iter().find(|path| path.exists()) {
+        if let Some(found) = searched.iter().find(|path| shell_path_exists(path)) {
             return Ok(ShellConfig::bash(found.clone()));
         }
         if let Some(found) = find_executable_on_path("bash.exe") {
@@ -95,7 +139,7 @@ pub fn shell_config(custom_path: Option<&Path>) -> Result<ShellConfig, String> {
         ));
     }
     let system_bash = Path::new("/bin/bash");
-    if system_bash.exists() {
+    if shell_path_exists(system_bash) {
         return Ok(ShellConfig::bash(system_bash.to_path_buf()));
     }
     if let Some(found) = find_executable_on_path("bash") {
@@ -116,13 +160,27 @@ pub const POWERSHELL_ARGS: [&str; 5] = [
     "-Command",
 ];
 
-/// PowerShell on Windows, PowerShell 7 when it is installed.
+/// PowerShell on Windows, PowerShell 7 when it is installed. Each is also looked for in
+/// its installation folder, which need not be on PATH or on drive C.
 pub fn powershell_config() -> Result<ShellConfig, String> {
     if !cfg!(windows) {
         return Err("The powershell tool is only available on Windows.".to_string());
     }
+    let installed = |dir: Option<PathBuf>, path: &[&str]| {
+        dir.map(|dir| path.iter().fold(dir, |dir, part| dir.join(part)))
+            .filter(|path| shell_path_exists(path))
+    };
+    let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
+    let system_root = system_root().map(PathBuf::from);
     let shell = find_executable_on_path("pwsh.exe")
+        .or_else(|| installed(program_files, &["PowerShell", "7", "pwsh.exe"]))
         .or_else(|| find_executable_on_path("powershell.exe"))
+        .or_else(|| {
+            installed(
+                system_root,
+                &["System32", "WindowsPowerShell", "v1.0", "powershell.exe"],
+            )
+        })
         .ok_or_else(|| {
             "No PowerShell executable found. Install PowerShell or add powershell.exe/pwsh.exe to PATH."
                 .to_string()
@@ -213,7 +271,7 @@ pub fn kill_process_tree(pid: u32) {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         // The trusted System32 copy, so cleanup does not depend on PATH.
-        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let system_root = system_root().unwrap_or_else(|| "C:\\Windows".into());
         let taskkill = PathBuf::from(system_root)
             .join("System32")
             .join("taskkill.exe");
@@ -239,6 +297,27 @@ mod tests {
         let git_bash = ShellConfig::bash(PathBuf::from("C:\\Program Files\\Git\\bin\\bash.exe"));
         assert_eq!(git_bash.args, ["-c"]);
         assert_eq!(git_bash.transport, CommandTransport::Argv);
+    }
+
+    #[test]
+    fn the_wsl_launcher_is_found_in_the_windows_folder() {
+        let launcher =
+            |path: &str, root: Option<&str>| is_legacy_wsl_bash_in(Path::new(path), root);
+        // Wherever Windows is installed, when the environment says where.
+        assert!(launcher("D:\\Win\\System32\\bash.exe", Some("D:\\Win")));
+        assert!(launcher("d:/win//sysnative/BASH.EXE", Some("D:\\Win\\")));
+        assert!(!launcher(
+            "C:\\Windows\\System32\\bash.exe",
+            Some("D:\\Win")
+        ));
+        // A Windows folder that is no drive path names no launcher.
+        assert!(!launcher(
+            "C:\\Windows\\System32\\bash.exe",
+            Some("Windows")
+        ));
+        // Otherwise the conventional folder on any drive.
+        assert!(launcher("E:\\Windows\\System32\\bash.exe", None));
+        assert!(!launcher("C:\\Program Files\\Git\\bin\\bash.exe", None));
     }
 
     #[test]
