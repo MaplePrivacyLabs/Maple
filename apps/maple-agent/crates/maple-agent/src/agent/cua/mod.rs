@@ -9,8 +9,8 @@
 //! structured grounding as bounded, image-free text; a model without vision
 //! gets each screenshot described by the side model in its place.
 //!
-//! The SDK has a native backend for macOS and Linux (`embedded_cua`);
-//! elsewhere the integration reads as not available.
+//! The SDK has a native backend for macOS, Linux and Windows
+//! (`embedded_cua`); elsewhere the integration reads as not available.
 
 #[cfg(embedded_cua)]
 mod driver;

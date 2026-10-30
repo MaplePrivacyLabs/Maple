@@ -61,11 +61,13 @@ process-wrap = { version = "=9.1.0", default-features = false, features = ["toki
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 # CUA's native SDK is not published to crates.io yet. Pin a trycua/cua
 # main commit (cua-driver 0.38.0 plus the macOS app-bundle health-check and
 # background window enumeration fixes) so Maple's embedded runtime remains
 # reproducible. Keep the ashpd async-io backend (trycua/cua#3687) on Linux.
+# Windows uses the SDK's UI Automation, SendInput and Windows.Graphics.Capture
+# backend, which needs no extra features.
 cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "2a3975570a885f45ef83f7e81bba54a01804ebd0", package = "cua-driver-sdk" }
 
 [target.'cfg(target_os = "linux")'.dependencies]

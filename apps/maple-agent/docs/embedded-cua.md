@@ -1,8 +1,8 @@
 # Embedded CUA developer preview
 
 Maple can give a desktop task the Cua Driver tool catalog without launching a
-Cua Driver daemon or an MCP child process. The macOS and
-Linux builds pin Cua's `cua-driver-sdk` source at a trycua/cua main commit
+Cua Driver daemon or an MCP child process. The macOS, Linux and
+Windows builds pin Cua's `cua-driver-sdk` source at a trycua/cua main commit
 (cua-driver 0.38.0 or later), which includes Xcode 26.5 linker compatibility,
 self-process window restoration on the AppKit main queue, and the ashpd
 `async-io` backend (`trycua/cua#3687`), and create the native runtime inside
@@ -91,6 +91,13 @@ belong to Maple's app identity; permissions previously granted to
 On Linux the desktop portal asks for consent when a task first takes a
 screenshot or sends input, and the compositor remembers that choice, so most
 sessions need no setup step and the card offers **Enable** directly.
+
+Windows has no consent gate at all. Any process running at the user's integrity
+level may read UI Automation trees, send input with `SendInput`, and capture
+windows, so the requirement list is empty and the card offers **Enable**
+directly. That switch, and the per-task switch, are the only consent computer
+use gets on Windows: the operating system never asks. The SDK refuses to start
+outside an interactive user session (Session 0).
 
 GNOME is the exception, and the requirement list says so. Mutter advertises
 none of the protocols an ordinary client would use for this: not the wlroots
@@ -193,9 +200,13 @@ remain separate distribution concerns.
 
 ## Preview limits
 
-- macOS and Linux host the runtime. Windows keeps the integration hidden until
-  its packaging and permission story are implemented, even though the SDK
-  carries a Windows backend.
+- macOS, Linux and Windows host the runtime. Windows support is best effort
+  until it has been tested by hand in a packaged build
+  ([issue #1295](https://github.com/MaplePrivacyLabs/Maple/issues/1295)).
+- On Windows, Maple runs at medium integrity, so it cannot drive windows of
+  elevated (administrator) processes, and UAC prompts on the secure desktop
+  are out of reach. Capturing an occluded or UWP window needs Windows 10 1903
+  or later. Screen recording to video needs `ffmpeg` on `PATH`, as on Linux.
 - On Linux the preview is validated against GNOME on Wayland. Other
   compositors and X11 sessions are supported by the SDK but are not part of
   Maple's own testing yet.
