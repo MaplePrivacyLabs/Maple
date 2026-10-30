@@ -75,6 +75,9 @@ and Google/GitHub callback completion through the real V1 encryption
 middleware and V2 gateway. Completion tests exchange synthetic credentials
 only with local mock token/user-info endpoints, verify the originally selected
 callback after settings change, and reject replay without another exchange.
+The recovery subset covers recovery-wrap lifecycle, management and V2
+password-reset routes, and a recovery flow through the real V1 middleware and
+V2 gateway; its reset rows use a known code MAC instead of email delivery.
 The `os-sdk-e2e` lane in `ci.yml` runs this helper too. These fixtures do not
 prove a live OAuth provider flow, a released SDK or application, or a data
 conversion from representative old rows.
