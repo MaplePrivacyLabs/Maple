@@ -153,8 +153,8 @@ impl ChatScreen {
     pub(crate) fn navigation_generation(&self) -> u64 {
         self.selection_generation
     }
-    /// Observe a paired computer without opening its latest conversation or
-    /// starting its runtime. The normal event stream keeps these summaries live.
+    /// Warm a paired computer without opening a conversation or running a task.
+    /// The normal event stream keeps its navigation summaries live.
     pub(crate) fn new_catalog(
         backend: Arc<AgentBackend>,
         user_id: String,
@@ -232,23 +232,26 @@ impl ChatScreen {
             running: self.active_runs.keys().cloned().collect(),
             unread: self.completed_unread_sessions.clone(),
             pinned: self.sidebar.read(cx).pinned_tasks().to_vec(),
-            loading: !self.navigation_ready && self.host_recovery.events.is_some(),
-            error: self.host_recovery.unavailable.then(|| {
-                if self.host_recovery.ended {
-                    if self
-                        .runtime_error
-                        .as_deref()
-                        .is_some_and(crate::remote::wire::is_protocol_incompatibility_refusal)
-                    {
-                        "Update required — select to retry after updating"
+            loading: (!self.navigation_ready && self.host_recovery.events.is_some())
+                || (self.booting && !self.host_recovery.unavailable),
+            error: (self.host_recovery.unavailable && self.host_recovery.events.is_none()).then(
+                || {
+                    if self.host_recovery.ended {
+                        if self
+                            .runtime_error
+                            .as_deref()
+                            .is_some_and(crate::remote::wire::is_protocol_incompatibility_refusal)
+                        {
+                            "Update required — select to retry after updating"
+                        } else {
+                            "Offline — select to reconnect"
+                        }
                     } else {
-                        "Offline — select to reconnect"
+                        "Connecting…"
                     }
-                } else {
-                    "Connecting…"
-                }
-                .into()
-            }),
+                    .into()
+                },
+            ),
         }
     }
 
@@ -314,7 +317,11 @@ impl ChatScreen {
                 .update(cx, |s, cx| s.set_project_filter(None, cx)),
             Destination::Task(id) => self.select_session(&id, cx),
             Destination::Project(path) | Destination::DraftProject(path) => {
-                self.select_project_root(path, cx);
+                // The current workspace is already registered and selected.
+                // A new draft there needs no owner request or sidebar reload.
+                if !self.draft || self.project_root.as_deref() != Some(path.as_str()) {
+                    self.select_project_root(path, cx);
+                }
             }
             Destination::NewProject | Destination::DraftNewProject => self.choose_root_dialog(cx),
         }
@@ -330,17 +337,11 @@ impl ChatScreen {
         self.draft && !self.session_setup_pending && !self.root_selecting
     }
 
-    /// The computer is on screen for work: stop filtering transcript events
-    /// and start its runtime. A catalog drops transcript rows, so any task
-    /// run from it would show nothing until reopened.
-    pub(super) fn leave_catalog(&mut self, cx: &mut Context<Self>) {
-        if !self.navigation_only {
-            return;
-        }
+    /// Stop filtering transcript events before this computer is used for work.
+    /// Recovery already warms its runtime; activation must preserve that boot
+    /// state instead of restarting setup on the first click or send.
+    pub(super) fn leave_catalog(&mut self, _cx: &mut Context<Self>) {
         self.navigation_only = false;
-        self.booting = true;
-        self.refresh_slash_commands(cx);
-        self.start_runtime(cx);
     }
 
     pub(super) fn finish_navigation_bootstrap(&mut self, cx: &mut Context<Self>) {

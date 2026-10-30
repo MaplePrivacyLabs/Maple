@@ -3,6 +3,7 @@
 use super::*;
 use crate::backend::ProjectPageRequest;
 use crate::ui::chat::computers::{Computer, Destination, Navigate};
+use crate::ui::icons::spinner;
 use maple_agent::store::{
     NavigationGroupPage, NavigationGroupQuery, NavigationProjectGroup, NavigationProjectPage,
     NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery, ProjectSummary, TaskSummary,
@@ -478,6 +479,29 @@ pub(super) struct OtherTask {
 }
 
 impl Sidebar {
+    #[cfg(test)]
+    pub(in crate::ui::chat) fn navigation_page_state_for_test(&self) -> (u64, usize, bool) {
+        (
+            self.group_pages.generation,
+            self.group_pages
+                .hosts
+                .values()
+                .map(|page| {
+                    page.groups
+                        .iter()
+                        .map(|group| group.tasks.len())
+                        .sum::<usize>()
+                })
+                .sum(),
+            self.pages.any_loading()
+                || self
+                    .group_pages
+                    .hosts
+                    .values()
+                    .any(|page| !page.loading.is_empty()),
+        )
+    }
+
     /// View fixtures supply bounded, verified owner snapshots rather than
     /// asynchronous pages from the fixtures' deliberately empty stores.
     #[cfg(test)]
@@ -2346,7 +2370,7 @@ impl Sidebar {
                 let expanded = !self.collapsed_computers.contains(&computer.key);
                 let status = computer.error.clone().or_else(|| {
                     if computer.loading {
-                        Some("Connecting…".into())
+                        None
                     } else if computer.backend.is_none() {
                         Some("Offline".into())
                     } else if computer.projects.is_empty() {
@@ -2458,6 +2482,16 @@ impl Sidebar {
                                     .truncate()
                                     .child(computer.label.clone()),
                             )
+                            .child(div().flex_none().w(px(12.)).h(px(12.)).when(
+                                computer.loading,
+                                |slot| {
+                                    slot.child(spinner(
+                                        "computer-loading",
+                                        px(12.),
+                                        theme::text_muted(),
+                                    ))
+                                },
+                            ))
                             .when(
                                 collapsible && !dragging && !self.sidebar_menu_open(),
                                 |row| {

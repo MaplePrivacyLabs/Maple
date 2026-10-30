@@ -214,6 +214,17 @@ impl ChatScreen {
                 .child(title),
         )
         .child(
+            div()
+                .flex_none()
+                .w(px(14.))
+                .h(px(14.))
+                .debug_selector(|| "navigation-loading-slot".to_string())
+                .when(
+                    self.loading_session.is_some() || self.root_selecting || self.booting,
+                    |slot| slot.child(spinner("navigation-loading", px(14.), theme::text_muted())),
+                ),
+        )
+        .child(
             self.with_menu(
                 ChatPopup::Project,
                 chip(
@@ -1080,9 +1091,12 @@ impl ChatScreen {
         // The first send's create keeps the composer's text on show and
         // the composer waiting, like the runtime boot does.
         let pending_create = self.selected_session.is_none() && self.session_setup_pending;
-        let disabled = self.booting || pending_create || self.send_pending();
+        let disabled =
+            self.booting || self.loading_session.is_some() || pending_create || self.send_pending();
         let status_label = if self.booting {
             "Starting Maple…"
+        } else if self.loading_session.is_some() {
+            "Opening task…"
         } else if pending_create {
             "Creating the task…"
         } else {
