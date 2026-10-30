@@ -107,7 +107,10 @@ async fn quiet_shell_reports_effective_folder_deadline_and_idle_time_until_stop(
     assert_eq!(tool.status.as_deref(), Some("running"));
     assert_eq!(tool.output.as_ref().unwrap()["text"], "fixture-output");
     let progress = &tool.output.as_ref().unwrap()["structuredContent"]["shellExecution"];
-    assert_eq!(progress["cwd"], json!(worktree.path()));
+    assert_eq!(
+        progress["cwd"],
+        json!(worktree.path().canonicalize().unwrap())
+    );
     assert_eq!(progress["timeoutSeconds"], 1800.0);
     assert!(progress["outputIdleSeconds"].as_u64().unwrap() >= 4);
     assert!(!progress.to_string().contains("fixture-private-command"));
