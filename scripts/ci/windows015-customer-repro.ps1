@@ -253,20 +253,25 @@ try {
         $block=($pairs -join [char]0) + [char]0 + [char]0
         $code=[Maple015Token]::RunAsUser($probeUser.Name,$password,$shell,$command,$Control,$block,240)
         $receipt=Join-Path $Control ($ChildPhase + '.json')
-        if (-not (Test-Path -LiteralPath $receipt)) { throw 'Credential child did not write its receipt' }
+        if (-not (Test-Path -LiteralPath $receipt)) {
+            return [pscustomobject]@{
+                phase=$ChildPhase; child_exit_code=$code; token=$null
+                environment_limit=@{operation='credential-child-without-receipt';error_type='MissingReceipt';process_exit_code=$code}
+            }
+        }
         $value=Get-Content -Raw -LiteralPath $receipt | ConvertFrom-Json
         $value | Add-Member -NotePropertyName child_exit_code -NotePropertyValue $code
         return $value
     }
     $operation='ordinary-account-default-install'
     $result.normal_install=Run-Account 'normal-install'
-    if ($result.normal_install.child_exit_code -ne 0) { throw 'Ordinary account child did not establish the requested environment' }
+    if ($result.normal_install.child_exit_code -ne 0 -or $null -ne $result.normal_install.environment_limit) { throw 'Ordinary account child did not establish the requested environment' }
     $childLocal=(Get-Content -Raw -LiteralPath (Join-Path $Control 'child-local.txt')).Trim()
     $defaultInstall=Join-Path $childLocal 'Programs/Maple Work'
     if ($result.normal_install.install.exit_code -eq 0) {
         $operation='ordinary-uninstall-before-fresh-elevated-case'
         $cleanup=Run-Account 'uninstall'; $result.normal_uninstall=$cleanup
-        if ($cleanup.child_exit_code -ne 0 -or $cleanup.uninstall.exit_code -ne 0) { throw 'Ordinary installation did not uninstall cleanly' }
+        if ($cleanup.child_exit_code -ne 0 -or $null -ne $cleanup.environment_limit -or $cleanup.uninstall.exit_code -ne 0) { throw 'Ordinary installation did not uninstall cleanly' }
         if (Test-Path -LiteralPath $defaultInstall) {
             $remaining=@(Get-ChildItem -LiteralPath $defaultInstall -Force)
             if (@($remaining | Where-Object { $_.Name -ne 'uninstall.exe' -or $_.PSIsContainer }).Count -ne 0) { throw 'Uninstall left owned or unknown files; no fresh elevated case' }
@@ -279,11 +284,11 @@ try {
     $operation='fresh-elevated-account-install'
     $result.elevated_install=Run-Account 'elevated-install'
     Remove-LocalGroupMember -Group $adminGroup -Member $probeUser; $addedAdmin=$false
-    if ($result.elevated_install.child_exit_code -ne 0) { throw 'Elevated child did not establish the requested environment' }
+    if ($result.elevated_install.child_exit_code -ne 0 -or $null -ne $result.elevated_install.environment_limit) { throw 'Elevated child did not establish the requested environment' }
     if ($result.elevated_install.install.exit_code -eq 0) {
         $operation='ordinary-account-first-launch-after-elevated-install'
         $result.normal_launch=Run-Account 'normal-launch'
-        if ($result.normal_launch.child_exit_code -ne 0) { throw 'Ordinary first-launch child did not complete its environment' }
+        if ($result.normal_launch.child_exit_code -ne 0 -or $null -ne $result.normal_launch.environment_limit) { throw 'Ordinary first-launch child did not complete its environment' }
     }
 } catch { $result.environment_limit=Error-Facts $_.Exception $operation }
 finally {
