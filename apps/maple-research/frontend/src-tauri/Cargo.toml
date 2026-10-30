@@ -15,7 +15,7 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.2", features = [] }
+tauri-build = { version = "2.7.3", features = [] }
 plist = "1"
 serde_json = "1.0"
 
@@ -23,23 +23,25 @@ serde_json = "1.0"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.2", features = [] }
-tauri-plugin-log = "2.8.0"
+tauri = { version = "2.12.4", features = [] }
+tauri-plugin-log = "2.10.1"
 # Maple publishes raw Windows installers and Linux AppImages, so it does not
 # need the updater's legacy ZIP / AppImage.tar.gz handlers or their ZIP dependency.
-tauri-plugin-updater = { version = "2.10.1", default-features = false, features = ["rustls-tls"] }
-tauri-plugin = "2.6.2"
+tauri-plugin-updater = { version = "2.14.0", default-features = false, features = ["rustls-tls"] }
+tauri-plugin = "2.7.2"
 # Keep Android deep links on the last known-working plugin behavior.
 # tauri-plugin-deep-link 2.4.9 added Android-side config filtering that drops
 # our existing cloud.opensecret.maple:// OAuth callback before Rust receives it.
 tauri-plugin-deep-link = "=2.4.7"
+# single-instance 2.4.1+ needs deep-link >= 2.4.8, so it stays on the newest release
+# that resolves with the deep-link pin above.
 tauri-plugin-single-instance = { version = "=2.4.0", features = ["deep-link"] }
-tauri-plugin-opener = "2.5.4"
-tauri-plugin-os = "2.3.2"
+tauri-plugin-opener = "2.7.2"
+tauri-plugin-os = "2.4.0"
 tauri-plugin-sign-in-with-apple = "1.0.2"
 tokio = { version = "1.0", features = ["fs", "io-util", "net", "sync", "rt-multi-thread", "macros", "time"] }
 once_cell = "1.18.0"
-tauri-plugin-fs = "2.5.1"
+tauri-plugin-fs = "2.7.1"
 anyhow = "1.0"
 pdf_oxide = { version = "=0.3.74", git = "https://github.com/OpenSecretCloud/pdf_oxide.git", rev = "2bc9246782fe874a97e57e348acc7a9eaa27ca4d", features = ["ocr-ort", "rendering"] }
 # Keep the pre-1.0 Word parser exact-pinned. office_oxide is already in the
@@ -96,13 +98,16 @@ keyring = { version = "3", features = ["windows-native"] }
 # The embedded proxy requires `maple-sdk` from the registry; resolve it to the same
 # in-tree source as the dependency above (docs/sdk-publishing.md).
 maple-sdk = { path = "../../../../sdk/rust" }
-# Local patch for tao 0.35.2 Android intent crashes:
-# https://github.com/tauri-apps/tao/issues/1217
+# Local patch for tao 0.37.1 Android intent crashes. tauri-apps/tao#1217 was
+# closed by #1224, which only made getType() null-safe: 0.37.1 still unwraps
+# getIntent, getAction, ClipData items and EXTRA_STREAM, so a null launch intent
+# from real Android launch/deep-link flows aborts the process before
+# tauri-plugin-deep-link sees OAuth/payment redirects. Remove the patch once
+# upstream stops unwrapping those calls.
 #
-# Tao's Android intent handler currently unwraps several JNI calls that can
-# receive null objects from real Android launch/deep-link flows, aborting the
-# process before tauri-plugin-deep-link sees OAuth/payment redirects. Remove
-# this once Tauri resolves to a Tao release containing the upstream fix.
-# The vendored library uses this application's Cargo.lock; its upstream
-# standalone lockfile is intentionally omitted.
-tao = { path = "patches/tao-0.35.2" }
+# Vendored from crates.io tao 0.37.1 (sha256
+# f37f381f4e048e6cdf038b5705f8cf14ad108279d46eb968140a7b291aba9400, upstream
+# 37b7e8bc90a0); Maple's changes follow the vendoring commit. The vendored
+# library uses this application's Cargo.lock; its upstream standalone lockfile
+# is intentionally omitted.
+tao = { path = "patches/tao-0.37.1" }

@@ -1257,6 +1257,47 @@ linuxdeploy_tools_arch() {
   esac
 }
 
+# tauri-cli runs target/.tauri/linuxdeploy-<hash>-<arch>.AppImage and downloads
+# an unpinned linuxdeploy when that file is missing, so the pinned wrapper is
+# installed under that name. The hash is LINUXDEPLOY_COMMIT_HASH in the
+# tauri-bundler of @tauri-apps/cli TAURI_LINUXDEPLOY_CLI; bumping the CLI fails
+# require_tauri_linuxdeploy_hash until both are updated together.
+TAURI_LINUXDEPLOY_HASH="07333c6"
+TAURI_LINUXDEPLOY_CLI="2.12.3"
+
+tauri_linuxdeploy_wrapper() {
+  local arch
+  arch="$(linuxdeploy_tools_arch)" || return 1
+  printf '%s\n' "${TAURI_DIR}/target/.tauri/linuxdeploy-${TAURI_LINUXDEPLOY_HASH}-${arch}.AppImage"
+}
+
+# Before bundling, so an unpinned linuxdeploy never runs with the signing key in
+# its environment: the installed CLI is the one the hash was read from.
+require_tauri_linuxdeploy_hash() {
+  local manifest="${FRONTEND_DIR}/node_modules/@tauri-apps/cli/package.json" installed
+  installed="$(jq -er .version "${manifest}")" || {
+    echo "Cannot read the installed @tauri-apps/cli version from ${manifest}." >&2
+    return 1
+  }
+  if [ "${installed}" != "${TAURI_LINUXDEPLOY_CLI}" ]; then
+    echo "@tauri-apps/cli ${installed} may run another linuxdeploy than ${TAURI_LINUXDEPLOY_HASH}, which is pinned for ${TAURI_LINUXDEPLOY_CLI}. Set TAURI_LINUXDEPLOY_HASH in scripts/ci/_common.sh to its tauri-bundler's LINUXDEPLOY_COMMIT_HASH and TAURI_LINUXDEPLOY_CLI to ${installed}." >&2
+    return 1
+  fi
+}
+
+# After bundling, as a backstop: tauri-cli fetched no linuxdeploy of its own.
+verify_tauri_used_pinned_linuxdeploy() {
+  local arch file wrapper
+  arch="$(linuxdeploy_tools_arch)" || return 1
+  wrapper="$(tauri_linuxdeploy_wrapper)" || return 1
+  for file in "${TAURI_DIR}/target/.tauri"/linuxdeploy-*-"${arch}".AppImage; do
+    if [ -e "${file}" ] && [ "${file}" != "${wrapper}" ]; then
+      echo "tauri-cli fetched $(basename "${file}") instead of the pinned $(basename "${wrapper}"); update TAURI_LINUXDEPLOY_HASH in scripts/ci/_common.sh." >&2
+      return 1
+    fi
+  done
+}
+
 write_chmod_patchelf_wrapper() {
   local wrapper="$1"
   local real_patchelf="$2"
@@ -1434,6 +1475,7 @@ prepare_tauri_linuxdeploy_tools_cache() {
     echo "MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS is required for reproducible AppImage bundling." >&2
     return 1
   fi
+  require_tauri_linuxdeploy_hash
 
   local arch linuxdeploy_arch tools cache internal linuxdeploy_wrapper appimage_wrapper linuxdeploy_appdir_bin plugin_bin runtime_file appimage_real_appimage appimage_appdir gtk_real_plugin gstreamer_real_plugin
   arch="$(linuxdeploy_tools_arch)"
@@ -1441,7 +1483,7 @@ prepare_tauri_linuxdeploy_tools_cache() {
   tools="${MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS}"
   cache="${TAURI_DIR}/target/.tauri"
   internal="${cache}/maple-linuxdeploy-tools"
-  linuxdeploy_wrapper="${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage"
+  linuxdeploy_wrapper="$(tauri_linuxdeploy_wrapper)"
   appimage_wrapper="${cache}/linuxdeploy-plugin-appimage.AppImage"
   linuxdeploy_appdir_bin="${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir/usr/bin"
   plugin_bin="${internal}/plugins"
@@ -1470,8 +1512,9 @@ prepare_tauri_linuxdeploy_tools_cache() {
   wrap_linuxdeploy_appdir_patchelf "${linuxdeploy_appdir_bin}"
 
   rm -f "${linuxdeploy_appdir_bin}"/linuxdeploy-plugin-*
-  write_linuxdeploy_input_plugin_wrapper "${cache}/linuxdeploy-plugin-gtk.sh" "maple-linuxdeploy-tools/linuxdeploy-plugin-gtk.real.sh"
-  write_linuxdeploy_input_plugin_wrapper "${cache}/linuxdeploy-plugin-gstreamer.sh" "maple-linuxdeploy-tools/linuxdeploy-plugin-gstreamer.real.sh"
+  # tauri-cli also writes its own embedded linuxdeploy-plugin-*.sh into the
+  # cache. The wrapper replaces PATH and unsets APPIMAGE, so linuxdeploy only
+  # finds the pinned plugins below.
   write_linuxdeploy_input_plugin_wrapper "${plugin_bin}/linuxdeploy-plugin-gtk" "../linuxdeploy-plugin-gtk.real.sh"
   write_linuxdeploy_input_plugin_wrapper "${plugin_bin}/linuxdeploy-plugin-gstreamer" "../linuxdeploy-plugin-gstreamer.real.sh"
 
@@ -1809,7 +1852,7 @@ EOF
   print_file_hashes \
     "${cache}/AppRun-${arch}" \
     "${cache}/linuxdeploy-${linuxdeploy_arch}.real.AppImage" \
-    "${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage" \
+    "${linuxdeploy_wrapper}" \
     "${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir/AppRun" \
     "${plugin_bin}/linuxdeploy-plugin-appimage" \
     "${plugin_bin}/linuxdeploy-plugin-gtk" \
@@ -1817,9 +1860,7 @@ EOF
     "${appimage_real_appimage}" \
     "${cache}/linuxdeploy-plugin-appimage.AppImage" \
     "${appimage_appdir}/AppRun" \
-    "${runtime_file}" \
-    "${cache}/linuxdeploy-plugin-gtk.sh" \
-    "${cache}/linuxdeploy-plugin-gstreamer.sh"
+    "${runtime_file}"
 }
 
 verify_linuxdeploy_plugin_metadata() {
