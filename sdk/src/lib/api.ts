@@ -1337,6 +1337,8 @@ export type ModelCatalogItem = Model &
     enabled: boolean;
     deprecated: boolean;
     sort_order?: number;
+    /** False for a model Maple Work does not offer for new tasks; absent on older servers. */
+    available_in_agent?: boolean;
   };
 
 export type ModelAlias = ModelReasoningMetadata & {

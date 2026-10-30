@@ -2168,10 +2168,14 @@ impl ChatScreen {
                 if let Ok((mut models, saved, catalog)) = result {
                     if let Some(catalog) = &catalog {
                         this.model_labels = composer::catalog_model_labels(catalog);
-                        // An older execution computer lists every API model;
-                        // offer only what the catalog describes.
-                        let described =
-                            |model: &String| catalog.data.iter().any(|entry| &entry.id == model);
+                        // An older execution computer lists every API model,
+                        // or every catalog model; offer only what the catalog
+                        // describes and does not keep out of Maple Work.
+                        let described = |model: &String| {
+                            catalog.data.iter().any(|entry| {
+                                &entry.id == model && entry.available_in_agent != Some(false)
+                            })
+                        };
                         if models.iter().any(described) {
                             models.retain(described);
                         }

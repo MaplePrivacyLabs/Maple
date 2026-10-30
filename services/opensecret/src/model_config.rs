@@ -378,6 +378,9 @@ struct ModelConfigEntry {
     badges: &'static [&'static str],
     listed: bool,
     api_listed: bool,
+    /// Maple Work offers the model for new tasks. The catalog still lists it
+    /// for Research and the API either way.
+    available_in_agent: bool,
     enabled: bool,
     deprecated: bool,
     sort_order: u16,
@@ -495,15 +498,10 @@ const PAID_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
 };
 
 /// The concrete model Maple Work suggests for a new task when the user has
-/// not picked one. The agent runs locally and cannot follow a server-side
-/// model switch mid-task, so this is a suggestion for new tasks, not an alias.
-/// Clients that predate it ignore the field.
-const fn agent_default_model(plan: ModelPlan) -> &'static str {
-    match plan {
-        ModelPlan::Free => QUICK_MODEL_ID,
-        ModelPlan::Paid => DEEPSEEK_V4_1_FLASH_MODEL_ID,
-    }
-}
+/// not picked one, the same on every plan. The agent runs locally and cannot
+/// follow a server-side model switch mid-task, so this is a suggestion for new
+/// tasks, not an alias. Clients that predate it ignore the field.
+const AGENT_DEFAULT_MODEL_ID: &str = DEEPSEEK_V4_1_FLASH_MODEL_ID;
 
 /// Models outside the catalog send no sampling and replay no reasoning.
 const UNCATALOGED_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig {
@@ -562,6 +560,7 @@ impl ModelConfigEntry {
             badges,
             listed,
             api_listed: listed,
+            available_in_agent: listed,
             enabled,
             deprecated,
             sort_order,
@@ -602,6 +601,7 @@ impl ModelConfigEntry {
             badges,
             listed: false,
             api_listed: true,
+            available_in_agent: false,
             enabled,
             deprecated,
             sort_order,
@@ -640,6 +640,12 @@ impl ModelConfigEntry {
         self
     }
 
+    /// Keep a listed model out of Maple Work's model list.
+    const fn unavailable_in_agent(mut self) -> Self {
+        self.available_in_agent = false;
+        self
+    }
+
     /// vLLM has no output cap of its own: input and output share the context
     /// window, so the most a request can receive is the window less its prompt.
     const fn max_completion_tokens(self) -> usize {
@@ -674,6 +680,7 @@ impl ModelConfigEntry {
             "enabled": self.enabled,
             "deprecated": self.deprecated,
             "sort_order": self.sort_order,
+            "available_in_agent": self.available_in_agent,
         });
         self.write_reasoning_metadata(&mut value);
 
@@ -987,7 +994,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         131_072,
         GPT_OSS_RESPONSES_MODEL_CONFIG,
     )
-    .with_reasoning(GPT_OSS_REASONING),
+    .with_reasoning(GPT_OSS_REASONING)
+    .unavailable_in_agent(),
     ModelConfigEntry::new(
         "gemma4-31b",
         "Gemma 4 31B",
@@ -1132,7 +1140,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         80,
         131_072,
         LLAMA3_3_70B_RESPONSES_MODEL_CONFIG,
-    ),
+    )
+    .unavailable_in_agent(),
     ModelConfigEntry::api_only(
         "gpt-oss-safeguard-120b",
         "OpenAI GPT-OSS Safeguard 120B",
@@ -1265,7 +1274,7 @@ pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
         "defaults": {
             "quick": AUTO_QUICK_MODEL_ID,
             "powerful": AUTO_POWERFUL_MODEL_ID,
-            "agent": agent_default_model(plan)
+            "agent": AGENT_DEFAULT_MODEL_ID
         },
         "audio": {
             "transcription": {
@@ -1676,18 +1685,43 @@ mod tests {
     }
 
     #[test]
-    fn test_catalog_suggests_a_listed_agent_default_the_plan_can_use() {
-        for (plan, expected) in [
-            (ModelPlan::Free, QUICK_MODEL_ID),
-            (ModelPlan::Paid, DEEPSEEK_V4_1_FLASH_MODEL_ID),
-        ] {
+    fn test_catalog_suggests_one_listed_agent_model_on_every_plan() {
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
             let catalog = model_catalog_response(plan);
-            assert_eq!(catalog["defaults"]["agent"], expected, "plan={plan:?}");
-            let model = catalog_model(&catalog, expected);
+            assert_eq!(
+                catalog["defaults"]["agent"], DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                "plan={plan:?}"
+            );
+            let model = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
             assert_eq!(model["enabled"], true);
             assert_eq!(model["deprecated"], false);
+            assert_eq!(model["available_in_agent"], true);
             assert_eq!(model["capabilities"]["tool_use"], true);
-            assert!(plan.allows_model(expected));
+        }
+        assert!(ModelPlan::Paid.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
+    }
+
+    #[test]
+    fn test_catalog_says_which_models_maple_work_offers() {
+        let not_in_agent = ["gpt-oss-120b", "llama3-3-70b"];
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            let catalog = model_catalog_response(plan);
+            for model in catalog["data"].as_array().expect("catalog data") {
+                let id = model["id"].as_str().expect("model ID");
+                assert_eq!(
+                    model["available_in_agent"],
+                    !not_in_agent.contains(&id),
+                    "{id}"
+                );
+            }
+            // Research and the API keep both models.
+            for id in not_in_agent {
+                assert!(has_model(&catalog, id), "{id}");
+            }
+        }
+        let models = openai_models_response();
+        for id in not_in_agent {
+            assert!(has_model(&models, id), "{id}");
         }
     }
 
