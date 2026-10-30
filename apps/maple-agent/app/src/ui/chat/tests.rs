@@ -1795,6 +1795,47 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_question_card_folds_without_answering(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let question = |request_id: &str| AgentServiceEvent::Question {
+                session_id: "s1".into(),
+                request_id: request_id.into(),
+                questions: vec![maple_agent::agent::AgentQuestion {
+                    id: "pick".into(),
+                    header: "Duplicate row".into(),
+                    question: "Consolidate?".into(),
+                    multi_select: false,
+                    options: ["Yes", "No"]
+                        .into_iter()
+                        .map(|label| maple_agent::agent::AgentQuestionOption {
+                            label: label.into(),
+                            description: String::new(),
+                        })
+                        .collect(),
+                }],
+            };
+            this.handle_service_event(question("first"), cx);
+            this.toggle_question_collapsed(cx);
+            assert!(this.question_collapsed);
+            // A number key unfolds the card instead of answering unseen.
+            this.pick_and_submit_question_option(0, cx);
+            assert!(!this.question_collapsed);
+            assert!(this.current_question().is_some());
+            assert!(this.question_selected.is_empty());
+            // Moving the cursor also unfolds it.
+            this.toggle_question_collapsed(cx);
+            this.focus_question_option(0, 1, cx);
+            assert!(!this.question_collapsed);
+            // The next question always arrives unfolded.
+            this.toggle_question_collapsed(cx);
+            this.skip_question(cx);
+            this.handle_service_event(question("second"), cx);
+            assert!(!this.question_collapsed);
+        });
+    }
+
+    #[gpui::test]
     fn test_multi_select_preserves_choices_notes_and_question_steps(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {

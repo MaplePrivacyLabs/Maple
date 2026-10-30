@@ -529,6 +529,10 @@ impl ChatScreen {
     }
 
     fn activate_application_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.current_question().is_some() && self.question_collapsed {
+            self.toggle_question_collapsed(cx);
+            return;
+        }
         if self.current_question().is_some() {
             let step = self
                 .current_question()
