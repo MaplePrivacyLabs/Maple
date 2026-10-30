@@ -2,15 +2,15 @@
 //!
 //! Output streams to the interface as it arrives. The model gets the last 2000 lines or
 //! 50KB, whichever is less, and when that cuts anything the full output is saved to a
-//! file it can read. The embedding host can choose a default timeout. Stop or a
-//! timeout ends the command's process group (its process tree on Windows).
+//! file it can read. There is no default timeout; Stop or a timeout ends the command
+//! and everything it started.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use pi_agent_core::{AgentTool, AgentToolResult, ToolError, ToolInvocation, ToolUpdates};
@@ -33,8 +33,6 @@ use super::{PREFER_STRICT, ToolContext};
 const MAX_TIMEOUT_SECONDS: f64 = 2_147_483_647.0 / 1000.0;
 /// How often output updates reach the interface at most.
 const UPDATE_THROTTLE: Duration = Duration::from_millis(100);
-/// Quiet commands still report their execution status to the interface.
-const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 /// After the shell exits, how long its output may stay quiet before collection stops.
 /// A background process can keep the output open; output still arriving keeps it open.
 const EXIT_STDIO_GRACE: Duration = Duration::from_millis(100);
@@ -84,8 +82,6 @@ pub trait BashOperations: Send + Sync {
     /// Run `command` in `cwd`, streaming its output. The exit code is `None` when the
     /// command ended without one; a command killed by a signal reports 128 plus the
     /// signal's number.
-    /// A selected working directory that is unavailable must fail, never fall back
-    /// to the host's working directory or a temporary folder.
     async fn exec(
         &self,
         command: &str,
@@ -101,7 +97,7 @@ enum LocalShell {
 }
 
 /// Commands on this machine, in their own process group (a process tree on Windows)
-/// so stopping one reaches the group's members, including pipeline processes.
+/// so that stopping one reaches everything it started.
 #[derive(Clone, Debug)]
 pub struct LocalShellOperations {
     shell: LocalShell,
@@ -146,15 +142,7 @@ impl BashOperations for LocalShellOperations {
                 format!("{POWERSHELL_UTF8_PREFIX}{command}"),
             ),
         };
-        if !cwd.is_absolute() {
-            return Err(ExecError::Failed(
-                "Working directory must be an absolute path".into(),
-            ));
-        }
-        if !tokio::fs::metadata(cwd)
-            .await
-            .is_ok_and(|metadata| metadata.is_dir())
-        {
+        if tokio::fs::metadata(cwd).await.is_err() {
             return Err(ExecError::Failed(format!(
                 "Working directory does not exist: {}\nCannot execute {shell_name} commands.",
                 cwd.display()
@@ -252,7 +240,10 @@ async fn run_local(
     if let Some(stderr) = child.stderr.take() {
         readers.spawn(pump(stderr, options.on_data.clone(), activity.clone()));
     }
-    let stdin = child.stdin.take();
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(command.as_bytes()).await;
+        drop(stdin);
+    }
 
     let kill = |pid: Option<u32>| {
         if let Some(pid) = pid {
@@ -268,14 +259,7 @@ async fn run_local(
         }
     };
     tokio::pin!(deadline);
-    // Writing a large command to a stdin-based shell can block too. Keep that
-    // write inside the same cancellation/deadline boundary as waiting for exit.
-    let wait = async {
-        if let Some(mut stdin) = stdin {
-            let _ = stdin.write_all(command.as_bytes()).await;
-        }
-        child.wait().await
-    };
+    let wait = child.wait();
     tokio::pin!(wait);
     let status = loop {
         tokio::select! {
@@ -378,9 +362,6 @@ async fn pump<R: AsyncRead + Unpin>(mut stream: R, on_data: OnData, activity: Ar
 /// Options for `bash`.
 #[derive(Clone)]
 pub struct BashToolOptions {
-    /// Seconds before a command without an explicit timeout is stopped.
-    /// Standalone Pi has no default; an embedding host can choose one.
-    pub default_timeout: Option<f64>,
     /// Full output goes here when present, without falling back on a failed path.
     pub output_dir: Option<PathBuf>,
     /// Where commands run; this machine when `None`.
@@ -398,7 +379,6 @@ pub struct BashToolOptions {
 impl Default for BashToolOptions {
     fn default() -> Self {
         Self {
-            default_timeout: None,
             output_dir: None,
             operations: None,
             command_prefix: None,
@@ -412,7 +392,6 @@ impl Default for BashToolOptions {
 /// Options for `powershell`.
 #[derive(Clone)]
 pub struct PowerShellToolOptions {
-    pub default_timeout: Option<f64>,
     pub output_dir: Option<PathBuf>,
     pub operations: Option<Arc<dyn BashOperations>>,
     pub expose_session_environment: bool,
@@ -422,7 +401,6 @@ pub struct PowerShellToolOptions {
 impl Default for PowerShellToolOptions {
     fn default() -> Self {
         Self {
-            default_timeout: None,
             output_dir: None,
             operations: None,
             expose_session_environment: true,
@@ -441,7 +419,6 @@ pub struct ShellTool {
     command_prefix: Option<String>,
     expose_session_environment: bool,
     spawn_hook: Option<BashSpawnHook>,
-    default_timeout: Option<f64>,
     context: ToolContext,
 }
 
@@ -449,32 +426,23 @@ pub struct ShellTool {
 struct ShellParams {
     command: String,
     #[serde(default)]
-    workdir: Option<PathBuf>,
-    #[serde(default)]
     timeout: Option<f64>,
 }
 
-fn shell_declaration(name: &str, shell_name: &str, default_timeout: Option<f64>) -> Tool {
-    let timeout_description = match default_timeout {
-        Some(seconds) => format!(
-            "Timeout in seconds (optional, defaults to {seconds} seconds). Set explicitly for longer commands."
-        ),
-        None => "Timeout in seconds (optional, no default timeout)".to_string(),
-    };
+fn shell_declaration(name: &str, shell_name: &str) -> Tool {
     Tool::new(
         name,
         format!(
-            "Execute a {shell_name} command in the session working directory, or an explicit absolute workdir. Each call starts in that folder; cd does not change later calls. Returns stdout and stderr. Output is truncated to last {DEFAULT_MAX_LINES} lines or {}KB (whichever is hit first). If truncated, full output is saved to a temp file. {timeout_description}",
+            "Execute a {shell_name} command in the current working directory. Returns stdout and stderr. Output is truncated to last {DEFAULT_MAX_LINES} lines or {}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
             DEFAULT_MAX_BYTES / 1024
         ),
         json!({
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "Shell command to execute" },
-                "workdir": { "type": "string", "description": "Absolute working directory on the execution computer. For repository searches, set this to the intended checkout or worktree." },
                 "timeout": {
                     "type": "number",
-                    "description": timeout_description
+                    "description": "Timeout in seconds (optional, no default timeout)"
                 }
             },
             "required": ["command"]
@@ -489,7 +457,7 @@ impl ShellTool {
             .operations
             .unwrap_or_else(|| Arc::new(LocalShellOperations::bash(options.shell_path)));
         Self {
-            declaration: shell_declaration("bash", "bash", options.default_timeout),
+            declaration: shell_declaration("bash", "bash"),
             name: "bash",
             cwd: cwd.into(),
             output_dir: options.output_dir,
@@ -497,7 +465,6 @@ impl ShellTool {
             command_prefix: options.command_prefix,
             expose_session_environment: options.expose_session_environment,
             spawn_hook: options.spawn_hook,
-            default_timeout: options.default_timeout,
             context,
         }
     }
@@ -511,7 +478,7 @@ impl ShellTool {
             .operations
             .unwrap_or_else(|| Arc::new(LocalShellOperations::powershell()));
         Self {
-            declaration: shell_declaration("powershell", "PowerShell", options.default_timeout),
+            declaration: shell_declaration("powershell", "PowerShell"),
             name: "powershell",
             cwd: cwd.into(),
             output_dir: options.output_dir,
@@ -519,23 +486,20 @@ impl ShellTool {
             command_prefix: None,
             expose_session_environment: options.expose_session_environment,
             spawn_hook: options.spawn_hook,
-            default_timeout: options.default_timeout,
             context,
         }
     }
 
     /// The guideline that goes with the tool's snippet.
     pub fn guidelines(&self) -> Vec<String> {
-        let mut rules = vec![
-            "For repository searches, set workdir to the absolute intended checkout/worktree and search within it. Verify the folder before using parent paths; never guess ../../ from a temporary folder. Avoid recursive searches of filesystem roots or virtual filesystems such as /proc, /sys and /dev. head limits output, not runtime; request a short timeout (normally 30 seconds) for searches and narrow the scope if it expires.".to_string(),
-        ];
         if self.expose_session_environment {
-            rules.push(format!(
+            vec![format!(
                 "You can inspect {}_* environment variables for current model and session details.",
                 self.context.env_prefix()
-            ));
+            )]
+        } else {
+            Vec::new()
         }
-        rules
     }
 
     fn spawn_context(&self, command: String, cwd: PathBuf) -> BashSpawnContext {
@@ -581,50 +545,23 @@ struct UpdateThrottle {
     task: tokio::task::JoinHandle<()>,
     output: Arc<Mutex<OutputAccumulator>>,
     updates: ToolUpdates,
-    progress: Arc<ShellProgress>,
-}
-
-struct ShellProgress {
-    cwd: PathBuf,
-    timeout: Option<f64>,
-    started: Instant,
-    last_output: Mutex<Instant>,
 }
 
 impl UpdateThrottle {
-    fn start(
-        output: Arc<Mutex<OutputAccumulator>>,
-        updates: ToolUpdates,
-        cwd: PathBuf,
-        timeout: Option<f64>,
-    ) -> Self {
-        let progress = Arc::new(ShellProgress {
-            cwd,
-            timeout,
-            started: Instant::now(),
-            last_output: Mutex::new(Instant::now()),
+    fn start(output: Arc<Mutex<OutputAccumulator>>, updates: ToolUpdates) -> Self {
+        updates.send(AgentToolResult {
+            content: Vec::new(),
+            ..AgentToolResult::default()
         });
-        let dirty = Arc::new(AtomicBool::new(true));
-        send_update(&dirty, &output, &updates, &progress);
+        let dirty = Arc::new(AtomicBool::new(false));
         let wake = Arc::new(Notify::new());
         let task = tokio::spawn({
-            let (dirty, wake, output, updates, progress) = (
-                dirty.clone(),
-                wake.clone(),
-                output.clone(),
-                updates.clone(),
-                progress.clone(),
-            );
+            let (dirty, wake, output, updates) =
+                (dirty.clone(), wake.clone(), output.clone(), updates.clone());
             async move {
-                let mut status = tokio::time::interval(STATUS_INTERVAL);
-                status.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                status.tick().await;
                 loop {
-                    tokio::select! {
-                        _ = wake.notified() => {},
-                        _ = status.tick() => dirty.store(true, Ordering::Release),
-                    }
-                    send_update(&dirty, &output, &updates, &progress);
+                    wake.notified().await;
+                    send_update(&dirty, &output, &updates);
                     tokio::time::sleep(UPDATE_THROTTLE).await;
                 }
             }
@@ -635,41 +572,22 @@ impl UpdateThrottle {
             task,
             output,
             updates,
-            progress,
         }
     }
 
     fn mark(&self) {
-        *self
-            .progress
-            .last_output
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Instant::now();
         self.dirty.store(true, Ordering::Release);
         self.wake.notify_one();
     }
 
-    /// Join the reporter before the tool returns: abort alone cannot stop a
-    /// synchronous send already running on another executor thread.
-    async fn finish(mut self) {
+    /// Stop, sending whatever has not been sent.
+    fn finish(self) {
         self.task.abort();
-        let _ = (&mut self.task).await;
-        send_update(&self.dirty, &self.output, &self.updates, &self.progress);
+        send_update(&self.dirty, &self.output, &self.updates);
     }
 }
 
-impl Drop for UpdateThrottle {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-fn send_update(
-    dirty: &AtomicBool,
-    output: &Mutex<OutputAccumulator>,
-    updates: &ToolUpdates,
-    progress: &ShellProgress,
-) {
+fn send_update(dirty: &AtomicBool, output: &Mutex<OutputAccumulator>, updates: &ToolUpdates) {
     if !dirty.swap(false, Ordering::AcqRel) {
         return;
     }
@@ -677,16 +595,9 @@ fn send_update(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .snapshot(true);
-    let mut details = snapshot_details(&snapshot).unwrap_or_else(|| json!({}));
-    details["shellExecution"] = json!({
-        "cwd": progress.cwd.to_string_lossy(),
-        "timeoutSeconds": progress.timeout,
-        "elapsedSeconds": progress.started.elapsed().as_secs(),
-        "outputIdleSeconds": progress.last_output.lock().unwrap_or_else(|error| error.into_inner()).elapsed().as_secs(),
-    });
     updates.send(AgentToolResult {
         content: vec![Content::text(snapshot.content.clone())],
-        details: Some(details),
+        details: snapshot_details(&snapshot),
         ..AgentToolResult::default()
     });
 }
@@ -762,18 +673,7 @@ impl AgentTool for ShellTool {
             Some(prefix) => format!("{prefix}\n{}", params.command),
             None => params.command,
         };
-        let timeout = params.timeout.or(self.default_timeout);
-        resolve_timeout(timeout)?;
-        if params
-            .workdir
-            .as_ref()
-            .is_some_and(|cwd| !cwd.is_absolute())
-        {
-            return Err("Working directory must be an absolute path".into());
-        }
-        let cwd = params
-            .workdir
-            .unwrap_or_else(|| self.context.cwd().unwrap_or_else(|| self.cwd.clone()));
+        let cwd = self.context.cwd().unwrap_or_else(|| self.cwd.clone());
         let spawn = self.spawn_context(command, cwd);
 
         let output = Arc::new(Mutex::new(OutputAccumulator::new_with_output_dir(
@@ -783,8 +683,6 @@ impl AgentTool for ShellTool {
         let throttle = Arc::new(Mutex::new(Some(UpdateThrottle::start(
             output.clone(),
             invocation.updates.clone(),
-            spawn.cwd.clone(),
-            timeout,
         ))));
         let on_data: OnData = {
             let (output, throttle) = (output.clone(), throttle.clone());
@@ -810,7 +708,7 @@ impl AgentTool for ShellTool {
                 ExecOptions {
                     on_data,
                     cancel: invocation.cancel.clone(),
-                    timeout,
+                    timeout: params.timeout,
                     env: Some(spawn.env),
                 },
             )
@@ -821,12 +719,12 @@ impl AgentTool for ShellTool {
             output.finish();
             (output.snapshot(true), output.last_line_bytes())
         };
-        let finished_throttle = throttle
+        if let Some(throttle) = throttle
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .take();
-        if let Some(throttle) = finished_throttle {
-            throttle.finish().await;
+            .take()
+        {
+            throttle.finish();
         }
         // The kept output reaches the model either way; a failed save loses only the
         // rest, and the note says the file could not be saved.

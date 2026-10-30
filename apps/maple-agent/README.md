@@ -71,15 +71,19 @@ agent runtime; its desktop Agent page points users to Maple Work.
   and a context-window indicator. Every tool call runs without asking for
   approval.
 - Shell tool calls start in the task's saved folder on the execution computer.
-  An absolute `workdir` selects another checkout/worktree for one call; a `cd`
-  inside a command does not affect later calls. Maple supplies a 30-minute
-  default deadline to allow slow builds, and the call can request a longer
+  A `cd` inside a command does not affect later calls. Repository searches
+  should name the intended checkout/worktree with explicit absolute paths.
+  Maple supplies a 30-minute default deadline to allow slow builds, and the
+  call can request a longer
   `timeout` explicitly. Search guidance asks for a short timeout (normally
   30 seconds) and a narrower scope if it expires; that shorter limit applies
   only when the call requests it.
   Quiet commands report their starting folder, elapsed time, time since output and
   deadline every five seconds, including on collapsed tool cards. Stop and
-  deadlines kill the shell's process group on Unix (the process tree on Windows).
+  deadlines use Pi's process-group cleanup on Unix (process-tree cleanup on Windows).
+  Maple bounds the whole operation, including setup and stdin delivery, and allows
+  up to one second for cooperative cancellation before dropping a stuck operation.
+  The execution policy and progress reporting live in Maple; the Pi crates are unchanged.
   These are execution safeguards, not a filesystem sandbox: repository searches
   must still choose the correct folder and bounded scope, and deliberately
   detached processes can escape a Unix process group. `head` bounds output,

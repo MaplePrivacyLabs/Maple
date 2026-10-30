@@ -65,11 +65,22 @@ async fn quiet_shell_reports_effective_folder_deadline_and_idle_time_until_stop(
     harness.faux.push_message(vec![faux_tool_call(
         "bash",
         json!({
-            "command": "sleep 30 # fixture-private-command",
-            "workdir": worktree.path(),
+            "command": "printf fixture-output; sleep 30 # fixture-private-command",
         }),
     )]);
-    let task = harness.create_task().await;
+    let task = harness
+        .handle
+        .create_session(Some(AgentCreateSessionRequest {
+            project_root: Some(worktree.path().to_string_lossy().into_owned()),
+            title: None,
+            model: None,
+            context_limit: None,
+            mcp_server_names: Some(Vec::new()),
+        }))
+        .await
+        .unwrap()
+        .session
+        .id;
     let mut run = harness.send(&task, "Wait for cancellation").await;
     let run_id = run.run_id.clone();
     eventually(|| {
@@ -94,10 +105,11 @@ async fn quiet_shell_reports_effective_folder_deadline_and_idle_time_until_stop(
     let rows = harness.recorder.live_rows(&run_id);
     let tool = rows.iter().find(|row| row.item_type == "tool").unwrap();
     assert_eq!(tool.status.as_deref(), Some("running"));
+    assert_eq!(tool.output.as_ref().unwrap()["text"], "fixture-output");
     let progress = &tool.output.as_ref().unwrap()["structuredContent"]["shellExecution"];
     assert_eq!(progress["cwd"], json!(worktree.path()));
     assert_eq!(progress["timeoutSeconds"], 1800.0);
-    assert!(progress["outputIdleSeconds"].as_u64().unwrap() >= 5);
+    assert!(progress["outputIdleSeconds"].as_u64().unwrap() >= 4);
     assert!(!progress.to_string().contains("fixture-private-command"));
     let identity = tool.live.clone();
     assert!(identity.is_some());
