@@ -7172,7 +7172,9 @@ mod state_tests {
     }
 
     /// The collapsed header keeps its commands before the title in both
-    /// pane layouts; expanding keeps only the same fixed toggle.
+    /// pane layouts; expanding keeps only the toggle. Beside traffic lights
+    /// the toggle stays put and the logo sits under them; without them the
+    /// logo moves up into their corner and the toolbar follows it.
     #[gpui::test]
     fn collapsed_sidebar_header_toolbar(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
@@ -7198,15 +7200,32 @@ mod state_tests {
                 cx.debug_bounds("sidebar-rail").unwrap().top(),
                 cx.debug_bounds("chat-header").unwrap().bottom()
             );
-            assert_eq!(toggle.left(), SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET);
+            assert_eq!(toggle.left(), header_toolbar_left(0.));
             assert!(toggle.right() < new_task.left());
             assert!(title.right() < project.left());
             assert_eq!(toggle.center().y, title.center().y);
+            let mark = cx.debug_bounds("show-sidebar").expect("mark");
+            if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
+                assert!(mark.top() > toggle.bottom());
+            } else {
+                assert_eq!(mark.center().y, toggle.center().y);
+                assert_eq!(mark.right() + px(4.), toggle.left());
+            }
 
             press(cx, "header-sidebar-toggle");
             assert!(!cx.update(|_, app| chat.read(app).sidebar_collapsed));
             cx.run_until_parked();
-            assert_eq!(cx.debug_bounds("header-sidebar-toggle"), Some(toggle));
+            let expanded = cx.debug_bounds("header-sidebar-toggle").expect("toggle");
+            assert_eq!(expanded.left(), header_toolbar_left(1.));
+            assert_eq!((expanded.top(), expanded.size), (toggle.top(), toggle.size));
+            let wordmark = cx.debug_bounds("sidebar-wordmark").expect("wordmark");
+            if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
+                assert_eq!(expanded, toggle);
+                assert!(wordmark.top() > expanded.bottom());
+            } else {
+                assert_eq!(wordmark.center().y, expanded.center().y);
+                assert!(wordmark.right() < expanded.left());
+            }
             assert!(cx.debug_bounds("header-new-task").is_none());
             assert!(cx.debug_bounds("root-picker").is_some());
             assert_eq!(
@@ -7216,8 +7235,8 @@ mod state_tests {
         }
     }
 
-    /// The same header toggle survives either transition and remains a
-    /// keyboard target when expanded.
+    /// The same header toggle survives either transition, in each state's
+    /// place, and remains a keyboard target when expanded.
     #[gpui::test]
     fn collapsed_sidebar_toggle_keeps_its_bounds(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
@@ -7259,7 +7278,12 @@ mod state_tests {
             });
             cx.run_until_parked();
             assert!(cx.update(|_, app| chat.read(app).sidebar_collapsed));
-            assert_eq!(cx.debug_bounds("header-sidebar-toggle"), Some(toggle));
+            let collapsed = cx.debug_bounds("header-sidebar-toggle").expect("toggle");
+            assert_eq!(collapsed.left(), header_toolbar_left(0.));
+            assert_eq!(
+                (collapsed.top(), collapsed.size),
+                (toggle.top(), toggle.size)
+            );
             assert_eq!(
                 ["header-sidebar-toggle", "sidebar-toggle"]
                     .into_iter()
