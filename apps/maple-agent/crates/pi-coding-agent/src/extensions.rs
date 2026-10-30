@@ -37,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_session::{CompactionReason, SessionCore, StreamingBehavior};
 use crate::bash_executor::BashResult;
 use crate::compaction::{CompactionPreparation, CompactionResult};
-use crate::messages::SessionMessage;
+use crate::messages::{CustomMessage, SessionMessage};
 use crate::session::{ProjectedEntry, SessionEntry};
 use crate::system_prompt::SystemPromptOptions;
 use crate::tools::BashOperations;
@@ -285,14 +285,26 @@ pub enum InputAction {
     Handled,
 }
 
-/// A prompt about to start a run.
+/// A run about to start, from a prompt or from a custom message, as Pi's
+/// `before_agent_start` for both of its message types.
 #[derive(Clone, Debug)]
 pub struct BeforeAgentStart {
-    pub prompt: String,
-    /// The images attached to the prompt.
-    pub images: Vec<ImageContent>,
+    /// The message that starts the run.
+    pub trigger: RunTrigger,
     pub system_prompt: String,
     pub options: SystemPromptOptions,
+}
+
+/// What starts a run, as Pi's `messageType` says.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RunTrigger {
+    /// A prompt: its text after expansion, and the images attached to it.
+    User {
+        prompt: String,
+        images: Vec<ImageContent>,
+    },
+    /// A custom message that starts a turn, as Pi's `sendMessage` with `triggerTurn`.
+    Custom(CustomMessage),
 }
 
 /// A message an extension asks to add.
