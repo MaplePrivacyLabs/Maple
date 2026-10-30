@@ -121,6 +121,66 @@ describe("simplified Transport V2 encrypted API seam", () => {
     clearTransportV2CacheRoot(platformApiUrl);
   });
 
+  for (const target of ["/v1/chat/completions", "/v1/responses", "/v1/systemone"]) {
+    for (const apiKey of [undefined, "explicit-api-key"]) {
+      test(`reports configured host for ${target} with ${apiKey ? "API key" : "session"} authentication`, async () => {
+        let seen: TransportV2RuntimeRequest | undefined;
+        const testHarness = harness(async (input) => {
+          seen = copyInput(input);
+          return exchange(
+            target === "/v1/responses"
+              ? new Response(
+                  'event: response.completed\ndata: {"type":"response.completed","response":{"id":"response"}}\n\n'
+                )
+              : jsonResponse({ ok: true })
+          );
+        });
+        testHarness.dependencies.getApiClientApp = () => "chat";
+
+        await openAiAuthenticatedApiCallWithDependencies(
+          `${appApiUrl}${target}`,
+          "POST",
+          { model: "model" },
+          undefined,
+          apiKey,
+          testHarness.dependencies
+        );
+
+        expect(seen?.request.headers).toEqual([
+          { name: "content-type", value: "application/json" },
+          { name: "x-maple-client-app", value: "chat" }
+        ]);
+        expect(seen?.request.credential?.kind).toBe(apiKey ? "api_key" : "bearer");
+        expect(seen?.request).not.toHaveProperty("client_app");
+      });
+    }
+  }
+
+  test("general authenticated requests inherit the app without tagging platform authority", async () => {
+    const seen: TransportV2RuntimeRequest[] = [];
+    const testHarness = harness(async (input) => {
+      seen.push(copyInput(input));
+      return exchange(jsonResponse({ ok: true }));
+    });
+    testHarness.dependencies.getApiClientApp = () => "work";
+    await authenticatedApiCallWithDependencies(
+      `${appApiUrl}/protected/user`,
+      "GET",
+      undefined,
+      undefined,
+      testHarness.dependencies
+    );
+    await authenticatedApiCallWithDependencies(
+      `${platformApiUrl}/platform/user`,
+      "GET",
+      undefined,
+      undefined,
+      testHarness.dependencies
+    );
+    expect(seen[0].request.headers).toEqual([{ name: "x-maple-client-app", value: "work" }]);
+    expect(seen[1].request.headers).toBeUndefined();
+  });
+
   test("puts the credential, query, body presence, and JSON bytes in the logical request", async () => {
     const seen: TransportV2RuntimeRequest[] = [];
     const testHarness = harness(async (input) => {
@@ -210,13 +270,14 @@ describe("simplified Transport V2 encrypted API seam", () => {
     expect(testHarness.noteResponse).toHaveBeenCalledTimes(2);
   });
 
-  test("pins endpoint and PCR policy across an asynchronous authority lookup", async () => {
+  test("pins endpoint, PCR policy, and application across an asynchronous authority lookup", async () => {
     const seen: TransportV2RuntimeRequest[] = [];
     const testHarness = harness(async (input) => {
       seen.push(copyInput(input));
       return exchange(jsonResponse({ ok: true }));
     });
     let configuredApiUrl = appApiUrl;
+    let configuredClientApp: "chat" | "work" = "chat";
     let configuredPcr: PcrConfig = {
       environment: "development",
       remoteAttestation: false,
@@ -224,6 +285,7 @@ describe("simplified Transport V2 encrypted API seam", () => {
     };
     testHarness.dependencies.getApiUrl = () => configuredApiUrl;
     testHarness.dependencies.getApiPcrConfig = () => configuredPcr;
+    testHarness.dependencies.getApiClientApp = () => configuredClientApp;
     testHarness.authority.mockImplementation(
       async (authorityApiUrl: string, authorityPcr: PcrConfig, kind: "user" | "platform") => {
         expect(authorityApiUrl).toBe(appApiUrl);
@@ -233,6 +295,7 @@ describe("simplified Transport V2 encrypted API seam", () => {
           pcr0DevValues: ["11".repeat(48)]
         });
         configuredApiUrl = "https://replacement.example.test/gateway";
+        configuredClientApp = "work";
         configuredPcr = {
           environment: "production",
           remoteAttestation: true,
@@ -258,6 +321,7 @@ describe("simplified Transport V2 encrypted API seam", () => {
       pcr0DevValues: ["11".repeat(48)]
     });
     expect(seen[0].request.target).toBe("/protected/user");
+    expect(seen[0].request.headers).toContainEqual({ name: "x-maple-client-app", value: "chat" });
     expect(seen[0].request.credential).toEqual({
       kind: "bearer",
       value: "user-access-token"

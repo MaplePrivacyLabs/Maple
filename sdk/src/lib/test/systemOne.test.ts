@@ -136,6 +136,14 @@ const answers: SystemOneResponse = {
 };
 
 describe("systemOne", () => {
+  test("keeps the configured application independent of an API-key override", async () => {
+    const { seen, dependencies } = harness(() => jsonResponse(answers));
+    dependencies.getApiClientApp = () => "chat";
+    await systemOneWithDependencies(request, { apiKey: "explicit-api-key" }, dependencies);
+    expect(seen[0].request.headers).toContainEqual({ name: "x-maple-client-app", value: "chat" });
+    expect(seen[0].request.credential?.kind).toBe("api_key");
+  });
+
   test("posts the request in caller order with the session credential and returns typed answers", async () => {
     const { seen, dependencies } = harness(() => jsonResponse(answers));
 

@@ -20,6 +20,7 @@ export function openSecretClientConfig() {
   return {
     apiUrl: import.meta.env.VITE_OPEN_SECRET_API_URL,
     clientId: import.meta.env.VITE_CLIENT_ID || DEFAULT_OPEN_SECRET_CLIENT_ID,
+    clientApp: "chat" as const,
     pcrConfig: {
       environment: openSecretPcrEnvironment(),
       pcr0Values: [...PCR0_VALUES],

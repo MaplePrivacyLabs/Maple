@@ -224,6 +224,7 @@ pub(crate) struct SummaryExecutor<'a> {
     pub body: &'a ResponsesCreateRequest,
     pub routing: InferenceRoutingContext,
     pub cache_policy: &'a CompletionCachePolicy,
+    pub client_app: Option<crate::client_app::ClientApp>,
     pub execution: &'a ResponseExecution,
     pub budget: &'a CompactionBudget,
     pub deadline: Instant,
@@ -287,7 +288,8 @@ impl SummaryExecutor<'_> {
                 response_id = %self.execution.response_id(), fragment_index = completed_fragments,
                 fragments_pending = fragments.len(), estimated_tokens = estimate, reductions,
                 "Compaction summary provider call started");
-            let billing = BillingContext::new(AuthMethod::Jwt, self.body.model.clone());
+            let billing =
+                BillingContext::new(AuthMethod::Jwt, self.body.model.clone(), self.client_app);
             let execution =
                 CompletionExecutionContext::new(billing, self.routing, self.cache_policy);
             // Once helper execution starts, the enclosing HTTP request must not

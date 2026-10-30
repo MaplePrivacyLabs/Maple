@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     Router,
 };
-use maple_proxy::{create_app, Config};
+use maple_proxy::{create_app, ClientApp, Config};
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::path::Path;
@@ -269,6 +269,7 @@ async fn start_proxy_inner(
 
 fn build_proxy_server_config(config: &ProxyConfig, backend_url: String) -> Result<Config, String> {
     let proxy_config = Config::new(config.host.clone(), config.port, backend_url)
+        .with_client_app(ClientApp::Chat)
         .with_pcr0_environment(configured_pcr0_environment()?)
         .with_debug(false)
         // Maple owns the browser boundary below so it can both list the
@@ -472,6 +473,7 @@ mod tests {
 
         assert!(!server_config.enable_cors);
         assert!(server_config.default_api_key.is_none());
+        assert_eq!(server_config.client_app, Some(ClientApp::Chat));
         assert_eq!(
             server_config.pcr0_environment,
             configured_pcr0_environment().unwrap()
@@ -490,6 +492,7 @@ mod tests {
 
         assert!(!server_config.enable_cors);
         assert_eq!(server_config.default_api_key.as_deref(), Some("saved-key"));
+        assert_eq!(server_config.client_app, Some(ClientApp::Chat));
     }
 
     async fn serve_test_app(app: Router) -> (String, tokio::task::JoinHandle<()>) {

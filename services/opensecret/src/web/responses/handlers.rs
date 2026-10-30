@@ -1,6 +1,7 @@
 //! Responses API implementation with SSE streaming and dual-stream storage.
 //! Phases 4 & 5: Always streams to client while concurrently storing to database.
 
+use crate::client_app::ClientApp;
 use crate::{
     billing::{BillingError, ChatBillingAccess},
     db::DBError,
@@ -4921,6 +4922,7 @@ struct ResponsesImageDescriptionExecutor<'a> {
     user: &'a User,
     cache_policy: &'a CompletionCachePolicy,
     routing: InferenceRoutingContext,
+    client_app: Option<ClientApp>,
     _access: PaidImageDescriptionAccess,
 }
 
@@ -5006,8 +5008,11 @@ impl ImageDescriptionAttemptExecutor for ResponsesImageDescriptionExecutor<'_> {
         }
 
         let headers = HeaderMap::new();
-        let billing_context =
-            BillingContext::new(AuthMethod::Jwt, candidate.public_model_id.to_string());
+        let billing_context = BillingContext::new(
+            AuthMethod::Jwt,
+            candidate.public_model_id.to_string(),
+            self.client_app,
+        );
         let mut completion = get_bounded_chat_completion_response(
             self.state,
             self.user,
@@ -5065,12 +5070,14 @@ async fn describe_images(
     routing: InferenceRoutingContext,
     access: PaidImageDescriptionAccess,
     images: &[ImageAttachment],
+    client_app: Option<ClientApp>,
 ) -> Result<Vec<ImageDescriptionToolPair>, ApiError> {
     let executor = ResponsesImageDescriptionExecutor {
         state,
         user,
         cache_policy,
         routing,
+        client_app,
         _access: access,
     };
     let fallback_policy = RetryNonTerminalImageDescriptionFallbackPolicy;
@@ -5185,6 +5192,7 @@ struct BuiltContext {
     context_observation: ResponseContextObservation,
     current_user_uuid: Uuid,
     allowed_urls: HashSet<String>,
+    client_app: Option<ClientApp>,
 }
 
 /// Persisted database records
@@ -5216,6 +5224,7 @@ fn spawn_title_generation_task(
     user_content: String,
     cache_policy: CompletionCachePolicy,
     routing: InferenceRoutingContext,
+    client_app: Option<ClientApp>,
 ) {
     tokio::spawn(async move {
         debug!(
@@ -5250,6 +5259,7 @@ fn spawn_title_generation_task(
         let billing_context = crate::web::openai::BillingContext::new(
             crate::web::openai_auth::AuthMethod::Jwt,
             "llama3-3-70b".to_string(),
+            client_app,
         );
         let title_intent = InferenceIntent::new(
             user.uuid,
@@ -5558,6 +5568,7 @@ async fn prepare_context_and_check_billing(
     deadline: TokioInstant,
     routing: InferenceRoutingContext,
     cache_policy: &CompletionCachePolicy,
+    client_app: Option<ClientApp>,
     context_policy: ContextPolicy,
     context_observation: &ResponseContextObservation,
     force_compaction: bool,
@@ -5655,6 +5666,7 @@ async fn prepare_context_and_check_billing(
                 body,
                 routing,
                 cache_policy,
+                client_app,
                 execution: response_execution,
                 budget: compaction_budget,
                 deadline,
@@ -5717,6 +5729,7 @@ async fn prepare_context_and_check_billing(
         context_observation: context_observation.clone(),
         current_user_uuid: prepared.user_message_id,
         allowed_urls: prompt.allowed_urls,
+        client_app,
     })
 }
 
@@ -6198,6 +6211,7 @@ async fn start_responses_assistant_turn(
     prompt_token_estimate: usize,
     response_execution: ResponseExecution,
     cache_policy: &CompletionCachePolicy,
+    client_app: Option<ClientApp>,
 ) -> Result<StartedCompletion, CompletionExecutionError> {
     let mut chat_request = build_model_turn_request(body, prompt_messages, tools_enabled);
 
@@ -6221,6 +6235,7 @@ async fn start_responses_assistant_turn(
     let billing_context = crate::web::openai::BillingContext::new(
         crate::web::openai_auth::AuthMethod::Jwt,
         pinned_completion.intent().requested_model_id.clone(),
+        client_app,
     );
 
     start_chat_completion_response_for_execution(
@@ -6599,6 +6614,7 @@ async fn setup_completion_processor(
                         prompt_token_estimate,
                         response_execution.clone(),
                         cache_policy,
+                        context.client_app,
                     )
                     .await
                     {
@@ -6787,6 +6803,7 @@ async fn prepare_persisted_context(
                 body,
                 routing,
                 cache_policy,
+                client_app: context.client_app,
                 execution: &execution,
                 budget: &context.compaction_budget,
                 deadline,
@@ -7047,6 +7064,7 @@ async fn create_response_stream_inner(
     admission_observation: &mut Option<ResponseContextObservation>,
 ) -> Result<Response, ApiError> {
     let require_explicit_terminal = session_id.is_v2();
+    let client_app = ClientApp::from_headers(&headers);
     let cache_policy = CompletionCachePolicy::for_request(
         &session_id,
         cache_namespace_root.map(|Extension(root)| root),
@@ -7235,6 +7253,7 @@ async fn create_response_stream_inner(
                 execution_policy.deadline,
                 routing,
                 &cache_policy,
+                client_app,
                 context_policy,
                 &context_observation,
                 false,
@@ -7276,6 +7295,7 @@ async fn create_response_stream_inner(
             routing.with_model_plan(ModelPlan::Paid),
             access,
             &prepared.image_attachments,
+            client_app,
         )
         .await
         .map_err(|error| {
@@ -7326,6 +7346,7 @@ async fn create_response_stream_inner(
                     execution_policy.deadline,
                     routing,
                     &cache_policy,
+                    client_app,
                     context_policy,
                     &context_observation,
                     false,
@@ -7451,6 +7472,7 @@ async fn create_response_stream_inner(
             context.total_prompt_tokens,
             response_execution.clone(),
             &cache_policy,
+            client_app,
         ),
     )
     .await
@@ -7480,6 +7502,7 @@ async fn create_response_stream_inner(
                         execution_policy.deadline,
                         routing,
                         &cache_policy,
+                        client_app,
                         context_policy,
                         &context_observation,
                         true,
@@ -7512,6 +7535,7 @@ async fn create_response_stream_inner(
                     context.total_prompt_tokens,
                     response_execution.clone(),
                     &cache_policy,
+                    client_app,
                 ),
             )
             .await
@@ -7674,6 +7698,7 @@ async fn create_response_stream_inner(
             user_content,
             cache_policy.clone(),
             title_routing,
+            client_app,
         );
     }
 
