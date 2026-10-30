@@ -218,9 +218,8 @@ let
     src = fetchSource upstreams.sdkC;
 
     patches = [
-      ./kmstool-seed-entropy-fail-closed.patch
       ./sdk-c-explicit-version.patch
-      ./sdk-c-gcc14-cleanup-safety.patch
+      ./sdk-c-gcc14-hash-table-include.patch
       ./sdk-c-modern-install-dirs.patch
     ];
     strictDeps = true;
@@ -257,16 +256,14 @@ let
 
     postPatch = ''
       source_file="bin/kmstool-enclave-cli/main.c"
-      if grep -Fq 'AWS_ASSERT(aws_nitro_enclaves_library_seed_entropy' "$source_file"; then
-        echo "entropy seeding is still hidden in AWS_ASSERT" >&2
-        exit 1
-      fi
       if [[ "$(grep -Fc 'aws_nitro_enclaves_library_seed_entropy(1024)' "$source_file")" -ne 1 ]]; then
         echo "kmstool must seed system entropy exactly once" >&2
         exit 1
       fi
-      grep -Fq 'rc = aws_nitro_enclaves_library_seed_entropy(1024)' "$source_file"
-      grep -Fq 'fail_on(rc != AWS_OP_SUCCESS, "Could not seed system entropy")' "$source_file"
+      # SDK-C v0.4.6 includes the former local fail-closed entropy patch.
+      entropy_branch="$(sed -n '/if (aws_nitro_enclaves_library_seed_entropy(1024) != AWS_OP_SUCCESS) {/,/^    }/p' "$source_file")"
+      grep -Fq 'Could not seed entropy pool' <<<"$entropy_branch"
+      grep -Fq 'exit(1);' <<<"$entropy_branch"
       grep -Fq 'if (NOT DEFINED VERSION)' CMakeLists.txt
 
       instance_source="bin/kmstool-instance/main.c"
@@ -293,6 +290,10 @@ let
         echo "REST signable is still declared after an earlier cleanup jump" >&2
         exit 1
       fi
+      # Reject parent-supplied regions before constructing a KMS endpoint.
+      grep -Fq 'region->len > 32' "$rest_source"
+      grep -Fq '!s_region_is_valid(configuration->region)' "$rest_source"
+      grep -Fq '(size_t)written >= sizeof(host_name_str)' "$rest_source"
 
       # Pinned aws-c-common 0.14.4 uses GNUInstallDirs directly and no longer
       # defines its historical LIBRARY_DIRECTORY compatibility variable.
@@ -375,7 +376,7 @@ let
       fi
       grep -Fxq 'PLAINTEXT: %s' "$strings_file"
       grep -Fxq 'CIPHERTEXT: %s' "$strings_file"
-      grep -Fxq 'Could not seed system entropy' "$strings_file"
+      grep -Fxq 'Could not seed entropy pool' "$strings_file"
       grep -Fxq 'aws-nitro_enclaves-sdk-c/v${upstreams.sdkC.version}' "$strings_file"
 
       if ! kmstool_dynamic="$(${pkgs.binutils}/bin/readelf -d "$kmstool")"; then
