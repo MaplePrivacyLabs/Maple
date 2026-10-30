@@ -11,10 +11,11 @@ use pi_agent_core::QueueMode;
 use pi_agent_core::{AgentToolResult, FnTool};
 use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
-use pi_coding_agent::compaction::estimate_tokens;
+use pi_coding_agent::compaction::{CompactionResult, estimate_tokens};
 use pi_coding_agent::extensions::{
-    BeforeForkResult, BeforeTreeResult, CustomMessageDraft, ForkPosition, Input, InputAction,
-    ModelSelect, SessionBeforeFork, SessionBeforeTree, SlashCommandSource, extension,
+    BeforeCompactResult, BeforeForkResult, BeforeTreeResult, CustomMessageDraft, ForkPosition,
+    Input, InputAction, ModelSelect, SessionBeforeCompact, SessionBeforeFork, SessionBeforeTree,
+    SlashCommandSource, extension,
 };
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources, Skill};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
@@ -1498,6 +1499,104 @@ async fn a_reply_cut_off_by_a_full_context_is_compacted_and_asked_again() {
             .unwrap()
             .contains(&"compaction_end:Overflow:ok:retry".to_string())
     );
+}
+
+#[tokio::test]
+async fn recovering_a_cut_off_tool_call_omits_its_result_with_it() {
+    // A resumed session ends with a reply cut off at the output limit, and a result for
+    // its call saying it was not run (Pi #11227).
+    let harness = Harness::new();
+    let model = harness.faux.model();
+    let mut tree = SessionManager::in_memory("/work");
+    tree.append_model_change(&model.provider, &model.id);
+    tree.append_message(SessionMessage::Llm(Message::User(
+        pi_ai::UserMessage::text("check status"),
+    )));
+    let mut cut_off = faux_message(vec![AssistantContent::tool_call(
+        "call_cut_off",
+        "bash",
+        json!({ "command": "echo" }),
+    )]);
+    cut_off.stop_reason = StopReason::Length;
+    cut_off.usage = Usage {
+        input: 100,
+        output: 16,
+        total_tokens: 116,
+        ..Usage::default()
+    };
+    tree.append_message(SessionMessage::Llm(Message::Assistant(cut_off)));
+    tree.append_message(SessionMessage::Llm(Message::ToolResult(
+        pi_ai::ToolResultMessage {
+            tool_call_id: "call_cut_off".into(),
+            tool_name: "bash".into(),
+            content: vec![Content::text("Not executed: output token limit reached.")],
+            details: None,
+            usage: None,
+            is_error: true,
+            timestamp: 0,
+        },
+    )));
+    let supply = extension("supply", |api| {
+        api.on(|event: SessionBeforeCompact, _ctx| async move {
+            Ok(BeforeCompactResult {
+                cancel: false,
+                compaction: Some(CompactionResult {
+                    summary: "summary".into(),
+                    first_kept_entry_id: event.preparation.first_kept_entry_id,
+                    tokens_before: event.preparation.tokens_before,
+                    estimated_tokens_after: None,
+                    usage: Default::default(),
+                    details: None,
+                }),
+            })
+        });
+    });
+    let session = harness
+        .session_with(|options| {
+            options.session = tree;
+            options.extensions = vec![supply];
+        })
+        .await;
+    harness.faux.push_text("done");
+    let events = record(&session);
+
+    session
+        .prompt("continue", PromptOptions::default())
+        .await
+        .unwrap();
+    let requests = harness.faux.requests();
+    let sent = &requests.last().unwrap().context.messages;
+    assert!(
+        sent.iter().all(|message| match message {
+            Message::ToolResult(_) => false,
+            Message::Assistant(reply) => reply.stop_reason != StopReason::Length,
+            _ => true,
+        }),
+        "{sent:?}"
+    );
+    // Both are omitted by entries of their own.
+    let omitted = session.with_session(|tree| {
+        tree.entries()
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.kind,
+                    EntryKind::ContextEdit {
+                        replacement: None,
+                        ..
+                    }
+                )
+            })
+            .count()
+    });
+    assert_eq!(omitted, 2);
+    let appended = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event.as_str() == "entry:context_edit")
+        .count();
+    assert_eq!(appended, 2);
 }
 
 /// A store whose every write fails.

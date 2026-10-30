@@ -2861,28 +2861,57 @@ impl SessionCore {
         completed && !self.abort_requested()
     }
 
-    /// Omit the latest assistant message from the context with a context edit.
+    /// Omit the latest assistant message from the context with a context edit, and the
+    /// tool results that answer its calls with it, as Pi's `_omitRecoveryAttempt` does: a
+    /// result without its call would be sent on its own.
     fn omit_last_assistant(&self) {
-        let edit = {
+        let edits = {
             let mut session = lock(&self.session);
-            let target = session
-                .branch()
+            let targets: Vec<String> = {
+                let branch = session.branch();
+                let Some((position, assistant)) =
+                    branch
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(position, entry)| match &entry.kind {
+                            EntryKind::Message {
+                                message: SessionMessage::Llm(Message::Assistant(assistant)),
+                            } => Some((position, assistant)),
+                            _ => None,
+                        })
+                else {
+                    return;
+                };
+                let calls: Vec<&str> = assistant
+                    .tool_calls()
+                    .map(|call| call.id.as_str())
+                    .collect();
+                let results = branch[position + 1..]
+                    .iter()
+                    .filter_map(|entry| match &entry.kind {
+                        EntryKind::Message {
+                            message: SessionMessage::Llm(Message::ToolResult(result)),
+                        } if calls.contains(&result.tool_call_id.as_str()) => {
+                            Some(entry.id.clone())
+                        }
+                        _ => None,
+                    });
+                std::iter::once(branch[position].id.clone())
+                    .chain(results)
+                    .collect()
+            };
+            targets
                 .iter()
-                .rev()
-                .find_map(|entry| match &entry.kind {
-                    EntryKind::Message {
-                        message: SessionMessage::Llm(Message::Assistant(_)),
-                    } => Some(entry.id.clone()),
-                    _ => None,
-                });
-            target.and_then(|target| {
-                let id = session.append_context_edit(&target, None).ok()?;
-                session.entry(&id).cloned()
-            })
+                .filter_map(|target| {
+                    let id = session.append_context_edit(target, None).ok()?;
+                    session.entry(&id).cloned()
+                })
+                .collect::<Vec<_>>()
         };
         self.report_persistence();
         self.rebuild_messages();
-        if let Some(entry) = edit {
+        for entry in edits {
             self.emit(AgentSessionEvent::EntryAppended { entry });
         }
     }
