@@ -36,16 +36,6 @@ pub fn top_row_inset(gutter: Pixels) -> Pixels {
     }
 }
 
-/// Top padding for a row placed under the traffic lights: clears them
-/// when the bar is transparent, otherwise the ordinary gutter.
-pub fn top_row_top(gutter: Pixels) -> Pixels {
-    if TRANSPARENT_TITLEBAR {
-        TRAFFIC_LIGHT_ROW
-    } else {
-        gutter
-    }
-}
-
 /// Make an element behave like the title bar it is standing in for: a
 /// press on its empty area drags the window and a double press zooms it,
 /// the way AppKit's bar does. Interactive children stop the press with

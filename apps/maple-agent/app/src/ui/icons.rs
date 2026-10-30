@@ -43,9 +43,14 @@ pub fn wordmark(height: Pixels, color: u32) -> Svg {
     svg()
         .path("icons/maple-wordmark.svg")
         .h(height)
-        .w(height * (248. / 50.))
+        .w(wordmark_width(height))
         .flex_none()
         .text_color(gpui::rgb(color))
+}
+
+/// The wordmark's width at `height`.
+pub fn wordmark_width(height: Pixels) -> Pixels {
+    height * (248. / 50.)
 }
 
 /// A `loader-circle` icon that turns once per second while it is shown.

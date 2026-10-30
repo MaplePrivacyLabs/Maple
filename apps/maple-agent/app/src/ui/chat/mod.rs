@@ -136,13 +136,23 @@ impl SidebarTransition {
 }
 /// Height of the task header and the clear strip above the collapsed rail.
 const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
-/// Left inset for the header beside the rail: the traffic lights reach
-/// 30 px past it, followed by an 8 px gap when the bar is transparent.
-const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = if titlebar::TRANSPARENT_TITLEBAR {
-    px(38.)
-} else {
-    px(16.)
-};
+/// Where the header's toolbar starts, from the window's left edge, as the
+/// sidebar goes from collapsed (0) to expanded (1). Beside traffic lights
+/// it stays put: they reach 30 px past the rail, followed by an 8 px gap.
+/// Without them the Maple logo holds the top row's corner, and the
+/// toolbar follows it at its own 4 px button gap: after the rail's mark
+/// button, or after the wordmark with the same padding, on a whole pixel.
+fn header_toolbar_left(sidebar_expansion: f32) -> gpui::Pixels {
+    if titlebar::TRANSPARENT_TITLEBAR {
+        return SIDEBAR_RAIL_WIDTH + px(38.);
+    }
+    let padding = (sidebar::TOP_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
+    let mark = sidebar::WORDMARK_LEFT - padding + sidebar::TOP_ROW_HEIGHT;
+    let wordmark = sidebar::WORDMARK_LEFT
+        + crate::ui::icons::wordmark_width(sidebar::WORDMARK_HEIGHT)
+        + padding;
+    (mark + (wordmark - mark) * sidebar_expansion + px(4.)).round()
+}
 /// Reading width shared by the transcript and the composer; they must
 /// stay in one column.
 const CONTENT_WIDTH: gpui::Pixels = px(900.);

@@ -11,7 +11,7 @@ use super::commands::ChatCommand;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
-    SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
+    SIDE_THREAD_PLACEHOLDER, Section,
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
@@ -96,12 +96,15 @@ impl ChatScreen {
         let sidebar_width = super::SIDEBAR_RAIL_WIDTH
             + (super::SIDEBAR_WIDTH - super::SIDEBAR_RAIL_WIDTH) * sidebar_expansion;
         // Compensate for the moving pane so the toggle stays beside the
-        // window controls throughout the transition.
-        let toolbar_left = super::SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET - sidebar_width;
+        // window controls throughout the transition, or follows the logo.
+        let toolbar_left = super::header_toolbar_left(sidebar_expansion) - sidebar_width;
         let toolbar_width = window.rem_size() * 5.75;
         let header_gap = window.rem_size() * 0.75;
         let expanded_inset = window.rem_size();
-        let collapsed_inset = SIDEBAR_COLLAPSED_INSET + toolbar_width + header_gap * 2. + px(1.);
+        let collapsed_inset = super::header_toolbar_left(0.) - super::SIDEBAR_RAIL_WIDTH
+            + toolbar_width
+            + header_gap * 2.
+            + px(1.);
         let inset = expanded_inset + (collapsed_inset - expanded_inset) * collapsed_progress;
         titlebar::drag_region(
             div()
