@@ -48,7 +48,7 @@ stdio MCP server configured in Settings > Integrations.
 |---|---|---|---|
 | L1 | `read`, `bash`, `edit`, `write` | One prompt that uses all four | Each runs without a card and the files match |
 | L2 | Images in tools | On a text-only model, `read_image` on a local and a public https image, then `read` on the local one; on a vision model, `read` on it | The text-only model gets both described, and `read` sends it to `read_image`; the vision model sees the image (**automated** for `read`: `a_model_without_vision_looks_at_images_through_read_image`) |
-| L3 | `todo_write` | Ask for a multi-step plan | The plan pins above the composer and updates |
+| L3 | `todo_write` | Ask for a multi-step plan | The plan pins above the composer and updates; once every item is checked it leaves the composer and stays in the transcript as a foldable Plan row |
 | L4 | `web_search` and `open_url` | Ask for a page title | Web results and the title come back |
 | L5 | `request_user_input` | Ask the model to ask you a question | The card shows; the answer reaches the model; Escape skips |
 

@@ -1534,6 +1534,54 @@ mod state_tests {
         });
     }
 
+    /// A plan the run finishes keeps its card for a beat, then the card
+    /// goes and the list stays in the transcript. A finished plan from
+    /// history, a repeat of it, or an empty list shows no card.
+    #[gpui::test]
+    fn test_finished_plan_leaves_the_card(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let done = serde_json::json!([
+            { "content": "one", "status": "completed" },
+            { "content": "two", "status": "completed" }
+        ]);
+        screen.update(cx, |this, cx| {
+            this.apply_incoming_item(
+                "s1",
+                todo_item(
+                    "t1",
+                    serde_json::json!([
+                        { "content": "one", "status": "completed" },
+                        { "content": "two", "status": "in_progress" }
+                    ]),
+                ),
+                cx,
+            );
+            assert!(this.render_plan_card(cx).is_some());
+            this.apply_incoming_item("s1", todo_item("t2", done.clone()), cx);
+            assert!(this.render_plan_card(cx).is_some());
+        });
+        cx.executor().advance_clock(PLAN_DONE_HOLD);
+        cx.run_until_parked();
+        screen.update(cx, |this, cx| {
+            assert!(this.render_plan_card(cx).is_none());
+            assert_eq!(this.navigable_timeline_ids(), vec!["t2".to_string()]);
+            this.apply_incoming_item("s1", todo_item("t3", done.clone()), cx);
+            assert!(this.render_plan_card(cx).is_none());
+
+            this.replace_timeline(vec![todo_item("a", done.clone())]);
+            assert!(this.render_plan_card(cx).is_none());
+
+            this.apply_incoming_item(
+                "s1",
+                todo_item("t4", serde_json::json!([{ "content": "next" }])),
+                cx,
+            );
+            assert!(this.render_plan_card(cx).is_some());
+            this.apply_incoming_item("s1", todo_item("t5", serde_json::json!([])), cx);
+            assert!(this.render_plan_card(cx).is_none());
+        });
+    }
+
     /// A persisted settings file must shape a freshly built chat screen:
     /// tool cards collapsed and web off for new tasks without visiting
     /// the settings screen first.

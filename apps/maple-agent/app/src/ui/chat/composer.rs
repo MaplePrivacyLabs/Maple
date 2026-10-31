@@ -734,7 +734,12 @@ impl ChatScreen {
     }
 
     fn toggle_plan_collapsed(&mut self, cx: &mut Context<Self>) {
-        self.plan_collapsed = !self.plan_collapsed;
+        let Some(session) = self.selected_session.clone() else {
+            return;
+        };
+        if !self.plan_collapsed.remove(&session) {
+            self.plan_collapsed.insert(session);
+        }
         cx.notify();
     }
 
@@ -995,10 +1000,13 @@ impl ChatScreen {
     }
 
     pub(super) fn render_plan_card(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.plan.is_empty() {
+        if !self.plan_card_visible() {
             return None;
         }
-        let collapsed = self.plan_collapsed;
+        let collapsed = self
+            .selected_session
+            .as_ref()
+            .is_some_and(|session| self.plan_collapsed.contains(session));
         let done = self.plan_done;
         let header = div()
             .id("plan-card-header")

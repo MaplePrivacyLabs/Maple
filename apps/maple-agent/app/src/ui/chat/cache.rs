@@ -15,7 +15,8 @@ use maple_agent::agent::{AgentTimelineItem, ExternalAgentActivity};
 
 use super::ChatScreen;
 use super::transcript::{
-    diff_lines_for, external_agent_activity, tool_input_line, tool_output_markdown,
+    PlanEntry, diff_lines_for, external_agent_activity, plan_entries, tool_input_line,
+    tool_output_markdown,
 };
 use crate::ui::markdown;
 
@@ -273,6 +274,8 @@ pub(super) struct ItemDerived {
     /// What an external agent (Codex) did, for the row of the tool call
     /// that ran it.
     pub(super) external_agent: Option<Arc<ExternalAgentActivity>>,
+    /// The list of a todo_write call.
+    pub(super) plan: Option<Vec<PlanEntry>>,
 }
 
 pub(super) const MAX_DIFF_LINES: usize = 200;
@@ -296,6 +299,7 @@ impl ItemDerived {
             input_line: tool_input_line(item).map(SharedString::from),
             diff_lines: Arc::new(diff_lines_for(item)),
             external_agent: external_agent_activity(item).map(Arc::new),
+            plan: plan_entries(item),
         }
     }
 }

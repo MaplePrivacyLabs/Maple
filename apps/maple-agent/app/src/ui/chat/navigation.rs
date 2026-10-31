@@ -13,7 +13,7 @@ use maple_agent::agent::AgentTimelineItem;
 use super::ChatScreen;
 use super::commands::ChatCommand;
 use super::composer::ComposerControl;
-use super::transcript::{attachment_refs, has_tool_input};
+use super::transcript::{PlanStatus, attachment_refs, has_tool_input, plan_entries, plan_finished};
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
 use crate::ui::text_input::vim::VimMode;
 
@@ -741,6 +741,22 @@ impl ChatScreen {
             "message" | "thinking" | "reasoning" => {
                 self.derived.get(item, revision).text.to_string()
             }
+            "tool" | "toolCall" if has_tool_input(item, "todos") => self
+                .derived
+                .get(item, revision)
+                .plan
+                .iter()
+                .flatten()
+                .map(|entry| {
+                    let mark = if entry.status == PlanStatus::Completed {
+                        'x'
+                    } else {
+                        ' '
+                    };
+                    format!("- [{mark}] {}", entry.content)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
             "tool" | "toolCall" => self
                 .tool_summaries
                 .get(&item.id)
@@ -1159,8 +1175,10 @@ fn timeline_item_is_navigable(item: &AgentTimelineItem) -> bool {
     if item.item_type == "internal" {
         return false;
     }
+    // An unfinished list shows only in the pinned card; a finished one is
+    // a transcript row.
     if matches!(item.item_type.as_str(), "tool" | "toolCall") && has_tool_input(item, "todos") {
-        return false;
+        return plan_entries(item).is_some_and(|plan| plan_finished(&plan));
     }
     if item.item_type == "message" {
         return item

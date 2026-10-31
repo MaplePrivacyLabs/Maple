@@ -365,8 +365,12 @@ pub(super) fn render_timeline_item(
             // Dispatch on payload shape; runtime titles are humanized
             // ("todo write", "ask user") and vary by detail suffix.
             if has_tool_input(item, "todos") {
-                // The pinned plan card above the composer shows the list.
-                return div().into_any_element();
+                // The pinned card above the composer shows an unfinished
+                // list; a finished one stays here as a foldable row.
+                match render_finished_plan(item, revision, expanded, transcript) {
+                    Some(plan) => plan,
+                    None => return div().into_any_element(),
+                }
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
@@ -849,6 +853,94 @@ pub(super) fn plan_entries(item: &AgentTimelineItem) -> Option<Vec<PlanEntry>> {
             })
             .collect(),
     )
+}
+
+/// A list with every entry checked off. An empty list clears the plan and
+/// is never finished.
+pub(super) fn plan_finished(plan: &[PlanEntry]) -> bool {
+    !plan.is_empty()
+        && plan
+            .iter()
+            .all(|entry| entry.status == PlanStatus::Completed)
+}
+
+/// The transcript row of a finished todo list: a foldable card like a tool
+/// call's, or `None` while the list is unfinished and the pinned card
+/// shows it.
+fn render_finished_plan(
+    item: &AgentTimelineItem,
+    revision: u64,
+    details: bool,
+    transcript: &TranscriptCtx,
+) -> Option<Div> {
+    let derived = transcript.derived.get(item, revision);
+    let plan = derived.plan.as_deref().filter(|plan| plan_finished(plan))?;
+    let count = format!("{}/{}", plan.len(), plan.len());
+    let item_id = item.id.clone();
+    let chat = transcript.chat.clone();
+    let mut card = div()
+        .id(SharedString::from(format!("plan-toggle-{item_id}")))
+        .debug_selector(|| "plan-row".to_string())
+        .role(gpui::Role::DisclosureTriangle)
+        .aria_label(SharedString::from(format!("Plan, {count} done")))
+        .aria_expanded(details)
+        .flex()
+        .flex_col()
+        .gap_1()
+        .px_3()
+        .py_2()
+        .rounded(theme::RADIUS_SM)
+        .bg(gpui::rgb(theme::bg_tool_card()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border_subtle()))
+        .hover(|style| {
+            style
+                .border_color(gpui::rgb(theme::border()))
+                .cursor_pointer()
+        })
+        .on_click(move |_event, _window, cx: &mut gpui::App| {
+            chat.update(cx, |chat, cx| chat.toggle_tool(&item_id, cx))
+                .ok();
+        })
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child("Plan"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(count),
+                )
+                .child(icon(
+                    if details {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    },
+                    px(14.),
+                    theme::text_muted(),
+                )),
+        );
+    if details {
+        card = card.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .children(plan.iter().map(render_plan_row)),
+        );
+    }
+    Some(div().child(card))
 }
 
 /// One row of the subagent card: what the subagent was asked to do, the
