@@ -129,17 +129,24 @@ Permissions are rechecked before host shutdown and replacement can still fail
 safely if the filesystem changes afterward.
 
 Linux x86_64 uses a persistent user-local directory bundle distributed as a
-`.tar.gz`, with launcher and desktop integration. The bundle carries its loader
-and client libraries; users need no FUSE mount or Nix runtime. Host graphics
-drivers, CA certificates and desktop services remain required. Read-only,
+`.tar.gz`, with launcher and desktop integration. The binary targets glibc
+2.31 and runs on the host's glibc, desktop libraries, graphics drivers, CA
+certificates and desktop services; users need no FUSE mount or Nix runtime. Read-only,
 inconsistent or unsupported installations offer the signed manual download.
 Unsupported architectures do not install another architecture's payload.
 See [desktop builds](desktop-builds.md) for installation commands.
 
-The bundled loader makes `current_exe()` refer to the loader. Detached hosts and
-reopen use the validated persistent `AppRun`; the bounded SQL integrity child
-executes the validated loader/payload directly to preserve parent ownership and
-private stdin. After replacement, restart targets the committed bundle's `AppRun`.
+`AppRun` executes `usr/bin/maple-agent` directly. Detached hosts and reopen use
+the validated persistent `AppRun`; the bounded SQL integrity child executes the
+validated payload directly to preserve parent ownership and private stdin.
+After replacement, restart targets the committed bundle's `AppRun`.
+
+Bundle format v1 still requires an executable `usr/lib/ld-linux-x86-64.so.2`.
+Releases before the host-glibc change bundled glibc there, check that path
+before installing an update, and may start a bounded child through it until
+they relaunch. Current bundles ship a small shell launcher at that path that
+accepts the old loader options and runs only the bundle's own payload. Keep it
+for as long as such releases can still update.
 
 ### Windows installation and recovery
 

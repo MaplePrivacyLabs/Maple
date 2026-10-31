@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hermetic tests for the AppImage closure/launcher boundary, without a build."""
+"""Hermetic tests for the Linux payload audit and launcher boundary, without a build."""
 
 import importlib.util
 import json
@@ -31,13 +31,11 @@ METADATA = {
 }
 
 
-def write_elf(path, needed=(), rpath="", interpreter="", requires=(), supplies=(), version_providers=None):
+def write_elf(path, needed=("libc.so.6",), rpath="", interpreter="/lib64/ld-linux-x86-64.so.2", requires=("GLIBC_2.2.5",)):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(
         HEADER + json.dumps({
-            "needed": list(needed), "rpath": rpath, "interpreter": interpreter,
-            "requires": list(requires), "supplies": list(supplies),
-            "version_providers": version_providers if version_providers is not None else ({"libc.so.6": list(requires)} if requires else {}),
+            "needed": list(needed), "rpath": rpath, "interpreter": interpreter, "requires": list(requires),
         }, sort_keys=True).encode()
     )
     path.chmod(0o755)
@@ -52,15 +50,8 @@ class ElfTools:
         stdout = ""
         returncode = 0
         if command == "readelf":
-            if state["supplies"]:
-                stdout += "Version definition section\n"
-                stdout += "\n".join(f"Name: {version}" for version in state["supplies"])
-            if state["version_providers"]:
-                stdout += "\nVersion needs section\n"
-                for provider, versions in state["version_providers"].items():
-                    stdout += f"  000000: Version: 1 File: {provider} Cnt: {len(versions)}\n"
-                    stdout += "\n".join(f"  0x0010: Name: {version} Flags: none Version: 2" for version in versions)
-                    stdout += "\n"
+            stdout = "Version needs section\n  000000: Version: 1 File: libc.so.6 Cnt: 1\n"
+            stdout += "\n".join(f"  0x0010: Name: {version} Flags: none Version: 2" for version in state["requires"])
         elif option == "--print-needed":
             stdout = "\n".join(state["needed"])
         elif option == "--print-rpath":
@@ -68,18 +59,8 @@ class ElfTools:
         elif option == "--print-interpreter":
             stdout = state["interpreter"]
             returncode = 0 if stdout else 1
-        elif option == "--replace-needed":
-            state["needed"] = [args[3] if item == args[2] else item for item in state["needed"]]
-            if args[2] in state["version_providers"]:
-                state["version_providers"][args[3]] = state["version_providers"].pop(args[2])
-        elif option == "--set-rpath":
-            state["rpath"] = args[2]
-        elif option == "--set-interpreter":
-            state["interpreter"] = args[2]
         else:
             raise AssertionError(f"Unexpected tool command: {args}")
-        if option.startswith("--set") or option == "--replace-needed":
-            path.write_bytes(HEADER + json.dumps(state, sort_keys=True).encode())
         return subprocess.CompletedProcess(args, returncode, stdout, "")
 
 
@@ -88,24 +69,11 @@ class AppImageTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.runtime = self.root / "runtime"
-        self.glibc = self.root / "glibc"
-        self.store_paths = self.root / "store-paths"
-        self.store_paths.write_text(f"{self.runtime}\n{self.glibc}\n")
         self.binary = self.root / "native/maple-agent"
         write_elf(
-            self.glibc / "lib/libc.so.6", interpreter="/nix/store/glibc/lib/ld-linux-x86-64.so.2",
-            supplies=("GLIBC_2.2.5", "GLIBC_2.42", "GLIBC_PRIVATE"),
-        )
-        write_elf(self.glibc / "lib" / packaging.LOADER)
-        for soname in packaging.DLOPEN_LIBRARIES:
-            write_elf(self.runtime / "lib" / soname, needed=(str(self.glibc / "lib/libc.so.6"),))
-        write_elf(self.runtime / "lib/libalpha.so.1", needed=("libbeta.so.1",), rpath=str(self.runtime / "lib"))
-        write_elf(self.runtime / "lib/libbeta.so.1", needed=(str(self.glibc / "lib/libc.so.6"),))
-        write_elf(
-            self.binary, needed=(str(self.runtime / "lib/libalpha.so.1"), "libc.so.6"),
-            rpath=str(self.glibc / "lib"), interpreter="/nix/store/glibc/lib/ld-linux-x86-64.so.2",
-            requires=("GLIBC_2.42",),
+            self.binary,
+            needed=("libxkbcommon.so.0", "libX11.so.6", "libasound.so.2", "libgcc_s.so.1", "libm.so.6", "libc.so.6"),
+            requires=("GLIBC_2.2.5", "GLIBC_2.17", "GLIBC_2.31"),
         )
         self.component = self.root / "component"
         icons = self.component / "app/packaging"
@@ -118,125 +86,81 @@ class AppImageTests(unittest.TestCase):
 
     def stage(self):
         appdir = self.root / "AppDir"
-        packaging.stage_closure(appdir, self.binary, packaging.Closure(self.store_paths), self.glibc)
+        packaging.stage_payload(appdir, self.binary)
         packaging.stage_metadata(appdir, self.component, METADATA)
         packaging.normalize_public_permissions(appdir)
         return appdir
 
-    def test_transitive_and_dlopen_closure_is_relative_and_matches_libc_loader(self):
+    def test_payload_uses_host_glibc_and_desktop_libraries_only(self):
         appdir = self.stage()
         result = packaging.audit(appdir)
-        self.assertTrue(result["bundled_glibc"])
-        self.assertEqual(result["required_glibc_versions"], ["GLIBC_2.42"])
-        executable = appdir / "usr/bin/maple-agent"
-        self.assertEqual(packaging.needed(executable), ["libalpha.so.1", "libc.so.6"])
-        self.assertEqual(packaging.interpreter(executable), packaging.INTERPRETER)
-        self.assertTrue((appdir / "usr/lib/libbeta.so.1").is_file())
+        self.assertFalse(result["bundled_glibc"])
+        self.assertEqual(result["interpreter"], packaging.INTERPRETER)
+        self.assertEqual(result["glibc_floor"], "2.31")
+        self.assertEqual(result["required_glibc_versions"], ["GLIBC_2.2.5", "GLIBC_2.17", "GLIBC_2.31"])
+        self.assertIn("libxkbcommon.so.0", result["host_libraries"])
+        elves = [path for path in appdir.rglob("*") if path.is_file() and packaging.elf(path)]
+        self.assertEqual(elves, [appdir / "usr/bin/maple-agent"])
+        compatibility = appdir / "usr/lib" / packaging.LOADER
+        self.assertEqual(compatibility.read_text(), packaging.COMPATIBILITY_LOADER)
+        self.assertEqual(compatibility.stat().st_mode & 0o777, 0o755)
         self.assertEqual((appdir / f"{METADATA['bundle_id']}.png").read_bytes(), b"dev-icon")
 
-    def test_missing_dynamic_library_fails_closed(self):
-        (self.runtime / "lib/libvulkan.so.1").unlink()
-        with self.assertRaisesRegex(packaging.PackagingError, "Missing pinned runtime library: libvulkan"):
-            self.stage()
-
-    def test_unwinder_seed_preserves_original_main_binary_rpath(self):
-        # The pinned glibc closure also contains bootstrap xgcc's libgcc. The
-        # main executable's original RPATH identifies the full-GCC runtime
-        # selected by its linker rather than an arbitrary closure candidate.
-        alternative = self.root / "bootstrap-libgcc"
-        self.store_paths.write_text(self.store_paths.read_text() + f"{alternative}\n")
-        write_elf(alternative / "lib/libgcc_s.so.1", requires=("GLIBC_2.2.5",))
-        write_elf(self.binary, needed=("libgcc_s.so.1", "libc.so.6"), rpath=f"{self.runtime}/lib:{self.glibc}/lib")
+    def test_audit_rejects_glibc_above_the_floor_and_private_versions(self):
         appdir = self.stage()
+        for version in ("GLIBC_2.34", "GLIBC_2.39", "GLIBC_PRIVATE", "GLIBC_ABI_DT_RELR"):
+            write_elf(appdir / "usr/bin/maple-agent", requires=("GLIBC_2.2.5", version))
+            with self.assertRaisesRegex(packaging.PackagingError, "newer than the 2.31 floor"):
+                packaging.audit(appdir)
+
+    def test_audit_rejects_libraries_a_desktop_may_not_provide(self):
+        appdir = self.stage()
+        write_elf(appdir / "usr/bin/maple-agent", needed=("libssl.so.3", "libc.so.6"))
+        with self.assertRaisesRegex(packaging.PackagingError, "may not provide: \\['libssl.so.3'\\]"):
+            packaging.audit(appdir)
+
+    def test_audit_rejects_bundled_loader_paths_and_libraries(self):
+        appdir = self.stage()
+        payload = appdir / "usr/bin/maple-agent"
+        write_elf(payload, rpath="$ORIGIN/../lib")
+        with self.assertRaisesRegex(packaging.PackagingError, "runtime library path"):
+            packaging.audit(appdir)
+        write_elf(payload, interpreter="/nix/store/glibc/lib/ld-linux-x86-64.so.2")
+        with self.assertRaisesRegex(packaging.PackagingError, "host loader"):
+            packaging.audit(appdir)
+        write_elf(payload)
+        write_elf(appdir / "usr/lib/libxkbcommon.so.0")
+        with self.assertRaisesRegex(packaging.PackagingError, "host libraries are never bundled"):
+            packaging.audit(appdir)
+
+    def test_audit_requires_reviewed_launchers(self):
+        appdir = self.stage()
+        compatibility = appdir / "usr/lib" / packaging.LOADER
+        compatibility.write_text("#!/bin/sh\nexec /bin/true\n")
+        with self.assertRaisesRegex(packaging.PackagingError, "compatibility launcher"):
+            packaging.audit(appdir)
+        compatibility.unlink()
+        with self.assertRaisesRegex(packaging.PackagingError, "compatibility launcher"):
+            packaging.audit(appdir)
+        packaging.stage_payload(appdir, self.binary)
+        (appdir / "AppRun").write_text(packaging.APPRUN + "export LD_LIBRARY_PATH=/nowhere\n")
+        with self.assertRaisesRegex(packaging.PackagingError, "AppRun differs"):
+            packaging.audit(appdir)
+        (appdir / "AppRun").write_text(packaging.apprun_variants()[0])
         packaging.audit(appdir)
-        selected = json.loads((appdir / "usr/lib/libgcc_s.so.1").read_bytes()[20:])
-        self.assertEqual(selected["requires"], [])
-        self.assertEqual(selected["needed"], ["libc.so.6"])
 
-    def test_unwinder_seed_without_linker_selection_rejects_ambiguity(self):
-        alternative = self.root / "bootstrap-libgcc"
-        self.store_paths.write_text(self.store_paths.read_text() + f"{alternative}\n")
-        write_elf(alternative / "lib/libgcc_s.so.1", requires=("GLIBC_2.2.5",))
-        with self.assertRaisesRegex(packaging.PackagingError, "Ambiguous pinned runtime library: libgcc_s.so.1"):
-            self.stage()
-
-    def test_missing_transitive_library_fails_closed(self):
-        (self.runtime / "lib/libbeta.so.1").unlink()
-        with self.assertRaisesRegex(packaging.PackagingError, "Missing pinned runtime library: libbeta"):
-            self.stage()
-
-    def test_dependency_outside_pinned_closure_is_rejected(self):
-        outsider = self.root / "host/liboutside.so.1"
-        write_elf(outsider)
-        write_elf(self.binary, needed=(str(outsider),))
-        with self.assertRaisesRegex(packaging.PackagingError, "outside the pinned runtime closure"):
-            self.stage()
-
-    def test_conflicting_soname_versions_are_rejected(self):
-        alternative = self.root / "alternative"
-        self.store_paths.write_text(self.store_paths.read_text() + f"{alternative}\n")
-        write_elf(alternative / "lib/libbeta.so.1", requires=("GLIBC_2.2.5",))
-        write_elf(self.runtime / "lib/libgamma.so.1", needed=("libbeta.so.1",), rpath=str(alternative / "lib"))
-        write_elf(self.binary, needed=("libalpha.so.1", "libgamma.so.1", "libc.so.6"), rpath=str(self.runtime / "lib"))
-        with self.assertRaisesRegex(packaging.PackagingError, "Conflicting libraries share SONAME libbeta"):
-            self.stage()
-
-    def test_audit_rejects_escape_and_absolute_needed(self):
+    def test_audit_rejects_escaping_symlink(self):
         appdir = self.stage()
         escape = appdir / "usr/lib/escape"
         escape.symlink_to(self.binary)
         with self.assertRaisesRegex(packaging.PackagingError, "symlink escapes"):
             packaging.audit(appdir)
-        escape.unlink()
-        write_elf(appdir / "usr/lib/libbeta.so.1", needed=("/nix/store/forgotten/libc.so.6",), rpath="$ORIGIN")
-        with self.assertRaisesRegex(packaging.PackagingError, "Absolute DT_NEEDED"):
-            packaging.audit(appdir)
-
-    def test_audit_rejects_incompatible_glibc_versions(self):
-        appdir = self.stage()
-        write_elf(appdir / "usr/bin/maple-agent", needed=("libc.so.6",), rpath="$ORIGIN/../lib", requires=("GLIBC_999.0",))
-        with self.assertRaisesRegex(packaging.PackagingError, "does not supply required versions"):
-            packaging.audit(appdir)
-
-    def test_glibc_version_is_checked_against_its_declared_libm_provider(self):
-        # Exact pinned glibc 2.42 ABI tables expose GLIBC_2.40 in libm, while
-        # libc does not define that version label. The provider still satisfies
-        # this valid dependency regardless of libc's distinct definition set.
-        appdir = self.stage()
-        write_elf(appdir / "usr/lib/libm.so.6", rpath="$ORIGIN", supplies=("GLIBC_2.40",))
-        write_elf(appdir / "usr/lib/libbeta.so.1", needed=("libm.so.6",), rpath="$ORIGIN", version_providers={"libm.so.6": ["GLIBC_2.40"]})
-        self.assertIn("GLIBC_2.40", packaging.audit(appdir)["required_glibc_versions"])
-        # The presence of this version in libm cannot satisfy a need declared
-        # against libc. A global union would incorrectly accept this payload.
-        write_elf(appdir / "usr/lib/libbeta.so.1", needed=("libc.so.6",), rpath="$ORIGIN", version_providers={"libc.so.6": ["GLIBC_2.40"]})
-        with self.assertRaisesRegex(packaging.PackagingError, "Bundled libc.so.6 does not supply.*GLIBC_2.40"):
-            packaging.audit(appdir)
-
-    def test_provider_version_needs_are_not_version_definitions(self):
-        appdir = self.stage()
-        write_elf(appdir / "usr/lib/libc.so.6", rpath="$ORIGIN", supplies=("GLIBC_2.42", "GLIBC_2.40"))
-        write_elf(appdir / "usr/lib/libm.so.6", needed=("libc.so.6",), rpath="$ORIGIN", supplies=("GLIBC_2.39",), version_providers={"libc.so.6": ["GLIBC_2.40"]})
-        write_elf(appdir / "usr/lib/libbeta.so.1", needed=("libm.so.6",), rpath="$ORIGIN", version_providers={"libm.so.6": ["GLIBC_2.40"]})
-        with self.assertRaisesRegex(packaging.PackagingError, "Bundled libm.so.6 does not supply.*GLIBC_2.40"):
-            packaging.audit(appdir)
-
-    def test_matching_gconv_modules_use_relative_rpath(self):
-        write_elf(self.glibc / "lib/gconv/EXAMPLE.so", needed=("libc.so.6",))
-        (self.glibc / "lib/gconv/gconv-modules").write_text("module EXAMPLE// INTERNAL EXAMPLE 1\n")
-        (self.glibc / "lib/gconv/gconv-modules.cache").write_bytes(b"/nix/store/cache")
-        appdir = self.stage()
-        packaging.audit(appdir)
-        module = appdir / "usr/lib/gconv/EXAMPLE.so"
-        self.assertEqual(packaging.run("patchelf", "--print-rpath", module).stdout, "$ORIGIN/..")
-        self.assertFalse((appdir / "usr/lib/gconv/gconv-modules.cache").exists())
 
     def test_failed_staging_publishes_no_output(self):
-        (self.runtime / "lib/libbeta.so.1").unlink()
+        write_elf(self.binary, needed=("libssl.so.3", "libc.so.6"))
         output = self.root / "must-not-exist.AppDir"
         variables = {f"MAPLE_PACKAGE_{key.upper()}": value for key, value in METADATA.items()}
         variables.update({
-            "MAPLE_AGENT_LINUX_CLOSURE_INFO": str(self.root),
-            "MAPLE_AGENT_LINUX_GLIBC": str(self.glibc),
             "SOURCE_DATE_EPOCH": "12345",
         })
         with mock.patch.dict(os.environ, variables), mock.patch.object(packaging.sys, "argv", ["helper", "--stage-only", str(self.binary), str(output)]):
@@ -252,8 +176,6 @@ class AppImageTests(unittest.TestCase):
         (tools / "runtime-x86_64").write_bytes(b"pinned-runtime")
         variables = {f"MAPLE_PACKAGE_{key.upper()}": value for key, value in METADATA.items()}
         variables.update({
-            "MAPLE_AGENT_LINUX_CLOSURE_INFO": str(self.root),
-            "MAPLE_AGENT_LINUX_GLIBC": str(self.glibc),
             "MAPLE_AGENT_APPIMAGE_TOOLS": str(tools),
             "SOURCE_DATE_EPOCH": "12345",
         })
@@ -291,23 +213,38 @@ class AppImageTests(unittest.TestCase):
         self.assertEqual(output.read_bytes(), b"pinned-runtimesquashfs-payload")
         self.assertTrue(output.with_name(output.name + ".runtime-audit.json").is_file())
 
-    def test_launcher_library_path_does_not_escape_to_child_environment(self):
+    def fake_bundle(self):
         appdir = self.root / "launch with spaces"
-        (appdir / "usr/lib").mkdir(parents=True)
-        (appdir / "usr/lib/gconv").mkdir()
+        payload = self.root / "script-payload"
+        payload.write_text('#!/bin/sh\nprintf "library_env=%s\\nappdir=%s\\n" "${LD_LIBRARY_PATH-unset}" "$APPDIR"\nprintf "%s\\n" "$@"\n')
+        payload.chmod(0o755)
+        packaging.stage_payload(appdir, payload)
         launcher = appdir / "AppRun"
         launcher.write_text(packaging.APPRUN)
         launcher.chmod(0o755)
-        loader = appdir / "usr/lib" / packaging.LOADER
-        loader.write_text('#!/bin/sh\nprintf "library_env=%s\\ngconv_env=%s\\n" "${LD_LIBRARY_PATH-unset}" "${GCONV_PATH-unset}"\nprintf "%s\\n" "$@"\n')
-        loader.chmod(0o755)
         environment = os.environ.copy()
         environment.pop("LD_LIBRARY_PATH", None)
-        environment.pop("GCONV_PATH", None)
-        result = subprocess.run([str(launcher), "--version"], text=True, capture_output=True, env=environment, check=True)
-        self.assertTrue(result.stdout.startswith("library_env=unset\ngconv_env=unset\n--inhibit-cache\n--library-path\n"))
-        self.assertIn(str(appdir / "usr/lib"), result.stdout)
-        self.assertTrue(result.stdout.endswith("--version\n"))
+        return appdir.resolve(), environment
+
+    @unittest.skipUnless(Path(packaging.INTERPRETER).exists(), "needs a glibc host loader")
+    def test_launcher_runs_payload_directly_without_a_library_path(self):
+        appdir, environment = self.fake_bundle()
+        result = subprocess.run([str(appdir / "AppRun"), "--version", "two words"], text=True, capture_output=True, env=environment, check=True)
+        self.assertEqual(result.stdout, f"library_env=unset\nappdir={appdir}\n--version\ntwo words\n")
+
+    def test_compatibility_loader_accepts_old_loader_options_for_its_payload_only(self):
+        appdir, environment = self.fake_bundle()
+        compatibility = appdir / "usr/lib" / packaging.LOADER
+        payload = appdir / "usr/bin/maple-agent"
+        environment["APPDIR"] = "inherited"
+        result = subprocess.run(
+            [str(compatibility), "--inhibit-cache", "--library-path", f"{appdir}/usr/lib:/usr/lib", str(payload), "--internal-check", "/private/store"],
+            text=True, capture_output=True, env=environment, check=True,
+        )
+        self.assertEqual(result.stdout, "library_env=unset\nappdir=inherited\n--internal-check\n/private/store\n")
+        rejected = subprocess.run([str(compatibility), "/bin/echo", "escaped"], text=True, capture_output=True, env=environment)
+        self.assertEqual(rejected.returncode, 127)
+        self.assertNotIn("escaped", rejected.stdout)
 
     def test_private_outer_umask_produces_public_payload_modes(self):
         previous = os.umask(0o077)

@@ -1232,9 +1232,9 @@ fn installation() -> Result<Installation, String> {
 
 #[cfg(any(target_os = "linux", all(test, unix)))]
 fn linux_installation(executable: &Path, resolved: Result<PathBuf, String>) -> Installation {
-    // AppRun may execute through the bundled loader. Resolve that entrypoint
-    // through the shared launcher, then let the installer validate its bundle
-    // layout, compiled identity and replacement permissions.
+    // Resolve the AppRun entrypoint through the shared launcher, then let the
+    // installer validate its bundle layout, compiled identity and replacement
+    // permissions.
     let Ok(path) = resolved else {
         return Installation::manual(executable);
     };
@@ -1553,26 +1553,26 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let parent = directory.path().canonicalize().unwrap();
         let bundle = linux_bundle_fixture(&parent);
-        let loader = bundle.join("usr/lib/ld-linux-x86-64.so.2");
+        let executable = bundle.join("usr/bin/maple-agent");
         let legacy_appimage = parent.join("old-maple.AppImage");
         std::fs::write(&legacy_appimage, b"legacy AppImage context").unwrap();
-        let automatic = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        let automatic = linux_installation(&executable, Ok(bundle.join("AppRun")));
         assert!(!automatic.manual_only);
         assert_eq!(automatic.installed_path, bundle);
 
         for resolved in [
             Err("invalid launcher context".into()),
-            Ok(loader.clone()),
+            Ok(executable.clone()),
             Ok(legacy_appimage),
         ] {
-            let manual = linux_installation(&loader, resolved);
+            let manual = linux_installation(&executable, resolved);
             assert!(manual.manual_only);
-            assert_eq!(manual.installed_path, loader);
+            assert_eq!(manual.installed_path, executable);
         }
         std::fs::remove_file(bundle.join("bundle.json")).unwrap();
-        let invalid = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        let invalid = linux_installation(&executable, Ok(bundle.join("AppRun")));
         assert!(invalid.manual_only);
-        assert_eq!(invalid.installed_path, loader);
+        assert_eq!(invalid.installed_path, executable);
     }
 
     #[cfg(unix)]
@@ -1587,12 +1587,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let parent = directory.path().canonicalize().unwrap();
         let bundle = linux_bundle_fixture(&parent);
-        let loader = bundle.join("usr/lib/ld-linux-x86-64.so.2");
+        let executable = bundle.join("usr/bin/maple-agent");
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let manual = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        let manual = linux_installation(&executable, Ok(bundle.join("AppRun")));
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(manual.manual_only);
-        assert_eq!(manual.installed_path, loader);
+        assert_eq!(manual.installed_path, executable);
     }
 
     #[cfg(unix)]

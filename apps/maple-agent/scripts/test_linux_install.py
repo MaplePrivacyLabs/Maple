@@ -43,8 +43,9 @@ def bundle_fixture(parent, profile="prod"):
         "AppRun": b'#!/bin/sh\nprintf "%s\\n" "$@"\n',
         "install.sh": b"#!/bin/sh\nexit 0\n",
         "usr/bin/maple-agent": b"\x7fELFfixture-agent",
-        "usr/lib/ld-linux-x86-64.so.2": b"\x7fELFfixture-loader",
-        "usr/lib/libc.so.6": b"\x7fELFfixture-libc",
+        # Bundle format v1 compatibility launcher: an executable shell script.
+        "usr/lib/ld-linux-x86-64.so.2": b"#!/bin/sh\nexit 74\n",
+        "usr/lib/libc.so.6": b"\x7fELFfixture-library",
         "usr/share/maple-agent/install.py": b"# synthetic installer payload\n",
         f"usr/share/icons/hicolor/256x256/apps/{bundle_id}.png": b"fixture-public-icon",
     }
@@ -52,7 +53,7 @@ def bundle_fixture(parent, profile="prod"):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-        path.chmod(0o755 if name in ("AppRun", "install.sh") or data.startswith(b"\x7fELF") else 0o644)
+        path.chmod(0o755 if name in installer.SCRIPT_EXECUTABLES or data.startswith(b"\x7fELF") else 0o644)
     (root / "usr/lib/libc-link.so").symlink_to("libc.so.6")
     for path in (root, *root.rglob("*")):
         if path.is_dir() and not path.is_symlink():

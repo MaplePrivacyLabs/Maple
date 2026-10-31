@@ -155,8 +155,10 @@ else
     [[ "$profile" == prod ]] || bundle_root=maple-agent-dev.app
     app="$temporary/extracted/$bundle_root"
     python3 "$component/scripts/linux-release-bundle.py" audit "$app"
-    "$app/AppRun" --build-info > "$temporary/build-info.json"
+    # The payload uses the host's libraries; verify-linux-bundle-docker.sh runs
+    # AppRun on stock distributions. Here, check identity on the Nix runtime.
+    "$component/scripts/run-linux-payload.sh" "$app/usr/bin/maple-agent" --build-info > "$temporary/build-info.json"
     cmp "$directory/build-info.json" "$temporary/build-info.json"
-    "$app/AppRun" --version
+    "$component/scripts/run-linux-payload.sh" "$app/usr/bin/maple-agent" --version
 fi
 echo "verified ${profile} ${platform} release artifacts"

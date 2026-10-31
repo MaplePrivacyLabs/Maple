@@ -17,10 +17,11 @@ their original source SHA and provenance; they are never relabeled as a newer
 commit. A manual dispatch from `master` forces fresh packages, including when
 the previous run's 30-day artifacts have expired. macOS ARM64 builds are
 Developer ID signed, notarized, and stapled. Linux x86_64 builds are tar bundles
-with a bundled runtime and a normal application directory. CI checks each
-downloaded bundle's command-line startup and detached host lifecycle in an
-Ubuntu 24.04 container with no Nix installation and no network
-access. Each master run completes independently. Windows x64 packages are
+with a normal application directory. Like Zed, the binary is linked against
+glibc 2.31 and uses the host's glibc, desktop libraries and GPU drivers; it
+ships no libraries of its own. CI checks each downloaded bundle's command-line
+startup and detached host lifecycle in an Ubuntu 24.04 container with only the
+standard desktop libraries added, no Nix installation and no network access. Each master run completes independently. Windows x64 packages are
 per-user NSIS installers requiring Windows 10 version 1703 (build 15063) or later. Native Windows ARM64 packages require Windows 11 (build 22000) or later and use the same application version and profile identities, with separate architecture-specific installers and update bundles. The x64 baseline supplies the OS `icuuc.dll`
 imported by GPUI; see Microsoft's [Windows ICU version history](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
 Trusted master
@@ -154,19 +155,21 @@ GNOME Files need not execute it on double-click. There is no need to change file
 associations or script-execution security settings. For a portable launch without
 installing, run `./maple-agent.app/AppRun` from a terminal (Dev:
 `./maple-agent-dev.app/AppRun`). Its `AppRun` entrypoint starts the
-bundled executable and runtime directly, without an AppImage mount or FUSE.
+bundled executable directly with the host's dynamic loader, without an AppImage
+mount or FUSE. The host needs glibc 2.31 or newer, a Vulkan or OpenGL graphics
+driver, and libxkbcommon, libxkbcommon-x11, libX11, libXi, libxcb and ALSA,
+which desktop installations include. On NixOS, use the flake package or nix-ld.
 The host must provide its normal CA certificate trust store for TLS validation;
 existing user certificate-path overrides remain supported. The isolated CI
 container mounts the runner's public `/etc/ssl/certs` read-only and keeps TLS
 validation enabled.
-Compose and dead-key input use the host's `/usr/share/X11/locale` data when
-available; an explicit `XLOCALEDIR` override remains unchanged.
 Initial installation leaves profile, SQL, authentication, and settings data
 untouched. Managed uninstall is not yet provided.
 The final Linux artifact contains exactly that tar archive, `build-info.json`,
 `manifest.json`, and `SHA256SUMS`. The archive has one application root,
-including `bundle.json`, the entrypoint, executable, runtime libraries,
-and installer helpers. Package verification extracts to temporary storage and
+including `bundle.json`, the entrypoint, executable, the bundle format v1
+compatibility launcher at `usr/lib/ld-linux-x86-64.so.2`, and installer
+helpers. Package verification extracts to temporary storage and
 does not install into your application directory.
 
 Native BSDtar creation explicitly disables xattrs, file flags, ACLs and macOS

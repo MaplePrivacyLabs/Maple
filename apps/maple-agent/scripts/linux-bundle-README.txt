@@ -3,6 +3,12 @@ Maple Work for Linux
 
 Install once, then launch from your desktop's application menu.
 
+Requirements: x86_64 Linux with glibc 2.31 or newer (Ubuntu 20.04, Debian 11,
+Fedora 32 or later), a graphics driver with Vulkan or OpenGL support, and the
+standard desktop libraries libxkbcommon, libxkbcommon-x11, libX11, libXi,
+libxcb and ALSA (libasound). Desktop installations include these. Maple Work
+uses your system's own libraries and GPU drivers, like other desktop apps.
+
 1. Extract the entire .tar.gz archive. Do not open AppRun inside Archive Manager
    (File Roller): files inside the archive cannot be launched there.
 2. Open a terminal in the extracted application folder (the folder containing
