@@ -14,13 +14,13 @@ use crate::ui::widgets;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ApiKeysTarget {
     SeePlans,
+    BuyMore,
     Name,
     Create,
     DismissCreated,
     /// Delete (or confirm deleting) the key with this name.
     Delete(String),
     CancelDelete,
-    Credits(super::api_credits::CreditsTarget),
 }
 
 pub(super) struct ApiKeysState {
@@ -34,7 +34,6 @@ pub(super) struct ApiKeysState {
     pub(super) confirm_delete: Option<String>,
     pub(super) deleting: Option<String>,
     pub(super) notice: Option<String>,
-    pub(super) credits: super::api_credits::CreditsState,
 }
 
 impl ApiKeysState {
@@ -43,11 +42,6 @@ impl ApiKeysState {
         application_focus: gpui::FocusHandle,
         cx: &mut Context<SettingsScreen>,
     ) -> Self {
-        let credits = super::api_credits::CreditsState::new(
-            application_vim_enabled,
-            application_focus.clone(),
-            cx,
-        );
         let name = cx.new(move |cx| {
             TextInput::new("Key name, for example “Cursor”", cx)
                 .with_tab_index(15)
@@ -63,7 +57,6 @@ impl ApiKeysState {
             confirm_delete: None,
             deleting: None,
             notice: None,
-            credits,
         }
     }
 }
@@ -71,7 +64,7 @@ impl ApiKeysState {
 impl SettingsScreen {
     /// Whether the plan allows API keys. Unknown while billing loads, so
     /// the list is offered until the status says otherwise.
-    fn api_access(&self) -> Option<bool> {
+    pub(super) fn api_access(&self) -> Option<bool> {
         self.billing
             .status
             .as_ref()
@@ -79,7 +72,6 @@ impl SettingsScreen {
     }
 
     pub(super) fn load_api_keys(&self, cx: &mut Context<Self>) {
-        self.load_credit_balance(cx);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -106,6 +98,7 @@ impl SettingsScreen {
             return vec![SettingsTarget::ApiKeys(ApiKeysTarget::SeePlans)];
         }
         let mut targets = vec![
+            SettingsTarget::ApiKeys(ApiKeysTarget::BuyMore),
             SettingsTarget::ApiKeys(ApiKeysTarget::Name),
             SettingsTarget::ApiKeys(ApiKeysTarget::Create),
         ];
@@ -120,7 +113,6 @@ impl SettingsScreen {
                 targets.push(SettingsTarget::ApiKeys(ApiKeysTarget::CancelDelete));
             }
         }
-        targets.extend(self.credits_targets());
         targets
     }
 
@@ -131,7 +123,9 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match target {
-            ApiKeysTarget::SeePlans => self.select_section(Section::Billing, cx),
+            ApiKeysTarget::SeePlans | ApiKeysTarget::BuyMore => {
+                self.select_section(Section::Billing, cx)
+            }
             ApiKeysTarget::Name => {
                 let handle = self.api_keys.name.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
@@ -148,7 +142,6 @@ impl SettingsScreen {
                 self.reconcile_application_vim_target();
                 cx.notify();
             }
-            ApiKeysTarget::Credits(target) => self.activate_credits_target(target, window, cx),
         }
     }
 
@@ -270,6 +263,8 @@ impl SettingsScreen {
             );
         }
 
+        pane = pane.child(self.render_credits_strip(cx));
+
         pane = pane.child(
             div()
                 .text_sm()
@@ -349,7 +344,30 @@ impl SettingsScreen {
                 );
             }
         }
-        pane.child(self.render_credits(cx))
+        pane
+    }
+
+    fn render_credits_strip(&self, cx: &mut Context<Self>) -> Div {
+        widgets::card_row()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(super::setting_copy(
+                "API credits",
+                &self.billing.credits.balance_label(),
+            ))
+            .child(
+                self.application_target(
+                    || SettingsTarget::ApiKeys(ApiKeysTarget::BuyMore),
+                    widgets::secondary_button("api-keys-buy-more")
+                        .py_1p5()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.select_section(Section::Billing, cx);
+                        }))
+                        .child("Buy more"),
+                ),
+            )
     }
 
     fn render_created_key(&self, created: &MapleApiKeyCreated, cx: &mut Context<Self>) -> Div {

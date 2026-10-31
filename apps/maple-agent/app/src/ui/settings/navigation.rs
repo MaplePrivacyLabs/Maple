@@ -91,6 +91,7 @@ impl SettingsScreen {
         let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
         inputs.extend(self.account.inputs());
         inputs.push(self.api_keys.name.clone());
+        inputs.push(self.billing.credits.custom.clone());
         #[cfg(feature = "proxy")]
         inputs.push(self.local_api.port.clone());
         if let Some(editor) = &self.mcp_editor {
@@ -359,7 +360,9 @@ impl SettingsScreen {
             Some(SettingsTarget::Account(target)) => {
                 self.activate_account_target(target, window, cx)
             }
-            Some(SettingsTarget::Billing(target)) => self.activate_billing_target(target, cx),
+            Some(SettingsTarget::Billing(target)) => {
+                self.activate_billing_target(target, window, cx)
+            }
             Some(SettingsTarget::ApiKeys(target)) => {
                 self.activate_api_keys_target(target, window, cx)
             }

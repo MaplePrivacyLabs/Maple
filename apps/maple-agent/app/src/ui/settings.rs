@@ -433,7 +433,7 @@ impl SettingsScreen {
             section,
             popup: Popup::new(|this| &mut this.popup, cx),
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
-            billing: BillingState::new(),
+            billing: BillingState::new(application_vim_enabled, application_focus.clone(), cx),
             api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
             #[cfg(feature = "proxy")]
             local_api: LocalApiUiState::new(application_vim_enabled, application_focus.clone(), cx),
