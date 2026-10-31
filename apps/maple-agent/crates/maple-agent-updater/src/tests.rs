@@ -85,6 +85,7 @@ fn manifest(version: &str) -> Manifest {
             linux_appimage: None,
             linux_bundle: None,
             windows: None,
+            windows_arm64: None,
         },
     }
 }
@@ -107,6 +108,7 @@ fn linux_manifest(version: &str) -> Manifest {
             linux_appimage: None,
             linux_bundle: Some(linux),
             windows: None,
+            windows_arm64: None,
         },
         ..manifest(version)
     }
@@ -124,6 +126,25 @@ fn windows_manifest(version: &str) -> Manifest {
             linux_appimage: None,
             linux_bundle: None,
             windows: Some(artifact(version, "Maple-Agent-windows-x86_64-setup.exe")),
+            windows_arm64: None,
+        },
+        ..manifest(version)
+    }
+}
+
+fn windows_arm64_manifest(version: &str) -> Manifest {
+    Manifest {
+        format: "maple-agent-update-v4".into(),
+        artifacts: BTreeMap::from([(
+            "windows-aarch64".into(),
+            artifact(version, "Maple-Agent-windows-aarch64.tar.gz"),
+        )]),
+        downloads: Downloads {
+            macos: None,
+            linux_appimage: None,
+            linux_bundle: None,
+            windows: None,
+            windows_arm64: Some(artifact(version, "Maple-Agent-windows-aarch64-setup.exe")),
         },
         ..manifest(version)
     }
@@ -208,10 +229,67 @@ fn static_windows_v3_fixture_uses_the_same_public_test_key() {
     assert!(release.artifact(Target::DarwinAarch64).is_err());
     assert!(release.artifact(Target::LinuxX86_64).is_err());
     assert!(release.artifact(Target::WindowsX86_64).is_ok());
+    assert!(release.artifact(Target::WindowsAarch64).is_err());
 
     for mut value in [manifest("0.0.4"), linux_manifest("0.0.4")] {
         value.downloads.windows = Some(artifact("0.0.4", "Maple-Agent-setup.exe"));
         assert!(verify_envelope(&envelope(&value), &origin(), &[key(7)]).is_err());
+    }
+}
+
+#[test]
+fn static_windows_arm64_v4_fixture_preserves_exact_bytes_and_architecture() {
+    let signed = include_bytes!("../tests/fixtures/signed-windows-arm64-v4-envelope.json");
+    let release = verify_envelope(
+        signed,
+        &origin(),
+        &[include_str!("../tests/fixtures/public-test-key.pub").to_owned()],
+    )
+    .unwrap();
+    assert_eq!(release.manifest, windows_arm64_manifest("0.0.2"));
+    assert_eq!(
+        serde_json::to_vec(&release.manifest).unwrap(),
+        include_bytes!("../tests/fixtures/windows-arm64-v4-manifest.json")
+    );
+    assert_eq!(release.envelope.as_bytes(), signed);
+    assert!(legacy_v1::verify_envelope(signed, &origin(), &[key(7)]).is_err());
+    assert!(release.artifact(Target::WindowsAarch64).is_ok());
+    for target in [
+        Target::DarwinAarch64,
+        Target::LinuxX86_64,
+        Target::WindowsX86_64,
+    ] {
+        assert!(release.artifact(target).is_err());
+    }
+}
+
+#[test]
+fn arm64_download_fields_do_not_expand_any_shipped_manifest_schema() {
+    for manifest in [
+        manifest("0.0.2"),
+        linux_manifest("0.0.2"),
+        windows_manifest("0.0.2"),
+    ] {
+        for forbidden in [
+            serde_json::Value::Null,
+            serde_json::to_value(artifact("0.0.2", "arm64.exe")).unwrap(),
+        ] {
+            let mut value = serde_json::to_value(&manifest).unwrap();
+            value["downloads"]["windows-arm64"] = forbidden;
+            assert!(verify_envelope(&envelope_value(&value), &origin(), &[key(7)]).is_err());
+        }
+    }
+    let arm64 = windows_arm64_manifest("0.0.2");
+    for forbidden in [
+        "macos",
+        "linux-appimage",
+        "linux-bundle",
+        "windows",
+        "unknown",
+    ] {
+        let mut value = serde_json::to_value(&arm64).unwrap();
+        value["downloads"][forbidden] = serde_json::Value::Null;
+        assert!(verify_envelope(&envelope_value(&value), &origin(), &[key(7)]).is_err());
     }
 }
 
@@ -370,6 +448,30 @@ fn target_metadata_paths_keep_legacy_macos_and_separate_platforms() {
         Target::WindowsX86_64.manifest_path("0.0.4"),
         "/agent/stable/releases/0.0.4/windows-manifest.json"
     );
+    assert_eq!(
+        Target::WindowsAarch64.feed_path(),
+        "/agent/stable/windows-arm64/latest.json"
+    );
+    assert_eq!(
+        Target::WindowsAarch64.manifest_path("0.0.4"),
+        "/agent/stable/releases/0.0.4/windows-arm64-manifest.json"
+    );
+    for (os, arch, target) in [
+        ("macos", "aarch64", Target::DarwinAarch64),
+        ("linux", "x86_64", Target::LinuxX86_64),
+        ("windows", "x86_64", Target::WindowsX86_64),
+        ("windows", "aarch64", Target::WindowsAarch64),
+    ] {
+        assert_eq!(Target::for_platform(os, arch), Some(target));
+    }
+    for (os, arch) in [
+        ("windows", "x86"),
+        ("macos", "x86_64"),
+        ("linux", "aarch64"),
+        ("freebsd", "x86_64"),
+    ] {
+        assert_eq!(Target::for_platform(os, arch), None);
+    }
 }
 
 #[test]
@@ -552,7 +654,7 @@ impl Fixture {
                 std::fs::write(&path, b"old installed executable").unwrap();
                 path
             }
-            Target::WindowsX86_64 => {
+            Target::WindowsX86_64 | Target::WindowsAarch64 => {
                 let path = temp.path().join("Maple Agent");
                 std::fs::create_dir_all(&path).unwrap();
                 std::fs::write(path.join("maple-agent.exe"), b"old installed executable").unwrap();
@@ -875,6 +977,12 @@ async fn wrong_target_feed_cannot_advance_rollback_memory_or_start_a_download() 
         (Target::WindowsX86_64, linux_manifest("0.0.2")),
         (Target::DarwinAarch64, windows_manifest("0.0.2")),
         (Target::LinuxX86_64, windows_manifest("0.0.2")),
+        (Target::WindowsX86_64, windows_arm64_manifest("0.0.2")),
+        (Target::WindowsAarch64, windows_manifest("0.0.2")),
+        (Target::WindowsAarch64, manifest("0.0.2")),
+        (Target::WindowsAarch64, linux_manifest("0.0.2")),
+        (Target::DarwinAarch64, windows_arm64_manifest("0.0.2")),
+        (Target::LinuxX86_64, windows_arm64_manifest("0.0.2")),
     ] {
         let signed = envelope(&value);
         let server = Fixture::new(vec![ok(&signed)]).await;
@@ -905,6 +1013,11 @@ async fn platform_download_restore_revalidate_and_commit_use_their_exact_feed() 
             Target::WindowsX86_64,
             windows_manifest("0.0.2"),
             "Maple-Agent-windows-x86_64.tar.gz",
+        ),
+        (
+            Target::WindowsAarch64,
+            windows_arm64_manifest("0.0.2"),
+            "Maple-Agent-windows-aarch64.tar.gz",
         ),
     ] {
         let signed = envelope(&value);

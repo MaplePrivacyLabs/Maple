@@ -34,19 +34,22 @@ successful packaged update.
 Only GET and HEAD are supported. Metadata and errors use `no-store` at both
 browser and CDN layers. No origin fetch is made on failure.
 
-| Path                                             | Behavior                                                                         |
-| ------------------------------------------------ | -------------------------------------------------------------------------------- |
-| `/agent/stable/latest.json`                      | Exact v1 signed envelope from `stable/latest.json`                               |
-| `/agent/stable/linux/latest.json`                | Exact Linux v2 signed envelope from `stable/linux/latest.json`                   |
-| `/agent/stable/windows/latest.json`              | Exact Windows v3 signed envelope from `stable/windows/latest.json`               |
-| `/agent/stable/releases/V/manifest.json`         | Immutable v1 signed envelope                                                     |
-| `/agent/stable/releases/V/linux-manifest.json`   | Immutable Linux v2 signed envelope                                               |
-| `/agent/stable/releases/V/windows-manifest.json` | Immutable Windows v3 signed envelope                                             |
-| `/agent/stable/releases/V/FILE`                  | Signed, enumerated artifact; GET/HEAD, single byte ranges, ETag, immutable cache |
-| `/download/agent/stable/macos`                   | Uncached 302 to the current DMG                                                  |
-| `/download/agent/stable/linux-appimage`          | Uncached 302 only when Linux is present                                          |
-| `/download/agent/stable/linux`                   | Uncached 302 to the current v2 Linux tar bundle                                  |
-| `/download/agent/stable/windows`                 | Uncached 302 to the current v3 Windows installer                                 |
+| Path                                                   | Behavior                                                                         |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| `/agent/stable/latest.json`                            | Exact v1 signed envelope from `stable/latest.json`                               |
+| `/agent/stable/linux/latest.json`                      | Exact Linux v2 signed envelope from `stable/linux/latest.json`                   |
+| `/agent/stable/windows/latest.json`                    | Exact Windows x64 v3 signed envelope from `stable/windows/latest.json`           |
+| `/agent/stable/windows-arm64/latest.json`              | Exact Windows ARM64 v4 signed envelope from `stable/windows-arm64/latest.json`   |
+| `/agent/stable/releases/V/manifest.json`               | Immutable v1 signed envelope                                                     |
+| `/agent/stable/releases/V/linux-manifest.json`         | Immutable Linux v2 signed envelope                                               |
+| `/agent/stable/releases/V/windows-manifest.json`       | Immutable Windows x64 v3 signed envelope                                         |
+| `/agent/stable/releases/V/windows-arm64-manifest.json` | Immutable Windows ARM64 v4 signed envelope                                       |
+| `/agent/stable/releases/V/FILE`                        | Signed, enumerated artifact; GET/HEAD, single byte ranges, ETag, immutable cache |
+| `/download/agent/stable/macos`                         | Uncached 302 to the current DMG                                                  |
+| `/download/agent/stable/linux-appimage`                | Uncached 302 only when Linux is present                                          |
+| `/download/agent/stable/linux`                         | Uncached 302 to the current v2 Linux tar bundle                                  |
+| `/download/agent/stable/windows`                       | Uncached 302 to the current v3 Windows x64 installer                             |
+| `/download/agent/stable/windows-arm64`                 | Uncached 302 to the current v4 Windows ARM64 installer                           |
 
 Missing objects/targets return 404. Malformed metadata, mismatched stored sizes
 and bucket failures return bounded 503 responses. The Worker checks schema and
@@ -83,12 +86,21 @@ Windows latest and immutable `windows-manifest.json` require v3. Windows fields
 are rejected by the historical v1/v2 schemas, including null fields, and a v3
 document cannot contain macOS, Linux or AppImage entries.
 
+Windows ARM64 has a separate feed with `format: maple-agent-update-v4`,
+`artifacts` containing only `windows-aarch64` (the `.tar.gz` updater bundle),
+and `downloads` containing only `windows-arm64` (the `.exe` installer).
+Its exact fields, bounds and signing-comment contract match the other formats.
+ARM64 latest and immutable `windows-arm64-manifest.json` require v4; x64 routes
+continue to require v3. Neither architecture's manifest accepts the other's
+fields, including explicit null entries. The existing v1/v2/v3 documents and
+signed bytes remain valid without reinterpretation.
+
 Artifact lookup reads the requested version's fixed `manifest.json` first and
 serves an exact enumerated match without consulting Linux metadata. A missing
 or valid nonmatching v1 manifest permits an exact match from that version's
-`linux-manifest.json`, then `windows-manifest.json` when neither earlier
-manifest enumerates the path. An earlier exact match returns without consulting
-later platform manifests. Every consulted manifest must have its required format
+`linux-manifest.json`, then `windows-manifest.json`, then
+`windows-arm64-manifest.json` when no earlier manifest enumerates the path.
+An earlier exact match returns without consulting later platform manifests. Every consulted manifest must have its required format
 and requested version; corrupt metadata returns 503 without fallback. No latest
 pointer authorizes a release artifact, and no unsigned auxiliary object is
 exposed by any feed.

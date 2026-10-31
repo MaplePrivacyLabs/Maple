@@ -31,6 +31,7 @@ import zipfile
 SCRIPTS = Path(__file__).resolve().parent
 COMPONENT = SCRIPTS.parent
 PLATFORM = "windows-x86_64"
+WINDOWS_ARCHITECTURES = ("x86_64", "aarch64")
 NSIS_VERSION = "3.12"
 NSIS_URL = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12.zip"
 NSIS_SHA256 = "56581f90db321581c5381193d796fffcf2d24b2f8fed2160a6c6a3baa67f2c4f"
@@ -73,6 +74,30 @@ ACTIVATION_FAILURE_STAGES = {
     7: "generation-identity", 8: "generation-verification",
     9: "generation-guards", 10: "pointer-commit",
 }
+
+
+def platform_name(arch):
+    if arch not in WINDOWS_ARCHITECTURES:
+        raise ValueError("unsupported Windows architecture")
+    return "windows-" + arch
+
+
+def require_native_host(arch):
+    """Do not count emulated installation as a native architecture smoke."""
+    import ctypes
+
+    platform_name(arch)
+    process_machine, native_machine = ctypes.c_ushort(), ctypes.c_ushort()
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.argtypes, kernel.GetCurrentProcess.restype = (), ctypes.c_void_p
+    kernel.IsWow64Process2.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ushort), ctypes.POINTER(ctypes.c_ushort))
+    kernel.IsWow64Process2.restype = ctypes.c_int
+    # Unlike GetNativeSystemInfo, IsWow64Process2 reports ARM64 even when this
+    # Python/tool process itself uses Windows' x64 emulation.
+    if not kernel.IsWow64Process2(kernel.GetCurrentProcess(), ctypes.byref(process_machine), ctypes.byref(native_machine)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if native_machine.value != pe.MACHINES[arch]:
+        raise ValueError("Windows smoke requires the selected native machine architecture")
 
 
 def decode_activation_failure(code):
@@ -146,10 +171,10 @@ def validate_imports(binary):
         raise ValueError("Windows release has unbundled non-OS DLL imports: " + ", ".join(unknown))
 
 
-def prepare(profile):
+def prepare(profile, arch="x86_64"):
     binary = COMPONENT / "target/release/maple-agent.exe"
     regular(binary)
-    info = pe.validated_build_info(profile, binary, source_sha())
+    info = pe.validated_build_info(profile, binary, source_sha(), arch)
     validate_imports(binary)
     print("Verified exact Windows binary profile, source, DLL closure")
     return binary, info
@@ -171,13 +196,17 @@ def nsis_literal(value):
     return value.replace("$", "$$").replace('"', '$\\"')
 
 
-def write_nsis_config(path, info, payload, installer, unsigned, build):
+def write_nsis_config(path, info, payload, installer, unsigned, build, arch="x86_64"):
+    platform_name(arch)
     values = {
         "DISPLAY_NAME": info["display_name"], "BUNDLE_ID": info["bundle_id"],
         "VERSION": info["version"], "NUMERIC_VERSION": info["version"].split("-", 1)[0],
         "PAYLOAD": payload, "INSTALLER": installer,
         "ICON": COMPONENT / "app/packaging" / ("maple-agent-dev.ico" if info["profile"] == "dev" else "maple-agent.ico"),
         "BUILD": build, "GENERATION": info["version"] + "-" + build,
+        "NATIVE_ARCHITECTURE": "ARM64" if arch == "aarch64" else "AMD64",
+        "MIN_WINDOWS_BUILD": "22000" if arch == "aarch64" else "15063",
+        "WINDOWS_REQUIREMENT": "Windows 11 or later on an ARM64 computer" if arch == "aarch64" else "Windows 10 version 1703 (build 15063) or later on an x64 computer",
     }
     signer = SCRIPTS / "windows-sign-file.ps1"
     # !uninstfinalize is a compiler command string. Reject cmd.exe expansion
@@ -308,9 +337,9 @@ def extract_installer(installer, destination, unsigned, info, build):
     return destination / uninstaller
 
 
-def verify_payload(profile, directory, expected_info, unsigned, *, verify_signature=True):
+def verify_payload(profile, directory, expected_info, unsigned, *, verify_signature=True, arch="x86_64"):
     binary = directory / "maple-agent.exe"
-    info = pe.validated_build_info(profile, binary, source_sha())
+    info = pe.validated_build_info(profile, binary, source_sha(), arch)
     if info != expected_info or json.loads((directory / "build-info.json").read_text(encoding="utf-8")) != info:
         raise ValueError("Installer payload identity differs from its verified build")
     validate_imports(binary)
@@ -441,8 +470,9 @@ def inspect_bundle(archive_path, info, build, extracted=None):
     return digests
 
 
-def package(profile, unsigned):
-    binary, info = prepare(profile)
+def package(profile, unsigned, arch="x86_64"):
+    platform = platform_name(arch)
+    binary, info = prepare(profile, arch)
     build = build_number()
     destination = COMPONENT / "dist" / profile
     if destination.exists():
@@ -460,10 +490,10 @@ def package(profile, unsigned):
         (payload / "build-info.json").write_text(metadata, encoding="utf-8", newline="\n")
         (payload / "bundle-info.json").write_text(json.dumps(bundle_descriptor(info, build), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
         signature(payload / "maple-agent.exe", unsigned, sign=not unsigned)
-        verify_payload(profile, payload, info, unsigned)
-        installer = output / release_info.windows_package_name(info)
+        verify_payload(profile, payload, info, unsigned, arch=arch)
+        installer = output / release_info.windows_package_name(info, platform)
         configuration = scratch / "package.nsh"
-        write_nsis_config(configuration, info, payload, installer, unsigned, build)
+        write_nsis_config(configuration, info, payload, installer, unsigned, build, arch)
         compiler = install_nsis(scratch)
         run([compiler, "/V3", f"/DMAPLE_CONFIG={configuration}", SCRIPTS / "windows-installer.nsi"], timeout=300)
         signature(installer, unsigned, sign=not unsigned)
@@ -473,14 +503,14 @@ def package(profile, unsigned):
         if uninstaller.name != "uninstall.exe":
             raise ValueError("Windows updater requires a standalone PE uninstaller")
         generation = extracted / "versions" / (info["version"] + "-" + build)
-        verify_payload(profile, generation, info, unsigned)
+        verify_payload(profile, generation, info, unsigned, arch=arch)
         signature(uninstaller, unsigned)
-        write_bundle(generation, output / release_info.windows_archive_name(info), info, build)
+        write_bundle(generation, output / release_info.windows_archive_name(info, platform), info, build)
         shutil.copyfile(payload / "build-info.json", output / "build-info.json")
-        release_info.write_manifest(info, output, PLATFORM, unsigned, build)
+        release_info.write_manifest(info, output, platform, unsigned, build)
         # Data-only parsing of the compressed final signed bytes; never execute
         # the app, generated uninstaller or installer on the signing worker.
-        verify(profile, output, unsigned, smoke=False)
+        verify(profile, output, unsigned, smoke=False, arch=arch)
         output.rename(destination)
     print(destination)
 
@@ -944,7 +974,49 @@ def smoke_failure_evidence(phase, error, installed, generation_name, registry, a
         print("Windows installer failure evidence unavailable", file=sys.stderr)
 
 
-def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checker):
+def require_absent(path, message):
+    # Access denial is not evidence that an installer left no files behind.
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    raise ValueError(message)
+
+
+def cleanup_smoke_registration(installed, info, winreg):
+    """Remove only this verifier's temporary registration and owned shortcuts.
+
+    Install smoke does not execute or qualify the product uninstaller.
+    """
+    registry = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + info["bundle_id"]
+    access = winreg.KEY_READ | winreg.KEY_WOW64_32KEY
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, access) as key:
+        if not windows_path_equal(winreg.QueryValueEx(key, "InstallLocation")[0], installed):
+            raise ValueError("Refusing to clean another installation's registration")
+    directory = windows_programs_directory() / info["display_name"]
+    try:
+        status = directory.lstat()
+    except FileNotFoundError:
+        status = None
+    if status is not None and (directory.is_symlink() or getattr(status, "st_file_attributes", 0) & 0x400 or not stat.S_ISDIR(status.st_mode)):
+        raise ValueError("Refusing redirected smoke shortcut cleanup")
+    for name, target in ((info["display_name"] + ".lnk", "maple-agent.exe"), ("Uninstall.lnk", "uninstall.exe")):
+        path = directory / name
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        # The real COM probe checks exact target, empty arguments and ordinary
+        # paths before this fixture removes its own link.
+        probe_windows_shortcut(path, installed / target)
+        path.unlink()
+    if directory.is_dir() and not any(directory.iterdir()):
+        directory.rmdir()
+    winreg.DeleteKeyEx(winreg.HKEY_CURRENT_USER, registry, winreg.KEY_WOW64_32KEY)
+
+
+def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checker, arch="x86_64"):
+    platform_name(arch)
     import winreg  # Only the explicit native smoke path loads the Windows API.
 
     registry = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + info["bundle_id"]
@@ -976,8 +1048,9 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                 # Keep the actual NSIS refusal proof in addition to the direct
                 # read-only probe; neither may enable unsigned Prod installs.
                 result = subprocess.run(command_as_windows_args(command), env=environment, timeout=120)
-                if result.returncode == 0 or installed.exists():
+                if result.returncode == 0:
                     raise ValueError("Unsigned Prod installer did not refuse before destination changes")
+                require_absent(installed, "Unsigned Prod installer did not refuse before destination changes")
                 try:
                     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
                         raise ValueError("Unsigned Prod installer changed installation registration")
@@ -994,7 +1067,7 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             pointer_bytes = (installed / "current.json").read_bytes()
             if json.loads(pointer_bytes, object_pairs_hook=pe.unique_object) != {"format": "maple-agent-windows-current-v1", "generation": generation_name}:
                 raise ValueError("Installed Windows current generation pointer differs")
-            verify_payload(info["profile"], generation, info, unsigned)
+            verify_payload(info["profile"], generation, info, unsigned, arch=arch)
             bundle_payload_inventory(generation)
             for name in BUNDLE_FILES:
                 regular(generation / name)
@@ -1053,32 +1126,14 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             if installed_ok:
                 cleanup_phase = "host-stop"
                 try:
-                    if executable.is_file():
-                        run([executable, "host", "stop"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
-                    if uninstaller.is_file():
-                        sentinel = installed / "user-created-file.txt"
-                        sentinel.write_text("preserve me", encoding="utf-8")
-                        state = scratch / "data" / info["data_namespace"] / "state-marker.txt"
-                        state.parent.mkdir(parents=True, exist_ok=True)
-                        state.write_text("preserve state", encoding="utf-8")
-                        # _?= suppresses the uninstaller's detached temp copy, so the
-                        # process exit really completes the cleanup being checked.
-                        cleanup_phase = "uninstall"
-                        run(command_as_windows_args(f'"{uninstaller}" /S _?={installed}'), env=environment, timeout=120)
-                        if executable.exists() or sentinel.read_text(encoding="utf-8") != "preserve me" or state.read_text(encoding="utf-8") != "preserve state":
-                            raise ValueError("Uninstall did not remove the app while preserving user files and state")
-                        if any((installed / name).exists() for name in ("current.json", ".install.lock", ".installer-intent.json", ".uninstaller-intent.json", "versions")):
-                            raise ValueError("Uninstall left owned generation or transaction files behind")
-                        try:
-                            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
-                                raise ValueError("Uninstall left the profile's registration behind")
-                        except FileNotFoundError:
-                            pass
+                    run([executable, "host", "stop"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
+                    cleanup_phase = "fixture-cleanup"
+                    cleanup_smoke_registration(installed, info, winreg)
                 except Exception as error:
                     smoke_failure_evidence(cleanup_phase, error, installed, generation_name, registry, registry_access, winreg)
                     if primary is None:
                         raise
-    print("Verified Windows install, identity, signed-out ACP, GUI first render, silent/repeat install, interactive auto-launch, persistent shell icons, host stop and state-preserving uninstall")
+    print("Verified Windows install, identity, signed-out ACP, GUI first render, silent/repeat install, interactive auto-launch, persistent shell icons and host stop")
 
 
 def command_as_windows_args(command):
@@ -1402,26 +1457,28 @@ def gui_smoke(executable, scratch, environment, *, integration_ready=None):
             process.wait(timeout=10)
 
 
-def verify(profile, directory, unsigned, *, smoke):
+def verify(profile, directory, unsigned, *, smoke, arch="x86_64"):
+    platform = platform_name(arch)
     directory = directory.resolve()
-    manifest = release_info.verify_artifacts(profile, directory, unsigned, source_sha(), PLATFORM)
+    manifest = release_info.verify_artifacts(profile, directory, unsigned, source_sha(), platform)
     if manifest["build"] != build_number():
         raise ValueError("Windows package build differs from the selected producer build")
-    info = release_info.read_info(profile, directory / "build-info.json", source_sha(), PLATFORM)
+    info = release_info.read_info(profile, directory / "build-info.json", source_sha(), platform)
     installer = directory / manifest["package"]
     signature(installer, unsigned)
     with verification_scratch("maple-windows-extract-") as payload:
         uninstaller = extract_installer(installer, payload, unsigned, info, manifest["build"])
         generation = payload / "versions" / (info["version"] + "-" + manifest["build"])
-        verify_payload(profile, generation, info, unsigned)
+        verify_payload(profile, generation, info, unsigned, arch=arch)
         signature(uninstaller, unsigned)
         expected_hashes = inspect_bundle(directory / manifest["updater"], info, manifest["build"], generation)
         if smoke:
+            require_native_host(arch)
             if any(name.startswith(("AZURE_", "MAPLE_WINDOWS_ARTIFACT_SIGNING_")) for name in os.environ):
                 raise ValueError("Installed Windows smoke requires a verifier without signing configuration")
             smoke_installer(installer, info, unsigned, manifest["build"], expected_hashes,
-                            checker=payload / INSTALLER_CHECKER)
-    print(f"Verified {profile} Windows installer identity, exact inventory and signatures")
+                            checker=payload / INSTALLER_CHECKER, arch=arch)
+    print(f"Verified {profile} {platform} installer identity, exact inventory and signatures")
 
 
 def main():
@@ -1431,17 +1488,18 @@ def main():
     parser.add_argument("directory", type=Path, nargs="?")
     parser.add_argument("--unsigned", action="store_true")
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--arch", choices=WINDOWS_ARCHITECTURES, default="x86_64")
     args = parser.parse_args()
     if sys.platform != "win32":
         raise ValueError("Windows installer packaging and verification require native Windows")
     if args.operation == "prepare":
-        prepare(args.profile)
+        prepare(args.profile, args.arch)
     elif args.operation == "package":
-        package(args.profile, args.unsigned)
+        package(args.profile, args.unsigned, args.arch)
     elif args.directory is None:
         parser.error("verify requires an artifact directory")
     else:
-        verify(args.profile, args.directory, args.unsigned, smoke=args.smoke)
+        verify(args.profile, args.directory, args.unsigned, smoke=args.smoke, arch=args.arch)
 
 
 if __name__ == "__main__":

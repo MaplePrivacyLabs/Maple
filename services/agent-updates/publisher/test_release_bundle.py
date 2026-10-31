@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from release_helpers import bundle as bundle_module
 from release_helpers.bundle import BundleVerifier, NAMES, PHASES
-from release_helpers.context import OperatorError, TARGETS, sha
+from release_helpers.context import OperatorError, TARGETS, PLATFORMS, sha
 import test_publisher as publisher_fixtures
 from test_publisher import FakeStore, publisher
 
@@ -126,7 +126,7 @@ class BundleVerifierTests(unittest.TestCase):
         manifest = publications[0]["manifest"]
         identity = {name: manifest[name] for name in ("version", "build", "source_sha", "pub_date")}
         identity.update(run_id=ctx.producer_run, run_attempt=ctx.producer_attempt)
-        artifact_names = {platform: f"maple-agent-prod-{arch}-{ctx.producer_run}" for platform, arch in TARGETS.items()}
+        artifact_names = {platform: f"maple-agent-prod-{TARGETS[platform]}-{ctx.producer_run}" for platform in PLATFORMS}
         trust = {name: identity[name] for name in ("run_id", "run_attempt", "source_sha", "build", "pub_date")}
         trust["artifacts"] = artifact_names
         (bundle / "trust.json").write_bytes(publisher.encode_json(trust))
@@ -134,7 +134,7 @@ class BundleVerifierTests(unittest.TestCase):
         fixtures.index_metadata(bundle)
         selected = dict(ctx.publication, payload_source=ctx.source, producer_run=ctx.producer_run,
                         producer_attempt=ctx.producer_attempt, version=ctx.version)
-        ctx.bindings = {"schema": "agent-release-bindings-v1", "producer_identity": identity,
+        ctx.bindings = {"schema": "agent-release-bindings-v1", "producer_identity": identity, "platforms": list(PLATFORMS),
                         "publication_identity": ctx.publication, "public_key": str(key),
                         "previous": {"version": old_version},
                         "artifacts": {platform: {"id": index + 1, "name": name, "size": index + 10,

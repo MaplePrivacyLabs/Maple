@@ -3,8 +3,8 @@
 For routine operator releases, use the checked-in
 [reusable release CLI](release_helpers/README.md). Release identities, artifact
 digests and private operator policy are hash-bound data; do not copy these
-helpers or edit executable constants for each version. The existing publisher
-workflow and its separate protected approvals remain unchanged.
+helpers or edit executable constants for each version. The publisher retains
+its existing separate protected approvals.
 
 This tooling publishes the independent Agent feed. It does not change Research,
 create Cloudflare resources, generate keys, create GitHub releases or execute
@@ -23,7 +23,7 @@ are required; the exact item-ID inputs are listed in the [service setup](../READ
 The public key must already be pinned both in the selected build's source profile
 and in the publisher's trusted source profile. An empty key list blocks publication.
 
-Normal publication defaults to macOS, Linux and Windows at the same version,
+Normal publication defaults to macOS, Linux, Windows x64 and Windows ARM64 at the same version,
 build and source. Omit a platform only explicitly for a historical producer
 that did not build it. Windows uses the same production setup, protected
 `updates-production` stages and exact-package verification as the other platforms;
@@ -31,11 +31,11 @@ there is no separate Windows activation variable or approval path.
 
 ```sh
 publisher=services/agent-updates/publisher/publisher.py
-python3 "$publisher" trust --run-id BUILD_RUN_ID --linux --windows --output trust.json
-# All three platform packages come from this one verified producer run.
+python3 "$publisher" trust --run-id BUILD_RUN_ID --linux --windows --windows-arm64 --output trust.json
+# All four platform packages come from this one verified producer run.
 python3 "$publisher" prepare --run-id BUILD_RUN_ID --version 0.0.12 \
   --build BUILD_RUN_NUMBER --macos macos-artifacts --linux linux-artifacts \
-  --windows windows-artifacts --notes-file notes.txt \
+  --windows windows-artifacts --windows-arm64 windows-arm64-artifacts --notes-file notes.txt \
   --public-key public-key.pub --output bundle
 python3 "$publisher" reserve --bundle bundle --public-key bundle/public-key.pub \
   --endpoint https://ACCOUNT.r2.cloudflarestorage.com --bucket AGENT_BUCKET
@@ -47,8 +47,8 @@ python3 "$publisher" publish --bundle bundle --public-key bundle/public-key.pub 
 ```
 
 The low-level CLI selects platform packages explicitly with `--linux` and
-`--windows`, retaining historical bundle preparation. The normal workflow
-supplies both. All included packages must come from that same selected producer
+`--windows` and `--windows-arm64`, retaining historical bundle preparation. The normal workflow
+supplies all three. All included packages must come from that same selected producer
 run, with the same source, version and build.
 
 `trust` returns the source SHA, selected artifact names, exact run attempt,
@@ -79,6 +79,11 @@ Links, extensions, auxiliary entries, malformed end markers and trailing content
 are rejected without extracting or executing downloaded files. The generation
 archive contains the signed application executable and build metadata; the
 stable launcher and NSIS uninstaller remain outside each generation.
+ARM64 independently requires `Build Windows ARM64 binary (prod)`,
+`Signed Windows ARM64 (prod)` and `Verify downloaded Windows ARM64 (prod)`.
+Its five-file artifact uses the `windows-aarch64` package identity, with
+independent final-file attestations. An x64 job or artifact cannot substitute
+for any member of that chain.
 
 The manifest build number is the selected build run's `run_number`, matching the
 packaging workflow's `CFBundleVersion` input and Linux `bundle.json` descriptor.
@@ -110,6 +115,16 @@ Windows feed must be pinned in both selected-source and trusted-publisher
 profiles. Version, build, source, date and notes must agree with all included
 documents. macOS v1 and Linux v2 retain their existing wire shapes.
 
+Native Windows ARM64 uses strict format `maple-agent-update-v4` in
+`windows-arm64-manifest.json`: only `artifacts.windows-aarch64` is the
+native generation archive, and only `downloads.windows-arm64` is its setup.
+`--windows-arm64` writes that document, the separate `windows-arm64-envelope.json`
+and exactly three `windows-arm64-` audit sidecars. It requires
+`windows_arm64_update_feed_url` to pin
+`https://updates.maple.ai/agent/stable/windows-arm64/latest.json` in both source
+and publisher profiles. The existing Windows x64 v3 feed remains unchanged;
+none of the v1/v2/v3 documents accepts ARM64 fields, including explicit nulls.
+
 The canonical compiled feeds use `https://updates.maple.ai`; both source and
 trusted-publisher profiles must pin those exact URLs. Packages built before the
 hostname change keep checking `updates.trymaple.ai`, so retain delivery there.
@@ -127,7 +142,8 @@ reservation receipt. When Linux is included, it separately reserves
 receipt. Linux payload hashes are inside the exact reserved Linux document; its
 sidecars are inside the reserved metadata inventory. Windows equivalently reserves
 `publication-windows-manifest.json` and binds `windows_manifest_sha256` in the
-receipt. All selected bytes are
+receipt. ARM64 separately reserves `publication-windows-arm64-manifest.json`
+and binds `windows_arm64_manifest_sha256`. All selected bytes are
 reserved before signing. It recovers each existing complete signed manifest into
 the bundle, preserving every envelope on a retry. `sign` requires the reservation
 receipt, signs the exact bytes with prehashed minisign and the exact trusted
@@ -172,6 +188,14 @@ reserved and signed bytes. A concurrent Windows pointer change blocks that
 promotion and remains untouched. Publications without Windows never read or
 change its pointer.
 
+ARM64 similarly uses immutable `stable/releases/V/windows-arm64-manifest.json`
+and pointer `stable/windows-arm64/latest.json`, with download alias
+`/download/agent/stable/windows-arm64`. Each architecture has its own signed
+envelope and opaque ETag. A first ARM64 publication can create its absent pointer
+without changing or reinterpreting the x64 predecessor. All four selected feeds
+are snapshotted before any upload or promotion; an interrupted ARM64 promotion
+can resume only from identical reserved bytes.
+
 The bundle contains raw, provenance-checked build-info, package manifest,
 SHA256SUMS and macOS notarization logs under `metadata/`, prefixed by platform,
 plus the stable run/source/artifact identity and attestation policy in
@@ -180,8 +204,8 @@ it is omitted from durable metadata so a successful verifier-only rerun can reus
 the exact release. A finite filename allowlist and a 4 MiB limit per file
 bound this audit inventory. Reservation, signing and publication require exactly
 the five macOS sidecars and provenance, plus the three Linux sidecars when the
-separate Linux document is included and three Windows sidecars when its document
-is included; a missing, empty, partial or extra inventory is rejected. The exact
+separate Linux document is included and three sidecars per included Windows
+architecture; a missing, empty, partial or extra inventory is rejected. The exact
 bundle file inventories, including payloads, metadata, manifests and key, are:
 
 | Included platforms | Prepared | Reserved | Signed |
@@ -189,7 +213,8 @@ bundle file inventories, including payloads, metadata, manifests and key, are:
 | macOS | 12 | 13 | 14 |
 | macOS + Linux | 17 | 18 | 20 |
 | macOS + Windows | 18 | 19 | 21 |
-| macOS + Linux + Windows | 23 | 24 | 27 |
+| macOS + Linux + Windows x64 | 23 | 24 | 27 |
+| macOS + Linux + Windows x64 + Windows ARM64 | 29 | 30 | 34 |
 
 These
 objects are stored immutably under

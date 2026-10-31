@@ -150,6 +150,84 @@ test("Windows routes distinguish v3 metadata, NSIS redirects and update bundles"
   }
 });
 
+test("ARM64 requests use existing Windows ledger categories without retaining architecture-specific paths", async () => {
+  const prefix = "/agent/stable/releases/0.0.16/";
+  const stem = "maple-agent-prod-0.0.16-abcdef0-windows-aarch64";
+  for (const [path, artifact, kind, version, response] of [
+    [
+      prefix + stem + ".tar.gz",
+      "windows-bundle",
+      "artifact",
+      "0.0.16",
+      new Response("payload"),
+    ],
+    [
+      prefix + stem + "-setup.exe",
+      "windows-installer",
+      "artifact",
+      "0.0.16",
+      new Response("payload"),
+    ],
+    [
+      "/agent/stable/windows-arm64/latest.json",
+      "latest",
+      "metadata",
+      null,
+      new Response("unparsed"),
+    ],
+    [
+      prefix + "windows-arm64-manifest.json",
+      "manifest",
+      "metadata",
+      "0.0.16",
+      new Response("unparsed"),
+    ],
+    [
+      "/download/agent/stable/windows-arm64",
+      "windows-installer",
+      "alias",
+      "0.0.16",
+      new Response(null, {
+        status: 302,
+        headers: { location: prefix + stem + "-setup.exe" },
+      }),
+    ],
+  ] as const) {
+    const observation = capture(path, response);
+    await observation.done();
+    expect(observation.events).toHaveLength(1);
+    expect(observation.events[0]).toMatchObject({
+      product: "agent",
+      platform: "windows",
+      artifact,
+      kind,
+      version,
+    });
+    expect(isDownloadEvent(observation.events[0])).toBe(true);
+    expect(JSON.stringify(observation.events[0])).not.toContain("aarch64");
+    expect(observation.response.bodyUsed).toBe(false);
+  }
+  const { sqlite, db } = await database();
+  try {
+    const observation = capture(prefix + stem + ".tar.gz");
+    await observation.done();
+    const item = message(observation.events[0]);
+    await consumeEvents({ messages: [item] }, { DOWNLOAD_DB: db });
+    expect(item).toMatchObject({ acks: 1, retries: 0 });
+    expect(
+      sqlite
+        .query("SELECT platform, artifact, version FROM download_events")
+        .get(),
+    ).toEqual({
+      platform: "windows",
+      artifact: "windows-bundle",
+      version: "0.0.16",
+    });
+  } finally {
+    sqlite.close();
+  }
+});
+
 test("captures original UTC timestamp and random observation ID without reading/replacing bytes or headers", async () => {
   const bytes = new Uint8Array([0, 255, 1, 128]);
   const response = new Response(bytes, {
@@ -405,6 +483,13 @@ test("metadata capture never parses or rewrites bodies and needs no version asse
     ["/agent/stable/latest.json", "agent", "latest", null, "macos"],
     ["/agent/stable/linux/latest.json", "agent", "latest", null, "linux"],
     ["/agent/stable/windows/latest.json", "agent", "latest", null, "windows"],
+    [
+      "/agent/stable/windows-arm64/latest.json",
+      "agent",
+      "latest",
+      null,
+      "windows",
+    ],
     [
       "/agent/stable/releases/0.0.9/manifest.json",
       "agent",

@@ -3,7 +3,8 @@
 Packaged Prod builds use the Agent-only signed update service at
 `https://updates.maple.ai/agent/stable/latest.json` on macOS and
 `https://updates.maple.ai/agent/stable/linux/latest.json` on Linux, and
-`https://updates.maple.ai/agent/stable/windows/latest.json` on Windows x86_64. Dev and unpackaged
+`https://updates.maple.ai/agent/stable/windows/latest.json` on Windows x86_64, or
+`https://updates.maple.ai/agent/stable/windows-arm64/latest.json` on Windows ARM64. Dev and unpackaged
 builds do not check that service. The Prod profile now pins the reviewed primary
 and backup public keys, so packaged Prod builds check the compiled feed after
 launch. Builds and production publication remain separate operations;
@@ -151,7 +152,7 @@ help, version, build information and ACP belong to that selected generation.
 The stable bootstrap and uninstaller are not replaced by in-app updates;
 changing their contract requires a separately qualified manual installer.
 
-An update verifies the signed v3 offer, archive hash, exact bounded generation
+An update verifies the signed v3 (x64) or v4 (ARM64) offer, archive hash, exact bounded generation
 inventory, embedded profile/version/source identity, and native Authenticode
 trust and timestamp for `Mutiny Wallet Inc. dba OpenSecret`. Prod never accepts
 unsigned preview code. The installer writes a complete new generation before
@@ -240,8 +241,13 @@ matching schema and compiled feed before advancing state. Windows uses
 `maple-agent-update-v3` with exactly `artifacts["windows-x86_64"]` for its
 generation `.tar.gz` and `downloads["windows"]` for the separate signed NSIS
 `.exe`. Its immutable envelope is `releases/<version>/windows-manifest.json`.
-Older v1/v2 manifests retain their existing strict fields and bytes; they do
-not admit Windows fields. Each artifact has a
+Windows ARM64 uses `maple-agent-update-v4` with exactly
+`artifacts["windows-aarch64"]` and `downloads["windows-arm64"]`; its immutable
+envelope is `releases/<version>/windows-arm64-manifest.json`. Its compiled feed
+is separate from the x64 feed. The installer and updater require executable
+machine types matching the build architecture, including installed generations.
+Older v1/v2/v3 manifests retain their existing strict fields and bytes and do
+not admit ARM64 fields. Each artifact has a
 signed path, byte size, and SHA-256.
 
 Paths stay under `/agent/stable/releases/<version>/<filename>`. Metadata is

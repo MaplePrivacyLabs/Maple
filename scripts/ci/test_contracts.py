@@ -114,6 +114,36 @@ def variants(job: dict, event: str) -> list:
                                        {"github.event_name": event}))
 
 
+def matrix_rows(job: dict, event: str) -> list[dict]:
+    """Expand the real matrix dimensions/includes before checking consumers.
+
+    Includes augment every compatible original combination; a row conflicting
+    with all original dimensions is an additional combination (GitHub semantics).
+    """
+    matrix = job.get("strategy", {}).get("matrix", {})
+    dimensions = {key: variants(job, event) if key == "variant" else value
+                  for key, value in matrix.items() if key not in {"include", "exclude"}}
+    if any(not isinstance(value, list) for value in dimensions.values()):
+        raise ValueError("unsupported desktop matrix dimension")
+    originals = [dict(zip(dimensions, values)) for values in itertools.product(*dimensions.values())]
+    rows = [dict(row) for row in originals]
+    for include in matrix.get("include", []):
+        compatible = [index for index, original in enumerate(originals)
+                      if all(key not in original or original[key] == value for key, value in include.items())]
+        if compatible:
+            for index in compatible:
+                rows[index].update(include)
+        else:
+            rows.append(dict(include))
+    return [row for row in rows if not any(all(row.get(key) == value for key, value in excluded.items())
+                                           for excluded in matrix.get("exclude", []))]
+
+
+def expand_matrix(text: str, row: dict, run_id: int) -> str:
+    text = text.replace("${{ github.run_id }}", str(run_id))
+    return re.sub(r"\$\{\{ matrix\.([A-Za-z0-9_-]+) \}\}", lambda match: str(row[match[1]]), text)
+
+
 def job_results(config: dict, event: str) -> dict:
     """Which agent-desktop-build.yml jobs run on a master `event` that changes Agent
     inputs, if every job that runs succeeds: each job's `if:` and `needs`, evaluated."""
@@ -150,17 +180,14 @@ def needs_of(job: dict) -> list:
 def desktop_run(config: dict, run_id: int, event: str = "push"):
     """The job inventory (with runner labels) and artifacts of one agent-desktop-build.yml
     run on master in which every job that runs succeeds; a job its `if:` skips is skipped."""
-    def expand(text, variant):
-        return text.replace("${{ matrix.variant }}", str(variant)).replace("${{ github.run_id }}", str(run_id))
-
     results = job_results(config, event)
     inventory, artifacts = [], []
     for job_id, job in config["jobs"].items():
-        for variant in variants(job, event):
-            inventory.append({"name": expand(job.get("name", job_id), variant), "status": "completed",
-                              "conclusion": results[job_id], "labels": [job["runs-on"]]})
+        for row in matrix_rows(job, event):
+            inventory.append({"name": expand_matrix(job.get("name", job_id), row, run_id), "status": "completed",
+                              "conclusion": results[job_id], "labels": [expand_matrix(job["runs-on"], row, run_id)]})
             if results[job_id] == "success":
-                artifacts += [{"name": expand(step["with"]["name"], variant), "expired": False}
+                artifacts += [{"name": expand_matrix(step["with"]["name"], row, run_id), "expired": False}
                               for step in job.get("steps", [])
                               if step.get("uses", "").startswith("actions/upload-artifact@")]
     return inventory, artifacts
@@ -242,6 +269,22 @@ class ContractTests(unittest.TestCase):
                             "github.event.workflow_run.event == 'release'"):
                 self.assertIn(control, gate, name)
 
+    def test_c2_matrix_expansion_keeps_architecture_names_artifacts_and_native_runners_bound(self):
+        job = {"name": "Windows${{ matrix.suffix }} (${{ matrix.variant }})",
+               "runs-on": "${{ matrix.runner }}",
+               "strategy": {"matrix": {"variant": ["dev", "prod"], "architecture": ["x86_64", "aarch64"],
+                   "include": [{"architecture": "x86_64", "suffix": "", "runner": "windows-2025"},
+                               {"architecture": "aarch64", "suffix": " ARM64", "runner": "windows-11-arm"}],
+                   "exclude": [{"variant": "dev", "architecture": "aarch64"}]}},
+               "steps": [{"uses": "actions/upload-artifact@" + "0" * 40,
+                          "with": {"name": "windows-${{ matrix.architecture }}-${{ matrix.variant }}-${{ github.run_id }}"}}]}
+        inventory, artifacts = desktop_run({"jobs": {"windows": job}}, 42)
+        self.assertEqual([(entry["name"], entry["labels"]) for entry in inventory],
+                         [("Windows (dev)", ["windows-2025"]), ("Windows (prod)", ["windows-2025"]),
+                          ("Windows ARM64 (prod)", ["windows-11-arm"])])
+        self.assertEqual([entry["name"] for entry in artifacts],
+                         ["windows-x86_64-dev-42", "windows-x86_64-prod-42", "windows-aarch64-prod-42"])
+
     def test_c2_agent_publisher_accepts_this_workflows_jobs_and_artifacts(self):
         config = load(ROOT / publisher.WORKFLOW)
         self.assertIn("master", config["on"]["push"]["branches"])
@@ -251,7 +294,7 @@ class ContractTests(unittest.TestCase):
         for job_id, job in config["jobs"].items():
             attests = any(step.get("uses", "").startswith("actions/attest@") for step in job.get("steps", []))
             if attests:  # the publisher verifies with --deny-self-hosted-runners
-                self.assertTrue(GITHUB_HOSTED.fullmatch(job["runs-on"]), job_id)
+                self.assertTrue(all(GITHUB_HOSTED.fullmatch(label) for label in runner_labels("agent-desktop-build.yml", job_id, job)), job_id)
             if attests or environment(job) or job.get("name", "").startswith("Verify"):
                 self.assertFalse([step for step in job.get("steps", []) if step.get("uses", "").startswith(
                     ("actions/cache", "Swatinem/rust-cache@"))], f"{job_id} must restore no cache")
@@ -292,12 +335,39 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(job.get("env", {}).get("MAPLE_PACKAGE_BUILD_NUMBER"), "${{ github.run_number }}",
                              job.get("name"))
 
+    def test_c2_windows_signing_requires_its_own_architecture_producer_before_credentials(self):
+        job = load(ROOT / publisher.WORKFLOW)["jobs"]["windows"]
+        gate = job["steps"][0]
+        self.assertEqual(gate["working-directory"], ".")  # checkout has not run yet
+        self.assertEqual(gate["shell"], "bash")
+        self.assertFalse(re.search(r"secrets\.|github\.token|GH_TOKEN", json.dumps(gate)))
+        self.assertEqual(gate["env"], {"X64_BUILD_RESULT": "${{ needs.windows-build.result }}",
+                                       "ARM64_BUILD_RESULT": "${{ needs.windows-arm64-build.result }}"})
+        # A failed ARM build cannot enter the protected payload handling/login
+        # steps, while the successful x64 sibling can still finish its release.
+        for architecture, x64, arm64, allowed in (
+            ("x86_64", "success", "failure", True), ("aarch64", "success", "failure", False),
+            ("aarch64", "failure", "success", True), ("x86_64", "failure", "success", False),
+            ("aarch64", "success", "skipped", False), ("arm64ec", "success", "success", False),
+        ):
+            with self.subTest(architecture=architecture, x64=x64, arm64=arm64):
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", gate["run"]],
+                                        env={**os.environ, "MAPLE_WINDOWS_ARCH": architecture,
+                                             "X64_BUILD_RESULT": x64, "ARM64_BUILD_RESULT": arm64},
+                                        capture_output=True)
+                self.assertEqual(result.returncode == 0, allowed)
+        # No following credential step is allowed to override a failed gate.
+        self.assertFalse([step for step in job["steps"][1:] if "always()" in str(step.get("if", ""))])
+
     def test_c2_prebuilt_binary_handoff_preserves_the_packagers_release_path(self):
         config = load(ROOT / publisher.WORKFLOW)
-        for platform, binary in (("macos", "maple-agent"), ("windows", "maple-agent.exe")):
+        for platform, binary in (("macos", "maple-agent"), ("windows", "maple-agent.exe"),
+                                 ("windows-arm64", "maple-agent.exe")):
             with self.subTest(platform=platform):
-                producer = config["jobs"][platform + "-build"]["steps"]
-                consumer = config["jobs"][platform]["steps"]
+                producer_job = config["jobs"][platform + "-build"]
+                consumer_job = config["jobs"]["windows" if platform.startswith("windows") else platform]
+                producer = producer_job["steps"]
+                consumer = consumer_job["steps"]
                 upload = next(step["with"] for step in producer
                               if step.get("uses", "").startswith("actions/upload-artifact@")
                               and "-prebuilt-" in step["with"]["name"])
@@ -307,7 +377,12 @@ class ContractTests(unittest.TestCase):
                 # consumer must place that basename back under target/release.
                 expected = Path("apps/maple-agent/target/release") / binary
                 self.assertEqual(upload["path"].splitlines(), [expected.as_posix()])
-                self.assertEqual(download["name"], upload["name"])
+                architecture = "aarch64" if platform == "windows-arm64" else "x86_64"
+                producer_row = matrix_rows(producer_job, "push")[0]
+                consumer_row = next(row for row in matrix_rows(consumer_job, "push")
+                                    if row.get("architecture", architecture) == architecture)
+                self.assertEqual(expand_matrix(download["name"], consumer_row, 42),
+                                 expand_matrix(upload["name"], producer_row, 42))
                 self.assertEqual(Path(download["path"]) / binary, expected)
 
     def test_c2_windows_packaging_lanes_pass_a_build_number(self):
@@ -318,7 +393,7 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(packaging)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            stubs = {root / "scripts/build-release.sh": "exit 0\n",
+            stubs = {root / "scripts/build-release.sh": "exit 0\n", root / "bin/cargo": "exit 0\n",
                      root / "bin/python3": 'printf "%s|%s\\n" "${MAPLE_PACKAGE_BUILD_NUMBER-unset}" "$*" >> "$CALLS"\n'}
             for path, body in stubs.items():
                 path.parent.mkdir(parents=True, exist_ok=True)

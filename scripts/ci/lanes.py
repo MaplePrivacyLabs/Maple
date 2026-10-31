@@ -49,6 +49,7 @@ GITHUB_XCODE = Runner("xcode-27")
 # GitHub's cache store); CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
 GITHUB_WINDOWS = Runner("maple-windows-2025-16core", "CI_WINDOWS_GITHUB_RUNNER")
 GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the free standard runner, for the native Windows test suites
+GITHUB_WINDOWS_ARM64 = Runner("windows-11-arm")
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"
@@ -182,11 +183,11 @@ WINDOWS_PACKAGE = (
     # windows-release.py requires a build number; like package-release.sh, use the
     # Actions run number, or 1 outside Actions.
     'export MAPLE_PACKAGE_BUILD_NUMBER="${GITHUB_RUN_NUMBER:-1}"'
-    " && ./scripts/build-release.sh dev && python3 scripts/windows-release.py prepare dev"
-    " && python3 scripts/windows-release.py package dev --unsigned"
+    " && ./scripts/build-release.sh dev && python3 scripts/windows-release.py prepare dev --arch \"${MAPLE_WINDOWS_ARCH:-x86_64}\""
+    " && python3 scripts/windows-release.py package dev --unsigned --arch \"${MAPLE_WINDOWS_ARCH:-x86_64}\""
     # The stock image exports Azure CLI paths that the fail-closed signing guard rejects.
     " && env -u AZURE_CONFIG_DIR -u AZURE_DEVOPS_CACHE_DIR -u AZURE_EXTENSION_DIR"
-    " python3 scripts/windows-release.py verify dev dist/dev --unsigned --smoke"
+    " python3 scripts/windows-release.py verify dev dist/dev --unsigned --smoke --arch \"${MAPLE_WINDOWS_ARCH:-x86_64}\""
 )
 
 PROXY_CONTAINER = ("proxy/Dockerfile", ".dockerignore", "proxy/Cargo.lock") + PROXY_RUNTIME + RUST_SDK
@@ -293,6 +294,15 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),) + FAST_RELEASE, timeout=90, gate=False),
+    # Native ARM64 build, updater tests and installer smoke. This is a
+    # full packaging rehearsal, selected by labels/nightly rather than ordinary PRs.
+    Lane("agent-package-windows-arm64", AGENT_WINDOWS_PACKAGING,
+         pr_paths=(), labels=("ci:package", "ci:windows", "ci:full"),
+         events=PR_AND_NIGHTLY, job="agent-package-windows-arm64", runner=GITHUB_WINDOWS_ARM64,
+         workdir="apps/maple-agent",
+         run="cargo test -p maple-agent-updater --locked --target aarch64-pc-windows-msvc --no-fail-fast -- --test-threads=1 && " + WINDOWS_PACKAGE,
+         env=(("MAPLE_WINDOWS_ARCH", "aarch64"), ("RUSTFLAGS", "-D warnings -C target-feature=+crt-static")) + FAST_RELEASE,
+         timeout=120, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script
     # tests, the release gates, and release metadata (read from the version files).
     Lane("repo", (

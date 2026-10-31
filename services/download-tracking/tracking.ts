@@ -90,9 +90,15 @@ function agentArtifact(path: string): Route | null {
   const file = match[2];
   if (file.length > 200 || file.includes("..")) return null;
   const base = { version: match[1], kind: "artifact" as const };
-  if (file.endsWith("-windows-x86_64.tar.gz"))
+  if (
+    file.endsWith("-windows-x86_64.tar.gz") ||
+    file.endsWith("-windows-aarch64.tar.gz")
+  )
     return { ...base, platform: "windows", artifact: "windows-bundle" };
-  if (file.endsWith("-windows-x86_64-setup.exe"))
+  if (
+    file.endsWith("-windows-x86_64-setup.exe") ||
+    file.endsWith("-windows-aarch64-setup.exe")
+  )
     return { ...base, platform: "windows", artifact: "windows-installer" };
   // Wrong Windows profiles must not fall through to Linux's historical generic
   // tar suffix. Classification does not authorize serving any artifact.
@@ -112,6 +118,7 @@ const AGENT_ALIASES: Record<string, Pick<Route, "platform" | "artifact">> = {
   macos: { platform: "macos", artifact: "macos-dmg" },
   linux: { platform: "linux", artifact: "linux-bundle" },
   windows: { platform: "windows", artifact: "windows-installer" },
+  "windows-arm64": { platform: "windows", artifact: "windows-installer" },
   "linux-appimage": { platform: "linux", artifact: "linux-appimage" },
 };
 const RESEARCH_ALIASES: Record<string, Pick<Route, "platform" | "artifact">> = {
@@ -177,20 +184,21 @@ function routeFor(
     if (
       path === "/agent/stable/latest.json" ||
       path === "/agent/stable/linux/latest.json" ||
-      path === "/agent/stable/windows/latest.json"
+      path === "/agent/stable/windows/latest.json" ||
+      path === "/agent/stable/windows-arm64/latest.json"
     )
       return {
         kind: "metadata",
         version: null,
         platform: path.includes("/linux/")
           ? "linux"
-          : path.includes("/windows/")
+          : path.includes("/windows/") || path.includes("/windows-arm64/")
             ? "windows"
             : "macos",
         artifact: "latest",
       };
     const manifest =
-      /^\/agent\/stable\/releases\/([^/]+)\/(linux-manifest|windows-manifest|manifest)\.json$/.exec(
+      /^\/agent\/stable\/releases\/([^/]+)\/(linux-manifest|windows-manifest|windows-arm64-manifest|manifest)\.json$/.exec(
         path,
       );
     if (manifest && stableVersion(manifest[1]))
@@ -200,7 +208,8 @@ function routeFor(
         platform:
           manifest[2] === "linux-manifest"
             ? "linux"
-            : manifest[2] === "windows-manifest"
+            : manifest[2] === "windows-manifest" ||
+                manifest[2] === "windows-arm64-manifest"
               ? "windows"
               : "macos",
         artifact: "manifest",
