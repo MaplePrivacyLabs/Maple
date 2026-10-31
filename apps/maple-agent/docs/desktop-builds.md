@@ -264,7 +264,7 @@ the Windows ARM runner, separately from the existing x64 jobs.
 The package script verifies its pinned NSIS compiler download. Signed packaging
 uses the same command without `--unsigned`, only in the trusted master job after
 Azure login and the existing pinned Artifact Signing module setup. The signing
-runner never executes downloaded app code. Install/uninstall smoke runs only on
+runner never executes downloaded app code. Installation smoke runs only on
 a separate credential-free verifier.
 The exact five final files, build number, source/profile and fixed tar inventory
 are checked before attestation and again after download. The tar is generated
@@ -272,11 +272,12 @@ from the same extracted installer generation, so its signed executable and
 all public license/descriptor bytes match. Native preflight checks destination
 and code trust before installed files or registration change; a durable manual
 install intent permits safe interrupted-install recovery. Unsigned Prod must
-refuse before modification; unsigned Dev remains a positive install/GUI/uninstall
+refuse before modification; unsigned Dev remains a positive install/GUI
 preview with no production feed or keys.
 The native smoke also repeats the silent install without opening another
 process, then completes the interactive installer and observes its actual
-auto-launched window before the existing host-stop and uninstall checks.
+auto-launched window before stopping the host and cleaning its temporary
+registration and shortcuts. The smoke does not execute the product uninstaller.
 Both GUI probes begin with legacy shortcut icon metadata and require the
 canonical persistent artwork, unchanged shortcut targets and other properties,
 and the profile's updated installed-app icon.

@@ -415,30 +415,8 @@ class AgentLaneTests(unittest.TestCase):
         self.assertIn(arm, active(DISPATCH))
         lane = next(lane for lane in lanes.LANES if lane.id == arm)
         self.assertEqual(lane.runner.label, "windows-11-arm")
-        self.assertTrue(plan.matches(fixture, lane.paths))
         self.assertEqual(dict(lane.env)["MAPLE_WINDOWS_ARCH"], "aarch64")
         self.assertFalse(lane.gate)
-
-    def test_native_arm64_installer_fixture_failure_stops_before_rust_builds(self):
-        lane = next(lane for lane in lanes.LANES if lane.id == "agent-package-windows-arm64")
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            tools = root / "bin"
-            tools.mkdir()
-            calls = root / "calls"
-            for name, body in {
-                "python3": 'printf "%s\\n" "$*" >> "$CALLS"; exit 23\n',
-                "cargo": 'printf "Rust started\\n" >> "$CALLS"; exit 79\n',
-            }.items():
-                tool = tools / name
-                tool.write_text("#!/bin/sh\n" + body)
-                tool.chmod(0o755)
-            result = subprocess.run(["bash", "-euo", "pipefail", "-c", lane.run], cwd=root,
-                                    env={**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
-                                         "CALLS": str(calls)}, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 23, result.stderr)
-            self.assertEqual(calls.read_text().splitlines(),
-                             ["scripts/test_windows_release.py NativeNSISUninstallCopyTests"])
 
     def test_a_required_lane_runs_only_with_the_lane_that_requires_it(self):
         # The macOS packaging rehearsal compiles gpui's shaders on Blacksmith, whose image

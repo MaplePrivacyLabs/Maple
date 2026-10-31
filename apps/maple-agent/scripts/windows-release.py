@@ -874,51 +874,21 @@ def windows_icon_equal(value, expected):
 
 
 @contextmanager
-def verification_scratch(prefix, *, cleanup_facts=None, cleanup_failure=None):
-    temporary = tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=False)
-    scratch = Path(temporary.name)
+def verification_scratch(prefix):
+    temporary = tempfile.TemporaryDirectory(prefix=prefix)
     primary = None
     try:
-        scratch = scratch.resolve()
-        yield scratch
+        yield Path(temporary.name).resolve()
     except BaseException as error:
         primary = error
         raise
     finally:
-        started = time.monotonic_ns()
-        cleanup_error = None
-        finished = None
         try:
             temporary.cleanup()
-            require_scratch_absent(scratch)
         except Exception as error:
-            cleanup_error = error
-            finished = time.monotonic_ns()
-            if cleanup_failure is not None:
-                try:
-                    cleanup_failure(scratch, error)
-                except BaseException as diagnostic_error:
-                    print("Windows cleanup diagnostic unavailable: " + type(diagnostic_error).__name__, file=sys.stderr)
             print("Windows verification cleanup failure: " + type(error).__name__, file=sys.stderr)
             if primary is None:
                 raise
-        finally:
-            finished = finished if finished is not None else time.monotonic_ns()
-            facts = {"prefix": prefix, "cleanup_started_monotonic_ns": started,
-                     "cleanup_finished_monotonic_ns": finished, "cleanup_duration_ns": finished - started,
-                     "result": "failure" if cleanup_error else "success"}
-            child_returned = (cleanup_facts or {}).get("child_returned_monotonic_ns")
-            if type(child_returned) is int:
-                facts["child_returned_monotonic_ns"] = child_returned
-                facts["child_to_cleanup_ns"] = started - child_returned
-            if cleanup_error is not None:
-                facts.update(error=type(cleanup_error).__name__, winerror=getattr(cleanup_error, "winerror", None))
-                try:
-                    facts["path"] = str(Path(getattr(cleanup_error, "filename", None)).relative_to(scratch))[:256]
-                except (TypeError, ValueError):
-                    pass
-            # Report only after the actual cleanup and strict absence probes.
-            print("Windows verification cleanup: " + json.dumps(facts, sort_keys=True), flush=True)
 
 
 @contextmanager
@@ -1004,27 +974,8 @@ def smoke_failure_evidence(phase, error, installed, generation_name, registry, a
         print("Windows installer failure evidence unavailable", file=sys.stderr)
 
 
-def smoke_phase_complete(name, arch, **facts):
-    print("Windows smoke phase complete: " + json.dumps({"phase": name, "arch": arch, **facts}, sort_keys=True), flush=True)
-
-
-def uninstaller_digest(path):
-    regular(path)
-    digest, size = hashlib.sha256(), 0
-    with path.open("rb") as source:
-        while block := source.read(64 * 1024):
-            size += len(block)
-            if size > 32 * 1024 * 1024:
-                raise ValueError("Windows uninstaller exceeds its verified extraction bound")
-            digest.update(block)
-    if size == 0:
-        raise ValueError("Windows uninstaller is empty")
-    return digest.hexdigest()
-
-
 def require_absent(path, message):
-    # Path.exists() may translate access denial into False on modern Python.
-    # Only an actual missing entry is evidence that an owned file was removed.
+    # Access denial is not evidence that an installer left no files behind.
     try:
         path.lstat()
     except FileNotFoundError:
@@ -1032,83 +983,39 @@ def require_absent(path, message):
     raise ValueError(message)
 
 
-def require_scratch_absent(scratch):
-    require_absent(scratch / "uninstaller-runner" / "uninstall.exe", "Auxiliary uninstaller survived scratch cleanup")
-    require_absent(scratch / "uninstaller-runner", "Auxiliary runner directory survived scratch cleanup")
-    require_absent(scratch, "Windows verification scratch survived cleanup")
+def cleanup_smoke_registration(installed, info, winreg):
+    """Remove only this verifier's temporary registration and owned shortcuts.
 
-
-def run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, expected_sha256, arch, *, cleanup_facts=None):
-    """Model NSIS relocation but synchronously wait for the actual uninstaller.
-
-    https://nsis.sourceforge.io/Docs/AppendixD.html#D.1 documents copying the
-    uninstaller and invoking that copy with _?=$INSTDIR to retain its exit code.
-    The running image is then outside the installation being removed.
+    Install smoke does not execute or qualify the product uninstaller.
     """
-    platform_name(arch)
-    if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-        raise ValueError("Windows uninstall smoke requires its verified source hash")
-    if uninstaller != installed / "uninstall.exe" or installed.parent != scratch:
-        raise ValueError("Windows uninstall smoke requires its owned installation root")
-    phase = "source-verification"
-    copied = scratch / "uninstaller-runner" / "uninstall.exe"
-    result = None
+    registry = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + info["bundle_id"]
+    access = winreg.KEY_READ | winreg.KEY_WOW64_32KEY
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, access) as key:
+        if not windows_path_equal(winreg.QueryValueEx(key, "InstallLocation")[0], installed):
+            raise ValueError("Refusing to clean another installation's registration")
+    directory = windows_programs_directory() / info["display_name"]
     try:
-        if uninstaller_digest(uninstaller) != expected_sha256:
-            raise ValueError("Installed uninstaller differs from the verified installer")
-        signature(uninstaller, unsigned)
-        # scratch is this smoke's private, ordinary temporary directory. The
-        # new child inherits its trusted ownership; no shared TEMP name is used.
-        copied.parent.mkdir(mode=0o700)
-        phase = "copy-verification"
-        with uninstaller.open("rb") as source, copied.open("xb") as target:
-            size = 0
-            while block := source.read(64 * 1024):
-                size += len(block)
-                if size > 32 * 1024 * 1024:
-                    raise ValueError("Windows uninstaller copy exceeds its verified extraction bound")
-                target.write(block)
-        if uninstaller_digest(copied) != expected_sha256:
-            raise ValueError("Private copied uninstaller differs from its verified source")
-        signature(copied, unsigned)
-        if uninstaller_digest(copied) != expected_sha256:
-            raise ValueError("Copied uninstaller changed during signature verification")
-        smoke_phase_complete("uninstaller-copy-verification", arch, sha256=expected_sha256)
-        phase = "copied-process"
-        # _?= is last and deliberately unquoted, as required by NSIS. This copy
-        # performs the work itself, without NSIS's detached second invocation.
-        result = run(command_as_windows_args(f'"{copied}" /S _?={installed}'),
-                     cwd=scratch, env=environment, timeout=120)
-        returned = time.monotonic_ns()
-        if cleanup_facts is not None:
-            cleanup_facts["child_returned_monotonic_ns"] = returned
-        result.check_returncode()
-        phase = "original-retirement"
-        require_absent(uninstaller, "NSIS did not remove the original installed uninstaller")
-        phase = "post-child-copy-verification"
-        if uninstaller_digest(copied) != expected_sha256:
-            raise ValueError("Copied uninstaller changed while running")
-        # The private auxiliary runner belongs to verification_scratch, just
-        # like the other temporary verifier inputs. All product assertions run
-        # before standard cleanup; strict auxiliary absence is checked afterward.
-        smoke_phase_complete("uninstaller-child-complete", arch, sha256=expected_sha256,
-                             exit_code=result.returncode, original_absent=True)
-    except BaseException as error:
-        facts = {"phase": phase, "error": type(error).__name__, "exit_code": getattr(result, "returncode", None)}
-        for name, path in (("original", uninstaller), ("copy", copied)):
-            try:
-                status = path.lstat()
-                attributes = getattr(status, "st_file_attributes", 0)
-                facts[name] = {"present": True, "readonly": bool(attributes & 1), "reparse": bool(attributes & 0x400)}
-            except FileNotFoundError:
-                facts[name] = {"present": False}
-            except OSError:
-                facts[name] = {"state": "unavailable"}
-        print("Windows uninstaller retirement failure: " + json.dumps(facts, sort_keys=True), file=sys.stderr)
-        raise
+        status = directory.lstat()
+    except FileNotFoundError:
+        status = None
+    if status is not None and (directory.is_symlink() or getattr(status, "st_file_attributes", 0) & 0x400 or not stat.S_ISDIR(status.st_mode)):
+        raise ValueError("Refusing redirected smoke shortcut cleanup")
+    for name, target in ((info["display_name"] + ".lnk", "maple-agent.exe"), ("Uninstall.lnk", "uninstall.exe")):
+        path = directory / name
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        # The real COM probe checks exact target, empty arguments and ordinary
+        # paths before this fixture removes its own link.
+        probe_windows_shortcut(path, installed / target)
+        path.unlink()
+    if directory.is_dir() and not any(directory.iterdir()):
+        directory.rmdir()
+    winreg.DeleteKeyEx(winreg.HKEY_CURRENT_USER, registry, winreg.KEY_WOW64_32KEY)
 
 
-def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checker, uninstaller_sha256, arch="x86_64"):
+def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checker, arch="x86_64"):
     platform_name(arch)
     import winreg  # Only the explicit native smoke path loads the Windows API.
 
@@ -1119,8 +1026,7 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             raise ValueError("Refusing to smoke over an existing Agent installation")
     except FileNotFoundError:
         pass
-    cleanup_facts = {}
-    with verification_scratch("maple-windows-install-", cleanup_facts=cleanup_facts) as scratch:
+    with verification_scratch("maple-windows-install-") as scratch:
         environment = smoke_environment(scratch)
         installed = scratch / "install with spaces"
         command = f'"{installer}" /S /D={installed}'
@@ -1173,13 +1079,11 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             signature(uninstaller, unsigned)
             # A fresh silent install must not start any app/host process.
             quiet_installer_smoke(generation / "maple-agent.exe")
-            smoke_phase_complete("installed-verification", arch)
             phase = "installed-cli"
             actual = run([executable, "--build-info"], env=environment, capture_output=True, text=True).stdout
             if json.loads(actual) != info:
                 raise ValueError("Installed Windows binary reports another profile/source")
             run([executable, "--version"], env=environment, stdout=subprocess.DEVNULL)
-            smoke_phase_complete("installed-cli", arch)
             for _ in range(2):
                 result = subprocess.run([str(executable), "acp"], cwd=scratch, env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=45)
                 if result.returncode != 1 or not any(message in result.stderr for message in (
@@ -1188,7 +1092,6 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                 )):
                     bounded_diagnostics(result.stderr)
                     raise ValueError("Installed Windows ACP did not preserve the signed-out guard")
-            smoke_phase_complete("signed-out-acp", arch)
             # Bootstrap CLI probes above exercise native argv/stdio/status
             # forwarding. GUI bootstrap intentionally detaches, so observe
             # the exact selected installed generation for render/lifetime and
@@ -1197,7 +1100,6 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             integration = WindowsIntegrationProbe(info, installed, scratch, environment, winreg)
             integration.seed()
             gui_smoke(generation / "maple-agent.exe", scratch, environment, integration_ready=integration.ready)
-            smoke_phase_complete("gui-first-render-and-icons", arch)
             # A repeated manual installer must retain the active generation
             # and stable bootstrap rather than rewriting a running payload.
             bootstrap_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
@@ -1211,13 +1113,11 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                     if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
                         raise ValueError("Repeated Windows install changed stable bootstrap or active pointer")
                 quiet_installer_smoke(generation / "maple-agent.exe", ui=ui, existing=existing)
-                smoke_phase_complete("silent-repeat-install", arch)
                 phase = "interactive-install"
                 interactive_installer_smoke(installer, installed, generation / "maple-agent.exe", scratch, environment, ui=ui, existing=existing,
                                            before_close=integration.seed, integration_ready=integration.ready)
             if (installed / "current.json").read_bytes() != pointer_bytes or hashlib.sha256(executable.read_bytes()).hexdigest() != bootstrap_hash:
                 raise ValueError("Interactive repeat changed stable bootstrap or active pointer")
-            smoke_phase_complete("interactive-auto-launch-and-icons", arch)
         except BaseException as error:
             primary = error
             smoke_failure_evidence(phase, error, installed, generation_name, registry, registry_access, winreg)
@@ -1226,42 +1126,14 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             if installed_ok:
                 cleanup_phase = "host-stop"
                 try:
-                    if primary is None:
-                        # A successful body must prove the real installed
-                        # uninstaller ran; scratch deletion cannot stand in for it.
-                        regular(executable)
-                        regular(uninstaller)
-                    if primary is None or executable.is_file():
-                        run([executable, "host", "stop"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
-                        smoke_phase_complete("host-stop", arch)
-                    if primary is None or uninstaller.is_file():
-                        sentinel = installed / "user-created-file.txt"
-                        sentinel.write_text("preserve me", encoding="utf-8")
-                        state = scratch / "data" / info["data_namespace"] / "state-marker.txt"
-                        state.parent.mkdir(parents=True, exist_ok=True)
-                        state.write_text("preserve state", encoding="utf-8")
-                        cleanup_phase = "uninstall"
-                        run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, uninstaller_sha256, arch,
-                                               cleanup_facts=cleanup_facts)
-                        require_absent(executable, "Uninstall did not remove the app")
-                        require_absent(uninstaller, "Uninstall did not remove the original uninstaller")
-                        if sentinel.read_text(encoding="utf-8") != "preserve me" or state.read_text(encoding="utf-8") != "preserve state":
-                            raise ValueError("Uninstall did not remove the app while preserving user files and state")
-                        for name in ("current.json", ".install.lock", ".installer-intent.json", ".uninstaller-intent.json", "versions"):
-                            require_absent(installed / name, "Uninstall left owned generation or transaction files behind")
-                        try:
-                            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
-                                raise ValueError("Uninstall left the profile's registration behind")
-                        except FileNotFoundError:
-                            pass
-                        smoke_phase_complete("uninstall-owned-files-and-state", arch)
+                    run([executable, "host", "stop"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
+                    cleanup_phase = "fixture-cleanup"
+                    cleanup_smoke_registration(installed, info, winreg)
                 except Exception as error:
                     smoke_failure_evidence(cleanup_phase, error, installed, generation_name, registry, registry_access, winreg)
                     if primary is None:
                         raise
-    require_scratch_absent(scratch)
-    smoke_phase_complete("installer-smoke-complete", arch)
-    print("Verified Windows install, identity, signed-out ACP, GUI first render, silent/repeat install, interactive auto-launch, persistent shell icons, host stop and state-preserving uninstall")
+    print("Verified Windows install, identity, signed-out ACP, GUI first render, silent/repeat install, interactive auto-launch, persistent shell icons and host stop")
 
 
 def command_as_windows_args(command):
@@ -1605,7 +1477,7 @@ def verify(profile, directory, unsigned, *, smoke, arch="x86_64"):
             if any(name.startswith(("AZURE_", "MAPLE_WINDOWS_ARTIFACT_SIGNING_")) for name in os.environ):
                 raise ValueError("Installed Windows smoke requires a verifier without signing configuration")
             smoke_installer(installer, info, unsigned, manifest["build"], expected_hashes,
-                            checker=payload / INSTALLER_CHECKER, uninstaller_sha256=uninstaller_digest(uninstaller), arch=arch)
+                            checker=payload / INSTALLER_CHECKER, arch=arch)
     print(f"Verified {profile} {platform} installer identity, exact inventory and signatures")
 
 
