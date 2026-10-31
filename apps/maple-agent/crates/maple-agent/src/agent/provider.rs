@@ -56,6 +56,12 @@ const DECISION_MODEL_CONTEXT_WINDOW: u64 = 32_768;
 
 pub(crate) const AUTHENTICATION_ERROR_MESSAGE: &str = "Maple authentication failed";
 pub(crate) const CREDITS_EXHAUSTED_MESSAGE: &str = "Maple credits are exhausted";
+/// Shown when OpenSecret refuses a turn with `usage_limit_reached`.
+/// The wording stays clear of Pi's overflow and retry phrases. "Billing"
+/// also matches Pi's account-limit check, so the turn is not retried.
+pub const USAGE_LIMIT_MESSAGE: &str =
+    "You've run out of usage. See your options in Billing so you can keep working.";
+const USAGE_LIMIT_ERROR_CODE: &str = "usage_limit_reached";
 /// Pi's overflow check recognizes "exceeds the context window".
 pub(crate) const CONTEXT_OVERFLOW_MESSAGE: &str =
     "The request exceeds the context window of this model";
@@ -638,7 +644,7 @@ async fn into_http_response(
         return Err(SECURE_CONNECTION_ERROR_MESSAGE.to_string());
     }
     let body = collect_bounded_body(response.into_body(), &cancel).await?;
-    let message = http_error_message(status, error_message(&body).as_deref());
+    let message = map_inference_error(status, &headers, &body, error_message(&body).as_deref());
     Ok(HttpResponse {
         status: status.as_u16(),
         headers,
@@ -744,6 +750,63 @@ async fn collect_bounded_body(
     Ok(collected)
 }
 
+/// A fixed Maple message for this failure. A 403 is an out-of-usage refusal
+/// only when the decrypted body says `usage_limit_reached` and a present
+/// `x-opensecret-error-code` header agrees. Any other 403 keeps the generic
+/// rejection, including a model the plan does not include and the free-tier
+/// length limit.
+fn map_inference_error(
+    status: http::StatusCode,
+    headers: &[(String, String)],
+    body: &[u8],
+    provider_message: Option<&str>,
+) -> String {
+    if usage_limit_reached(status, headers, body) {
+        log::warn!(
+            "Maple inference request failed (http_status_{})",
+            status.as_u16()
+        );
+        return USAGE_LIMIT_MESSAGE.to_string();
+    }
+    http_error_message(status, provider_message)
+}
+
+/// Whether this 403 is the account spending refusal, not another forbidden
+/// response that shares the status.
+fn usage_limit_reached(
+    status: http::StatusCode,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> bool {
+    if status != http::StatusCode::FORBIDDEN {
+        return false;
+    }
+    if error_code(body).as_deref() != Some(USAGE_LIMIT_ERROR_CODE) {
+        return false;
+    }
+    match header_values(headers, ERROR_CODE_HEADER).as_slice() {
+        [] => true,
+        [code] => *code == USAGE_LIMIT_ERROR_CODE,
+        _ => false,
+    }
+}
+
+fn header_values<'a>(headers: &'a [(String, String)], name: &str) -> Vec<&'a str> {
+    headers
+        .iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+        .collect()
+}
+
+fn error_code(body: &[u8]) -> Option<String> {
+    let payload: Value = serde_json::from_slice(body).ok()?;
+    payload
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 /// The provider's own message from an error body, used only to classify it.
 fn error_message(body: &[u8]) -> Option<String> {
     let payload: Value = serde_json::from_slice(body).ok()?;
@@ -797,7 +860,7 @@ fn opensecret_error_kind_message(error: maple_sdk::Error) -> String {
         maple_sdk::Error::Api { status, message } => {
             let status =
                 http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY);
-            http_error_message(status, Some(&message))
+            map_inference_error(status, &[], message.as_bytes(), Some(&message))
         }
         maple_sdk::Error::Http(error) => {
             if error.is_timeout() {

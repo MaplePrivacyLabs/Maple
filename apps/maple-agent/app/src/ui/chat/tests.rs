@@ -11369,6 +11369,41 @@ mod state_tests {
         );
     }
     #[gpui::test]
+    fn out_of_usage_banner_opens_billing(cx: &mut TestAppContext) {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use maple_agent::agent::USAGE_LIMIT_MESSAGE;
+
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.replace_timeline(vec![
+                item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
+                item(
+                    "other-1",
+                    "error",
+                    Some("Maple rejected the inference request (status 403)"),
+                ),
+            ]);
+        });
+        let opened = Rc::new(Cell::new(0));
+        let observed = opened.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(
+                &chat,
+                move |_, request: &crate::ui::settings::OpenSettingsSection, _| {
+                    assert!(matches!(request.0, crate::ui::settings::Section::Billing));
+                    observed.set(observed.get() + 1);
+                },
+            )
+        });
+        assert!(cx.debug_bounds("open-billing-usage-1").is_some());
+        assert!(cx.debug_bounds("open-billing-other-1").is_none());
+        press(cx, "open-billing-usage-1");
+        cx.run_until_parked();
+        assert_eq!(opened.get(), 1);
+    }
+
+    #[gpui::test]
     fn update_badge_marks_settings_and_its_menu_row_routes_by_state(cx: &mut TestAppContext) {
         use std::cell::RefCell;
         use std::rc::Rc;
