@@ -191,7 +191,7 @@
           xcrun = pkgs.writeShellScriptBin "xcrun" ''
             exec /usr/bin/xcrun "$@"
           '';
-          # Agent owns its distribution tools and runtime closure. These fixed
+          # Agent owns its distribution tools. These fixed
           # hashes also pin the tools used by Research, without importing its
           # Tauri packaging scripts or requiring its flake.
           appimageTools =
@@ -211,13 +211,6 @@
                 install -m 0755 ${linuxdeploy} "$out/linuxdeploy-x86_64.AppImage"
                 install -m 0755 ${runtime} "$out/runtime-x86_64"
               ''
-            else
-              null;
-          linuxRuntimeClosure =
-            if pkgs.stdenv.hostPlatform.isLinux then
-              pkgs.closureInfo {
-                rootPaths = linuxBuildInputs ++ [ pkgs.stdenv.cc.cc.lib pkgs.glibc ];
-              }
             else
               null;
         in
@@ -241,8 +234,11 @@
             ++ pkgs.lib.optionals isDarwin [ xcrun ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.binutils
+              # Release builds link against an old glibc floor (build-release.sh).
+              pkgs.cargo-zigbuild
               pkgs.patchelf
               pkgs.squashfsTools
+              pkgs.zig
             ];
 
             buildInputs =
@@ -268,8 +264,9 @@
             '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH="${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               export VK_ADD_DRIVER_FILES="${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d:${pkgs.mesa}/share/vulkan/icd.d''${VK_ADD_DRIVER_FILES:+:$VK_ADD_DRIVER_FILES}"
-              export MAPLE_AGENT_LINUX_CLOSURE_INFO="${linuxRuntimeClosure}"
+              # run-linux-payload.sh runs release binaries on this runtime.
               export MAPLE_AGENT_LINUX_GLIBC="${pkgs.glibc}"
+              export MAPLE_AGENT_LINUX_RUNTIME_PATH="${pkgs.lib.makeLibraryPath (linuxBuildInputs ++ [ pkgs.stdenv.cc.cc.lib ])}"
             '' + pkgs.lib.optionalString (appimageTools != null) ''
               export MAPLE_AGENT_APPIMAGE_TOOLS="${appimageTools}"
             '' + pkgs.lib.optionalString isDarwin ''

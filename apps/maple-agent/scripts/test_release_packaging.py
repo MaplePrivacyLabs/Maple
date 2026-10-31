@@ -178,7 +178,7 @@ class BuildReleaseMetadataTests(unittest.TestCase):
         self.component = Path(temporary.name) / "component with spaces"
         scripts = self.component / "scripts"
         scripts.mkdir(parents=True)
-        for name in ("build-release.sh", "windows-build-info.py", "release-info.py"):
+        for name in ("build-release.sh", "run-linux-payload.sh", "windows-build-info.py", "release-info.py"):
             shutil.copy2(SCRIPTS / name, scripts / name)
         shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
         self.env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
@@ -198,18 +198,29 @@ class BuildReleaseMetadataTests(unittest.TestCase):
         tools = self.component / "tools"
         tools.mkdir()
         for name, source in {
-            "uname": "import os\nprint(os.environ['FIXTURE_OS'])\n",
+            "uname": "import os, sys\nprint('x86_64' if sys.argv[1:] == ['-m'] else os.environ['FIXTURE_OS'])\n",
             "cargo": """import json, os, shutil, sys
 from pathlib import Path
 arguments = sys.argv[1:]
 with Path(os.environ['FIXTURE_COMMANDS']).open('a') as log:
     log.write(json.dumps(arguments) + '\\n')
 windows = os.environ['FIXTURE_OS'].startswith(('MINGW', 'MSYS', 'CYGWIN'))
-expected = ['build', '--release', '-p', 'maple-agent-app', '--locked', '--timings']
+linux = os.environ['FIXTURE_OS'] == 'Linux'
+expected = ['zigbuild' if linux else 'build', '--release', '-p', 'maple-agent-app', '--locked', '--timings']
 if windows:
     expected += ['--target', 'x86_64-pc-windows-msvc']
+if linux:
+    expected += ['--target', 'x86_64-unknown-linux-gnu.2.31']
+    flags = os.environ['RUSTFLAGS'].split()
+    assert '-Wl,--allow-shlib-undefined' in ' '.join(flags), flags
+    assert 'native=' + os.environ['MAPLE_AGENT_LINUX_RUNTIME_PATH'] in flags, flags
 assert arguments == expected, arguments
-target = Path('target/x86_64-pc-windows-msvc/release/maple-agent.exe' if windows else 'target/release/maple-agent')
+if windows:
+    target = Path('target/x86_64-pc-windows-msvc/release/maple-agent.exe')
+elif linux:
+    target = Path('target/x86_64-unknown-linux-gnu/release/maple-agent')
+else:
+    target = Path('target/release/maple-agent')
 target.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(os.environ['FIXTURE_INPUT'], target)
 target.chmod(0o644 if windows else 0o755)
@@ -220,7 +231,8 @@ target.chmod(0o644 if windows else 0o755)
             tool.chmod(0o755)
         self.env.update(PATH=str(tools) + os.pathsep + self.env["PATH"],
                         FIXTURE_INPUT=str(self.input), FIXTURE_COMMANDS=str(self.commands),
-                        FIXTURE_METADATA=str(self.metadata), FIXTURE_EXECUTED=str(self.executed))
+                        FIXTURE_METADATA=str(self.metadata), FIXTURE_EXECUTED=str(self.executed),
+                        **fake_nix_runtime(self.component))
 
     def build(self, operating_system, profile="dev"):
         self.env["FIXTURE_OS"] = operating_system
@@ -284,6 +296,17 @@ print(Path(os.environ['FIXTURE_METADATA']).read_text())
                             self.assertIn("incorrect release profile", result.stderr)
 
 
+def fake_nix_runtime(root):
+    """A stand-in for the Nix shell's glibc loader used by run-linux-payload.sh."""
+    glibc = root / "fixture-glibc"
+    (glibc / "lib").mkdir(parents=True)
+    loader = glibc / "lib/ld-linux-x86-64.so.2"
+    loader.write_text("#!/bin/sh\n[ \"$1\" = --library-path ] || exit 90\nshift 2\nexec \"$@\"\n")
+    loader.chmod(0o755)
+    # RUSTFLAGS is space-separated; Nix store library directories never contain spaces.
+    return {"MAPLE_AGENT_LINUX_GLIBC": str(glibc), "MAPLE_AGENT_LINUX_RUNTIME_PATH": "/nix/store/fixture-libs/lib"}
+
+
 class LinuxVerifierExtractionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -292,7 +315,7 @@ class LinuxVerifierExtractionTests(unittest.TestCase):
         self.component = self.root / "component"
         scripts = self.component / "scripts"
         scripts.mkdir(parents=True)
-        for name in ("verify-release.sh", "release-info.py"):
+        for name in ("verify-release.sh", "run-linux-payload.sh", "release-info.py"):
             shutil.copy2(SCRIPTS / name, scripts / name)
         shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
         self.info = {**profile_info("dev"), "profile": "dev", "version": "0.1.0",
@@ -342,12 +365,14 @@ assert appdir.parent.stat().st_mode & 0o777 == 0o700, "extraction parent must re
             path.write_text(f"#!{sys.executable}\n{body}\n")
             path.chmod(0o755)
         self.env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
-                        TMPDIR=str(self.root), FIXTURE_EXEC_MODE="755", FIXTURE_DATA_MODE="644")
+                        TMPDIR=str(self.root), FIXTURE_EXEC_MODE="755", FIXTURE_DATA_MODE="644",
+                        **fake_nix_runtime(self.root))
 
     def write_archive(self):
         root = "maple-agent-dev.app"
-        members = [(root, None, 0o755),
-                   (root + "/AppRun", self.launcher, int(self.env["FIXTURE_EXEC_MODE"], 8)),
+        members = [(root, None, 0o755), (root + "/usr", None, 0o755), (root + "/usr/bin", None, 0o755),
+                   (root + "/AppRun", "#!/bin/sh\nexit 70\n", int(self.env["FIXTURE_EXEC_MODE"], 8)),
+                   (root + "/usr/bin/maple-agent", self.launcher, 0o755),
                    (root + "/resource.txt", "fixture data", int(self.env["FIXTURE_DATA_MODE"], 8))]
         with tarfile.open(self.archive, "w:gz") as archive:
             for name, content, mode in members:

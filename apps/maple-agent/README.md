@@ -429,6 +429,8 @@ A pure Darwin package is not exposed: the pinned Nix Swift/SDK combination
 cannot build the CUA bridges with the SDK required for recording. The supported
 macOS path uses Xcode's Swift and Metal toolchains and is also used by CI.
 Linux builds use Nix-provided ALSA, font, keyboard, Wayland and Vulkan libraries.
+Release bundles link against glibc 2.31 with `cargo zigbuild` and run on the
+host's own libraries; see [desktop builds](docs/desktop-builds.md).
 
 ### Shared Rust build cache
 

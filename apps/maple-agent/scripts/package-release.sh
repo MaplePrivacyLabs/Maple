@@ -39,7 +39,7 @@ if [[ "$platform" == macos-aarch64 ]]; then
     python3 "$component/scripts/macos-build-info.py" "$binary" --profile "$profile" \
         --source-sha "$source_sha" > "$staging/build-info.json"
 else
-    "$binary" --build-info > "$staging/build-info.json"
+    "$component/scripts/run-linux-payload.sh" "$binary" --build-info > "$staging/build-info.json"
 fi
 python3 "$metadata_tool" validate "$profile" "$staging/build-info.json" --source-sha "$source_sha" --platform "$platform"
 field() { python3 "$metadata_tool" field "$profile" "$staging/build-info.json" --field "$1" --platform "$platform"; }

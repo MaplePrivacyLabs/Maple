@@ -2857,6 +2857,26 @@ fn cancel_quit(cx: &mut App) {
     cancel_native_quit();
 }
 
+/// wgpu reports a GPU stack that failed to load only as an empty backend set,
+/// and one that loaded without usable adapters as "No GPU adapter found". On
+/// Linux both usually mean the host's Vulkan/OpenGL driver is missing or old.
+fn main_window_failure(error: &impl std::fmt::Display) -> String {
+    let detail = format!("{error:#}");
+    if cfg!(target_os = "linux")
+        && (detail.contains("Failed to create surface") || detail.contains("No GPU adapter found"))
+    {
+        format!(
+            "failed to open main window: {detail}\n\
+             Maple could not find a usable Vulkan or OpenGL GPU driver. Check that \
+             your graphics driver (Mesa or the vendor driver) and the Vulkan loader \
+             are installed and up to date. Run with VK_LOADER_DEBUG=error,warn,driver \
+             to see why a driver did not load."
+        )
+    } else {
+        format!("failed to open main window: {detail}")
+    }
+}
+
 /// A separate window also works when Quit comes from a tray with no open window.
 fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(560.), px(270.)), cx);
@@ -3709,7 +3729,7 @@ pub fn run() {
                         plan_check: PlanCheck::default(),
                     })
                 })
-                .expect("failed to open main window");
+                .unwrap_or_else(|error| panic!("{}", main_window_failure(&error)));
             log::debug!("startup: window open at {} ms", crate::startup_elapsed());
             window
                 .update(cx, |app: &mut MapleApp, _window, cx| {

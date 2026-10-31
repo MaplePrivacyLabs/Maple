@@ -42,7 +42,8 @@ def fixture_entries(descriptor=None):
             entry(ROOT + "/AppRun", b"#!/bin/sh\nexit 71\n", 0o755),
             entry(ROOT + "/install.sh", b"#!/bin/sh\nexit 72\n", 0o755),
             entry(ROOT + "/usr/bin/maple-agent", b"\x7fELFsynthetic-agent", 0o755),
-            entry(ROOT + "/usr/lib/ld-linux-x86-64.so.2", b"\x7fELFsynthetic-loader", 0o755),
+            # Bundle format v1 compatibility launcher: an executable shell script.
+            entry(ROOT + "/usr/lib/ld-linux-x86-64.so.2", b"#!/bin/sh\nexit 74\n", 0o755),
             entry(ROOT + "/usr/lib/libc.so.6", b"\x7fELFsynthetic-libc", 0o755),
             entry(ROOT + "/usr/share/maple-agent/install.py", b"raise SystemExit(73)\n"),
             entry(ROOT + "/usr/lib/libc-alias.so", b"", 0o777, tarfile.SYMTYPE, "libc.so.6")]
@@ -238,48 +239,40 @@ class LinuxBundleLauncherTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(readme.stat().st_mode), 0o644)
                 self.assertEqual((root / "install.sh").read_bytes(), (bundle.SCRIPTS / "linux-install.sh").read_bytes())
 
-    def test_clears_same_appdir_image_state_and_preserves_host_overrides(self):
+    @unittest.skipUnless(Path("/lib64/ld-linux-x86-64.so.2").exists(), "needs a glibc host loader")
+    def test_clears_same_appdir_image_state_and_preserves_host_environment(self):
         with tempfile.TemporaryDirectory() as temporary:
             app = Path(temporary).resolve() / "maple-agent.app"
-            library = app / "usr/lib"
-            library.mkdir(parents=True)
-            (app / "usr/bin").mkdir()
-            (app / "usr/bin/maple-agent").write_text("not executed by the fixture loader")
+            (app / "usr/bin").mkdir(parents=True)
+            payload = app / "usr/bin/maple-agent"
+            payload.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                               "print(json.dumps({'env': dict(os.environ), 'argv': sys.argv[1:]}))\n")
+            payload.chmod(0o755)
             launcher = app / "AppRun"
             launcher.write_text(bundle.bundle_apprun())
             launcher.chmod(0o755)
-            loader = library / "ld-linux-x86-64.so.2"
-            loader.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
-                              "print(json.dumps({'env': dict(os.environ), 'argv': sys.argv[1:]}))\n")
-            loader.chmod(0o755)
-            custom = {"FONTCONFIG_FILE": "/custom/fonts.conf", "FONTCONFIG_PATH": "/custom/fonts",
-                      "ALSA_CONFIG_PATH": "/custom/alsa.conf", "ALSA_CONFIG_DIR": "/custom/alsa",
-                      "ALSA_PLUGIN_DIR": "/custom/alsa-lib", "PULSE_SERVER": "unix:/custom/pulse",
-                      "PIPEWIRE_REMOTE": "fixture-pipewire", "VK_DRIVER_FILES": "/custom/vulkan.json"}
-            for locale_override in ("/custom/X11/locale", "", None):
-                with self.subTest(XLOCALEDIR=locale_override):
+            # The host's libraries read their own configuration; AppRun adds
+            # no loader, library, font, locale, audio or GPU driver overrides.
+            custom = {"FONTCONFIG_FILE": "/custom/fonts.conf", "ALSA_CONFIG_PATH": "/custom/alsa.conf",
+                      "PULSE_SERVER": "unix:/custom/pulse", "VK_DRIVER_FILES": "/custom/vulkan.json",
+                      "LD_LIBRARY_PATH": "/custom/lib", "XLOCALEDIR": ""}
+            for inherited in (custom, {}):
+                with self.subTest(inherited=sorted(inherited)):
                     # Keep the pinned shell's utilities available inside Nix sandboxes.
                     environment = {"PATH": os.environ["PATH"], "APPDIR": str(app),
-                                   "APPIMAGE": "/stale/outer.AppImage", "APPIMAGE_EXTRACT_AND_RUN": "1", **custom}
-                    if locale_override is not None:
-                        environment["XLOCALEDIR"] = locale_override
+                                   "APPIMAGE": "/stale/outer.AppImage", "APPIMAGE_EXTRACT_AND_RUN": "1", **inherited}
                     result = subprocess.run([str(launcher), "--build-info"], env=environment,
                                             capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     observed = json.loads(result.stdout)
-                    self.assertEqual(observed["env"]["APPDIR"], str(app))
+                    expected = {key: value for key, value in environment.items() if not key.startswith("APPIMAGE")}
+                    self.assertEqual({key: observed["env"].get(key) for key in expected}, expected)
                     self.assertNotIn("APPIMAGE", observed["env"])
                     self.assertNotIn("APPIMAGE_EXTRACT_AND_RUN", observed["env"])
-                    for key, value in custom.items():
-                        self.assertEqual(observed["env"][key], value, key)
-                    if locale_override is not None:
-                        self.assertEqual(observed["env"]["XLOCALEDIR"], locale_override)
-                    elif os.access("/usr/share/X11/locale/compose.dir", os.R_OK):
-                        self.assertEqual(observed["env"]["XLOCALEDIR"], "/usr/share/X11/locale")
-                    else:
-                        self.assertNotIn("XLOCALEDIR", observed["env"])
-                    self.assertEqual(observed["argv"][:2], ["--inhibit-cache", "--library-path"])
-                    self.assertEqual(observed["argv"][-2:], [str(app / "usr/bin/maple-agent"), "--build-info"])
+                    for key in custom:
+                        if key not in inherited:
+                            self.assertNotIn(key, observed["env"])
+                    self.assertEqual(observed["argv"], ["--build-info"])
 
 
 if __name__ == "__main__":

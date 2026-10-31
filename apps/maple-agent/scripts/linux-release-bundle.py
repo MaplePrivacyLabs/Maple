@@ -111,7 +111,8 @@ def inspect_archive(archive, expected_profile=None):
             elif member.isfile():
                 payload = source.extractfile(member)
                 prefix = payload.read(4)
-                executable = prefix == b"\x7fELF" or path.name in ("AppRun", "install.sh") and len(path.parts) == 2
+                relative = PurePosixPath(*path.parts[1:]).as_posix() if len(path.parts) > 1 else ""
+                executable = prefix == b"\x7fELF" or relative in install.SCRIPT_EXECUTABLES
                 install.need(member.mode == (0o755 if executable else 0o644), "unsafe tar file permissions")
                 if path.name == "bundle.json" and len(path.parts) == 2:
                     install.need(member.size <= install.MAX_DESCRIPTOR, "oversized bundle descriptor")
@@ -146,7 +147,7 @@ def inspect_archive(archive, expected_profile=None):
             target = links[target]
         install.need(target in members, "tar contains dangling symlink")
     for relative in ("bundle.json", "AppRun", "usr/bin/maple-agent", "usr/lib/ld-linux-x86-64.so.2",
-                     "usr/lib/libc.so.6", "install.sh", "usr/share/maple-agent/install.py"):
+                     "install.sh", "usr/share/maple-agent/install.py"):
         member = members.get(root + "/" + relative)
         install.need(member is not None and member.isfile(), "tar is missing required regular payload")
     return value, members
