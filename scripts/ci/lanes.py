@@ -296,10 +296,12 @@ LANES: Tuple[Lane, ...] = (
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),) + FAST_RELEASE, timeout=90, gate=False),
     # Native ARM64 build, updater tests and installer smoke. This is a
     # full packaging rehearsal, selected by labels/nightly rather than ordinary PRs.
-    Lane("agent-package-windows-arm64", AGENT_WINDOWS_PACKAGING, pr_paths=(), labels=("ci:package", "ci:windows", "ci:full"),
+    Lane("agent-package-windows-arm64", AGENT_WINDOWS_PACKAGING + ("apps/maple-agent/scripts/test_windows_release.py",),
+         pr_paths=(), labels=("ci:package", "ci:windows", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-windows-arm64", runner=GITHUB_WINDOWS_ARM64,
          workdir="apps/maple-agent",
-         run="cargo test -p maple-agent-updater --locked --target aarch64-pc-windows-msvc --no-fail-fast -- --test-threads=1 && " + WINDOWS_PACKAGE,
+         run="python3 scripts/test_windows_release.py NativeNSISUninstallCopyTests"
+             " && cargo test -p maple-agent-updater --locked --target aarch64-pc-windows-msvc --no-fail-fast -- --test-threads=1 && " + WINDOWS_PACKAGE,
          env=(("MAPLE_WINDOWS_ARCH", "aarch64"), ("RUSTFLAGS", "-D warnings -C target-feature=+crt-static")) + FAST_RELEASE,
          timeout=120, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script

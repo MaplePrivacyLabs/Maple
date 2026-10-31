@@ -433,6 +433,7 @@ class PackageBoundaryTests(unittest.TestCase):
             directory = Path(temporary)
             extraction = directory / "extracted"
             extraction.mkdir()
+            (extraction / "uninstall.exe").write_bytes(b"verified uninstaller fixture")
             manifest = {"package": "installer.exe", "updater": "bundle.tar.gz", "build": "12"}
             primary = ValueError("original installer failure")
             def cleanup():
@@ -454,8 +455,10 @@ class PackageBoundaryTests(unittest.TestCase):
                 checker = payload / release.INSTALLER_CHECKER
                 checker.parent.mkdir()
                 checker.write_bytes(b"verified checker fixture")
+                (payload / "uninstall.exe").write_bytes(b"verified uninstaller fixture")
                 return payload / "uninstall.exe"
-            def smoke(*_arguments, checker, arch):
+            def smoke(*_arguments, checker, uninstaller_sha256, arch):
+                self.assertEqual(uninstaller_sha256, hashlib.sha256(b"verified uninstaller fixture").hexdigest())
                 self.assertEqual(arch, "x86_64")
                 self.assertEqual(checker.read_bytes(), b"verified checker fixture")
                 checked.append(checker)
@@ -468,7 +471,11 @@ class PackageBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             manifest = {"package": "installer.exe", "updater": "bundle.tar.gz", "build": "12"}
-            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info("dev", "aarch64")), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=lambda _installer, payload, *_args: payload / "uninstall.exe"), patch.object(release, "verify_payload") as payload, patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host") as host, patch.object(release, "smoke_installer") as installed:
+            def extract(_installer, payload, *_arguments):
+                uninstaller = payload / "uninstall.exe"
+                uninstaller.write_bytes(b"verified uninstaller fixture")
+                return uninstaller
+            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info("dev", "aarch64")), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "verify_payload") as payload, patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host") as host, patch.object(release, "smoke_installer") as installed:
                 release.verify("dev", directory, True, smoke=True, arch="aarch64")
             self.assertEqual(payload.call_args.kwargs["arch"], "aarch64")
             host.assert_called_once_with("aarch64")
@@ -1398,7 +1405,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
         diagnostics = io.StringIO()
         with patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")), patch.object(release, "run", side_effect=primary) as commands, patch.object(sys, "stderr", diagnostics):
             with self.assertRaises(subprocess.CalledProcessError) as raised:
-                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
+                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, uninstaller_sha256="a" * 64, checker=Path("verified-checker.exe"))
         self.assertIs(raised.exception, primary)
         self.assertEqual(commands.call_count, 1)
         evidence = json.loads(diagnostics.getvalue().split("Windows installer failure evidence: ", 1)[1])
@@ -1442,7 +1449,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
             proxy = types.SimpleNamespace(name=str(scratch), cleanup=cleanup)
             with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value=environment), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")) as probe, patch.object(release, "run", side_effect=install) as commands, patch.object(sys, "stderr", diagnostics):
                 with self.assertRaises(subprocess.CalledProcessError) as raised:
-                    release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
+                    release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, uninstaller_sha256="a" * 64, checker=Path("verified-checker.exe"))
             self.assertIs(raised.exception, primary)
             self.assertEqual(commands.call_count, 1)
             self.assertIs(probe.call_args.args[1], environment)
@@ -1474,7 +1481,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
         diagnostics = io.StringIO()
         with patch.dict(sys.modules, winreg=registry), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")), patch.object(release, "run", side_effect=command), patch.object(sys, "stderr", diagnostics):
             with self.assertRaises(ValueError) as raised:
-                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
+                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, uninstaller_sha256="a" * 64, checker=Path("verified-checker.exe"))
         self.assertIs(raised.exception, primary)
         self.assertEqual(calls, 2)
         self.assertIn('"phase": "installed-verification"', diagnostics.getvalue())
@@ -1523,7 +1530,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
                 diagnostics = io.StringIO()
                 with patch.object(release, "verification_scratch", return_value=nullcontext(scratch)), patch.dict(sys.modules, winreg=registry), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")), patch.object(release, "run", side_effect=install), patch.object(release, "verify_payload", side_effect=installed_verification) as verified, patch.object(release, "signature"), patch.object(sys, "stderr", diagnostics):
                     with self.assertRaises(ValueError) as raised:
-                        release.smoke_installer(Path("fixture.exe"), identity, True, "12", {}, checker=Path("checker.exe"), arch=arch)
+                        release.smoke_installer(Path("fixture.exe"), identity, True, "12", {}, uninstaller_sha256="a" * 64, checker=Path("checker.exe"), arch=arch)
                 self.assertEqual(verified.call_args.kwargs["arch"], arch)
                 if opposite:
                     self.assertIn("PE architecture", str(raised.exception))
@@ -1538,7 +1545,7 @@ class SmokeDiagnosticsTests(unittest.TestCase):
         result = subprocess.CompletedProcess(["checker", "--internal-windows-installer-preflight"], 1, b"fixed native guard failure\x1b[31m\x00")
         with patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=result), patch.object(release, "run") as commands, patch.object(sys, "stderr", diagnostics):
             with self.assertRaises(subprocess.CalledProcessError):
-                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, checker=Path("verified-checker.exe"))
+                release.smoke_installer(Path("fixture.exe"), info(), False, "12", {}, uninstaller_sha256="a" * 64, checker=Path("verified-checker.exe"))
         commands.assert_not_called()
         self.assertIn("fixed native guard failure", diagnostics.getvalue())
         self.assertNotIn("\x1b", diagnostics.getvalue())
@@ -1555,7 +1562,7 @@ class UnsignedProdSmokeTests(unittest.TestCase):
         # This portable test covers the verifier's negative-proof assertions.
         # Actual NSIS/native trust behavior remains a Windows consumer test.
         with patch.dict(sys.modules, winreg=self.registry()), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 1, b"expected unsigned refusal")), patch.object(subprocess, "run", side_effect=invoke), patch.object(release, "gui_smoke") as gui:
-            release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {}, checker=Path("checker.exe"))
+            release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {}, uninstaller_sha256="a" * 64, checker=Path("checker.exe"))
             gui.assert_not_called()
 
     def test_unsigned_prod_requires_failure_without_destination_changes(self):
@@ -1587,7 +1594,162 @@ class UnsignedProdSmokeTests(unittest.TestCase):
         registry.OpenKey = changed
         with patch.dict(sys.modules, winreg=registry), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 1, b"expected unsigned refusal")), patch.object(subprocess, "run", return_value=subprocess.CompletedProcess("preview", 1)):
             with self.assertRaisesRegex(ValueError, "registration"):
-                release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {}, checker=Path("checker.exe"))
+                release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {}, uninstaller_sha256="a" * 64, checker=Path("checker.exe"))
+
+
+class CopiedUninstallerTests(unittest.TestCase):
+    def fixture(self, scratch):
+        installed = scratch / "install with spaces"
+        installed.mkdir()
+        uninstaller = installed / "uninstall.exe"
+        uninstaller.write_bytes(b"exact verified NSIS fixture bytes")
+        return installed, uninstaller, hashlib.sha256(uninstaller.read_bytes()).hexdigest()
+
+    def test_copy_preserves_exact_verified_bytes_policy_and_waited_retirement(self):
+        for unsigned in (True, False):
+            with self.subTest(unsigned=unsigned), tempfile.TemporaryDirectory() as temporary:
+                scratch = Path(temporary)
+                installed, uninstaller, digest = self.fixture(scratch)
+                copied = scratch / "uninstaller-runner/uninstall.exe"
+                environment = {"FIXTURE": "isolated"}
+                def uninstall(command, **options):
+                    self.assertEqual(command, f'"{copied}" /S _?={installed}')
+                    self.assertIs(options["env"], environment)
+                    self.assertEqual(options["cwd"], scratch)
+                    self.assertEqual(copied.read_bytes(), uninstaller.read_bytes())
+                    self.assertEqual(hashlib.sha256(copied.read_bytes()).hexdigest(), digest)
+                    # Model the actual child's completed work. A returned exit
+                    # status cannot bless the original remaining on disk.
+                    uninstaller.unlink()
+                    return subprocess.CompletedProcess(command, 0)
+                with patch.object(release, "signature") as signature, patch.object(release, "run", side_effect=uninstall):
+                    release.run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, digest, "aarch64")
+                self.assertEqual(signature.call_args_list, [unittest.mock.call(uninstaller, unsigned), unittest.mock.call(copied, unsigned)])
+                self.assertFalse(copied.parent.exists())
+                self.assertFalse(uninstaller.exists())
+
+    def test_wrong_source_hash_and_changed_verified_copy_never_execute(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            installed, uninstaller, digest = self.fixture(scratch)
+            with patch.object(release, "signature"), patch.object(release, "run") as command:
+                with self.assertRaisesRegex(ValueError, "verified installer"):
+                    release.run_copied_uninstaller(uninstaller, installed, scratch, {}, True, "0" * 64, "aarch64")
+                command.assert_not_called()
+            def mutate_copy(path, _unsigned):
+                if path.parent.name == "uninstaller-runner":
+                    path.write_bytes(b"changed after signature inspection")
+            with patch.object(release, "signature", side_effect=mutate_copy), patch.object(release, "run") as command:
+                with self.assertRaisesRegex(ValueError, "changed during signature"):
+                    release.run_copied_uninstaller(uninstaller, installed, scratch, {}, True, digest, "aarch64")
+                command.assert_not_called()
+
+    def test_original_remnant_and_denied_absence_probe_cannot_pass(self):
+        for denied in (False, True):
+            with self.subTest(denied=denied), tempfile.TemporaryDirectory() as temporary:
+                scratch = Path(temporary)
+                installed, uninstaller, digest = self.fixture(scratch)
+                original_lstat = Path.lstat
+                denial = PermissionError("fixed absence probe failure")
+                # Set the denial only after the child returns; do not replace
+                # the initial source regular-file/hash/signature admission.
+                after_child = False
+                def probe(path, *arguments, **options):
+                    if denied and after_child and path == uninstaller:
+                        raise denial
+                    return original_lstat(path, *arguments, **options)
+                def uninstall(command, **_options):
+                    nonlocal after_child
+                    after_child = True
+                    return subprocess.CompletedProcess(command, 0)
+                with patch.object(release, "signature"), patch.object(release, "run", side_effect=uninstall), patch.object(Path, "lstat", probe):
+                    with self.assertRaises(PermissionError if denied else ValueError) as raised:
+                        release.run_copied_uninstaller(uninstaller, installed, scratch, {}, True, digest, "aarch64")
+                if denied:
+                    self.assertIs(raised.exception, denial)
+                else:
+                    self.assertIn("original installed uninstaller", str(raised.exception))
+
+    def test_missing_entry_is_success_but_access_denial_is_not_absence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "missing.exe"
+            release.require_absent(missing, "must be missing")
+            denial = PermissionError("fixed lstat denial")
+            with patch.object(Path, "lstat", side_effect=denial), self.assertRaises(PermissionError) as raised:
+                release.require_absent(missing, "must be missing")
+            self.assertIs(raised.exception, denial)
+
+    def test_child_failure_is_not_replaced_by_cleanup_or_retirement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            installed, uninstaller, digest = self.fixture(scratch)
+            primary = subprocess.CalledProcessError(52, "owned copied uninstaller")
+            with patch.object(release, "signature"), patch.object(release, "run", side_effect=primary):
+                with self.assertRaises(subprocess.CalledProcessError) as raised:
+                    release.run_copied_uninstaller(uninstaller, installed, scratch, {}, True, digest, "aarch64")
+            self.assertIs(raised.exception, primary)
+            self.assertTrue(uninstaller.is_file())
+            self.assertTrue((scratch / "uninstaller-runner/uninstall.exe").is_file())
+
+
+@unittest.skipUnless(sys.platform == "win32", "requires the native Windows NSIS process model")
+class NativeNSISUninstallCopyTests(unittest.TestCase):
+    def test_verified_copy_retires_original_and_runner_after_real_child_exit(self):
+        # Tiny pinned-tool fixture: this proves NSIS relocation/wait semantics,
+        # not a Maple install, GUI, host, signed package or updater qualification.
+        arch = release.os.environ.get("MAPLE_WINDOWS_ARCH", "x86_64")
+        release.require_native_host(arch)
+        with release.verification_scratch("maple-nsis-uninstall-fixture-") as scratch:
+            compiler = release.install_nsis(scratch)
+            source = scratch / "fixture.nsi"
+            installer = scratch / "fixture-setup.exe"
+            payload = scratch / "input.txt"
+            payload.write_bytes(b"owned NSIS fixture payload")
+            source.write_text(fr'''Unicode true
+Name "Maple NSIS copy fixture"
+OutFile "{release.nsis_literal(installer)}"
+RequestExecutionLevel user
+SilentInstall silent
+SilentUnInstall silent
+Section "Install"
+  SetOutPath "$INSTDIR"
+  File /oname=owned.txt "{release.nsis_literal(payload)}"
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+  IfErrors failed
+  SetErrorLevel 0
+  Goto done
+failed:
+  SetErrorLevel 41
+  Abort
+done:
+SectionEnd
+Section "Uninstall"
+  ClearErrors
+  Delete "$INSTDIR\owned.txt"
+  IfErrors failed
+  Delete "$INSTDIR\uninstall.exe"
+  IfErrors failed
+  SetErrorLevel 0
+  Goto done
+failed:
+  SetErrorLevel 51
+  Abort
+done:
+SectionEnd
+''', encoding="utf-8", newline="\n")
+            release.run([compiler, "/V2", source], timeout=120)
+            installed = scratch / "install with spaces"
+            release.run(release.command_as_windows_args(f'"{installer}" /S /D={installed}'), timeout=120)
+            uninstaller = installed / "uninstall.exe"
+            digest = release.uninstaller_digest(uninstaller)
+            sentinel = installed / "user-created-file.txt"
+            sentinel.write_bytes(b"preserve this user file")
+            environment = release.smoke_environment(scratch)
+            release.run_copied_uninstaller(uninstaller, installed, scratch, environment, True, digest, arch)
+            self.assertEqual({path.name for path in installed.iterdir()}, {sentinel.name})
+            self.assertEqual(sentinel.read_bytes(), b"preserve this user file")
+            self.assertFalse((scratch / "uninstaller-runner").exists())
+        print("Verified pinned NSIS copied-uninstaller semantics only; no Maple runtime qualification", flush=True)
 
 
 if __name__ == "__main__":
