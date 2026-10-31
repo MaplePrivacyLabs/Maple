@@ -81,6 +81,7 @@ fn call(input: &str) -> SessionMessage {
                 .as_object()
                 .unwrap()
                 .clone(),
+            arguments_error: None,
             partial_json: None,
         })],
         api: "fixture".into(),
