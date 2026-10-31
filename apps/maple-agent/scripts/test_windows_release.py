@@ -1749,6 +1749,99 @@ class SuccessfulSmokeUninstallerLifecycleTests(unittest.TestCase):
         self.exercise_success_cleanup("late-missing")
 
 
+class VerificationScratchCleanupCallbackTests(unittest.TestCase):
+    def test_callback_observes_actual_cleanup_failure_before_cleanup_logs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = (Path(temporary) / "scratch").resolve()
+            scratch.mkdir()
+            cleanup_error = PermissionError("fixed cleanup failure")
+            output, diagnostics, observations = io.StringIO(), io.StringIO(), []
+
+            def cleanup():
+                raise cleanup_error
+
+            def callback(owner, error):
+                self.assertEqual(owner, scratch)
+                self.assertIs(error, cleanup_error)
+                self.assertTrue(scratch.is_dir())
+                # The failure and timing record must describe the cleanup that
+                # already happened, after its optional diagnostic observation.
+                self.assertEqual(output.getvalue(), "")
+                self.assertEqual(diagnostics.getvalue(), "")
+                observations.append((owner, error))
+
+            proxy = types.SimpleNamespace(name=str(scratch), cleanup=cleanup)
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), \
+                    patch.object(sys, "stdout", output), patch.object(sys, "stderr", diagnostics):
+                with self.assertRaises(PermissionError) as raised:
+                    with release.verification_scratch("fixture-", cleanup_failure=callback):
+                        pass
+            self.assertIs(raised.exception, cleanup_error)
+            self.assertEqual(observations, [(scratch, cleanup_error)])
+            self.assertIn("Windows verification cleanup failure: PermissionError", diagnostics.getvalue())
+            record = json.loads(output.getvalue().split("Windows verification cleanup: ", 1)[1])
+            self.assertEqual(record["result"], "failure")
+            self.assertEqual(record["error"], "PermissionError")
+
+    def test_callback_never_runs_when_standard_cleanup_succeeds(self):
+        import shutil
+
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = (Path(temporary) / "scratch").resolve()
+            scratch.mkdir()
+            callback = Mock(side_effect=AssertionError("a successful cleanup has no diagnostic callback"))
+            proxy = types.SimpleNamespace(name=str(scratch), cleanup=lambda: shutil.rmtree(scratch))
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), \
+                    patch.object(sys, "stdout", io.StringIO()):
+                with release.verification_scratch("fixture-", cleanup_failure=callback):
+                    pass
+            callback.assert_not_called()
+            release.require_scratch_absent(scratch)
+
+    def test_default_callback_is_absent_and_launches_no_diagnostic_worker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = (Path(temporary) / "scratch").resolve()
+            scratch.mkdir()
+            cleanup_error = PermissionError("fixed default cleanup failure")
+            proxy = types.SimpleNamespace(name=str(scratch), cleanup=Mock(side_effect=cleanup_error))
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), \
+                    patch.object(release.subprocess, "run") as worker, \
+                    patch.object(sys, "stdout", io.StringIO()), patch.object(sys, "stderr", io.StringIO()):
+                with self.assertRaises(PermissionError) as raised:
+                    # The default must not enroll ordinary verifier callers in
+                    # platform diagnostics or create any native subprocess.
+                    with release.verification_scratch("fixture-"):
+                        pass
+            self.assertIs(raised.exception, cleanup_error)
+            proxy.cleanup.assert_called_once_with()
+            worker.assert_not_called()
+
+    def test_callback_exception_cannot_replace_cleanup_or_earlier_product_error(self):
+        for earlier in (None, ValueError("fixed earlier product failure")):
+            with self.subTest(earlier=type(earlier).__name__), tempfile.TemporaryDirectory() as temporary:
+                scratch = (Path(temporary) / "scratch").resolve()
+                scratch.mkdir()
+                cleanup_error = PermissionError("fixed secondary cleanup failure")
+                callback_error = RuntimeError("fixed callback failure")
+                expected = earlier if earlier is not None else cleanup_error
+                callback = Mock(side_effect=callback_error)
+                proxy = types.SimpleNamespace(name=str(scratch), cleanup=Mock(side_effect=cleanup_error))
+                output, diagnostics = io.StringIO(), io.StringIO()
+                with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), \
+                        patch.object(sys, "stdout", output), patch.object(sys, "stderr", diagnostics):
+                    with self.assertRaises(type(expected)) as raised:
+                        with release.verification_scratch("fixture-", cleanup_failure=callback):
+                            if earlier is not None:
+                                raise earlier
+                self.assertIs(raised.exception, expected)
+                callback.assert_called_once_with(scratch, cleanup_error)
+                proxy.cleanup.assert_called_once_with()
+                self.assertIn("Windows verification cleanup failure: PermissionError", diagnostics.getvalue())
+                record = json.loads(output.getvalue().split("Windows verification cleanup: ", 1)[1])
+                self.assertEqual(record["result"], "failure")
+                self.assertEqual(record["error"], "PermissionError")
+
+
 class VerificationScratchLifecycleTests(unittest.TestCase):
     def test_path_resolution_failure_still_cleans_the_created_scratch(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1958,6 +2051,265 @@ class CopiedUninstallerTests(unittest.TestCase):
             self.assertTrue((scratch / "uninstaller-runner/uninstall.exe").is_file())
 
 
+class NativeCopiedFileOwners:
+    """Failure telemetry for one fixture copy; no owner mutation or pass predicate."""
+    CAP = 4
+
+    def __init__(self):
+        class FileTime(ctypes.Structure):
+            _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
+        class Standard(ctypes.Structure):
+            _fields_ = [("allocation", ctypes.c_int64), ("eof", ctypes.c_int64), ("links", ctypes.c_uint32),
+                        ("delete_pending", ctypes.c_ubyte), ("directory", ctypes.c_ubyte)]
+        class Status(ctypes.Union):
+            _fields_ = [("status", ctypes.c_int32), ("pointer", ctypes.c_void_p)]
+        class IOStatus(ctypes.Structure):
+            _anonymous_ = ("result",)
+            _fields_ = [("result", Status), ("information", ctypes.c_size_t)]
+        class Pids(ctypes.Structure):
+            _fields_ = [("count", ctypes.c_uint32), ("pids", ctypes.c_size_t * self.CAP)]
+        class UniqueProcess(ctypes.Structure):
+            _fields_ = [("pid", ctypes.c_uint32), ("started", FileTime)]
+        class ProcessInfo(ctypes.Structure):
+            _fields_ = [("process", UniqueProcess), ("app_name", ctypes.c_uint16 * 256),
+                        ("service_name", ctypes.c_uint16 * 64), ("kind", ctypes.c_int32),
+                        ("status", ctypes.c_uint32), ("session", ctypes.c_uint32), ("restartable", ctypes.c_int32)]
+        self.filetime_type, self.standard_type, self.io_type = FileTime, Standard, IOStatus
+        self.pids_type, self.unique_type, self.rm_type = Pids, UniqueProcess, ProcessInfo
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.rm = ctypes.WinDLL("rstrtmgr", use_last_error=True)
+        self.nt = ctypes.WinDLL("ntdll", use_last_error=True)
+        def bind(library, name, args, result):
+            function = getattr(library, name)
+            function.argtypes, function.restype = args, result
+            return function
+        handle, dword, pointer, boolean = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int32
+        bind(self.kernel, "CreateFileW", (ctypes.c_wchar_p, dword, dword, pointer, dword, dword, handle), handle)
+        bind(self.kernel, "GetFileInformationByHandleEx", (handle, ctypes.c_int32, pointer, dword), boolean)
+        bind(self.kernel, "CloseHandle", (handle,), boolean)
+        bind(self.kernel, "OpenProcess", (dword, boolean, dword), handle)
+        bind(self.kernel, "GetProcessTimes", (handle, pointer, pointer, pointer, pointer), boolean)
+        bind(self.kernel, "QueryFullProcessImageNameW", (handle, dword, pointer, pointer), boolean)
+        self.query_nt = None
+        try:
+            self.query_nt = bind(self.nt, "NtQueryInformationFile", (handle, pointer, pointer, dword, ctypes.c_int32), ctypes.c_int32)
+        except AttributeError:
+            pass
+        bind(self.rm, "RmStartSession", (pointer, dword, pointer), dword)
+        bind(self.rm, "RmRegisterResources", (dword, dword, pointer, dword, pointer, dword, pointer), dword)
+        bind(self.rm, "RmGetList", (dword, pointer, pointer, pointer, pointer), dword)
+        bind(self.rm, "RmEndSession", (dword,), dword)
+
+    @staticmethod
+    def ticks(value):
+        return value.low | (value.high << 32)
+
+    def process(self, pid, expected_creation=None):
+        result = {"pid": pid, "diagnostic_process": pid == release.os.getpid()}
+        handle = self.kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION only
+        if not handle:
+            return {**result, "open_process_winerror": ctypes.get_last_error()}
+        try:
+            created, exited, kernel, user = (self.filetime_type() for _ in range(4))
+            if not self.kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
+                result["process_times_winerror"] = ctypes.get_last_error()
+                return result
+            result["creation_time"] = self.ticks(created)
+            if expected_creation is not None and result["creation_time"] != expected_creation:
+                result["pid_reused"] = True
+                return result
+            name, length = ctypes.create_unicode_buffer(32768), ctypes.c_uint32(32768)
+            if self.kernel.QueryFullProcessImageNameW(handle, 0, name, ctypes.byref(length)):
+                result["basename"] = release.ntpath.basename(name.value)[:64]
+            else:
+                result["image_query_winerror"] = ctypes.get_last_error()
+            return result
+        finally:
+            if not self.kernel.CloseHandle(handle):
+                result["close_process_winerror"] = ctypes.get_last_error()
+
+    def file(self, path):
+        result = {"owner_result": "unknown"}
+        # Read only, all share modes, OPEN_EXISTING + OPEN_REPARSE_POINT.
+        handle = self.kernel.CreateFileW(str(path), 0x80000000, 7, None, 3, 0x00200000, None)
+        if handle == ctypes.c_void_p(-1).value:
+            return {**result, "open_file_winerror": ctypes.get_last_error()}
+        try:
+            standard = self.standard_type()
+            if self.kernel.GetFileInformationByHandleEx(handle, 1, ctypes.byref(standard), ctypes.sizeof(standard)):
+                result["standard"] = {"links": standard.links, "delete_pending": bool(standard.delete_pending), "directory": bool(standard.directory)}
+            else:
+                result["standard_winerror"] = ctypes.get_last_error()
+            if self.query_nt is None:
+                result["nt_query"] = "unavailable"
+                return result
+            # Class47 is reserved for system use: optional raw telemetry only.
+            iosb, pids = self.io_type(), self.pids_type()
+            status = self.query_nt(handle, ctypes.byref(iosb), ctypes.byref(pids), ctypes.sizeof(pids), 47)
+            result.update(ntstatus=f"0x{status & 0xffffffff:08x}", io_status=f"0x{iosb.status & 0xffffffff:08x}", io_bytes=iosb.information)
+            if status == 0 and iosb.status == 0 and iosb.information >= self.pids_type.pids.offset:
+                result["pid_count"] = pids.count
+                needed = self.pids_type.pids.offset + pids.count * ctypes.sizeof(ctypes.c_size_t)
+                if pids.count <= self.CAP and needed <= iosb.information <= ctypes.sizeof(pids):
+                    result["owners"] = [self.process(int(pid)) for pid in pids.pids[:pids.count]]
+                else:
+                    result["truncated_or_short"] = True
+            return result
+        finally:
+            if not self.kernel.CloseHandle(handle):
+                result["close_file_winerror"] = ctypes.get_last_error()
+
+    def restart_manager(self, path):
+        result = {"owner_result": "unknown"}
+        session, key = ctypes.c_uint32(), ctypes.create_unicode_buffer(33)
+        result["start_status"] = self.rm.RmStartSession(ctypes.byref(session), 0, key)
+        if result["start_status"]:
+            return result
+        try:
+            paths = (ctypes.c_wchar_p * 1)(str(path))
+            result["register_status"] = self.rm.RmRegisterResources(session.value, 1, paths, 0, None, 0, None)
+            if result["register_status"]:
+                return result
+            needed, count, reboot = ctypes.c_uint32(), ctypes.c_uint32(self.CAP), ctypes.c_uint32()
+            owners = (self.rm_type * self.CAP)()
+            result["list_status"] = self.rm.RmGetList(session.value, ctypes.byref(needed), ctypes.byref(count), owners, ctypes.byref(reboot))
+            result["needed"], result["count"] = needed.value, count.value
+            if result["list_status"] == 0 and count.value <= self.CAP:
+                result["owners"] = []
+                for owner in owners[:count.value]:
+                    creation = self.ticks(owner.process.started)
+                    process = self.process(owner.process.pid, creation)
+                    process.update(reported_creation_time=creation, kind=owner.kind, status=owner.status,
+                                   service=bytes(owner.service_name).decode("utf-16le", "replace").split("\0", 1)[0][:64])
+                    result["owners"].append(process)
+            elif result["list_status"] == 234 or count.value > self.CAP:
+                result["truncated"] = True
+            return result
+        finally:
+            result["end_status"] = self.rm.RmEndSession(session.value)
+
+
+def native_cleanup_owner_worker():
+    collector = NativeCopiedFileOwners()  # Preload before the fixture child runs.
+    print("NSIS_OWNER_DIAGNOSTIC_READY", flush=True)
+    line = sys.stdin.readline(4097)
+    if not line:
+        return
+    if len(line) > 4096:
+        raise ValueError("Owner diagnostic request exceeds its fixed bound")
+    request = json.loads(line)
+    path = Path(request["path"])
+    if not path.is_absolute() or path.name != "uninstall.exe" or path.parent.name != "uninstaller-runner" or not path.parent.parent.name.startswith("maple-nsis-uninstall-fixture-"):
+        raise ValueError("Diagnostic path is not this native fixture's exact private copy")
+    received = release.time.monotonic_ns()
+    for offset in (0, 0.1, 0.5):
+        delay = offset - (release.time.monotonic_ns() - received) / 1_000_000_000
+        if delay > 0:
+            release.time.sleep(delay)  # Observation only; never retry deletion.
+        started = release.time.monotonic_ns()
+        result = {"inconclusive": True, "callback_monotonic_ns": request["callback_monotonic_ns"],
+                  "request_received_monotonic_ns": received, "query_started_monotonic_ns": started,
+                  "file": collector.file(path), "restart_manager": collector.restart_manager(path)}
+        result["query_finished_monotonic_ns"] = release.time.monotonic_ns()
+        print(json.dumps(result, sort_keys=True), flush=True)
+
+
+class NativeCleanupFailureObserver:
+    """Preloaded, read-only failure observer; only its own worker may be stopped."""
+    def __enter__(self):
+        self.worker, self.unavailable = None, None
+        allowed = {"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"}
+        environment = {key: value for key, value in release.os.environ.items() if key.upper() in allowed}
+        try:
+            self.worker = subprocess.Popen([sys.executable, "-I", str(Path(__file__).resolve()), "--nsis-cleanup-owner-worker"],
+                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment)
+            timer = release.threading.Timer(3, self.stop_owned_worker)
+            timer.start()
+            try:
+                if self.worker.stdout.readline(64) != b"NSIS_OWNER_DIAGNOSTIC_READY\n":
+                    raise ValueError("Owner diagnostic worker did not preload")
+            finally:
+                timer.cancel()
+        except Exception as error:
+            self.unavailable = type(error).__name__
+            try:
+                self.finish()
+            except Exception:
+                pass  # Optional observer setup cannot replace the fixture result.
+        return self.collect
+
+    def collect(self, scratch, _cleanup_error):
+        if self.unavailable:
+            print("Windows NSIS cleanup owner diagnostic: " + json.dumps({"unavailable": self.unavailable, "inconclusive": True}), flush=True)
+            return
+        request = json.dumps({"path": str(scratch / "uninstaller-runner/uninstall.exe"), "callback_monotonic_ns": release.time.monotonic_ns()}).encode() + b"\n"
+        if len(request) > 4096:
+            raise ValueError("Owner diagnostic request exceeds its fixed bound")
+        expired = release.threading.Event()
+        def expire():
+            expired.set()
+            self.stop_owned_worker()
+        timer = release.threading.Timer(8, expire)
+        timer.start()
+        try:
+            self.worker.stdin.write(request)
+            self.worker.stdin.flush()
+            output = self.worker.stdout.read(release.DIAGNOSTIC_LIMIT + 1)
+            self.worker.wait(timeout=1)
+            if len(output) > release.DIAGNOSTIC_LIMIT:
+                raise ValueError("Owner diagnostic output exceeds its fixed bound")
+            invalid = False
+            fields = {"inconclusive", "callback_monotonic_ns", "request_received_monotonic_ns",
+                      "query_started_monotonic_ns", "query_finished_monotonic_ns", "file", "restart_manager"}
+            for line in output.decode("utf-8", "replace").splitlines():
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    invalid = True
+                    continue
+                if not isinstance(record, dict) or set(record) != fields or record.get("inconclusive") is not True:
+                    invalid = True
+                    continue
+                print("Windows NSIS cleanup owner diagnostic: " + json.dumps(record, sort_keys=True), flush=True)
+            if invalid:
+                print("Windows NSIS cleanup owner diagnostic: " + json.dumps({"unavailable": "invalid-or-partial-worker-output", "inconclusive": True}), flush=True)
+        finally:
+            timer.cancel()
+            print("Windows NSIS cleanup owner diagnostic: " + json.dumps({"worker_exit": self.worker.returncode,
+                   "timed_out": expired.is_set(), "inconclusive": True}), flush=True)
+
+    def stop_owned_worker(self):
+        try:
+            self.worker.kill()  # Only this fixture's diagnostic worker, no owner.
+        except OSError:
+            # A timer can race the worker's normal exit. Never emit a thread
+            # traceback or let this optional observation replace fixture failure.
+            pass
+
+    def finish(self):
+        if self.worker is None:
+            return
+        try:
+            if self.worker.stdin and not self.worker.stdin.closed:
+                self.worker.stdin.close()
+        finally:
+            try:
+                try:
+                    self.worker.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    self.stop_owned_worker()
+                    self.worker.wait(timeout=1)
+            finally:
+                self.worker.stdout.close()
+
+    def __exit__(self, error_type, _error, _traceback):
+        try:
+            self.finish()
+        except Exception:
+            if error_type is None:
+                raise
+
+
 @unittest.skipUnless(sys.platform == "win32", "requires the native Windows NSIS process model")
 class NativeNSISUninstallCopyTests(unittest.TestCase):
     def test_verified_copy_retires_original_and_runner_after_real_child_exit(self):
@@ -2009,24 +2361,26 @@ SectionEnd
                 # This is three independent required proofs. A failure raises
                 # immediately; a later iteration cannot replace it with success.
                 cleanup_facts = {}
-                with release.verification_scratch("maple-nsis-uninstall-fixture-", cleanup_facts=cleanup_facts) as scratch:
-                    self.assertNotIn(scratch, roots)
-                    roots.add(scratch)
-                    environment = release.smoke_environment(scratch)
-                    installed = scratch / "install with spaces"
-                    release.run(release.command_as_windows_args(f'"{installer}" /S /D={installed}'),
-                                env=environment, timeout=120)
-                    uninstaller = installed / "uninstall.exe"
-                    digest = release.uninstaller_digest(uninstaller)
-                    sentinel = installed / "user-created-file.txt"
-                    sentinel.write_bytes(b"preserve this user file")
-                    release.run_copied_uninstaller(uninstaller, installed, scratch, environment, True, digest, arch,
-                                                   cleanup_facts=cleanup_facts)
-                    release.require_absent(installed / "owned.txt", "NSIS fixture left its installed payload")
-                    release.require_absent(uninstaller, "NSIS fixture left the original uninstaller")
-                    self.assertEqual({path.name for path in installed.iterdir()}, {sentinel.name})
-                    self.assertEqual(sentinel.read_bytes(), b"preserve this user file")
-                    release.smoke_phase_complete("nsis-fixture-product-assertions", arch, iteration=iteration)
+                with NativeCleanupFailureObserver() as observe:
+                    with release.verification_scratch("maple-nsis-uninstall-fixture-", cleanup_facts=cleanup_facts,
+                                                      cleanup_failure=observe) as scratch:
+                        self.assertNotIn(scratch, roots)
+                        roots.add(scratch)
+                        environment = release.smoke_environment(scratch)
+                        installed = scratch / "install with spaces"
+                        release.run(release.command_as_windows_args(f'"{installer}" /S /D={installed}'),
+                                    env=environment, timeout=120)
+                        uninstaller = installed / "uninstall.exe"
+                        digest = release.uninstaller_digest(uninstaller)
+                        sentinel = installed / "user-created-file.txt"
+                        sentinel.write_bytes(b"preserve this user file")
+                        release.run_copied_uninstaller(uninstaller, installed, scratch, environment, True, digest, arch,
+                                                       cleanup_facts=cleanup_facts)
+                        release.require_absent(installed / "owned.txt", "NSIS fixture left its installed payload")
+                        release.require_absent(uninstaller, "NSIS fixture left the original uninstaller")
+                        self.assertEqual({path.name for path in installed.iterdir()}, {sentinel.name})
+                        self.assertEqual(sentinel.read_bytes(), b"preserve this user file")
+                        release.smoke_phase_complete("nsis-fixture-product-assertions", arch, iteration=iteration)
                 release.require_scratch_absent(scratch)
                 release.smoke_phase_complete("nsis-fixture-scratch-retired", arch, iteration=iteration)
         release.require_scratch_absent(tools)
@@ -2034,7 +2388,7 @@ SectionEnd
 
 class NativeNSISFixtureControlFlowTests(unittest.TestCase):
     def exercise_fixture(self, fail_first):
-        from contextlib import ExitStack
+        from contextlib import ExitStack, nullcontext
 
         roots, tools = [], []
         primary = subprocess.CalledProcessError(51, "first independent fixture child")
@@ -2070,6 +2424,7 @@ class NativeNSISFixtureControlFlowTests(unittest.TestCase):
         # only native process/tool calls replaced. This is control-flow proof.
         case = NativeNSISUninstallCopyTests("test_verified_copy_retires_original_and_runner_after_real_child_exit")
         with ExitStack() as stack:
+            stack.enter_context(patch.object(sys.modules[__name__], "NativeCleanupFailureObserver", return_value=nullcontext(lambda *_args: None)))
             stack.enter_context(patch.object(release, "require_native_host"))
             stack.enter_context(patch.object(release, "install_nsis", side_effect=toolchain))
             stack.enter_context(patch.object(release, "smoke_environment", side_effect=environment))
@@ -2096,5 +2451,374 @@ class NativeNSISFixtureControlFlowTests(unittest.TestCase):
         self.exercise_fixture(True)
 
 
+class NativeCopiedFileOwnerAPITests(unittest.TestCase):
+    def collector(self):
+        kernel = types.SimpleNamespace(**{name: Mock() for name in (
+            "CreateFileW", "GetFileInformationByHandleEx", "CloseHandle", "OpenProcess",
+            "GetProcessTimes", "QueryFullProcessImageNameW",
+        )})
+        manager = types.SimpleNamespace(**{name: Mock() for name in (
+            "RmStartSession", "RmRegisterResources", "RmGetList", "RmEndSession",
+        )})
+        native = types.SimpleNamespace(NtQueryInformationFile=Mock())
+        libraries = {"kernel32": kernel, "rstrtmgr": manager, "ntdll": native}
+        with patch.object(ctypes, "WinDLL", side_effect=lambda name, **_options: libraries[name], create=True):
+            collector = NativeCopiedFileOwners()
+        kernel.CreateFileW.return_value = 123
+        kernel.CloseHandle.return_value = 1
+        collector.process = Mock(side_effect=lambda pid, *_arguments: {"pid": pid, "basename": "fixture.exe"})
+        return collector, kernel, manager, native
+
+    @staticmethod
+    def put_dword(pointer, value):
+        ctypes.cast(pointer, ctypes.POINTER(ctypes.c_uint32))[0] = value
+
+    def test_windows_64_bit_structs_match_fixed_sdk_sizes_and_offsets(self):
+        collector, kernel, manager, native = self.collector()
+        self.assertEqual(ctypes.sizeof(ctypes.c_void_p), 8)
+        self.assertEqual(ctypes.sizeof(collector.standard_type), 24)
+        self.assertEqual((collector.standard_type.links.offset,
+                          collector.standard_type.delete_pending.offset,
+                          collector.standard_type.directory.offset), (16, 20, 21))
+        self.assertEqual(ctypes.sizeof(collector.io_type), 16)
+        self.assertEqual(collector.io_type.information.offset, 8)
+        self.assertEqual(collector.pids_type.pids.offset, 8)
+        self.assertEqual(ctypes.sizeof(collector.pids_type), 8 + 4 * 8)
+        self.assertEqual(ctypes.sizeof(collector.unique_type), 12)
+        self.assertEqual(collector.unique_type.started.offset, 4)
+        self.assertEqual(ctypes.sizeof(collector.rm_type), 668)
+        self.assertEqual([getattr(collector.rm_type, name).offset for name in (
+            "process", "app_name", "service_name", "kind", "status", "session", "restartable",
+        )], [0, 12, 524, 652, 656, 660, 664])
+        # Constructing/binding the collector itself must perform no native work.
+        for library in (kernel, manager, native):
+            self.assertTrue(all(not function.called for function in vars(library).values()))
+
+    def file_query(self, *, status=0, io_status=0, count=2, byte_count=None):
+        collector, kernel, manager, native = self.collector()
+        path = Path("owned-private-fixture") / "uninstaller-runner" / "uninstall.exe"
+        if byte_count is None:
+            byte_count = collector.pids_type.pids.offset + count * ctypes.sizeof(ctypes.c_size_t)
+
+        def standard(handle, kind, output, length):
+            self.assertEqual((handle, kind, length), (123, 1, 24))
+            value = ctypes.cast(output, ctypes.POINTER(collector.standard_type)).contents
+            value.links, value.delete_pending, value.directory = 1, 0, 0
+            return 1
+
+        def query(handle, output_status, output_pids, length, kind):
+            self.assertEqual((handle, kind, length), (123, 47, 8 + 4 * 8))
+            io = ctypes.cast(output_status, ctypes.POINTER(collector.io_type)).contents
+            io.status, io.information = io_status, byte_count
+            pids = ctypes.cast(output_pids, ctypes.POINTER(collector.pids_type)).contents
+            pids.count = count
+            for index in range(collector.CAP):
+                pids.pids[index] = 100 + index
+            return status
+
+        kernel.GetFileInformationByHandleEx.side_effect = standard
+        native.NtQueryInformationFile.side_effect = query
+        with patch.object(ctypes, "get_last_error", return_value=5, create=True):
+            result = collector.file(path)
+        kernel.CreateFileW.assert_called_once_with(str(path), 0x80000000, 7, None, 3, 0x00200000, None)
+        kernel.GetFileInformationByHandleEx.assert_called_once()
+        native.NtQueryInformationFile.assert_called_once()
+        kernel.CloseHandle.assert_called_once_with(123)
+        # Only the requested file was opened; no process enumeration or process
+        # mutation function is even available on these fake native libraries.
+        kernel.OpenProcess.assert_not_called()
+        kernel.GetProcessTimes.assert_not_called()
+        kernel.QueryFullProcessImageNameW.assert_not_called()
+        self.assertTrue(all(not function.called for function in vars(manager).values()))
+        return collector, result
+
+    def test_file_query_uses_one_read_only_shared_handle_and_fixed_buffers(self):
+        collector, result = self.file_query()
+        self.assertEqual(result["standard"], {"links": 1, "delete_pending": False, "directory": False})
+        self.assertEqual(result["ntstatus"], "0x00000000")
+        self.assertEqual(result["io_status"], "0x00000000")
+        self.assertEqual(result["io_bytes"], 24)
+        self.assertEqual([owner["pid"] for owner in result["owners"]], [100, 101])
+        self.assertEqual(collector.process.call_args_list, [unittest.mock.call(100), unittest.mock.call(101)])
+        self.assertEqual(result["owner_result"], "unknown")
+
+    def test_pending_failed_short_and_overflowing_nt_responses_never_parse_owners(self):
+        cases = (
+            {"status": -1073741820},  # STATUS_INFO_LENGTH_MISMATCH
+            {"status": 0x103},       # STATUS_PENDING is not completed success
+            {"io_status": 0x103},
+            {"byte_count": 7},       # incomplete header/alignment prefix
+            {"byte_count": 15},      # count=2 needs 24 bytes
+            {"count": 5, "byte_count": 40},
+            {"count": 1, "byte_count": 41},  # API cannot return beyond our fixed buffer
+        )
+        for options in cases:
+            with self.subTest(options=options):
+                collector, result = self.file_query(**options)
+                collector.process.assert_not_called()
+                self.assertNotIn("owners", result)
+                self.assertEqual(result["owner_result"], "unknown")
+
+    def manager_query(self, *, start_status=0, register_status=0, list_status=0, count=1, needed=1):
+        collector, kernel, manager, _native = self.collector()
+        path = Path("owned-private-fixture") / "uninstaller-runner" / "uninstall.exe"
+
+        def start(session, flags, key):
+            self.assertEqual(flags, 0)
+            self.assertEqual(len(key), 33)
+            self.put_dword(session, 17)
+            return start_status
+
+        def register(session, file_count, paths, application_count, applications, service_count, services):
+            self.assertEqual((session, file_count, len(paths)), (17, 1, 1))
+            self.assertEqual(paths[0], str(path))
+            self.assertEqual((application_count, applications, service_count, services), (0, None, 0, None))
+            return register_status
+
+        def owners(session, needed_pointer, count_pointer, output, reboot_pointer):
+            self.assertEqual(session, 17)
+            self.assertEqual(ctypes.cast(count_pointer, ctypes.POINTER(ctypes.c_uint32))[0], 4)
+            self.assertEqual(len(output), 4)
+            self.put_dword(needed_pointer, needed)
+            self.put_dword(count_pointer, count)
+            self.put_dword(reboot_pointer, 0)
+            output[0].process.pid = 212
+            output[0].process.started.low, output[0].process.started.high = 9, 2
+            output[0].kind, output[0].status = 3, 1
+            for index, character in enumerate("fixture-service"):
+                output[0].service_name[index] = ord(character)
+            # This friendly application name must not be treated as an image
+            # basename or accidentally exposed by the bounded owner projection.
+            for index, character in enumerate("private arbitrary friendly application label"):
+                output[0].app_name[index] = ord(character)
+            return list_status
+
+        manager.RmStartSession.side_effect = start
+        manager.RmRegisterResources.side_effect = register
+        manager.RmGetList.side_effect = owners
+        manager.RmEndSession.return_value = 0
+        result = collector.restart_manager(path)
+        manager.RmStartSession.assert_called_once()
+        if start_status:
+            manager.RmRegisterResources.assert_not_called()
+            manager.RmGetList.assert_not_called()
+            manager.RmEndSession.assert_not_called()
+        else:
+            manager.RmRegisterResources.assert_called_once()
+            manager.RmEndSession.assert_called_once_with(17)
+            if register_status:
+                manager.RmGetList.assert_not_called()
+            else:
+                manager.RmGetList.assert_called_once()
+        self.assertTrue(all(not function.called for function in vars(kernel).values()))
+        return collector, manager, result
+
+    def test_restart_manager_registers_only_one_file_and_projects_bounded_owners(self):
+        collector, _manager, result = self.manager_query()
+        self.assertEqual(result["owners"], [{
+            "pid": 212, "basename": "fixture.exe", "reported_creation_time": (2 << 32) | 9,
+            "kind": 3, "status": 1, "service": "fixture-service",
+        }])
+        collector.process.assert_called_once_with(212, (2 << 32) | 9)
+        self.assertEqual(result["end_status"], 0)
+        self.assertEqual(result["owner_result"], "unknown")
+        self.assertNotIn("private arbitrary", json.dumps(result))
+
+    def test_reported_process_identity_exposes_only_basename_and_checks_creation(self):
+        collector, kernel, _manager, _native = self.collector()
+        collector.process = types.MethodType(NativeCopiedFileOwners.process, collector)
+        kernel.OpenProcess.return_value = 99
+        def times(_handle, created, *_arguments):
+            value = ctypes.cast(created, ctypes.POINTER(collector.filetime_type)).contents
+            value.low, value.high = 9, 2
+            return 1
+        def image(_handle, flags, output, length):
+            self.assertEqual(flags, 0)
+            output.value = r"C:\Private arbitrary directory\maple-agent.exe"
+            self.put_dword(length, len(output.value))
+            return 1
+        kernel.GetProcessTimes.side_effect = times
+        kernel.QueryFullProcessImageNameW.side_effect = image
+        observed = collector.process(212, (2 << 32) | 9)
+        self.assertEqual(observed["basename"], "maple-agent.exe")
+        self.assertNotIn("Private arbitrary", json.dumps(observed))
+        kernel.OpenProcess.assert_called_once_with(0x1000, False, 212)
+        kernel.CloseHandle.assert_called_once_with(99)
+        kernel.QueryFullProcessImageNameW.reset_mock()
+        reused = collector.process(212, 1)
+        self.assertTrue(reused["pid_reused"])
+        self.assertNotIn("basename", reused)
+        kernel.QueryFullProcessImageNameW.assert_not_called()
+
+    def test_process_query_denial_stays_unknown_and_closes_any_opened_handle(self):
+        collector, kernel, _manager, _native = self.collector()
+        collector.process = types.MethodType(NativeCopiedFileOwners.process, collector)
+        with patch.object(ctypes, "get_last_error", return_value=5, create=True):
+            kernel.OpenProcess.return_value = None
+            self.assertEqual(collector.process(212)["open_process_winerror"], 5)
+            kernel.CloseHandle.assert_not_called()
+            kernel.OpenProcess.return_value = 99
+            kernel.GetProcessTimes.return_value = 0
+            self.assertEqual(collector.process(212)["process_times_winerror"], 5)
+            kernel.CloseHandle.assert_called_once_with(99)
+
+    def test_restart_manager_more_data_or_overflow_never_resizes_or_parses(self):
+        for options in ({"list_status": 234, "count": 1, "needed": 9}, {"count": 5, "needed": 5}):
+            with self.subTest(options=options):
+                collector, manager, result = self.manager_query(**options)
+                self.assertTrue(result["truncated"])
+                self.assertNotIn("owners", result)
+                collector.process.assert_not_called()
+                manager.RmGetList.assert_called_once()
+                manager.RmEndSession.assert_called_once_with(17)
+
+    def test_restart_manager_ends_started_session_even_after_register_failure(self):
+        collector, manager, result = self.manager_query(register_status=5)
+        self.assertEqual(result["register_status"], 5)
+        self.assertEqual(result["end_status"], 0)
+        collector.process.assert_not_called()
+        manager.RmEndSession.assert_called_once_with(17)
+
+    def test_restart_manager_start_failure_has_no_session_to_end(self):
+        collector, _manager, result = self.manager_query(start_status=353)
+        self.assertEqual(result["start_status"], 353)
+        self.assertNotIn("end_status", result)
+        collector.process.assert_not_called()
+
+    def test_restart_manager_ends_started_session_when_native_query_raises(self):
+        path = Path("owned-private-fixture") / "uninstaller-runner" / "uninstall.exe"
+        for failed_call in ("RmRegisterResources", "RmGetList"):
+            with self.subTest(failed_call=failed_call):
+                collector, _kernel, manager, _native = self.collector()
+                primary = OSError("fixed native query failure")
+                def start(session, _flags, _key):
+                    self.put_dword(session, 17)
+                    return 0
+                manager.RmStartSession.side_effect = start
+                manager.RmRegisterResources.return_value = 0
+                manager.RmGetList.return_value = 0
+                getattr(manager, failed_call).side_effect = primary
+                manager.RmEndSession.return_value = 0
+                with self.assertRaises(OSError) as raised:
+                    collector.restart_manager(path)
+                self.assertIs(raised.exception, primary)
+                manager.RmEndSession.assert_called_once_with(17)
+                collector.process.assert_not_called()
+
+
+class NativeCleanupOwnerWorkerTests(unittest.TestCase):
+    def test_preloaded_worker_observes_only_requested_file_at_fixed_bounded_offsets(self):
+        value = 0
+        def monotonic_ns():
+            return value
+        def sleep(seconds):
+            nonlocal value
+            self.assertGreaterEqual(seconds, 0)
+            value += round(seconds * 1_000_000_000)
+        copied = Path.cwd() / "maple-nsis-uninstall-fixture-unit/uninstaller-runner/uninstall.exe"
+        request = json.dumps({"path": str(copied), "callback_monotonic_ns": 0}) + "\n"
+        collector = types.SimpleNamespace(file=Mock(return_value={"owner_result": "unknown"}),
+                                          restart_manager=Mock(return_value={"owner_result": "unknown"}))
+        output = io.StringIO()
+        with patch.object(sys.modules[__name__], "NativeCopiedFileOwners", return_value=collector) as preload, patch.object(sys, "stdin", io.StringIO(request)), patch.object(sys, "stdout", output), patch.object(release.time, "monotonic_ns", side_effect=monotonic_ns), patch.object(release.time, "sleep", side_effect=sleep), patch.object(subprocess, "run") as command:
+            native_cleanup_owner_worker()
+        preload.assert_called_once_with()
+        self.assertTrue(output.getvalue().startswith("NSIS_OWNER_DIAGNOSTIC_READY\n"))
+        snapshots = [json.loads(line) for line in output.getvalue().splitlines()[1:]]
+        self.assertEqual([row["query_started_monotonic_ns"] for row in snapshots], [0, 100_000_000, 500_000_000])
+        self.assertTrue(all(row["inconclusive"] for row in snapshots))
+        self.assertEqual(collector.file.call_args_list, [unittest.mock.call(copied)] * 3)
+        self.assertEqual(collector.restart_manager.call_args_list, [unittest.mock.call(copied)] * 3)
+        command.assert_not_called()
+
+    def test_successful_fixture_eof_never_queries_any_file_owner(self):
+        collector = types.SimpleNamespace(file=Mock(), restart_manager=Mock())
+        with patch.object(sys.modules[__name__], "NativeCopiedFileOwners", return_value=collector), patch.object(sys, "stdin", io.StringIO("")), patch.object(sys, "stdout", io.StringIO()):
+            native_cleanup_owner_worker()
+        collector.file.assert_not_called()
+        collector.restart_manager.assert_not_called()
+
+    def test_another_path_is_refused_before_any_owner_query(self):
+        collector = types.SimpleNamespace(file=Mock(), restart_manager=Mock())
+        request = json.dumps({"path": "/other/uninstaller-runner/uninstall.exe", "callback_monotonic_ns": 0}) + "\n"
+        with patch.object(sys.modules[__name__], "NativeCopiedFileOwners", return_value=collector), patch.object(sys, "stdin", io.StringIO(request)), patch.object(sys, "stdout", io.StringIO()), self.assertRaisesRegex(ValueError, "exact private copy"):
+            native_cleanup_owner_worker()
+        collector.file.assert_not_called()
+        collector.restart_manager.assert_not_called()
+
+    def test_observer_preloads_and_only_failure_sends_one_bounded_request(self):
+        worker = types.SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b'NSIS_OWNER_DIAGNOSTIC_READY\n{"inconclusive":true}\n'),
+                                       kill=Mock(), wait=Mock(return_value=0), returncode=0)
+        timers = []
+        def timer(seconds, callback):
+            result = types.SimpleNamespace(start=Mock(), cancel=Mock())
+            timers.append((seconds, callback, result))
+            return result
+        scratch = Path.cwd() / "maple-nsis-uninstall-fixture-unit"
+        output = io.StringIO()
+        with patch.object(subprocess, "Popen", return_value=worker) as spawn, patch.object(release.threading, "Timer", side_effect=timer), patch.object(sys, "stdout", output):
+            with NativeCleanupFailureObserver() as observe:
+                self.assertEqual(worker.stdin.getvalue(), b"")
+                observe(scratch, PermissionError("original cleanup failure"))
+                request = json.loads(worker.stdin.getvalue())
+                self.assertEqual(request["path"], str(scratch / "uninstaller-runner/uninstall.exe"))
+                self.assertIs(type(request["callback_monotonic_ns"]), int)
+        self.assertEqual([item[0] for item in timers], [3, 8])
+        self.assertTrue(callable(timers[0][1]))
+        self.assertTrue(callable(timers[1][1]))
+        worker.kill.assert_not_called()
+        self.assertTrue(all(item[2].start.call_count == item[2].cancel.call_count == 1 for item in timers))
+        self.assertTrue(worker.stdin.closed and worker.stdout.closed)
+        self.assertEqual(spawn.call_args.args[0], [sys.executable, "-I", str(Path(__file__).resolve()), "--nsis-cleanup-owner-worker"])
+        self.assertTrue({key.upper() for key in spawn.call_args.kwargs["env"]} <= {"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"})
+        self.assertIn('"inconclusive": true', output.getvalue())
+        self.assertNotIn("installer-smoke-complete", output.getvalue())
+
+    def test_observer_output_bound_cannot_become_fixture_success(self):
+        worker = types.SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b"NSIS_OWNER_DIAGNOSTIC_READY\n" + b"x" * (release.DIAGNOSTIC_LIMIT + 1)),
+                                       kill=Mock(), wait=Mock(return_value=0), returncode=0)
+        with patch.object(subprocess, "Popen", return_value=worker), patch.object(release.threading, "Timer"), patch.object(sys, "stdout", io.StringIO()):
+            with NativeCleanupFailureObserver() as observe, self.assertRaisesRegex(ValueError, "fixed bound"):
+                observe(Path.cwd() / "maple-nsis-uninstall-fixture-unit", PermissionError("primary"))
+
+    def test_worker_traceback_or_partial_data_is_not_forwarded(self):
+        worker = types.SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b"NSIS_OWNER_DIAGNOSTIC_READY\nTraceback: private arbitrary error details\n{partial\n"),
+                                       kill=Mock(), wait=Mock(return_value=1), returncode=1)
+        output = io.StringIO()
+        with patch.object(subprocess, "Popen", return_value=worker), patch.object(release.threading, "Timer"), patch.object(sys, "stdout", output):
+            with NativeCleanupFailureObserver() as observe:
+                observe(Path.cwd() / "maple-nsis-uninstall-fixture-unit", PermissionError("primary"))
+        self.assertIn("invalid-or-partial-worker-output", output.getvalue())
+        self.assertNotIn("private arbitrary", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+        self.assertIn('"timed_out": false', output.getvalue())
+
+    def test_owned_worker_timeout_is_explicit_and_not_a_fixture_pass(self):
+        worker = types.SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b"NSIS_OWNER_DIAGNOSTIC_READY\n"),
+                                       kill=Mock(), wait=Mock(return_value=-1), returncode=-1)
+        def timer(seconds, callback):
+            return types.SimpleNamespace(start=Mock(side_effect=callback if seconds == 8 else None), cancel=Mock())
+        output = io.StringIO()
+        with patch.object(subprocess, "Popen", return_value=worker), patch.object(release.threading, "Timer", side_effect=timer), patch.object(sys, "stdout", output):
+            with NativeCleanupFailureObserver() as observe:
+                observe(Path.cwd() / "maple-nsis-uninstall-fixture-unit", PermissionError("primary"))
+        worker.kill.assert_called_once_with()
+        self.assertIn('"timed_out": true', output.getvalue())
+        self.assertIn('"inconclusive": true', output.getvalue())
+        self.assertNotIn("installer-smoke-complete", output.getvalue())
+
+    def test_timer_race_with_already_exited_worker_is_silent(self):
+        observer = NativeCleanupFailureObserver()
+        observer.worker = types.SimpleNamespace(kill=Mock(side_effect=ProcessLookupError("already exited")))
+        output, diagnostics = io.StringIO(), io.StringIO()
+        with patch.object(sys, "stdout", output), patch.object(sys, "stderr", diagnostics):
+            observer.stop_owned_worker()
+        observer.worker.kill.assert_called_once_with()
+        self.assertEqual(output.getvalue() + diagnostics.getvalue(), "")
+
+
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:] == ["--nsis-cleanup-owner-worker"]:
+        native_cleanup_owner_worker()
+    else:
+        unittest.main()

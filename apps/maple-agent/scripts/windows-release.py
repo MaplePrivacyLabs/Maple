@@ -874,7 +874,7 @@ def windows_icon_equal(value, expected):
 
 
 @contextmanager
-def verification_scratch(prefix, *, cleanup_facts=None):
+def verification_scratch(prefix, *, cleanup_facts=None, cleanup_failure=None):
     temporary = tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=False)
     scratch = Path(temporary.name)
     primary = None
@@ -887,16 +887,23 @@ def verification_scratch(prefix, *, cleanup_facts=None):
     finally:
         started = time.monotonic_ns()
         cleanup_error = None
+        finished = None
         try:
             temporary.cleanup()
             require_scratch_absent(scratch)
         except Exception as error:
             cleanup_error = error
+            finished = time.monotonic_ns()
+            if cleanup_failure is not None:
+                try:
+                    cleanup_failure(scratch, error)
+                except BaseException as diagnostic_error:
+                    print("Windows cleanup diagnostic unavailable: " + type(diagnostic_error).__name__, file=sys.stderr)
             print("Windows verification cleanup failure: " + type(error).__name__, file=sys.stderr)
             if primary is None:
                 raise
         finally:
-            finished = time.monotonic_ns()
+            finished = finished if finished is not None else time.monotonic_ns()
             facts = {"prefix": prefix, "cleanup_started_monotonic_ns": started,
                      "cleanup_finished_monotonic_ns": finished, "cleanup_duration_ns": finished - started,
                      "result": "failure" if cleanup_error else "success"}
