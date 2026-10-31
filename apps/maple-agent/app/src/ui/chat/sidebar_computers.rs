@@ -2091,7 +2091,10 @@ impl Sidebar {
                 return;
             }
             let index = self.other_tasks.len();
-            let session = session_from_summary(task);
+            // Rename, delete and the hover step read the newest summary too.
+            let session = latest
+                .cloned()
+                .unwrap_or_else(|| session_from_summary(task));
             let pinned = self.computer_task_pin(computer, task).is_some();
             let metadata = if self.show_task_metadata(pinned, archived) {
                 one_line(&format!(
