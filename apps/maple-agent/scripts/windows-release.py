@@ -974,7 +974,8 @@ def smoke_failure_evidence(phase, error, installed, generation_name, registry, a
         print("Windows installer failure evidence unavailable", file=sys.stderr)
 
 
-def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checker):
+def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checker, arch="x86_64"):
+    platform_name(arch)
     import winreg  # Only the explicit native smoke path loads the Windows API.
 
     registry = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + info["bundle_id"]
@@ -1024,7 +1025,7 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             pointer_bytes = (installed / "current.json").read_bytes()
             if json.loads(pointer_bytes, object_pairs_hook=pe.unique_object) != {"format": "maple-agent-windows-current-v1", "generation": generation_name}:
                 raise ValueError("Installed Windows current generation pointer differs")
-            verify_payload(info["profile"], generation, info, unsigned)
+            verify_payload(info["profile"], generation, info, unsigned, arch=arch)
             bundle_payload_inventory(generation)
             for name in BUNDLE_FILES:
                 regular(generation / name)
@@ -1452,7 +1453,7 @@ def verify(profile, directory, unsigned, *, smoke, arch="x86_64"):
             if any(name.startswith(("AZURE_", "MAPLE_WINDOWS_ARTIFACT_SIGNING_")) for name in os.environ):
                 raise ValueError("Installed Windows smoke requires a verifier without signing configuration")
             smoke_installer(installer, info, unsigned, manifest["build"], expected_hashes,
-                            checker=payload / INSTALLER_CHECKER)
+                            checker=payload / INSTALLER_CHECKER, arch=arch)
     print(f"Verified {profile} {platform} installer identity, exact inventory and signatures")
 
 

@@ -455,13 +455,24 @@ class PackageBoundaryTests(unittest.TestCase):
                 checker.parent.mkdir()
                 checker.write_bytes(b"verified checker fixture")
                 return payload / "uninstall.exe"
-            def smoke(*_arguments, checker):
+            def smoke(*_arguments, checker, arch):
+                self.assertEqual(arch, "x86_64")
                 self.assertEqual(checker.read_bytes(), b"verified checker fixture")
                 checked.append(checker)
             with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host"), patch.object(release, "smoke_installer", side_effect=smoke):
                 release.verify("dev", directory, True, smoke=True)
             self.assertEqual(len(checked), 1)
             self.assertFalse(checked[0].exists())
+
+    def test_downloaded_arm_verifier_forwards_selected_target_into_installed_smoke(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            manifest = {"package": "installer.exe", "updater": "bundle.tar.gz", "build": "12"}
+            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info("dev", "aarch64")), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=lambda _installer, payload, *_args: payload / "uninstall.exe"), patch.object(release, "verify_payload") as payload, patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host") as host, patch.object(release, "smoke_installer") as installed:
+                release.verify("dev", directory, True, smoke=True, arch="aarch64")
+            self.assertEqual(payload.call_args.kwargs["arch"], "aarch64")
+            host.assert_called_once_with("aarch64")
+            self.assertEqual(installed.call_args.kwargs["arch"], "aarch64")
 
     def test_downloaded_verifier_checks_the_standalone_uninstaller_in_both_policies(self):
         for unsigned in (False, True):
@@ -1468,6 +1479,59 @@ class SmokeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         self.assertIn('"phase": "installed-verification"', diagnostics.getvalue())
         self.assertIn('"phase": "host-stop"', diagnostics.getvalue())
+
+    def test_installed_verification_keeps_selected_architecture_and_primary_error(self):
+        from contextlib import nullcontext
+        from test_windows_build_info import icon_records, pe as executable_fixture
+
+        for arch, machine, opposite in (("aarch64", 0xAA64, False), ("x86_64", 0x8664, False),
+                                        ("aarch64", 0x8664, True)):
+            with self.subTest(arch=arch, machine=machine), tempfile.TemporaryDirectory() as temporary:
+                scratch = Path(temporary)
+                identity = info("dev", arch)
+                installed = scratch / "install with spaces"
+                registry = self.registry()
+                def open_key(*_arguments):
+                    if not installed.exists():
+                        raise FileNotFoundError
+                    return nullcontext(object())
+                registry.OpenKey = open_key
+                registry.QueryValueEx = lambda *_args: (str(installed), 1)
+                reached = ValueError("stop after real installed PE validation")
+                original = release.verify_payload
+
+                def install(command, **_options):
+                    if not isinstance(command, str):
+                        # Exercise primary-error preservation during host-stop
+                        # cleanup, without starting a fixture executable.
+                        raise PermissionError("secondary cleanup fixture")
+                    generation = installed / "versions" / "0.1.2-12"
+                    generation.mkdir(parents=True)
+                    icon = release.COMPONENT / "app/packaging/maple-agent-dev.ico"
+                    executable = executable_fixture(identity, machine=machine, resources=icon_records(icon.read_bytes()))
+                    (generation / "maple-agent.exe").write_bytes(executable)
+                    (generation / "build-info.json").write_text(json.dumps(identity))
+                    (generation / "LICENSE.txt").write_bytes((release.COMPONENT / "LICENSE").read_bytes())
+                    (installed / "maple-agent.exe").write_bytes(executable)
+                    (installed / "current.json").write_text(json.dumps({"format": "maple-agent-windows-current-v1", "generation": "0.1.2-12"}))
+                    return subprocess.CompletedProcess(command, 0)
+
+                def installed_verification(*arguments, **options):
+                    original(*arguments, **options)
+                    raise reached
+
+                diagnostics = io.StringIO()
+                with patch.object(release, "verification_scratch", return_value=nullcontext(scratch)), patch.dict(sys.modules, winreg=registry), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")), patch.object(release, "run", side_effect=install), patch.object(release, "verify_payload", side_effect=installed_verification) as verified, patch.object(release, "signature"), patch.object(sys, "stderr", diagnostics):
+                    with self.assertRaises(ValueError) as raised:
+                        release.smoke_installer(Path("fixture.exe"), identity, True, "12", {}, checker=Path("checker.exe"), arch=arch)
+                self.assertEqual(verified.call_args.kwargs["arch"], arch)
+                if opposite:
+                    self.assertIn("PE architecture", str(raised.exception))
+                else:
+                    self.assertIs(raised.exception, reached)
+                self.assertIn('"phase": "installed-verification"', diagnostics.getvalue())
+                self.assertIn('"phase": "host-stop"', diagnostics.getvalue())
+                self.assertNotIn("secondary cleanup fixture", diagnostics.getvalue())
 
     def test_failed_readonly_preflight_never_runs_the_installer_or_prepare(self):
         diagnostics = io.StringIO()
