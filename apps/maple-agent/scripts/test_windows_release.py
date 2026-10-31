@@ -1597,6 +1597,136 @@ class UnsignedProdSmokeTests(unittest.TestCase):
                 release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {}, uninstaller_sha256="a" * 64, checker=Path("checker.exe"))
 
 
+class CopiedUninstallerDispositionTests(unittest.TestCase):
+    class Call:
+        def __init__(self, callback):
+            self.callback, self.calls = callback, []
+
+        def __call__(self, *arguments):
+            self.calls.append(arguments)
+            return self.callback(*arguments)
+
+    class Kernel:
+        def __init__(self, copied, *, attributes=0, failure=None, close_failure=False):
+            self.copied, self.data, self.offset = copied, copied.read_bytes(), 0
+            self.attributes, self.failure, self.close_failure = attributes, failure, close_failure
+            self.marked = False
+            for name in ("CreateFileW", "GetFileInformationByHandleEx", "ReadFile", "SetFileInformationByHandle", "CloseHandle"):
+                setattr(self, name, CopiedUninstallerDispositionTests.Call(getattr(self, "_" + name)))
+
+        def _CreateFileW(self, *_arguments):
+            return ctypes.c_void_p(-1).value if self.failure == "open" else 123
+
+        def _GetFileInformationByHandleEx(self, _handle, _kind, output, _length):
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_uint32))[0] = self.attributes
+            return self.failure != "attributes"
+
+        def _ReadFile(self, _handle, output, length, count, _overlapped):
+            if self.failure == "read":
+                return 0
+            data = self.data[self.offset:self.offset + length]
+            ctypes.memmove(output, data, len(data))
+            ctypes.cast(count, ctypes.POINTER(ctypes.c_uint32))[0] = len(data)
+            self.offset += len(data)
+            return 1
+
+        def _SetFileInformationByHandle(self, _handle, kind, flags, length):
+            self.disposition = (kind, ctypes.cast(flags, ctypes.POINTER(ctypes.c_uint32))[0], length)
+            if self.failure == "disposition":
+                return 0
+            self.marked = True
+            return 1
+
+        def _CloseHandle(self, _handle):
+            if self.marked and not self.close_failure:
+                self.copied.unlink()
+            return not self.close_failure
+
+    def fixture(self, scratch, **options):
+        copied = scratch / "uninstaller-runner" / "uninstall.exe"
+        copied.parent.mkdir()
+        copied.write_bytes(b"exact private verified copied runner")
+        return copied, hashlib.sha256(copied.read_bytes()).hexdigest(), self.Kernel(copied, **options)
+
+    def native_api(self, kernel):
+        # Exercise the real ctypes call boundary on every host. Only the Windows
+        # calls are simulated; the read/hash/admission/close control flow is real.
+        return (patch.object(ctypes, "WinDLL", return_value=kernel, create=True),
+                patch.object(ctypes, "get_last_error", return_value=5, create=True),
+                patch.object(ctypes, "WinError", side_effect=lambda code: OSError(code, "fixed native API failure"), create=True))
+
+    def test_same_handle_hash_delete_admission_and_exact_flags_remove_the_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            copied, digest, kernel = self.fixture(scratch)
+            dll, last_error, win_error = self.native_api(kernel)
+            with dll, last_error, win_error:
+                release.retire_copied_uninstaller(copied, scratch, digest)
+            self.assertEqual(kernel.CreateFileW.calls, [(str(copied), 0x80010000, 5, None, 3, 0x00200000, None)])
+            self.assertEqual(kernel.GetFileInformationByHandleEx.calls[0][:2], (123, 9))
+            self.assertEqual(kernel.offset, len(kernel.data))
+            self.assertEqual(kernel.disposition, (21, 3, 4))
+            self.assertEqual(kernel.CloseHandle.calls, [(123,)])
+            self.assertFalse(copied.exists())
+
+    def test_readonly_reparse_and_directory_entries_are_refused_without_disposition(self):
+        for attributes in (0x1, 0x400, 0x10):
+            with self.subTest(attributes=attributes), tempfile.TemporaryDirectory() as temporary:
+                scratch = Path(temporary)
+                copied, digest, kernel = self.fixture(scratch, attributes=attributes)
+                dll, last_error, win_error = self.native_api(kernel)
+                with dll, last_error, win_error, self.assertRaisesRegex(ValueError, "read-only, directory or reparse"):
+                    release.retire_copied_uninstaller(copied, scratch, digest)
+                self.assertEqual(kernel.ReadFile.calls, [])
+                self.assertEqual(kernel.SetFileInformationByHandle.calls, [])
+                self.assertEqual(kernel.CloseHandle.calls, [(123,)])
+                self.assertTrue(copied.is_file())
+
+    def test_wrong_same_handle_hash_is_refused_and_handle_is_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            copied, _digest, kernel = self.fixture(scratch)
+            dll, last_error, win_error = self.native_api(kernel)
+            with dll, last_error, win_error, self.assertRaisesRegex(ValueError, "verified hash"):
+                release.retire_copied_uninstaller(copied, scratch, "0" * 64)
+            self.assertEqual(kernel.SetFileInformationByHandle.calls, [])
+            self.assertEqual(kernel.CloseHandle.calls, [(123,)])
+            self.assertTrue(copied.is_file())
+
+    def test_another_path_or_unbound_hash_never_opens_a_delete_handle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            copied, digest, kernel = self.fixture(scratch)
+            dll, last_error, win_error = self.native_api(kernel)
+            with dll, last_error, win_error:
+                for path, expected in ((scratch / "uninstall.exe", digest), (copied, None)):
+                    with self.subTest(path=path, expected=expected), self.assertRaisesRegex(ValueError, "exact owned copy"):
+                        release.retire_copied_uninstaller(path, scratch, expected)
+            self.assertEqual(kernel.CreateFileW.calls, [])
+            self.assertTrue(copied.is_file())
+
+    def test_native_api_failures_are_not_retried_or_replaced(self):
+        for failure in ("open", "attributes", "read", "disposition", "close"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                scratch = Path(temporary)
+                copied, digest, kernel = self.fixture(scratch, failure=failure, close_failure=failure == "close")
+                dll, last_error, win_error = self.native_api(kernel)
+                with dll, last_error, win_error, self.assertRaises(OSError):
+                    release.retire_copied_uninstaller(copied, scratch, digest)
+                self.assertEqual(len(kernel.CreateFileW.calls), 1)
+                self.assertEqual(kernel.CloseHandle.calls, [] if failure == "open" else [(123,)])
+                self.assertLessEqual(len(kernel.SetFileInformationByHandle.calls), 1)
+
+    def test_close_failure_preserves_a_primary_hash_refusal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            copied, _digest, kernel = self.fixture(scratch, close_failure=True)
+            dll, last_error, win_error = self.native_api(kernel)
+            with dll, last_error, win_error, self.assertRaisesRegex(ValueError, "verified hash"):
+                release.retire_copied_uninstaller(copied, scratch, "0" * 64)
+            self.assertEqual(kernel.CloseHandle.calls, [(123,)])
+
+
 class CopiedUninstallerTests(unittest.TestCase):
     def fixture(self, scratch):
         installed = scratch / "install with spaces"
@@ -1622,9 +1752,10 @@ class CopiedUninstallerTests(unittest.TestCase):
                     # status cannot bless the original remaining on disk.
                     uninstaller.unlink()
                     return subprocess.CompletedProcess(command, 0)
-                with patch.object(release, "signature") as signature, patch.object(release, "run", side_effect=uninstall):
+                with patch.object(release, "signature") as signature, patch.object(release, "run", side_effect=uninstall), patch.object(release, "retire_copied_uninstaller", side_effect=lambda copy, _scratch, _digest: copy.unlink()) as retire:
                     release.run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, digest, "aarch64")
                 self.assertEqual(signature.call_args_list, [unittest.mock.call(uninstaller, unsigned), unittest.mock.call(copied, unsigned)])
+                retire.assert_called_once_with(copied, scratch, digest)
                 self.assertFalse(copied.parent.exists())
                 self.assertFalse(uninstaller.exists())
 

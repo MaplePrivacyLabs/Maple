@@ -1002,6 +1002,72 @@ def require_absent(path, message):
     raise ValueError(message)
 
 
+def retire_copied_uninstaller(copied, scratch, expected_sha256):
+    """Retire only this smoke's verified, already-exited private runner.
+
+    POSIX disposition removes the name on close even if other handles retain
+    the stream. DELETE access and the read-only attribute remain enforced:
+    https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex
+    """
+    import ctypes
+
+    if copied != scratch / "uninstaller-runner" / "uninstall.exe" or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("Uninstaller retirement requires the exact owned copy and verified hash")
+    regular(copied)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+                                   ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+    kernel.CreateFileW.restype = ctypes.c_void_p
+    kernel.GetFileInformationByHandleEx.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
+    kernel.GetFileInformationByHandleEx.restype = ctypes.c_int
+    kernel.ReadFile.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p)
+    kernel.ReadFile.restype = ctypes.c_int
+    kernel.SetFileInformationByHandle.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
+    kernel.SetFileInformationByHandle.restype = ctypes.c_int
+    kernel.CloseHandle.argtypes, kernel.CloseHandle.restype = (ctypes.c_void_p,), ctypes.c_int
+    # Read and DELETE admission for the same existing file, without following a
+    # final reparse point. Refuse concurrent write admission; permit old readers.
+    handle = kernel.CreateFileW(str(copied), 0x80010000, 0x5, None, 3, 0x00200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    primary = None
+    try:
+        # FileAttributeTagInfo (9): two DWORDs, attributes then reparse tag.
+        attributes = (ctypes.c_uint32 * 2)()
+        if not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(attributes), ctypes.sizeof(attributes)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if attributes[0] & (0x1 | 0x10 | 0x400):
+            raise ValueError("Copied runner retirement refuses read-only, directory or reparse entries")
+        digest, size = hashlib.sha256(), 0
+        buffer, count = ctypes.create_string_buffer(64 * 1024), ctypes.c_uint32()
+        while True:
+            if not kernel.ReadFile(handle, buffer, len(buffer), ctypes.byref(count), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if count.value == 0:
+                break
+            size += count.value
+            if size > 32 * 1024 * 1024:
+                raise ValueError("Copied runner retirement exceeds its verified extraction bound")
+            digest.update(buffer.raw[:count.value])
+        if size == 0 or digest.hexdigest() != expected_sha256:
+            raise ValueError("Copied runner retirement differs from its verified hash")
+        # FileDispositionInfoEx (21), DELETE | POSIX_SEMANTICS only. Do not
+        # ignore read-only attributes, change ACLs, or fall back to weaker cleanup.
+        flags = ctypes.c_uint32(0x3)
+        if not kernel.SetFileInformationByHandle(handle, 21, ctypes.byref(flags), ctypes.sizeof(flags)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if not kernel.CloseHandle(handle):
+            error = ctypes.WinError(ctypes.get_last_error())
+            if primary is None:
+                raise error
+            print("Windows copied-uninstaller handle cleanup failure: " + type(error).__name__, file=sys.stderr)
+    require_absent(copied, "Copied uninstaller survived by-handle retirement")
+
+
 def run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, expected_sha256, arch):
     """Model NSIS relocation but synchronously wait for the actual uninstaller.
 
@@ -1047,9 +1113,7 @@ def run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigne
         phase = "original-retirement"
         require_absent(uninstaller, "NSIS did not remove the original installed uninstaller")
         phase = "copy-retirement"
-        if uninstaller_digest(copied) != expected_sha256:
-            raise ValueError("Copied uninstaller changed before retirement")
-        copied.unlink()
+        retire_copied_uninstaller(copied, scratch, expected_sha256)
         require_absent(copied, "Copied uninstaller survived retirement")
         copied.parent.rmdir()
         require_absent(copied.parent, "Private uninstaller directory survived retirement")
