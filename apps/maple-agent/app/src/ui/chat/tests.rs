@@ -219,7 +219,7 @@ mod state_tests {
                     path: "/tmp/proj".into(),
                     label: "proj".into(),
                 }],
-                sessions: vec![summary("same-id", "Remote task")],
+                sessions: vec![summary("same-id", "Remote\r\ntask")],
                 running: HashSet::from(["same-id".into()]),
                 unread: HashSet::new(),
                 pinned: Vec::new(),
@@ -249,6 +249,10 @@ mod state_tests {
                     .iter()
                     .find(|e| matches!(e, SidebarEntry::OtherTask(_)))
                     .unwrap();
+                let SidebarEntry::OtherTask(index) = entry else {
+                    unreachable!()
+                };
+                assert_eq!(sidebar.other_task_title(index), Some("Remote task"));
                 assert_eq!(
                     sidebar.computer_target(entry),
                     Some(navigation::SidebarTarget::Computer(Navigate {
@@ -8388,6 +8392,160 @@ mod state_tests {
         });
     }
 
+    fn inactive_task_window(
+        cx: &mut TestAppContext,
+    ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
+        chat_window(cx, |this, cx| {
+            this.selected_session = None;
+            this.draft = true;
+            this.project_root = Some("/shared".into());
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_view(crate::settings::SidebarView::default(), cx);
+            });
+            this.sessions = vec![summary_at("same-id", "Existing task", "/shared")];
+            this.apply_recent_roots(vec![named_root("/shared", "Local project", 1)], cx);
+            set_computer_snapshots(this, identical_path_project_catalog(), cx);
+            this.composer.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_text("Keep my draft", cx);
+            });
+        })
+    }
+
+    #[gpui::test]
+    fn inactive_task_hover_controls_are_scoped_and_do_not_navigate(cx: &mut TestAppContext) {
+        use crate::settings::SidebarItemKey;
+        use crate::ui::chat::computers::{TaskAction, TaskActionRequest};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (chat, cx) = inactive_task_window(cx);
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let generation = chat.update(cx, |this, _| this.selection_generation);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = requests.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, request: &TaskActionRequest, _| {
+                observed.borrow_mut().push(request.clone());
+            })
+        });
+        let navigation = Rc::new(RefCell::new(Vec::new()));
+        let observed = navigation.clone();
+        let _navigation = cx.update(|_, app| {
+            app.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                if matches!(event, SidebarEvent::Navigate(_) | SidebarEvent::Select(_)) {
+                    observed.borrow_mut().push(event.clone());
+                }
+            })
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let own = cx
+            .debug_bounds("menu-session-same-id")
+            .expect("local task menu");
+        let east = cx
+            .debug_bounds("menu-session-computer-task-Some(\"east\")-same-id")
+            .expect("inactive task menu before selection");
+        let west = cx
+            .debug_bounds("menu-session-computer-task-Some(\"west\")-same-id")
+            .expect("other inactive task menu before selection");
+        assert_ne!(own.center(), east.center());
+        assert_ne!(east.center(), west.center());
+        for selector in [
+            "rename-session-computer-task-Some(\"east\")-same-id",
+            "step-session-computer-task-Some(\"east\")-same-id",
+            "rename-session-computer-task-Some(\"west\")-same-id",
+            "step-session-computer-task-Some(\"west\")-same-id",
+        ] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector}");
+        }
+        press(cx, "menu-session-computer-task-Some(\"east\")-same-id");
+        press(cx, "rename-task-computer-task-Some(\"east\")-same-id");
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target()),
+            Some(RenameTarget::OtherTask(Arc::new(SidebarItemKey {
+                computer: Some("east".into()),
+                id: "same-id".into(),
+            })))
+        );
+        cx.simulate_keystrokes("secondary-a");
+        cx.simulate_input("East task renamed");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        press(cx, "step-session-computer-task-Some(\"west\")-same-id");
+        cx.run_until_parked();
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].target.computer.as_deref(), Some("east"));
+        assert_eq!(requests[0].target.id, "same-id");
+        assert!(
+            matches!(&requests[0].action, TaskAction::Rename(name) if name == "East task renamed")
+        );
+        assert_eq!(requests[1].target.computer.as_deref(), Some("west"));
+        assert_eq!(requests[1].target.id, "same-id");
+        assert!(matches!(
+            requests[1].action,
+            TaskAction::SetState(AgentTaskState::Settled)
+        ));
+        assert!(navigation.borrow().is_empty());
+        chat.update(cx, |this, cx| {
+            assert!(this.draft);
+            assert!(this.selected_session.is_none());
+            assert_eq!(this.project_root.as_deref(), Some("/shared"));
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("Keep my draft"));
+        });
+    }
+
+    #[gpui::test]
+    fn inactive_task_delete_confirms_on_the_visible_screen(cx: &mut TestAppContext) {
+        use crate::settings::SidebarItemKey;
+        use crate::ui::chat::computers::{TaskAction, TaskActionRequest};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (chat, cx) = inactive_task_window(cx);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = requests.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, request: &TaskActionRequest, _| {
+                observed.borrow_mut().push(request.clone());
+            })
+        });
+        press(cx, "menu-session-computer-task-Some(\"east\")-same-id");
+        press(cx, "delete-task-computer-task-Some(\"east\")-same-id");
+        cx.run_until_parked();
+        let target = SidebarItemKey {
+            computer: Some("east".into()),
+            id: "same-id".into(),
+        };
+        chat.update(cx, |this, _| {
+            assert_eq!(
+                this.confirm,
+                Some(dialogs::ConfirmDialog::DeleteComputerTask {
+                    target: target.clone(),
+                    title: "Existing task".into(),
+                })
+            );
+            assert!(this.selected_session.is_none());
+        });
+        assert!(
+            requests.borrow().is_empty(),
+            "opening confirmation performs no mutation"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].target, target);
+        assert!(matches!(requests[0].action, TaskAction::Delete));
+        chat.update(cx, |this, cx| {
+            assert!(this.confirm.is_none());
+            assert!(this.draft);
+            assert!(this.selected_session.is_none());
+            assert_eq!(this.composer_text(cx).as_deref(), Some("Keep my draft"));
+        });
+    }
+
     #[gpui::test]
     fn inactive_project_rename_controls_are_scoped_and_do_not_navigate(cx: &mut TestAppContext) {
         use std::cell::RefCell;
@@ -9406,12 +9564,35 @@ mod state_tests {
             // A rename moves the row strings.
             this.upsert_session(summary("s1", "Renamed"), cx);
             assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ref(), "Renamed");
+            // Search retains raw line breaks.
+            for title in ["Two\nlines", "Two\r\nlines", "Two\rlines", "Two lines"] {
+                this.upsert_session(summary("s1", title), cx);
+                let sidebar = this.sidebar.read(cx);
+                assert_eq!(sidebar.rows()[0].title.as_ref(), "Two lines");
+                assert_eq!(sidebar.rows()[0].search, title.to_lowercase());
+            }
+            // Case-only renames still refresh the displayed title.
+            this.upsert_session(summary("s1", "two lines"), cx);
+            assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ref(), "two lines");
+            // Filtering reuses the normalized row cache.
+            this.upsert_session(summary("s1", "Two\nlines"), cx);
+            let built = this.sidebar.read(cx).rows()[0].title.as_ptr();
+            this.set_sidebar_filter("two", cx);
+            assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ptr(), built);
+            this.set_sidebar_filter("", cx);
             this.sidebar.update(cx, |sidebar, _| {
                 sidebar.set_project_name_for_test("/tmp/proj", "Nice");
             });
             assert_eq!(
                 this.sidebar.read(cx).rows()[0].project_name.as_ref(),
                 "Nice"
+            );
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_project_name_for_test("/tmp/proj", "Nice\nname");
+            });
+            assert_eq!(
+                this.sidebar.read(cx).rows()[0].project_name.as_ref(),
+                "Nice name"
             );
         });
     }

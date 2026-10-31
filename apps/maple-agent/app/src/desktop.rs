@@ -15,6 +15,7 @@ use crate::backend::AgentBackend;
 use crate::ui;
 use crate::ui::chat::computers::{
     Computer, Destination, Navigate, NavigationChanged, ProjectRenameRequest, ProjectTarget,
+    TaskAction, TaskActionRequest,
 };
 use crate::ui::chat::{ChatScreen, LoggedOut, SignOutFailed};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
@@ -85,6 +86,14 @@ struct PendingNavigation {
 /// which computer the user is viewing when its response arrives.
 struct PendingProjectRename {
     target: ProjectTarget,
+    account: String,
+    owner: gpui::EntityId,
+    grant: Option<[u8; 16]>,
+    source: gpui::WeakEntity<ChatScreen>,
+}
+
+struct PendingTaskAction {
+    request: TaskActionRequest,
     account: String,
     owner: gpui::EntityId,
     grant: Option<[u8; 16]>,
@@ -1608,7 +1617,14 @@ impl MapleApp {
         &self,
         target: &ProjectTarget,
     ) -> Option<(Entity<ChatScreen>, Option<[u8; 16]>)> {
-        match &target.computer {
+        self.computer_owner(target.computer.as_deref())
+    }
+
+    fn computer_owner(
+        &self,
+        computer: Option<&str>,
+    ) -> Option<(Entity<ChatScreen>, Option<[u8; 16]>)> {
+        match computer {
             None => self.local_chat.clone().map(|chat| (chat, None)),
             Some(peer) => self.remote_computers.get(peer).and_then(|computer| {
                 computer
@@ -1714,6 +1730,117 @@ impl MapleApp {
         {
             source.update(cx, |chat, cx| {
                 chat.finish_project_rename(pending.target, result, cx)
+            });
+        }
+    }
+
+    fn task_action(
+        &mut self,
+        source: Entity<ChatScreen>,
+        request: TaskActionRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(account) = self
+            .user_id
+            .clone()
+            .filter(|_| self.has_chat(source.entity_id()))
+        else {
+            return;
+        };
+        let Some((owner, grant)) = self
+            .computer_owner(request.target.computer.as_deref())
+            .filter(|(chat, _)| chat.read(cx).project_names_available())
+        else {
+            source.update(cx, |chat, cx| {
+                chat.sidebar_task_action_notice(
+                    "This computer is unavailable. Reconnect it before changing the task.".into(),
+                    cx,
+                );
+            });
+            return;
+        };
+        if let TaskAction::Pin(pinned) = request.action {
+            owner.update(cx, |chat, cx| {
+                chat.set_sidebar_task_pin(&request.target.id, pinned, cx)
+            });
+            self.sync_computers(cx);
+            return;
+        }
+        if matches!(request.action, TaskAction::SetState(state) if state != maple_agent::agent::AgentTaskState::Active)
+        {
+            owner.update(cx, |chat, cx| {
+                chat.set_sidebar_task_pin(&request.target.id, false, cx)
+            });
+        }
+        let backend = owner.read(cx).execution_backend();
+        let pending = PendingTaskAction {
+            request: request.clone(),
+            account: account.clone(),
+            owner: owner.entity_id(),
+            grant,
+            source: source.downgrade(),
+        };
+        let executor = backend.clone();
+        let bridge = ui::task::call(
+            &executor,
+            async move {
+                let id = &request.target.id;
+                match request.action {
+                    TaskAction::Rename(name) => {
+                        backend.rename_session(&account, id, name).await.map(Some)
+                    }
+                    TaskAction::SetState(state) => backend
+                        .set_session_state(&account, id, state)
+                        .await
+                        .map(Some),
+                    TaskAction::Delete => backend.delete_session(&account, id).await.map(|()| None),
+                    TaskAction::Pin(_) => Err("This task action is unavailable.".into()),
+                }
+            },
+            cx,
+            move |app, result, cx| app.complete_task_action(pending, result, cx),
+        );
+        ui::task::retain(&self.remote_bridges, bridge);
+    }
+
+    fn complete_task_action(
+        &mut self,
+        pending: PendingTaskAction,
+        result: Result<Option<maple_agent::agent::AgentSessionSummary>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.user_id.as_deref() != Some(&pending.account) {
+            return;
+        }
+        let owner = self
+            .computer_owner(pending.request.target.computer.as_deref())
+            .filter(|(chat, grant)| {
+                chat.entity_id() == pending.owner
+                    && *grant == pending.grant
+                    && !chat.read(cx).connection_ended()
+            });
+        let result = match owner {
+            Some((owner, _)) => result.map(|session| {
+                owner.update(cx, |chat, cx| {
+                    chat.apply_sidebar_task_action(
+                        &pending.request.target.id,
+                        &pending.request.action,
+                        session,
+                        cx,
+                    );
+                });
+                self.sync_computers(cx);
+            }),
+            None => {
+                Err("The computer connection changed. Check the task before trying again.".into())
+            }
+        };
+        if let Some(source) = pending.source.upgrade()
+            && self.has_chat(source.entity_id())
+        {
+            source.update(cx, |chat, cx| match result {
+                Ok(()) => chat.refresh_sidebar_task_actions(cx),
+                Err(message) => chat.sidebar_task_action_notice(message, cx),
             });
         }
     }
@@ -2050,6 +2177,10 @@ impl MapleApp {
         .detach();
         cx.subscribe(chat, |app, source, request: &ProjectRenameRequest, cx| {
             app.rename_project(source, request.clone(), cx)
+        })
+        .detach();
+        cx.subscribe(chat, |app, source, request: &TaskActionRequest, cx| {
+            app.task_action(source, request.clone(), cx)
         })
         .detach();
         cx.subscribe(
@@ -4839,6 +4970,130 @@ mod tests {
             app.finish_inline_mode_notice_ack(old, false, cx);
             assert_eq!(app.mode_change_notice, Some(newer));
             assert!(app.inline_mode_notice.is_none());
+        });
+    }
+
+    fn task_summary(title: &str) -> maple_agent::agent::AgentSessionSummary {
+        maple_agent::agent::AgentSessionSummary {
+            id: "same-task".into(),
+            title: title.into(),
+            project_root: "/same/project".into(),
+            created_ms: 1,
+            updated_ms: 2,
+            message_count: 1,
+            model: None,
+            web_enabled: true,
+            state: maple_agent::agent::AgentTaskState::Active,
+            acp: false,
+        }
+    }
+
+    fn task_attempt(app: &MapleApp, computer: Option<&str>) -> PendingTaskAction {
+        let (owner, grant) = app.computer_owner(computer).unwrap();
+        let Screen::Chat(source) = &app.screen else {
+            panic!("chat fixture")
+        };
+        PendingTaskAction {
+            request: TaskActionRequest {
+                target: crate::settings::SidebarItemKey {
+                    computer: computer.map(str::to_string),
+                    id: "same-task".into(),
+                },
+                action: TaskAction::Rename("New title".into()),
+            },
+            account: "user".into(),
+            owner: owner.entity_id(),
+            grant,
+            source: source.downgrade(),
+        }
+    }
+
+    fn seed_task_owners(app: &MapleApp, cx: &mut Context<MapleApp>) {
+        for (computer, title) in [
+            (None, "Local task"),
+            (Some("east"), "East task"),
+            (Some("west"), "West task"),
+        ] {
+            let (owner, _) = app.computer_owner(computer).unwrap();
+            owner.update(cx, |chat, cx| {
+                chat.apply_sidebar_task_action(
+                    "same-task",
+                    &TaskAction::Rename(title.into()),
+                    Some(task_summary(title)),
+                    cx,
+                );
+            });
+        }
+    }
+
+    fn task_title(app: &MapleApp, computer: Option<&str>, cx: &App) -> String {
+        let (owner, _) = app.computer_owner(computer).unwrap();
+        owner
+            .read(cx)
+            .computer_snapshot("Fixture".into(), cx)
+            .sessions
+            .into_iter()
+            .find(|session| session.id == "same-task")
+            .unwrap()
+            .title
+    }
+
+    #[gpui::test]
+    fn task_action_results_route_duplicate_ids_without_navigation(cx: &mut gpui::TestAppContext) {
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            seed_task_owners(app, cx);
+            let east = app.remote_computers["east"].chat.as_ref().unwrap().clone();
+            let navigation = east.read(cx).navigation_generation();
+            app.screen = Screen::Chat(east.clone());
+            app.selected_host = Some("east".into());
+
+            let pending = task_attempt(app, None);
+            app.complete_task_action(pending, Ok(Some(task_summary("Renamed local"))), cx);
+            assert_eq!(task_title(app, None, cx), "Renamed local");
+            assert_eq!(task_title(app, Some("east"), cx), "East task");
+            assert_eq!(task_title(app, Some("west"), cx), "West task");
+
+            let pending = task_attempt(app, Some("west"));
+            app.complete_task_action(pending, Ok(Some(task_summary("Renamed west"))), cx);
+            assert_eq!(task_title(app, Some("west"), cx), "Renamed west");
+            assert_eq!(task_title(app, None, cx), "Renamed local");
+            assert_eq!(task_title(app, Some("east"), cx), "East task");
+            assert!(matches!(&app.screen, Screen::Chat(chat)
+                if chat.entity_id() == east.entity_id()
+                    && chat.read(cx).navigation_generation() == navigation));
+            assert_eq!(app.selected_host.as_deref(), Some("east"));
+            assert!(app.requested_navigation.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn stale_task_action_results_cannot_mutate_replacement_owners(cx: &mut gpui::TestAppContext) {
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            seed_task_owners(app, cx);
+            let pending = task_attempt(app, Some("east"));
+            app.remote_computers.get_mut("east").unwrap().grant = [3; 16];
+            app.complete_task_action(pending, Ok(Some(task_summary("Old grant"))), cx);
+            assert_eq!(task_title(app, Some("east"), cx), "East task");
+
+            let pending = task_attempt(app, Some("east"));
+            let west = app.remote_computers["west"].chat.clone();
+            app.remote_computers.get_mut("east").unwrap().chat = west;
+            app.complete_task_action(pending, Ok(Some(task_summary("Old owner"))), cx);
+            assert_eq!(task_title(app, Some("east"), cx), "West task");
+
+            let pending = task_attempt(app, Some("east"));
+            app.remote_computers.remove("east");
+            app.complete_task_action(pending, Ok(Some(task_summary("Unpaired"))), cx);
+            assert!(!app.remote_computers.contains_key("east"));
+            assert_eq!(task_title(app, Some("west"), cx), "West task");
+
+            let pending = task_attempt(app, None);
+            app.user_id = Some("another-account".into());
+            app.complete_task_action(pending, Ok(Some(task_summary("Old account"))), cx);
+            assert_eq!(task_title(app, None, cx), "Local task");
+            assert!(app.requested_navigation.is_none());
         });
     }
 

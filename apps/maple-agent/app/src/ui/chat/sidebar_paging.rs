@@ -85,14 +85,109 @@ mod tests {
                     sidebar.rebuild_sections();
                     assert_eq!(
                         sidebar.entries,
-                        [
-                            SidebarEntry::NewTask,
-                            SidebarEntry::ProjectsHeader,
-                            SidebarEntry::ArchivedHeader,
-                        ]
+                        [SidebarEntry::NewTask, SidebarEntry::ProjectsHeader]
                     );
                 }
             }
+        });
+    }
+
+    #[gpui::test]
+    fn archived_header_follows_prefetched_and_live_tasks(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.selected = None;
+            sidebar.running.clear();
+            sidebar.archived_expanded = false;
+            sidebar.refresh_pages(cx);
+            assert!(sidebar.pages.loading(PageKind::Archived));
+            sidebar.refresh_task_order(cx);
+            assert!(sidebar.pages.loading(PageKind::Archived));
+            // Keep this fixture's explicit pages independent of the pending reads.
+            sidebar.pages = SidebarPages {
+                enabled: true,
+                started: HashSet::from([PageKind::Archived]),
+                ..Default::default()
+            };
+            sidebar.apply_task_page(PageKind::Archived, Vec::new(), false);
+            sidebar.rebuild_sections();
+            assert!(!sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+
+            sidebar.apply_task_page(
+                PageKind::Archived,
+                vec![TaskSummary {
+                    state: "archived".into(),
+                    ..page_summary("old")
+                }],
+                false,
+            );
+            sidebar.rebuild_sections();
+            assert!(sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            assert!(
+                !sidebar
+                    .entries
+                    .iter()
+                    .any(|entry| { matches!(entry, SidebarEntry::Task(task) if task.archived) })
+            );
+
+            sidebar
+                .pages
+                .next
+                .insert(PageKind::Archived, "continuation".into());
+            sidebar.set_archived_expanded(true, cx);
+            assert!(!sidebar.pages.loading(PageKind::Archived));
+            assert_eq!(sidebar.pages.next[&PageKind::Archived], "continuation");
+            assert!(
+                sidebar
+                    .entries
+                    .iter()
+                    .any(|entry| { matches!(entry, SidebarEntry::Task(task) if task.archived) })
+            );
+            sidebar.set_archived_expanded(false, cx);
+
+            sidebar.apply_live_summary(summary("old", AgentTaskState::Active), cx);
+            assert!(!sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            sidebar.apply_live_summary(summary("old", AgentTaskState::Archived), cx);
+            assert!(sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            sidebar.forget_page_tasks(&["old".into()]);
+            sidebar.rebuild_sections();
+            assert!(!sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            assert_eq!(sidebar.pages.next[&PageKind::Archived], "continuation");
+            assert!(
+                sidebar
+                    .entries
+                    .contains(&SidebarEntry::LoadMore(PageKind::Archived)),
+                "the unread archived suffix remains reachable without a cached row"
+            );
+
+            sidebar.pages.next.remove(&PageKind::Archived);
+            sidebar.pages.failed.insert(PageKind::Archived);
+            sidebar.rebuild_sections();
+            assert!(!sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            assert_eq!(
+                sidebar
+                    .entries
+                    .iter()
+                    .filter(|entry| **entry == SidebarEntry::LoadMore(PageKind::Archived))
+                    .count(),
+                1,
+                "failed archive reads remain retryable without an empty heading"
+            );
+            sidebar.pages.failed.remove(&PageKind::Archived);
+            sidebar.pages.loading.insert(PageKind::Archived);
+            sidebar.rebuild_sections();
+            assert!(!sidebar.entries.contains(&SidebarEntry::ArchivedHeader));
+            assert!(
+                !sidebar
+                    .entries
+                    .contains(&SidebarEntry::LoadMore(PageKind::Archived))
+            );
         });
     }
 
@@ -131,6 +226,72 @@ mod tests {
         let published = published.borrow();
         assert_eq!(published.len(), 1);
         assert!(published[0].is_empty());
+    }
+
+    #[gpui::test]
+    fn prefetched_archives_do_not_displace_startup_candidates(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        chat.update(cx, |chat, cx| {
+            let published = published.clone();
+            cx.subscribe(&chat.sidebar, move |_, _, event: &SidebarEvent, _| {
+                if let SidebarEvent::PagesReady { sessions, .. } = event {
+                    published.borrow_mut().push(sessions.clone());
+                }
+            })
+            .detach();
+        });
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.selected = None;
+            sidebar.running.clear();
+            sidebar.sessions = (0..60)
+                .map(|index| AgentSessionSummary {
+                    updated_ms: 100 + index,
+                    ..summary(&format!("archived-{index}"), AgentTaskState::Archived)
+                })
+                .collect();
+            let archived = sidebar.sessions.iter().map(|s| s.id.clone()).collect();
+            sidebar
+                .sessions
+                .push(summary("active", AgentTaskState::Active));
+            sidebar.pages = SidebarPages {
+                enabled: true,
+                ready: HashSet::from([PageKind::Active, PageKind::Settled, PageKind::Pinned]),
+                ids: HashMap::from([
+                    (PageKind::Archived, archived),
+                    (PageKind::Active, vec!["active".into()]),
+                ]),
+                autoselect_generation: Some(u64::MAX),
+                ..Default::default()
+            };
+            sidebar.pages_ready(cx);
+            assert_eq!(
+                sidebar.sessions.len(),
+                61,
+                "archives stay in the sidebar cache"
+            );
+
+            // Explicit selection and running state keep their existing retention.
+            sidebar.selected = Some("archived-0".into());
+            sidebar.running.insert("archived-1".into());
+            sidebar.pages.autoselect_generation = Some(u64::MAX);
+            sidebar.pages_ready(cx);
+        });
+        let published = published.borrow();
+        assert_eq!(published.len(), 2);
+        let ids = |index: usize| {
+            published[index]
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), ["active"]);
+        assert_eq!(ids(1), ["archived-1", "archived-0", "active"]);
     }
 
     #[gpui::test]
@@ -813,11 +974,13 @@ impl Sidebar {
         // A normal refresh may keep grouped rows visible while its owner read
         // is pending. Those display-only rows cannot become fresh navigation
         // authority or auto-selection candidates after empty first pages.
+        // Prefetched archives likewise do not consume the startup candidate budget.
         let mut sessions = self
             .sessions
             .iter()
             .filter(|session| {
-                self.pages.contains(&session.id, false)
+                (session.state != AgentTaskState::Archived
+                    && self.pages.contains(&session.id, false))
                     || self.running.contains(&session.id)
                     || self.selected.as_ref() == Some(&session.id)
             })
@@ -852,9 +1015,7 @@ impl Sidebar {
                 self.load_page(PageKind::Active, cx);
                 self.load_page(PageKind::Settled, cx);
                 self.load_page(PageKind::Pinned, cx);
-                if self.archived_expanded {
-                    self.load_page(PageKind::Archived, cx);
-                }
+                self.load_page(PageKind::Archived, cx);
             } else {
                 self.load_page(PageKind::Search, cx);
             }
@@ -888,9 +1049,8 @@ impl Sidebar {
         if self.filter.is_empty() {
             self.load_page(PageKind::Active, cx);
             self.load_page(PageKind::Settled, cx);
-            if self.archived_expanded {
-                self.load_page(PageKind::Archived, cx);
-            }
+            // The first archived page decides whether its collapsed heading exists.
+            self.load_page(PageKind::Archived, cx);
         } else if self.backend.remote_host().is_none() {
             self.load_page(PageKind::Search, cx);
         }
@@ -1011,10 +1171,7 @@ impl Sidebar {
                 ids.retain(|current| current != &id);
             }
         }
-        if visible
-            && self.filter.is_empty()
-            && (target != PageKind::Archived || self.archived_expanded)
-        {
+        if visible && self.filter.is_empty() {
             let ids = self.pages.ids.entry(target).or_default();
             ids.insert(0, id.clone());
             // The continuation cursor is after the last loaded row. Dropping
