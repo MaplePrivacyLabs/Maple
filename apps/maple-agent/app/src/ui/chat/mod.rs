@@ -63,7 +63,7 @@ use self::navigation::ApplicationVimState;
 use self::sidebar::SessionActivity;
 use self::sidebar::{Sidebar, SidebarEvent, root_display_name, session_summary_eq};
 use self::transcript::{
-    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_question_card,
+    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, plan_finished, render_question_card,
     render_waiting_indicator,
 };
 
@@ -202,6 +202,9 @@ mod notification_policy_tests {
 
 /// How long a notice stays before it clears itself.
 const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+/// How long the plan card stays after its last item is checked off live,
+/// so the final check is seen before the card goes.
+const PLAN_DONE_HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
 
 const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder…";
 const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)…";
@@ -647,16 +650,21 @@ pub struct ChatScreen {
     mcp_enabled_count: usize,
     /// Composer fills the pane (fullscreen editing).
     composer_expanded: bool,
-    /// Latest todo list from the selected task, pinned above the composer.
+    /// Latest todo list from the selected task, pinned above the composer
+    /// while any entry is unfinished. A finished list stays in the
+    /// transcript.
     plan: Vec<PlanEntry>,
     /// Count of completed entries in `plan`, for the card header.
     plan_done: usize,
+    /// Set while a plan that just finished live keeps its card for
+    /// `PLAN_DONE_HOLD`; the task clears it.
+    plan_hold: Option<gpui::Task<()>>,
     /// Open `/btw` side question, if any. Never part of the transcript.
     btw: Option<SideQuestionPanel>,
     /// Counter for side question request ids.
     btw_sequence: u64,
-    /// The pinned plan card shows only its header.
-    plan_collapsed: bool,
+    /// Tasks whose pinned plan card shows only its header.
+    plan_collapsed: HashSet<String>,
     /// External agents working for the selected task, pinned above the
     /// composer. Empty unless an external agent is working.
     subagents: Vec<ActiveSubagent>,
@@ -1471,9 +1479,10 @@ impl ChatScreen {
             summaries_enabled: settings.tool_summaries,
             plan: Vec::new(),
             plan_done: 0,
+            plan_hold: None,
             btw: None,
             btw_sequence: 0,
-            plan_collapsed: false,
+            plan_collapsed: HashSet::new(),
             subagents: Vec::new(),
             subagent_tick_pending: std::cell::Cell::new(false),
             runtime_running_seen: false,
@@ -5748,7 +5757,7 @@ impl ChatScreen {
             return;
         };
         if let Some(plan) = plan {
-            self.set_plan(plan);
+            self.update_live_plan(plan, cx);
         }
         self.follow_application_stream();
         // A newer item after a thinking block finalizes the block; that is
@@ -7350,12 +7359,43 @@ impl ChatScreen {
     }
 
     /// Replace the plan and the completed count the card header shows.
+    /// A finished plan from history shows no card.
     fn set_plan(&mut self, plan: Vec<PlanEntry>) {
         self.plan_done = plan
             .iter()
             .filter(|entry| entry.status == PlanStatus::Completed)
             .count();
         self.plan = plan;
+        self.plan_hold = None;
+    }
+
+    /// Replace the plan from a live update. When the update finishes the
+    /// plan on screen, the card keeps the final check for
+    /// `PLAN_DONE_HOLD`, then goes; the finished list stays in the
+    /// transcript.
+    fn update_live_plan(&mut self, plan: Vec<PlanEntry>, cx: &mut Context<Self>) {
+        let showing = self.plan_card_visible();
+        // A repeat of the finished list keeps the running hold.
+        let hold = self.plan_hold.take();
+        self.set_plan(plan);
+        if showing && plan_finished(&self.plan) {
+            self.plan_hold = hold.or_else(|| {
+                Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(PLAN_DONE_HOLD).await;
+                    this.update(cx, |this, cx| {
+                        this.plan_hold = None;
+                        cx.notify();
+                    })
+                    .ok();
+                }))
+            });
+        }
+    }
+
+    /// The pinned card shows an unfinished plan, and a finished one only
+    /// while it holds its final check.
+    fn plan_card_visible(&self) -> bool {
+        !self.plan.is_empty() && (self.plan_done < self.plan.len() || self.plan_hold.is_some())
     }
 
     /// Replace the session's MCP servers and the enabled count the

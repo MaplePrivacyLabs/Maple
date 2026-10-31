@@ -61,7 +61,7 @@ fn registered(tool: Arc<dyn AgentTool>, snippet: &str) -> RegisteredTool {
 fn todo_declaration() -> Tool {
     Tool::new(
         "todo_write",
-        "Record or update the plan for the current task. Call this whenever the plan changes so the user sees live progress.",
+        "Record or update the plan for the current task, so the user sees live progress. Use it for work with three or more steps; skip it for quick tasks. Each call sends the full list. Keep exactly one item in_progress while you work, and mark each item completed as soon as it is done. The plan stays pinned above the user's message box until every item is completed. If the user changes direction, replace the list with the new steps, or send an empty list to clear it.",
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -69,7 +69,7 @@ fn todo_declaration() -> Tool {
             "properties": {
                 "todos": {
                     "type": "array",
-                    "description": "The full todo list; replaces any previous list",
+                    "description": "The full todo list; replaces any previous list. An empty list clears the plan",
                     "items": {
                         "type": "object",
                         "additionalProperties": false,
