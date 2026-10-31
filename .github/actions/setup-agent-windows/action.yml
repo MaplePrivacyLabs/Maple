@@ -37,7 +37,7 @@ runs:
           $llvm | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
         }
         foreach ($name in @('clang.exe', 'clang-cl.exe', 'cmake.exe')) {
-          $tool = Get-Command $name -CommandType Application -ErrorAction Stop
+          $tool = Get-Command $name -CommandType Application -ErrorAction Stop | Select-Object -First 1
           & $tool.Source --version
           if ($LASTEXITCODE -ne 0) { throw "$name could not start" }
         }
