@@ -61,7 +61,7 @@ use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
 #[cfg(test)]
 use self::sidebar::SessionActivity;
-use self::sidebar::{Sidebar, SidebarEvent, root_display_name, session_summary_eq};
+use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, root_display_name, session_summary_eq};
 use self::transcript::{
     ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_question_card,
     render_waiting_indicator,
@@ -463,6 +463,9 @@ pub struct ChatScreen {
     /// terminal event. This is intentionally independent of selection and
     /// project grouping; the sidebar derives presentation from it.
     completed_unread_sessions: HashSet<String>,
+    /// Tasks whose last run failed and that have not been opened since;
+    /// kept the same way as `completed_unread_sessions`.
+    failed_unread_sessions: HashSet<String>,
     /// Ids of runs whose Finished event already arrived, newest last and
     /// capped at `FINISHED_RUNS_KEPT`. A send that returns after its run
     /// finished must not mark that run active again.
@@ -968,22 +971,52 @@ impl ChatScreen {
     }
 
     /// Push everything the sidebar shows: sessions, the selection, which
-    /// tasks run or finished unread, and the recent roots. Called when
+    /// tasks wait, run, or ended unseen, and the recent roots. Called when
     /// any of them changed; the sidebar rebuilds only what moved.
     fn sync_sidebar(&mut self, cx: &mut Context<Self>) {
         let sessions = self.sessions.clone();
         let selected = self.selected_session.clone();
-        let running: HashSet<String> = self.active_runs.keys().cloned().collect();
-        let unread = self.completed_unread_sessions.clone();
+        let activity = self.task_activity();
         let roots = self.recent_roots.clone();
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_sessions(sessions, cx);
             sidebar.set_selected(selected, cx);
-            sidebar.set_activity(running, unread, cx);
+            sidebar.set_activity(activity, cx);
             sidebar.set_recent_roots(roots, cx);
         });
         self.refresh_selected_title();
         cx.emit(NavigationChanged);
+    }
+
+    /// Push only the row indicators: a question arrived or went away.
+    /// Other computers' sidebars show them too.
+    fn sync_sidebar_activity(&mut self, cx: &mut Context<Self>) {
+        let activity = self.task_activity();
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_activity(activity, cx));
+        cx.emit(NavigationChanged);
+    }
+
+    /// Which tasks wait on the user, run, or ended unseen.
+    fn task_activity(&self) -> TaskActivity {
+        TaskActivity {
+            running: self.active_runs.keys().cloned().collect(),
+            waiting: self
+                .pending_questions
+                .iter()
+                .map(|question| question.session_id.clone())
+                .collect(),
+            failed: self.failed_unread_sessions.clone(),
+            unread: self.completed_unread_sessions.clone(),
+        }
+    }
+
+    /// Seeing a task reads how its last run ended. Reports whether that
+    /// cleared a marker.
+    fn mark_seen(&mut self, session_id: &str) -> bool {
+        let completed = self.completed_unread_sessions.remove(session_id);
+        let failed = self.failed_unread_sessions.remove(session_id);
+        completed || failed
     }
 
     fn sync_sidebar_selection(&mut self, cx: &mut Context<Self>) {
@@ -1333,6 +1366,7 @@ impl ChatScreen {
             pages: paging::TranscriptPages::default(),
             active_runs: HashMap::new(),
             completed_unread_sessions: HashSet::new(),
+            failed_unread_sessions: HashSet::new(),
             finished_runs: std::collections::VecDeque::new(),
             session_setup_pending: false,
             first_send_waiting_for_mcp: false,
@@ -3317,11 +3351,11 @@ impl ChatScreen {
         }
         self.tool_summaries.extend(stored_summaries);
         let project_root = session.project_root.clone();
-        // Opening the task is what reads its completion, so the unread
-        // marker goes. Only an explicit settle ever moves a task out of
-        // the active inbox.
+        // Opening the task is what reads how its last run ended, so the
+        // unread or failed marker goes. Only an explicit settle ever moves
+        // a task out of the active inbox.
         if self.visible {
-            self.completed_unread_sessions.remove(&session.id);
+            self.mark_seen(&session.id);
         }
         self.selected_session = Some(session.id.clone());
         self.draft = false;
@@ -4053,13 +4087,7 @@ impl ChatScreen {
 
     #[cfg(test)]
     fn session_activity(&self, session_id: &str) -> Option<SessionActivity> {
-        if self.active_runs.contains_key(session_id) {
-            Some(SessionActivity::Running)
-        } else if self.completed_unread_sessions.contains(session_id) {
-            Some(SessionActivity::CompletedUnread)
-        } else {
-            None
-        }
+        self.task_activity().of(session_id)
     }
 
     /// Open the task before or after the selected one, in sidebar order.
@@ -5236,6 +5264,7 @@ impl ChatScreen {
         self.pending_questions
             .retain(|queued| queued.request_id != question.request_id);
         self.reset_question_card(cx);
+        self.sync_sidebar_activity(cx);
         cx.notify();
         self.call(
             async move { backend.answer_question(&user_id, &request_id, answer).await },
@@ -5278,6 +5307,7 @@ impl ChatScreen {
         self.pending_questions
             .retain(|queued| queued.request_id != question.request_id);
         self.reset_question_card(cx);
+        self.sync_sidebar_activity(cx);
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -5701,7 +5731,7 @@ impl ChatScreen {
         });
         // An archived row shows no indicator; drop a marker it may carry.
         if session.state == AgentTaskState::Archived {
-            self.completed_unread_sessions.remove(&session.id);
+            self.mark_seen(&session.id);
         }
         if let Some(existing) = self
             .sessions
@@ -6213,6 +6243,7 @@ impl ChatScreen {
                 if showing {
                     self.question_selected.clear();
                 }
+                self.sync_sidebar_activity(cx);
             }
             AgentServiceEvent::ThinkingChanged { session_id, state } => {
                 self.apply_thinking_changed(&session_id, state, cx);
@@ -6294,6 +6325,7 @@ impl ChatScreen {
                     request_id,
                     questions,
                 });
+                self.sync_sidebar_activity(cx);
                 if shows_now {
                     // A fresh question takes the card; follow-ups queue
                     // behind it and keep the user's picks on this one.
@@ -6355,8 +6387,11 @@ impl ChatScreen {
         let before = self.pending_questions.len();
         self.pending_questions
             .retain(|question| question.session_id != session_id);
-        if self.pending_questions.len() != before && self.is_selected(session_id) {
-            self.reset_question_card(cx);
+        if self.pending_questions.len() != before {
+            if self.is_selected(session_id) {
+                self.reset_question_card(cx);
+            }
+            self.sync_sidebar_activity(cx);
         }
     }
 
@@ -6466,15 +6501,22 @@ impl ChatScreen {
                     .is_none_or(|active| active == run_id);
                 if owns_session {
                     self.active_runs.remove(session_id);
-                    // The marker follows the latest terminal: only a
-                    // successful completion off screen sets it. Opening the
-                    // task (`set_active_session`) is the only other writer.
-                    self.completed_unread_sessions.remove(session_id);
-                    if matches!(terminal, maple_agent::agent::AgentRunTerminal::Completed)
-                        && !(self.visible && self.is_selected(session_id))
-                    {
-                        self.completed_unread_sessions
-                            .insert(session_id.to_string());
+                    // The markers follow the latest terminal: a completion
+                    // or a failure off screen sets one; a stop sets none.
+                    // Opening the task (`set_active_session`) is the only
+                    // other writer.
+                    self.mark_seen(session_id);
+                    if !(self.visible && self.is_selected(session_id)) {
+                        match terminal {
+                            maple_agent::agent::AgentRunTerminal::Completed => {
+                                self.completed_unread_sessions
+                                    .insert(session_id.to_string());
+                            }
+                            maple_agent::agent::AgentRunTerminal::Failed => {
+                                self.failed_unread_sessions.insert(session_id.to_string());
+                            }
+                            maple_agent::agent::AgentRunTerminal::Cancelled => {}
+                        }
                     }
                     // Waking or retiring a run moves a task between
                     // sections; the entries must follow the same frame.

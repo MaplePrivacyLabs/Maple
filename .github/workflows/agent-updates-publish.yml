@@ -26,6 +26,11 @@ on:
         required: true
         default: true
         type: boolean
+      include_windows_arm64:
+        description: Publish native Windows ARM64 too (disable only for a legacy producer without ARM64 packages)
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -71,14 +76,17 @@ jobs:
           RELEASE_NOTES: ${{ inputs.notes }}
           INCLUDE_LINUX: ${{ inputs.include_linux }}
           INCLUDE_WINDOWS: ${{ inputs.include_windows }}
+          INCLUDE_WINDOWS_ARM64: ${{ inputs.include_windows_arm64 }}
         run: |
           nix develop --no-update-lock-file .#ci -c bash -euo pipefail <<'PREPARE'
           linux_args=()
           windows_args=()
+          windows_arm64_args=()
           if [ "$INCLUDE_LINUX" = true ]; then linux_args=(--linux); fi
           if [ "$INCLUDE_WINDOWS" = true ]; then windows_args=(--windows); fi
+          if [ "$INCLUDE_WINDOWS_ARM64" = true ]; then windows_arm64_args=(--windows-arm64); fi
           python3 services/agent-updates/publisher/publisher.py trust \
-            --run-id "$BUILD_RUN_ID" "${linux_args[@]}" "${windows_args[@]}" --output trust.json
+            --run-id "$BUILD_RUN_ID" "${linux_args[@]}" "${windows_args[@]}" "${windows_arm64_args[@]}" --output trust.json
           gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name "$(jq -er .artifacts.macos trust.json)" --dir packages/macos
           linux_args=()
@@ -93,10 +101,16 @@ jobs:
               --name "$(jq -er .artifacts.windows trust.json)" --dir packages/windows
             windows_args=(--windows packages/windows)
           fi
+          windows_arm64_args=()
+          if [ "$INCLUDE_WINDOWS_ARM64" = true ]; then
+            gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "$(jq -er '.artifacts["windows-arm64"]' trust.json)" --dir packages/windows-arm64
+            windows_arm64_args=(--windows-arm64 packages/windows-arm64)
+          fi
           printf '%s' "$RELEASE_NOTES" > notes.txt
           python3 services/agent-updates/publisher/publisher.py prepare \
             --run-id "$BUILD_RUN_ID" --version "$RELEASE_VERSION" --build "$(jq -er .build trust.json)" \
-            --macos packages/macos "${linux_args[@]}" "${windows_args[@]}" --notes-file notes.txt --public-key public-key.pub --output bundle
+            --macos packages/macos "${linux_args[@]}" "${windows_args[@]}" "${windows_arm64_args[@]}" --notes-file notes.txt --public-key public-key.pub --output bundle
           PREPARE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

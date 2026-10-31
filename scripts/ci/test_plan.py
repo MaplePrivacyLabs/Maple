@@ -401,6 +401,23 @@ class AgentLaneTests(unittest.TestCase):
             self.assertEqual(agent_lanes(selected(["docs/x.md"], labels=[label])) & packages, packages)
         self.assertLessEqual(packages, active(NIGHTLY))
 
+    def test_native_arm64_packaging_runs_only_by_label_nightly_or_explicit_dispatch(self):
+        arm = "agent-package-windows-arm64"
+        fixture = "apps/maple-agent/scripts/test_windows_release.py"
+        self.assertTrue(plan.classified(fixture))
+        for path in ("apps/maple-agent/scripts/windows-installer.nsi", fixture):
+            for event in (PR, QUEUE, PUSH):
+                with self.subTest(path=path, event=event):
+                    self.assertNotIn(arm, selected([path], event))
+        for label in ("ci:package", "ci:windows", "ci:full"):
+            self.assertIn(arm, selected(["docs/x.md"], labels=[label]))
+        self.assertIn(arm, active(NIGHTLY))
+        self.assertIn(arm, active(DISPATCH))
+        lane = next(lane for lane in lanes.LANES if lane.id == arm)
+        self.assertEqual(lane.runner.label, "windows-11-arm")
+        self.assertEqual(dict(lane.env)["MAPLE_WINDOWS_ARCH"], "aarch64")
+        self.assertFalse(lane.gate)
+
     def test_a_required_lane_runs_only_with_the_lane_that_requires_it(self):
         # The macOS packaging rehearsal compiles gpui's shaders on Blacksmith, whose image
         # cannot download the Metal Toolchain; metal-toolchain exports it, and only that
@@ -539,7 +556,7 @@ class ClientLaneTests(unittest.TestCase):
         self.assertEqual(selected(["docs/x.md"], labels=["ci:research-dev-macos"]), {"research-dev-macos"})
         # ci:windows is the Agent's; Research Windows packaging comes with ci:package.
         self.assertEqual(selected(["docs/x.md"], labels=["ci:windows"]),
-                         {"agent-windows", "agent-windows-updater", "agent-full-windows"})
+                         {"agent-windows", "agent-windows-updater", "agent-full-windows", "agent-package-windows-arm64"})
         self.assertLessEqual(desktop, selected(["docs/x.md"], labels=["ci:package"]))
         self.assertFalse({lane for lane in selected([".github/workflows/ci.yml"]) if lane.startswith(
             ("research-ios", "research-android", "research-desktop", "research-dev"))})

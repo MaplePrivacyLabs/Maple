@@ -124,6 +124,28 @@ class ContextTests(unittest.TestCase):
                 self.assertEqual(loaded.tooling_sha256, context.tooling_digest(loaded.repo))
                 self.assertEqual(loaded.tool("gh"), self.fixture.tools["gh"]["path"])
 
+    def test_arm_release_requires_its_own_artifact_and_preserves_predecessor_platforms(self):
+        bindings = self.fixture.bindings
+        bindings['platforms'] = list(context.ALL_PLATFORMS)
+        bindings['artifacts']['windows-arm64'] = {
+            'id': 701, 'name': 'maple-agent-prod-windows-aarch64-202',
+            'size': 1024, 'zip_sha256': '8' * 64}
+        self.fixture.write()
+        loaded = self.load_without_git()
+        self.assertEqual(loaded.platforms, context.ALL_PLATFORMS)
+        self.assertEqual(context.predecessor_platforms(bindings), context.PLATFORMS)
+        self.assertEqual(context.r2_request_count(bindings), 16)
+        reference = deepcopy(next(iter(bindings['previous_signed_envelopes'].values())))
+        bindings['previous_signed_envelopes'][
+            f"stable/releases/{bindings['previous']['version']}/windows-arm64-manifest.json"] = reference
+        self.fixture.write()
+        self.assertEqual(context.predecessor_platforms(self.load_without_git().bindings), context.ALL_PLATFORMS)
+        self.assertEqual(context.r2_request_count(bindings), 17)
+        self.rejected_binding(lambda b: b.update(platforms=list(context.PLATFORMS),
+            artifacts={key: value for key, value in b['artifacts'].items() if key != 'windows-arm64'}))
+        self.rejected_binding(lambda b: b['artifacts']['windows-arm64'].update(
+            name=b['artifacts']['windows']['name']))
+
     def test_duplicate_fields_and_nonfinite_json_are_rejected(self):
         for raw in (b'{"x":1,"x":2}', b'{"outer":{"x":1,"x":2}}', b'{"x":NaN}', b'{"x":Infinity}',
                     b'{"x":-Infinity}', b'{"x":1e400}', b'{"nested":[-1e400]}'):

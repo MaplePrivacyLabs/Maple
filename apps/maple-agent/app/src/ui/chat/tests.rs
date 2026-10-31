@@ -188,6 +188,7 @@ mod state_tests {
             this.sync_sidebar(cx);
             assert!(
                 this.computer_snapshot("Office".into(), cx)
+                    .activity
                     .unread
                     .contains("s1")
             );
@@ -220,13 +221,15 @@ mod state_tests {
                     label: "proj".into(),
                 }],
                 sessions: vec![summary("same-id", "Remote\r\ntask")],
-                running: HashSet::from(["same-id".into()]),
-                unread: HashSet::new(),
+                activity: TaskActivity {
+                    running: HashSet::from(["same-id".into()]),
+                    ..TaskActivity::default()
+                },
                 pinned: Vec::new(),
                 loading: false,
                 error: None,
             };
-            set_computer_snapshots(this, Arc::new(vec![local, remote]), cx);
+            set_computer_snapshots(this, Arc::new(vec![local.clone(), remote.clone()]), cx);
             this.sidebar.update(cx, |sidebar, _| {
                 assert_eq!(
                     sidebar
@@ -270,6 +273,40 @@ mod state_tests {
                     destination: Destination::Task("same-id".into()),
                 })
             );
+            // Another computer's rows show its tasks' full status.
+            for (activity, shown) in [
+                (
+                    TaskActivity {
+                        running: HashSet::from(["same-id".into()]),
+                        waiting: HashSet::from(["same-id".into()]),
+                        ..TaskActivity::default()
+                    },
+                    SessionActivity::NeedsYou,
+                ),
+                (
+                    TaskActivity {
+                        failed: HashSet::from(["same-id".into()]),
+                        ..TaskActivity::default()
+                    },
+                    SessionActivity::Failed,
+                ),
+            ] {
+                let remote = Computer {
+                    activity,
+                    ..remote.clone()
+                };
+                set_computer_snapshots(this, Arc::new(vec![local.clone(), remote]), cx);
+                let sidebar = this.sidebar.read(cx);
+                let Some(SidebarEntry::OtherTask(index)) = sidebar
+                    .entries()
+                    .iter()
+                    .find(|e| matches!(e, SidebarEntry::OtherTask(_)))
+                    .copied()
+                else {
+                    panic!("the remote task has a row");
+                };
+                assert_eq!(sidebar.other_task_activity(index), Some(shown));
+            }
             // The projection never merges foreign records into the local runtime list.
             assert_eq!(this.sessions.len(), 1);
             assert_eq!(this.sessions[0].title, "Local task");
@@ -2217,9 +2254,14 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.handle_service_event(event, cx);
             assert!(!this.pending_questions.is_empty());
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s1"),
+                Some(SessionActivity::NeedsYou)
+            );
             this.skip_question(cx);
             assert!(this.pending_questions.is_empty());
             assert!(this.question_selected.is_empty());
+            assert_eq!(this.sidebar.read(cx).session_activity("s1"), None);
         });
     }
 
@@ -2330,6 +2372,10 @@ mod state_tests {
             this.handle_service_event(question("q2"), cx);
             assert_eq!(this.pending_questions.len(), 3);
             assert_eq!(this.pending_questions[0].request_id, "q1");
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s1"),
+                Some(SessionActivity::NeedsYou)
+            );
             // Answering pops the head and leaves the rest queued.
             this.answer_question("first".to_string(), cx);
             assert_eq!(this.pending_questions.len(), 2);
@@ -2344,6 +2390,7 @@ mod state_tests {
             this.answer_question("third".to_string(), cx);
             assert!(this.pending_questions.is_empty());
             assert!(this.pending_question_input.is_none());
+            assert_eq!(this.sidebar.read(cx).session_activity("s1"), None);
         });
     }
 
@@ -4778,8 +4825,20 @@ mod state_tests {
         let backend = backend_with_mcp_servers(cx, "remove-waiting-project", Vec::new());
         let alpha = mcp_project("remove-waiting-alpha");
         let beta = mcp_project("remove-waiting-beta");
+        // A task in each project, both carrying unseen markers. The test
+        // runtime is not running, so the archived project's task is
+        // already archived and the archive asks the backend for nothing.
+        let mut alpha_task = summary_at("alpha-task", "Alpha", &alpha);
+        alpha_task.state = AgentTaskState::Archived;
+        let beta_task = summary_at("beta-task", "Beta", &beta);
+        let (alpha_id, beta_id) = (alpha_task.id.clone(), beta_task.id.clone());
         let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
             this.selected_session = None;
+            this.sessions = vec![alpha_task, beta_task];
+            for id in [&alpha_id, &beta_id] {
+                this.completed_unread_sessions.insert(id.clone());
+                this.failed_unread_sessions.insert(id.clone());
+            }
             this.project_root = Some(alpha.clone());
             this.recent_roots = vec![recent_root(&alpha), recent_root(&beta)];
             this.draft = true;
@@ -4805,9 +4864,16 @@ mod state_tests {
             assert!(this.pending_first_send.is_none());
             assert_eq!(this.selected_session, None);
             assert!(
-                this.sessions.is_empty(),
+                this.sessions
+                    .iter()
+                    .all(|session| session.id == alpha_id || session.id == beta_id),
                 "no task was created for the withdrawn send"
             );
+            // The archived project's markers go with it; the other's stay.
+            assert!(!this.completed_unread_sessions.contains(&alpha_id));
+            assert!(!this.failed_unread_sessions.contains(&alpha_id));
+            assert!(this.completed_unread_sessions.contains(&beta_id));
+            assert!(this.failed_unread_sessions.contains(&beta_id));
             assert!(
                 this.prompt_history
                     .iter()
@@ -6276,6 +6342,7 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
             this.completed_unread_sessions.insert("s1".to_string());
+            this.failed_unread_sessions.insert("s1".to_string());
             this.sync_sidebar(cx);
             this.settle_task("s1", cx);
             assert_eq!(this.sidebar_settled(cx), vec![0]);
@@ -6292,6 +6359,7 @@ mod state_tests {
             assert!(this.selected_session.is_none());
             assert_eq!(this.loading_session.as_deref(), Some("s2"));
             assert!(!this.completed_unread_sessions.contains("s1"));
+            assert!(!this.failed_unread_sessions.contains("s1"));
             assert!(this.sidebar_settled(cx).is_empty());
             assert_eq!(this.sidebar_active(cx), vec![0]);
 
@@ -8333,8 +8401,7 @@ mod state_tests {
                     label: name.into(),
                 }],
                 sessions: vec![summary_at("same-id", "Existing task", "/shared")],
-                running: HashSet::new(),
-                unread: HashSet::new(),
+                activity: TaskActivity::default(),
                 pinned: Vec::new(),
                 loading: false,
                 error: None,
@@ -9778,7 +9845,8 @@ mod state_tests {
     }
 
     /// A queued turn that starts after a completion and then fails must
-    /// not leave the earlier completion's marker behind.
+    /// not leave the earlier completion's marker behind: the failure's
+    /// marker replaces it.
     #[gpui::test]
     fn test_later_failed_run_clears_an_earlier_unread_completion(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -9801,10 +9869,13 @@ mod state_tests {
                 AgentRunEvent::Finished(AgentRunTerminal::Failed),
                 cx,
             );
-            assert_eq!(this.session_activity("s2"), None);
+            assert_eq!(this.session_activity("s2"), Some(SessionActivity::Failed));
+            assert!(this.completed_unread_sessions.is_empty());
         });
     }
 
+    /// A failure off screen marks the task until it is opened; a stop
+    /// marks nothing, and neither counts as an unread completion.
     #[gpui::test]
     fn test_only_successful_background_completion_becomes_unread(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -9829,6 +9900,100 @@ mod state_tests {
             );
 
             assert!(this.completed_unread_sessions.is_empty());
+            assert_eq!(
+                this.session_activity("failed"),
+                Some(SessionActivity::Failed)
+            );
+            assert_eq!(this.session_activity("cancelled"), None);
+        });
+    }
+
+    /// A failure on the open task is in front of the user: no marker.
+    /// Opening a task that failed off screen clears its marker.
+    #[gpui::test]
+    fn test_failed_marker_clears_when_the_task_is_opened(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![
+                summary_at("s1", "A", "/work/alpha"),
+                summary_at("s2", "B", "/work/beta"),
+            ];
+            this.selected_session = Some("s1".to_string());
+            for session in ["s1", "s2"] {
+                this.handle_run_event(session, "run", AgentRunEvent::Started, cx);
+                this.handle_run_event(
+                    session,
+                    "run",
+                    AgentRunEvent::Finished(AgentRunTerminal::Failed),
+                    cx,
+                );
+            }
+            assert_eq!(this.session_activity("s1"), None);
+            assert_eq!(this.session_activity("s2"), Some(SessionActivity::Failed));
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s2"),
+                Some(SessionActivity::Failed)
+            );
+
+            this.set_active_session(
+                summary_at("s2", "B", "/work/beta"),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+            assert_eq!(this.session_activity("s2"), None);
+            assert_eq!(this.sidebar.read(cx).session_activity("s2"), None);
+        });
+    }
+
+    /// A question puts its task's row in the needs-you state ahead of the
+    /// run it paused, here and in the snapshot other computers show;
+    /// resolving it, or the run ending, clears that.
+    #[gpui::test]
+    fn test_waiting_question_marks_its_task_until_resolved(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.selected_session = Some("other".to_string());
+            this.handle_run_event("s1", "run", AgentRunEvent::Started, cx);
+            this.apply_service_event(one_question("q1", "Which file?"), cx);
+            assert_eq!(this.session_activity("s1"), Some(SessionActivity::NeedsYou));
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s1"),
+                Some(SessionActivity::NeedsYou)
+            );
+            assert_eq!(
+                this.computer_snapshot("This computer".into(), cx)
+                    .activity
+                    .of("s1"),
+                Some(SessionActivity::NeedsYou)
+            );
+
+            this.apply_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "req-q1".to_string(),
+                },
+                cx,
+            );
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s1"),
+                Some(SessionActivity::Running)
+            );
+
+            this.apply_service_event(one_question("q2", "Which branch?"), cx);
+            this.handle_run_event(
+                "s1",
+                "run",
+                AgentRunEvent::Finished(AgentRunTerminal::Cancelled),
+                cx,
+            );
+            assert_eq!(this.sidebar.read(cx).session_activity("s1"), None);
         });
     }
 
@@ -11970,8 +12135,7 @@ mod state_tests {
                             label: "Project".into(),
                         }],
                         sessions: Vec::new(),
-                        running: HashSet::new(),
-                        unread: HashSet::new(),
+                        activity: TaskActivity::default(),
                         pinned: Vec::new(),
                         loading: false,
                         error: None,

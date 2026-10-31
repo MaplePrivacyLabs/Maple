@@ -274,17 +274,22 @@ fn main() {
         )
         .unwrap();
         let mut compiler = Command::new("rustc");
+        let target_triple = format!("{}-pc-windows-msvc", std::env::consts::ARCH);
         compiler.args([
             "--edition=2024",
             "--crate-name",
             "windows_bootstrap_argv_fixture",
             "--target",
-            "x86_64-pc-windows-msvc",
+            &target_triple,
             "-C",
             "debuginfo=0",
         ]);
         // Reuse the CI's selected native linker instead of rediscovering it.
-        if let Some(linker) = std::env::var_os("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER") {
+        let linker_variable = format!(
+            "CARGO_TARGET_{}_PC_WINDOWS_MSVC_LINKER",
+            std::env::consts::ARCH.to_ascii_uppercase()
+        );
+        if let Some(linker) = std::env::var_os(linker_variable) {
             let mut option = OsString::from("linker=");
             option.push(linker);
             compiler.arg("-C").arg(option);

@@ -1045,10 +1045,9 @@ async fn cleanup_installed_update(service: &Service) {
         if service.manual_only() {
             return;
         }
-        let target = if cfg!(target_os = "windows") {
-            Target::WindowsX86_64
-        } else {
-            Target::LinuxX86_64
+        let Some(target) = Target::for_platform(std::env::consts::OS, std::env::consts::ARCH)
+        else {
+            return;
         };
         let Ok(origin) = compiled_feed_url(target) else {
             return;
@@ -1099,13 +1098,7 @@ async fn discard_preparation_with_lock(
 }
 
 fn manual_download_url(release: &VerifiedRelease) -> Option<String> {
-    let target = if cfg!(target_os = "linux") {
-        Target::LinuxX86_64
-    } else if cfg!(target_os = "windows") {
-        Target::WindowsX86_64
-    } else {
-        Target::DarwinAarch64
-    };
+    let target = Target::for_platform(std::env::consts::OS, std::env::consts::ARCH)?;
     manual_download_url_for_target(release, target)
 }
 
@@ -1114,6 +1107,7 @@ fn manual_download_url_for_target(release: &VerifiedRelease, target: Target) -> 
         Target::DarwinAarch64 => release.manifest.downloads.macos.as_ref()?,
         Target::LinuxX86_64 => release.manifest.downloads.linux_bundle.as_ref()?,
         Target::WindowsX86_64 => release.manifest.downloads.windows.as_ref()?,
+        Target::WindowsAarch64 => release.manifest.downloads.windows_arm64.as_ref()?,
     };
     release
         .origin
@@ -1127,15 +1121,8 @@ fn build_service() -> Result<Service, String> {
         installed_path,
         manual_only,
     } = installation()?;
-    let target = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Target::DarwinAarch64
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Target::LinuxX86_64
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Target::WindowsX86_64
-    } else {
-        return Err("Updates are not supported on this platform".into());
-    };
+    let target = Target::for_platform(std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or("Updates are not supported on this platform")?;
     let config = Config {
         feed_url: compiled_feed_url(target)?,
         public_keys: crate::profile::UPDATE_PUBLIC_KEYS
@@ -1709,6 +1696,22 @@ mod tests {
             );
             assert!(feed_url_for_target(&mac, Target::LinuxX86_64).is_err());
             assert!(feed_url_for_target(&linux, Target::DarwinAarch64).is_err());
+            let windows = format!("{origin}/agent/stable/windows/latest.json");
+            let windows_arm64 = format!("{origin}/agent/stable/windows-arm64/latest.json");
+            assert_eq!(
+                feed_url_for_target(&windows, Target::WindowsX86_64)
+                    .unwrap()
+                    .as_str(),
+                windows
+            );
+            assert_eq!(
+                feed_url_for_target(&windows_arm64, Target::WindowsAarch64)
+                    .unwrap()
+                    .as_str(),
+                windows_arm64
+            );
+            assert!(feed_url_for_target(&windows, Target::WindowsAarch64).is_err());
+            assert!(feed_url_for_target(&windows_arm64, Target::WindowsX86_64).is_err());
         }
         assert!(feed_url_for_target("not a URL", Target::LinuxX86_64).is_err());
     }
@@ -1735,6 +1738,32 @@ mod tests {
                 .ends_with("/Maple-Agent.dmg")
         );
         assert!(manual_download_url_for_target(&release, Target::LinuxX86_64).is_none());
+    }
+
+    #[test]
+    fn windows_manual_download_stays_on_the_verified_architecture() {
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        for (target, bytes, suffix, other) in [
+            (
+                Target::WindowsX86_64,
+                include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-windows-v3-envelope.json").as_slice(),
+                "/Maple-Agent-windows-x86_64-setup.exe",
+                Target::WindowsAarch64,
+            ),
+            (
+                Target::WindowsAarch64,
+                include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-windows-arm64-v4-envelope.json").as_slice(),
+                "/Maple-Agent-windows-aarch64-setup.exe",
+                Target::WindowsX86_64,
+            ),
+        ] {
+            let feed = format!("https://updates.maple.ai{}", target.feed_path()).parse().unwrap();
+            let release = maple_agent_updater::manifest::verify_envelope(bytes, &feed, std::slice::from_ref(&key)).unwrap();
+            assert!(manual_download_url_for_target(&release, target).unwrap().ends_with(suffix));
+            assert!(manual_download_url_for_target(&release, other).is_none());
+        }
     }
 
     #[test]

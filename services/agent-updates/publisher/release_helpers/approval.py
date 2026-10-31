@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 
 from .bundle import BundleVerifier
+from .context import (manifest_names, platform_counts, pointer_names,
+                      predecessor_platforms, r2_request_count, selected_platforms)
 
 
 class Approval:
@@ -124,13 +126,17 @@ class Approval:
                 "branches": [{"name": "master", "type": "branch"}]}
 
     def r2_proof(self, args, bindings, publications, metadata):
+        platforms = selected_platforms(bindings["platforms"])
+        manifests = manifest_names(platforms)
+        old_platforms = predecessor_platforms(bindings)
+        request_count = r2_request_count(bindings)
         proof, proof_sha = self.bound_json(args.r2_proof, args.r2_proof_sha256)
         self.need(proof.get("schema") == "agent-release-r2-proof-v1"
                   and proof.get("bindings_sha256") == self.ctx.bindings_sha256
                   and proof.get("tooling_sha256") == self.ctx.tooling_sha256
                   and proof.get("policy_sha256") == self.ctx.policy_sha256
                   and proof.get("phase") == self.PHASES[args.stage] and proof.get("passed") is True
-                  and type(proof.get("request_count")) is int and proof["request_count"] == 13
+                  and type(proof.get("request_count")) is int and proof["request_count"] == request_count
                   and proof.get("route_sha256") == self.ctx.policy["r2"]["route"]["sha256"],
                   "wrong current private R2 proof")
         start, end = [self.time(proof.get(name)) for name in ("started_at", "completed_at")]
@@ -155,12 +161,17 @@ class Approval:
                       and proof.get("previous_proof_sha256") == prior_sha, "private R2 predecessor differs")
         baseline = self.ctx.core.decode_json(self.ctx.pinned(bindings["previous_private_r2"]))["objects"]
         old_prefix = f"stable/releases/{bindings['previous']['version']}/"
+        # The first ARM publication must prove its new pointer absent. It may
+        # never borrow the x64 pointer's bytes or ETag as a predecessor.
         expected = {key: baseline[key] for key in (
-            "stable/latest.json", "stable/linux/latest.json", "stable/windows/latest.json",
-            *(old_prefix + name for name in self.MANIFESTS))}
+            *pointer_names(old_platforms),
+            *(old_prefix + name for name in manifest_names(old_platforms)))}
+        for platform, pointer in zip(platforms, pointer_names(platforms)):
+            if platform not in old_platforms:
+                expected[pointer] = None
         prefix = f"stable/releases/{self.ctx.version}/"
-        for name in ("publication-manifest.json", "publication-linux-manifest.json",
-                     "publication-windows-manifest.json", "publication-metadata.json", *self.MANIFESTS):
+        for name in (*("publication-" + name for name in manifests),
+                     "publication-metadata.json", *manifests):
             expected[prefix + name] = None
         if args.stage != "reserve":
             for key, data in [(prefix + item["reservation"], item["data"]) for item in publications] + [
@@ -169,7 +180,7 @@ class Approval:
                 if args.stage == "publish":
                     expected[key]["etag"] = prior["objects"][key]["etag"]
         objects = proof.get("objects", {})
-        self.need(set(objects) == set(expected) and len(objects) == 13, "private R2 object inventory differs")
+        self.need(set(objects) == set(expected) and len(objects) == request_count, "private R2 object inventory differs")
         for key, record in expected.items():
             actual = objects[key]
             self.need(actual is None if record is None else isinstance(actual, dict)
@@ -180,6 +191,7 @@ class Approval:
         return proof_sha
 
     def local_proofs(self, args, bindings):
+        platforms = selected_platforms(bindings["platforms"])
         stage = self.STAGES[args.stage]
         publication = self.ctx.publication
         run, attempt, publisher_source = publication["run_id"], publication["run_attempt"], publication["source_sha"]
@@ -209,17 +221,17 @@ class Approval:
                       "missing predecessor bundle proof")
             previous = {"path": str(args.previous_proof), "sha256": args.previous_sha256}
         publications, metadata, actual = self.verifier.verify_bundle(bindings, self.ctx.core, bundle, stage, previous)
-        self.need(tuple(item["name"] for item in publications) == self.MANIFESTS,
-                  "all three exact publication documents required")
+        self.need(tuple(item["name"] for item in publications) == manifest_names(platforms),
+                  "all selected exact publication documents required")
         self.need(proof.get("schema") == "agent-release-bundle-proof-v1"
                   and proof.get("tooling_sha256") == self.ctx.tooling_sha256
                   and actual == proof and actual["files"] == download.get("files")
-                  and len(actual["files"]) == {"prepared": 23, "reserved": 24, "signed": 27}[stage],
+                  and len(actual["files"]) == platform_counts(platforms)[stage],
                   "current exact inventory, downloaded map or authenticated proof differs")
         signatures = sorted(item["envelope_name"] for item in publications) if stage == "signed" else []
         self.need(actual.get("verified_primary_signatures") == signatures
-                  and len(signatures) == (3 if stage == "signed" else 0),
-                  "all three primary signatures required before publish")
+                  and len(signatures) == (len(platforms) if stage == "signed" else 0),
+                  "all selected primary signatures required before publish")
         artifact = download.get("artifact", {})
         self.need(type(artifact.get("id")) is int and artifact["id"] > 0
                   and artifact.get("name") == f"agent-update-{stage}-{run}"
@@ -275,10 +287,11 @@ class Approval:
         guarded_policy = self.policy()
         self.need(self.waiting(args.stage, producer_job)[0] == job, "current waiting gate changed during review")
         self.r2_proof(args, bindings, publications, metadata)
+        platform_names = "Mac+Linux+Windows" + ("+Windows ARM64" if "windows-arm64" in bindings["platforms"] else "")
         body = {"environment_ids": [self.ctx.environment_id], "state": "approved", "comment": (
-            f"{args.stage} only: reviewed exact Mac+Linux+Windows Agent{self.ctx.version}/build{self.ctx.build} "
+            f"{args.stage} only: reviewed exact {platform_names} Agent{self.ctx.version}/build{self.ctx.build} "
             f"from producer{self.ctx.producer_run}/source{self.ctx.source[:7]}; exact stage ZIP, freeze, proof chain, "
-            "three primary signatures where applicable and fresh private R2 state verified for this current gate.")}
+            "all primary signatures where applicable and fresh private R2 state verified for this current gate.")}
         intent = {"at": datetime.now(timezone.utc).isoformat(), "stage": args.stage,
                   "publication_run": run, "attempt": attempt, "job_id": job, "producer_job_id": producer_job,
                   "publisher_source": self.ctx.publication["source_sha"], "producer": self.ctx.producer_run,

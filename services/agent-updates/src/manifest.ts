@@ -34,7 +34,12 @@ export interface ManifestV3 extends ManifestFields {
   artifacts: { "windows-x86_64": Artifact };
   downloads: { windows: Artifact };
 }
-export type UpdateManifest = Manifest | ManifestV2 | ManifestV3;
+export interface ManifestV4 extends ManifestFields {
+  format: "maple-agent-update-v4";
+  artifacts: { "windows-aarch64": Artifact };
+  downloads: { "windows-arm64": Artifact };
+}
+export type UpdateManifest = Manifest | ManifestV2 | ManifestV3 | ManifestV4;
 export interface Envelope {
   manifest: string;
   signature: string;
@@ -104,6 +109,7 @@ export function parseManifest(value: unknown): UpdateManifest {
       "maple-agent-update-v1",
       "maple-agent-update-v2",
       "maple-agent-update-v3",
+      "maple-agent-update-v4",
     ].includes(value.format as string) ||
     value.product !== "maple-agent" ||
     value.channel !== "stable" ||
@@ -150,6 +156,16 @@ export function parseManifest(value: unknown): UpdateManifest {
     )
       throw new Error("invalid Windows bundle manifest");
     return value as unknown as ManifestV3;
+  }
+  if (value.format === "maple-agent-update-v4") {
+    if (
+      !keys(value.artifacts, ["windows-aarch64"]) ||
+      !keys(value.downloads, ["windows-arm64"]) ||
+      !artifact(value.artifacts["windows-aarch64"], value.version, ".tar.gz") ||
+      !artifact(value.downloads["windows-arm64"], value.version, ".exe")
+    )
+      throw new Error("invalid Windows ARM64 bundle manifest");
+    return value as unknown as ManifestV4;
   }
   // Keep the shipped v1 target/path rules, including optional AppImages.
   if (

@@ -35,6 +35,9 @@ class FakeContext:
                             "source_sha": str(identity_number + 2) * 40, "workflow": self.workflow}
         self.bindings = {"schema": "agent-release-bindings-v1", "producer_identity": self.identity,
                          "publication_identity": self.publication, "previous": {"version": previous_version},
+                         "platforms": ["macos", "linux", "windows"],
+                         "previous_signed_envelopes": {f"stable/releases/{previous_version}/{name}": {}
+                                                       for name in approval.Approval.MANIFESTS},
                          "freeze": {"sha256": "e" * 64}, "selected_publication": {"sha256": "f" * 64},
                          "artifacts": {platform: {} for platform in ("macos", "linux", "windows")}}
         self.gets, self.posts, self.emitted = [], [], []

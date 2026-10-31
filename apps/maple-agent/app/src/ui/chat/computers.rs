@@ -65,8 +65,7 @@ pub(crate) struct Computer {
     pub project_names: HashMap<String, String>,
     pub projects: Vec<Project>,
     pub sessions: Vec<AgentSessionSummary>,
-    pub running: HashSet<String>,
-    pub unread: HashSet<String>,
+    pub activity: TaskActivity,
     pub pinned: Vec<String>,
     pub loading: bool,
     pub error: Option<SharedString>,
@@ -81,8 +80,7 @@ impl Computer {
             project_names: HashMap::new(),
             projects: Vec::new(),
             sessions: Vec::new(),
-            running: HashSet::new(),
-            unread: HashSet::new(),
+            activity: TaskActivity::default(),
             pinned: Vec::new(),
             loading: error.is_none(),
             error: error.map(Into::into),
@@ -258,8 +256,8 @@ impl ChatScreen {
                 .update(cx, |sidebar, cx| sidebar.set_computers(computers, cx));
         }
         if visible
-            && let Some(id) = &self.selected_session
-            && self.completed_unread_sessions.remove(id)
+            && let Some(id) = self.selected_session.clone()
+            && self.mark_seen(&id)
         {
             self.sync_sidebar(cx);
         }
@@ -302,8 +300,7 @@ impl ChatScreen {
                         .project_is_removed(&session.project_root)
                 })
                 .collect(),
-            running: self.active_runs.keys().cloned().collect(),
-            unread: self.completed_unread_sessions.clone(),
+            activity: self.task_activity(),
             pinned: self.sidebar.read(cx).pinned_tasks().to_vec(),
             loading: (!self.navigation_ready && self.host_recovery.events.is_some())
                 || (self.booting && !self.host_recovery.unavailable),

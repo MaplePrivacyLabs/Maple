@@ -26,12 +26,12 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 
 
-def info(profile="dev"):
+def info(profile="dev", arch="x86_64"):
     profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
     return {
         **{key: profiles[profile][key] for key in release.release_info.PUBLIC_FIELDS},
         "profile": profile, "version": "0.1.2", "source_sha": "a" * 40,
-        "git_revision": "a" * 8, "update_feed_url": profiles[profile]["windows_update_feed_url"],
+        "git_revision": "a" * 8, "update_feed_url": profiles[profile]["windows_arm64_update_feed_url" if arch == "aarch64" else "windows_update_feed_url"],
     }
 
 
@@ -89,6 +89,32 @@ class WindowsMetadataTests(unittest.TestCase):
                     package.rename(directory / "renamed-setup.exe")
                     with self.assertRaises(ValueError):
                         release.release_info.write_manifest(identity, directory, release.PLATFORM, unsigned, "12")
+
+    def test_arm64_packages_bind_their_own_names_inventory_and_feed(self):
+        platform = "windows-aarch64"
+        for profile in ("dev", "prod"):
+            for unsigned in (True, False):
+                with self.subTest(profile=profile, unsigned=unsigned), tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    identity = info(profile, "aarch64")
+                    installer = release.release_info.windows_package_name(identity, platform)
+                    archive = release.release_info.windows_archive_name(identity, platform)
+                    self.assertIn("-windows-aarch64-setup.exe", installer)
+                    self.assertNotEqual(installer, release.release_info.windows_package_name(identity))
+                    (directory / installer).write_bytes(b"ARM64 installer fixture")
+                    (directory / archive).write_bytes(b"ARM64 generation fixture")
+                    (directory / "build-info.json").write_text(json.dumps(identity))
+                    release.release_info.write_manifest(identity, directory, platform, unsigned, "12")
+                    manifest = release.release_info.verify_artifacts(profile, directory, unsigned, "a" * 40, platform)
+                    self.assertEqual(manifest["platform"], platform)
+                    self.assertEqual(manifest["package"], installer)
+                    self.assertEqual(manifest["updater"], archive)
+                    self.assertEqual(len(list(directory.iterdir())), 5)
+                    with self.assertRaisesRegex(ValueError, "platform"):
+                        release.release_info.verify_artifacts(profile, directory, unsigned, "a" * 40, "windows-x86_64")
+                    (directory / installer).rename(directory / release.release_info.windows_package_name(identity))
+                    with self.assertRaisesRegex(ValueError, "Windows artifact"):
+                        release.release_info.write_manifest(identity, directory, platform, unsigned, "12")
 
     def test_unknown_installer_payload_cannot_be_blessed_by_new_checksums(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -413,7 +439,7 @@ class PackageBoundaryTests(unittest.TestCase):
                 raise PermissionError("secondary extraction cleanup failure")
             proxy = types.SimpleNamespace(name=str(extraction), cleanup=cleanup)
             diagnostics = io.StringIO()
-            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", return_value=extraction / "uninstall.exe"), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "smoke_installer", side_effect=primary), patch.object(sys, "stderr", diagnostics):
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", return_value=extraction / "uninstall.exe"), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host"), patch.object(release, "smoke_installer", side_effect=primary), patch.object(sys, "stderr", diagnostics):
                 with self.assertRaises(ValueError) as raised:
                     release.verify("dev", directory, True, smoke=True)
             self.assertIs(raised.exception, primary)
@@ -429,13 +455,24 @@ class PackageBoundaryTests(unittest.TestCase):
                 checker.parent.mkdir()
                 checker.write_bytes(b"verified checker fixture")
                 return payload / "uninstall.exe"
-            def smoke(*_arguments, checker):
+            def smoke(*_arguments, checker, arch):
+                self.assertEqual(arch, "x86_64")
                 self.assertEqual(checker.read_bytes(), b"verified checker fixture")
                 checked.append(checker)
-            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "smoke_installer", side_effect=smoke):
+            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host"), patch.object(release, "smoke_installer", side_effect=smoke):
                 release.verify("dev", directory, True, smoke=True)
             self.assertEqual(len(checked), 1)
             self.assertFalse(checked[0].exists())
+
+    def test_downloaded_arm_verifier_forwards_selected_target_into_installed_smoke(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            manifest = {"package": "installer.exe", "updater": "bundle.tar.gz", "build": "12"}
+            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info("dev", "aarch64")), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=lambda _installer, payload, *_args: payload / "uninstall.exe"), patch.object(release, "verify_payload") as payload, patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host") as host, patch.object(release, "smoke_installer") as installed:
+                release.verify("dev", directory, True, smoke=True, arch="aarch64")
+            self.assertEqual(payload.call_args.kwargs["arch"], "aarch64")
+            host.assert_called_once_with("aarch64")
+            self.assertEqual(installed.call_args.kwargs["arch"], "aarch64")
 
     def test_downloaded_verifier_checks_the_standalone_uninstaller_in_both_policies(self):
         for unsigned in (False, True):
@@ -511,6 +548,34 @@ class PackageBoundaryTests(unittest.TestCase):
             self.assertIn('!define GENERATION "0.1.2-12"', text)
             self.assertNotEqual(info("dev")["bundle_id"], info("prod")["bundle_id"])
             self.assertNotEqual(info("dev")["display_name"], info("prod")["display_name"])
+
+    def test_generated_installer_contract_binds_native_architecture_and_supported_os(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "configuration.nsh"
+            for arch, machine, minimum in (("x86_64", "AMD64", "15063"), ("aarch64", "ARM64", "22000")):
+                with self.subTest(arch=arch):
+                    release.write_nsis_config(path, info("prod", arch), Path("payload"), Path("setup.exe"), False, "12", arch)
+                    definitions = dict(re.findall(r'^!define ([A-Z_]+) "(.*)"$', path.read_text(encoding="utf-8"), re.MULTILINE))
+                    self.assertEqual(definitions["NATIVE_ARCHITECTURE"], machine)
+                    self.assertEqual(definitions["MIN_WINDOWS_BUILD"], minimum)
+            with self.assertRaisesRegex(ValueError, "architecture"):
+                release.write_nsis_config(path, info(), Path("payload"), Path("setup.exe"), False, "12", "arm64ec")
+
+    def test_smoke_requires_selected_native_host_instead_of_compatible_emulation(self):
+        for native, matching, other in ((0x8664, "x86_64", "aarch64"), (0xAA64, "aarch64", "x86_64")):
+            with self.subTest(native=native):
+                kernel = Mock()
+                def machine(_process, process, host):
+                    # The diagnostic Python may itself be emulated; only the
+                    # native host plus the separately checked Maple PE matters.
+                    ctypes.memmove(process, (0x8664).to_bytes(2, "little"), 2)
+                    ctypes.memmove(host, native.to_bytes(2, "little"), 2)
+                    return 1
+                kernel.IsWow64Process2.side_effect = machine
+                with patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
+                    release.require_native_host(matching)
+                    with self.assertRaisesRegex(ValueError, "native machine architecture"):
+                        release.require_native_host(other)
 
     def test_generated_config_selects_the_profile_artwork_from_the_source_tree(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1262,6 +1327,52 @@ class PointerPinTests(unittest.TestCase):
         self.assertIn("bootstrap_hash", ast.unparse(pinned[0]))
 
 
+class SmokeRegistrationCleanupTests(unittest.TestCase):
+    def registry(self, installed):
+        from contextlib import nullcontext
+        return types.SimpleNamespace(
+            KEY_READ=1, KEY_WOW64_32KEY=2, HKEY_CURRENT_USER=3,
+            OpenKey=Mock(return_value=nullcontext(object())),
+            QueryValueEx=Mock(return_value=(str(installed), 1)),
+            DeleteKeyEx=Mock(),
+        )
+
+    def test_cleanup_removes_only_owned_registration_and_shortcuts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "install with spaces"
+            programs = root / "programs"
+            identity = info()
+            directory = programs / identity["display_name"]
+            directory.mkdir(parents=True)
+            links = [(directory / (identity["display_name"] + ".lnk"), installed / "maple-agent.exe"),
+                     (directory / "Uninstall.lnk", installed / "uninstall.exe")]
+            for path, _target in links:
+                path.write_bytes(b"fixture link")
+            retained = directory / "unrelated.txt"
+            retained.write_bytes(b"preserve")
+            registry = self.registry(installed)
+            with patch.object(release, "windows_programs_directory", return_value=programs), patch.object(release, "probe_windows_shortcut") as probe:
+                release.cleanup_smoke_registration(installed, identity, registry)
+            self.assertEqual([call.args for call in probe.call_args_list], links)
+            self.assertTrue(all(not path.exists() for path, _target in links))
+            self.assertEqual(retained.read_bytes(), b"preserve")
+            registry.DeleteKeyEx.assert_called_once_with(
+                registry.HKEY_CURRENT_USER,
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + identity["bundle_id"],
+                registry.KEY_WOW64_32KEY,
+            )
+
+    def test_cleanup_refuses_another_installation_before_any_changes(self):
+        registry = self.registry(Path("another installation"))
+        with patch.object(release, "windows_programs_directory") as programs, patch.object(release, "probe_windows_shortcut") as probe:
+            with self.assertRaisesRegex(ValueError, "another installation"):
+                release.cleanup_smoke_registration(Path("owned fixture"), info(), registry)
+        programs.assert_not_called()
+        probe.assert_not_called()
+        registry.DeleteKeyEx.assert_not_called()
+
+
 class SmokeDiagnosticsTests(unittest.TestCase):
     def registry(self):
         def missing(*_arguments):
@@ -1414,6 +1525,59 @@ class SmokeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         self.assertIn('"phase": "installed-verification"', diagnostics.getvalue())
         self.assertIn('"phase": "host-stop"', diagnostics.getvalue())
+
+    def test_installed_verification_keeps_selected_architecture_and_primary_error(self):
+        from contextlib import nullcontext
+        from test_windows_build_info import icon_records, pe as executable_fixture
+
+        for arch, machine, opposite in (("aarch64", 0xAA64, False), ("x86_64", 0x8664, False),
+                                        ("aarch64", 0x8664, True)):
+            with self.subTest(arch=arch, machine=machine), tempfile.TemporaryDirectory() as temporary:
+                scratch = Path(temporary)
+                identity = info("dev", arch)
+                installed = scratch / "install with spaces"
+                registry = self.registry()
+                def open_key(*_arguments):
+                    if not installed.exists():
+                        raise FileNotFoundError
+                    return nullcontext(object())
+                registry.OpenKey = open_key
+                registry.QueryValueEx = lambda *_args: (str(installed), 1)
+                reached = ValueError("stop after real installed PE validation")
+                original = release.verify_payload
+
+                def install(command, **_options):
+                    if not isinstance(command, str):
+                        # Exercise primary-error preservation during host-stop
+                        # cleanup, without starting a fixture executable.
+                        raise PermissionError("secondary cleanup fixture")
+                    generation = installed / "versions" / "0.1.2-12"
+                    generation.mkdir(parents=True)
+                    icon = release.COMPONENT / "app/packaging/maple-agent-dev.ico"
+                    executable = executable_fixture(identity, machine=machine, resources=icon_records(icon.read_bytes()))
+                    (generation / "maple-agent.exe").write_bytes(executable)
+                    (generation / "build-info.json").write_text(json.dumps(identity))
+                    (generation / "LICENSE.txt").write_bytes((release.COMPONENT / "LICENSE").read_bytes())
+                    (installed / "maple-agent.exe").write_bytes(executable)
+                    (installed / "current.json").write_text(json.dumps({"format": "maple-agent-windows-current-v1", "generation": "0.1.2-12"}))
+                    return subprocess.CompletedProcess(command, 0)
+
+                def installed_verification(*arguments, **options):
+                    original(*arguments, **options)
+                    raise reached
+
+                diagnostics = io.StringIO()
+                with patch.object(release, "verification_scratch", return_value=nullcontext(scratch)), patch.dict(sys.modules, winreg=registry), patch.object(release, "smoke_environment", return_value={}), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")), patch.object(release, "run", side_effect=install), patch.object(release, "verify_payload", side_effect=installed_verification) as verified, patch.object(release, "signature"), patch.object(sys, "stderr", diagnostics):
+                    with self.assertRaises(ValueError) as raised:
+                        release.smoke_installer(Path("fixture.exe"), identity, True, "12", {}, checker=Path("checker.exe"), arch=arch)
+                self.assertEqual(verified.call_args.kwargs["arch"], arch)
+                if opposite:
+                    self.assertIn("PE architecture", str(raised.exception))
+                else:
+                    self.assertIs(raised.exception, reached)
+                self.assertIn('"phase": "installed-verification"', diagnostics.getvalue())
+                self.assertIn('"phase": "host-stop"', diagnostics.getvalue())
+                self.assertNotIn("secondary cleanup fixture", diagnostics.getvalue())
 
     def test_failed_readonly_preflight_never_runs_the_installer_or_prepare(self):
         diagnostics = io.StringIO()

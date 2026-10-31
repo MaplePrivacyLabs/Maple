@@ -38,6 +38,7 @@ class FixtureContext:
         self.publication = {"run_id": 120, "run_attempt": 3, "source_sha": self.source,
                             "workflow": ".github/workflows/agent-updates-publish.yml"}
         self.bindings = {"schema": "agent-release-bindings-v1", "publication": self.publication,
+                         "platforms": list(PublicVerifier.PLATFORMS),
                          "previous": {"version": "7.8.9", "build": "102", "source_sha": "a" * 40,
                                       "publisher_run": 100, "publisher_attempt": 1}}
 

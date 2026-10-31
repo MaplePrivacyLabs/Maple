@@ -208,7 +208,8 @@ windows = os.environ['FIXTURE_OS'].startswith(('MINGW', 'MSYS', 'CYGWIN'))
 linux = os.environ['FIXTURE_OS'] == 'Linux'
 expected = ['zigbuild' if linux else 'build', '--release', '-p', 'maple-agent-app', '--locked', '--timings']
 if windows:
-    expected += ['--target', 'x86_64-pc-windows-msvc']
+    arch = os.environ.get('MAPLE_WINDOWS_ARCH', 'x86_64')
+    expected += ['--target', arch + '-pc-windows-msvc']
 if linux:
     expected += ['--target', 'x86_64-unknown-linux-gnu.2.31']
     flags = os.environ['RUSTFLAGS'].split()
@@ -216,7 +217,7 @@ if linux:
     assert 'native=' + os.environ['MAPLE_AGENT_LINUX_RUNTIME_PATH'] in flags, flags
 assert arguments == expected, arguments
 if windows:
-    target = Path('target/x86_64-pc-windows-msvc/release/maple-agent.exe')
+    target = Path('target/' + arch + '-pc-windows-msvc/release/maple-agent.exe')
 elif linux:
     target = Path('target/x86_64-unknown-linux-gnu/release/maple-agent')
 else:
@@ -258,6 +259,25 @@ target.chmod(0o644 if windows else 0o755)
                     self.assertEqual(staged.stat().st_mode & 0o777, 0o644)
         commands = [json.loads(line) for line in self.commands.read_text().splitlines()]
         self.assertEqual(len(commands), 6)
+
+    def test_windows_arm64_build_stages_and_validates_only_the_selected_native_pe(self):
+        self.env["MAPLE_WINDOWS_ARCH"] = "aarch64"
+        for profile in ("dev", "prod"):
+            with self.subTest(profile=profile):
+                expected = pe(windows_info(profile, self.source, "aarch64"), machine=0xAA64)
+                self.input.write_bytes(expected)
+                self.input.chmod(0o644)
+                result = self.build("MINGW64_NT-10.0", profile)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.component / "target/release/maple-agent.exe").read_bytes(), expected)
+                self.input.write_bytes(pe(windows_info(profile, self.source, "aarch64")))
+                result = self.build("MINGW64_NT-10.0", profile)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("PE architecture", result.stderr)
+        self.env["MAPLE_WINDOWS_ARCH"] = "arm64ec"
+        result = self.build("MINGW64_NT-10.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported native Windows architecture", result.stderr)
 
     def test_windows_build_rejects_wrong_profile_source_and_dirty_revision(self):
         for profile in ("dev", "prod"):
@@ -632,6 +652,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             "macos-aarch64": profiles["prod"]["update_feed_url"],
             "linux-x86_64": profiles["prod"]["linux_update_feed_url"],
             "windows-x86_64": profiles["prod"]["windows_update_feed_url"],
+            "windows-aarch64": profiles["prod"]["windows_arm64_update_feed_url"],
         }
         for platform, expected in feeds.items():
             for feed in {*feeds.values(), None, "https://wrong.invalid/agent/stable/latest.json"}:

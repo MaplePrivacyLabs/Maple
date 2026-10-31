@@ -53,7 +53,7 @@ Function .onInit
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "PROCESSOR_ARCHITECTURE"
   IfErrors unsupported
   StrCpy $FailureCode 11
-  StrCmp $0 "AMD64" 0 unsupported
+  StrCmp $0 "${NATIVE_ARCHITECTURE}" 0 unsupported
   StrCpy $FailureCode 12
   ClearErrors
   GetDLLVersion "$SYSDIR\kernel32.dll" $0 $1
@@ -62,13 +62,14 @@ Function .onInit
   IntOp $0 $0 >> 16
   IntCmp $0 10 check_build unsupported supported
 check_build:
-  ; GPUI imports the OS ICU library, first shipped in Windows 10 version 1703.
+  ; x64 retains its Windows 10 version 1703 floor for the OS ICU import.
+  ; Native ARM64 packages target Windows 11; both floors come from package.nsh.
   ; GetDLLVersion's second DWORD contains the build in its high 16 bits.
   IntOp $1 $1 >> 16
   IntOp $1 $1 & 0xFFFF
-  IntCmp $1 15063 supported unsupported supported
+  IntCmp $1 ${MIN_WINDOWS_BUILD} supported unsupported supported
 unsupported:
-  MessageBox MB_OK|MB_ICONSTOP "${DISPLAY_NAME} requires Windows 10 version 1703 (build 15063) or later on an x64 computer." /SD IDOK
+  MessageBox MB_OK|MB_ICONSTOP "${DISPLAY_NAME} requires ${WINDOWS_REQUIREMENT}." /SD IDOK
   SetErrorLevel $FailureCode
   Abort
 supported:

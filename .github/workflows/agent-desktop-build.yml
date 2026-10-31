@@ -298,25 +298,103 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
 
-  windows:
-    name: Signed Windows (${{ matrix.variant }})
-    needs: windows-build
-    if: ${{ always() && !cancelled() && needs.windows-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
-    environment: windows-signing
+  windows-arm64-build:
+    name: Build Windows ARM64 binary (${{ matrix.variant }})
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    # Native ARM64 compilation and linking on GitHub's Windows ARM image.
+    # No x64 Cargo artifacts or signing credentials enter this job.
+    runs-on: windows-11-arm
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-    runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      MAPLE_WINDOWS_ARCH: aarch64
+      # Ship the CRT with the executable rather than requiring a machine-wide
+      # redistributable. Native verification rejects non-system DLL imports.
+      RUSTFLAGS: -D warnings -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up the pinned Windows toolchain, shader compiler and notice generator
+        uses: ./.github/actions/setup-agent-windows
+        with:
+          release: "true"
+          architecture: aarch64
+      - name: Exercise Windows metadata parser and native linker retention
+        run: python3 scripts/test_windows_build_info.py
+      - name: Exercise Windows host launch in a restrictive job
+        run: python3 scripts/test_windows_host_spawn.py
+      - name: Verify the canonical SDK and proxy dependency graph
+        run: |
+          metadata="$RUNNER_TEMP/agent-workspace-metadata.json"
+          cargo metadata --locked --format-version 1 > "$metadata"
+          python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
+          python3 scripts/verify-sqlcipher-build.py "$metadata"
+      - name: Build Windows release binary without signing credentials
+        run: ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Inspect immutable Windows profile and source
+        run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE" --arch aarch64
+      - name: Upload prebuilt Windows binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-windows-aarch64-prebuilt-${{ github.run_id }}
+          overwrite: true
+          path: apps/maple-agent/target/release/maple-agent.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Signed Windows${{ matrix.arch_suffix }} (${{ matrix.variant }})
+    needs: [windows-build, windows-arm64-build]
+    if: ${{ always() && !cancelled() && (needs.windows-build.result == 'success' || needs.windows-arm64-build.result == 'success') && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    # Packaging inspects ARM64 payloads as data; the existing x64 signing worker
+    # remains unchanged. The subsequent verifier executes on native ARM64.
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
+        architecture: [x86_64, aarch64]
+        include:
+          - architecture: x86_64
+            arch_suffix: ""
+            build_runner: blacksmith-8vcpu-windows-2025
+            verify_runner: windows-2025
+          - architecture: aarch64
+            arch_suffix: " ARM64"
+            build_runner: windows-11-arm
+            verify_runner: windows-11-arm
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      MAPLE_WINDOWS_ARCH: ${{ matrix.architecture }}
       MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
     steps:
+      - name: Require this architecture's successful credential-free producer
+        working-directory: .
+        shell: bash
+        run: |
+          case "$MAPLE_WINDOWS_ARCH" in
+            x86_64) test "$X64_BUILD_RESULT" = success ;;
+            aarch64) test "$ARM64_BUILD_RESULT" = success ;;
+            *) exit 1 ;;
+          esac
+        env:
+          X64_BUILD_RESULT: ${{ needs.windows-build.result }}
+          ARM64_BUILD_RESULT: ${{ needs.windows-arm64-build.result }}
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ github.sha }}
@@ -324,10 +402,10 @@ jobs:
       - name: Download exact prebuilt Windows binary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: maple-agent-${{ matrix.variant }}-windows-x86_64-prebuilt-${{ github.run_id }}
+          name: maple-agent-${{ matrix.variant }}-windows-${{ matrix.architecture }}-prebuilt-${{ github.run_id }}
           path: apps/maple-agent/target/release
       - name: Inspect immutable Windows profile and source before signing
-        run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE"
+        run: python3 scripts/windows-release.py prepare "$MAPLE_RELEASE_PROFILE" --arch "$MAPLE_WINDOWS_ARCH"
       - name: Azure login for Artifact Signing
         uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a
         with:
@@ -338,7 +416,7 @@ jobs:
         shell: pwsh
         run: ../../scripts/ci/install-windows-artifact-signing.ps1
       - name: Sign and package Windows Agent
-        run: python3 scripts/windows-release.py package "$MAPLE_RELEASE_PROFILE"
+        run: python3 scripts/windows-release.py package "$MAPLE_RELEASE_PROFILE" --arch "$MAPLE_WINDOWS_ARCH"
         env:
           MAPLE_WINDOWS_ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
           MAPLE_WINDOWS_ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
@@ -350,27 +428,38 @@ jobs:
       - name: Upload Agent packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: maple-agent-${{ matrix.variant }}-windows-x86_64-${{ github.run_id }}
+          name: maple-agent-${{ matrix.variant }}-windows-${{ matrix.architecture }}-${{ github.run_id }}
           overwrite: true
           path: apps/maple-agent/dist/${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 30
 
   verify-windows:
-    name: Verify downloaded Windows (${{ matrix.variant }})
+    name: Verify downloaded Windows${{ matrix.arch_suffix }} (${{ matrix.variant }})
     needs: windows
-    if: ${{ always() && !cancelled() && needs.windows.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    if: ${{ always() && !cancelled() && needs.windows.result != 'skipped' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     permissions:
       contents: read
       attestations: read
-    runs-on: windows-2025
+    runs-on: ${{ matrix.verify_runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["dev","prod"]' || github.event_name == 'schedule' && '["dev"]' || '["prod"]') }}
+        architecture: [x86_64, aarch64]
+        include:
+          - architecture: x86_64
+            arch_suffix: ""
+            build_runner: blacksmith-8vcpu-windows-2025
+            verify_runner: windows-2025
+          - architecture: aarch64
+            arch_suffix: " ARM64"
+            build_runner: windows-11-arm
+            verify_runner: windows-11-arm
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+      MAPLE_WINDOWS_ARCH: ${{ matrix.architecture }}
       MAPLE_PACKAGE_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -380,7 +469,7 @@ jobs:
       - name: Download exact Windows packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: maple-agent-${{ matrix.variant }}-windows-x86_64-${{ github.run_id }}
+          name: maple-agent-${{ matrix.variant }}-windows-${{ matrix.architecture }}-${{ github.run_id }}
           path: artifacts
       - name: Verify downloaded package provenance
         working-directory: .
@@ -403,7 +492,7 @@ jobs:
           # The stock image exports these Azure CLI tooling/cache paths.
           # Keep other Azure/signing variables visible to the fail-closed guard.
           unset AZURE_CONFIG_DIR AZURE_DEVOPS_CACHE_DIR AZURE_EXTENSION_DIR
-          python3 scripts/windows-release.py verify "$MAPLE_RELEASE_PROFILE" ../../artifacts --smoke
+          python3 scripts/windows-release.py verify "$MAPLE_RELEASE_PROFILE" ../../artifacts --smoke --arch "$MAPLE_WINDOWS_ARCH"
 
   linux:
     name: Linux bundle (${{ matrix.variant }})

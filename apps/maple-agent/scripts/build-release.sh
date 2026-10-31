@@ -29,9 +29,15 @@ case "$(uname -s)" in
         # An explicit Windows target keeps +crt-static off host proc macros
         # and build scripts. Stage only this build's executable at the shared
         # prebuilt path.
-        cargo build --release -p maple-agent-app --locked --timings --target x86_64-pc-windows-msvc
+        windows_arch="${MAPLE_WINDOWS_ARCH:-x86_64}"
+        case "$windows_arch" in
+            x86_64|aarch64) ;;
+            *) echo "unsupported native Windows architecture" >&2; exit 2 ;;
+        esac
+        windows_target="${windows_arch}-pc-windows-msvc"
+        cargo build --release -p maple-agent-app --locked --timings --target "$windows_target"
         mkdir -p target/release
-        cp target/x86_64-pc-windows-msvc/release/maple-agent.exe target/release/maple-agent.exe
+        cp "target/$windows_target/release/maple-agent.exe" target/release/maple-agent.exe
         ;;
     Linux)
         [[ "$(uname -m)" == x86_64 ]] || { echo "Linux release bundles are x86_64 only" >&2; exit 1; }
@@ -63,7 +69,7 @@ case "$(uname -s)" in
         # Validate its immutable PE metadata without entering runtime trust or
         # installation checks; signing and installed-app smoke happen later.
         python3 "$component/scripts/windows-build-info.py" "${binary}.exe" \
-            --profile "$1" --source-sha "$(git rev-parse HEAD)" >/dev/null
+            --profile "$1" --source-sha "$(git rev-parse HEAD)" --arch "$windows_arch" >/dev/null
         ;;
     Linux)
         "$component/scripts/run-linux-payload.sh" "$binary" --build-info |
