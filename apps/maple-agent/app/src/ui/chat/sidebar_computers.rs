@@ -388,7 +388,7 @@ fn snapshot_page(computer: &Computer, query: &str, archived_expanded: bool) -> C
         })
         .collect();
     for session in &computer.sessions {
-        if session.message_count == 0 && !computer.running.contains(&session.id) {
+        if session.message_count == 0 && !computer.activity.running.contains(&session.id) {
             continue;
         }
         let project = computer
@@ -621,8 +621,8 @@ impl Sidebar {
             let task = self.current_computer_task(computer, &task);
             if task.state != "archived"
                 && (task.message_count > 0
-                    || computer.running.contains(&task.uuid)
-                    || (own && self.running.contains(&task.uuid)))
+                    || computer.activity.running.contains(&task.uuid)
+                    || (own && self.activity.running.contains(&task.uuid)))
             {
                 tasks.insert(task.uuid.clone(), task);
             }
@@ -1353,7 +1353,9 @@ impl Sidebar {
             }
             .into();
         }
-        if computer.running.contains(&task.uuid) || (own && self.running.contains(&task.uuid)) {
+        if computer.activity.running.contains(&task.uuid)
+            || (own && self.activity.running.contains(&task.uuid))
+        {
             task.state = "active".into();
         }
         task.pinned_ms = self.computer_task_pin(computer, &task);
@@ -1601,10 +1603,10 @@ impl Sidebar {
 
     fn prefix_exempt_task(&self, computer: &Computer, task: &TaskSummary) -> bool {
         task.pinned_ms.is_some()
-            || computer.running.contains(&task.uuid)
+            || computer.activity.running.contains(&task.uuid)
             || (computer.key.as_deref() == self.backend.remote_host()
                 && (self.selected.as_ref() == Some(&task.uuid)
-                    || self.running.contains(&task.uuid)
+                    || self.activity.running.contains(&task.uuid)
                     || self.pages.is_live(&task.uuid)))
     }
 
@@ -2098,7 +2100,8 @@ impl Sidebar {
                 entries.push(SidebarEntry::Task(SidebarTaskEntry {
                     session: index,
                     pinned: self.computer_task_pin(computer, task).is_some(),
-                    settled: state == AgentTaskState::Settled && !self.running.contains(&task.uuid),
+                    settled: state == AgentTaskState::Settled
+                        && !self.activity.running.contains(&task.uuid),
                     archived: state == AgentTaskState::Archived,
                 }));
             }
@@ -2150,7 +2153,7 @@ impl Sidebar {
             let rung = if archived {
                 TaskRung::Archived
             } else if session.state == AgentTaskState::Settled
-                && !computer.running.contains(&task.uuid)
+                && !computer.activity.running.contains(&task.uuid)
             {
                 TaskRung::Settled
             } else {
@@ -2175,13 +2178,7 @@ impl Sidebar {
                     latest.map_or(task.title.as_str(), |session| session.title.as_str()),
                 ),
                 pinned,
-                activity: if computer.running.contains(&task.uuid) {
-                    Some(SessionActivity::Running)
-                } else if computer.unread.contains(&task.uuid) {
-                    Some(SessionActivity::CompletedUnread)
-                } else {
-                    None
-                },
+                activity: computer.activity.of(&task.uuid),
             });
             entries.push(SidebarEntry::OtherTask(index));
         }
@@ -2191,6 +2188,12 @@ impl Sidebar {
     #[cfg(test)]
     pub(in crate::ui::chat) fn other_task_title(&self, index: usize) -> Option<&str> {
         Some(self.other_tasks.get(index)?.title.as_ref())
+    }
+
+    /// What another computer's task row indicates.
+    #[cfg(test)]
+    pub(in crate::ui::chat) fn other_task_activity(&self, index: usize) -> Option<SessionActivity> {
+        self.other_tasks.get(index)?.activity
     }
 
     pub(in crate::ui::chat) fn computer_target(
@@ -2596,8 +2599,7 @@ mod paging_tests {
             project_names: HashMap::new(),
             projects: Vec::new(),
             sessions: vec![session_from_summary(&task("head"))],
-            running: HashSet::new(),
-            unread: HashSet::new(),
+            activity: TaskActivity::default(),
             pinned: Vec::new(),
             loading: false,
             error: None,
@@ -2987,7 +2989,7 @@ mod paging_tests {
         let mut computer = computer();
         computer.sessions[0].message_count = 0;
         assert!(snapshot_page(&computer, "", false).groups.is_empty());
-        computer.running.insert("head".into());
+        computer.activity.running.insert("head".into());
         let page = snapshot_page(&computer, "", false);
         assert_eq!(page.groups.len(), 1);
         assert_eq!(page.groups[0].tasks[0].uuid, "head");
@@ -3151,7 +3153,7 @@ mod merged_prefix_tests {
                 sort: SidebarSort::Updated,
             };
             sidebar.selected = None;
-            sidebar.running.clear();
+            sidebar.activity.running.clear();
             let mut local = Computer::pending("local".into(), "This Computer".into(), None);
             local.key = None;
             local.backend = Some(sidebar.backend.clone());
