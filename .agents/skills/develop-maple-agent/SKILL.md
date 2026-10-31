@@ -107,9 +107,9 @@ feed; publication is a separate protected operation. Invitations require the
 platform-specific signed installed-update rehearsal. Linux uses user-owned tar
 bundles and a separate v2 wire schema, preserving the shipped macOS v1 feed;
 one release may update both platforms to the same version.
-Windows x64 Dev/Prod installers are built by the same desktop workflow, with
+Windows x64 and native ARM64 Dev/Prod installers are built by the same desktop workflow, with
 master Authenticode signing through the existing `windows-signing` environment.
-Windows Prod uses its signed v3 update feed and generation tar bundle; its
+Windows Prod uses its signed v3 (x64) or v4 (ARM64) update feed and generation tar bundle; its
 signed NSIS setup remains the manual installation download. Normal publication
 includes Windows through the same protected publisher as macOS and Linux,
 without a separate Windows activation variable. Built-in Windows CUA remains

@@ -127,6 +127,7 @@ fn signed_release(payload: &Path, bundle: &Bundle) -> crate::VerifiedRelease {
             linux_appimage: None,
             linux_bundle: Some(artifact),
             windows: None,
+            windows_arm64: None,
         },
     };
     let text = serde_json::to_string(&manifest).unwrap();

@@ -257,6 +257,7 @@ fn descriptor_comparison_rejects_changed_release_version_build_or_source() {
                 linux_appimage: None,
                 linux_bundle: None,
                 windows: None,
+                windows_arm64: None,
             },
         },
         envelope: String::new(),
@@ -340,7 +341,7 @@ fn pe_fixture(info: &serde_json::Value) -> Vec<u8> {
     bytes[..2].copy_from_slice(b"MZ");
     put32(&mut bytes, 60, PE_OFFSET as u32);
     bytes[PE_OFFSET..PE_OFFSET + 4].copy_from_slice(b"PE\0\0");
-    put16(&mut bytes, PE_OFFSET + 4, 0x8664);
+    put16(&mut bytes, PE_OFFSET + 4, windows_pe_machine().unwrap());
     put16(&mut bytes, PE_OFFSET + 6, 2);
     put16(&mut bytes, PE_OFFSET + 20, 240);
     put16(&mut bytes, PE_OFFSET + 22, 2);
@@ -369,9 +370,21 @@ fn read_pe(bytes: &[u8]) -> Result<serde_json::Value> {
 }
 
 #[test]
-fn pe_metadata_parser_reads_x64_maple_section_without_running_code() {
+fn pe_metadata_parser_reads_native_maple_section_without_running_code() {
     let info = serde_json::json!({"profile":"prod","bundle_id":"cloud.opensecret.maple.agent","version":"0.0.10","source_sha":"a".repeat(40)});
     assert_eq!(read_pe(&pe_fixture(&info)).unwrap(), info);
+}
+
+#[test]
+fn pe_metadata_parser_refuses_the_other_supported_windows_architecture() {
+    let mut bytes = pe_fixture(&serde_json::json!({"version":"0.0.10"}));
+    let other = if windows_pe_machine().unwrap() == 0x8664 {
+        0xaa64
+    } else {
+        0x8664
+    };
+    put16(&mut bytes, PE_OFFSET + 4, other);
+    assert!(matches!(read_pe(&bytes), Err(InstallError::CodeSignature)));
 }
 
 #[test]

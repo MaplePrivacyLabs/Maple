@@ -16,8 +16,9 @@ nix develop --no-update-lock-file .#ci -c python3 -I \
 These commands do not merge, bump versions, create GitHub releases or tags,
 publish registries, change signing environments, deploy Workers, or run downloaded
 applications. Publishing still requires the owner's release authorization. This
-CLI supports the normal macOS + Linux + Windows release; it does not remove a
-platform to work around a failure.
+CLI plans the normal macOS + Linux + Windows x64 + Windows ARM64 release; it
+does not remove a platform to work around a failure. Existing immutable
+three-platform bindings remain usable with their original inventories.
 
 ## Private inputs
 
@@ -46,8 +47,8 @@ use, including after resolving package-manager symlinks.
 `source_sha`, publisher run and attempt; the remaining fields are pinned
 `previous_private_r2`, `previous_root_acceptance`, `previous_public`,
 `research_preservation`, and `previous_signed_envelopes` references. The last is
-the exact three `stable/releases/<previous-version>/*manifest.json` keys mapped
-to their accepted signed envelope files. `accept` generates this descriptor for
+the exact three or four `stable/releases/<previous-version>/*manifest.json` keys
+mapped to their accepted signed envelope files. `accept` generates this descriptor for
 the next release. For the initial migration, prepare it once from the already
 accepted release evidence; do not treat an arbitrary current HTTP response as
 predecessor authority. Legacy acceptance/public receipt schemas are supported
@@ -72,15 +73,15 @@ bindings input. `--help` on each subcommand gives the exact flags.
 1. **Plan:** `plan --network --producer-run … --version … --notes-file …
    --public-key … --previous-manifest … --previous-manifest-sha256 … --output …`.
    It reads the exact completed trusted master Desktop producer, executes the
-   canonical concrete Prod-job policy and captures the three exact final artifact
+   canonical concrete Prod-job policy and captures the four exact final artifact
    records. It writes qualification, notes, key and initial binding data.
-2. **Download:** call `download-producer <macos|linux|windows> --network` once per
-   platform using the initial bindings. IDs, ZIP sizes/digests, source and attempt
+2. **Download:** call
+   `download-producer <macos|linux|windows|windows-arm64> --network` once per platform using the initial bindings. IDs, ZIP sizes/digests, source and attempt
    come from the plan. Safe bounded extraction does not execute any package.
 3. **Prepare and freeze:** `freeze --network --output …` calls the unmodified
-   canonical preparation with its default verifier: all 16 final files receive
+   canonical preparation with its default verifier: all 21 final files receive
    independent GitHub attestation checks for exact source/master/workflow and
-   denial of self-hosted runners. It writes the canonical 23-file bundle, freeze
+   denial of self-hosted runners. It writes the canonical 29-file bundle, freeze
    and a new binding snapshot. ZIP digest verification never substitutes for this.
 4. **Review and dispatch once:** `dispatch` without `--dispatch-once` validates
    local frozen inputs and shows the exact request, including notes, without
@@ -96,23 +97,24 @@ bindings input. `--help` on each subcommand gives the exact flags.
 6. **Current reserve gate:** download its exact prepared artifact with
    `download-stage prepared --network`, supplying the currently successful
    producer job and exact stage artifact metadata. `verify-bundle --stage prepared`
-   validates all 23 files. With explicit `--network --r2-phase before-reserve
-   --r2-output …`, it also performs the fixed 13 private metadata GETs and emits
-   the bundle/private-state proofs. Invoke `approve --stage reserve --approve-one`
+   validates all 29 files. With explicit `--network --r2-phase before-reserve
+   --r2-output …`, it also performs the fixed private metadata GET inventory and
+   emits the bundle/private-state proofs. Invoke `approve --stage reserve --approve-one`
    with the exact download/proof/private-proof paths and expected digests.
 7. **Current sign gate:** after reserve actually succeeds, repeat for `reserved`
-   (24 files), the prepared predecessor proof and fresh `before-sign` private
+   (30 files), the prepared predecessor proof and fresh `before-sign` private
    state linked to `before-reserve`. Approve **sign only** with its current proofs.
 8. **Current publish gate:** after sign actually succeeds, repeat for `signed`
-   (27 files), the reserved proof and fresh `before-publish` private state.
-   All three primary signatures must verify before approving **publish only**.
+   (34 files), the reserved proof and fresh `before-publish` private state.
+   All four primary signatures must verify before approving **publish only**.
 9. **After success:** verify `after-publish` private state with the same signed
    bundle and linked private proof. `bind-public --successful-run …
    --successful-run-sha256 … --signed-stage-proof … --signed-stage-proof-sha256 …
    --signed-bundle … --output …` creates a final public binding snapshot from the
    actual successful run. `verify-public --execute-live --output …` performs the
-   existing both-host delivery/preservation matrix: 97 requests, at most seven
-   additional Research evidence lookups, and 10 full payload hash streams. Every
+   existing both-host delivery/preservation matrix: 125 requests for the first ARM
+   release, 127 afterward, at most seven additional Research evidence lookups, and
+   14 full payload hash streams. Every
    request carries `X-Maple-Download-Probe: 1`; no duplicate payload files are saved.
    Finally `accept` with pinned public/private receipt inputs emits the accepted
    release record and the next predecessor descriptor.
@@ -122,7 +124,12 @@ The credentialed `verify-bundle` command consumes the existing
 the existing references-only SecretSpec/BWS route. Run `check-policy --policy …
 --policy-sha256 …` before credential resolution to verify its pinned bytes/mode
 and existing executable bytes locally, without network requests. The helper rechecks that route before any
-R2 access and permits only 13 fixed ordered GETs, never list/HEAD/write requests.
+R2 access and permits only the fixed ordered GETs, never list/HEAD/write
+requests. The first ARM release performs 16 metadata GETs at each gate; the
+next four-platform release performs 17. Each new ARM pointer must be absent
+until publication when the accepted predecessor has no ARM release. Accepted
+x64 pointer and immutable bytes/ETags remain mandatory throughout; an ARM
+pointer that already exists without accepted predecessor authority is a conflict.
 No credential value is an argument, binding field or output.
 
 ## Checks and recovery
@@ -143,7 +150,7 @@ recovery and any new production action still require the existing authority.
 
 Offline tests use synthetic releases, fake transports/stores, and disposable
 temporary signing keys. They cover changed source/ZIP metadata, two versions,
-23→24→27 inventories, per-platform signature tampering, stale/private-state
+23→24→27 legacy and 29→30→34 four-platform inventories, per-platform signature tampering, stale/private-state
 proofs, environment/pointer races, and zero duplicate POSTs. Run the existing
 publisher suite; the existing `repo` and `agent-updates` CI lanes discover it:
 
@@ -151,3 +158,11 @@ publisher suite; the existing `repo` and `agent-updates` CI lanes discover it:
 nix develop --no-update-lock-file .#ci -c python3 -I -m unittest discover \
   -s services/agent-updates/publisher -p 'test_*.py'
 ```
+
+New plans require all four concrete Prod build/signing/downloaded-consumer chains
+and select architecture-specific final artifacts. The ARM package target is
+`windows-aarch64`, while its operator name is `windows-arm64`. Its strict v4
+manifest/feed and primary signature remain separate from the shipped x64 v3
+feed. Continuing an existing three-platform snapshot preserves its 16 final-file
+attestations, 23/24/27 stage inventories, 13 private reads, and 97-request/10-stream
+public matrix; it cannot silently include ARM due to a changed workflow default.

@@ -21,7 +21,8 @@ class FakeContext:
         self.repository = "MaplePrivacyLabs/Maple"
         self.workflow = ".github/workflows/agent-updates-publish.yml"
         self.bindings_sha256, self.policy_sha256, self.tooling_sha256 = (char * 64 for char in "cde")
-        self.bindings = {"publisher_source": self.publisher_source,
+        self.bindings = {"platforms": ["macos", "linux", "windows"],
+                         "publisher_source": self.publisher_source,
                          "freeze": {"sha256": "f" * 64}, "qualification": {"sha256": "9" * 64}}
         self.posts, self.gets, self.revisions = [], [], []
         self.runs = []

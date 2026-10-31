@@ -4,6 +4,9 @@ description: >-
   build and a smoke-tested linker. Release builds also select the GPUI shader
   compiler.
 inputs:
+  architecture:
+    description: Native Windows CPU architecture (x86_64 or aarch64)
+    default: "x86_64"
   release:
     description: Also select fxc for release packages
     default: "false"
@@ -21,13 +24,36 @@ runs:
     - name: Select Windows MSVC and SDK
       uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
       with:
-        arch: x64
+        arch: ${{ inputs.architecture == 'aarch64' && 'arm64' || 'x64' }}
+
+    - name: Select LLVM and CMake for native ARM64 crypto dependencies
+      if: inputs.architecture == 'aarch64'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $llvm = Join-Path $env:ProgramFiles 'LLVM/bin'
+        if (Test-Path -LiteralPath $llvm -PathType Container) {
+          $env:PATH = "$llvm;$env:PATH"
+          $llvm | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        }
+        foreach ($name in @('clang.exe', 'clang-cl.exe', 'cmake.exe')) {
+          $tool = Get-Command $name -CommandType Application -ErrorAction Stop
+          & $tool.Source --version
+          if ($LASTEXITCODE -ne 0) { throw "$name could not start" }
+        }
 
     - name: Select native Windows Perl for the static crypto build
       shell: bash
       run: |
-        native_perl=/c/Strawberry/perl/bin/perl.exe
-        if [ ! -x "$native_perl" ]; then
+        native_perl=
+        while IFS= read -r candidate; do
+          candidate="$(cygpath -u "${candidate%$'\r'}")"
+          if [ -x "$candidate" ] && "$candidate" -MLocale::Maketext::Simple -MIPC::Cmd -e 'exit($^O eq "MSWin32" ? 0 : 1)' 2>/dev/null; then
+            native_perl="$candidate"
+            break
+          fi
+        done < <(printf '%s\n' 'C:\Strawberry\perl\bin\perl.exe'; where.exe perl.exe || true)
+        if [ -z "$native_perl" ]; then
           echo 'Native Windows Perl is missing from the runner' >&2
           exit 1
         fi
@@ -42,6 +68,8 @@ runs:
       shell: bash
       working-directory: apps/maple-agent
       run: python3 ../../scripts/ci/agent_windows.py
+      env:
+        MAPLE_WINDOWS_ARCH: ${{ inputs.architecture }}
 
     - name: Select the SDK shader compiler for release GPUI
       if: inputs.release == 'true'
@@ -49,7 +77,13 @@ runs:
       run: |
         $ErrorActionPreference = 'Stop'
         if (-not $env:WindowsSdkVerBinPath) { throw 'Selected Windows SDK binary path is missing' }
-        $fxc = Join-Path $env:WindowsSdkVerBinPath 'x64/fxc.exe'
+        $toolArch = if ('${{ inputs.architecture }}' -eq 'aarch64') { 'arm64' } else { 'x64' }
+        $fxc = Join-Path $env:WindowsSdkVerBinPath "$toolArch/fxc.exe"
+        # Some SDK versions ship fxc only as x64; it is a build-time tool, while
+        # Maple and its updater are compiled and verified for native ARM64.
+        if (-not (Test-Path -LiteralPath $fxc -PathType Leaf)) {
+          $fxc = Join-Path $env:WindowsSdkVerBinPath 'x64/fxc.exe'
+        }
         if (-not (Test-Path -LiteralPath $fxc -PathType Leaf)) { throw "Windows SDK shader compiler is missing: $fxc" }
         Write-Host "Selected HLSL compiler: $fxc"
         "GPUI_FXC_PATH=$fxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

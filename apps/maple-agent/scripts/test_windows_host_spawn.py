@@ -191,7 +191,9 @@ class WindowsHostSpawnTests(unittest.TestCase):
             # Rust's regular string syntax accepts JSON's escaped Windows path.
             source.write_text(FIXTURE.replace("HELPER_PATH", json.dumps(str(HELPER), ensure_ascii=False)), encoding="utf-8")
             command = ["rustc", "--edition=2024", "-D", "warnings", "-C", "opt-level=1"]
-            linker = os.environ.get("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER")
+            arch = os.environ.get("MAPLE_WINDOWS_ARCH", "x86_64")
+            self.assertIn(arch, ("x86_64", "aarch64"))
+            linker = os.environ.get(f"CARGO_TARGET_{arch.upper()}_PC_WINDOWS_MSVC_LINKER")
             if os.environ.get("GITHUB_ACTIONS") == "true":
                 self.assertIsNotNone(linker, "native fixture requires CI's verified MSVC linker")
             if linker:

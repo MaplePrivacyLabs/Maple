@@ -33,10 +33,11 @@ class AgentUpdatesWorkflows(unittest.TestCase):
         self.assertEqual(config["concurrency"], {
             "group": "agent-updates-production", "cancel-in-progress": False,
         })
-        # Normal releases keep all three platforms on one version. Historical
+        # Normal releases keep all four targets on one version. Historical
         # producers remain available through explicit platform overrides.
         self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["include_linux"]["default"], True)
         self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["include_windows"]["default"], True)
+        self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["include_windows_arm64"]["default"], True)
         jobs = config["jobs"]
         self.assertEqual(set(jobs), {"verify", "reserve", "sign", "publish"})
         self.assertNotIn("environment", jobs["verify"])
@@ -167,7 +168,7 @@ with open(os.environ["TRACE"], "a") as stream:
     stream.write(json.dumps({"tool": tool, "args": args}) + "\\n")
 if tool == "python3" and args[1] == "trust":
     pathlib.Path(args[args.index("--output") + 1]).write_text(json.dumps({
-        "build": "42", "artifacts": {"macos": "selected-macos", "linux": "selected-linux", "windows": "selected-windows"}}))
+        "build": "42", "artifacts": {"macos": "selected-macos", "linux": "selected-linux", "windows": "selected-windows", "windows-arm64": "selected-windows-arm64"}}))
 elif tool == "gh":
     pathlib.Path(args[args.index("--dir") + 1]).mkdir(parents=True)
 elif tool != "python3" or args[1] != "prepare":
@@ -183,18 +184,21 @@ elif tool != "python3" or args[1] != "prepare":
                                          "BUILD_RUN_ID": "42", "RELEASE_VERSION": "0.0.12", "RELEASE_NOTES": "Windows release",
                                          "GITHUB_REPOSITORY": "MaplePrivacyLabs/Maple",
                                          "INCLUDE_LINUX": str(defaults["include_linux"]["default"]).lower(),
-                                         "INCLUDE_WINDOWS": str(defaults["include_windows"]["default"]).lower()},
+                                         "INCLUDE_WINDOWS": str(defaults["include_windows"]["default"]).lower(),
+                                         "INCLUDE_WINDOWS_ARM64": str(defaults["include_windows_arm64"]["default"]).lower()},
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             calls = [json.loads(line) for line in trace.read_text().splitlines()]
             trust, prepared = [call["args"] for call in calls if call["tool"] == "python3"]
             self.assertIn("--windows", trust)
+            self.assertIn("--windows-arm64", trust)
             self.assertEqual(trust[trust.index("--run-id") + 1], "42")
             downloads = [call["args"] for call in calls if call["tool"] == "gh"]
             self.assertEqual({args[args.index("--name") + 1] for args in downloads},
-                             {"selected-macos", "selected-linux", "selected-windows"})
+                             {"selected-macos", "selected-linux", "selected-windows", "selected-windows-arm64"})
             self.assertTrue(all(args[:3] == ["run", "download", "42"] for args in downloads))
             self.assertEqual(prepared[prepared.index("--windows") + 1], "packages/windows")
+            self.assertEqual(prepared[prepared.index("--windows-arm64") + 1], "packages/windows-arm64")
             self.assertEqual(prepared[prepared.index("--build") + 1], "42")
             self.assertEqual((root / "notes.txt").read_text(), "Windows release")
 

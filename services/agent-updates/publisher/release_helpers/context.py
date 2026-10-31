@@ -17,7 +17,15 @@ REPOSITORY = "MaplePrivacyLabs/Maple"
 WORKFLOW = ".github/workflows/agent-updates-publish.yml"
 DESKTOP_WORKFLOW = ".github/workflows/agent-desktop-build.yml"
 PLATFORMS = ("macos", "linux", "windows")
-TARGETS = {"macos": "macos-aarch64", "linux": "linux-x86_64", "windows": "windows-x86_64"}
+ALL_PLATFORMS = (*PLATFORMS, "windows-arm64")
+TARGETS = {"macos": "macos-aarch64", "linux": "linux-x86_64", "windows": "windows-x86_64",
+           "windows-arm64": "windows-aarch64"}
+MANIFESTS = dict(zip(ALL_PLATFORMS, ("manifest.json", "linux-manifest.json", "windows-manifest.json",
+                                  "windows-arm64-manifest.json")))
+ENVELOPES = dict(zip(ALL_PLATFORMS, ("envelope.json", "linux-envelope.json", "windows-envelope.json",
+                                  "windows-arm64-envelope.json")))
+POINTERS = dict(zip(ALL_PLATFORMS, ("stable/latest.json", "stable/linux/latest.json", "stable/windows/latest.json",
+                                 "stable/windows-arm64/latest.json")))
 SCHEMA_BINDINGS = "agent-release-bindings-v1"
 SCHEMA_FREEZE = "agent-release-prepared-freeze-v1"
 SCHEMA_BUNDLE = "agent-release-bundle-proof-v1"
@@ -39,6 +47,46 @@ class OperatorError(RuntimeError):
 def need(ok, message):
     if not ok:
         raise OperatorError(message)
+
+
+def selected_platforms(value):
+    """Existing snapshots retain three platforms; new releases include ARM64."""
+    need(isinstance(value, (list, tuple)) and tuple(value) in (PLATFORMS, ALL_PLATFORMS),
+         "release must include the exact ordered platform inventory")
+    return tuple(value)
+
+
+def manifest_names(platforms):
+    return tuple(MANIFESTS[name] for name in selected_platforms(platforms))
+
+
+def envelope_names(platforms):
+    return tuple(ENVELOPES[name] for name in selected_platforms(platforms))
+
+
+def pointer_names(platforms):
+    return tuple(POINTERS[name] for name in selected_platforms(platforms))
+
+
+def predecessor_platforms(bindings):
+    refs = bindings.get("previous_signed_envelopes")
+    need(isinstance(refs, dict), "predecessor immutable inventory differs")
+    prefix = f"stable/releases/{bindings['previous']['version']}/"
+    for platforms in (PLATFORMS, ALL_PLATFORMS):
+        if set(refs) == {prefix + name for name in manifest_names(platforms)}:
+            return platforms
+    raise OperatorError("predecessor immutable inventory differs")
+
+
+def platform_counts(platforms):
+    arm = "windows-arm64" in selected_platforms(platforms)
+    return {"prepared": 23 + 6 * arm, "reserved": 24 + 6 * arm, "signed": 27 + 7 * arm}
+
+
+def r2_request_count(bindings):
+    current, previous = selected_platforms(bindings["platforms"]), predecessor_platforms(bindings)
+    need(set(previous) <= set(current), "release cannot remove an accepted platform")
+    return 3 * len(current) + len(previous) + 1
 
 
 def sha(data):
@@ -172,7 +220,8 @@ class Context:
         self.primary_sha256 = sha((self.primary + "\n").encode("ascii"))
         need(self.core.public_key_text(self.bindings["public_key"]) == self.primary,
              "release public key is not the compiled primary")
-        self.core.validate_pins(self.primary, profiles, profiles, linux=True, windows=True)
+        self.core.validate_pins(self.primary, profiles, profiles, linux=True, windows=True,
+                                **({"windows_arm64": True} if "windows-arm64" in self.platforms else {}))
 
     def validate_policy(self):
         p = self.policy
@@ -208,7 +257,7 @@ class Context:
         need(isinstance(b, dict) and b.get("schema") == SCHEMA_BINDINGS, "invalid release binding schema")
         need(b.get("policy_sha256") == self.policy_sha256, "release uses a different operator policy")
         need("UNBOUND" not in json.dumps(b), "release bindings contain unbound placeholders")
-        need(b.get("platforms") == list(PLATFORMS), "normal release must include all three platforms")
+        platforms = selected_platforms(b.get("platforms"))
         identity = b.get("producer_identity")
         need(isinstance(identity, dict) and set(identity) == {"run_id", "run_attempt", "source_sha", "version", "build", "pub_date"},
              "invalid producer identity")
@@ -224,7 +273,7 @@ class Context:
         except ValueError as error:
             raise OperatorError("invalid producer date") from error
         need(source(b.get("payload_tree")), "invalid payload tree")
-        need(set(b.get("artifacts", {})) == set(PLATFORMS), "missing exact final package records")
+        need(set(b.get("artifacts", {})) == set(platforms), "missing exact final package records")
         for platform, item in b["artifacts"].items():
             need(set(item) == {"id", "name", "size", "zip_sha256"} and positive(item["id"])
                  and type(item["size"]) is int and 0 < item["size"] <= 512 * 1024**2
@@ -241,7 +290,9 @@ class Context:
              "invalid predecessor identity fields")
         need(tuple(map(int, previous["version"].split('.'))) < tuple(map(int, identity["version"].split('.'))),
              "release version does not advance predecessor")
-        names = ("manifest.json", "linux-manifest.json", "windows-manifest.json")
+        previous_platforms = predecessor_platforms(b)
+        need(set(previous_platforms) <= set(platforms), "release cannot remove an accepted platform")
+        names = manifest_names(previous_platforms)
         need(set(b.get("previous_signed_envelopes", {})) == {f"stable/releases/{previous['version']}/{n}" for n in names},
              "predecessor immutable inventory differs")
         for item in b["previous_signed_envelopes"].values():
@@ -256,6 +307,8 @@ class Context:
 
     @property
     def source(self): return self.identity["source_sha"]
+    @property
+    def platforms(self): return selected_platforms(self.bindings["platforms"])
     @property
     def version(self): return self.identity["version"]
     @property

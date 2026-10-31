@@ -1921,6 +1921,7 @@ mod tests {
                         linux_appimage: None,
                         linux_bundle: None,
                         windows: None,
+                        windows_arm64: None,
                     },
                 },
                 envelope: "test-only authenticated caller fixture".into(),

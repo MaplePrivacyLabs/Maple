@@ -27,10 +27,10 @@ OPTIONAL = PE_OFFSET + 24
 SECTIONS = OPTIONAL + 240
 
 
-def public_info(profile="dev", source_sha=SOURCE_SHA):
+def public_info(profile="dev", source_sha=SOURCE_SHA, arch="x86_64"):
     profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
     public = {field: profiles[profile][field] for field in release_info.PUBLIC_FIELDS}
-    return dict(public, update_feed_url=profiles[profile]["windows_update_feed_url"], profile=profile, version="0.1.0",
+    return dict(public, update_feed_url=profiles[profile]["windows_arm64_update_feed_url" if arch == "aarch64" else "windows_update_feed_url"], profile=profile, version="0.1.0",
                 git_revision=source_sha[:8], source_sha=source_sha)
 
 
@@ -181,10 +181,26 @@ class StaticWindowsMetadataTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaisesRegex(ValueError, "update_feed_url"):
                 metadata.validated_build_info("prod", self.binary, SOURCE_SHA)
 
+    def test_native_arm64_identity_cannot_satisfy_the_x64_target_or_feed(self):
+        for profile in ("dev", "prod"):
+            with self.subTest(profile=profile):
+                identity = public_info(profile, arch="aarch64")
+                self.write(identity, machine=metadata.MACHINE_ARM64)
+                self.assertEqual(metadata.inspect_pe(self.binary)["machine"], "aarch64")
+                self.assertEqual(metadata.validated_build_info(profile, self.binary, SOURCE_SHA, "aarch64"), identity)
+                with self.assertRaisesRegex(ValueError, "architecture"):
+                    metadata.validated_build_info(profile, self.binary, SOURCE_SHA, "x86_64")
+                self.write(public_info(profile), machine=metadata.MACHINE_AMD64)
+                with self.assertRaisesRegex(ValueError, "architecture"):
+                    metadata.validated_build_info(profile, self.binary, SOURCE_SHA, "aarch64")
+        self.write(public_info("prod"), machine=metadata.MACHINE_ARM64)
+        with self.assertRaisesRegex(ValueError, "update_feed_url"):
+            metadata.validated_build_info("prod", self.binary, SOURCE_SHA, "aarch64")
+
     def test_rejects_non_pe_architectures_dlls_and_bad_optional_headers(self):
-        for options in ({"machine": 0x14C}, {"machine": 0xAA64}, {"characteristics": 0x2022}, {"characteristics": 0}):
+        for options in ({"machine": 0x14C}, {"machine": 0xA641}, {"machine": 0xA64E}, {"characteristics": 0x2022}, {"characteristics": 0}):
             self.write(**options)
-            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "x64 PE executable"):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "native Windows PE executable"):
                 metadata.read_build_info(self.binary)
         for offset, value, kind in ((0, 0, "<H"), (PE_OFFSET, 0, "<I"), (0x3C, 63, "<I"),
                                     (0x3C, metadata.MAX_HEADER_BYTES + 1, "<I"),
@@ -370,7 +386,9 @@ class StaticWindowsMetadataTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32" and shutil.which("rustc"), "native PE fixture requires Windows and Rust")
     def test_native_rust_metadata_survives_release_lto_and_symbol_stripping(self):
         root = self.binary.parent
-        info = public_info()
+        arch = os.environ.get("MAPLE_WINDOWS_ARCH", "x86_64")
+        self.assertIn(arch, metadata.MACHINES)
+        info = public_info(arch=arch)
         (root / "build-info.json").write_text(json.dumps(info, sort_keys=True, separators=(",", ":")))
         source = root / "fixture.rs"
         source.write_text('''#[used]
@@ -384,7 +402,7 @@ fn main() { panic!("the signing preflight must never execute an artifact"); }
         # Direct rustc does not consume Cargo's target-linker environment.
         # Preserve the native linker already selected and smoked by CI, rather
         # than letting Git Bash's unrelated link.exe win PATH resolution.
-        linker = os.environ.get("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER")
+        linker = os.environ.get(f"CARGO_TARGET_{arch.upper()}_PC_WINDOWS_MSVC_LINKER")
         if os.environ.get("GITHUB_ACTIONS") == "true":
             self.assertIsNotNone(linker, "native fixture requires CI's verified MSVC linker")
         if linker:
@@ -394,8 +412,10 @@ fn main() { panic!("the signing preflight must never execute an artifact"); }
             command.extend(["-C", f"linker={selected}"])
         subprocess.run([*command, str(source), "-o", str(self.binary)],
                        check=True, capture_output=True, text=True)
-        self.assertEqual(metadata.validated_build_info("dev", self.binary, SOURCE_SHA), info)
-        self.assertIn("kernel32.dll", metadata.inspect_pe(self.binary)["imports"])
+        self.assertEqual(metadata.validated_build_info("dev", self.binary, SOURCE_SHA, arch), info)
+        inspected = metadata.inspect_pe(self.binary)
+        self.assertEqual(inspected["machine"], arch)
+        self.assertIn("kernel32.dll", inspected["imports"])
 
 
 if __name__ == "__main__":

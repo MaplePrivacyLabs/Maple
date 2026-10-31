@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .bundle import BundleVerifier
-from .context import need, sha, decode, source, SCHEMA_FREEZE
+from .context import need, sha, decode, source, selected_platforms, SCHEMA_FREEZE
 
 
 class Dispatcher:
@@ -31,24 +31,28 @@ class Dispatcher:
     def inputs(self):
         ctx = self.ctx
         b = ctx.bindings
+        platforms = selected_platforms(b["platforms"])
         frozen = decode(ctx.pinned(b["freeze"]))
         need(frozen.get("schema") == SCHEMA_FREEZE and frozen.get("canonical_prepare_completed") is True
              and frozen["source"] == ctx.source and frozen["tree"] == ctx.tree
              and frozen["producer"]["run_id"] == ctx.producer_run
              and frozen["producer"]["run_attempt"] == ctx.producer_attempt
              and frozen["producer"]["build"] == ctx.build
-             and frozen["platforms"] == ["macos", "linux", "windows"], "frozen release identity differs")
+             and frozen["platforms"] == list(platforms), "frozen release identity differs")
         need(frozen["files"] == b["prepared_files"] and frozen["notes"]["sha256"] == b["notes"]["sha256"],
              "frozen files or notes differ")
         BundleVerifier(ctx).verify_bundle(b, ctx.core, Path(b["prepared_bundle"]), "prepared", None)
         qualification = decode(ctx.pinned(b["qualification"]))
         need(qualification["required_included_jobs_all_success"] is True and qualification["producer_terminal"] is True
              and (qualification["run_id"], qualification["attempt"], qualification["source"], qualification["version"], qualification["build"])
-             == (ctx.producer_run, ctx.producer_attempt, ctx.source, ctx.version, int(ctx.build)),
+             == (ctx.producer_run, ctx.producer_attempt, ctx.source, ctx.version, int(ctx.build))
+             and qualification.get("scope", {}).get("include_windows_arm64", False) is ("windows-arm64" in platforms),
              "qualified producer identity differs")
         notes = ctx.pinned(b["notes"]).decode("utf-8")
-        return qualification, {"ref": "master", "inputs": {"build_run_id": str(ctx.producer_run),
-                "version": ctx.version, "notes": notes, "include_linux": True, "include_windows": True}}
+        inputs = {"build_run_id": str(ctx.producer_run), "version": ctx.version, "notes": notes,
+                  "include_linux": True, "include_windows": True,
+                  "include_windows_arm64": "windows-arm64" in platforms}
+        return qualification, {"ref": "master", "inputs": inputs}
 
     def run(self, args):
         ctx = self.ctx
@@ -119,7 +123,7 @@ class Dispatcher:
         selected = {"run_id": run["id"], "run_attempt": run["run_attempt"], "source_sha": run["head_sha"],
                     "workflow": ctx.workflow, "payload_source": ctx.source, "producer_run": ctx.producer_run,
                     "producer_attempt": ctx.producer_attempt, "version": ctx.version,
-                    "platforms": ["macos", "linux", "windows"], "inputs": intent["body"]["inputs"],
+                    "platforms": list(selected_platforms(ctx.bindings["platforms"])), "inputs": intent["body"]["inputs"],
                     "dispatch_intent_sha256": sha(raw)}
         digest = ctx.emit(args.output, selected)
         return {"selection": str(args.output), "sha256": digest, "run_id": run["id"], "attempt": run["run_attempt"]}

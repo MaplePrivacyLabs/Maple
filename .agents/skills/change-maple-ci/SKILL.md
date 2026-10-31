@@ -126,7 +126,7 @@ fields in `lanes.py` are authoritative.
 
 | Label | Adds | Use when |
 | --- | --- | --- |
-| `ci:windows` | The native updater tests and the full Windows suite (Windows Clippy already runs on every Agent PR) | Path, filesystem, process or terminal code behaves differently on Windows |
+| `ci:windows` | The native updater tests, full Windows suite and native ARM64 packaging rehearsal (Windows Clippy already runs on every Agent PR) | Path, filesystem, process or terminal code behaves differently on Windows |
 | `ci:package` | Unsigned Agent packages and Research desktop bundles on all three OSes, plus the Research Dev macOS app | Packaging or release scripts, flakes, toolchains, or bundled assets, entitlements or updater metadata change. Also a gpui/zed revision bump, an Xcode pin change or an edit to the Metal Toolchain actions: PR lanes build gpui with runtime shaders, and only the macOS rehearsal compiles them before master's signed build |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build | Research changes reach native mobile code or mobile-only plugins that their paths do not select |
 | `ci:research-dev-macos` | The unsigned Research Dev app | Research Dev OAuth profile work |

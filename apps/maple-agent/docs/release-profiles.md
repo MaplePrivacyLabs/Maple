@@ -65,8 +65,10 @@ Tarball/pure Nix builds without Git report `unknown` for unavailable revisions.
 Packaged Prod builds use only the compiled Agent stable feed:
 `https://updates.maple.ai/agent/stable/latest.json` on macOS, or
 `https://updates.maple.ai/agent/stable/linux/latest.json` on Linux, and
-`https://updates.maple.ai/agent/stable/windows/latest.json` on Windows. The checked-in
-`update_feed_url`, `linux_update_feed_url` and `windows_update_feed_url` select
+`https://updates.maple.ai/agent/stable/windows/latest.json` on Windows x64, or
+`https://updates.maple.ai/agent/stable/windows-arm64/latest.json` on Windows ARM64. The checked-in
+`update_feed_url`, `linux_update_feed_url`, `windows_update_feed_url` and
+`windows_arm64_update_feed_url` select
 those targets; embedded build-info retains the existing `update_feed_url` field
 with the effective feed.
 Older installed packages retain their compiled `updates.trymaple.ai` feeds;
@@ -86,9 +88,9 @@ backup supports planned rotation and does not revoke a compromised accepted
 primary.
 
 Windows Dev/Prod installers retain their profile and state identities. Packaged
-Prod uses its separate Windows v3 signed feed, a `.tar.gz` update bundle, and an
-NSIS `.exe` for manual installation. The macOS v1 and Linux v2 feeds cannot
-authorize a Windows update. Windows packages use the existing Authenticode
+Prod uses its separate Windows v3 (x64) or v4 (ARM64) signed feed, a `.tar.gz` update bundle, and an
+NSIS `.exe` for manual installation. The feeds cannot authorize another
+architecture's update. Windows packages use the existing Authenticode
 signing identity alongside the Agent feed's pinned primary and backup keys.
 Dev and unpackaged Windows builds remain excluded from production updates.
 The final Windows package artifact has exactly five files: the signed manual

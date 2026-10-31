@@ -16,9 +16,10 @@ from urllib.parse import urlsplit
 import publisher as canonical
 
 from .context import (
-    CODE_PATHS, DESKTOP_WORKFLOW, PLATFORMS, REPOSITORY, SCHEMA_BINDINGS,
+    CODE_PATHS, DESKTOP_WORKFLOW, PLATFORMS, ALL_PLATFORMS, REPOSITORY, SCHEMA_BINDINGS,
     SCHEMA_BUNDLE, SCHEMA_FREEZE, SCHEMA_PUBLIC, SCHEMA_R2, TARGETS, WORKFLOW, Policy, decode, digest,
-    need, positive, read_regular, reference, sha, source, tooling_digest,
+    need, positive, read_regular, reference, sha, source, tooling_digest, selected_platforms,
+    manifest_names, envelope_names, pointer_names, predecessor_platforms, platform_counts, r2_request_count,
 )
 
 PREVIOUS_SCHEMA = "agent-release-previous-v1"
@@ -98,9 +99,7 @@ def _previous(path, expected, version):
          and isinstance(old["build"], str) and re.fullmatch(r"[1-9][0-9]{0,17}", old["build"])
          and source(old["source_sha"]) and positive(old["publisher_run"]) and positive(old["publisher_attempt"]),
          "invalid or nonadvancing predecessor")
-    need(isinstance(value["previous_signed_envelopes"], dict)
-         and set(value["previous_signed_envelopes"]) == {f"stable/releases/{old['version']}/{name}" for name in NAMES},
-         "predecessor envelope inventory differs")
+    predecessor_platforms(value)
     for item in [value[key] for key in PREVIOUS_REFS] + list(value["previous_signed_envelopes"].values()):
         reference(item)
         _pinned(item["path"], item["sha256"])
@@ -123,10 +122,11 @@ def plan(args):
     repo = Path(__file__).resolve().parents[4]
     profiles = decode(read_regular(repo / "apps/maple-agent/release-profiles.json"))
     need(primary == profiles["prod"]["update_public_keys"][0], "release key must be the compiled primary")
-    canonical.validate_pins(primary, profiles, profiles, linux=True, windows=True)
+    platforms = ALL_PLATFORMS
+    canonical.validate_pins(primary, profiles, profiles, linux=True, windows=True, windows_arm64=True)
     run = _get(policy, f"actions/runs/{args.producer_run}")
     jobs = _get(policy, f"actions/runs/{args.producer_run}/jobs?filter=latest&per_page=100")
-    canonical.validate_run(run, jobs, linux=True, windows=True)
+    canonical.validate_run(run, jobs, linux=True, windows=True, windows_arm64=True)
     need(run["id"] == args.producer_run and positive(run["run_attempt"]), "selected producer run differs")
     need(isinstance(run.get("created_at"), str)
          and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", run["created_at"]),
@@ -137,7 +137,7 @@ def plan(args):
     need(isinstance(rows, list) and type(inventory.get("total_count")) is int
          and inventory["total_count"] == len(rows), "incomplete artifact inventory")
     selected, artifacts = [], {}
-    for platform in PLATFORMS:
+    for platform in platforms:
         name = f"maple-agent-prod-{TARGETS[platform]}-{args.producer_run}"
         matches = [item for item in rows if item.get("name") == name]
         need(len(matches) == 1, "selected final artifact missing or duplicated")
@@ -152,7 +152,7 @@ def plan(args):
         selected.append(item)
         artifacts[platform] = {"id": item["id"], "name": name, "size": item["size_in_bytes"],
                                "zip_sha256": item["digest"][7:]}
-    need(len({item["id"] for item in selected}) == len(PLATFORMS), "selected artifact IDs are ambiguous")
+    need(len({item["id"] for item in selected}) == len(platforms), "selected artifact IDs are ambiguous")
     commit = _get(policy, f"git/commits/{run['head_sha']}")
     need(commit.get("sha") == run["head_sha"] and source(commit.get("tree", {}).get("sha")),
          "producer source tree differs")
@@ -164,12 +164,12 @@ def plan(args):
         "schema": "agent-release-producer-qualification-v1", "run_id": run["id"], "attempt": run["run_attempt"],
         "source": run["head_sha"], "version": args.version, "build": run["run_number"],
         "producer_terminal": True, "required_included_jobs_all_success": True,
-        "scope": {"include_linux": True, "include_windows": True}, "run": run,
+        "scope": {"include_linux": True, "include_windows": True, "include_windows_arm64": True}, "run": run,
         "jobs": jobs, "selected_final_artifact_metadata": selected,
     }
     bindings = {
         "schema": SCHEMA_BINDINGS, "policy_sha256": args.policy_sha256,
-        "tooling_sha256": tooling_digest(repo), "repo": str(repo), "platforms": list(PLATFORMS),
+        "tooling_sha256": tooling_digest(repo), "repo": str(repo), "platforms": list(platforms),
         "code_pins": {name: sha(read_regular(repo / name)) for name in CODE_PATHS},
         "producer_identity": identity, "payload_tree": commit["tree"]["sha"], "artifacts": artifacts,
         "publisher_source": master["sha"], "freeze": None, "prepared_files": {}, "prepared_bundle": None,
@@ -192,13 +192,15 @@ def _snapshot(ctx, output, changes):
 
 
 def _frozen(ctx):
+    platforms = selected_platforms(ctx.bindings['platforms'])
     frozen = decode(ctx.pinned(ctx.bindings["freeze"]))
     producer = {**ctx.identity, "artifacts": {platform: item["name"]
                                              for platform, item in ctx.bindings["artifacts"].items()}}
     need(frozen.get("schema") == SCHEMA_FREEZE and frozen.get("canonical_prepare_completed") is True
          and frozen.get("source") == ctx.source and frozen.get("tree") == ctx.tree
-         and frozen.get("platforms") == list(PLATFORMS) and frozen.get("producer") == producer
-         and frozen.get("files") == ctx.bindings["prepared_files"] and len(frozen["files"]) == 23
+         and frozen.get("platforms") == list(platforms) and frozen.get("producer") == producer
+         and frozen.get("files") == ctx.bindings["prepared_files"]
+         and len(frozen["files"]) == platform_counts(platforms)['prepared']
          and frozen.get("notes") == ctx.bindings["notes"], "frozen release identity differs")
     return frozen
 
@@ -213,8 +215,10 @@ def freeze(ctx, args):
         ctx.pinned(ctx.bindings[name])
     prepared = Path(getattr(args, "prepared_bundle", None) or ctx.root / "local-prepared")
     _output(ctx.root, prepared)
+    platforms = selected_platforms(ctx.bindings['platforms'])
+    names = manifest_names(platforms)
     directories = {platform: ctx.root / f"packages-{platform}-{ctx.bindings['artifacts'][platform]['id']}"
-                   for platform in PLATFORMS}
+                   for platform in platforms}
     for path in directories.values():
         need(path.is_absolute() and path.resolve(strict=True) == path and path.is_dir() and not path.is_symlink(),
              "missing or unsafe exact producer package directory")
@@ -229,7 +233,8 @@ def freeze(ctx, args):
         with redirect_stdout(log):
             ctx.core.prepare(str(ctx.producer_run), ctx.version, ctx.build, directories["macos"], directories["linux"],
                              Path(ctx.bindings["notes"]["path"]), prepared, Path(ctx.bindings["public_key"]),
-                             pub_date=ctx.identity["pub_date"], windows=directories["windows"])
+                             pub_date=ctx.identity["pub_date"], windows=directories["windows"],
+                             **({'windows_arm64': directories['windows-arm64']} if 'windows-arm64' in platforms else {}))
     finally:
         os.umask(previous_mask)
         if previous_path is None:
@@ -241,14 +246,14 @@ def freeze(ctx, args):
     producer["artifacts"] = {platform: item["name"] for platform, item in ctx.bindings["artifacts"].items()}
     need(trust == producer, "canonical preparation selected a different producer")
     publications = ctx.core.bundle_manifests(prepared)
-    need(tuple(item["name"] for item in publications) == NAMES, "canonical preparation omitted a platform")
+    need(tuple(item["name"] for item in publications) == names, "canonical preparation omitted a platform")
     main = publications[0]["manifest"]
     need(all(main.get(key) == ctx.identity[key] for key in ("version", "build", "source_sha", "pub_date"))
          and main.get("notes") == ctx.pinned(ctx.bindings["notes"]).decode("utf-8"),
          "canonical prepared release differs")
     payloads = ctx.core.bundle_records(prepared, main)
     _, metadata = ctx.core.bundle_metadata(prepared, main)
-    expected = set(NAMES) | {"trust.json", "public-key.pub", "metadata-inventory.json"}
+    expected = set(names) | {"trust.json", "public-key.pub", "metadata-inventory.json"}
     expected |= {str(path.relative_to(prepared)) for path, _ in payloads + metadata}
     files = {}
     for path in prepared.rglob("*"):
@@ -259,7 +264,7 @@ def freeze(ctx, args):
         else:
             hashed, size = ctx.core.hash_file(path, 512 * 1024**2 if relative.startswith("payloads/") else 4 * 1024**2)
             files[relative] = {"sha256": hashed, "size": size}
-    need(set(files) == expected and len(files) == 23, "canonical prepared file inventory differs")
+    need(set(files) == expected and len(files) == platform_counts(platforms)['prepared'], "canonical prepared file inventory differs")
     need(read_regular(prepared / "metadata/provenance.json") == ctx.core.durable_provenance(trust),
          "canonical provenance differs")
     log_bytes = log.getvalue().encode()
@@ -268,11 +273,11 @@ def freeze(ctx, args):
     execution = _emit(ctx.root, ctx.root / "canonical-prepare.json", {
         "schema": "agent-release-canonical-prepare-v1", "completed": True,
         "core_sha256": ctx.core_sha256, "tooling_sha256": ctx.tooling_sha256,
-        "producer": deepcopy(ctx.identity), "default_attestation_file_count": 16,
+        "producer": deepcopy(ctx.identity), "default_attestation_file_count": 16 + 5 * ('windows-arm64' in platforms),
         "log": log_ref, "prepared_bundle": str(prepared),
     })
     frozen = {"schema": SCHEMA_FREEZE, "canonical_prepare_completed": True, "source": ctx.source,
-              "tree": ctx.tree, "platforms": list(PLATFORMS), "producer": producer,
+              "tree": ctx.tree, "platforms": list(platforms), "producer": producer,
               "files": files, "notes": deepcopy(ctx.bindings["notes"]), "canonical_execution": execution}
     frozen["producer"]["version"] = ctx.version
     frozen_ref = _emit(ctx.root, ctx.root / "prepared-freeze.json", frozen)
@@ -288,6 +293,7 @@ def bind_publication(ctx, args):
     need(ctx.bindings.get("freeze") is not None and ctx.bindings.get("publication_identity") is None,
          "a frozen, unselected release is required")
     _frozen(ctx)
+    platforms = selected_platforms(ctx.bindings['platforms'])
     selected = decode(_pinned(args.selection, args.selection_sha256))
     publication = {key: selected.get(key) for key in ("run_id", "run_attempt", "source_sha", "workflow")}
     need(positive(publication["run_id"]) and positive(publication["run_attempt"])
@@ -296,10 +302,16 @@ def bind_publication(ctx, args):
     need(type(selected.get("producer_run")) is int and selected["producer_run"] == ctx.producer_run
          and type(selected.get("producer_attempt")) is int and selected["producer_attempt"] == ctx.producer_attempt
          and selected.get("payload_source") == ctx.source and selected.get("version") == ctx.version
-         and selected.get("platforms") == list(PLATFORMS), "selected publication payload differs")
+         and selected.get("platforms") == list(platforms), "selected publication payload differs")
     inputs = {"build_run_id": str(ctx.producer_run), "version": ctx.version,
               "notes": ctx.pinned(ctx.bindings["notes"]).decode("utf-8"), "include_linux": True, "include_windows": True}
-    need(selected.get("inputs") == inputs, "selected publication inputs differ")
+    arm_inputs = {**inputs, "include_windows_arm64": 'windows-arm64' in platforms}
+    actual_inputs = selected.get('inputs')
+    need(isinstance(actual_inputs, dict)
+         and all(type(actual_inputs.get(key)) is bool for key in ('include_linux', 'include_windows'))
+         and ('include_windows_arm64' not in actual_inputs or type(actual_inputs['include_windows_arm64']) is bool)
+         and (actual_inputs == arm_inputs or (platforms == PLATFORMS and actual_inputs == inputs)),
+         "selected publication inputs differ")
     return _snapshot(ctx, args.output, {"publication_identity": publication,
                                        "selected_publication": {"path": str(args.selection), "sha256": args.selection_sha256}})
 
@@ -308,6 +320,8 @@ def bind_public(ctx, args):
     """Bind successful-run and signed-proof facts for separate public verification."""
     _output(ctx.root, args.output)
     need(not ctx.bindings.get("successful_publication_run"), "public facts already bound")
+    platforms = selected_platforms(ctx.bindings['platforms'])
+    envelopes_expected = envelope_names(platforms)
     identity = ctx.publication
     success = decode(_pinned(args.successful_run, args.successful_run_sha256))
     need(type(success.get("id")) is int and success["id"] == identity["run_id"]
@@ -324,15 +338,16 @@ def bind_public(ctx, args):
          and proof.get("bindings_sha256") == ctx.bindings_sha256
          and proof.get("tooling_sha256") == ctx.tooling_sha256 and proof.get("policy_sha256") == ctx.policy_sha256
          and proof.get("core_sha256") == ctx.core_sha256 and proof.get("primary_key_sha256") == ctx.primary_sha256
-         and proof.get("verified_primary_signatures") == list(ENVELOPES),
+         and proof.get("verified_primary_signatures") == sorted(envelopes_expected),
          "signed-stage proof identity differs")
     bundle = Path(args.signed_bundle)
     need(bundle.is_absolute() and bundle.resolve(strict=True) == bundle and bundle.is_dir()
          and not bundle.is_symlink() and bundle.is_relative_to(ctx.root), "unsafe signed bundle")
     frozen = _frozen(ctx)
     files = proof.get("files", {})
-    need(set(files) == set(ctx.bindings["prepared_files"]) | {"reservation.json", *ENVELOPES}
-         and len(files) == 27 and frozen["files"] == ctx.bindings["prepared_files"], "signed proof inventory differs")
+    need(set(files) == set(ctx.bindings["prepared_files"]) | {"reservation.json", *envelopes_expected}
+         and len(files) == platform_counts(platforms)['signed']
+         and frozen["files"] == ctx.bindings["prepared_files"], "signed proof inventory differs")
     actual = set()
     for path in bundle.rglob("*"):
         need(not path.is_symlink() and path.resolve(strict=True) == path, "unsafe signed bundle member")
@@ -349,7 +364,7 @@ def bind_public(ctx, args):
         need(record == {"sha256": hashed, "size": size}, "signed bundle differs from proof")
         if name in ctx.bindings["prepared_files"]:
             need(record == ctx.bindings["prepared_files"][name], "frozen prepared bytes changed")
-    envelopes = {platform: files[name]["sha256"] for platform, name in zip(PLATFORMS, ENVELOPES)}
+    envelopes = {platform: files[name]["sha256"] for platform, name in zip(platforms, envelopes_expected)}
     return _snapshot(ctx, args.output, {
         "successful_publication_run": {"path": str(args.successful_run), "sha256": args.successful_run_sha256},
         "signed_stage_proof": {"path": str(args.signed_stage_proof), "sha256": args.signed_stage_proof_sha256},
@@ -367,6 +382,9 @@ def accept(ctx, args):
     research_path = _output(ctx.root, ctx.root / "research-preservation.json")
     need(len({output, acceptance_path, research_path}) == 3, "baseline and evidence outputs must differ")
     bindings = ctx.bindings
+    platforms = selected_platforms(bindings['platforms'])
+    names, envelopes = manifest_names(platforms), envelope_names(platforms)
+    public_inventory = PublicVerifier.inventory(bindings)
     publication = ctx.publication
     public = decode(_pinned(args.public_receipt, args.public_receipt_sha256))
     private = decode(_pinned(args.private_receipt, args.private_receipt_sha256))
@@ -375,13 +393,13 @@ def accept(ctx, args):
     operation_sha = bindings["operation_bindings"]["sha256"]
     need(signed.get("schema") == SCHEMA_BUNDLE and signed.get("stage") == "signed"
          and signed.get("bindings_sha256") == operation_sha and signed.get("producer") == ctx.identity
-         and signed.get("publication") == publication and signed.get("verified_primary_signatures") == list(ENVELOPES)
+         and signed.get("publication") == publication and signed.get("verified_primary_signatures") == sorted(envelopes)
          and signed.get("primary_key_sha256") == ctx.primary_sha256
          and all(signed.get(key) == value for key, value in {
              "tooling_sha256": ctx.tooling_sha256, "policy_sha256": ctx.policy_sha256,
              "core_sha256": ctx.core_sha256}.items()), "accepted signed proof differs")
     need(all(operation.get(key) == bindings[key] for key in (
-        "producer_identity", "publication_identity", "payload_tree", "artifacts", "freeze", "prepared_files",
+        "producer_identity", "publication_identity", "payload_tree", "platforms", "artifacts", "freeze", "prepared_files",
         "prepared_bundle", "notes", "public_key", "policy_sha256", "tooling_sha256", "code_pins")),
         "public and operator snapshots differ")
     need(public.get("schema") == SCHEMA_PUBLIC and public.get("all_checks_passed") is True
@@ -400,13 +418,13 @@ def accept(ctx, args):
         need(record.get("policy_sha256") == ctx.policy_sha256 and record.get("tooling_sha256") == ctx.tooling_sha256,
              "release evidence policy or tooling differs")
     need(public.get("core_sha256") == ctx.core_sha256
-         and public.get("full_payload_streams") == PublicVerifier.FULL_STREAMS
-         and public.get("successful_full_payload_streams") == PublicVerifier.FULL_STREAMS
-         and public.get("fixed_request_count") == PublicVerifier.FIXED_REQUESTS
+         and public.get("full_payload_streams") == public_inventory['full_streams']
+         and public.get("successful_full_payload_streams") == public_inventory['full_streams']
+         and public.get("fixed_request_count") == public_inventory['fixed_requests']
          and type(public.get("total_request_count")) is int
-         and PublicVerifier.FIXED_REQUESTS <= public["total_request_count"] <= PublicVerifier.MAX_REQUESTS
-         and public.get("included_platforms") == list(PLATFORMS)
-         and public.get("preserved_previous_immutables") == list(PLATFORMS)
+         and public_inventory['fixed_requests'] <= public["total_request_count"] <= public_inventory['max_requests']
+         and public.get("included_platforms") == list(platforms)
+         and public.get("preserved_previous_immutables") == list(predecessor_platforms(bindings))
          and public.get("duplicate_full_payload_files_saved") == 0
          and public.get("credentials_used") is False and public.get("redirects_followed") is False
          and public.get("producer_attestations_verified_here") is False
@@ -414,24 +432,24 @@ def accept(ctx, args):
          and public.get("research", {}).get("state") in {"unchanged", "independent_release_verified"},
          "public verification inventory differs")
     requests = public.get("requests", [])
-    need(isinstance(requests, list) and len(requests) == PublicVerifier.FIXED_REQUESTS
+    need(isinstance(requests, list) and len(requests) == public_inventory['fixed_requests']
          and all(item.get("check_passed") is True for item in requests), "public request checks incomplete")
     streams = [item for item in requests if item.get("kind") == "payload-full"]
-    need(len(streams) == PublicVerifier.FULL_STREAMS
+    need(len(streams) == public_inventory['full_streams']
          and {urlsplit(item.get("url", "")).hostname for item in streams} == set(PublicVerifier.HOSTS)
-         and len({item.get("url") for item in streams}) == PublicVerifier.FULL_STREAMS,
+         and len({item.get("url") for item in streams}) == public_inventory['full_streams'],
          "both-host full payload evidence incomplete")
     stream_paths = []
     for host in PublicVerifier.HOSTS:
         urls = [urlsplit(item["url"]) for item in streams if urlsplit(item["url"]).hostname == host]
         paths = {url.path for url in urls}
-        need(len(urls) == len(paths) == PublicVerifier.FULL_STREAMS // len(PublicVerifier.HOSTS)
+        need(len(urls) == len(paths) == public_inventory['full_streams'] // len(PublicVerifier.HOSTS)
              and all(url.scheme == "https" and url.netloc == host and not url.query and not url.fragment for url in urls),
              "per-host full payload evidence differs")
         stream_paths.append(paths)
     need(all(paths == stream_paths[0] for paths in stream_paths), "public hosts verified different payloads")
     need(private.get("schema") == SCHEMA_R2 and private.get("phase") == "after-publish"
-         and private.get("passed") is True and private.get("request_count") == 13
+         and private.get("passed") is True and private.get("request_count") == r2_request_count(bindings)
          and private.get("bindings_sha256") == operation_sha
          and private.get("route_sha256") == ctx.route_sha256 and digest(private.get("previous_proof_sha256")),
          "successful operator-bound after-publication private proof required")
@@ -440,13 +458,13 @@ def accept(ctx, args):
          "invalid private proof time interval")
     baseline = decode(ctx.pinned(bindings["previous_private_r2"]))["objects"]
     prefix = f"stable/releases/{ctx.version}/"
-    pointers = ("stable/latest.json", "stable/linux/latest.json", "stable/windows/latest.json")
-    reservations = {prefix + "publication-" + name: name for name in NAMES}
+    pointers = pointer_names(platforms)
+    reservations = {prefix + "publication-" + name: name for name in names}
     reservations[prefix + "publication-metadata.json"] = "metadata-inventory.json"
     old_keys = set(bindings["previous_signed_envelopes"])
     objects = private.get("objects", {})
-    expected_keys = set(pointers) | old_keys | set(reservations) | {prefix + name for name in NAMES}
-    need(isinstance(objects, dict) and set(objects) == expected_keys and len(objects) == 13,
+    expected_keys = set(pointers) | old_keys | set(reservations) | {prefix + name for name in names}
+    need(isinstance(objects, dict) and set(objects) == expected_keys and len(objects) == r2_request_count(bindings),
          "private metadata object inventory differs")
     for key, value in objects.items():
         need(isinstance(value, dict) and set(value) == {"sha256", "size", "etag"}
@@ -456,7 +474,7 @@ def accept(ctx, args):
         if key in old_keys:
             need(value == baseline[key], "accepted previous immutable bytes or ETag changed")
     envelope_refs = {}
-    for platform, name, envelope, pointer in zip(PLATFORMS, NAMES, ENVELOPES, pointers):
+    for platform, name, envelope, pointer in zip(platforms, names, envelopes, pointers):
         path = Path(bindings["signed_bundle"]) / envelope
         raw = read_regular(path, ctx.core.MAX_ENVELOPE)
         expected = {"sha256": sha(raw), "size": len(raw)}

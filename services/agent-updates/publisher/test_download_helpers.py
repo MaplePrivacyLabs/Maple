@@ -38,7 +38,8 @@ class DownloadTests(unittest.TestCase):
             "payload_tree": self.ctx.tree,
             "artifacts": {platform: {"id": number, "name": f"maple-agent-prod-{target}-501",
                                       "size": 1, "zip_sha256": "f" * 64}
-                          for number, (platform, target) in enumerate(d.TARGETS.items(), 11)}}
+                          for number, (platform, target) in enumerate(
+                              ((key, d.TARGETS[key]) for key in ("macos", "linux", "windows")), 11)}}
         self.ctx.pinned = self.pinned
         self.ctx.emit = self.emit
         self.ctx.tool = Mock(return_value=Path("/synthetic/gh"))
@@ -62,7 +63,7 @@ class DownloadTests(unittest.TestCase):
                           "payload_source": self.ctx.source, "version": self.ctx.version,
                           "platforms": ["macos", "linux", "windows"],
                           "inputs": {"include_linux": True, "include_windows": True,
-                                     "version": self.ctx.version, "build_run_id": "501"}}
+                                     "version": self.ctx.version, "build_run_id": "501", "notes": "Release notes\n"}}
         self.ctx.bindings["selected_publication"] = self.reference("selected", self.selection)
 
     def reference(self, name, value):
@@ -90,7 +91,8 @@ class DownloadTests(unittest.TestCase):
                                            "metadata-inventory.json", "public-key.pub", "trust.json")}
         files.update({"metadata/" + name: b"metadata\n" for name in
                       {"provenance.json"} | p.MACOS_METADATA_NAMES | p.LINUX_METADATA_NAMES | p.WINDOWS_METADATA_NAMES})
-        for platform, target in d.TARGETS.items():
+        for platform in self.ctx.bindings["platforms"]:
+            target = d.TARGETS[platform]
             for suffix in d.SUFFIXES[platform]:
                 files[f"payloads/maple-agent-prod-{self.ctx.version}-{self.ctx.source[:7]}-{target}{suffix}"] = b"payload\n"
         return files

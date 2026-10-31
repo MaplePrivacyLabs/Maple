@@ -26,14 +26,22 @@ if [[ "$(uname -s)" == Darwin ]]; then
 fi
 target_args=()
 case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) target_args=(--target x86_64-pc-windows-msvc) ;;
+    MINGW*|MSYS*|CYGWIN*)
+        windows_arch="${MAPLE_WINDOWS_ARCH:-x86_64}"
+        case "$windows_arch" in
+            x86_64|aarch64) ;;
+            *) echo "unsupported native Windows architecture" >&2; exit 2 ;;
+        esac
+        windows_target="${windows_arch}-pc-windows-msvc"
+        target_args=(--target "$windows_target")
+        ;;
 esac
 # An explicit Windows target keeps +crt-static off host proc macros and build
 # scripts. Stage only this build's executable at the shared prebuilt path.
 cargo build --release -p maple-agent-app --locked --timings "${target_args[@]}"
 if [[ ${#target_args[@]} != 0 ]]; then
     mkdir -p target/release
-    cp target/x86_64-pc-windows-msvc/release/maple-agent.exe target/release/maple-agent.exe
+    cp "target/$windows_target/release/maple-agent.exe" target/release/maple-agent.exe
 fi
 binary="$component/target/release/maple-agent"
 case "$(uname -s)" in
@@ -42,7 +50,7 @@ case "$(uname -s)" in
         # Validate its immutable PE metadata without entering runtime trust or
         # installation checks; signing and installed-app smoke happen later.
         python3 "$component/scripts/windows-build-info.py" "${binary}.exe" \
-            --profile "$1" --source-sha "$(git rev-parse HEAD)" >/dev/null
+            --profile "$1" --source-sha "$(git rev-parse HEAD)" --arch "$windows_arch" >/dev/null
         ;;
     *)
         "$binary" --build-info |
