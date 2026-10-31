@@ -1597,134 +1597,249 @@ class UnsignedProdSmokeTests(unittest.TestCase):
                 release.smoke_installer(Path("preview.exe"), info("prod"), True, "12", {}, uninstaller_sha256="a" * 64, checker=Path("checker.exe"))
 
 
-class CopiedUninstallerDispositionTests(unittest.TestCase):
-    class Call:
-        def __init__(self, callback):
-            self.callback, self.calls = callback, []
+class SuccessfulSmokeUninstallerLifecycleTests(unittest.TestCase):
+    def exercise_success_cleanup(self, condition):
+        from contextlib import ExitStack, nullcontext
+        import shutil
 
-        def __call__(self, *arguments):
-            self.calls.append(arguments)
-            return self.callback(*arguments)
-
-    class Kernel:
-        def __init__(self, copied, *, attributes=0, failure=None, close_failure=False):
-            self.copied, self.data, self.offset = copied, copied.read_bytes(), 0
-            self.attributes, self.failure, self.close_failure = attributes, failure, close_failure
-            self.marked = False
-            for name in ("CreateFileW", "GetFileInformationByHandleEx", "ReadFile", "SetFileInformationByHandle", "CloseHandle"):
-                setattr(self, name, CopiedUninstallerDispositionTests.Call(getattr(self, "_" + name)))
-
-        def _CreateFileW(self, *_arguments):
-            return ctypes.c_void_p(-1).value if self.failure == "open" else 123
-
-        def _GetFileInformationByHandleEx(self, _handle, _kind, output, _length):
-            ctypes.cast(output, ctypes.POINTER(ctypes.c_uint32))[0] = self.attributes
-            return self.failure != "attributes"
-
-        def _ReadFile(self, _handle, output, length, count, _overlapped):
-            if self.failure == "read":
-                return 0
-            data = self.data[self.offset:self.offset + length]
-            ctypes.memmove(output, data, len(data))
-            ctypes.cast(count, ctypes.POINTER(ctypes.c_uint32))[0] = len(data)
-            self.offset += len(data)
-            return 1
-
-        def _SetFileInformationByHandle(self, _handle, kind, flags, length):
-            self.disposition = (kind, ctypes.cast(flags, ctypes.POINTER(ctypes.c_uint32))[0], length)
-            if self.failure == "disposition":
-                return 0
-            self.marked = True
-            return 1
-
-        def _CloseHandle(self, _handle):
-            if self.marked and not self.close_failure:
-                self.copied.unlink()
-            return not self.close_failure
-
-    def fixture(self, scratch, **options):
-        copied = scratch / "uninstaller-runner" / "uninstall.exe"
-        copied.parent.mkdir()
-        copied.write_bytes(b"exact private verified copied runner")
-        return copied, hashlib.sha256(copied.read_bytes()).hexdigest(), self.Kernel(copied, **options)
-
-    def native_api(self, kernel):
-        # Exercise the real ctypes call boundary on every host. Only the Windows
-        # calls are simulated; the read/hash/admission/close control flow is real.
-        return (patch.object(ctypes, "WinDLL", return_value=kernel, create=True),
-                patch.object(ctypes, "get_last_error", return_value=5, create=True),
-                patch.object(ctypes, "WinError", side_effect=lambda code: OSError(code, "fixed native API failure"), create=True))
-
-    def test_same_handle_hash_delete_admission_and_exact_flags_remove_the_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
-            scratch = Path(temporary)
-            copied, digest, kernel = self.fixture(scratch)
-            dll, last_error, win_error = self.native_api(kernel)
-            with dll, last_error, win_error:
-                release.retire_copied_uninstaller(copied, scratch, digest)
-            self.assertEqual(kernel.CreateFileW.calls, [(str(copied), 0x80010000, 5, None, 3, 0x00200000, None)])
-            self.assertEqual(kernel.GetFileInformationByHandleEx.calls[0][:2], (123, 9))
-            self.assertEqual(kernel.offset, len(kernel.data))
-            self.assertEqual(kernel.disposition, (21, 3, 4))
-            self.assertEqual(kernel.CloseHandle.calls, [(123,)])
-            self.assertFalse(copied.exists())
+            scratch = (Path(temporary) / "scratch").resolve()
+            scratch.mkdir()
+            installed = scratch / "install with spaces"
+            generation = installed / "versions" / "0.1.2-12"
+            uninstaller = installed / "uninstall.exe"
+            executable = installed / "maple-agent.exe"
+            copied = scratch / "uninstaller-runner" / "uninstall.exe"
+            identity = info("dev", "aarch64")
+            payloads = {name: ("owned fixture " + name).encode() for name in release.BUNDLE_FILES}
+            expected_hashes = {name: hashlib.sha256(data).hexdigest() for name, data in payloads.items()}
+            uninstaller_bytes = b"verified owned installed uninstaller fixture"
+            uninstaller_sha256 = hashlib.sha256(uninstaller_bytes).hexdigest()
+            registry = SmokeDiagnosticsTests.registry(self)
+            registered, finishing = False, False
+            phases, cleanup_observations = [], []
+            denied = PermissionError("fixed installed uninstaller access denial")
+            original_regular = release.regular
 
-    def test_readonly_reparse_and_directory_entries_are_refused_without_disposition(self):
-        for attributes in (0x1, 0x400, 0x10):
-            with self.subTest(attributes=attributes), tempfile.TemporaryDirectory() as temporary:
-                scratch = Path(temporary)
-                copied, digest, kernel = self.fixture(scratch, attributes=attributes)
-                dll, last_error, win_error = self.native_api(kernel)
-                with dll, last_error, win_error, self.assertRaisesRegex(ValueError, "read-only, directory or reparse"):
-                    release.retire_copied_uninstaller(copied, scratch, digest)
-                self.assertEqual(kernel.ReadFile.calls, [])
-                self.assertEqual(kernel.SetFileInformationByHandle.calls, [])
-                self.assertEqual(kernel.CloseHandle.calls, [(123,)])
-                self.assertTrue(copied.is_file())
+            def open_key(*_arguments):
+                if not registered:
+                    raise FileNotFoundError
+                return nullcontext(object())
 
-    def test_wrong_same_handle_hash_is_refused_and_handle_is_closed(self):
+            registry.OpenKey = open_key
+            registry.QueryValueEx = lambda *_arguments: (str(installed), 1)
+
+            def command(arguments, **_options):
+                nonlocal registered
+                if isinstance(arguments, str):
+                    if not installed.exists():
+                        self.assertEqual(Path(arguments.split("/D=", 1)[1]), installed)
+                        generation.mkdir(parents=True)
+                        for name, data in payloads.items():
+                            (generation / name).write_bytes(data)
+                        executable.write_bytes(payloads["maple-agent.exe"])
+                        uninstaller.write_bytes(uninstaller_bytes)
+                        (installed / "current.json").write_text(json.dumps({
+                            "format": "maple-agent-windows-current-v1", "generation": "0.1.2-12",
+                        }))
+                        registered = True
+                    return subprocess.CompletedProcess(arguments, 0)
+                if list(arguments)[1:] == ["--build-info"]:
+                    return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(identity))
+                if list(arguments)[1:] == ["host", "stop"] and condition == "late-missing":
+                    uninstaller.unlink()
+                return subprocess.CompletedProcess(arguments, 0)
+
+            def finish_interactive(*_arguments, **_options):
+                nonlocal finishing
+                finishing = True
+                if condition in ("missing", "directory"):
+                    uninstaller.unlink()
+                    if condition == "directory":
+                        uninstaller.mkdir()
+
+            def require_regular(path):
+                # Missing and directory cases exercise the real portable file
+                # guard. Simulate Windows access denial at the same admission
+                # boundary, without changing the machine's permissions.
+                original_regular(path)
+                if finishing and condition == "denied" and path == uninstaller:
+                    raise denied
+
+            def uninstall(source, root, owner, _environment, _unsigned, digest, _arch, **_options):
+                nonlocal registered
+                self.assertEqual((source, root, owner), (uninstaller, installed, scratch))
+                self.assertEqual(release.uninstaller_digest(source), digest)
+                self.assertEqual(digest, uninstaller_sha256)
+                # Model product removal only. Standard temporary cleanup must
+                # own the auxiliary runner, after real preservation assertions.
+                copied.parent.mkdir()
+                copied.write_bytes(source.read_bytes())
+                executable.unlink()
+                uninstaller.unlink()
+                (installed / "current.json").unlink()
+                shutil.rmtree(installed / "versions")
+                registered = False
+
+            def cleanup():
+                if condition == "valid":
+                    self.assertIn("uninstall-owned-files-and-state", phases)
+                    self.assertEqual((installed / "user-created-file.txt").read_text(), "preserve me")
+                    self.assertEqual((scratch / "data" / identity["data_namespace"] / "state-marker.txt").read_text(), "preserve state")
+                    self.assertEqual(copied.read_bytes(), uninstaller_bytes)
+                    self.assertNotIn("installer-smoke-complete", phases)
+                cleanup_observations.append(condition)
+                shutil.rmtree(scratch)
+
+            proxy = types.SimpleNamespace(name=str(scratch), cleanup=cleanup)
+            diagnostics = io.StringIO()
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy))
+                stack.enter_context(patch.dict(sys.modules, winreg=registry))
+                stack.enter_context(patch.object(release, "smoke_environment", return_value={}))
+                stack.enter_context(patch.object(release, "capture_preflight", return_value=subprocess.CompletedProcess("checker", 0, b"")))
+                stack.enter_context(patch.object(release, "run", side_effect=command))
+                stack.enter_context(patch.object(release.subprocess, "run", side_effect=lambda arguments, **_options: subprocess.CompletedProcess(arguments, 1, b"", b"Maple ACP requires sign-in.")))
+                stack.enter_context(patch.object(release, "regular", side_effect=require_regular))
+                stack.enter_context(patch.object(release, "verify_payload"))
+                stack.enter_context(patch.object(release, "signature"))
+                stack.enter_context(patch.object(release, "quiet_installer_smoke"))
+                stack.enter_context(patch.object(release, "gui_smoke"))
+                stack.enter_context(patch.object(release, "WindowsIntegrationProbe", return_value=types.SimpleNamespace(seed=lambda: None, ready=lambda: None)))
+                stack.enter_context(patch.object(release, "smoke_application_baseline", return_value=nullcontext((object(), []))))
+                stack.enter_context(patch.object(release, "pin_current_pointer", return_value=nullcontext()))
+                stack.enter_context(patch.object(release, "interactive_installer_smoke", side_effect=finish_interactive))
+                invoked = stack.enter_context(patch.object(release, "run_copied_uninstaller", side_effect=uninstall))
+                stack.enter_context(patch.object(release, "smoke_phase_complete", side_effect=lambda phase, *_arguments, **_facts: phases.append(phase)))
+                stack.enter_context(patch.object(sys, "stderr", diagnostics))
+                if condition == "valid":
+                    release.smoke_installer(Path("fixture.exe"), identity, True, "12", expected_hashes,
+                                            uninstaller_sha256=uninstaller_sha256, checker=Path("checker.exe"), arch="aarch64")
+                    self.assertEqual(invoked.call_count, 1)
+                    self.assertIn("installer-smoke-complete", phases)
+                else:
+                    with self.assertRaises(PermissionError if condition == "denied" else ValueError) as raised:
+                        release.smoke_installer(Path("fixture.exe"), identity, True, "12", expected_hashes,
+                                                uninstaller_sha256=uninstaller_sha256, checker=Path("checker.exe"), arch="aarch64")
+                    if condition == "denied":
+                        self.assertIs(raised.exception, denied)
+                    if condition == "late-missing":
+                        self.assertEqual(invoked.call_count, 1)
+                    else:
+                        invoked.assert_not_called()
+                    self.assertNotIn("uninstall-owned-files-and-state", phases)
+                    self.assertNotIn("installer-smoke-complete", phases)
+            self.assertEqual(cleanup_observations, [condition])
+            release.require_absent(copied, "Auxiliary copy survived temporary cleanup")
+            release.require_absent(copied.parent, "Auxiliary directory survived temporary cleanup")
+            release.require_absent(scratch, "Scratch survived temporary cleanup")
+
+    def test_valid_success_proves_product_uninstall_before_generic_scratch_cleanup(self):
+        self.exercise_success_cleanup("valid")
+
+    def test_success_cannot_skip_a_missing_or_directory_uninstaller(self):
+        for condition in ("missing", "directory"):
+            with self.subTest(condition=condition):
+                self.exercise_success_cleanup(condition)
+
+    def test_success_cannot_translate_installed_uninstaller_access_denial_into_absence(self):
+        self.exercise_success_cleanup("denied")
+
+    def test_success_cannot_skip_an_uninstaller_that_disappears_after_admission(self):
+        self.exercise_success_cleanup("late-missing")
+
+
+class VerificationScratchLifecycleTests(unittest.TestCase):
+    def test_path_resolution_failure_still_cleans_the_created_scratch(self):
         with tempfile.TemporaryDirectory() as temporary:
-            scratch = Path(temporary)
-            copied, _digest, kernel = self.fixture(scratch)
-            dll, last_error, win_error = self.native_api(kernel)
-            with dll, last_error, win_error, self.assertRaisesRegex(ValueError, "verified hash"):
-                release.retire_copied_uninstaller(copied, scratch, "0" * 64)
-            self.assertEqual(kernel.SetFileInformationByHandle.calls, [])
-            self.assertEqual(kernel.CloseHandle.calls, [(123,)])
-            self.assertTrue(copied.is_file())
+            real = tempfile.TemporaryDirectory(dir=temporary)
+            scratch = Path(real.name).resolve()
+            primary = PermissionError("fixed scratch resolution failure")
+            proxy = types.SimpleNamespace(name=real.name, cleanup=Mock(side_effect=real.cleanup))
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.object(Path, "resolve", side_effect=primary), patch.object(sys, "stdout", io.StringIO()):
+                with self.assertRaises(PermissionError) as raised:
+                    with release.verification_scratch("fixture-"):
+                        self.fail("unresolved scratch was yielded")
+            self.assertIs(raised.exception, primary)
+            proxy.cleanup.assert_called_once_with()
+            release.require_scratch_absent(scratch)
 
-    def test_another_path_or_unbound_hash_never_opens_a_delete_handle(self):
+    def test_cleanup_runs_after_product_assertions_and_is_strictly_observed(self):
         with tempfile.TemporaryDirectory() as temporary:
-            scratch = Path(temporary)
-            copied, digest, kernel = self.fixture(scratch)
-            dll, last_error, win_error = self.native_api(kernel)
-            with dll, last_error, win_error:
-                for path, expected in ((scratch / "uninstall.exe", digest), (copied, None)):
-                    with self.subTest(path=path, expected=expected), self.assertRaisesRegex(ValueError, "exact owned copy"):
-                        release.retire_copied_uninstaller(path, scratch, expected)
-            self.assertEqual(kernel.CreateFileW.calls, [])
-            self.assertTrue(copied.is_file())
+            real = tempfile.TemporaryDirectory(dir=temporary)
+            scratch = Path(real.name).resolve()
+            product_checked = False
+            copied = scratch / "uninstaller-runner/uninstall.exe"
+            def cleanup():
+                self.assertTrue(product_checked)
+                self.assertEqual(copied.read_bytes(), b"owned auxiliary runner")
+                real.cleanup()
+            proxy = types.SimpleNamespace(name=real.name, cleanup=cleanup)
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy) as factory:
+                with release.verification_scratch("fixture-") as actual:
+                    self.assertEqual(actual, scratch)
+                    copied.parent.mkdir()
+                    copied.write_bytes(b"owned auxiliary runner")
+                    # Product assertions must finish while the auxiliary input
+                    # still exists; generic deletion cannot supply their proof.
+                    release.require_absent(scratch / "install with spaces/maple-agent.exe", "owned app remained")
+                    product_checked = True
+                factory.assert_called_once_with(prefix="fixture-", ignore_cleanup_errors=False)
+            release.require_scratch_absent(scratch)
 
-    def test_native_api_failures_are_not_retried_or_replaced(self):
-        for failure in ("open", "attributes", "read", "disposition", "close"):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
-                scratch = Path(temporary)
-                copied, digest, kernel = self.fixture(scratch, failure=failure, close_failure=failure == "close")
-                dll, last_error, win_error = self.native_api(kernel)
-                with dll, last_error, win_error, self.assertRaises(OSError):
-                    release.retire_copied_uninstaller(copied, scratch, digest)
-                self.assertEqual(len(kernel.CreateFileW.calls), 1)
-                self.assertEqual(kernel.CloseHandle.calls, [] if failure == "open" else [(123,)])
-                self.assertLessEqual(len(kernel.SetFileInformationByHandle.calls), 1)
+    def test_cleanup_failure_is_fatal_and_cannot_replace_a_primary_failure(self):
+        for primary in (None, subprocess.CalledProcessError(52, "actual copied child")):
+            with self.subTest(primary=primary), tempfile.TemporaryDirectory() as temporary:
+                scratch = Path(temporary) / "scratch"
+                scratch.mkdir()
+                secondary = PermissionError("do not expose arbitrary cleanup details")
+                proxy = types.SimpleNamespace(name=str(scratch), cleanup=Mock(side_effect=secondary))
+                output, diagnostics = io.StringIO(), io.StringIO()
+                with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.object(sys, "stdout", output), patch.object(sys, "stderr", diagnostics):
+                    with self.assertRaises(type(primary or secondary)) as raised:
+                        with release.verification_scratch("fixture-"):
+                            if primary:
+                                raise primary
+                self.assertIs(raised.exception, primary or secondary)
+                proxy.cleanup.assert_called_once_with()
+                self.assertIn('"result": "failure"', output.getvalue())
+                self.assertNotIn("do not expose", output.getvalue() + diagnostics.getvalue())
 
-    def test_close_failure_preserves_a_primary_hash_refusal(self):
+    def test_cleanup_that_leaves_the_scratch_cannot_report_success(self):
         with tempfile.TemporaryDirectory() as temporary:
-            scratch = Path(temporary)
-            copied, _digest, kernel = self.fixture(scratch, close_failure=True)
-            dll, last_error, win_error = self.native_api(kernel)
-            with dll, last_error, win_error, self.assertRaisesRegex(ValueError, "verified hash"):
-                release.retire_copied_uninstaller(copied, scratch, "0" * 64)
-            self.assertEqual(kernel.CloseHandle.calls, [(123,)])
+            scratch = Path(temporary) / "scratch"
+            scratch.mkdir()
+            proxy = types.SimpleNamespace(name=str(scratch), cleanup=Mock())
+            output = io.StringIO()
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.object(sys, "stdout", output), patch.object(sys, "stderr", io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "scratch survived cleanup"):
+                    with release.verification_scratch("fixture-"):
+                        pass
+            self.assertIn('"result": "failure"', output.getvalue())
+
+    def test_post_cleanup_access_denial_is_never_missing_evidence(self):
+        for target in ("copy", "directory", "scratch"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                real = tempfile.TemporaryDirectory(dir=temporary)
+                scratch = Path(real.name).resolve()
+                paths = {"copy": scratch / "uninstaller-runner/uninstall.exe", "directory": scratch / "uninstaller-runner", "scratch": scratch}
+                after_cleanup = False
+                original_lstat = Path.lstat
+                denial = PermissionError("fixed post-cleanup lstat denial")
+                def probe(path, *arguments, **options):
+                    if after_cleanup and path == paths[target]:
+                        raise denial
+                    return original_lstat(path, *arguments, **options)
+                def cleanup():
+                    nonlocal after_cleanup
+                    real.cleanup()
+                    after_cleanup = True
+                proxy = types.SimpleNamespace(name=real.name, cleanup=cleanup)
+                with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.object(Path, "lstat", probe), patch.object(sys, "stdout", io.StringIO()), patch.object(sys, "stderr", io.StringIO()):
+                    with self.assertRaises(PermissionError) as raised:
+                        with release.verification_scratch("fixture-"):
+                            pass
+                self.assertIs(raised.exception, denial)
 
 
 class CopiedUninstallerTests(unittest.TestCase):
@@ -1735,29 +1850,49 @@ class CopiedUninstallerTests(unittest.TestCase):
         uninstaller.write_bytes(b"exact verified NSIS fixture bytes")
         return installed, uninstaller, hashlib.sha256(uninstaller.read_bytes()).hexdigest()
 
-    def test_copy_preserves_exact_verified_bytes_policy_and_waited_retirement(self):
+    def test_copy_stays_owned_until_standard_cleanup_after_product_assertions(self):
         for unsigned in (True, False):
-            with self.subTest(unsigned=unsigned), tempfile.TemporaryDirectory() as temporary:
-                scratch = Path(temporary)
-                installed, uninstaller, digest = self.fixture(scratch)
-                copied = scratch / "uninstaller-runner/uninstall.exe"
-                environment = {"FIXTURE": "isolated"}
-                def uninstall(command, **options):
-                    self.assertEqual(command, f'"{copied}" /S _?={installed}')
-                    self.assertIs(options["env"], environment)
-                    self.assertEqual(options["cwd"], scratch)
-                    self.assertEqual(copied.read_bytes(), uninstaller.read_bytes())
+            with self.subTest(unsigned=unsigned):
+                facts = {}
+                with release.verification_scratch("maple-copy-lifecycle-", cleanup_facts=facts) as scratch:
+                    installed, uninstaller, digest = self.fixture(scratch)
+                    copied = scratch / "uninstaller-runner/uninstall.exe"
+                    environment = {"FIXTURE": "isolated"}
+                    sentinel = installed / "user-created-file.txt"
+                    sentinel.write_bytes(b"preserved user fixture")
+                    state = scratch / "data/state-marker.txt"
+                    state.parent.mkdir()
+                    state.write_bytes(b"preserved state fixture")
+                    def uninstall(command, **options):
+                        self.assertEqual(command, f'"{copied}" /S _?={installed}')
+                        self.assertIs(options["env"], environment)
+                        self.assertEqual(options["cwd"], scratch)
+                        self.assertEqual(copied.read_bytes(), uninstaller.read_bytes())
+                        self.assertEqual(hashlib.sha256(copied.read_bytes()).hexdigest(), digest)
+                        uninstaller.unlink()
+                        return subprocess.CompletedProcess(command, 0)
+                    with patch.object(release, "signature") as signature, patch.object(release, "run", side_effect=uninstall):
+                        release.run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, digest, "aarch64",
+                                                       cleanup_facts=facts)
+                    self.assertEqual(signature.call_args_list, [unittest.mock.call(uninstaller, unsigned), unittest.mock.call(copied, unsigned)])
+                    release.require_absent(uninstaller, "product uninstaller must already be gone")
+                    self.assertEqual(sentinel.read_bytes(), b"preserved user fixture")
+                    self.assertEqual(state.read_bytes(), b"preserved state fixture")
                     self.assertEqual(hashlib.sha256(copied.read_bytes()).hexdigest(), digest)
-                    # Model the actual child's completed work. A returned exit
-                    # status cannot bless the original remaining on disk.
-                    uninstaller.unlink()
-                    return subprocess.CompletedProcess(command, 0)
-                with patch.object(release, "signature") as signature, patch.object(release, "run", side_effect=uninstall), patch.object(release, "retire_copied_uninstaller", side_effect=lambda copy, _scratch, _digest: copy.unlink()) as retire:
-                    release.run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, digest, "aarch64")
-                self.assertEqual(signature.call_args_list, [unittest.mock.call(uninstaller, unsigned), unittest.mock.call(copied, unsigned)])
-                retire.assert_called_once_with(copied, scratch, digest)
-                self.assertFalse(copied.parent.exists())
-                self.assertFalse(uninstaller.exists())
+                    self.assertTrue(copied.parent.is_dir())
+                    self.assertIs(type(facts["child_returned_monotonic_ns"]), int)
+                release.require_absent(copied, "copy must retire only after context cleanup")
+                release.require_absent(copied.parent, "runner directory must retire after context cleanup")
+                release.require_absent(scratch, "scratch must retire after context cleanup")
+
+    def test_original_remnant_failure_survives_successful_standard_cleanup(self):
+        with patch.object(sys, "stdout", io.StringIO()), patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "original installed uninstaller"):
+                with release.verification_scratch("maple-product-remnant-") as scratch:
+                    installed, uninstaller, digest = self.fixture(scratch)
+                    with patch.object(release, "signature"), patch.object(release, "run", return_value=subprocess.CompletedProcess("child", 0)):
+                        release.run_copied_uninstaller(uninstaller, installed, scratch, {}, True, digest, "aarch64")
+        release.require_scratch_absent(scratch)
 
     def test_wrong_source_hash_and_changed_verified_copy_never_execute(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1826,15 +1961,15 @@ class CopiedUninstallerTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform == "win32", "requires the native Windows NSIS process model")
 class NativeNSISUninstallCopyTests(unittest.TestCase):
     def test_verified_copy_retires_original_and_runner_after_real_child_exit(self):
-        # Tiny pinned-tool fixture: this proves NSIS relocation/wait semantics,
-        # not a Maple install, GUI, host, signed package or updater qualification.
+        # The tools and compiled input stay outside each small real-layout
+        # installation scratch. Their cleanup cannot delay retiring its runner.
         arch = release.os.environ.get("MAPLE_WINDOWS_ARCH", "x86_64")
         release.require_native_host(arch)
-        with release.verification_scratch("maple-nsis-uninstall-fixture-") as scratch:
-            compiler = release.install_nsis(scratch)
-            source = scratch / "fixture.nsi"
-            installer = scratch / "fixture-setup.exe"
-            payload = scratch / "input.txt"
+        with release.verification_scratch("maple-nsis-tools-") as tools:
+            compiler = release.install_nsis(tools)
+            source = tools / "fixture.nsi"
+            installer = tools / "fixture-setup.exe"
+            payload = tools / "input.txt"
             payload.write_bytes(b"owned NSIS fixture payload")
             source.write_text(fr'''Unicode true
 Name "Maple NSIS copy fixture"
@@ -1869,18 +2004,96 @@ done:
 SectionEnd
 ''', encoding="utf-8", newline="\n")
             release.run([compiler, "/V2", source], timeout=120)
-            installed = scratch / "install with spaces"
-            release.run(release.command_as_windows_args(f'"{installer}" /S /D={installed}'), timeout=120)
-            uninstaller = installed / "uninstall.exe"
-            digest = release.uninstaller_digest(uninstaller)
-            sentinel = installed / "user-created-file.txt"
-            sentinel.write_bytes(b"preserve this user file")
-            environment = release.smoke_environment(scratch)
-            release.run_copied_uninstaller(uninstaller, installed, scratch, environment, True, digest, arch)
-            self.assertEqual({path.name for path in installed.iterdir()}, {sentinel.name})
-            self.assertEqual(sentinel.read_bytes(), b"preserve this user file")
-            self.assertFalse((scratch / "uninstaller-runner").exists())
-        print("Verified pinned NSIS copied-uninstaller semantics only; no Maple runtime qualification", flush=True)
+            roots = set()
+            for iteration in range(1, 4):
+                # This is three independent required proofs. A failure raises
+                # immediately; a later iteration cannot replace it with success.
+                cleanup_facts = {}
+                with release.verification_scratch("maple-nsis-uninstall-fixture-", cleanup_facts=cleanup_facts) as scratch:
+                    self.assertNotIn(scratch, roots)
+                    roots.add(scratch)
+                    environment = release.smoke_environment(scratch)
+                    installed = scratch / "install with spaces"
+                    release.run(release.command_as_windows_args(f'"{installer}" /S /D={installed}'),
+                                env=environment, timeout=120)
+                    uninstaller = installed / "uninstall.exe"
+                    digest = release.uninstaller_digest(uninstaller)
+                    sentinel = installed / "user-created-file.txt"
+                    sentinel.write_bytes(b"preserve this user file")
+                    release.run_copied_uninstaller(uninstaller, installed, scratch, environment, True, digest, arch,
+                                                   cleanup_facts=cleanup_facts)
+                    release.require_absent(installed / "owned.txt", "NSIS fixture left its installed payload")
+                    release.require_absent(uninstaller, "NSIS fixture left the original uninstaller")
+                    self.assertEqual({path.name for path in installed.iterdir()}, {sentinel.name})
+                    self.assertEqual(sentinel.read_bytes(), b"preserve this user file")
+                    release.smoke_phase_complete("nsis-fixture-product-assertions", arch, iteration=iteration)
+                release.require_scratch_absent(scratch)
+                release.smoke_phase_complete("nsis-fixture-scratch-retired", arch, iteration=iteration)
+        release.require_scratch_absent(tools)
+        print("Verified three independent pinned NSIS copied-uninstaller rehearsals only; no Maple runtime qualification", flush=True)
+
+class NativeNSISFixtureControlFlowTests(unittest.TestCase):
+    def exercise_fixture(self, fail_first):
+        from contextlib import ExitStack
+
+        roots, tools = [], []
+        primary = subprocess.CalledProcessError(51, "first independent fixture child")
+        def toolchain(root):
+            tools.append(root)
+            directory = root / "nsis"
+            directory.mkdir()
+            (directory / "tool-input.txt").write_bytes(b"outer tools must not delay inner cleanup")
+            return directory / "makensis.exe"
+        def environment(root):
+            for name in ("config", "data", "cache", "tmp"):
+                (root / name).mkdir()
+            return {}
+        def command(arguments, **_options):
+            if not isinstance(arguments, str):
+                return subprocess.CompletedProcess(arguments, 0)
+            if " /D=" in arguments:
+                installed = Path(arguments.split(" /D=", 1)[1])
+                roots.append(installed.parent)
+                self.assertNotIn(tools[0], installed.parents)
+                self.assertEqual({p.name for p in installed.parent.iterdir()}, {"config", "data", "cache", "tmp"})
+                installed.mkdir()
+                (installed / "owned.txt").write_bytes(b"owned NSIS fixture payload")
+                (installed / "uninstall.exe").write_bytes(b"verified fake NSIS input")
+            else:
+                installed = Path(arguments.split(" _?=", 1)[1])
+                if fail_first:
+                    raise primary
+                (installed / "owned.txt").unlink()
+                (installed / "uninstall.exe").unlink()
+            return subprocess.CompletedProcess(arguments, 0)
+        # Execute the real three-iteration fixture/lifecycle on every host, with
+        # only native process/tool calls replaced. This is control-flow proof.
+        case = NativeNSISUninstallCopyTests("test_verified_copy_retires_original_and_runner_after_real_child_exit")
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(release, "require_native_host"))
+            stack.enter_context(patch.object(release, "install_nsis", side_effect=toolchain))
+            stack.enter_context(patch.object(release, "smoke_environment", side_effect=environment))
+            stack.enter_context(patch.object(release, "signature"))
+            stack.enter_context(patch.object(release, "run", side_effect=command))
+            stack.enter_context(patch.object(sys, "stdout", io.StringIO()))
+            stack.enter_context(patch.object(sys, "stderr", io.StringIO()))
+            if fail_first:
+                with self.assertRaises(subprocess.CalledProcessError) as raised:
+                    case.test_verified_copy_retires_original_and_runner_after_real_child_exit()
+                self.assertIs(raised.exception, primary)
+            else:
+                case.test_verified_copy_retires_original_and_runner_after_real_child_exit()
+        self.assertEqual(len(roots), 1 if fail_first else 3)
+        self.assertEqual(len(set(roots)), len(roots))
+        self.assertEqual(len(tools), 1)
+        for root in roots + tools:
+            release.require_scratch_absent(root)
+
+    def test_three_fresh_small_scratches_pass_before_outer_tool_cleanup(self):
+        self.exercise_fixture(False)
+
+    def test_first_failed_instance_stops_without_later_installations(self):
+        self.exercise_fixture(True)
 
 
 if __name__ == "__main__":

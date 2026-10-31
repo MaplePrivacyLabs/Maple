@@ -874,21 +874,44 @@ def windows_icon_equal(value, expected):
 
 
 @contextmanager
-def verification_scratch(prefix):
-    temporary = tempfile.TemporaryDirectory(prefix=prefix)
+def verification_scratch(prefix, *, cleanup_facts=None):
+    temporary = tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=False)
+    scratch = Path(temporary.name)
     primary = None
     try:
-        yield Path(temporary.name).resolve()
+        scratch = scratch.resolve()
+        yield scratch
     except BaseException as error:
         primary = error
         raise
     finally:
+        started = time.monotonic_ns()
+        cleanup_error = None
         try:
             temporary.cleanup()
+            require_scratch_absent(scratch)
         except Exception as error:
+            cleanup_error = error
             print("Windows verification cleanup failure: " + type(error).__name__, file=sys.stderr)
             if primary is None:
                 raise
+        finally:
+            finished = time.monotonic_ns()
+            facts = {"prefix": prefix, "cleanup_started_monotonic_ns": started,
+                     "cleanup_finished_monotonic_ns": finished, "cleanup_duration_ns": finished - started,
+                     "result": "failure" if cleanup_error else "success"}
+            child_returned = (cleanup_facts or {}).get("child_returned_monotonic_ns")
+            if type(child_returned) is int:
+                facts["child_returned_monotonic_ns"] = child_returned
+                facts["child_to_cleanup_ns"] = started - child_returned
+            if cleanup_error is not None:
+                facts.update(error=type(cleanup_error).__name__, winerror=getattr(cleanup_error, "winerror", None))
+                try:
+                    facts["path"] = str(Path(getattr(cleanup_error, "filename", None)).relative_to(scratch))[:256]
+                except (TypeError, ValueError):
+                    pass
+            # Report only after the actual cleanup and strict absence probes.
+            print("Windows verification cleanup: " + json.dumps(facts, sort_keys=True), flush=True)
 
 
 @contextmanager
@@ -1002,73 +1025,13 @@ def require_absent(path, message):
     raise ValueError(message)
 
 
-def retire_copied_uninstaller(copied, scratch, expected_sha256):
-    """Retire only this smoke's verified, already-exited private runner.
-
-    POSIX disposition removes the name on close even if other handles retain
-    the stream. DELETE access and the read-only attribute remain enforced:
-    https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex
-    """
-    import ctypes
-
-    if copied != scratch / "uninstaller-runner" / "uninstall.exe" or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-        raise ValueError("Uninstaller retirement requires the exact owned copy and verified hash")
-    regular(copied)
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateFileW.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
-                                   ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
-    kernel.CreateFileW.restype = ctypes.c_void_p
-    kernel.GetFileInformationByHandleEx.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
-    kernel.GetFileInformationByHandleEx.restype = ctypes.c_int
-    kernel.ReadFile.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p)
-    kernel.ReadFile.restype = ctypes.c_int
-    kernel.SetFileInformationByHandle.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
-    kernel.SetFileInformationByHandle.restype = ctypes.c_int
-    kernel.CloseHandle.argtypes, kernel.CloseHandle.restype = (ctypes.c_void_p,), ctypes.c_int
-    # Read and DELETE admission for the same existing file, without following a
-    # final reparse point. Refuse concurrent write admission; permit old readers.
-    handle = kernel.CreateFileW(str(copied), 0x80010000, 0x5, None, 3, 0x00200000, None)
-    if handle == ctypes.c_void_p(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    primary = None
-    try:
-        # FileAttributeTagInfo (9): two DWORDs, attributes then reparse tag.
-        attributes = (ctypes.c_uint32 * 2)()
-        if not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(attributes), ctypes.sizeof(attributes)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        if attributes[0] & (0x1 | 0x10 | 0x400):
-            raise ValueError("Copied runner retirement refuses read-only, directory or reparse entries")
-        digest, size = hashlib.sha256(), 0
-        buffer, count = ctypes.create_string_buffer(64 * 1024), ctypes.c_uint32()
-        while True:
-            if not kernel.ReadFile(handle, buffer, len(buffer), ctypes.byref(count), None):
-                raise ctypes.WinError(ctypes.get_last_error())
-            if count.value == 0:
-                break
-            size += count.value
-            if size > 32 * 1024 * 1024:
-                raise ValueError("Copied runner retirement exceeds its verified extraction bound")
-            digest.update(buffer.raw[:count.value])
-        if size == 0 or digest.hexdigest() != expected_sha256:
-            raise ValueError("Copied runner retirement differs from its verified hash")
-        # FileDispositionInfoEx (21), DELETE | POSIX_SEMANTICS only. Do not
-        # ignore read-only attributes, change ACLs, or fall back to weaker cleanup.
-        flags = ctypes.c_uint32(0x3)
-        if not kernel.SetFileInformationByHandle(handle, 21, ctypes.byref(flags), ctypes.sizeof(flags)):
-            raise ctypes.WinError(ctypes.get_last_error())
-    except BaseException as error:
-        primary = error
-        raise
-    finally:
-        if not kernel.CloseHandle(handle):
-            error = ctypes.WinError(ctypes.get_last_error())
-            if primary is None:
-                raise error
-            print("Windows copied-uninstaller handle cleanup failure: " + type(error).__name__, file=sys.stderr)
-    require_absent(copied, "Copied uninstaller survived by-handle retirement")
+def require_scratch_absent(scratch):
+    require_absent(scratch / "uninstaller-runner" / "uninstall.exe", "Auxiliary uninstaller survived scratch cleanup")
+    require_absent(scratch / "uninstaller-runner", "Auxiliary runner directory survived scratch cleanup")
+    require_absent(scratch, "Windows verification scratch survived cleanup")
 
 
-def run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, expected_sha256, arch):
+def run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, expected_sha256, arch, *, cleanup_facts=None):
     """Model NSIS relocation but synchronously wait for the actual uninstaller.
 
     https://nsis.sourceforge.io/Docs/AppendixD.html#D.1 documents copying the
@@ -1109,16 +1072,20 @@ def run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigne
         # performs the work itself, without NSIS's detached second invocation.
         result = run(command_as_windows_args(f'"{copied}" /S _?={installed}'),
                      cwd=scratch, env=environment, timeout=120)
+        returned = time.monotonic_ns()
+        if cleanup_facts is not None:
+            cleanup_facts["child_returned_monotonic_ns"] = returned
         result.check_returncode()
         phase = "original-retirement"
         require_absent(uninstaller, "NSIS did not remove the original installed uninstaller")
-        phase = "copy-retirement"
-        retire_copied_uninstaller(copied, scratch, expected_sha256)
-        require_absent(copied, "Copied uninstaller survived retirement")
-        copied.parent.rmdir()
-        require_absent(copied.parent, "Private uninstaller directory survived retirement")
-        smoke_phase_complete("uninstaller-retirement", arch, sha256=expected_sha256,
-                             exit_code=result.returncode, original_absent=True, copy_absent=True)
+        phase = "post-child-copy-verification"
+        if uninstaller_digest(copied) != expected_sha256:
+            raise ValueError("Copied uninstaller changed while running")
+        # The private auxiliary runner belongs to verification_scratch, just
+        # like the other temporary verifier inputs. All product assertions run
+        # before standard cleanup; strict auxiliary absence is checked afterward.
+        smoke_phase_complete("uninstaller-child-complete", arch, sha256=expected_sha256,
+                             exit_code=result.returncode, original_absent=True)
     except BaseException as error:
         facts = {"phase": phase, "error": type(error).__name__, "exit_code": getattr(result, "returncode", None)}
         for name, path in (("original", uninstaller), ("copy", copied)):
@@ -1145,7 +1112,8 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             raise ValueError("Refusing to smoke over an existing Agent installation")
     except FileNotFoundError:
         pass
-    with verification_scratch("maple-windows-install-") as scratch:
+    cleanup_facts = {}
+    with verification_scratch("maple-windows-install-", cleanup_facts=cleanup_facts) as scratch:
         environment = smoke_environment(scratch)
         installed = scratch / "install with spaces"
         command = f'"{installer}" /S /D={installed}'
@@ -1167,8 +1135,9 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                 # Keep the actual NSIS refusal proof in addition to the direct
                 # read-only probe; neither may enable unsigned Prod installs.
                 result = subprocess.run(command_as_windows_args(command), env=environment, timeout=120)
-                if result.returncode == 0 or installed.exists():
+                if result.returncode == 0:
                     raise ValueError("Unsigned Prod installer did not refuse before destination changes")
+                require_absent(installed, "Unsigned Prod installer did not refuse before destination changes")
                 try:
                     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry, 0, registry_access):
                         raise ValueError("Unsigned Prod installer changed installation registration")
@@ -1250,17 +1219,23 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
             if installed_ok:
                 cleanup_phase = "host-stop"
                 try:
-                    if executable.is_file():
+                    if primary is None:
+                        # A successful body must prove the real installed
+                        # uninstaller ran; scratch deletion cannot stand in for it.
+                        regular(executable)
+                        regular(uninstaller)
+                    if primary is None or executable.is_file():
                         run([executable, "host", "stop"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
                         smoke_phase_complete("host-stop", arch)
-                    if uninstaller.is_file():
+                    if primary is None or uninstaller.is_file():
                         sentinel = installed / "user-created-file.txt"
                         sentinel.write_text("preserve me", encoding="utf-8")
                         state = scratch / "data" / info["data_namespace"] / "state-marker.txt"
                         state.parent.mkdir(parents=True, exist_ok=True)
                         state.write_text("preserve state", encoding="utf-8")
                         cleanup_phase = "uninstall"
-                        run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, uninstaller_sha256, arch)
+                        run_copied_uninstaller(uninstaller, installed, scratch, environment, unsigned, uninstaller_sha256, arch,
+                                               cleanup_facts=cleanup_facts)
                         require_absent(executable, "Uninstall did not remove the app")
                         require_absent(uninstaller, "Uninstall did not remove the original uninstaller")
                         if sentinel.read_text(encoding="utf-8") != "preserve me" or state.read_text(encoding="utf-8") != "preserve state":
@@ -1277,6 +1252,7 @@ def smoke_installer(installer, info, unsigned, build, expected_hashes, *, checke
                     smoke_failure_evidence(cleanup_phase, error, installed, generation_name, registry, registry_access, winreg)
                     if primary is None:
                         raise
+    require_scratch_absent(scratch)
     smoke_phase_complete("installer-smoke-complete", arch)
     print("Verified Windows install, identity, signed-out ACP, GUI first render, silent/repeat install, interactive auto-launch, persistent shell icons, host stop and state-preserving uninstall")
 
