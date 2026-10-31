@@ -84,7 +84,7 @@ later push runs the labelled lanes again until the label is removed.
 | --- | --- |
 | `ci:full` | Every lane except the OpenSecret EIF candidate |
 | `ci:package` | Unsigned Agent and Research desktop packages on every OS, and the unsigned Research Dev app |
-| `ci:windows` | The Agent's Windows Clippy, native updater tests and full Windows suite |
+| `ci:windows` | The Agent's Windows Clippy, native updater tests, full Windows suite and native ARM64 packaging rehearsal |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build |
 | `ci:research-dev-macos` | The unsigned Research Dev app |
 | `ci:eif` | The OpenSecret EIF candidate (same-repository PRs to `master` that edit no PCR approval) |
@@ -175,6 +175,7 @@ org's 16-core GitHub runner are billed by the minute.
 | `xcode-27` | `metal-toolchain` | GitHub's Xcode 27 image ships Xcode's Metal Toolchain, which Blacksmith's macOS image lacks and cannot download; it exports it for the macOS packaging rehearsal, the only lane that compiles gpui's shaders. The Agent's other macOS lanes build with runtime shaders. It is a public-preview label without an SLA; if GitHub retires it, use the label that carries Xcode 27.1 |
 | `ubuntu-latest`, `ubuntu-24.04-arm` | Lighter lanes, for example `repo`, SDK, proxy, Research web, services, `deps-*` and `os-pcr` | Free, and fast enough without Blacksmith |
 | `windows-2025` | `agent-windows-updater`, `agent-full-windows` | Blacksmith's Windows workspace inherits a foreign write ACE that the updater's storage validation rejects, and the reparse tests need the symlink privilege GitHub's runner grants |
+| `windows-11-arm` | `agent-package-windows-arm64` | Native ARM64 compilation, updater tests and unsigned installer smoke; emulated x64 execution does not qualify this lane |
 | `maple-windows-2025-16core` | `agent-package-windows` (its install smoke needs GitHub's image), `research-desktop-windows` (for speed) | Same image and cache store as `windows-2025`, with more cores |
 | `blacksmith-16vcpu-ubuntu-2404-arm` | `os-eif` | The release EIF builder's class ([contracts](repository-workflows.md#contracts)) |
 

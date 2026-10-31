@@ -34,6 +34,11 @@ class PublicVerifier:
                       "Location", "Accept-Ranges", "CF-Ray")
     RESEARCH_KEYS = ("macos", "windows", "linux-appimage", "linux-deb", "linux-rpm", "android")
     PLATFORMS = ("macos", "linux", "windows")
+    ARM_PLATFORM = "windows-arm64"
+    MANIFEST_NAMES = {"macos": "manifest.json", "linux": "linux-manifest.json",
+                      "windows": "windows-manifest.json", "windows-arm64": "windows-arm64-manifest.json"}
+    DOWNLOAD_KEYS = {"macos": "macos", "linux": "linux-bundle", "windows": "windows",
+                     "windows-arm64": "windows-arm64"}
     FIXED_REQUESTS, MAX_REQUESTS, FULL_STREAMS = 97, 104, 10
     IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
 
@@ -44,6 +49,35 @@ class PublicVerifier:
         self.requests = 0
         self.deadline = None
         self.enabled = False
+        inventory = self.inventory(ctx.bindings)
+        self.platforms, self.previous_platforms = inventory["platforms"], inventory["previous_platforms"]
+        self.FULL_STREAMS = inventory["full_streams"]
+        self.FIXED_REQUESTS = inventory["fixed_requests"]
+        self.MAX_REQUESTS = inventory["max_requests"]
+
+    @classmethod
+    def inventory(cls, bindings):
+        platforms = bindings.get("platforms")
+        if platforms not in (list(cls.PLATFORMS), [*cls.PLATFORMS, cls.ARM_PLATFORM]):
+            raise ValueError("public verification requires the complete selected platform inventory")
+        platforms = tuple(platforms)
+        references = bindings.get("previous_signed_envelopes")
+        if not isinstance(references, dict):
+            raise ValueError("public verification requires the previous signed envelope inventory")
+        previous_names = {key.rsplit("/", 1)[-1] for key in references}
+        if previous_names not in ({cls.MANIFEST_NAMES[p] for p in cls.PLATFORMS}, set(cls.MANIFEST_NAMES.values())):
+            raise ValueError("public verification requires the complete previous signed envelope inventory")
+        previous_platforms = cls.PLATFORMS + ((cls.ARM_PLATFORM,) if
+                             cls.MANIFEST_NAMES[cls.ARM_PLATFORM] in previous_names else ())
+        if not set(previous_platforms) <= set(platforms):
+            raise ValueError("previous platform may not be dropped")
+        payload_count = 5 + (2 if cls.ARM_PLATFORM in platforms else 0)
+        # Per host: four current metadata requests and four aliases per selected
+        # platform, one immutable per previous platform, and HEAD/range/full per
+        # payload. Research retains its independent fixed thirteen requests.
+        fixed = 2 * (8 * len(platforms) + len(previous_platforms) + 3 * payload_count) + 13
+        return {"platforms": platforms, "previous_platforms": previous_platforms,
+                "fixed_requests": fixed, "full_streams": 2 * payload_count, "max_requests": fixed + 7}
 
     @staticmethod
     def add_arguments(parser):
@@ -78,7 +112,8 @@ class PublicVerifier:
         inner = envelope["manifest"].encode("utf-8")
         self.need(inner == expected_inner, "signed manifest differs from frozen exact bytes")
         self.need(manifest["format"] == {"macos": "maple-agent-update-v1",
-                  "linux": "maple-agent-update-v2", "windows": "maple-agent-update-v3"}[platform],
+                  "linux": "maple-agent-update-v2", "windows": "maple-agent-update-v3",
+                  "windows-arm64": "maple-agent-update-v4"}[platform],
                   "wrong platform envelope")
         with tempfile.TemporaryDirectory(prefix="agent-public-signature-") as temporary:
             message, signature = Path(temporary) / "manifest.json", Path(temporary) / "signature.minisig"
@@ -105,8 +140,7 @@ class PublicVerifier:
         freeze = self.plain_json(self.ctx.pinned(bindings["freeze"]))
         self.freeze = freeze
         self.need(freeze["schema"] == "agent-release-prepared-freeze-v1" and
-                  freeze["source"] == self.ctx.source and len(freeze["platforms"]) == 3 and
-                  set(freeze["platforms"]) == set(self.PLATFORMS) and
+                  freeze["source"] == self.ctx.source and freeze["platforms"] == list(self.platforms) and
                   freeze["producer"]["run_id"] == self.ctx.producer_run and
                   freeze["producer"]["run_attempt"] == self.ctx.producer_attempt and
                   freeze["producer"]["build"] == self.ctx.build,
@@ -120,7 +154,8 @@ class PublicVerifier:
                   proof["tooling_sha256"] == self.ctx.tooling_sha256 and
                   proof["policy_sha256"] == self.ctx.policy_sha256 and
                   proof["core_sha256"] == self.ctx.core_sha256 and
-                  proof["verified_primary_signatures"] == ["envelope.json", "linux-envelope.json", "windows-envelope.json"],
+                  proof["verified_primary_signatures"] == sorted(self.MANIFEST_NAMES[p].replace("manifest", "envelope")
+                                                                  for p in self.platforms),
                   "actual signed-stage proof differs")
         prepared, bundle = Path(bindings["prepared_bundle"]), Path(bindings["signed_bundle"])
         for directory in (prepared, bundle):
@@ -132,11 +167,11 @@ class PublicVerifier:
         self.primary = core.public_key_text(key_path)
         profile = core.decode_json(self.ctx.read(core.ROOT / "apps/maple-agent/release-profiles.json"))
         self.need(self.primary == profile["prod"]["update_public_keys"][0], "public verifier requires the trusted primary key")
-        core.validate_pins(self.primary, profile, profile, linux=True, windows=True)
+        arm = {"windows_arm64": True} if self.ARM_PLATFORM in self.platforms else {}
+        core.validate_pins(self.primary, profile, profile, linux=True, windows=True, **arm)
         self.signed, self.manifests, self.publications = {}, {}, {}
         for publication in core.bundle_manifests(prepared):
-            platform = {"manifest.json": "macos", "linux-manifest.json": "linux",
-                        "windows-manifest.json": "windows"}[publication["name"]]
+            platform = {name: p for p, name in self.MANIFEST_NAMES.items()}[publication["name"]]
             name, envelope_name, inner = publication["name"], publication["envelope_name"], publication["data"]
             data = self.ctx.read(bundle / envelope_name)
             self.need(self.sha(data) == bindings["envelope_sha256"][platform] == proof["files"][envelope_name]["sha256"],
@@ -147,7 +182,7 @@ class PublicVerifier:
                       "signed release identity differs")
             self.signed[platform], self.manifests[platform] = data, manifest
             self.publications[platform] = publication
-        self.need(set(self.signed) == set(self.PLATFORMS), "all three platforms are required")
+        self.need(set(self.signed) == set(self.platforms), "all selected platforms are required")
         self.load_previous()
         research = self.plain_json(self.ctx.pinned(bindings["research_preservation"]))
         self.need(research["passed"] is True and research["request_count"] == 7 and research["writes"] == 0,
@@ -155,7 +190,7 @@ class PublicVerifier:
         self.recent_research = research
         self.payloads = {a["path"]: a for manifest in self.manifests.values()
                          for group in ("artifacts", "downloads") for a in manifest[group].values()}
-        self.need(len(self.payloads) == 5, "expected five unique Mac/Linux/Windows payloads")
+        self.need(len(self.payloads) == self.FULL_STREAMS // 2, "selected platform payload inventory differs")
         self.prefixes = {}
         for path, artifact in self.payloads.items():
             filename = path.rsplit("/", 1)[-1]
@@ -194,10 +229,12 @@ class PublicVerifier:
                   acceptance["envelopes"] == baseline["envelope_sha256"],
                   "accepted previous all-platform authority differs")
         self.baseline, self.old, self.old_manifests = baseline, {}, {}
-        expected_keys = {f"stable/releases/{previous['version']}/{name}" for name in
-                         ("manifest.json", "linux-manifest.json", "windows-manifest.json")}
+        self.need(set(baseline["envelope_sha256"]) == set(self.previous_platforms),
+                  "accepted previous platform inventory differs")
+        expected_keys = {f"stable/releases/{previous['version']}/{self.MANIFEST_NAMES[p]}"
+                         for p in self.previous_platforms}
         self.need(set(bindings["previous_signed_envelopes"]) == expected_keys, "previous envelope inventory differs")
-        for platform in self.PLATFORMS:
+        for platform in self.previous_platforms:
             name = self.publications[platform]["name"]
             reference = bindings["previous_signed_envelopes"][f"stable/releases/{previous['version']}/{name}"]
             data = self.ctx.pinned(reference)
@@ -211,16 +248,18 @@ class PublicVerifier:
         tasks = []
         for host in self.HOSTS:
             origin = "https://" + host
-            for platform in self.PLATFORMS:
+            for platform in self.platforms:
                 publication = self.publications[platform]
                 for method, ua in (("GET", self.NATIVE), ("GET", self.CURL), ("HEAD", self.NATIVE)):
                     tasks.append(dict(kind="current-envelope", platform=platform,
                                       url=origin + "/agent/" + publication["pointer"], method=method, ua=ua))
                 tasks.append(dict(kind="current-envelope", platform=platform, immutable=True,
                                   url=origin + f"/agent/stable/releases/{self.ctx.version}/" + publication["name"]))
-                tasks.append(dict(kind="previous-envelope", platform=platform,
-                                  url=origin + f"/agent/stable/releases/{self.previous_identity['version']}/" + publication["name"]))
-            for platform, key in (("macos", "macos"), ("linux", "linux-bundle"), ("windows", "windows")):
+                if platform in self.previous_platforms:
+                    tasks.append(dict(kind="previous-envelope", platform=platform,
+                                      url=origin + f"/agent/stable/releases/{self.previous_identity['version']}/" + publication["name"]))
+            for platform in self.platforms:
+                key = self.DOWNLOAD_KEYS[platform]
                 for ua in (self.NATIVE, self.CURL):
                     for method in ("GET", "HEAD"):
                         tasks.append(dict(kind="agent-alias", url=origin + "/download/agent/stable/" + platform,
@@ -489,7 +528,7 @@ class PublicVerifier:
                    "full_payload_streams": sum(r["kind"] == "payload-full" for r in records),
                    "successful_full_payload_streams": sum(r["kind"] == "payload-full" and r["check_passed"] for r in records),
                    "duplicate_full_payload_files_saved": 0, "analytics_probe_header": {"X-Maple-Download-Probe": "1"},
-                   "included_platforms": list(self.PLATFORMS), "preserved_previous_immutables": list(self.PLATFORMS),
+                   "included_platforms": list(self.platforms), "preserved_previous_immutables": list(self.previous_platforms),
                    "previous": self.previous_identity, "previous_public_sha256": bindings["previous_public"]["sha256"],
                    "credentials_used": False, "redirects_followed": False, "producer_attestations_verified_here": False,
                    "requests": records,

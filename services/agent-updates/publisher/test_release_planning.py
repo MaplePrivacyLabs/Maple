@@ -15,8 +15,11 @@ import publisher
 import test_publisher as fixtures
 import test_trust as trust_fixtures
 import test_windows_publisher as windows_fixtures
+import test_windows_arm64_publisher as arm_fixtures
 from release_helpers import planning
-from release_helpers.context import OperatorError, SCHEMA_BUNDLE, SCHEMA_FREEZE, decode, read_regular, sha
+from release_helpers.context import (OperatorError, SCHEMA_BUNDLE, SCHEMA_FREEZE, decode, read_regular, sha,
+                                     ALL_PLATFORMS, manifest_names, envelope_names, pointer_names,
+                                     platform_counts, predecessor_platforms, r2_request_count)
 from release_helpers.public import PublicVerifier
 
 
@@ -90,9 +93,10 @@ class ReleasePlanningTests(unittest.TestCase):
         self.run = {**trust.run, "head_sha": fixtures.SOURCE_SHA, "run_number": 42,
                     "created_at": "2026-10-21T18:00:00Z"}
         self.jobs = deepcopy(trust.jobs)
-        self.jobs["jobs"] += win.jobs(win.windows)["jobs"]
+        self.jobs["jobs"] += win.jobs(win.windows | {"Build Windows ARM64 binary (prod)",
+            "Signed Windows ARM64 (prod)", "Verify downloaded Windows ARM64 (prod)"})["jobs"]
         self.jobs["total_count"] = len(self.jobs["jobs"])
-        self.artifacts = {"total_count": 3, "artifacts": [
+        self.artifacts = {"total_count": 4, "artifacts": [
             {"id": index + 100, "name": f"maple-agent-prod-{target}-{self.run['id']}",
              "size_in_bytes": 1234 + index, "digest": "sha256:" + str(index + 1) * 64, "expired": False,
              "workflow_run": {"id": self.run["id"], "head_sha": self.run["head_sha"], "head_branch": "master"}}
@@ -138,6 +142,8 @@ class ReleasePlanningTests(unittest.TestCase):
 
     def test_plan_records_canonical_prod_jobs_exact_artifacts_and_private_input_copies(self):
         _, bindings = self.make_plan()
+        self.assertEqual(bindings["platforms"], list(ALL_PLATFORMS))
+        self.assertEqual(set(bindings["artifacts"]), set(ALL_PLATFORMS))
         self.assertEqual(bindings["producer_identity"]["run_attempt"], self.run["run_attempt"])
         self.assertEqual(bindings["producer_identity"]["build"], str(self.run["run_number"]))
         self.assertEqual(bindings["publisher_source"], self.master["object"]["sha"])
@@ -148,15 +154,34 @@ class ReleasePlanningTests(unittest.TestCase):
         self.assertEqual(proof["jobs"], self.jobs)
         self.assertEqual(proof["selected_final_artifact_metadata"], self.artifacts["artifacts"])
         self.assertTrue(proof["producer_terminal"] and proof["required_included_jobs_all_success"])
+        self.assertIs(proof["scope"]["include_windows_arm64"], True)
         for path in (bindings["public_key"], bindings["notes"]["path"], bindings["qualification"]["path"],
                      str(self.root / "bindings-plan.json")):
             self.assertEqual(Path(path).stat().st_mode & 0o777, 0o600)
         self.assertEqual(Path(bindings["public_key"]).read_bytes(), Path(self.key["path"]).read_bytes())
 
+    def test_plan_requires_the_arm64_package_and_concrete_signed_consumer_chain(self):
+        original = deepcopy((self.jobs, self.artifacts))
+        for kind in ("missing", "x64-alias", "failed-signing", "skipped-consumer"):
+            self.jobs, self.artifacts = deepcopy(original)
+            arm = self.artifacts["artifacts"][-1]
+            if kind == "missing":
+                self.artifacts["artifacts"].pop()
+                self.artifacts["total_count"] -= 1
+            elif kind == "x64-alias":
+                arm["name"] = self.artifacts["artifacts"][-2]["name"]
+            else:
+                name = "Signed Windows ARM64 (prod)" if kind == "failed-signing" else "Verify downloaded Windows ARM64 (prod)"
+                next(job for job in self.jobs["jobs"] if job["name"] == name)["conclusion"] = (
+                    "failure" if kind == "failed-signing" else "skipped")
+            with self.subTest(kind=kind), self.assertRaises((OperatorError, publisher.PublishError)):
+                self.make_plan()
+            self.assertFalse((self.root / "qualification.json").exists())
+
     def test_another_release_changes_only_data_without_literal_version_or_run_dependencies(self):
         self.run.update(id=973, run_attempt=4, run_number=905, head_sha="f" * 40)
         self.tree.update(sha=self.run["head_sha"])
-        for platform, item in zip(planning.PLATFORMS, self.artifacts["artifacts"]):
+        for platform, item in zip(ALL_PLATFORMS, self.artifacts["artifacts"]):
             item["name"] = f"maple-agent-prod-{planning.TARGETS[platform]}-{self.run['id']}"
             item["workflow_run"].update(id=self.run["id"], head_sha=self.run["head_sha"])
         _, bindings = self.make_plan(version="7.8.9")
@@ -193,14 +218,17 @@ class ReleasePlanningTests(unittest.TestCase):
             self.make_plan()
         self.assertEqual(before, decode((self.root / "bindings-plan.json").read_bytes()))
 
-    def frozen_context(self):
+    def frozen_context(self, platforms=ALL_PLATFORMS):
         _, bindings = self.make_plan()
-        names = [*planning.NAMES, "metadata-inventory.json", *(f"payloads/file-{index}" for index in range(19))]
+        bindings["platforms"] = list(platforms)
+        bindings["artifacts"] = {name: bindings["artifacts"][name] for name in platforms}
+        roots = [*manifest_names(platforms), "metadata-inventory.json"]
+        names = [*roots, *(f"payloads/file-{index}" for index in range(platform_counts(platforms)["prepared"] - len(roots)))]
         bindings["prepared_files"] = {name: {"size": 1, "sha256": sha(b"x")} for name in names}
         bindings["freeze"] = self.record("freeze-input.json", publisher.encode_json({
             "schema": SCHEMA_FREEZE, "canonical_prepare_completed": True,
             "source": bindings["producer_identity"]["source_sha"], "tree": bindings["payload_tree"],
-            "platforms": list(planning.PLATFORMS), "notes": bindings["notes"],
+            "platforms": bindings["platforms"], "notes": bindings["notes"],
             "producer": {**bindings["producer_identity"], "artifacts": {
                 platform: item["name"] for platform, item in bindings["artifacts"].items()}},
             "files": bindings["prepared_files"]}))
@@ -210,10 +238,11 @@ class ReleasePlanningTests(unittest.TestCase):
         value = {"run_id": 654, "run_attempt": 3, "source_sha": ctx.bindings["publisher_source"],
                  "workflow": planning.WORKFLOW, "payload_source": ctx.source,
                  "producer_run": ctx.producer_run, "producer_attempt": ctx.producer_attempt,
-                 "version": ctx.version, "platforms": list(planning.PLATFORMS),
+                 "version": ctx.version, "platforms": ctx.bindings["platforms"],
                  "inputs": {"build_run_id": str(ctx.producer_run), "version": ctx.version,
                             "notes": ctx.pinned(ctx.bindings["notes"]).decode(),
-                            "include_linux": True, "include_windows": True}}
+                            "include_linux": True, "include_windows": True,
+                            "include_windows_arm64": "windows-arm64" in ctx.bindings["platforms"]}}
         value.update(changes)
         return value
 
@@ -236,8 +265,11 @@ class ReleasePlanningTests(unittest.TestCase):
         self.assertEqual(selected["publication_identity"]["run_id"], 654)
         self.assertEqual(ctx.bindings, initial)
 
-    def test_freeze_runs_unchanged_canonical_prepare_and_default_attestations_once_per_file(self):
+    def run_freeze(self, platforms=ALL_PLATFORMS):
         _, bindings = self.make_plan()
+        original_plan = deepcopy(bindings)
+        bindings["platforms"] = list(platforms)
+        bindings["artifacts"] = {name: bindings["artifacts"][name] for name in platforms}
         ctx = LocalContext(self.root, bindings)
         mac = fixtures.PackageBoundaryTests()
         linux = fixtures.LinuxPackageBoundaryTests()
@@ -245,8 +277,14 @@ class ReleasePlanningTests(unittest.TestCase):
         for case in (mac, linux, win):
             case.setUp()
             self.addCleanup(case.doCleanups)
-        for platform, case in zip(planning.PLATFORMS, (mac, linux, win)):
-            shutil.copytree(case.directory, self.root / f"packages-{platform}-{bindings['artifacts'][platform]['id']}")
+        packages = {"macos": mac.directory, "linux": linux.directory, "windows": win.directory}
+        if "windows-arm64" in platforms:
+            arm = arm_fixtures.WindowsArm64PackageBoundaryTests()
+            arm.setUp()
+            self.addCleanup(arm.doCleanups)
+            packages["windows-arm64"] = arm.fixture.directory
+        for platform in platforms:
+            shutil.copytree(packages[platform], self.root / f"packages-{platform}-{bindings['artifacts'][platform]['id']}")
         trust = {key: ctx.identity[key] for key in ("run_id", "run_attempt", "source_sha", "build", "pub_date")}
         trust["artifacts"] = {platform: item["name"] for platform, item in bindings["artifacts"].items()}
         profiles = decode((publisher.ROOT / "apps/maple-agent/release-profiles.json").read_bytes())
@@ -268,15 +306,22 @@ class ReleasePlanningTests(unittest.TestCase):
             result = planning.freeze(ctx, SimpleNamespace(network=True, output=self.root / "frozen.json"))
         self.assertEqual(os.environ.get("PATH"), old_path)
         self.assertEqual(len(attested), len({str(path) for path in attested}))
-        self.assertEqual(len(attested), 16)
+        self.assertEqual(len(attested), 16 + 5 * ("windows-arm64" in platforms))
         frozen = decode(Path(result["freeze"]["path"]).read_bytes())
         self.assertTrue(frozen["canonical_prepare_completed"])
         self.assertEqual(frozen["producer"], {**trust, "version": ctx.version})
-        self.assertEqual(len(frozen["files"]), 23)
+        self.assertEqual(len(frozen["files"]), platform_counts(platforms)["prepared"])
+        self.assertEqual(frozen["platforms"], list(platforms))
         snapshot = decode(Path(result["bindings"]).read_bytes())
         self.assertEqual(snapshot["public_key"], str(Path(snapshot["prepared_bundle"]) / "public-key.pub"))
         self.assertEqual(ctx.bindings, before)
-        self.assertEqual(decode((self.root / "bindings-plan.json").read_bytes()), before)
+        self.assertEqual(decode((self.root / "bindings-plan.json").read_bytes()), original_plan)
+
+    def test_freeze_runs_unchanged_canonical_prepare_and_twenty_one_default_attestations(self):
+        self.run_freeze()
+
+    def test_freeze_continues_legacy_three_platform_snapshot_with_sixteen_attestations(self):
+        self.run_freeze(planning.PLATFORMS)
 
     def test_freeze_requires_explicit_network_before_preparer_or_output(self):
         _, bindings = self.make_plan()
@@ -294,7 +339,7 @@ class ReleasePlanningTests(unittest.TestCase):
         bundle.mkdir(mode=0o700)
         prepared_files = ctx.bindings["prepared_files"]
         files = {**prepared_files, **{name: {"size": 1, "sha256": sha(b"x")}
-                                     for name in ("reservation.json", *planning.ENVELOPES)}}
+                                     for name in ("reservation.json", *envelope_names(ctx.bindings["platforms"]))}}
         for name in files:
             path = bundle / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -303,7 +348,7 @@ class ReleasePlanningTests(unittest.TestCase):
                  "publication": ctx.publication, "tooling_sha256": ctx.tooling_sha256,
                  "policy_sha256": ctx.policy_sha256, "core_sha256": ctx.core_sha256,
                  "bindings_sha256": ctx.bindings_sha256, "primary_key_sha256": ctx.primary_sha256,
-                 "verified_primary_signatures": list(planning.ENVELOPES), "files": files}
+                 "verified_primary_signatures": sorted(envelope_names(ctx.bindings["platforms"])), "files": files}
         success = {"id": ctx.publication["run_id"], "run_attempt": ctx.publication["run_attempt"],
                    "head_sha": ctx.publication["source_sha"], "path": planning.WORKFLOW, "head_branch": "master",
                    "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
@@ -318,22 +363,23 @@ class ReleasePlanningTests(unittest.TestCase):
             with self.subTest(change=change):
                 if change == "run": success["conclusion"] = "failure"
                 if change == "signature": proof["verified_primary_signatures"].pop()
-                if change == "bytes": (bundle / planning.ENVELOPES[0]).write_bytes(b"z")
+                if change == "bytes": (bundle / envelope_names(ctx.bindings["platforms"])[0]).write_bytes(b"z")
                 with self.assertRaises(OperatorError): planning.bind_public(ctx, bind_args())
                 self.assertFalse((self.root / "public.json").exists())
                 success["conclusion"] = "success"
-                proof["verified_primary_signatures"] = list(planning.ENVELOPES)
-                (bundle / planning.ENVELOPES[0]).write_bytes(b"x")
+                proof["verified_primary_signatures"] = sorted(envelope_names(ctx.bindings["platforms"]))
+                (bundle / envelope_names(ctx.bindings["platforms"])[0]).write_bytes(b"x")
         result = planning.bind_public(ctx, bind_args())
         bound = decode(Path(result["bindings"]).read_bytes())
-        self.assertEqual(bound["envelope_sha256"], {platform: sha(b"x") for platform in planning.PLATFORMS})
+        self.assertEqual(bound["envelope_sha256"], {platform: sha(b"x") for platform in ctx.bindings["platforms"]})
         self.assertEqual(bound["operation_bindings"], {"path": str(ctx.bindings_path), "sha256": ctx.bindings_sha256})
         self.assertNotIn("successful_publication_run", ctx.bindings)
 
-    def acceptance_context(self):
+    def acceptance_context(self, platforms=ALL_PLATFORMS):
         """Pinned receipt fixtures model completed checks; they make no signature claim."""
-        ctx = self.frozen_context()
+        ctx = self.frozen_context(platforms)
         b = ctx.bindings
+        inventory = PublicVerifier.inventory(b)
         research_version = "2.0.0"
         research_latest = {"kind": "research-latest", "url": "https://updates.trymaple.ai/latest.json",
                            "method": "GET", "status": 200, "check_passed": True,
@@ -359,7 +405,7 @@ class ReleasePlanningTests(unittest.TestCase):
         bundle.mkdir(mode=0o700)
         b["signed_bundle"] = str(bundle)
         files = {**b["prepared_files"], **{name: {"size": 1, "sha256": sha(b"x")}
-                                         for name in ("reservation.json", *planning.ENVELOPES)}}
+                                         for name in ("reservation.json", *envelope_names(ctx.bindings["platforms"]))}}
         for name in files:
             path = bundle / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -368,15 +414,15 @@ class ReleasePlanningTests(unittest.TestCase):
                  "publication": ctx.publication, "tooling_sha256": ctx.tooling_sha256,
                  "policy_sha256": ctx.policy_sha256, "core_sha256": ctx.core_sha256,
                  "bindings_sha256": operation["sha256"], "primary_key_sha256": ctx.primary_sha256,
-                 "verified_primary_signatures": list(planning.ENVELOPES), "files": files}
+                 "verified_primary_signatures": sorted(envelope_names(ctx.bindings["platforms"])), "files": files}
         b["signed_stage_proof"] = self.record("signed-proof.json", publisher.encode_json(proof))
-        b["envelope_sha256"] = {platform: sha(b"x") for platform in planning.PLATFORMS}
+        b["envelope_sha256"] = {platform: sha(b"x") for platform in ctx.bindings["platforms"]}
         ctx.snapshot()
         records = [{"kind": "payload-full", "url": f"https://{host}/payload-{index}", "check_passed": True}
-                   for host in PublicVerifier.HOSTS for index in range(PublicVerifier.FULL_STREAMS // len(PublicVerifier.HOSTS))]
+                   for host in PublicVerifier.HOSTS for index in range(inventory["full_streams"] // len(PublicVerifier.HOSTS))]
         records += research_records
         records += [{"kind": "metadata", "url": "https://" + PublicVerifier.HOSTS[0] + f"/metadata-{index}",
-                     "check_passed": True} for index in range(PublicVerifier.FIXED_REQUESTS - len(records))]
+                     "check_passed": True} for index in range(inventory["fixed_requests"] - len(records))]
         public = {"schema": planning.SCHEMA_PUBLIC, "all_checks_passed": True,
                   "agent_checks_passed": True, "research_checks_passed": True,
                   "source": ctx.source, "version": ctx.version, "build": ctx.build,
@@ -386,23 +432,23 @@ class ReleasePlanningTests(unittest.TestCase):
                   "envelope_sha256": b["envelope_sha256"], "previous": b["previous"],
                   "previous_public_sha256": b["previous_public"]["sha256"],
                   "policy_sha256": ctx.policy_sha256, "tooling_sha256": ctx.tooling_sha256,
-                  "core_sha256": ctx.core_sha256, "full_payload_streams": PublicVerifier.FULL_STREAMS,
-                  "successful_full_payload_streams": PublicVerifier.FULL_STREAMS,
-                  "fixed_request_count": PublicVerifier.FIXED_REQUESTS, "total_request_count": PublicVerifier.FIXED_REQUESTS,
-                  "included_platforms": list(planning.PLATFORMS),
-                  "preserved_previous_immutables": list(planning.PLATFORMS), "duplicate_full_payload_files_saved": 0,
+                  "core_sha256": ctx.core_sha256, "full_payload_streams": inventory["full_streams"],
+                  "successful_full_payload_streams": inventory["full_streams"],
+                  "fixed_request_count": inventory["fixed_requests"], "total_request_count": inventory["fixed_requests"],
+                  "included_platforms": b["platforms"],
+                  "preserved_previous_immutables": list(predecessor_platforms(b)), "duplicate_full_payload_files_saved": 0,
                   "credentials_used": False, "redirects_followed": False, "producer_attestations_verified_here": False,
                   "analytics_probe_header": {"X-Maple-Download-Probe": "1"}, "research": {
                       "state": "unchanged", "version": research_version, "metadata_sha256": research_latest["body_sha256"]},
                   "requests": records}
         prefix = f"stable/releases/{ctx.version}/"
         envelope_record = {"size": 1, "sha256": sha(b"x"), "etag": '"new-etag"'}
-        objects = {**old_objects, **{prefix + name: deepcopy(envelope_record) for name in planning.NAMES},
+        objects = {**old_objects, **{prefix + name: deepcopy(envelope_record) for name in manifest_names(platforms)},
                    **{pointer: deepcopy(envelope_record) for pointer in
-                      ("stable/latest.json", "stable/linux/latest.json", "stable/windows/latest.json")},
-                   **{prefix + "publication-" + name: deepcopy(envelope_record) for name in planning.NAMES},
+                      pointer_names(platforms)},
+                   **{prefix + "publication-" + name: deepcopy(envelope_record) for name in manifest_names(platforms)},
                    prefix + "publication-metadata.json": deepcopy(envelope_record)}
-        private = {"schema": planning.SCHEMA_R2, "phase": "after-publish", "passed": True, "request_count": 13,
+        private = {"schema": planning.SCHEMA_R2, "phase": "after-publish", "passed": True, "request_count": r2_request_count(b),
                    "bindings_sha256": operation["sha256"], "tooling_sha256": ctx.tooling_sha256,
                    "policy_sha256": ctx.policy_sha256, "route_sha256": ctx.route_sha256,
                    "previous_proof_sha256": "f" * 64, "started_at": "2026-10-21T18:00:00+00:00",
@@ -428,6 +474,10 @@ class ReleasePlanningTests(unittest.TestCase):
         self.assertTrue(acceptance["release_published"])
         self.assertEqual(acceptance["operation_bindings_sha256"], private["bindings_sha256"])
         self.assertNotEqual(private["bindings_sha256"], ctx.bindings_sha256)
+        self.assertEqual(private["request_count"], 16)
+        self.assertEqual(public["fixed_request_count"], 125)
+        self.assertEqual(public["full_payload_streams"], 14)
+        self.assertEqual(len(baseline["previous_signed_envelopes"]), 4)
         self.assertEqual(baseline["previous"]["version"], ctx.version)
         self.assertEqual(baseline["previous_root_acceptance"], result["root_acceptance"])
         self.assertNotEqual(baseline["research_preservation"], original["research_preservation"])
@@ -443,6 +493,56 @@ class ReleasePlanningTests(unittest.TestCase):
                          ["previous"], baseline["previous"])
         with self.assertRaises(OperatorError):
             planning.accept(ctx, self.acceptance_args(public, private))
+
+    def test_legacy_three_platform_snapshot_acceptance_stays_exact(self):
+        ctx, public, private = self.acceptance_context(planning.PLATFORMS)
+        self.assertEqual(len(ctx.bindings["prepared_files"]), 23)
+        self.assertEqual(private["request_count"], 13)
+        self.assertEqual(public["fixed_request_count"], 97)
+        self.assertEqual(public["full_payload_streams"], 10)
+        result = planning.accept(ctx, self.acceptance_args(public, private))
+        baseline = decode(Path(result["baseline_manifest"]).read_bytes())
+        self.assertEqual(len(baseline["previous_signed_envelopes"]), 3)
+
+    def test_subsequent_arm_release_preserves_four_previous_platforms(self):
+        refs = self.previous["previous_signed_envelopes"]
+        refs[f"stable/releases/{self.old['version']}/windows-arm64-manifest.json"] = deepcopy(next(iter(refs.values())))
+        self.previous_ref = self.record("previous.json", publisher.encode_json(self.previous))
+        ctx, public, private = self.acceptance_context()
+        self.assertEqual(private["request_count"], 17)
+        self.assertEqual(public["fixed_request_count"], 127)
+        self.assertEqual(public["preserved_previous_immutables"], list(ALL_PLATFORMS))
+        bad = deepcopy(private)
+        old_arm = f"stable/releases/{self.old['version']}/windows-arm64-manifest.json"
+        bad["objects"][old_arm]["etag"] = '"changed-arm-etag"'
+        with self.assertRaises(OperatorError):
+            planning.accept(ctx, self.acceptance_args(public, bad))
+        result = planning.accept(ctx, self.acceptance_args(public, private))
+        baseline = decode(Path(result["baseline_manifest"]).read_bytes())
+        self.assertEqual(len(baseline["previous_signed_envelopes"]), 4)
+
+    def test_four_platform_selection_cannot_disable_arm_or_omit_its_explicit_input(self):
+        ctx = self.frozen_context()
+        for change in ("absent", "false", "integer"):
+            selected = self.selection(ctx)
+            if change == "absent":
+                selected["inputs"].pop("include_windows_arm64")
+            else:
+                selected["inputs"]["include_windows_arm64"] = False if change == "false" else 1
+            ref = self.record("selection.json", publisher.encode_json(selected))
+            with self.subTest(change=change), self.assertRaises(OperatorError):
+                planning.bind_publication(ctx, SimpleNamespace(selection=Path(ref["path"]),
+                    selection_sha256=ref["sha256"], output=self.root / "selected.json"))
+            self.assertFalse((self.root / "selected.json").exists())
+
+    def test_legacy_publication_selection_keeps_historical_absent_arm_input(self):
+        ctx = self.frozen_context(planning.PLATFORMS)
+        selected = self.selection(ctx)
+        selected["inputs"].pop("include_windows_arm64")
+        ref = self.record("selection.json", publisher.encode_json(selected))
+        result = planning.bind_publication(ctx, SimpleNamespace(selection=Path(ref["path"]),
+            selection_sha256=ref["sha256"], output=self.root / "selected.json"))
+        self.assertEqual(decode(Path(result["bindings"]).read_bytes())["selected_publication"], ref)
 
     def test_accept_rejects_partial_public_wrong_operator_and_changed_old_immutable_evidence(self):
         ctx, public, private = self.acceptance_context()

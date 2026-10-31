@@ -21,7 +21,7 @@ with a bundled runtime and a normal application directory. CI checks each
 downloaded bundle's command-line startup and detached host lifecycle in an
 Ubuntu 24.04 container with no Nix installation and no network
 access. Each master run completes independently. Windows x64 packages are
-per-user NSIS installers requiring Windows 10 version 1703 (build 15063) or later. This baseline supplies the OS `icuuc.dll`
+per-user NSIS installers requiring Windows 10 version 1703 (build 15063) or later. Native Windows ARM64 packages require Windows 11 (build 22000) or later and use the same application version and profile identities, with separate architecture-specific installers and update bundles. The x64 baseline supplies the OS `icuuc.dll`
 imported by GPUI; see Microsoft's [Windows ICU version history](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
 Trusted master
 packages use the existing Azure publisher to Authenticode-sign the application,
@@ -89,6 +89,8 @@ Its artifacts include the profile, platform, and run ID in their names:
 - `maple-agent-prod-linux-x86_64-RUN`
 - `maple-agent-dev-windows-x86_64-RUN`
 - `maple-agent-prod-windows-x86_64-RUN`
+- `maple-agent-dev-windows-aarch64-RUN`
+- `maple-agent-prod-windows-aarch64-RUN`
 
 Artifact names stay stable when failed jobs are retried, so verification can
 reuse a successful profile's package from an earlier attempt. A rerun producer
@@ -96,17 +98,17 @@ replaces only its own profile/platform artifact after packaging verification;
 the replacement has a new artifact ID and download link. Every package must
 still match the run's source commit and pass the same native verification.
 Internal binary artifacts use `macos-aarch64-prebuilt` or
-`windows-x86_64-prebuilt` in their names.
+`windows-x86_64-prebuilt` or `windows-aarch64-prebuilt` in their names.
 They retain the same run/profile identity across retries, so a packaging-only
 retry can reuse a successful compilation while that internal artifact is retained.
 
 Final packages are retained for 30 days; internal prebuilt binaries for 7 days.
-Windows packages contain an `-windows-x86_64-setup.exe` installer, an updater
+Windows packages contain an `-windows-x86_64-setup.exe` or `-windows-aarch64-setup.exe` installer, an updater
 `.tar.gz`, public build-info, package manifest and checksums. Run the installer as your desktop
 user. Dev and Prod use distinct per-user installation directories, shortcuts and
 uninstall entries, separate from Research. Uninstall removes installed program
 files and integration while preserving account, settings and task data. Packaged
-Prod uses a separate signed Windows v3 feed. The per-user installation keeps a
+Prod uses a separate signed Windows v3 feed for x64 or v4 feed for ARM64. The per-user installation keeps a
 stable signed launcher and uninstaller; updates stage a new
 `versions/<version>-<build>/` generation and atomically select it with
 `current.json`, preserving the running generation. Dev has no production feed.
@@ -241,7 +243,7 @@ Windows builds use the pinned Rust/MSVC environment from
 build compiles on Blacksmith Windows; signing, verification and the
 `ci:package` rehearsal's install smoke run on GitHub's Windows image
 ([CI runners](../../../docs/ci.md#runners)). `build-release.sh` selects the
-explicit x64 MSVC target so host build tools keep their normal linkage, then
+explicit architecture-specific MSVC target so host build tools keep their normal linkage, then
 stages the exact resulting executable.
 From the component directory in Git Bash on Windows:
 
@@ -251,6 +253,13 @@ export MAPLE_PACKAGE_BUILD_NUMBER=1 # Actions supplies its actual github.run_num
 python3 scripts/windows-release.py package dev --unsigned
 python3 scripts/windows-release.py verify dev dist/dev --unsigned --smoke
 ```
+
+For ARM64, select `MAPLE_WINDOWS_ARCH=aarch64` when building and pass
+`--arch aarch64` to packaging and verification. The application, stable launcher,
+installer checker and updater execute as native ARM64 code. The NSIS setup and
+uninstaller can use Windows' x86 emulation; native application execution does
+not require x64 emulation. Native ARM64 packaging and installation smoke run on
+the Windows ARM runner, separately from the existing x64 jobs.
 
 The package script verifies its pinned NSIS compiler download. Signed packaging
 uses the same command without `--unsigned`, only in the trusted master job after
@@ -307,7 +316,7 @@ The independent Agent publisher promotes only verified Prod artifacts into the
 Agent R2 bucket. It creates no GitHub Release/tag and does not redeploy Research.
 The client accepts only its signed Agent product/channel/target manifest, with
 the primary and backup keys embedded in the Prod profile. Packaged Prod builds
-on macOS/Linux/Windows check their platform's feed. The Windows v3 feed binds
+on macOS/Linux/Windows check their platform's feed. The Windows v3 and ARM64 v4 feeds bind
 its generation `.tar.gz` separately from the manual `.exe` download and does
 not change the installed macOS v1 or Linux v2 contracts. Publication remains separately gated, and
 invitations require a signed native update rehearsal on every required launch

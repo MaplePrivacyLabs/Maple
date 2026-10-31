@@ -21,7 +21,8 @@ fn main() {
     let (channel, profile) = release_profile::select_profile(channel.as_deref(), pcr.as_deref())
         .expect("validated Maple Agent build profile");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("Cargo target OS");
-    let update_feed_url = profile.update_feed_for_target_os(&target_os);
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("Cargo target architecture");
+    let update_feed_url = profile.update_feed_for_target(&target_os, &target_arch);
     let metadata = serde_json::json!({
         "profile": channel,
         "display_name": profile.display_name,
@@ -83,10 +84,10 @@ fn main() {
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
-        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64")
+        && matches!(target_arch.as_str(), "x86_64" | "aarch64")
     {
         // #[used] retains the object symbol; /INCLUDE additionally roots it
-        // through MSVC release /OPT:REF and LTO. x64 C symbols are undecorated.
+        // through MSVC release /OPT:REF and LTO. x64 and ARM64 C symbols are undecorated.
         println!("cargo:rustc-link-arg-bin=maple-agent=/INCLUDE:MAPLE_AGENT_BUILD_INFO");
     }
 }

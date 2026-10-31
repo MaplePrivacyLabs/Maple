@@ -341,6 +341,34 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Native ARM64 installer rehearsal, independent of all x64 build artifacts.
+  agent-package-windows-arm64:
+    name: agent-package-windows-arm64
+    needs: plan
+    if: fromJSON(needs.plan.outputs.lanes)['agent-package-windows-arm64']
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-agent-windows
+        with:
+          release: "true"
+          architecture: aarch64
+      - name: Build native ARM64, exercise the updater and verify unsigned installation
+        run: python3 scripts/ci/plan.py run agent-package-windows-arm64
+      - name: Upload the unsigned native ARM64 installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-agent-dev-windows-aarch64-unsigned-${{ github.run_id }}
+          path: apps/maple-agent/dist/dev/
+          if-no-files-found: error
+          retention-days: 7
+
   # Research Rust on PRs, warm from rust-tests.yml's master cache (read-only).
   research-rust:
     name: research-rust
@@ -673,7 +701,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [plan, nix, windows, agent-package-linux, metal-toolchain, agent-package-macos, agent-package-windows, research-rust,
+    needs: [plan, nix, windows, agent-package-linux, metal-toolchain, agent-package-macos, agent-package-windows, agent-package-windows-arm64, research-rust,
             research-ios, research-desktop-macos, research-desktop-linux, research-desktop-windows,
             research-dev-macos, os-sdk-e2e, os-helpers, os-eif]
     runs-on: ubuntu-latest

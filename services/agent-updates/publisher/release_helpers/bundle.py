@@ -6,7 +6,8 @@ from pathlib import Path
 import signal
 import stat
 import time
-from .context import need, sha, read_regular, decode, SCHEMA_BUNDLE, SCHEMA_R2, SCHEMA_FREEZE
+from .context import (need, sha, read_regular, decode, SCHEMA_BUNDLE, SCHEMA_R2, SCHEMA_FREEZE,
+                      selected_platforms, manifest_names, pointer_names, TARGETS, predecessor_platforms, r2_request_count)
 NAMES = ("manifest.json", "linux-manifest.json", "windows-manifest.json")
 PHASES = ("before-reserve", "before-sign", "before-publish", "after-publish")
 
@@ -31,9 +32,11 @@ class BundleVerifier:
         return bindings, ctx.core
 
     def verify_bundle(self, bindings, core, bundle, stage, previous):
+        platforms = selected_platforms(bindings['platforms'])
+        names = manifest_names(platforms)
         need(bundle.is_dir() and (not bundle.is_symlink()), 'invalid bundle directory')
         publications = core.bundle_manifests(bundle)
-        need(tuple((item['name'] for item in publications)) == NAMES, 'normal release must include all three manifests')
+        need(tuple((item['name'] for item in publications)) == names, 'normal release manifest inventory differs')
         manifest = publications[0]['manifest']
         identity = bindings['producer_identity']
         need(all((manifest[key] == identity[key] for key in ('version', 'build', 'source_sha', 'pub_date'))), 'release identity differs')
@@ -43,15 +46,16 @@ class BundleVerifier:
         expected = {key: identity[key] for key in ('run_id', 'run_attempt', 'source_sha', 'build', 'pub_date')}
         expected['artifacts'] = {platform: item['name'] for platform, item in bindings['artifacts'].items()}
         need(trust == expected, 'producer trust receipt differs')
-        need(set(expected['artifacts']) == {'macos', 'linux', 'windows'}, 'missing selected platform artifact')
-        for platform, arch in (('macos', 'macos-aarch64'), ('linux', 'linux-x86_64'), ('windows', 'windows-x86_64')):
+        need(set(expected['artifacts']) == set(platforms), 'missing selected platform artifact')
+        for platform in platforms:
+            arch = TARGETS[platform]
             item = bindings['artifacts'][platform]
             need(item['name'] == f"maple-agent-prod-{arch}-{identity['run_id']}" and type(item['id']) is int and (item['id'] > 0) and (type(item['size']) is int) and (item['size'] > 0) and core.DIGEST.fullmatch(item['zip_sha256']), 'invalid final artifact pin')
         need(core.public_key_text(bundle / 'public-key.pub') == core.public_key_text(bindings['public_key']), 'bundle public key differs')
         payloads = core.bundle_records(bundle, manifest)
         metadata_bytes, metadata = core.bundle_metadata(bundle, manifest)
         need(core.read_bytes(bundle / 'metadata/provenance.json', core.MAX_JSON) == core.durable_provenance(trust), 'durable provenance differs')
-        roots = set(NAMES) | {'trust.json', 'public-key.pub', 'metadata-inventory.json'}
+        roots = set(names) | {'trust.json', 'public-key.pub', 'metadata-inventory.json'}
         base = roots | {str(path.relative_to(bundle)) for path, _ in payloads + metadata}
         envelopes = {item['envelope_name'] for item in publications}
         expected_files = base | ({'reservation.json'} if stage != 'prepared' else set()) | (envelopes if stage == 'signed' else set())
@@ -110,21 +114,31 @@ class BundleVerifier:
             data = self.ctx.pinned(reference)
             need(baseline[key]['sha256'] == sha(data) and baseline[key]['size'] == len(data), 'accepted predecessor envelope differs')
         current = [item['pointer'] for item in publications]
-        old = [f"stable/releases/{self.ctx.bindings['previous']['version']}/{name}" for name in NAMES]
+        old = [f"stable/releases/{self.ctx.bindings['previous']['version']}/{name}"
+               for name in manifest_names(predecessor_platforms(bindings))]
         new = f'stable/releases/{self.ctx.version}/'
         reservations = {new + item['reservation']: item['data'] for item in publications}
         reservations[new + 'publication-metadata.json'] = metadata
         complete = {new + item['name']: core.read_bytes(bundle / item['envelope_name'], core.MAX_ENVELOPE) if phase == 'after-publish' else None for item in publications}
         keys = current + old + list(reservations) + list(complete)
-        need(len(keys) == len(set(keys)) == 13, 'fixed metadata GET inventory differs')
+        need(len(keys) == len(set(keys)) == r2_request_count(bindings), 'fixed metadata GET inventory differs')
         prior = None
         if phase != 'before-reserve':
             need(prior_reference is not None, 'missing predecessor R2 proof')
             prior = core.decode_json(self.ctx.pinned(prior_reference))
             need(prior['schema'] == SCHEMA_R2 and prior['passed'] is True and (prior['bindings_sha256'] == self.ctx.bindings_sha256 and prior['tooling_sha256'] == self.ctx.tooling_sha256 and prior['policy_sha256'] == self.ctx.policy_sha256) and (prior['phase'] == PHASES[PHASES.index(phase) - 1]), 'wrong predecessor R2 proof')
         expected = {}
-        for key in old + current:
+        for key in old:
             expected[key] = baseline[key]
+        accepted_pointers = set(pointer_names(predecessor_platforms(bindings)))
+        for key in current:
+            # The first ARM release must observe an absent pointer at every
+            # prepublication gate; an existing unaccepted pointer is a conflict.
+            if key in accepted_pointers:
+                expected[key] = baseline[key]
+            else:
+                need(baseline.get(key) is None, 'unaccepted platform pointer in predecessor baseline')
+                expected[key] = None
         for key, data in reservations.items():
             expected[key] = None if phase == 'before-reserve' else {'sha256': sha(data), 'size': len(data)}
         for key, data in complete.items():

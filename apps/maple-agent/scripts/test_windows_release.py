@@ -26,12 +26,12 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 
 
-def info(profile="dev"):
+def info(profile="dev", arch="x86_64"):
     profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
     return {
         **{key: profiles[profile][key] for key in release.release_info.PUBLIC_FIELDS},
         "profile": profile, "version": "0.1.2", "source_sha": "a" * 40,
-        "git_revision": "a" * 8, "update_feed_url": profiles[profile]["windows_update_feed_url"],
+        "git_revision": "a" * 8, "update_feed_url": profiles[profile]["windows_arm64_update_feed_url" if arch == "aarch64" else "windows_update_feed_url"],
     }
 
 
@@ -89,6 +89,32 @@ class WindowsMetadataTests(unittest.TestCase):
                     package.rename(directory / "renamed-setup.exe")
                     with self.assertRaises(ValueError):
                         release.release_info.write_manifest(identity, directory, release.PLATFORM, unsigned, "12")
+
+    def test_arm64_packages_bind_their_own_names_inventory_and_feed(self):
+        platform = "windows-aarch64"
+        for profile in ("dev", "prod"):
+            for unsigned in (True, False):
+                with self.subTest(profile=profile, unsigned=unsigned), tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    identity = info(profile, "aarch64")
+                    installer = release.release_info.windows_package_name(identity, platform)
+                    archive = release.release_info.windows_archive_name(identity, platform)
+                    self.assertIn("-windows-aarch64-setup.exe", installer)
+                    self.assertNotEqual(installer, release.release_info.windows_package_name(identity))
+                    (directory / installer).write_bytes(b"ARM64 installer fixture")
+                    (directory / archive).write_bytes(b"ARM64 generation fixture")
+                    (directory / "build-info.json").write_text(json.dumps(identity))
+                    release.release_info.write_manifest(identity, directory, platform, unsigned, "12")
+                    manifest = release.release_info.verify_artifacts(profile, directory, unsigned, "a" * 40, platform)
+                    self.assertEqual(manifest["platform"], platform)
+                    self.assertEqual(manifest["package"], installer)
+                    self.assertEqual(manifest["updater"], archive)
+                    self.assertEqual(len(list(directory.iterdir())), 5)
+                    with self.assertRaisesRegex(ValueError, "platform"):
+                        release.release_info.verify_artifacts(profile, directory, unsigned, "a" * 40, "windows-x86_64")
+                    (directory / installer).rename(directory / release.release_info.windows_package_name(identity))
+                    with self.assertRaisesRegex(ValueError, "Windows artifact"):
+                        release.release_info.write_manifest(identity, directory, platform, unsigned, "12")
 
     def test_unknown_installer_payload_cannot_be_blessed_by_new_checksums(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -413,7 +439,7 @@ class PackageBoundaryTests(unittest.TestCase):
                 raise PermissionError("secondary extraction cleanup failure")
             proxy = types.SimpleNamespace(name=str(extraction), cleanup=cleanup)
             diagnostics = io.StringIO()
-            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", return_value=extraction / "uninstall.exe"), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "smoke_installer", side_effect=primary), patch.object(sys, "stderr", diagnostics):
+            with patch.object(release.tempfile, "TemporaryDirectory", return_value=proxy), patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", return_value=extraction / "uninstall.exe"), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host"), patch.object(release, "smoke_installer", side_effect=primary), patch.object(sys, "stderr", diagnostics):
                 with self.assertRaises(ValueError) as raised:
                     release.verify("dev", directory, True, smoke=True)
             self.assertIs(raised.exception, primary)
@@ -432,7 +458,7 @@ class PackageBoundaryTests(unittest.TestCase):
             def smoke(*_arguments, checker):
                 self.assertEqual(checker.read_bytes(), b"verified checker fixture")
                 checked.append(checker)
-            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "smoke_installer", side_effect=smoke):
+            with patch.dict(release.os.environ, MAPLE_PACKAGE_BUILD_NUMBER="12", clear=True), patch.object(release, "source_sha", return_value="a" * 40), patch.object(release.release_info, "verify_artifacts", return_value=manifest), patch.object(release.release_info, "read_info", return_value=info()), patch.object(release, "signature"), patch.object(release, "extract_installer", side_effect=extract), patch.object(release, "verify_payload"), patch.object(release, "inspect_bundle", return_value={}), patch.object(release, "require_native_host"), patch.object(release, "smoke_installer", side_effect=smoke):
                 release.verify("dev", directory, True, smoke=True)
             self.assertEqual(len(checked), 1)
             self.assertFalse(checked[0].exists())
@@ -511,6 +537,34 @@ class PackageBoundaryTests(unittest.TestCase):
             self.assertIn('!define GENERATION "0.1.2-12"', text)
             self.assertNotEqual(info("dev")["bundle_id"], info("prod")["bundle_id"])
             self.assertNotEqual(info("dev")["display_name"], info("prod")["display_name"])
+
+    def test_generated_installer_contract_binds_native_architecture_and_supported_os(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "configuration.nsh"
+            for arch, machine, minimum in (("x86_64", "AMD64", "15063"), ("aarch64", "ARM64", "22000")):
+                with self.subTest(arch=arch):
+                    release.write_nsis_config(path, info("prod", arch), Path("payload"), Path("setup.exe"), False, "12", arch)
+                    definitions = dict(re.findall(r'^!define ([A-Z_]+) "(.*)"$', path.read_text(encoding="utf-8"), re.MULTILINE))
+                    self.assertEqual(definitions["NATIVE_ARCHITECTURE"], machine)
+                    self.assertEqual(definitions["MIN_WINDOWS_BUILD"], minimum)
+            with self.assertRaisesRegex(ValueError, "architecture"):
+                release.write_nsis_config(path, info(), Path("payload"), Path("setup.exe"), False, "12", "arm64ec")
+
+    def test_smoke_requires_selected_native_host_instead_of_compatible_emulation(self):
+        for native, matching, other in ((0x8664, "x86_64", "aarch64"), (0xAA64, "aarch64", "x86_64")):
+            with self.subTest(native=native):
+                kernel = Mock()
+                def machine(_process, process, host):
+                    # The diagnostic Python may itself be emulated; only the
+                    # native host plus the separately checked Maple PE matters.
+                    ctypes.memmove(process, (0x8664).to_bytes(2, "little"), 2)
+                    ctypes.memmove(host, native.to_bytes(2, "little"), 2)
+                    return 1
+                kernel.IsWow64Process2.side_effect = machine
+                with patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
+                    release.require_native_host(matching)
+                    with self.assertRaisesRegex(ValueError, "native machine architecture"):
+                        release.require_native_host(other)
 
     def test_generated_config_selects_the_profile_artwork_from_the_source_tree(self):
         with tempfile.TemporaryDirectory() as temporary:

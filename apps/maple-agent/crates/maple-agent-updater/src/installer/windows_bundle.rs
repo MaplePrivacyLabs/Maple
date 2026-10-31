@@ -319,6 +319,19 @@ fn descriptor(directory: &Path, profile: &str) -> Result<Bundle> {
 // Read the signed .maple PE section without executing downloaded code. Windows
 // Authenticode validates the executable; metadata must additionally identify
 // this product/profile/version/source rather than any other Maple-signed app.
+fn windows_target() -> Result<Target> {
+    Target::for_platform("windows", std::env::consts::ARCH)
+        .ok_or(InstallError::Invalid("unsupported Windows architecture"))
+}
+
+fn windows_pe_machine() -> Result<u16> {
+    match windows_target()? {
+        Target::WindowsX86_64 => Ok(0x8664),
+        Target::WindowsAarch64 => Ok(0xaa64),
+        _ => unreachable!("Windows target was validated above"),
+    }
+}
+
 fn pe_build_info(path: &Path) -> Result<serde_json::Value> {
     let mut file = open_regular(path, false, false)?;
     let file_size = file.metadata()?.len();
@@ -349,7 +362,7 @@ fn pe_build_info(path: &Path) -> Result<serde_json::Value> {
     let optional_size = usize::from(u16at(&header, 20));
     let flags = u16at(&header, 22);
     if &header[..4] != b"PE\0\0"
-        || u16at(&header, 4) != 0x8664
+        || u16at(&header, 4) != windows_pe_machine()?
         || !(1..=96).contains(&count)
         || !(112..=4096).contains(&optional_size)
         || flags & 2 == 0
@@ -439,7 +452,10 @@ fn verify_identity_metadata(directory: &Path, bundle: &Bundle) -> Result<PathBuf
         || info["source_sha"] != bundle.source_sha
         || info["update_feed_url"]
             != if bundle.profile == "prod" {
-                serde_json::json!("https://updates.maple.ai/agent/stable/windows/latest.json")
+                serde_json::json!(format!(
+                    "https://updates.maple.ai{}",
+                    windows_target()?.feed_path()
+                ))
             } else {
                 serde_json::Value::Null
             }
@@ -501,7 +517,7 @@ fn expected_artifact(update: &PreparedUpdate) -> Result<&Artifact> {
         .map_err(|_| InstallError::Invalid("Windows manifest fields changed"))?;
     update
         .release
-        .artifact(Target::WindowsX86_64)
+        .artifact(windows_target()?)
         .map_err(|_| InstallError::Invalid("missing Windows updater bundle"))
 }
 
@@ -1062,7 +1078,7 @@ pub fn cleanup_current_windows_bundle(
                 .map_err(|_| InstallError::CodeSignature)?;
             current.matches_release(&release)?;
             let artifact = release
-                .artifact(Target::WindowsX86_64)
+                .artifact(windows_target()?)
                 .map_err(|_| InstallError::Invalid("Windows receipt target"))?;
             verify_payload(&stage.join("payload"), artifact)?;
             let (expected, bundle) = archive(&stage.join("payload"), None, "prod")?;

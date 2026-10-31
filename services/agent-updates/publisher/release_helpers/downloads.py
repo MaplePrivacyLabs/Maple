@@ -19,17 +19,17 @@ import subprocess
 import zipfile
 
 from .bundle import BundleVerifier
-from .context import OperatorError, need, sha, decode
+from .context import (OperatorError, need, sha, decode, TARGETS, selected_platforms,
+                      manifest_names, envelope_names, platform_counts)
 
 
 SCHEMA_BINDINGS = "agent-release-bindings-v1"
 SCHEMA_FREEZE = "agent-release-prepared-freeze-v1"
 SCHEMA_DOWNLOAD = "agent-release-stage-download-v1"
-PLATFORMS = {"macos", "linux", "windows"}
-TARGETS = {"macos": "macos-aarch64", "linux": "linux-x86_64", "windows": "windows-x86_64"}
-COUNTS = {"macos": 7, "linux": 4, "windows": 5}
+PLATFORMS = set(TARGETS)
+COUNTS = {"macos": 7, "linux": 4, "windows": 5, "windows-arm64": 5}
 SUFFIXES = {"macos": {".app.tar.gz", ".dmg"}, "linux": {".tar.gz"},
-            "windows": {".tar.gz", "-setup.exe"}}
+            "windows": {".tar.gz", "-setup.exe"}, "windows-arm64": {".tar.gz", "-setup.exe"}}
 STAGES = ("prepared", "reserved", "signed")
 STAGE_COUNTS = {"prepared": 23, "reserved": 24, "signed": 27}
 MAX_METADATA = 4 * 1024**2
@@ -41,7 +41,11 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def all_platforms(value):
-    return isinstance(value, list) and len(value) == 3 and set(value) == PLATFORMS
+    try:
+        selected_platforms(value)
+        return True
+    except OperatorError:
+        return False
 
 
 def positive(value):
@@ -127,7 +131,8 @@ class ProducerDownloader(DownloadBase):
              and isinstance(ctx.source, str) and re.fullmatch(r"[0-9a-f]{40}", ctx.source)
              and isinstance(ctx.build, str) and re.fullmatch(r"[1-9][0-9]{0,17}", ctx.build),
              "invalid producer identity")
-        need(set(ctx.bindings["artifacts"]) == PLATFORMS, "all platform artifacts required")
+        platforms = selected_platforms(ctx.bindings["platforms"])
+        need(set(ctx.bindings["artifacts"]) == set(platforms), "all selected platform artifacts required")
         for platform, item in ctx.bindings["artifacts"].items():
             need(type(item.get("id")) is int and 0 < item["id"] < 2**64
                  and type(item.get("size")) is int and 0 < item["size"] <= MAX_ZIP
@@ -145,7 +150,8 @@ class ProducerDownloader(DownloadBase):
              == (ctx.producer_run, ctx.producer_attempt, ctx.source, ctx.version)
              and type(proof.get("build")) is int and proof["build"] == int(ctx.build)
              and proof.get("scope", {}).get("include_linux") is True
-             and proof.get("scope", {}).get("include_windows") is True,
+             and proof.get("scope", {}).get("include_windows") is True
+             and proof.get("scope", {}).get("include_windows_arm64", False) is ("windows-arm64" in platforms),
              "qualified producer binding differs")
         return proof
 
@@ -198,7 +204,7 @@ class ProducerDownloader(DownloadBase):
 
     def run(self, args):
         need(args.network is True, "native GitHub GETs require explicit --network")
-        need(args.platform in PLATFORMS, "unknown producer platform")
+        need(args.platform in selected_platforms(self.ctx.bindings["platforms"]), "producer platform was not selected")
         os.umask(0o077)
         ctx = self.ctx
         proof = self.qualification()
@@ -250,6 +256,8 @@ class ProducerDownloader(DownloadBase):
 class StageDownloader(DownloadBase):
     def frozen_inputs(self):
         ctx, bindings, core = self.ctx, self.ctx.bindings, self.ctx.core
+        platforms = selected_platforms(bindings.get("platforms"))
+        arm64 = "windows-arm64" in platforms
         need(bindings.get("schema") == SCHEMA_BINDINGS
              and all_platforms(bindings.get("platforms")), "wrong binding schema/platforms")
         publication = ctx.publication
@@ -259,22 +267,27 @@ class StageDownloader(DownloadBase):
              and publication["workflow"] == ".github/workflows/agent-updates-publish.yml"
              and re.fullmatch(r"[0-9a-f]{40}", publication["source_sha"]), "invalid publication identity")
         selected = decode(ctx.pinned(bindings["selected_publication"]))
+        expected_inputs = {"include_linux": True, "include_windows": True,
+                           "include_windows_arm64": arm64, "version": ctx.version,
+                           "build_run_id": str(ctx.producer_run),
+                           "notes": ctx.pinned(bindings["notes"]).decode("utf-8")}
+        legacy_inputs = {key: value for key, value in expected_inputs.items() if key != "include_windows_arm64"}
+        input_match = selected.get("inputs") == expected_inputs or (not arm64 and selected.get("inputs") == legacy_inputs)
         need(type(selected.get("run_id")) is int and type(selected.get("run_attempt")) is int
              and type(selected.get("producer_run")) is int and type(selected.get("producer_attempt")) is int
              and all(selected.get(key) == value for key, value in publication.items())
              and selected.get("payload_source") == ctx.source and selected.get("producer_run") == ctx.producer_run
              and selected.get("producer_attempt") == ctx.producer_attempt and selected.get("version") == ctx.version
-             and all_platforms(selected.get("platforms"))
+             and selected.get("platforms") == list(platforms) and input_match
              and selected.get("inputs", {}).get("include_linux") is True
              and selected.get("inputs", {}).get("include_windows") is True
-             and selected.get("inputs", {}).get("version") == ctx.version
-             and selected.get("inputs", {}).get("build_run_id") == str(ctx.producer_run),
+             and selected.get("inputs", {}).get("include_windows_arm64", False) is arm64,
              "selected publication/producer differs")
         frozen = decode(ctx.pinned(bindings["freeze"]))
         identity, producer = ctx.identity, frozen["producer"]
         need(frozen.get("schema") == SCHEMA_FREEZE and frozen.get("canonical_prepare_completed") is True
              and frozen.get("source") == ctx.source and frozen.get("tree") == ctx.tree
-             and all_platforms(frozen.get("platforms")) and identity.get("version") == ctx.version
+             and frozen.get("platforms") == list(platforms) and identity.get("version") == ctx.version
              and identity.get("build") == ctx.build and identity.get("source_sha") == ctx.source
              and type(identity.get("run_id")) is int and identity["run_id"] == ctx.producer_run
              and type(identity.get("run_attempt")) is int and identity["run_attempt"] == ctx.producer_attempt
@@ -282,28 +295,31 @@ class StageDownloader(DownloadBase):
              and all(producer.get(key) == identity[key] for key in ("run_id", "run_attempt", "source_sha", "build", "pub_date"))
              and bindings.get("payload_tree") == ctx.tree, "frozen producer/release binding differs")
         files = frozen.get("files")
-        roots = {"manifest.json", "linux-manifest.json", "windows-manifest.json", "metadata-inventory.json", "public-key.pub", "trust.json"}
+        roots = set(manifest_names(platforms)) | {"metadata-inventory.json", "public-key.pub", "trust.json"}
         metadata = {"metadata/" + name for name in {"provenance.json"} | core.MACOS_METADATA_NAMES
-                    | core.LINUX_METADATA_NAMES | core.WINDOWS_METADATA_NAMES}
-        need(len(metadata) == 12 and isinstance(files, dict) and len(files) == 23
+                    | core.LINUX_METADATA_NAMES | core.WINDOWS_METADATA_NAMES
+                    | (core.WINDOWS_ARM64_METADATA_NAMES if arm64 else set())}
+        need(len(metadata) == 12 + 3 * arm64 and isinstance(files, dict)
+             and len(files) == platform_counts(platforms)["prepared"]
              and roots | metadata <= set(files) and bindings["prepared_files"] == files,
              "prepared freeze inventory differs")
         payloads = set(files) - roots - metadata
         suffixes = set()
+        expected_suffixes = {TARGETS[platform] + suffix for platform in platforms for suffix in SUFFIXES[platform]}
         pattern = (r"payloads/maple-agent-prod-" + re.escape(ctx.version)
-                   + r"-([0-9a-f]{7,40})-(macos-aarch64\.dmg|macos-aarch64\.app\.tar\.gz|linux-x86_64\.tar\.gz|windows-x86_64-setup\.exe|windows-x86_64\.tar\.gz)")
+                   + r"-([0-9a-f]{7,40})-(" + "|".join(re.escape(suffix) for suffix in sorted(expected_suffixes)) + ")")
         for name in payloads:
             match = re.fullmatch(pattern, name)
             need(match is not None and ctx.source.startswith(match[1]), "frozen payload name/source differs")
             suffixes.add(match[2])
-        need(len(payloads) == 5 and suffixes == {"macos-aarch64.dmg", "macos-aarch64.app.tar.gz", "linux-x86_64.tar.gz", "windows-x86_64-setup.exe", "windows-x86_64.tar.gz"},
+        need(len(payloads) == len(expected_suffixes) and suffixes == expected_suffixes,
              "frozen platform payload inventory differs")
         for name, record in files.items():
             maximum = MAX_FILE if name.startswith("payloads/") else MAX_METADATA
             need(isinstance(record, dict) and set(record) == {"size", "sha256"}
                  and type(record["size"]) is int and 0 < record["size"] <= maximum
                  and isinstance(record["sha256"], str) and HEX.fullmatch(record["sha256"]), "invalid frozen file record")
-        need(set(bindings["artifacts"]) == PLATFORMS
+        need(set(bindings["artifacts"]) == set(platforms)
              and producer["artifacts"] == {key: item["name"] for key, item in bindings["artifacts"].items()}
              and frozen["notes"]["sha256"] == bindings["notes"]["sha256"], "frozen notes/artifact projection differs")
         for key in ("qualification", "notes"):
@@ -358,7 +374,7 @@ class StageDownloader(DownloadBase):
         return artifact, producers[0]["id"]
 
     @staticmethod
-    def central_directory(archive):
+    def central_directory(archive, maximum_entries=29):
         size = archive.stat().st_size
         with archive.open("rb") as source:
             source.seek(max(0, size - 65557))
@@ -367,14 +383,16 @@ class StageDownloader(DownloadBase):
         need(position >= 0 and len(tail) - position >= 22, "missing ZIP end record")
         _, disk, central_disk, on_disk, count, central_size, offset, comment = struct.unpack_from("<4s4H2LH", tail, position)
         end_offset = size - len(tail) + position
-        need(disk == central_disk == 0 and on_disk == count and 0 < count <= 29
+        need(disk == central_disk == 0 and on_disk == count and 0 < count <= maximum_entries
              and 0 < central_size <= 64 * 1024 and offset + central_size == end_offset
              and position + 22 + comment == len(tail), "split, Zip64, oversized or malformed ZIP directory")
         return count
 
     @classmethod
-    def zip_inventory(cls, archive, stage, frozen_files):
-        count = cls.central_directory(archive)
+    def zip_inventory(cls, archive, stage, frozen_files, platforms=("macos", "linux", "windows")):
+        platforms = selected_platforms(list(platforms))
+        envelopes = set(envelope_names(platforms))
+        count = cls.central_directory(archive, platform_counts(platforms)["signed"] + 2)
         with zipfile.ZipFile(archive) as zipped:
             entries = zipped.infolist()
             need(len(entries) == count, "ZIP entry count differs")
@@ -403,13 +421,13 @@ class StageDownloader(DownloadBase):
             if stage != "prepared":
                 expected.add("reservation.json")
             if stage == "signed":
-                expected |= {"envelope.json", "linux-envelope.json", "windows-envelope.json"}
-            need(set(leaves) == expected and len(leaves) == STAGE_COUNTS[stage], "ZIP leaf inventory differs from selected stage")
+                expected |= envelopes
+            need(set(leaves) == expected and len(leaves) == platform_counts(platforms)[stage], "ZIP leaf inventory differs from selected stage")
             for name, record in frozen_files.items():
                 need(leaves[name].file_size == record["size"], "frozen ZIP member size differs")
             if "reservation.json" in leaves:
                 need(leaves["reservation.json"].file_size <= 64 * 1024, "oversized reservation")
-            for name in {"envelope.json", "linux-envelope.json", "windows-envelope.json"} & set(leaves):
+            for name in envelopes & set(leaves):
                 need(leaves[name].file_size <= 128 * 1024, "oversized envelope")
         return expected
 
@@ -466,16 +484,20 @@ class StageDownloader(DownloadBase):
             os.fsync(stream.fileno())
         actual, _ = read_record(archive, MAX_ZIP)
         need(actual == {"size": args.zip_size, "sha256": args.zip_sha256}, "downloaded ZIP size/digest differs")
-        expected = self.zip_inventory(archive, args.stage, frozen_files)
+        platforms = selected_platforms(ctx.bindings["platforms"])
+        expected = self.zip_inventory(archive, args.stage, frozen_files, platforms)
         destination = output / "bundle"
-        reservation = ctx.core.encode_json({"manifest_sha256": frozen_files["manifest.json"]["sha256"],
+        reservation_fields = {"manifest_sha256": frozen_files["manifest.json"]["sha256"],
                                            "linux_manifest_sha256": frozen_files["linux-manifest.json"]["sha256"],
                                            "windows_manifest_sha256": frozen_files["windows-manifest.json"]["sha256"],
                                            "metadata_inventory_sha256": frozen_files["metadata-inventory.json"]["sha256"],
-                                           "version": ctx.version})
+                                           "version": ctx.version}
+        if "windows-arm64" in platforms:
+            reservation_fields["windows_arm64_manifest_sha256"] = frozen_files["windows-arm64-manifest.json"]["sha256"]
+        reservation = ctx.core.encode_json(reservation_fields)
         files = self.extract(archive, destination, expected, frozen_files, reservation)
         record = {"schema": SCHEMA_DOWNLOAD, "at": datetime.now(timezone.utc).isoformat(),
-                  "platforms": ["macos", "linux", "windows"], "stage": args.stage,
+                  "platforms": list(platforms), "stage": args.stage,
                   "publication_run": ctx.publication["run_id"], "publisher_source": expected_run["publisher_source"],
                   "attempt": ctx.publication["run_attempt"], "producer": ctx.producer_run,
                   "source": ctx.source, "build": ctx.build, "version": ctx.version,
