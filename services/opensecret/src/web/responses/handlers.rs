@@ -47,7 +47,8 @@ use crate::{
             compaction::{
                 self,
                 context::{ContextItem, ContextItemKey, ContextItemKind},
-                CompactionBudget, CompactionOutput, ContextManagement, SummaryExecutor,
+                CompactionBudget, CompactionOutput, CompactionProgress, ContextManagement,
+                SummaryExecutor,
             },
             constants::*,
             context_observability::{ContextOutcome, ResponseContextObservation},
@@ -100,9 +101,9 @@ const RESPONSE_CANCEL_ACK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_WEB_SEARCH_TOOL_TURNS_FREE: usize = 5;
 const MAX_WEB_SEARCH_TOOL_TURNS_PAID: usize = 30;
 const RESPONSE_EXECUTION_DEADLINE: Duration = Duration::from_secs(10 * 60);
-// Summary work before HTTP acceptance has a separate, shorter allowance.
-// Accepted tool turns retain the logical Response's full execution deadline.
-const PREACCEPT_COMPACTION_BUDGET: Duration = Duration::from_secs(60);
+// Initial preparation runs inside the accepted stream. Bound it independently
+// while later tool turns retain the logical Response's absolute deadline.
+const INITIAL_COMPACTION_PREPARATION_BUDGET: Duration = Duration::from_secs(5 * 60);
 
 /// vLLM's per-request loop guard: generation stops with finish reason
 /// `repetition` once a 4 to 64 token pattern repeats 16 times in a row. Both
@@ -3664,6 +3665,154 @@ mod tests {
         assert!(!state.first_unknown_item_report(second));
     }
 
+    #[tokio::test]
+    async fn streamed_preparation_waits_until_both_lifecycle_frames_are_yielded() {
+        use axum::response::sse::Event;
+        use futures::StreamExt;
+
+        let (start, mut started) = oneshot::channel();
+        let frames = futures::stream::iter([
+            Ok(Event::default().event(EVENT_RESPONSE_CREATED).data("{}")),
+            Ok(Event::default()
+                .event(EVENT_RESPONSE_IN_PROGRESS)
+                .data("{}")),
+        ])
+        .chain(futures::stream::pending());
+        let mut stream = Box::pin(super::start_preparation_after_open(frames, Some(start)));
+        assert!(matches!(
+            started.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(stream.next().await.is_some());
+        assert!(matches!(
+            started.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(stream.next().await.is_some());
+        assert!(matches!(
+            started.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        // Polling beyond the yielded admission frames enables paid work, while
+        // the carrier can already send keepalives during the pending body.
+        assert!(futures::poll!(Box::pin(stream.next())).is_pending());
+        assert_eq!(started.await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn dropping_unpolled_stream_releases_accepted_execution_without_cancelling() {
+        use axum::response::sse::Event;
+
+        let (start, started) = oneshot::channel();
+        let stream = super::start_preparation_after_open(
+            futures::stream::pending::<Result<Event, ApiError>>(),
+            Some(start),
+        );
+        let registry = crate::web::responses::ResponseExecutionRegistry::default();
+        let response_uuid = Uuid::new_v4();
+        let registration = registry.register(response_uuid, Uuid::new_v4()).unwrap();
+        let execution = registration.execution();
+        drop(stream);
+        let terminal = run_response_worker(
+            response_uuid,
+            &execution,
+            tokio::time::Instant::now() + Duration::from_secs(60),
+            async {
+                let _ = started.await;
+                ResponseTerminal::Completed {
+                    finish_reason: "stop".into(),
+                }
+            },
+        )
+        .await;
+        assert!(matches!(terminal, ResponseTerminal::Completed { .. }));
+        assert!(!execution.is_cancelled());
+    }
+
+    #[test]
+    fn pending_compaction_progress_reserves_no_canonical_output_or_index_holes() {
+        use crate::web::responses::compaction::CompactionOutput;
+
+        let mut state = ClientResponseState::default();
+        let abandoned = Uuid::new_v4();
+        state.begin_compaction(abandoned);
+        assert_eq!(state.compaction_progress_index(abandoned), Some(0));
+        assert!(state.build_output_items().is_empty());
+        state.abandon_compaction(abandoned);
+        assert_eq!(state.compaction_progress_index(abandoned), None);
+        let message = Uuid::new_v4();
+        assert_eq!(state.push_message(message), 0);
+
+        let published = Uuid::new_v4();
+        state.begin_compaction(published);
+        assert_eq!(state.compaction_progress_index(published), Some(1));
+        let output = CompactionOutput {
+            id: published,
+            encrypted_content: "opaque-checkpoint".into(),
+            after_item_uuid: Some(message),
+        };
+        assert_eq!(state.push_compaction(output.clone()), Some(1));
+        assert_eq!(state.compaction_progress_index(published), None);
+        assert_eq!(state.push_compaction(output), None);
+        let output = serde_json::to_value(state.build_output_items()).unwrap();
+        assert_eq!(output.as_array().unwrap().len(), 2);
+        assert_eq!(output[1]["id"], published.to_string());
+        assert!(!output.to_string().contains(&abandoned.to_string()));
+    }
+
+    #[test]
+    fn durable_initial_request_is_not_appended_to_source_snapshot_again() {
+        let user_message_id = Uuid::new_v4();
+        let response_uuid = Uuid::new_v4();
+        let prepared = super::PreparedRequest {
+            user_key: secp256k1::SecretKey::from_slice(&[1; 32]).unwrap(),
+            message_content: MessageContent::Text("current input".into()),
+            image_attachments: Vec::new(),
+            user_message_tokens: 3,
+            content_enc: Vec::new(),
+            user_message_id,
+            assistant_message_id: Uuid::new_v4(),
+        };
+        let images = vec![ImageDescriptionToolPair {
+            tool_call_id: Uuid::new_v4(),
+            tool_output_id: Uuid::new_v4(),
+            arguments: json!({"image_index": 0}),
+            output: "a described image".into(),
+            argument_tokens: 3,
+            output_tokens: 4,
+        }];
+        let pending = super::initial_compaction_items(&prepared, &images, response_uuid, false);
+        assert_eq!(pending.len(), 3);
+        assert_eq!(pending[0].key.uuid, user_message_id);
+        assert!(pending[1].protected_input);
+        assert!(pending[2].protected_input);
+        let durable = super::initial_compaction_items(&prepared, &images, response_uuid, true);
+        assert!(
+            durable.is_empty(),
+            "the source loader owns every accepted row"
+        );
+    }
+
+    #[test]
+    fn compaction_progress_event_contains_only_standard_metadata() {
+        let item_id = Uuid::new_v4();
+        let event = super::ResponseCompactionCompactingEvent {
+            event_type: EVENT_RESPONSE_COMPACTION_COMPACTING,
+            sequence_number: 7,
+            item_id: item_id.to_string(),
+            output_index: 2,
+        };
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            json!({
+                "type": "response.compaction.compacting",
+                "sequence_number": 7,
+                "item_id": item_id,
+                "output_index": 2,
+            })
+        );
+    }
+
     #[test]
     fn compaction_output_is_opaque_and_interleaves_without_fake_canonical_items() {
         use crate::web::responses::compaction::CompactionOutput;
@@ -4126,6 +4275,16 @@ pub struct ResponseCreatedEvent {
     pub sequence_number: i32,
 }
 
+/// Content-free compaction progress, following the standard Responses event.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResponseCompactionCompactingEvent {
+    #[serde(rename = "type")]
+    pub event_type: &'static str,
+    pub sequence_number: i32,
+    pub item_id: String,
+    pub output_index: i32,
+}
+
 /// SSE Event wrapper for response.output_text.delta
 #[derive(Debug, Clone, Serialize)]
 pub struct ResponseOutputTextDeltaEvent {
@@ -4511,6 +4670,8 @@ pub struct ToolOutputCreatedEvent {
 /// Message types for the storage task
 #[derive(Debug, Clone)]
 pub enum StorageMessage {
+    /// Advisory lifecycle metadata sent only to the client, never persisted.
+    CompactionProgress(CompactionProgress),
     /// The checkpoint is already committed independently; this only projects
     /// its output-item lifecycle to the client, never into canonical messages.
     Compaction(CompactionOutput),
@@ -4587,10 +4748,33 @@ struct ClientResponseState {
     indices: HashMap<Uuid, usize>,
     /// Unknown item ids already warned about, so per-delta events warn once per item.
     warned_unknown_items: HashSet<Uuid>,
+    pending_compaction: Option<(Uuid, i32)>,
 }
 
 impl ClientResponseState {
+    // Progress refers to a reserved future output slot. Only a committed
+    // checkpoint is inserted into the public output array, so an advisory
+    // failure leaves no fabricated item or index hole behind.
+    fn begin_compaction(&mut self, item_id: Uuid) {
+        if !self.indices.contains_key(&item_id) {
+            self.pending_compaction = Some((item_id, self.items.len() as i32));
+        }
+    }
+
+    fn compaction_progress_index(&self, item_id: Uuid) -> Option<i32> {
+        self.pending_compaction
+            .filter(|(pending, _)| *pending == item_id)
+            .map(|(_, index)| index)
+    }
+
+    fn abandon_compaction(&mut self, item_id: Uuid) {
+        if self.compaction_progress_index(item_id).is_some() {
+            self.pending_compaction = None;
+        }
+    }
+
     fn push_compaction(&mut self, output: CompactionOutput) -> Option<i32> {
+        self.abandon_compaction(output.id);
         if self.indices.contains_key(&output.id) {
             return None;
         }
@@ -5543,13 +5727,72 @@ async fn prepare_request_storage(
     })
 }
 
+/// Pending requests contribute their caller-owned input directly. Once accepted,
+/// the same rows come from the owned source snapshot, exactly once.
+fn initial_compaction_items(
+    prepared: &PreparedRequest,
+    image_descriptions: &[ImageDescriptionToolPair],
+    response_uuid: Uuid,
+    request_is_durable: bool,
+) -> Vec<ContextItem> {
+    if request_is_durable {
+        return Vec::new();
+    }
+    let user_message_for_prompt = json!({
+        "role": "user",
+        "content": MessageContentConverter::to_model_format(&prepared.message_content)
+    });
+    let mut incoming = vec![ContextItem::from_prompt(
+        ContextItemKey {
+            kind: ContextItemKind::User,
+            uuid: prepared.user_message_id,
+        },
+        Some(response_uuid),
+        vec![user_message_for_prompt],
+        prepared.user_message_tokens as usize,
+        false,
+        None,
+    )];
+    for pair in image_descriptions {
+        let messages = pair.prompt_messages();
+        let mut call = ContextItem::from_prompt(
+            ContextItemKey {
+                kind: ContextItemKind::ToolCall,
+                uuid: pair.tool_call_id,
+            },
+            Some(response_uuid),
+            vec![messages[0].clone()],
+            pair.argument_tokens as usize,
+            false,
+            Some(pair.tool_call_id),
+        );
+        call.protected_input = true;
+        incoming.push(call);
+        let mut output = ContextItem::from_prompt(
+            ContextItemKey {
+                kind: ContextItemKind::ToolOutput,
+                uuid: pair.tool_output_id,
+            },
+            Some(response_uuid),
+            vec![messages[1].clone()],
+            pair.output_tokens as usize,
+            false,
+            Some(pair.tool_call_id),
+        );
+        output.protected_input = true;
+        incoming.push(output);
+    }
+    incoming
+}
+
 /// Phase 2: plan context, execute/publish any checkpoint, then check final quota.
-/// Compaction is explicit paid preparation; canonical request items still wait
-/// for the established successful main-provider start boundary.
+/// Compaction is explicit paid preparation. Pending legacy requests retain the
+/// established provider-start boundary; accepted requests load their current
+/// user/image items from durable storage instead of appending them again.
 ///
 /// Operations:
 /// - Reads the owned conversation's existing messages
-/// - Builds prompt context with new user message (not yet persisted)
+/// - Builds prompt context from owned history and the pending or durable user input
 /// - Checks billing quota and token limits
 #[allow(clippy::too_many_arguments)]
 async fn prepare_context_and_check_billing(
@@ -5572,6 +5815,7 @@ async fn prepare_context_and_check_billing(
     context_policy: ContextPolicy,
     context_observation: &ResponseContextObservation,
     force_compaction: bool,
+    request_is_durable: bool,
 ) -> Result<BuiltContext, ApiError> {
     let internal_system_prompt = build_internal_system_prompt(web_search_enabled, model_plan);
 
@@ -5616,50 +5860,12 @@ async fn prepare_context_and_check_billing(
             prepared.prompt
         }
         ContextStrategy::Compaction => {
-            let user_message_for_prompt = json!({
-                "role": "user",
-                "content": MessageContentConverter::to_model_format(&prepared.message_content)
-            });
-            let mut incoming = vec![ContextItem::from_prompt(
-                ContextItemKey {
-                    kind: ContextItemKind::User,
-                    uuid: prepared.user_message_id,
-                },
-                Some(response_uuid),
-                vec![user_message_for_prompt],
-                prepared.user_message_tokens as usize,
-                false,
-                None,
-            )];
-            for pair in image_descriptions {
-                let messages = pair.prompt_messages();
-                let mut call = ContextItem::from_prompt(
-                    ContextItemKey {
-                        kind: ContextItemKind::ToolCall,
-                        uuid: pair.tool_call_id,
-                    },
-                    Some(response_uuid),
-                    vec![messages[0].clone()],
-                    pair.argument_tokens as usize,
-                    false,
-                    Some(pair.tool_call_id),
-                );
-                call.protected_input = true;
-                incoming.push(call);
-                let mut output = ContextItem::from_prompt(
-                    ContextItemKey {
-                        kind: ContextItemKind::ToolOutput,
-                        uuid: pair.tool_output_id,
-                    },
-                    Some(response_uuid),
-                    vec![messages[1].clone()],
-                    pair.output_tokens as usize,
-                    false,
-                    Some(pair.tool_call_id),
-                );
-                output.protected_input = true;
-                incoming.push(output);
-            }
+            let incoming = initial_compaction_items(
+                prepared,
+                image_descriptions,
+                response_uuid,
+                request_is_durable,
+            );
             let executor = SummaryExecutor {
                 state,
                 user,
@@ -5688,7 +5894,8 @@ async fn prepare_context_and_check_billing(
     };
     let total_prompt_tokens = prompt.estimated_tokens;
 
-    // Check billing with token validation (BEFORE any persistence).
+    // Recheck quota against the complete provider-ready projection. On the
+    // accepted path, a denial becomes a durable failed Response over SSE.
     if let Some(billing_access) = billing_access {
         debug!(
             "Checking billing for user {} with {} input tokens",
@@ -5743,16 +5950,17 @@ async fn prepare_context_and_check_billing(
 ///
 /// These request-derived rows are inserted atomically. Later assistant and
 /// model-requested tool items are created by the storage task as stream events arrive.
+#[allow(clippy::too_many_arguments)]
 async fn persist_request_data(
     state: &Arc<AppState>,
     user: &User,
     body: &ResponsesCreateRequest,
     prepared: &PreparedRequest,
-    context: &BuiltContext,
+    conversation: &crate::models::responses::Conversation,
+    web_search_enabled: bool,
     response_uuid: Uuid,
     image_descriptions: &[ImageDescriptionToolPair],
 ) -> Result<PersistedData, ApiError> {
-    let conversation = &context.conversation;
     use crate::models::responses::{NewResponse, ResponseStatus};
 
     // Encrypt metadata if provided
@@ -5775,7 +5983,7 @@ async fn persist_request_data(
         status: ResponseStatus::InProgress,
         model: body.model.clone(),
         temperature: sampling.map(|sampling| sampling.temperature),
-        top_p: sampling.map(|sampling| sampling.top_p_for(context.web_search_enabled)),
+        top_p: sampling.map(|sampling| sampling.top_p_for(web_search_enabled)),
         max_output_tokens: body.max_output_tokens,
         tool_choice: body.tool_choice.clone(),
         parallel_tool_calls: body.parallel_tool_calls,
@@ -7027,6 +7235,357 @@ async fn forward_authoritative_response_terminal(
         .await;
 }
 
+/// Inputs fixed at durable acceptance. In particular, Auto cannot silently
+/// change the executing model after response.created has exposed its identity.
+struct StreamingResponsePreparation {
+    body: ResponsesCreateRequest,
+    prepared: PreparedRequest,
+    conversation: crate::models::responses::Conversation,
+    pinned_completion: PinnedCompletionRequest,
+    billing_access: Option<ChatBillingAccess>,
+    image_access: Option<PaidImageDescriptionAccess>,
+    model_plan: ModelPlan,
+    web_search_enabled: bool,
+    routing: InferenceRoutingContext,
+    cache_policy: CompletionCachePolicy,
+    context_policy: ContextPolicy,
+    compaction_budget: Arc<CompactionBudget>,
+    context_observation: ResponseContextObservation,
+    client_app: Option<ClientApp>,
+}
+
+/// The compaction path accepts a durable, retrievable/cancellable Response
+/// before paid preparation. All subsequent failures have the same encrypted,
+/// storage-authoritative terminal path as ordinary generation/tool failures.
+#[allow(clippy::too_many_arguments)]
+async fn create_streaming_preparation_response(
+    state: Arc<AppState>,
+    user: User,
+    session_id: TransportSession,
+    headers: HeaderMap,
+    work: StreamingResponsePreparation,
+    response_execution: ResponseExecution,
+    execution_policy: ResponseExecutionPolicy,
+) -> Result<Response, ApiError> {
+    // Acquire all child ownership before persistence exposes cancellation.
+    let storage_guard = response_execution
+        .begin_task()
+        .map_err(|_| ApiError::InternalServerError)?;
+    let supervisor_guard = response_execution
+        .begin_task()
+        .map_err(|_| ApiError::InternalServerError)?;
+    let client_guard = response_execution
+        .begin_task()
+        .map_err(|_| ApiError::InternalServerError)?;
+    let persisted = persist_request_data(
+        &state,
+        &user,
+        &work.body,
+        &work.prepared,
+        &work.conversation,
+        work.web_search_enabled,
+        response_execution.response_id(),
+        &[],
+    )
+    .await?;
+    work.context_observation.accepted();
+    let response_id = persisted.response.id;
+    let response_uuid = persisted.response.uuid;
+    let Some(first_item_created_at) = persisted
+        .last_item_created_at
+        .checked_add_signed(chrono::Duration::microseconds(1))
+    else {
+        best_effort_fail_response_after_storage_error(&state, response_id, response_uuid);
+        return Err(ApiError::InternalServerError);
+    };
+    let response_for_stream = persisted.response.clone();
+    let metadata = persisted.decrypted_metadata.clone();
+    let (tx_storage, rx_storage) = mpsc::channel(STORAGE_CHANNEL_BUFFER);
+    let (tx_client, rx_client) = mpsc::channel(CLIENT_CHANNEL_BUFFER);
+    let (tx_tool_ack, mut rx_tool_ack) = mpsc::channel::<Result<(), String>>(8);
+    let (tx_terminal_ack, rx_terminal_ack) = oneshot::channel();
+    let (start_preparation, preparation_started) = oneshot::channel();
+    work.compaction_budget
+        .set_progress_sender(tx_client.clone());
+
+    let storage_db = state.db.clone();
+    let conversation_id = work.conversation.id;
+    let user_id = user.uuid;
+    let user_key = work.prepared.user_key;
+    tokio::spawn(async move {
+        let _storage_guard = storage_guard;
+        storage_task(
+            rx_storage,
+            Some(tx_tool_ack),
+            Some(tx_terminal_ack),
+            storage_db,
+            response_id,
+            response_uuid,
+            first_item_created_at,
+            conversation_id,
+            user_id,
+            user_key,
+        )
+        .await;
+    });
+
+    let stream = response_client_sse(
+        state.clone(),
+        session_id,
+        response_for_stream,
+        metadata,
+        response_execution.clone(),
+        client_guard,
+        rx_client,
+        0,
+        Some(start_preparation),
+    );
+    tokio::spawn(async move {
+        let _supervisor_guard = supervisor_guard;
+        let requested_terminal = run_response_worker(
+            response_uuid,
+            &response_execution,
+            execution_policy.deadline,
+            async {
+                // The first two lifecycle events release this gate. A dropped
+                // body also releases it, preserving accepted execution ownership.
+                let _ = preparation_started.await;
+                work.compaction_budget.set_initial_preparation_deadline(
+                    TokioInstant::now() + INITIAL_COMPACTION_PREPARATION_BUDGET,
+                );
+                let prepared = async {
+                    let mut context = prepare_context_and_check_billing(
+                        &state,
+                        &user,
+                        &work.body,
+                        &work.prepared,
+                        &[],
+                        work.billing_access,
+                        work.model_plan,
+                        &work.conversation,
+                        work.web_search_enabled,
+                        response_uuid,
+                        &response_execution,
+                        &work.compaction_budget,
+                        execution_policy.deadline,
+                        work.routing,
+                        &work.cache_policy,
+                        work.client_app,
+                        work.context_policy,
+                        &work.context_observation,
+                        false,
+                        true,
+                    )
+                    .await?;
+
+                    if let Some(access) = work.image_access {
+                        let descriptions = describe_images(
+                            &state,
+                            &user,
+                            &work.cache_policy,
+                            work.routing.with_model_plan(ModelPlan::Paid),
+                            access,
+                            &work.prepared.image_attachments,
+                            work.client_app,
+                        )
+                        .await?;
+                        // The storage task owns the monotonic transcript order.
+                        // Await each pair before a later context snapshot reads it.
+                        for pair in &descriptions {
+                            for message in pair.client_messages() {
+                                send_storage_message(&tx_storage, &tx_client, message).await?;
+                            }
+                            match tokio::time::timeout(Duration::from_secs(5), rx_tool_ack.recv())
+                                .await
+                            {
+                                Ok(Some(Ok(()))) => {}
+                                _ => return Err(ApiError::InternalServerError),
+                            }
+                        }
+                        if !descriptions.is_empty() {
+                            context = prepare_context_and_check_billing(
+                                &state,
+                                &user,
+                                &work.body,
+                                &work.prepared,
+                                &[],
+                                work.billing_access,
+                                work.model_plan,
+                                &work.conversation,
+                                work.web_search_enabled,
+                                response_uuid,
+                                &response_execution,
+                                &work.compaction_budget,
+                                execution_policy.deadline,
+                                work.routing,
+                                &work.cache_policy,
+                                work.client_app,
+                                work.context_policy,
+                                &work.context_observation,
+                                false,
+                                true,
+                            )
+                            .await?;
+                        }
+                    }
+
+                    let turn_body = model_turn_request_without_user_payload(&work.body);
+                    let first_started = match start_responses_assistant_turn(
+                        &state,
+                        &user,
+                        &turn_body,
+                        &work.pinned_completion,
+                        &headers,
+                        &context.prompt_messages,
+                        context.web_search_enabled,
+                        response_uuid,
+                        context.conversation.uuid,
+                        0,
+                        context.total_prompt_tokens,
+                        response_execution.clone(),
+                        &work.cache_policy,
+                        work.client_app,
+                    )
+                    .await
+                    {
+                        Ok(started) => started,
+                        Err(error)
+                            if compaction::is_context_rejection(&error)
+                                && compaction_recovery_enabled(work.context_policy, &work.body) =>
+                        {
+                            context = prepare_context_and_check_billing(
+                                &state,
+                                &user,
+                                &work.body,
+                                &work.prepared,
+                                &[],
+                                work.billing_access,
+                                work.model_plan,
+                                &work.conversation,
+                                work.web_search_enabled,
+                                response_uuid,
+                                &response_execution,
+                                &work.compaction_budget,
+                                execution_policy.deadline,
+                                work.routing,
+                                &work.cache_policy,
+                                work.client_app,
+                                work.context_policy,
+                                &work.context_observation,
+                                true,
+                                true,
+                            )
+                            .await?;
+                            start_responses_assistant_turn(
+                                &state,
+                                &user,
+                                &turn_body,
+                                &work.pinned_completion,
+                                &headers,
+                                &context.prompt_messages,
+                                context.web_search_enabled,
+                                response_uuid,
+                                context.conversation.uuid,
+                                0,
+                                context.total_prompt_tokens,
+                                response_execution.clone(),
+                                &work.cache_policy,
+                                work.client_app,
+                            )
+                            .await
+                            .map_err(CompletionExecutionError::into_api_error)?
+                        }
+                        Err(error) => return Err(error.into_api_error()),
+                    };
+                    work.compaction_budget.clear_initial_preparation_deadline();
+                    Ok::<_, ApiError>((context, first_started, turn_body))
+                }
+                .await;
+                let (context, first_started, turn_body) = match prepared {
+                    Ok(ready) => ready,
+                    Err(error) => {
+                        return ResponseTerminal::Failed(PublicResponseFailure::from_api_error(
+                            &error,
+                        ));
+                    }
+                };
+
+                let (users, assistants) =
+                    context
+                        .prompt_messages
+                        .iter()
+                        .fold((0, 0), |(users, assistants), message| {
+                            match message.get("role").and_then(Value::as_str) {
+                                Some(ROLE_USER) => (users + 1, assistants),
+                                Some(ROLE_ASSISTANT) if message.get("tool_calls").is_none() => {
+                                    (users, assistants + 1)
+                                }
+                                _ => (users, assistants),
+                            }
+                        });
+                if users == 1 && assistants == 0 {
+                    spawn_title_generation_task(
+                        state.clone(),
+                        work.conversation.id,
+                        work.conversation.uuid,
+                        user.clone(),
+                        work.prepared.user_key,
+                        MessageContentConverter::extract_text_for_token_counting(
+                            &work.prepared.message_content,
+                        ),
+                        work.cache_policy.clone(),
+                        work.routing.with_model_plan(ModelPlan::Free),
+                        work.client_app,
+                    );
+                }
+                setup_completion_processor(
+                    &state,
+                    &user,
+                    &turn_body,
+                    &work.pinned_completion,
+                    work.model_plan,
+                    &context,
+                    &work.prepared.user_key,
+                    work.prepared.assistant_message_id,
+                    &persisted,
+                    &headers,
+                    tx_client.clone(),
+                    tx_storage.clone(),
+                    rx_tool_ack,
+                    first_started,
+                    execution_policy,
+                    response_execution.clone(),
+                    &work.cache_policy,
+                )
+                .await
+            },
+        )
+        .await;
+        if tx_storage
+            .send(StorageMessage::Terminal(requested_terminal))
+            .await
+            .is_err()
+        {
+            work.context_observation.storage_failed("channel_closed");
+            return;
+        }
+        forward_authoritative_response_terminal(
+            response_uuid,
+            &tx_client,
+            rx_terminal_ack,
+            Some(&work.context_observation),
+            || {
+                state
+                    .db
+                    .list_response_compactions(work.conversation.id, user.uuid, response_uuid)
+                    .map(|records| records.iter().map(CompactionOutput::from).collect())
+            },
+        )
+        .await;
+    });
+    Ok(stream)
+}
+
 async fn create_response_stream(
     state: State<Arc<AppState>>,
     headers: HeaderMap,
@@ -7063,7 +7622,6 @@ async fn create_response_stream_inner(
     Decrypted(mut body): Decrypted<ResponsesCreateRequest>,
     admission_observation: &mut Option<ResponseContextObservation>,
 ) -> Result<Response, ApiError> {
-    let require_explicit_terminal = session_id.is_v2();
     let client_app = ClientApp::from_headers(&headers);
     let cache_policy = CompletionCachePolicy::for_request(
         &session_id,
@@ -7202,9 +7760,6 @@ async fn create_response_stream_inner(
     let compaction_budget = Arc::new(CompactionBudget::default());
     let flag_started = Instant::now();
     let context_policy = context_policy::resolve(&state, user.uuid).await;
-    if context_policy.strategy == ContextStrategy::Compaction {
-        compaction_budget.set_preaccept_deadline(TokioInstant::now() + PREACCEPT_COMPACTION_BUDGET);
-    }
     compaction_budget
         .metrics()
         .record_flag_evaluation(flag_started.elapsed());
@@ -7217,6 +7772,77 @@ async fn create_response_stream_inner(
         compaction_budget.metrics(),
     );
     *admission_observation = Some(context_observation.clone());
+
+    if context_policy.strategy == ContextStrategy::Compaction {
+        // All provider-free controls remain real admission errors. The chosen
+        // executing model is fixed before it becomes durable and caller-visible;
+        // later within-model provider routing keeps its existing retry policy.
+        compaction::policy_for(&body)?;
+        // A caller input that already violates its plan is an immediate HTTP
+        // rejection; only history-dependent fit/quota checks wait for the stream.
+        if let Some(access) = billing_access {
+            match access.check_with_tokens(normalized.user_message_tokens) {
+                Err(BillingError::UsageLimitExceeded) => return Err(ApiError::UsageLimitReached),
+                Err(BillingError::FreeTokenLimitExceeded) => {
+                    return Err(ApiError::FreeTokenLimitExceeded);
+                }
+                _ => {}
+            }
+        }
+        let mut reselected = false;
+        let pinned_completion = loop {
+            let intent = resolved_model.intent(
+                user.uuid,
+                &requested_model,
+                model_plan,
+                InferenceSurface::Responses,
+                WorkloadClass::Interactive,
+            );
+            match prepare_completion_request(&state, &user, intent, routing).await {
+                Ok(pinned) => break pinned,
+                Err(ApiError::InferenceCapacity { retry_after, .. })
+                    if !reselected && resolved_model.auto_decision().is_some() =>
+                {
+                    reselected = true;
+                    let excluded = ExcludedAutoCandidate::unavailable(
+                        resolved_model.public_model_id(),
+                        retry_after,
+                    );
+                    resolved_model = resolve_model(Some(&excluded))?;
+                    apply_resolved_model(&mut body, &resolved_model);
+                    compaction::policy_for(&body)?;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let prepared =
+            prepare_request_storage(&user, user_key, &body, normalized, user_message_id).await?;
+        return create_streaming_preparation_response(
+            state,
+            user,
+            session_id,
+            headers,
+            StreamingResponsePreparation {
+                body,
+                prepared,
+                conversation,
+                pinned_completion,
+                billing_access,
+                image_access,
+                model_plan,
+                web_search_enabled,
+                routing,
+                cache_policy,
+                context_policy,
+                compaction_budget,
+                context_observation,
+                client_app,
+            },
+            response_execution,
+            execution_policy,
+        )
+        .await;
+    }
 
     // Phase 1b/2a: Validate the required input and prepare base context before
     // image description. Settled history may already require paid compaction.
@@ -7256,6 +7882,7 @@ async fn create_response_stream_inner(
                 client_app,
                 context_policy,
                 &context_observation,
+                false,
                 false,
             )
             .await?;
@@ -7349,6 +7976,7 @@ async fn create_response_stream_inner(
                     client_app,
                     context_policy,
                     &context_observation,
+                    false,
                     false,
                 )
                 .await
@@ -7506,6 +8134,7 @@ async fn create_response_stream_inner(
                         context_policy,
                         &context_observation,
                         true,
+                        false,
                     )
                     .await
                     .map_err(CompletionExecutionError::from)
@@ -7560,7 +8189,8 @@ async fn create_response_stream_inner(
         &user,
         &body,
         &prepared,
-        &context,
+        &context.conversation,
+        context.web_search_enabled,
         response_uuid,
         &image_descriptions,
     )
@@ -7568,7 +8198,7 @@ async fn create_response_stream_inner(
 
     // Acceptance metadata follows the durable transaction, not later client
     // channel setup. Subsequent tool work uses the full execution deadline.
-    compaction_budget.clear_preaccept_deadline();
+    compaction_budget.clear_initial_preparation_deadline();
     context_observation.accepted();
 
     // Capture stream and title data before moving execution state into the
@@ -7617,7 +8247,7 @@ async fn create_response_stream_inner(
     let user_key = prepared.user_key;
     drop(prepared);
     let (tx_storage, rx_storage) = mpsc::channel::<StorageMessage>(STORAGE_CHANNEL_BUFFER);
-    let (tx_client, mut rx_client) = mpsc::channel::<StorageMessage>(CLIENT_CHANNEL_BUFFER);
+    let (tx_client, rx_client) = mpsc::channel::<StorageMessage>(CLIENT_CHANNEL_BUFFER);
     let (tx_tool_ack, rx_tool_ack) = mpsc::channel::<Result<(), String>>(8);
     let (tx_terminal_ack, rx_terminal_ack) =
         oneshot::channel::<Result<Option<ResponseTerminal>, String>>();
@@ -7684,7 +8314,6 @@ async fn create_response_stream_inner(
 
     drop(response_execution_registration);
     drop(response_setup_guard);
-    let mut client_execution_guard = Some(client_execution_guard);
 
     if let Some((conversation_id, conversation_uuid, user_key, user_content, title_routing)) =
         title_request
@@ -7702,6 +8331,36 @@ async fn create_response_stream_inner(
         );
     }
 
+    Ok(response_client_sse(
+        state,
+        session_id,
+        response_for_stream,
+        decrypted_metadata,
+        response_execution,
+        client_execution_guard,
+        rx_client,
+        total_prompt_tokens,
+        None,
+    ))
+}
+
+/// The public body translates the execution's ordered channel into encrypted
+/// SSE. Its ownership is independent from the durable execution worker.
+#[allow(clippy::too_many_arguments)]
+fn response_client_sse(
+    state: Arc<AppState>,
+    session_id: TransportSession,
+    response_for_stream: crate::models::responses::Response,
+    decrypted_metadata: Option<Value>,
+    response_execution: ResponseExecution,
+    client_execution_guard: ResponseExecutionTaskGuard,
+    mut rx_client: mpsc::Receiver<StorageMessage>,
+    total_prompt_tokens: usize,
+    preparation_start: Option<oneshot::Sender<()>>,
+) -> Response {
+    let response_uuid = response_for_stream.uuid;
+    let require_explicit_terminal = session_id.is_v2();
+    let mut client_execution_guard = Some(client_execution_guard);
     // Storage and execution are already running; the body only translates the
     // ordered client channel into encrypted SSE events.
     let event_stream = async_stream::stream! {
@@ -7835,7 +8494,25 @@ async fn create_response_stream_inner(
                     };
                     yield Ok(ResponseEvent::OutputItemAdded(reasoning_item_added).to_sse_event(&mut emitter).await);
                 }
-                StorageMessage::Compaction(output) => {
+                StorageMessage::CompactionProgress(CompactionProgress::Started { item_id }) => {
+                    client_state.begin_compaction(item_id);
+                }
+                StorageMessage::CompactionProgress(CompactionProgress::Compacting { item_id }) => {
+                    if let Some(output_index) = client_state.compaction_progress_index(item_id) {
+                        let progress = ResponseCompactionCompactingEvent {
+                            event_type: EVENT_RESPONSE_COMPACTION_COMPACTING,
+                            sequence_number: emitter.sequence_number(),
+                            item_id: item_id.to_string(),
+                            output_index,
+                        };
+                        yield Ok(ResponseEvent::CompactionCompacting(progress).to_sse_event(&mut emitter).await);
+                    }
+                }
+                StorageMessage::CompactionProgress(CompactionProgress::Abandoned { item_id }) => {
+                    client_state.abandon_compaction(item_id);
+                }
+                StorageMessage::CompactionProgress(CompactionProgress::Finished(output))
+                | StorageMessage::Compaction(output) => {
                     let Some(output_index)=client_state.push_compaction(output.clone()) else {continue;};
                     let added=ResponseOutputItemAddedEvent {event_type:EVENT_RESPONSE_OUTPUT_ITEM_ADDED,
                         sequence_number:emitter.sequence_number(),output_index,item:output.as_output_item()};
@@ -8113,7 +8790,38 @@ async fn create_response_stream_inner(
         // Client stream is done, but storage and upstream tasks continue independently
     };
 
-    Ok(responses_sse_response(event_stream))
+    responses_sse_response(start_preparation_after_open(
+        event_stream,
+        preparation_start,
+    ))
+}
+
+/// Both lifecycle frames must cross the application stream boundary before
+/// paid preparation begins. Dropping an unpolled/disconnected body drops the
+/// sender too, releasing the independently owned accepted execution.
+fn start_preparation_after_open<S>(
+    event_stream: S,
+    mut preparation_start: Option<oneshot::Sender<()>>,
+) -> impl Stream<Item = Result<Event, ApiError>> + Send + 'static
+where
+    S: Stream<Item = Result<Event, ApiError>> + Send + 'static,
+{
+    async_stream::stream! {
+        use futures::StreamExt;
+        futures::pin_mut!(event_stream);
+        let mut lifecycle_frames = 0;
+        while let Some(event) = event_stream.next().await {
+            yield event;
+            if lifecycle_frames < 2 {
+                lifecycle_frames += 1;
+                if lifecycle_frames == 2 {
+                    if let Some(start) = preparation_start.take() {
+                        let _ = start.send(());
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn responses_sse_response<S>(event_stream: S) -> Response

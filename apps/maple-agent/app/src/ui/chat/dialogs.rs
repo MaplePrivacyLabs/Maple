@@ -7,6 +7,8 @@ use gpui::{Context, Div, div, prelude::*, px};
 use maple_agent::agent::{AgentProjectTrustStatus, AgentTaskState};
 
 use super::ChatScreen;
+use super::computers::{TaskAction, TaskActionRequest};
+use crate::settings::SidebarItemKey;
 use crate::ui::theme;
 use crate::ui::widgets;
 
@@ -17,6 +19,11 @@ pub(super) enum ConfirmDialog {
     RemoveRoot(String),
     /// Delete a task and its stored transcript for good.
     DeleteTask(String),
+    /// Confirm on the visible screen before deleting another computer's task.
+    DeleteComputerTask {
+        target: SidebarItemKey,
+        title: String,
+    },
 }
 
 /// The words a confirmation shows.
@@ -223,6 +230,15 @@ impl ChatScreen {
         self.open_confirm(ConfirmDialog::DeleteTask(session_id.to_string()), cx);
     }
 
+    pub(super) fn request_delete_computer_task(
+        &mut self,
+        target: SidebarItemKey,
+        title: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_confirm(ConfirmDialog::DeleteComputerTask { target, title }, cx);
+    }
+
     fn open_confirm(&mut self, dialog: ConfirmDialog, cx: &mut Context<Self>) {
         self.confirm = Some(dialog);
         self.dialog_focus.get_or_insert_with(|| cx.focus_handle());
@@ -235,6 +251,12 @@ impl ChatScreen {
         match self.confirm.take() {
             Some(ConfirmDialog::RemoveRoot(root)) => self.archive_root(&root, cx),
             Some(ConfirmDialog::DeleteTask(session_id)) => self.delete_task(&session_id, cx),
+            Some(ConfirmDialog::DeleteComputerTask { target, .. }) => {
+                cx.emit(TaskActionRequest {
+                    target,
+                    action: TaskAction::Delete,
+                });
+            }
             None => {}
         }
         cx.notify();
@@ -267,6 +289,13 @@ impl ChatScreen {
                     confirm_label: "Delete",
                 }
             }
+            ConfirmDialog::DeleteComputerTask { title, .. } => ConfirmCopy {
+                title: "Delete this task?".to_string(),
+                body: "The task and its transcript are deleted for good. Files the \
+                       agent wrote in the project stay where they are.",
+                detail: title.clone(),
+                confirm_label: "Delete",
+            },
         }
     }
 

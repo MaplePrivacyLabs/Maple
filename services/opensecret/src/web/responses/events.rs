@@ -7,19 +7,20 @@ use tracing::error;
 
 use super::constants::{
     ERROR_DATA_ENCRYPTION_FAILED, ERROR_DATA_SERIALIZATION_FAILED, EVENT_RESPONSE_CANCELLED,
-    EVENT_RESPONSE_COMPLETED, EVENT_RESPONSE_CONTENT_PART_ADDED, EVENT_RESPONSE_CONTENT_PART_DONE,
-    EVENT_RESPONSE_CREATED, EVENT_RESPONSE_FAILED, EVENT_RESPONSE_IN_PROGRESS,
-    EVENT_RESPONSE_OUTPUT_ITEM_ADDED, EVENT_RESPONSE_OUTPUT_ITEM_DONE,
-    EVENT_RESPONSE_OUTPUT_TEXT_DELTA, EVENT_RESPONSE_OUTPUT_TEXT_DONE,
-    EVENT_RESPONSE_REASONING_TEXT_DELTA, EVENT_RESPONSE_REASONING_TEXT_DONE,
-    EVENT_TOOL_CALL_CREATED, EVENT_TOOL_OUTPUT_CREATED,
+    EVENT_RESPONSE_COMPACTION_COMPACTING, EVENT_RESPONSE_COMPLETED,
+    EVENT_RESPONSE_CONTENT_PART_ADDED, EVENT_RESPONSE_CONTENT_PART_DONE, EVENT_RESPONSE_CREATED,
+    EVENT_RESPONSE_FAILED, EVENT_RESPONSE_IN_PROGRESS, EVENT_RESPONSE_OUTPUT_ITEM_ADDED,
+    EVENT_RESPONSE_OUTPUT_ITEM_DONE, EVENT_RESPONSE_OUTPUT_TEXT_DELTA,
+    EVENT_RESPONSE_OUTPUT_TEXT_DONE, EVENT_RESPONSE_REASONING_TEXT_DELTA,
+    EVENT_RESPONSE_REASONING_TEXT_DONE, EVENT_TOOL_CALL_CREATED, EVENT_TOOL_OUTPUT_CREATED,
 };
 use super::handlers::{
-    encrypt_event, ResponseCancelledEvent, ResponseCompletedEvent, ResponseContentPartAddedEvent,
-    ResponseContentPartDoneEvent, ResponseCreatedEvent, ResponseFailedEvent,
-    ResponseInProgressEvent, ResponseOutputItemAddedEvent, ResponseOutputItemDoneEvent,
-    ResponseOutputTextDeltaEvent, ResponseOutputTextDoneEvent, ResponseReasoningTextDeltaEvent,
-    ResponseReasoningTextDoneEvent, ToolCallCreatedEvent, ToolOutputCreatedEvent,
+    encrypt_event, ResponseCancelledEvent, ResponseCompactionCompactingEvent,
+    ResponseCompletedEvent, ResponseContentPartAddedEvent, ResponseContentPartDoneEvent,
+    ResponseCreatedEvent, ResponseFailedEvent, ResponseInProgressEvent,
+    ResponseOutputItemAddedEvent, ResponseOutputItemDoneEvent, ResponseOutputTextDeltaEvent,
+    ResponseOutputTextDoneEvent, ResponseReasoningTextDeltaEvent, ResponseReasoningTextDoneEvent,
+    ToolCallCreatedEvent, ToolOutputCreatedEvent,
 };
 
 /// Handles SSE event emission with automatic encryption and error handling
@@ -128,6 +129,7 @@ impl<'a> SseEventEmitter<'a> {
 /// Each variant wraps the corresponding event struct and knows its event type string.
 pub enum ResponseEvent {
     Created(ResponseCreatedEvent),
+    CompactionCompacting(ResponseCompactionCompactingEvent),
     InProgress(ResponseInProgressEvent),
     OutputItemAdded(ResponseOutputItemAddedEvent),
     ContentPartAdded(ResponseContentPartAddedEvent),
@@ -149,6 +151,7 @@ impl ResponseEvent {
     pub fn event_type(&self) -> &'static str {
         match self {
             ResponseEvent::Created(_) => EVENT_RESPONSE_CREATED,
+            ResponseEvent::CompactionCompacting(_) => EVENT_RESPONSE_COMPACTION_COMPACTING,
             ResponseEvent::InProgress(_) => EVENT_RESPONSE_IN_PROGRESS,
             ResponseEvent::OutputItemAdded(_) => EVENT_RESPONSE_OUTPUT_ITEM_ADDED,
             ResponseEvent::ContentPartAdded(_) => EVENT_RESPONSE_CONTENT_PART_ADDED,
@@ -172,6 +175,7 @@ impl ResponseEvent {
     pub async fn to_sse_event(&self, emitter: &mut SseEventEmitter<'_>) -> Event {
         match self {
             ResponseEvent::Created(e) => emitter.emit(self.event_type(), e).await,
+            ResponseEvent::CompactionCompacting(e) => emitter.emit(self.event_type(), e).await,
             ResponseEvent::InProgress(e) => emitter.emit(self.event_type(), e).await,
             ResponseEvent::OutputItemAdded(e) => emitter.emit(self.event_type(), e).await,
             ResponseEvent::ContentPartAdded(e) => emitter.emit(self.event_type(), e).await,

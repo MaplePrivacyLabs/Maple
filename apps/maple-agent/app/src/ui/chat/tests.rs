@@ -219,7 +219,7 @@ mod state_tests {
                     path: "/tmp/proj".into(),
                     label: "proj".into(),
                 }],
-                sessions: vec![summary("same-id", "Remote task")],
+                sessions: vec![summary("same-id", "Remote\r\ntask")],
                 running: HashSet::from(["same-id".into()]),
                 unread: HashSet::new(),
                 pinned: Vec::new(),
@@ -249,6 +249,10 @@ mod state_tests {
                     .iter()
                     .find(|e| matches!(e, SidebarEntry::OtherTask(_)))
                     .unwrap();
+                let SidebarEntry::OtherTask(index) = entry else {
+                    unreachable!()
+                };
+                assert_eq!(sidebar.other_task_title(index), Some("Remote task"));
                 assert_eq!(
                     sidebar.computer_target(entry),
                     Some(navigation::SidebarTarget::Computer(Navigate {
@@ -1160,6 +1164,91 @@ mod state_tests {
             status: Some("completed".to_string()),
             input: Some(serde_json::json!({ "todos": todos })),
             ..item(id, "tool", None)
+        }
+    }
+
+    #[gpui::test]
+    fn transcript_context_menu_copies_link_destinations(cx: &mut TestAppContext) {
+        let url = "https://example.test/docs?q=maple#install";
+        let (chat, cx) = chat_window(cx, |this, _| {
+            let mut reply = item(
+                "reply",
+                "message",
+                Some(&format!("[Read the docs]({url}) and ordinary text")),
+            );
+            reply.role = Some("assistant".into());
+            this.replace_timeline(vec![reply]);
+        });
+        let row = cx.debug_bounds("timeline-row-reply").expect("reply");
+        let at = gpui::point(row.left() + px(5.), row.top() + px(10.));
+        let right_click = |cx: &mut gpui::VisualTestContext, at| {
+            cx.simulate_mouse_move(at, None, gpui::Modifiers::default());
+            cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+            cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+            cx.run_until_parked();
+        };
+        right_click(cx, at);
+        assert!(cx.debug_bounds("transcript-menu-copy-link").is_some());
+        assert!(!cx.update(|_, app| {
+            chat.read(app)
+                .selection
+                .as_ref()
+                .unwrap()
+                .read(app)
+                .has_selection()
+        }));
+        press(cx, "transcript-menu-copy-link");
+        assert_eq!(
+            cx.update(|_, app| app.read_from_clipboard().and_then(|item| item.text())),
+            Some(url.to_owned()),
+        );
+        assert!(chat.update(cx, |this, _| this.popup.open_key().is_none()));
+
+        // A later press past the text must not reuse the previous link.
+        right_click(cx, gpui::point(row.right() - px(20.), at.y));
+        assert!(cx.debug_bounds("transcript-menu").is_some());
+        assert!(cx.debug_bounds("transcript-menu-copy-link").is_none());
+        cx.simulate_keystrokes("escape");
+
+        // Link actions coexist with copying an existing text selection.
+        chat.update(cx, |this, cx| this.select_all_text(cx));
+        cx.run_until_parked();
+        right_click(cx, at);
+        assert!(cx.debug_bounds("transcript-menu-copy-link").is_some());
+        press(cx, "transcript-menu-copy");
+        assert_eq!(
+            cx.update(|_, app| app.read_from_clipboard().and_then(|item| item.text())),
+            Some("Read the docs and ordinary text".to_owned()),
+        );
+
+        // Bare URLs and table cells use the same hit testing and clipboard path.
+        for (source, table) in [
+            (url.to_owned(), false),
+            (
+                format!("| Docs |\n| --- |\n| [Read the docs]({url}) |"),
+                true,
+            ),
+        ] {
+            chat.update(cx, |this, cx| {
+                let mut reply = item("reply", "message", Some(&source));
+                reply.role = Some("assistant".into());
+                this.replace_timeline(vec![reply]);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let at = if table {
+                let cell = cx.debug_bounds("md-cell-1-0").expect("link cell");
+                gpui::point(cell.left() + px(15.), cell.center().y)
+            } else {
+                let row = cx.debug_bounds("timeline-row-reply").expect("reply");
+                gpui::point(row.left() + px(5.), row.top() + px(10.))
+            };
+            right_click(cx, at);
+            press(cx, "transcript-menu-copy-link");
+            assert_eq!(
+                cx.update(|_, app| app.read_from_clipboard().and_then(|item| item.text())),
+                Some(url.to_owned()),
+            );
         }
     }
 
@@ -7172,7 +7261,9 @@ mod state_tests {
     }
 
     /// The collapsed header keeps its commands before the title in both
-    /// pane layouts; expanding keeps only the same fixed toggle.
+    /// pane layouts; expanding keeps only the toggle. Beside traffic lights
+    /// the toggle stays put and the logo sits under them; without them the
+    /// logo moves up into their corner and the toolbar follows it.
     #[gpui::test]
     fn collapsed_sidebar_header_toolbar(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
@@ -7198,15 +7289,32 @@ mod state_tests {
                 cx.debug_bounds("sidebar-rail").unwrap().top(),
                 cx.debug_bounds("chat-header").unwrap().bottom()
             );
-            assert_eq!(toggle.left(), SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET);
+            assert_eq!(toggle.left(), header_toolbar_left(0.));
             assert!(toggle.right() < new_task.left());
             assert!(title.right() < project.left());
             assert_eq!(toggle.center().y, title.center().y);
+            let mark = cx.debug_bounds("show-sidebar").expect("mark");
+            if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
+                assert!(mark.top() > toggle.bottom());
+            } else {
+                assert_eq!(mark.center().y, toggle.center().y);
+                assert_eq!(mark.right() + px(4.), toggle.left());
+            }
 
             press(cx, "header-sidebar-toggle");
             assert!(!cx.update(|_, app| chat.read(app).sidebar_collapsed));
             cx.run_until_parked();
-            assert_eq!(cx.debug_bounds("header-sidebar-toggle"), Some(toggle));
+            let expanded = cx.debug_bounds("header-sidebar-toggle").expect("toggle");
+            assert_eq!(expanded.left(), header_toolbar_left(1.));
+            assert_eq!((expanded.top(), expanded.size), (toggle.top(), toggle.size));
+            let wordmark = cx.debug_bounds("sidebar-wordmark").expect("wordmark");
+            if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
+                assert_eq!(expanded, toggle);
+                assert!(wordmark.top() > expanded.bottom());
+            } else {
+                assert_eq!(wordmark.center().y, expanded.center().y);
+                assert!(wordmark.right() < expanded.left());
+            }
             assert!(cx.debug_bounds("header-new-task").is_none());
             assert!(cx.debug_bounds("root-picker").is_some());
             assert_eq!(
@@ -7216,8 +7324,8 @@ mod state_tests {
         }
     }
 
-    /// The same header toggle survives either transition and remains a
-    /// keyboard target when expanded.
+    /// The same header toggle survives either transition, in each state's
+    /// place, and remains a keyboard target when expanded.
     #[gpui::test]
     fn collapsed_sidebar_toggle_keeps_its_bounds(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
@@ -7259,7 +7367,12 @@ mod state_tests {
             });
             cx.run_until_parked();
             assert!(cx.update(|_, app| chat.read(app).sidebar_collapsed));
-            assert_eq!(cx.debug_bounds("header-sidebar-toggle"), Some(toggle));
+            let collapsed = cx.debug_bounds("header-sidebar-toggle").expect("toggle");
+            assert_eq!(collapsed.left(), header_toolbar_left(0.));
+            assert_eq!(
+                (collapsed.top(), collapsed.size),
+                (toggle.top(), toggle.size)
+            );
             assert_eq!(
                 ["header-sidebar-toggle", "sidebar-toggle"]
                     .into_iter()
@@ -8276,6 +8389,160 @@ mod state_tests {
                 assert_eq!(sidebar.section_rows(SidebarSection::List), [1, 2]);
                 assert_eq!(sidebar.pinned_rows(), [0]);
             });
+        });
+    }
+
+    fn inactive_task_window(
+        cx: &mut TestAppContext,
+    ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
+        chat_window(cx, |this, cx| {
+            this.selected_session = None;
+            this.draft = true;
+            this.project_root = Some("/shared".into());
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_view(crate::settings::SidebarView::default(), cx);
+            });
+            this.sessions = vec![summary_at("same-id", "Existing task", "/shared")];
+            this.apply_recent_roots(vec![named_root("/shared", "Local project", 1)], cx);
+            set_computer_snapshots(this, identical_path_project_catalog(), cx);
+            this.composer.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_text("Keep my draft", cx);
+            });
+        })
+    }
+
+    #[gpui::test]
+    fn inactive_task_hover_controls_are_scoped_and_do_not_navigate(cx: &mut TestAppContext) {
+        use crate::settings::SidebarItemKey;
+        use crate::ui::chat::computers::{TaskAction, TaskActionRequest};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (chat, cx) = inactive_task_window(cx);
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let generation = chat.update(cx, |this, _| this.selection_generation);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = requests.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, request: &TaskActionRequest, _| {
+                observed.borrow_mut().push(request.clone());
+            })
+        });
+        let navigation = Rc::new(RefCell::new(Vec::new()));
+        let observed = navigation.clone();
+        let _navigation = cx.update(|_, app| {
+            app.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                if matches!(event, SidebarEvent::Navigate(_) | SidebarEvent::Select(_)) {
+                    observed.borrow_mut().push(event.clone());
+                }
+            })
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let own = cx
+            .debug_bounds("menu-session-same-id")
+            .expect("local task menu");
+        let east = cx
+            .debug_bounds("menu-session-computer-task-Some(\"east\")-same-id")
+            .expect("inactive task menu before selection");
+        let west = cx
+            .debug_bounds("menu-session-computer-task-Some(\"west\")-same-id")
+            .expect("other inactive task menu before selection");
+        assert_ne!(own.center(), east.center());
+        assert_ne!(east.center(), west.center());
+        for selector in [
+            "rename-session-computer-task-Some(\"east\")-same-id",
+            "step-session-computer-task-Some(\"east\")-same-id",
+            "rename-session-computer-task-Some(\"west\")-same-id",
+            "step-session-computer-task-Some(\"west\")-same-id",
+        ] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector}");
+        }
+        press(cx, "menu-session-computer-task-Some(\"east\")-same-id");
+        press(cx, "rename-task-computer-task-Some(\"east\")-same-id");
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target()),
+            Some(RenameTarget::OtherTask(Arc::new(SidebarItemKey {
+                computer: Some("east".into()),
+                id: "same-id".into(),
+            })))
+        );
+        cx.simulate_keystrokes("secondary-a");
+        cx.simulate_input("East task renamed");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        press(cx, "step-session-computer-task-Some(\"west\")-same-id");
+        cx.run_until_parked();
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].target.computer.as_deref(), Some("east"));
+        assert_eq!(requests[0].target.id, "same-id");
+        assert!(
+            matches!(&requests[0].action, TaskAction::Rename(name) if name == "East task renamed")
+        );
+        assert_eq!(requests[1].target.computer.as_deref(), Some("west"));
+        assert_eq!(requests[1].target.id, "same-id");
+        assert!(matches!(
+            requests[1].action,
+            TaskAction::SetState(AgentTaskState::Settled)
+        ));
+        assert!(navigation.borrow().is_empty());
+        chat.update(cx, |this, cx| {
+            assert!(this.draft);
+            assert!(this.selected_session.is_none());
+            assert_eq!(this.project_root.as_deref(), Some("/shared"));
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("Keep my draft"));
+        });
+    }
+
+    #[gpui::test]
+    fn inactive_task_delete_confirms_on_the_visible_screen(cx: &mut TestAppContext) {
+        use crate::settings::SidebarItemKey;
+        use crate::ui::chat::computers::{TaskAction, TaskActionRequest};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (chat, cx) = inactive_task_window(cx);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = requests.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, request: &TaskActionRequest, _| {
+                observed.borrow_mut().push(request.clone());
+            })
+        });
+        press(cx, "menu-session-computer-task-Some(\"east\")-same-id");
+        press(cx, "delete-task-computer-task-Some(\"east\")-same-id");
+        cx.run_until_parked();
+        let target = SidebarItemKey {
+            computer: Some("east".into()),
+            id: "same-id".into(),
+        };
+        chat.update(cx, |this, _| {
+            assert_eq!(
+                this.confirm,
+                Some(dialogs::ConfirmDialog::DeleteComputerTask {
+                    target: target.clone(),
+                    title: "Existing task".into(),
+                })
+            );
+            assert!(this.selected_session.is_none());
+        });
+        assert!(
+            requests.borrow().is_empty(),
+            "opening confirmation performs no mutation"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].target, target);
+        assert!(matches!(requests[0].action, TaskAction::Delete));
+        chat.update(cx, |this, cx| {
+            assert!(this.confirm.is_none());
+            assert!(this.draft);
+            assert!(this.selected_session.is_none());
+            assert_eq!(this.composer_text(cx).as_deref(), Some("Keep my draft"));
         });
     }
 
@@ -9297,12 +9564,35 @@ mod state_tests {
             // A rename moves the row strings.
             this.upsert_session(summary("s1", "Renamed"), cx);
             assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ref(), "Renamed");
+            // Search retains raw line breaks.
+            for title in ["Two\nlines", "Two\r\nlines", "Two\rlines", "Two lines"] {
+                this.upsert_session(summary("s1", title), cx);
+                let sidebar = this.sidebar.read(cx);
+                assert_eq!(sidebar.rows()[0].title.as_ref(), "Two lines");
+                assert_eq!(sidebar.rows()[0].search, title.to_lowercase());
+            }
+            // Case-only renames still refresh the displayed title.
+            this.upsert_session(summary("s1", "two lines"), cx);
+            assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ref(), "two lines");
+            // Filtering reuses the normalized row cache.
+            this.upsert_session(summary("s1", "Two\nlines"), cx);
+            let built = this.sidebar.read(cx).rows()[0].title.as_ptr();
+            this.set_sidebar_filter("two", cx);
+            assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ptr(), built);
+            this.set_sidebar_filter("", cx);
             this.sidebar.update(cx, |sidebar, _| {
                 sidebar.set_project_name_for_test("/tmp/proj", "Nice");
             });
             assert_eq!(
                 this.sidebar.read(cx).rows()[0].project_name.as_ref(),
                 "Nice"
+            );
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_project_name_for_test("/tmp/proj", "Nice\nname");
+            });
+            assert_eq!(
+                this.sidebar.read(cx).rows()[0].project_name.as_ref(),
+                "Nice name"
             );
         });
     }
@@ -11079,6 +11369,41 @@ mod state_tests {
         );
     }
     #[gpui::test]
+    fn out_of_usage_banner_opens_billing(cx: &mut TestAppContext) {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use maple_agent::agent::USAGE_LIMIT_MESSAGE;
+
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.replace_timeline(vec![
+                item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
+                item(
+                    "other-1",
+                    "error",
+                    Some("Maple rejected the inference request (status 403)"),
+                ),
+            ]);
+        });
+        let opened = Rc::new(Cell::new(0));
+        let observed = opened.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(
+                &chat,
+                move |_, request: &crate::ui::settings::OpenSettingsSection, _| {
+                    assert!(matches!(request.0, crate::ui::settings::Section::Billing));
+                    observed.set(observed.get() + 1);
+                },
+            )
+        });
+        assert!(cx.debug_bounds("open-billing-usage-1").is_some());
+        assert!(cx.debug_bounds("open-billing-other-1").is_none());
+        press(cx, "open-billing-usage-1");
+        cx.run_until_parked();
+        assert_eq!(opened.get(), 1);
+    }
+
+    #[gpui::test]
     fn update_badge_marks_settings_and_its_menu_row_routes_by_state(cx: &mut TestAppContext) {
         use std::cell::RefCell;
         use std::rc::Rc;
@@ -11392,6 +11717,96 @@ mod state_tests {
             });
         }
 
+        #[gpui::test]
+        fn opening_task_does_not_send_into_the_previous_task(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.booting = false;
+                this.loading_session = Some("next-task".into());
+                this.send_text("must stay unsent".into(), cx);
+                assert!(!this.send_pending());
+                assert!(this.pending_first_send.is_none());
+                assert!(this.unresolved_sends.is_empty());
+                assert!(this.notice.is_none());
+            });
+        }
+
+        #[gpui::test]
+        fn workspace_new_task_preserves_sidebar_pages_on_repeated_clicks(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_ready = true;
+                this.booting = false;
+                this.project_root = Some(absolute_fixture_root("workspace"));
+                let current = this.project_root.clone().unwrap();
+                set_computer_snapshots(this, identical_path_project_catalog(), cx);
+                let sidebar = this.sidebar.clone();
+                let pages = sidebar.read(cx).navigation_page_state_for_test();
+                assert!(pages.1 > 0);
+                assert!(!pages.2);
+                for _ in 0..3 {
+                    this.navigate(Destination::DraftProject(current.clone()), cx);
+                    assert!(this.draft);
+                    assert!(
+                        !this.root_selecting,
+                        "the selected workspace needs no registration"
+                    );
+                    assert_eq!(
+                        sidebar.read(cx).navigation_page_state_for_test(),
+                        pages,
+                        "new drafts must preserve all computer pages"
+                    );
+                }
+                // A different workspace still waits for owner registration,
+                // but its landing must not reload unrelated computer pages.
+                this.root_selecting = false;
+                let generation = this.selection_generation;
+                this.land_project_selection(absolute_fixture_root("different"), generation, cx);
+                assert_eq!(sidebar.read(cx).navigation_page_state_for_test(), pages);
+                assert!(this.draft);
+            });
+        }
+
+        #[gpui::test]
+        fn warmed_catalog_activation_keeps_runtime_ready(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_only = true;
+                this.navigation_ready = true;
+                this.booting = false;
+                this.selected_session = None;
+                this.navigate(Destination::Overview, cx);
+                assert!(!this.navigation_only);
+                assert!(
+                    !this.booting,
+                    "first activation must not restart runtime setup"
+                );
+                assert!(this.draft);
+                assert!(this.loading_session.is_none());
+            });
+        }
+
+        #[gpui::test]
+        fn recovering_catalog_reports_inline_loading_without_an_error(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_only = true;
+                this.navigation_ready = false;
+                this.host_recovery.unavailable = true;
+                this.host_recovery.events = Some(Vec::new());
+                let snapshot = this.computer_snapshot("Remote".into(), cx);
+                assert!(snapshot.loading);
+                assert!(snapshot.error.is_none());
+                this.host_recovery.unavailable = false;
+                this.host_recovery.events = None;
+                this.navigation_ready = true;
+                this.booting = true;
+                assert!(this.computer_snapshot("Remote".into(), cx).loading);
+                this.booting = false;
+                assert!(!this.computer_snapshot("Remote".into(), cx).loading);
+            });
+        }
+
         /// A New Task selector click carries its meaning to a previously
         /// visited computer, even if that computer showed an existing task.
         #[gpui::test]
@@ -11477,7 +11892,7 @@ mod state_tests {
         }
 
         /// Whatever left a catalog on screen, a send never runs from it:
-        /// it leaves catalog mode and waits for the runtime it starts.
+        /// it leaves catalog mode and waits for background runtime setup.
         #[gpui::test]
         fn sending_from_a_catalog_leaves_it_before_anything_runs(cx: &mut TestAppContext) {
             let chat = screen(cx);
@@ -11486,7 +11901,8 @@ mod state_tests {
                 this.project_root = Some(absolute_fixture_root("remote"));
                 this.navigation_only = true;
                 this.navigation_ready = true;
-                this.booting = false;
+                // Navigation is ready, but background runtime setup is pending.
+                this.booting = true;
                 this.send_text("hello".into(), cx);
                 assert!(!this.navigation_only);
                 assert!(this.booting);
@@ -11962,6 +12378,35 @@ mod state_tests {
                         .any(|prompt| prompt == "first message")
                 );
             });
+        }
+
+        #[gpui::test]
+        fn navigation_loading_keeps_the_header_and_composer_in_place(cx: &mut TestAppContext) {
+            let (chat, cx) = chat_window(cx, |this, _| {
+                this.loading_session = None;
+                this.root_selecting = false;
+                this.booting = false;
+            });
+            let slot = cx
+                .debug_bounds("navigation-loading-slot")
+                .expect("reserved inline slot");
+            let header = cx.debug_bounds("chat-header").unwrap();
+            let composer = cx.debug_bounds("send-message").unwrap();
+            chat.update(cx, |this, cx| {
+                this.loading_session = Some("opening".into());
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("navigation-loading-slot"), Some(slot));
+            assert_eq!(cx.debug_bounds("chat-header"), Some(header));
+            assert_eq!(cx.debug_bounds("send-message"), Some(composer));
+            chat.update(cx, |this, cx| {
+                this.finish_loading("opening");
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("navigation-loading-slot"), Some(slot));
+            assert_eq!(cx.debug_bounds("send-message"), Some(composer));
         }
 
         #[gpui::test]

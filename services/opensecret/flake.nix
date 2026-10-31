@@ -538,11 +538,19 @@
               let
                 baseName = baseNameOf path;
                 parts = pkgs.lib.splitString "/" path;
+                relativePath = pkgs.lib.removePrefix "${toString ./.}/" path;
               in
                 # Explicitly exclude .env files
                 (baseName != ".env" && baseName != ".env.sample") &&
                 (
                   (builtins.elem "src" parts) ||
+                  # The production usage-event builder's golden test compiles
+                  # this fixture into the test binary during cargoCheckHook.
+                  (type == "directory" && builtins.elem relativePath [
+                    "tests"
+                    "tests/fixtures"
+                  ]) ||
+                  (type == "regular" && relativePath == "tests/fixtures/client-app-usage.json") ||
                   (type == "regular" && (
                     baseName == "Cargo.toml" ||
                     baseName == "Cargo.lock" ||
@@ -602,6 +610,13 @@
         };
 
         checks = {
+          package-test-fixture = pkgs.runCommand "opensecret-package-test-fixture" {} ''
+            cmp ${opensecret.src}/tests/fixtures/client-app-usage.json \
+              ${./tests/fixtures/client-app-usage.json}
+            test ! -e ${opensecret.src}/.env
+            test ! -e ${opensecret.src}/.env.sample
+            touch "$out"
+          '';
           enclave-ca-trust = pkgs.runCommand "opensecret-enclave-ca-trust" {
             nativeBuildInputs = [ pkgs.openssl pkgs.python3 ];
           } ''

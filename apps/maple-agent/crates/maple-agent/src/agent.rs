@@ -51,7 +51,7 @@ pub use config::{
 };
 pub use integrations::begin_integration_setup;
 pub(crate) use projects::owner_project_display_name;
-pub use provider::CatalogEntry;
+pub use provider::{CatalogEntry, USAGE_LIMIT_MESSAGE};
 pub use questions::QuestionResponder;
 pub use runs::AgentRunHandle;
 use runtime::AgentRuntime;

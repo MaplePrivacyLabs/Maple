@@ -4360,15 +4360,28 @@ import_apple_developer_certificate() {
 
   security create-keychain -p "${keychain_password}" "${keychain}"
   security default-keychain -s "${keychain}"
+  # Identity validation and codesign resolve the certificate chain through the
+  # user search list, which a new keychain is not on. Keep the existing entries.
+  local search_list=() search_path
+  while IFS= read -r search_path; do
+    search_path="$(printf '%s' "${search_path}" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+    [ -n "${search_path}" ] && search_list+=("${search_path}")
+  done < <(security list-keychains -d user)
+  security list-keychains -d user -s "${keychain}" ${search_list[@]+"${search_list[@]}"}
   security unlock-keychain -p "${keychain_password}" "${keychain}"
   security set-keychain-settings -t 3600 -u "${keychain}"
   security import "${cert_file}" -k "${keychain}" -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign -T /usr/bin/productbuild
+  # Apple's Developer ID intermediate (www.apple.com/certificateauthority/DeveloperIDG2CA.cer,
+  # SHA-256 F16CD3C5...43D2DF3A). GitHub's macOS images preinstall it, Blacksmith's
+  # macOS 27 image does not, and without it the identity is not valid.
+  security import "${REPO_ROOT}/scripts/ci/apple-developer-id-g2.pem" -k "${keychain}"
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${keychain_password}" "${keychain}"
 
   cert_info="$(security find-identity -v -p codesigning "${keychain}" | grep "Developer ID Application" | head -n 1 || true)"
   if [ -z "${cert_info}" ]; then
     echo "No Developer ID Application identity found in imported Apple certificate." >&2
-    security find-identity -v -p codesigning "${keychain}" >&2 || true
+    # Without -v, invalid identities are listed with the reason they failed.
+    security find-identity -p codesigning "${keychain}" >&2 || true
     return 1
   fi
 
