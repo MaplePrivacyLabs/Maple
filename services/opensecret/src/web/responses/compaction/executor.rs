@@ -77,7 +77,7 @@ fn log_summary_provider_failure(
 pub(super) enum SummaryExecutionError {
     Cancelled,
     Deadline,
-    PreacceptBudget,
+    InitialPreparationBudget,
     Capacity,
     InputLimit,
     InvalidSummary,
@@ -90,7 +90,7 @@ impl SummaryExecutionError {
         match self {
             Self::Cancelled => "cancelled",
             Self::Deadline => "deadline",
-            Self::PreacceptBudget => "preaccept_budget",
+            Self::InitialPreparationBudget => "initial_preparation_budget",
             Self::Capacity => "helper_call_limit",
             Self::InputLimit => "helper_input_limit",
             Self::InvalidSummary => "invalid_summary",
@@ -101,9 +101,10 @@ impl SummaryExecutionError {
 
     pub(super) fn can_fallback_to_uncompacted(&self) -> bool {
         match self {
-            Self::PreacceptBudget | Self::Capacity | Self::InputLimit | Self::InvalidSummary => {
-                true
-            }
+            Self::InitialPreparationBudget
+            | Self::Capacity
+            | Self::InputLimit
+            | Self::InvalidSummary => true,
             Self::Provider(error) => match error.as_ref() {
                 CompletionExecutionError::Request(ApiError::ServiceUnavailable)
                 | CompletionExecutionError::Request(ApiError::InferenceCapacity { .. }) => true,
@@ -154,7 +155,7 @@ impl SummaryExecutionError {
             Self::InputLimit => ApiError::MessageExceedsContextLimit,
             Self::Cancelled
             | Self::Deadline
-            | Self::PreacceptBudget
+            | Self::InitialPreparationBudget
             | Self::Capacity
             | Self::InvalidSummary => ApiError::ServiceUnavailable,
         }
@@ -164,7 +165,7 @@ impl SummaryExecutionError {
 fn check_summary_lifetime(
     execution: &ResponseExecution,
     deadline: Instant,
-    preaccept_deadline: Option<Instant>,
+    initial_preparation_deadline: Option<Instant>,
 ) -> Result<(), SummaryExecutionError> {
     if execution.is_cancelled() {
         return Err(SummaryExecutionError::Cancelled);
@@ -175,8 +176,8 @@ fn check_summary_lifetime(
     if now >= deadline {
         return Err(SummaryExecutionError::Deadline);
     }
-    if preaccept_deadline.is_some_and(|deadline| now >= deadline) {
-        return Err(SummaryExecutionError::PreacceptBudget);
+    if initial_preparation_deadline.is_some_and(|deadline| now >= deadline) {
+        return Err(SummaryExecutionError::InitialPreparationBudget);
     }
     Ok(())
 }
@@ -184,11 +185,11 @@ fn check_summary_lifetime(
 async fn await_summary_step<T>(
     execution: &ResponseExecution,
     deadline: Instant,
-    preaccept_deadline: Option<Instant>,
+    initial_preparation_deadline: Option<Instant>,
     step: impl std::future::Future<Output = Result<T, SummaryExecutionError>>,
 ) -> Result<T, SummaryExecutionError> {
-    check_summary_lifetime(execution, deadline, preaccept_deadline)?;
-    let step_deadline = preaccept_deadline.map_or(deadline, |phase| phase.min(deadline));
+    check_summary_lifetime(execution, deadline, initial_preparation_deadline)?;
+    let step_deadline = initial_preparation_deadline.map_or(deadline, |phase| phase.min(deadline));
     tokio::select! {
         biased;
         _ = execution.cancelled() => Err(SummaryExecutionError::Cancelled),
@@ -196,7 +197,7 @@ async fn await_summary_step<T>(
             if Instant::now() >= deadline {
                 Err(SummaryExecutionError::Deadline)
             } else {
-                Err(SummaryExecutionError::PreacceptBudget)
+                Err(SummaryExecutionError::InitialPreparationBudget)
             }
         },
         result = step => result,
@@ -290,8 +291,8 @@ impl SummaryExecutor<'_> {
             let billing = BillingContext::new(AuthMethod::Jwt, self.body.model.clone());
             let execution =
                 CompletionExecutionContext::new(billing, self.routing, self.cache_policy);
-            // Once helper execution starts, the enclosing HTTP request must not
-            // be labelled safe for automatic replay, even if preparation fails.
+            // Helpers are independently billed work under this owned Response;
+            // their failure never authorizes replaying the caller's request.
             let response = async {
                 let mut completion = get_bounded_chat_completion_response_for_execution(
                     self.state,
@@ -303,7 +304,12 @@ impl SummaryExecutor<'_> {
                 )
                 .await
                 .map_err(|error| SummaryExecutionError::Provider(Box::new(error)))?;
-                collect_summary_stream(&mut completion.stream, self.budget.metrics.as_ref()).await
+                collect_summary_stream_with_progress(
+                    &mut completion.stream,
+                    self.budget.metrics.as_ref(),
+                    Some(&self.budget.progress),
+                )
+                .await
             };
             // Dropping this helper future is local cancellation, not an
             // invented provider failure. Ordinary provider observation/usage
@@ -311,7 +317,7 @@ impl SummaryExecutor<'_> {
             let response = await_summary_step(
                 self.execution,
                 self.deadline,
-                self.budget.preaccept_deadline(),
+                self.budget.initial_preparation_deadline(),
                 response,
             )
             .await;
@@ -330,12 +336,12 @@ impl SummaryExecutor<'_> {
                         "Compaction summary provider call reached its deadline");
                     return Err(SummaryExecutionError::Deadline);
                 }
-                Err(SummaryExecutionError::PreacceptBudget) => {
-                    tracing::warn!(event = "responses.compaction.helper_preaccept_budget", user_id = %self.user.uuid,
+                Err(SummaryExecutionError::InitialPreparationBudget) => {
+                    tracing::warn!(event = "responses.compaction.helper_initial_preparation_budget", user_id = %self.user.uuid,
                         response_id = %self.execution.response_id(), stage = "awaiting_provider",
                         elapsed_ms = call_started.elapsed().as_millis() as u64,
-                        "Compaction summary preaccept budget exhausted");
-                    return Err(SummaryExecutionError::PreacceptBudget);
+                        "Compaction summary initial preparation budget exhausted");
+                    return Err(SummaryExecutionError::InitialPreparationBudget);
                 }
                 Ok(response) => {
                     let next = summary::parse_summary_response(&response).map_err(|error| {
@@ -403,7 +409,7 @@ impl SummaryExecutor<'_> {
         if let Err(error) = check_summary_lifetime(
             self.execution,
             self.deadline,
-            self.budget.preaccept_deadline(),
+            self.budget.initial_preparation_deadline(),
         ) {
             tracing::warn!(event = "responses.compaction.helper_stopped", user_id = %self.user.uuid,
                 response_id = %self.execution.response_id(), stage = "before_fragment",
@@ -423,16 +429,31 @@ fn invalid_stream_summary(error: summary::SummaryError) -> SummaryExecutionError
     SummaryExecutionError::InvalidSummary
 }
 
+#[cfg(test)]
 async fn collect_summary_stream(
     stream: &mut tokio::sync::mpsc::Receiver<CompletionChunk>,
     metrics: &ContextMetrics,
+) -> Result<serde_json::Value, SummaryExecutionError> {
+    collect_summary_stream_with_progress(stream, metrics, None).await
+}
+
+async fn collect_summary_stream_with_progress(
+    stream: &mut tokio::sync::mpsc::Receiver<CompletionChunk>,
+    metrics: &ContextMetrics,
+    progress: Option<&super::progress::ProgressPublisher>,
 ) -> Result<serde_json::Value, SummaryExecutionError> {
     let mut summary = summary::SummaryStreamAccumulator::new(MAX_SUMMARY_TEXT_BYTES);
     let mut usage_recorded = false;
     while let Some(chunk) = stream.recv().await {
         match chunk {
             CompletionChunk::StreamChunk(chunk) => {
+                let previous_bytes = summary.visible_text_bytes();
                 summary.observe(&chunk).map_err(invalid_stream_summary)?;
+                if summary.visible_text_bytes() > previous_bytes {
+                    if let Some(progress) = progress {
+                        progress.sampled().await;
+                    }
+                }
             }
             // The existing completion processor owns usage publication. Wait
             // for its terminal after billing, rather than treating finish_reason
@@ -577,7 +598,7 @@ mod tests {
     use uuid::Uuid;
 
     #[tokio::test]
-    async fn preaccept_budget_drops_pending_helper_without_cancelling_the_response() {
+    async fn initial_preparation_budget_drops_pending_helper_without_cancelling_the_response() {
         use crate::web::responses::ResponseExecutionRegistry;
         use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::time::{timeout, Duration};
@@ -605,10 +626,10 @@ mod tests {
             }),
         )
         .await
-        .expect("the earlier preaccept budget must bound a slow helper");
+        .expect("the earlier initial preparation budget must bound a slow helper");
         assert!(matches!(
             result,
-            Err(SummaryExecutionError::PreacceptBudget)
+            Err(SummaryExecutionError::InitialPreparationBudget)
         ));
         assert!(polled.load(Ordering::Acquire));
         assert!(dropped.load(Ordering::Acquire));
@@ -617,7 +638,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_preaccept_budget_never_polls_work_and_absolute_deadline_stays_strict() {
+    async fn expired_initial_preparation_budget_never_polls_work_and_absolute_deadline_stays_strict(
+    ) {
         use crate::web::responses::ResponseExecutionRegistry;
         use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::time::Duration;
@@ -635,7 +657,7 @@ mod tests {
         .await;
         assert!(matches!(
             result,
-            Err(SummaryExecutionError::PreacceptBudget)
+            Err(SummaryExecutionError::InitialPreparationBudget)
         ));
         assert!(!polled.load(Ordering::Acquire));
         assert!(matches!(
@@ -650,7 +672,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clearing_preaccept_budget_restores_later_helper_execution_allowance() {
+    async fn clearing_initial_preparation_budget_restores_later_helper_execution_allowance() {
         use crate::web::responses::ResponseExecutionRegistry;
         use tokio::time::Duration;
 
@@ -658,13 +680,18 @@ mod tests {
         let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
         let execution = registration.execution();
         let budget = CompactionBudget::default();
-        budget.set_preaccept_deadline(Instant::now() - Duration::from_millis(1));
-        budget.clear_preaccept_deadline();
+        budget.set_initial_preparation_deadline(Instant::now() - Duration::from_millis(1));
+        budget.clear_initial_preparation_deadline();
         let deadline = Instant::now() + Duration::from_secs(1);
-        let result = await_summary_step(&execution, deadline, budget.preaccept_deadline(), async {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            Ok(42)
-        })
+        let result = await_summary_step(
+            &execution,
+            deadline,
+            budget.initial_preparation_deadline(),
+            async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok(42)
+            },
+        )
         .await;
         assert!(matches!(result, Ok(42)));
         assert!(!execution.is_cancelled());
@@ -674,6 +701,121 @@ mod tests {
         CompletionChunk::StreamChunk(json!({"choices": [{"index": 0, "delta": {
             "role": "assistant", "content": content,
         }, "finish_reason": finish}]}))
+    }
+
+    #[tokio::test]
+    async fn compaction_progress_requires_valid_new_visible_summary_text() {
+        use super::super::{progress::ProgressPublisher, CompactionProgress};
+        use crate::web::responses::handlers::StorageMessage;
+
+        for visible in [false, true] {
+            let (client_tx, mut client_rx) = tokio::sync::mpsc::channel(8);
+            let progress = ProgressPublisher::default();
+            progress.set_sender(client_tx);
+            let id = progress.begin().await;
+            assert!(matches!(
+                client_rx.recv().await,
+                Some(StorageMessage::CompactionProgress(CompactionProgress::Started { item_id })) if item_id == id
+            ));
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            tx.send(CompletionChunk::StreamChunk(
+                json!({"choices": [{"index": 0, "delta": {
+                    "role": "assistant", "reasoning_content": "PRIVATE_REASONING", "content": null
+                }}]}),
+            ))
+            .await
+            .unwrap();
+            tx.send(CompletionChunk::Usage(
+                crate::web::openai::CompletionUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 20,
+                    cached_prompt_tokens: None,
+                },
+            ))
+            .await
+            .unwrap();
+            tx.send(summary_stream_chunk("", serde_json::Value::Null))
+                .await
+                .unwrap();
+            if visible {
+                tx.send(summary_stream_chunk(
+                    "PRIVATE_SUMMARY",
+                    serde_json::Value::Null,
+                ))
+                .await
+                .unwrap();
+                // A second sampled chunk within the interval cannot emit more
+                // progress, and even successful sampling is not publication.
+                tx.send(summary_stream_chunk(" continued", json!("stop")))
+                    .await
+                    .unwrap();
+            } else {
+                tx.send(summary_stream_chunk("", json!("stop")))
+                    .await
+                    .unwrap();
+            }
+            tx.send(CompletionChunk::Terminal(AttemptTerminal::Completed {
+                attempt: attempt(),
+                evidence: CompletionEvidence::ProviderDone,
+            }))
+            .await
+            .unwrap();
+            drop(tx);
+            let _ = collect_summary_stream_with_progress(
+                &mut rx,
+                &ContextMetrics::default(),
+                Some(&progress),
+            )
+            .await;
+            if visible {
+                assert!(matches!(
+                    client_rx.try_recv(),
+                    Ok(StorageMessage::CompactionProgress(CompactionProgress::Compacting { item_id })) if item_id == id
+                ));
+            }
+            assert!(client_rx.try_recv().is_err());
+            progress.abandon().await;
+            assert!(matches!(
+                client_rx.try_recv(),
+                Ok(StorageMessage::CompactionProgress(CompactionProgress::Abandoned { item_id })) if item_id == id
+            ));
+            assert!(client_rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_summary_chunk_cannot_report_new_sampling() {
+        use super::super::{progress::ProgressPublisher, CompactionProgress};
+        use crate::web::responses::handlers::StorageMessage;
+
+        let (client_tx, mut client_rx) = tokio::sync::mpsc::channel(8);
+        let progress = ProgressPublisher::default();
+        progress.set_sender(client_tx);
+        let id = progress.begin().await;
+        let _ = client_rx.recv().await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(CompletionChunk::StreamChunk(json!({"choices": [{"index": 0, "delta": {
+            "role": "assistant", "content": "PRIVATE_PARTIAL", "tool_calls": [{"id": "unsupported"}]
+        }}]})))
+        .await
+        .unwrap();
+        drop(tx);
+        assert!(matches!(
+            collect_summary_stream_with_progress(
+                &mut rx,
+                &ContextMetrics::default(),
+                Some(&progress)
+            )
+            .await,
+            Err(SummaryExecutionError::InvalidSummary)
+        ));
+        assert!(client_rx.try_recv().is_err());
+        progress.abandon().await;
+        assert!(matches!(
+            client_rx.recv().await,
+            Some(StorageMessage::CompactionProgress(CompactionProgress::Abandoned { item_id })) if item_id == id
+        ));
     }
 
     #[tokio::test]
@@ -1023,7 +1165,7 @@ mod tests {
             assert!(!error.can_fallback_to_uncompacted());
         }
         for error in [
-            SummaryExecutionError::PreacceptBudget,
+            SummaryExecutionError::InitialPreparationBudget,
             SummaryExecutionError::Capacity,
             SummaryExecutionError::InputLimit,
             SummaryExecutionError::InvalidSummary,

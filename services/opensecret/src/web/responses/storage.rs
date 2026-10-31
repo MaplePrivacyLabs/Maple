@@ -737,7 +737,7 @@ pub async fn storage_task(
         match msg {
             // Compaction checkpoints are committed by their own storage path.
             // Their client lifecycle does not create a canonical transcript item.
-            StorageMessage::Compaction(_) => {}
+            StorageMessage::Compaction(_) | StorageMessage::CompactionProgress(_) => {}
             StorageMessage::MessageStarted { item_id } => {
                 let pending = pending_messages.entry(item_id).or_default();
                 let created_at = pending
