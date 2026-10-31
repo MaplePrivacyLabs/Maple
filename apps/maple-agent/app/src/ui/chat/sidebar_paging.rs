@@ -103,7 +103,7 @@ mod tests {
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
             sidebar.selected = None;
-            sidebar.running.clear();
+            sidebar.activity.running.clear();
             sidebar.archived_expanded = false;
             sidebar.refresh_pages(cx);
             assert!(sidebar.pages.loading(PageKind::Archived));
@@ -211,7 +211,7 @@ mod tests {
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.selected = None;
-            sidebar.running.clear();
+            sidebar.activity.running.clear();
             // The prior grouped projection stays visible during refresh; the
             // new authoritative ordinary pages have all completed empty.
             sidebar.sessions = vec![summary("display-only", AgentTaskState::Active)];
@@ -248,7 +248,7 @@ mod tests {
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.selected = None;
-            sidebar.running.clear();
+            sidebar.activity.running.clear();
             sidebar.sessions = (0..60)
                 .map(|index| AgentSessionSummary {
                     updated_ms: 100 + index,
@@ -278,7 +278,7 @@ mod tests {
 
             // Explicit selection and running state keep their existing retention.
             sidebar.selected = Some("archived-0".into());
-            sidebar.running.insert("archived-1".into());
+            sidebar.activity.running.insert("archived-1".into());
             sidebar.pages.autoselect_generation = Some(u64::MAX);
             sidebar.pages_ready(cx);
         });
@@ -409,7 +409,7 @@ mod tests {
                         ..summary("selected-a", state)
                     },
                 ];
-                sidebar.running = HashSet::from(["running-a".into()]);
+                sidebar.activity.running = HashSet::from(["running-a".into()]);
                 sidebar.selected = Some("selected-a".into());
                 sidebar.project_filter = Some("/b".into());
                 sidebar.refresh_pages(cx);
@@ -733,7 +733,7 @@ mod tests {
                         ..SidebarPages::default()
                     };
                     sidebar.selected = None;
-                    sidebar.running.clear();
+                    sidebar.activity.running.clear();
                     let original: Vec<_> = (0..count).map(|i| format!("loaded-{i}")).collect();
                     sidebar.sessions = original
                         .iter()
@@ -981,7 +981,7 @@ impl Sidebar {
             .filter(|session| {
                 (session.state != AgentTaskState::Archived
                     && self.pages.contains(&session.id, false))
-                    || self.running.contains(&session.id)
+                    || self.activity.running.contains(&session.id)
                     || self.selected.as_ref() == Some(&session.id)
             })
             .cloned()
@@ -1043,7 +1043,7 @@ impl Sidebar {
         };
         self.sessions.retain(|s| {
             retained.contains(&s.id)
-                || self.running.contains(&s.id)
+                || self.activity.running.contains(&s.id)
                 || self.selected.as_ref() == Some(&s.id)
         });
         if self.filter.is_empty() {
@@ -1084,7 +1084,7 @@ impl Sidebar {
                     *current = summary;
                     changed = true;
                 }
-            } else if self.running.contains(&summary.id)
+            } else if self.activity.running.contains(&summary.id)
                 || self.selected.as_ref() == Some(&summary.id)
             {
                 self.sessions.push(summary);
@@ -1410,7 +1410,7 @@ impl Sidebar {
         self.sessions.retain(|session| {
             self.pages.ids.values().any(|ids| ids.contains(&session.id))
                 || own.contains(&session.id)
-                || self.running.contains(&session.id)
+                || self.activity.running.contains(&session.id)
                 || self.selected.as_ref() == Some(&session.id)
         });
         self.task_project_labels.retain(|root, _| {
@@ -1697,7 +1697,7 @@ mod merged_prefix_tests {
                 sort: SidebarSort::Updated,
             };
             sidebar.selected = None;
-            sidebar.running.clear();
+            sidebar.activity.running.clear();
             sidebar.computers = Arc::new(Vec::new());
             sidebar.pages.enabled = true;
             for (kind, state, newest) in [
@@ -1783,7 +1783,7 @@ mod merged_prefix_tests {
                 sort: SidebarSort::Updated,
             };
             sidebar.selected = None;
-            sidebar.running.clear();
+            sidebar.activity.running.clear();
             sidebar.computers = Arc::new(Vec::new());
             sidebar.pages.enabled = true;
             sidebar.apply_task_page(PageKind::Active, vec![summary("z", "active", 100)], false);
@@ -1804,7 +1804,7 @@ mod merged_prefix_tests {
             // A selected/running task remains reachable outside the prefix.
             sidebar.pages.next.insert(PageKind::Settled, "more".into());
             sidebar.selected = Some("a".into());
-            sidebar.running.insert("z".into());
+            sidebar.activity.running.insert("z".into());
             sidebar.rebuild_sections();
             assert_eq!(shown(sidebar), ["a", "z"]);
         });
