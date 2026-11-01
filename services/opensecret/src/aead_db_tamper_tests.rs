@@ -163,6 +163,106 @@ async fn db_account_deletion_keeps_confirmation_on_billing_failure_then_retries(
 
 #[tokio::test]
 #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+async fn db_api_key_auth_attributes_requests_to_the_key_public_id() {
+    use crate::web::openai_auth::{validate_openai_auth, AuthMethod};
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+        middleware::from_fn_with_state,
+        routing::get,
+        Extension, Router,
+    };
+    use sha2::{Digest, Sha256};
+    use tower::ServiceExt;
+
+    let database_url = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL")
+        .expect("this test requires disposable migrated Postgres");
+    let app_state = Arc::new(build_local_test_app_state(database_url).await);
+    let project = first_active_project(&app_state);
+    let user = app_state
+        .db
+        .create_user(NewUser::new(None, None, project.id))
+        .unwrap();
+    let marker = Uuid::new_v4();
+    let api_key = Uuid::new_v4();
+    let used_key = app_state
+        .db
+        .create_user_api_key(NewUserApiKey::new(
+            user.uuid,
+            format!("{:x}", Sha256::digest(api_key.to_string().as_bytes())),
+            format!("public-id-used-{marker}"),
+        ))
+        .unwrap();
+    let other_key = app_state
+        .db
+        .create_user_api_key(NewUserApiKey::new(
+            user.uuid,
+            format!("test-api-key-hash-{marker}"),
+            format!("public-id-other-{marker}"),
+        ))
+        .unwrap();
+    assert!(!used_key.public_id.is_nil());
+    assert_ne!(
+        used_key.public_id, other_key.public_id,
+        "each API key must get its own public ID"
+    );
+    let mut listed_public_ids: Vec<Uuid> = app_state
+        .db
+        .get_all_user_api_keys_for_user(user.uuid)
+        .unwrap()
+        .into_iter()
+        .map(|key| key.public_id)
+        .collect();
+    listed_public_ids.sort();
+    let mut created_public_ids = vec![used_key.public_id, other_key.public_id];
+    created_public_ids.sort();
+    assert_eq!(listed_public_ids, created_public_ids);
+
+    let router = Router::new()
+        .route(
+            "/",
+            get(
+                |Extension(user): Extension<User>,
+                 Extension(auth_method): Extension<AuthMethod>| async move {
+                    format!("{}|{:?}", user.uuid, auth_method.api_key_public_id())
+                },
+            ),
+        )
+        .layer(from_fn_with_state(app_state.clone(), validate_openai_auth));
+    let request_with_key = |key: Uuid| {
+        Request::builder()
+            .uri("/")
+            .header(header::AUTHORIZATION, format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let response = router
+        .clone()
+        .oneshot(request_with_key(api_key))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        body,
+        format!("{}|{:?}", user.uuid, Some(used_key.public_id)).as_bytes(),
+        "API-key auth must attribute the request to the presented key's public ID"
+    );
+
+    let unknown_key_response = router
+        .oneshot(request_with_key(Uuid::new_v4()))
+        .await
+        .unwrap();
+    assert_eq!(unknown_key_response.status(), StatusCode::UNAUTHORIZED);
+
+    let _ = app_state.db.delete_user(&user);
+}
+
+#[tokio::test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
 async fn db_password_registration_creates_initial_seed_wrap_and_login_works() {
     let Some(database_url) = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").ok() else {
         eprintln!("skipping: AEAD_TAMPER_TEST_DATABASE_URL is not set");

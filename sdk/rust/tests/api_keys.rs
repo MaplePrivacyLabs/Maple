@@ -69,12 +69,19 @@ async fn test_create_list_delete_api_key() -> Result<()> {
     let uuid_result = Uuid::parse_str(&created_key.key);
     assert!(uuid_result.is_ok(), "API key should be a valid UUID");
 
+    // The non-secret key ID is separate from the key itself
+    let public_id = created_key
+        .public_id
+        .expect("the in-tree server should return the key's public ID");
+    assert_ne!(public_id.to_string(), created_key.key);
+
     // List API keys and verify the new key is present
     let keys = client.list_api_keys().await?;
     let found_key = keys.iter().find(|k| k.name == created_key.name);
 
     assert!(found_key.is_some());
     assert_eq!(found_key.unwrap().name, key_name);
+    assert_eq!(found_key.unwrap().public_id, Some(public_id));
 
     // Delete the API key
     client.delete_api_key(&created_key.name).await?;
