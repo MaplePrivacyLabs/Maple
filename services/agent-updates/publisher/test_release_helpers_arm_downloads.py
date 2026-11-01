@@ -1,6 +1,8 @@
 """Architecture-bound offline downloads and dispatch; no live I/O or execution."""
 from copy import deepcopy
 import json
+import stat
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
@@ -134,6 +136,70 @@ class ArmDownloadTests(unittest.TestCase):
         self.assertEqual(receipt["files"], self.fixture.records(files))
         self.assertEqual(receipt["actual_zip_sha256"], d.sha(zip_bytes))
         self.assertEqual(json.loads((args.output_dir / "bundle/reservation.json").read_text()), reservation)
+
+    def test_large_four_platform_stage_transfer_can_take_more_than_fifteen_minutes(self):
+        args = self.fixture.args()
+        zip_bytes = self.fixture.archive(self.files, "large-stage.zip").read_bytes()
+        args.zip_size, args.zip_sha256 = 248_926_519, d.sha(zip_bytes)
+        responses, _ = self.fixture.remote(args)
+        self.ctx.gh_get = Mock(side_effect=responses)
+
+        def transfer(command, **options):
+            if 1000 > options["timeout"]:
+                raise subprocess.TimeoutExpired(command, options["timeout"])
+            options["stdout"].write(zip_bytes)
+            return subprocess.CompletedProcess(command, 0)
+
+        # Simulate the large transport's byte count without a 249 MB fixture;
+        # real ZIP inventory, extraction and frozen-file hashes still run.
+        with patch.object(d, "BundleVerifier") as verifier, \
+             patch.object(d.subprocess, "run", side_effect=transfer) as request, \
+             patch.object(d, "cap", wraps=d.cap) as byte_bound, \
+             patch.object(d, "read_record", return_value=(
+                 {"size": args.zip_size, "sha256": args.zip_sha256}, b"")) as record:
+            verifier.return_value.setup.return_value = self.ctx.bindings, p
+            receipt = d.StageDownloader(self.ctx).run(args)
+        request.assert_called_once()
+        self.assertEqual(request.call_args.kwargs["timeout"], 2020)
+        byte_bound.assert_called_once_with(args.zip_size + 1)
+        record.assert_called_once_with(args.output_dir / "artifact.zip", d.MAX_ZIP)
+        self.assertEqual(receipt["actual_zip_size"], args.zip_size)
+        self.assertEqual(receipt["actual_zip_sha256"], args.zip_sha256)
+        self.assertEqual(receipt["files"], self.fixture.records(self.files))
+        self.assertEqual(len(receipt["files"]), 29)
+
+    def test_large_stage_timeout_retains_partial_without_retry_or_success_receipt(self):
+        args = self.fixture.args()
+        args.zip_size = 248_926_519
+        responses, _ = self.fixture.remote(args)
+        self.ctx.gh_get = Mock(side_effect=responses)
+        partial = b"incomplete four-platform stage"
+        downloader = d.StageDownloader(self.ctx)
+
+        def transfer(command, **options):
+            options["stdout"].write(partial)
+            raise subprocess.TimeoutExpired(command, options["timeout"])
+
+        with patch.object(d, "BundleVerifier") as verifier, \
+             patch.object(d.subprocess, "run", side_effect=transfer) as request, \
+             patch.object(downloader, "extract") as extract, \
+             patch.object(d, "read_record") as record:
+            verifier.return_value.setup.return_value = self.ctx.bindings, p
+            with self.assertRaisesRegex(OperatorError, "2020-second transfer timeout; partial archive retained"):
+                downloader.run(args)
+            archive = args.output_dir / "artifact.zip"
+            self.assertEqual(archive.read_bytes(), partial)
+            self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o600)
+            self.assertFalse((args.output_dir / "bundle").exists())
+            self.assertFalse((args.output_dir / "download.json").exists())
+            self.ctx.gh_get = Mock(side_effect=AssertionError("second request forbidden"))
+            with self.assertRaisesRegex(OperatorError, "output must be absent"):
+                downloader.run(args)
+            self.ctx.gh_get.assert_not_called()
+            request.assert_called_once()
+            self.assertEqual(request.call_args.kwargs["timeout"], 2020)
+            extract.assert_not_called()
+            record.assert_not_called()
 
     def test_new_legacy_dispatch_explicitly_disables_default_arm_input(self):
         fixture = fixtures.DownloadTests()

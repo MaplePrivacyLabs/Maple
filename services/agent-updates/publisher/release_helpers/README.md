@@ -134,6 +134,14 @@ No credential value is an argument, binding field or output.
 
 ## Checks and recovery
 
+Artifact GETs use the verified ZIP size to choose a total transfer deadline:
+two minutes plus one second per 128 KiB, rounded up, with a 15-minute minimum
+and a hard one-hour maximum. This allows larger combined stages more time
+without changing byte bounds or adding retries. A timeout retains its private
+partial ZIP and writes no success receipt. Keep that failed output intact;
+an explicitly chosen new output directory starts a fresh, fully validated GET,
+not a resumed download. Never delete failed evidence to reuse its output path.
+
 Every protected approval freshly validates the **currently waiting** job,
 successful concrete predecessor job/artifact time window, exact downloaded
 inventory and proof chain, current environment/reviewer/master-only policy,
