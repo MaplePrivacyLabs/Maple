@@ -9,7 +9,7 @@ The caller remains responsible for authorization before every operation.
 
 `Runtime::bind` installs a task binding without starting Python. The first
 `TaskHandle::execute` reserves one of four worker slots and starts the exact
-packaged executable. A protocol handshake validates CPython 3.13.15, executable,
+packaged executable. A protocol handshake validates CPython 3.14.7, executable,
 working directory, and protocol version before any cell executes. There is no
 system-Python fallback, runtime download, interpreter probe, or automatic replay.
 
@@ -73,8 +73,8 @@ and process termination cover a hung unfinished call, not a memory sandbox.
 ## Distribution and checks
 
 Development and standalone archives use the hash-pinned Python Build Standalone
-20260901 CPython 3.13.15 normal-GIL build. Nix packages retain locked nixpkgs'
-CPython 3.13.15 closure. Both carry `runtime.json`, `worker.py`, and licenses. The
+20260929 CPython 3.14.7 normal-GIL build. Nix packages retain locked nixpkgs'
+CPython 3.14.7 closure. Both carry `runtime.json`, `worker.py`, and licenses. The
 interpreter launches with `-I -B -u`: project imports are enabled only after worker
 bootstrap imports, and bytecode writes cannot mutate signed runtime resources.
 The bundle guarantees the standard library; it does not select project virtual
@@ -96,5 +96,5 @@ just code-mode-smoke
 Raw Cargo tests consume the prepared fixture and fail if it is missing. Explicit
 Nix fixtures use `MAPLE_CODE_MODE_RUNTIME_MANIFEST`. `code-mode-smoke --manifest
 PATH` exercises a relocated or signed package with the production resolver and
-framed worker. Native Windows/Linux/Intel validation belongs to their CI runners;
+framed worker. Native Windows/Linux validation belongs to their CI runners;
 a successful macOS ARM64 run is not evidence for those platforms.

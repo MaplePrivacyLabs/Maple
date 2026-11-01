@@ -81,7 +81,7 @@ async fn persistent_main_namespace_and_task_isolation() {
     );
     let identity = initial.runtime.unwrap();
     assert_eq!(identity.implementation, "cpython");
-    assert_eq!(identity.version, "3.13.15");
+    assert_eq!(identity.version, "3.14.7");
     assert_eq!(identity.cwd, root.path().canonicalize().unwrap());
     assert_eq!(identity.executable, packaged_python().executable);
     runtime.shutdown("test complete").await.unwrap();

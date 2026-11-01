@@ -51,11 +51,11 @@ impl PackagedPython {
         })?;
         if metadata.protocol_version != 1
             || metadata.implementation != "cpython"
-            || metadata.version != "3.13.15"
+            || metadata.version != "3.14.7"
             || metadata.distribution.is_empty()
             || metadata.distribution.len() > 256
         {
-            return Err(Error::Unavailable("Python runtime manifest does not declare the supported CPython 3.13.15 protocol 1 distribution".into()));
+            return Err(Error::Unavailable("Python runtime manifest does not declare the supported CPython 3.14.7 protocol 1 distribution".into()));
         }
         let manifest = fs::canonicalize(path).map_err(missing)?;
         let directory = manifest.parent().expect("absolute manifest has a parent");
@@ -150,7 +150,7 @@ mod tests {
         let manifest = RuntimeManifest {
             protocol_version: 1,
             implementation: "cpython".into(),
-            version: "3.13.15".into(),
+            version: "3.14.7".into(),
             distribution: "nix-fixture".into(),
             executable: "python".into(),
             worker: "worker.py".into(),
@@ -182,7 +182,7 @@ mod tests {
             PackagedPython::from_manifest(manifest)
                 .unwrap_err()
                 .to_string()
-                .contains("3.13.15")
+                .contains("3.14.7")
         );
     }
 }

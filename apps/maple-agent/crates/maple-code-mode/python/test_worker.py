@@ -1,9 +1,9 @@
 """Focused worker checks against an explicitly prepared package interpreter.
 
 Run through the repository environment, for example:
-  nix develop -c target/debug/runtime/python/bin/python3.13 -I \
+  nix develop -c target/debug/runtime/python/bin/python3.14 -I \
     crates/maple-code-mode/python/test_worker.py \
-    --python /absolute/worktree/target/debug/runtime/python/bin/python3.13
+    --python /absolute/worktree/target/debug/runtime/python/bin/python3.14
 
 There is deliberately no interpreter discovery, download, or missing-fixture
 skip. Rust native-worker tests additionally cover host supervision and limits.
@@ -174,7 +174,7 @@ class PackagedWorkerTests(unittest.TestCase):
         self.addCleanup(self.worker.shutdown)
 
     def test_exact_identity_real_main_state_and_eof_stdin(self):
-        self.assertEqual(self.worker.ready["version"], "3.13.15")
+        self.assertEqual(self.worker.ready["version"], "3.14.7")
         self.assertEqual(self.worker.ready["implementation"], "cpython")
         self.assertEqual(Path(self.worker.ready["executable"]).resolve(), PYTHON.resolve())
         self.assertEqual(self.worker.ready["cwd"], self.worker.root)

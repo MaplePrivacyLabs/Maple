@@ -49,8 +49,8 @@ class PreparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = self.archive(root, [
-                ("python/bin/python3.13", "binary", False),
-                ("python/bin/python3", "python3.13", True),
+                ("python/bin/python3.14", "binary", False),
+                ("python/bin/python3", "python3.14", True),
             ])
             staged = prepare.safe_extract(archive, root / "stage")
             self.assertEqual((staged / "bin/python3").read_text(), "binary")
@@ -70,7 +70,7 @@ class PreparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = self.archive(root, [
-                ("python/bin/python3.13", "binary", False),
+                ("python/bin/python3.14", "binary", False),
                 ("python/LICENSE.txt", "license", False),
                 ("python/lib/module.py", "module", False),
             ])
@@ -81,7 +81,7 @@ class PreparationTests(unittest.TestCase):
             worker = root / "worker.py"
             worker.write_text("worker")
             pins = root / "pins.json"
-            pins.write_text(json.dumps({"implementation": "cpython", "version": "3.13.15", "release": "20260901", "targets": {"test": {"sha256": archive_hash, "executable": "bin/python3.13", "url": "unused"}}}))
+            pins.write_text(json.dumps({"implementation": "cpython", "version": "3.14.7", "release": "20260929", "targets": {"test": {"sha256": archive_hash, "executable": "bin/python3.14", "url": "unused"}}}))
             destination = root / "runtime"
             with patch.object(prepare, "PINS", pins), patch.object(prepare.urllib.request, "urlopen", side_effect=AssertionError("network forbidden")):
                 prepare.prepare_pbs("test", destination, cache, worker, True)
