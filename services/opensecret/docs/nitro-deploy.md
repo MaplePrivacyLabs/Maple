@@ -56,21 +56,17 @@ deploy.
 
 ### Deployment handoff from a release run
 
-Deployment verifies an immutable Nix store artifact. Download the run's
-artifact, verify its provenance, add it to the store, and pass the merged
-approval commit:
+For a workflow-managed deployment, use the release run's reported source SHA,
+run ID, EIF SHA-256 and approval result as deployment inputs. The deployment
+workflow downloads the immutable artifact and verifies provenance, checksums,
+measurements and handoff identity in CI. A routine release needs no local EIF
+download, manual attestation command or local Nix-store import.
 
-```sh
-gh run download RUN_ID --name opensecret-eif-prod-COMMIT12 --dir eif-candidate
-gh attestation verify eif-candidate/image.eif --repo MaplePrivacyLabs/Maple
-eif_dir="$(nix store add-path --name opensecret-eif-prod eif-candidate)"
-export OPENSECRET_SOURCE_REF=MERGED_APPROVAL_COMMIT_SHA \
-  OPENSECRET_EIF_DIR="$eif_dir" \
-  OPENSECRET_EIF_SHA256="$(grep ' image.eif$' eif-candidate/SHA256SUMS | cut -d' ' -f1)"
-```
-
-The source ref must be the merged commit whose `pcr<Env>.json` matches the
-artifact's `pcr.json`; the deployment verifier rejects anything else.
+The selected artifact must come from a source commit that already contains its
+matching approved PCR files. After merging new approvals, build a final release
+from that commit and require `approval_needed=false`. Pass that final run's
+actual source SHA, run ID and hash together; do not relabel an older artifact
+with a later approval merge SHA.
 
 ## CI approval checks
 
