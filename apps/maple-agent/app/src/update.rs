@@ -45,6 +45,7 @@ pub enum UpdateAction {
 
 /// Title of the restart confirmation. It names the version, since the
 /// sidebar's update button shows only an icon.
+#[cfg(not(target_os = "linux"))]
 pub fn restart_title(version: Option<&str>) -> String {
     version.map_or_else(
         || "Restart Maple to update?".to_string(),
@@ -52,6 +53,7 @@ pub fn restart_title(version: Option<&str>) -> String {
     )
 }
 
+#[cfg(not(target_os = "linux"))]
 pub const RESTART_DETAIL: &str = "This stops running tasks and remote access on this computer. Editors using Maple must reconnect after the update.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]

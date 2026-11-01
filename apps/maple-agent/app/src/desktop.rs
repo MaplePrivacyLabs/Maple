@@ -895,6 +895,7 @@ impl MapleApp {
                         }
                     }
                     this.set_store_resident(status.keeps_resident(), cx);
+                    ui::i18n::initialize_saved_preference(this.settings.locale.as_deref());
                     ui::theme::apply_preference(
                         ui::theme::Preference::parse(&this.settings.theme),
                         cx,
@@ -1120,10 +1121,15 @@ impl MapleApp {
                 return;
             }
             self.restart_prompt_pending = true;
+            #[cfg(not(target_os = "linux"))]
             let title = crate::update::restart_title(self.updater.snapshot().version.as_deref());
             #[cfg(target_os = "linux")]
             let answer = {
-                let (prompt, answer) = ui::update_confirmation::open(title, window, cx);
+                let (prompt, answer) = ui::update_confirmation::open(
+                    self.updater.snapshot().version.as_deref(),
+                    window,
+                    cx,
+                );
                 self.restart_confirmation = Some(prompt);
                 cx.notify();
                 answer
