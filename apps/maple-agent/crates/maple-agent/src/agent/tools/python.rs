@@ -214,7 +214,11 @@ impl Drop for TaskPython {
     fn drop(&mut self) {
         // Retirement fences admission synchronously; the runtime keeps
         // ownership of the cleanup the dropped future would have observed.
-        if let Some(handle) = self.state.get_mut().unwrap().handle.take() {
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(handle) = state.handle.take() {
             drop(handle.retire(UNLOADED_REASON));
         }
     }
