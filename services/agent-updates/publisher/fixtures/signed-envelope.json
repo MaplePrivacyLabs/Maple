@@ -1,4 +1,0 @@
-{
-  "manifest": "{\"format\":\"maple-agent-update-v1\",\"product\":\"maple-agent\",\"channel\":\"stable\",\"version\":\"0.0.2\",\"build\":\"2\",\"source_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"pub_date\":\"2026-10-21T15:00:00Z\",\"notes\":\"A test update.\\nPlain text.\",\"artifacts\":{\"darwin-aarch64\":{\"path\":\"/agent/stable/releases/0.0.2/Maple-Agent.app.tar.gz\",\"size\":28,\"sha256\":\"106cfb1b4d93e07f8c02c2a3440aafd7dd2f5b0889bbb7ba77bc99ca85ef84da\"}},\"downloads\":{\"macos\":{\"path\":\"/agent/stable/releases/0.0.2/Maple-Agent.dmg\",\"size\":28,\"sha256\":\"106cfb1b4d93e07f8c02c2a3440aafd7dd2f5b0889bbb7ba77bc99ca85ef84da\"}}}",
-  "signature": "untrusted comment: TEST ONLY\nRUQxMjM0NTY3OCUVO3EkRz9emd4Vq7qd4IR+x9DelvoFJkcVwb/q0ODwQHQxK7yxsqUtoOA++iMkjIiVg3y+EKA964mP5WQwdw0=\ntrusted comment: product=maple-agent channel=stable version=0.0.2\n4Mo/xlTkXa0LMc4N+SJyNbTqErz0CLZg4vQMSCz4KzR1MdAITbAmXq9Vy4aXRhSXtFoeuTBSe3w4IF8I+aMXDQ==\n"
-}

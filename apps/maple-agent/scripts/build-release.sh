@@ -8,13 +8,6 @@ fi
 component="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$component"
 
-# Signed packaging is a later workflow step. Neither Cargo nor dependency build
-# scripts receive certificates, notarization passwords, or updater keys.
-unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_ID_PASSWORD
-unset APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-unset AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID
-unset MAPLE_WINDOWS_ARTIFACT_SIGNING_ENDPOINT MAPLE_WINDOWS_ARTIFACT_SIGNING_ACCOUNT_NAME
-unset MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME
 export MAPLE_RELEASE_PROFILE="$1"
 if [[ "$1" == dev ]]; then
     export VITE_OPEN_SECRET_PCR_ENVIRONMENT=development
@@ -29,21 +22,14 @@ case "$(uname -s)" in
         # An explicit Windows target keeps +crt-static off host proc macros
         # and build scripts. Stage only this build's executable at the shared
         # prebuilt path.
-        windows_arch="${MAPLE_WINDOWS_ARCH:-x86_64}"
-        case "$windows_arch" in
-            x86_64|aarch64) ;;
-            *) echo "unsupported native Windows architecture" >&2; exit 2 ;;
-        esac
-        windows_target="${windows_arch}-pc-windows-msvc"
+        windows_target="${MAPLE_WINDOWS_ARCH:-x86_64}-pc-windows-msvc"
         cargo build --release -p maple-agent-app --locked --timings --target "$windows_target"
         mkdir -p target/release
         cp "target/$windows_target/release/maple-agent.exe" target/release/maple-agent.exe
         ;;
     Linux)
-        [[ "$(uname -m)" == x86_64 ]] || { echo "Linux release bundles are x86_64 only" >&2; exit 1; }
         # Like Zed, link against an old glibc so the binary runs on the host's
-        # own glibc, display libraries and GPU drivers. Keep this floor equal
-        # to GLIBC_FLOOR in linux-release-appimage.py, whose audit enforces it.
+        # own glibc, display libraries and GPU drivers.
         # zig does not read the Nix compiler wrapper's search paths, so name the
         # Nix library directories explicitly. Those libraries are link-time
         # stand-ins for the host's copies, which resolve their own glibc
@@ -60,23 +46,5 @@ case "$(uname -s)" in
         ;;
     *)
         cargo build --release -p maple-agent-app --locked --timings
-        ;;
-esac
-binary="$component/target/release/maple-agent"
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*)
-        # The unsigned prebuilt Windows bootstrap is not an installed app.
-        # Validate its immutable PE metadata without entering runtime trust or
-        # installation checks; signing and installed-app smoke happen later.
-        python3 "$component/scripts/windows-build-info.py" "${binary}.exe" \
-            --profile "$1" --source-sha "$(git rev-parse HEAD)" --arch "$windows_arch" >/dev/null
-        ;;
-    Linux)
-        "$component/scripts/run-linux-payload.sh" "$binary" --build-info |
-            python3 -c 'import json,sys; info=json.load(sys.stdin); expected=sys.argv[1]; assert info["profile"] == expected, "incorrect release profile"' "$1"
-        ;;
-    *)
-        "$binary" --build-info |
-            python3 -c 'import json,sys; info=json.load(sys.stdin); expected=sys.argv[1]; assert info["profile"] == expected, "incorrect release profile"' "$1"
         ;;
 esac

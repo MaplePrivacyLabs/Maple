@@ -128,14 +128,14 @@ Blacksmith and the org's 16-core GitHub Windows runner are billed per minute.
   symlink privilege GitHub grants. 16 cores only add queueing to a short
   suite.
 - **Windows packaging (`agent-package-windows`, `research-desktop-windows`,
-  release `build-windows`) uses `maple-windows-2025-16core`.** Install smokes
-  need GitHub's image, and the bundles gain from cores.
+  release `build-windows`) uses `maple-windows-2025-16core`.** The bundles
+  gain from cores.
 - **The Agent's master Windows build runs on Blacksmith Windows.** The
   fat-LTO link is single-threaded, so 16 cores are no faster.
 - **The Agent's signing and attestation, `windows-signing` jobs and artifact
-  verifiers are GitHub-hosted.** The Agent publisher verifies attestations
-  with `--deny-self-hosted-runners`, and Blacksmith counts as self-hosted.
-  `windows-signing`'s Azure trust names GitHub-hosted runners (C6).
+  verifiers are GitHub-hosted.** Provenance then never names a self-hosted
+  runner (Blacksmith counts as self-hosted), and `windows-signing`'s Azure
+  trust names GitHub-hosted runners (C6).
   Verifiers run fresh and restore no cache. Research's macOS, Linux, iOS and
   Android signed builds compile and sign on Blacksmith.
 - **Every EIF builder that uses FlakeHub runs on
@@ -204,9 +204,10 @@ saves those caches.
 
 `agent-desktop-build.yml` builds Prod on master pushes, Dev nightly at 10:37
 UTC, and both on dispatch. Prod no longer waits on, or gets skipped by, a
-failed Dev leg, and pushes no longer spend runner time on Dev packages. The
-nightly run can never be published, because the publisher accepts only
-`push` and `workflow_dispatch` runs. The hour avoids the other scheduled runs
+failed Dev leg, and pushes no longer spend runner time on Dev packages. Only a
+dispatch with `release=true` publishes. Windows ARM64 compiles natively on
+GitHub's slow ARM image (35-50 minutes), so it builds only nightly, on dispatch
+and for releases, never on a push. The hour avoids the other scheduled runs
 and the top of the hour. Research iOS Dev TestFlight stays on push.
 
 ## CodeQL only has to be "not red"
@@ -258,8 +259,8 @@ audit whenever they are selected.
 Tests that grep a script's or workflow's prose or comments break on harmless
 renames and rewording and catch no behaviour. A hand-copied list of required
 test names breaks on the next rename. Test what the planner selects, or the
-contract another file consumes: `test_contracts.py` imports `publisher.py`,
-`ci_evidence.py` and the signature probe rather than copying their rules.
+contract another file consumes: `test_contracts.py` imports `ci_evidence.py`
+rather than copying its rules.
 Where a seam depends on exact structure, a contract test asserts the parsed
 YAML fields and conditions (for example the clean step's `run` lines or the
 EIF `sign` job's `if:`). Derive any list a test needs.

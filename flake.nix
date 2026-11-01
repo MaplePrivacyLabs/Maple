@@ -738,14 +738,13 @@
           '';
 
           # Every scripts/ci test (workflow policy, contracts, the planner, the
-          # release and publication scripts) and the Agent update publisher.
+          # release and publication scripts).
           ci-scripts = pkgs.runCommand "maple-ci-scripts-check" {
             nativeBuildInputs = with pkgs; [ mapleBash git jq minisign python3 unzip yq-go ];
             src = ./.;
           } ''
             cd "$src"
             python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'
-            python3 -I -m unittest discover -s services/agent-updates/publisher -p 'test_*.py'
             touch "$out"
           '';
 

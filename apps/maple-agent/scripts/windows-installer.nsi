@@ -20,15 +20,8 @@ VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Maple Privacy Labs"
 
 !ifdef SIGNER
-; NSIS generates a standalone uninstaller and signs it without running any
-; downloaded executable. A signer error aborts the package build.
-!ifdef UNSIGNED_UNINSTALLER
-; Preview bundles need the same standalone PE inventory. Verification performs
-; no signing and requires the compiler output to remain unsigned.
-!uninstfinalize 'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "${SIGNER}" "%1" -VerifyOnly -Unsigned' = 0
-!else
-!uninstfinalize 'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "${SIGNER}" "%1"' = 0
-!endif
+; NSIS signs the uninstaller it generates. A signer error aborts the package build.
+!uninstfinalize 'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "${SIGNER}" -File "%1"' = 0
 !endif
 
 Page directory
