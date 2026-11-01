@@ -52,7 +52,7 @@ pub(super) enum SettingsTarget {
     Shortcut(String),
     PromptEditor,
     PromptSave,
-    PromptReset,
+    PromptClear,
     Integration(String),
     IntegrationSetup(String),
     McpAdd,
@@ -164,7 +164,7 @@ impl SettingsScreen {
             Section::Prompt => vec![
                 SettingsTarget::PromptEditor,
                 SettingsTarget::PromptSave,
-                SettingsTarget::PromptReset,
+                SettingsTarget::PromptClear,
             ],
             Section::Integrations => self
                 .integrations
@@ -376,7 +376,7 @@ impl SettingsScreen {
                 window.focus(&handle, cx);
             }
             Some(SettingsTarget::PromptSave) => self.save_prompt(cx),
-            Some(SettingsTarget::PromptReset) => self.reset_prompt(cx),
+            Some(SettingsTarget::PromptClear) => self.clear_prompt(cx),
             Some(SettingsTarget::Integration(id)) => self.toggle_integration(&id, cx),
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),

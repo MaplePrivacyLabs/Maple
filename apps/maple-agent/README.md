@@ -156,7 +156,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
   and restore. Unknown or malformed View preferences fall back to defaults.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
-  speech voice and speed), Keyboard Shortcuts, System prompt, Integrations
+  speech voice and speed), Keyboard Shortcuts, Additional instructions, Integrations
   (detected built-ins and custom MCP servers), Usage (the plan meter from
   the billing API), and About.
 - Dark and light themes; the default follows the system.
