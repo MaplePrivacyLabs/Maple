@@ -95,6 +95,43 @@ class PreparationTests(unittest.TestCase):
                 prepare.prepare_pbs("test", destination, cache, worker, True)
                 self.assertEqual((destination / "worker.py").read_text(), "updated worker")
 
+    def test_tk_and_idle_are_left_out_of_every_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = self.archive(root, [
+                ("python/bin/python3.14", "binary", False),
+                ("python/bin/idle3.14", "idle", False),
+                ("python/bin/idle3", "idle3.14", True),
+                ("python/LICENSE.txt", "license", False),
+                ("python/lib/libtcl9.0.so", "tcl", False),
+                ("python/lib/tcl9.0/init.tcl", "tcl", False),
+                ("python/lib/tk9.0/tk.tcl", "tk", False),
+                ("python/lib/python3.14/tkinter/__init__.py", "tkinter", False),
+                ("python/lib/python3.14/idlelib/idle.py", "idle", False),
+                ("python/lib/python3.14/lib-dynload/_tkinter.cpython-314-x86_64-linux-gnu.so", "ext", False),
+                ("python/lib/python3.14/lib-dynload/_ssl.cpython-314-x86_64-linux-gnu.so", "ssl", False),
+                ("python/lib/python3.14/json/__init__.py", "json", False),
+            ])
+            archive_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
+            cache = root / "cache"
+            cache.mkdir()
+            archive.rename(cache / f"{archive_hash}.tar.gz")
+            worker = root / "worker.py"
+            worker.write_text("worker")
+            pins = root / "pins.json"
+            pins.write_text(json.dumps({"implementation": "cpython", "version": "3.14.7", "release": "20260929", "targets": {"test": {"sha256": archive_hash, "executable": "bin/python3.14", "url": "unused"}}}))
+            destination = root / "runtime"
+            with patch.object(prepare, "PINS", pins), patch.object(prepare.urllib.request, "urlopen", side_effect=AssertionError("network forbidden")):
+                prepare.prepare_pbs("test", destination, cache, worker, True)
+            kept = sorted(path.relative_to(destination).as_posix() for path in destination.rglob("*")
+                          if path.is_file() and not path.name.startswith("."))
+            self.assertIn("lib/python3.14/lib-dynload/_ssl.cpython-314-x86_64-linux-gnu.so", kept)
+            self.assertIn("lib/python3.14/json/__init__.py", kept)
+            # The pinned upstream notice set stays complete, including Tcl's.
+            for name in (name for name in kept if not name.startswith("licenses/")):
+                self.assertNotRegex(name, r"tcl|tk9|tkinter|idle")
+            self.assertFalse((destination / "bin/idle3").is_symlink())
+
     def test_failed_publication_restores_previous_tree(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
