@@ -117,8 +117,8 @@ vim-cases:
 permission-eval:
     cargo test -p maple-agent --locked --lib agent::permissions::eval -- --ignored --nocapture
 
-# Build the debug binary.
-build:
+# Build the debug binary, with the pinned CPython beside it for the python tool.
+build: python-prepare
     cargo build -p maple-agent-app
 
 # Stage the debug binary in a stable macOS app bundle. A stable bundle identity

@@ -5873,6 +5873,7 @@ dependencies = [
  "libc",
  "libsqlite3-sys",
  "log",
+ "maple-code-mode",
  "maple-proxy",
  "maple-sdk",
  "once_cell",
