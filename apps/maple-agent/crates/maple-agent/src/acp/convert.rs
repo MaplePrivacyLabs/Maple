@@ -580,7 +580,11 @@ pub(super) fn timeline_tool_kind(item: &AgentTimelineItem) -> ToolKind {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let input = item.input.as_ref();
-    if input.and_then(|value| value.get("command")).is_some() || title.contains("terminal") {
+    if input.and_then(|value| value.get("command")).is_some()
+        || input.and_then(|value| value.get("code")).is_some()
+        || title.contains("terminal")
+        || title.starts_with("python")
+    {
         ToolKind::Execute
     } else if input.and_then(|value| value.get("url")).is_some()
         || title.contains("web")

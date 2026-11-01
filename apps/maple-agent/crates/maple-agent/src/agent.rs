@@ -1081,6 +1081,7 @@ impl AgentRuntimeHandle {
         .map_err(|_| "Project settings worker did not complete".to_owned())??;
         if let Some(runtime) = runtime {
             runtime.project_root_removed(&path, fallback_path.as_deref());
+            runtime.discard_project_python(&path).await;
         }
         let config = load_agent_config_inner(self.paths(), &self.user_id)
             .map_err(|error| error.to_string())?;

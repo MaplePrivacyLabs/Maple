@@ -123,6 +123,9 @@ pub(super) struct AgentRuntime {
     pub(super) failures: Failures,
     /// The external agents of the account's tasks.
     pub(super) external_agents: Arc<ExternalAgentRegistry>,
+    /// The bundled CPython behind the tasks' `python` scratchpads, when this
+    /// build has one.
+    python: Option<Arc<tools::PythonWorkers>>,
 }
 
 impl AgentRuntime {
@@ -155,6 +158,7 @@ impl AgentRuntime {
             surfaces: Mutex::new(HashMap::new()),
             runs: Runs::default(),
             failures: Failures::default(),
+            python: tools::PythonWorkers::bundled(),
         })
     }
 
@@ -764,6 +768,17 @@ impl AgentRuntime {
                 login_path: search_path.clone(),
                 providers: agents.clone(),
             }));
+        if let Some(workers) = &self.python {
+            let python = workers.task(
+                &row.id,
+                PathBuf::from(&row.project_root),
+                search_path.as_deref(),
+                row.message_count > 0,
+                self.lifetime.child_token(),
+            );
+            options.tools.push(tools::python_tool(Arc::clone(&python)));
+            options.extensions.push(tools::python_extension(python));
+        }
         let mcp = TaskMcp::new_with_output_dir(
             Path::new(&row.project_root),
             search_path,
@@ -995,7 +1010,27 @@ impl AgentRuntime {
         // its persistence retry succeeds. The host must retain this runtime on
         // failure and keep its ownership lock/key until a successful retry.
         futures_util::future::join_all(sessions.iter().map(AgentSession::shutdown)).await;
+        if let Some(python) = &self.python {
+            python.shutdown().await;
+        }
         self.finish_shutdown().await
+    }
+
+    /// Discard a loaded task's Python scratchpad; its next call starts fresh
+    /// and is told why.
+    pub(super) async fn discard_python(&self, session_id: &str, reason: &str) {
+        if let Some(python) = &self.python {
+            python.discard(session_id, reason).await;
+        }
+    }
+
+    /// Discard the Python scratchpads of a project's loaded tasks.
+    pub(super) async fn discard_project_python(&self, project_root: &str) {
+        if let Some(python) = &self.python {
+            python
+                .discard_project(Path::new(project_root), tools::PROJECT_REMOVED_REASON)
+                .await;
+        }
     }
 
     /// Finish saving an already-drained runtime without notifying extensions or
