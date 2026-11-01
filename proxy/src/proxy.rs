@@ -8,7 +8,7 @@ use axum::{
 };
 use futures::{future::BoxFuture, Stream, StreamExt};
 use maple_sdk::{
-    client::OpenSecretResponseBody, OpenSecretClient, Result as OpenSecretResult,
+    client::OpenSecretResponseBody, ClientApp, OpenSecretClient, Result as OpenSecretResult,
     TransportV2CacheNamespaceRoot,
 };
 use std::{collections::HashSet, io, pin::Pin, sync::Arc, time::Duration};
@@ -66,6 +66,7 @@ impl ProxyState {
         let pcr0_environment = self.config.pcr0_environment;
         let request_timeout = self.config.request_timeout();
         let configured_cache_namespace_root = self.config.cache_namespace_root.clone();
+        let client_app = self.config.client_app;
 
         let client = self
             .client
@@ -75,6 +76,7 @@ impl ProxyState {
                     pcr0_environment,
                     request_timeout,
                     configured_cache_namespace_root,
+                    client_app,
                 )
                 .await
                 .map(Arc::new)
@@ -128,9 +130,9 @@ async fn create_shared_client(
     pcr0_environment: maple_sdk::Pcr0Environment,
     request_timeout: Duration,
     configured_cache_namespace_root: Option<TransportV2CacheNamespaceRoot>,
+    client_app: Option<ClientApp>,
 ) -> Result<OpenSecretClient, ProxyError> {
-    let client = OpenSecretClient::new_with_pcr0_environment(backend_url, pcr0_environment)
-        .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
+    let client = create_configured_client(backend_url, pcr0_environment, client_app)?;
     let client = if let Some(cache_namespace_root) = configured_cache_namespace_root {
         client.with_cache_namespace_root(cache_namespace_root)
     } else {
@@ -147,6 +149,19 @@ async fn create_shared_client(
         .map_err(|e| transport_error_response("OpenSecret attestation handshake", &e))?;
 
     Ok(client)
+}
+
+fn create_configured_client(
+    backend_url: &str,
+    pcr0_environment: maple_sdk::Pcr0Environment,
+    client_app: Option<ClientApp>,
+) -> Result<OpenSecretClient, ProxyError> {
+    let client = OpenSecretClient::new_with_pcr0_environment(backend_url, pcr0_environment)
+        .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
+    Ok(match client_app {
+        Some(client_app) => client.with_client_app(client_app),
+        None => client,
+    })
 }
 
 fn timeout_response(operation: &str, timeout: Duration) -> ProxyError {
@@ -394,6 +409,7 @@ mod tests {
 
     fn test_config() -> Config {
         Config {
+            client_app: None,
             host: "127.0.0.1".to_string(),
             port: 0,
             backend_url: "http://localhost:3000".to_string(),
@@ -404,6 +420,38 @@ mod tests {
             enable_cors: false,
             request_timeout_secs: 300,
             stream_idle_timeout_secs: 300,
+        }
+    }
+
+    #[test]
+    fn host_application_identity_reaches_the_proxy_sdk_client() {
+        use clap::Parser;
+
+        let standalone = Config::try_parse_from(["maple-proxy"]).unwrap();
+        let embedded = Config::new("127.0.0.1".into(), 0, "http://localhost:3000".into());
+        let cases = [
+            (standalone, Some(ClientApp::Proxy)),
+            (embedded.clone(), None),
+            (
+                embedded.clone().with_client_app(ClientApp::Chat),
+                Some(ClientApp::Chat),
+            ),
+            (
+                embedded
+                    .with_api_key("host-configured-key".into())
+                    .with_client_app(ClientApp::Work),
+                Some(ClientApp::Work),
+            ),
+        ];
+
+        for (config, expected) in cases {
+            let client = create_configured_client(
+                &config.backend_url,
+                config.pcr0_environment,
+                config.client_app,
+            )
+            .unwrap();
+            assert_eq!(client.client_app(), expected);
         }
     }
 

@@ -50,7 +50,7 @@ fn nested_and_pinned_completion_contexts_preserve_plan_without_provider_flag() {
             },
         );
         let context = CompletionExecutionContext::for_pinned(
-            BillingContext::new(AuthMethod::ApiKey, public_model.to_string()),
+            BillingContext::new(AuthMethod::ApiKey, public_model.to_string(), None),
             &pinned,
             &cache,
         );
@@ -119,9 +119,8 @@ fn maple_instance_routes_keep_shared_cache_namespace_and_billing_identity() {
                 cached_prompt_tokens: Some(42),
             },
             BigDecimal::from(0),
-            true,
             route.provider.family_name().to_owned(),
-            route.public_model_id,
+            &BillingContext::new(AuthMethod::ApiKey, route.public_model_id, None),
         );
         assert_eq!(event.provider_name, "maple");
         assert_eq!(event.model_name, model);

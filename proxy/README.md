@@ -54,15 +54,30 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
-This checkout prepares proxy `0.4.5`, including `POST /v1/systemone` introduced
+This checkout prepares proxy `0.5.0`, including `POST /v1/systemone` introduced
 in `0.4.2`, with a compatible registry requirement for `maple-sdk`
-starting at `4.0.1`. The published proxy crate in the example above
+starting at `4.2.0`. The published proxy crate in the example above
 predates this Transport V2 update. The standalone binary's lockfile selects its
 SDK version; an embedding application selects its own. Keep the host and proxy
 on one SDK source/version because their public APIs exchange SDK types. Local
 SDK links remain supported during development. See the
 [SDK consumer version policy](../docs/sdk-publishing.md#consumer-version-policy).
 Publishing the SDK does not publish the proxy crate or release the Maple app.
+
+### Application attribution
+
+The standalone binary identifies its encrypted inference requests as `proxy`.
+This is application metadata and is independent of whether a request uses a
+per-request API key or the configured default key. It does not change
+authentication, model routing, or pricing.
+
+Library hosts retain their own application identity. `Config::new` leaves the
+identity unspecified; a host can select it explicitly with
+`.with_client_app(ClientApp::Chat)` or `.with_client_app(ClientApp::Work)`.
+`ClientApp` is re-exported by `maple_proxy`. The configured identity is passed
+to the SDK, which puts it inside the encrypted request and overrides any
+conflicting caller-supplied attribution header. Older servers can ignore this
+metadata without changing request handling.
 
 ## ⚙️ Configuration
 

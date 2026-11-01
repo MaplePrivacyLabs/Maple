@@ -607,6 +607,7 @@ fn default_embedding_model() -> String {
 pub struct BillingContext {
     pub auth_method: AuthMethod,
     pub model_name: String,
+    pub client_app: Option<crate::client_app::ClientApp>,
 }
 
 /// Application policy carried with an internal completion request.
@@ -664,10 +665,15 @@ impl<'a> CompletionExecutionContext<'a> {
 }
 
 impl BillingContext {
-    pub fn new(auth_method: AuthMethod, model_name: String) -> Self {
+    pub fn new(
+        auth_method: AuthMethod,
+        model_name: String,
+        client_app: Option<crate::client_app::ClientApp>,
+    ) -> Self {
         Self {
             auth_method,
             model_name,
+            client_app,
         }
     }
 }
@@ -2023,7 +2029,11 @@ async fn proxy_openai(
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
     let routing = InferenceRoutingContext::new(model_plan);
     let model_selection = ModelSelection::for_request(&requested_model_name, &alias_target);
-    let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
+    let billing_context = BillingContext::new(
+        auth_method,
+        requested_model_name.clone(),
+        crate::client_app::ClientApp::from_headers(&headers),
+    );
 
     // Router v2 Auto may choose another approved model of the tier before the
     // route is pinned. The body is only inspected when that stage runs. If the
@@ -3530,9 +3540,8 @@ pub(crate) async fn publish_usage_event_internal(
     // Spawn background task for DB + SQS
     let state_clone = state.clone();
     let user_id = user.uuid;
-    let is_api_request = billing_context.auth_method == AuthMethod::ApiKey;
+    let billing_context = billing_context.clone();
     let provider_name = provider_name.to_string();
-    let model_name = billing_context.model_name.clone();
 
     tokio::spawn(async move {
         // Create and store token usage record
@@ -3551,14 +3560,8 @@ pub(crate) async fn publish_usage_event_internal(
 
         // Post event to SQS if configured
         if let Some(publisher) = &state_clone.sqs_publisher {
-            let event = build_usage_event(
-                user_id,
-                usage,
-                total_cost,
-                is_api_request,
-                provider_name,
-                model_name,
-            );
+            let event =
+                build_usage_event(user_id, usage, total_cost, provider_name, &billing_context);
 
             debug!(
                 "Prepared SQS usage event: user_uuid={}, provider={}, model={}, input_tokens={}, output_tokens={}, cached_input_tokens={:?}",
@@ -3587,9 +3590,8 @@ fn build_usage_event(
     user_id: Uuid,
     usage: CompletionUsage,
     estimated_cost: BigDecimal,
-    is_api_request: bool,
     provider_name: String,
-    model_name: String,
+    billing_context: &BillingContext,
 ) -> UsageEvent {
     UsageEvent {
         event_id: Uuid::new_v4(),
@@ -3598,10 +3600,11 @@ fn build_usage_event(
         output_tokens: usage.completion_tokens,
         estimated_cost,
         chat_time: Utc::now(),
-        is_api_request,
+        is_api_request: billing_context.auth_method == AuthMethod::ApiKey,
         provider_name,
-        model_name,
+        model_name: billing_context.model_name.clone(),
         cached_input_tokens: usage.cached_prompt_tokens,
+        client_app: billing_context.client_app,
     }
 }
 
@@ -4202,8 +4205,11 @@ async fn proxy_embeddings(
             .unwrap_or(0) as i32;
 
         if prompt_tokens > 0 {
-            let billing_context =
-                BillingContext::new(_auth_method, embedding_request.model.clone());
+            let billing_context = BillingContext::new(
+                _auth_method,
+                embedding_request.model.clone(),
+                crate::client_app::ClientApp::from_headers(&_headers),
+            );
             let embedding_usage = CompletionUsage {
                 prompt_tokens,
                 completion_tokens: 0, // Embeddings don't have completion tokens
@@ -4911,7 +4917,7 @@ mod tests {
             terminal_guard: Some(terminal_guard),
             response_model_id: "kimi-k3".to_string(),
             is_streaming: false,
-            billing_context: BillingContext::new(AuthMethod::Jwt, "kimi-k3".to_string()),
+            billing_context: BillingContext::new(AuthMethod::Jwt, "kimi-k3".to_string(), None),
             non_streaming_body_limit: None,
             stream_frame_limit: None,
             require_provider_done: false,
@@ -7569,6 +7575,68 @@ mod tests {
     }
 
     #[test]
+    fn client_app_usage_fixture_preserves_the_producer_wire_contract() {
+        let expected: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/client-app-usage.json"))
+                .unwrap();
+        let mut event = build_usage_event(
+            Uuid::parse_str(expected["user_id"].as_str().unwrap()).unwrap(),
+            CompletionUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                cached_prompt_tokens: Some(42),
+            },
+            BigDecimal::from_str("0.001").unwrap(),
+            "maple".to_owned(),
+            &BillingContext::new(
+                AuthMethod::Jwt,
+                "deepseek-v4-1-flash".to_owned(),
+                Some(crate::client_app::ClientApp::Work),
+            ),
+        );
+        // The production builder keeps generating independent idempotency IDs.
+        assert!(!event.event_id.is_nil());
+        event.event_id = Uuid::parse_str(expected["event_id"].as_str().unwrap()).unwrap();
+        event.chat_time =
+            chrono::DateTime::parse_from_rfc3339(expected["chat_time"].as_str().unwrap())
+                .unwrap()
+                .with_timezone(&Utc);
+        assert_eq!(serde_json::to_value(event).unwrap(), expected);
+    }
+
+    #[test]
+    fn client_app_attribution_preserves_authentication_and_usage_fields() {
+        for auth_method in [AuthMethod::Jwt, AuthMethod::ApiKey] {
+            for client_app in [
+                None,
+                Some(crate::client_app::ClientApp::Chat),
+                Some(crate::client_app::ClientApp::Proxy),
+                Some(crate::client_app::ClientApp::Work),
+            ] {
+                let billing =
+                    BillingContext::new(auth_method, "deepseek-v4-1-flash".to_owned(), client_app);
+                let event = build_usage_event(
+                    Uuid::new_v4(),
+                    CompletionUsage {
+                        prompt_tokens: 100,
+                        completion_tokens: 20,
+                        cached_prompt_tokens: Some(42),
+                    },
+                    BigDecimal::from_str("0.001").unwrap(),
+                    "maple".to_owned(),
+                    &billing,
+                );
+                assert_eq!(event.is_api_request, auth_method == AuthMethod::ApiKey);
+                assert_eq!(event.client_app, client_app);
+                assert_eq!(event.input_tokens, 100);
+                assert_eq!(event.output_tokens, 20);
+                assert_eq!(event.cached_input_tokens, Some(42));
+                assert_eq!(event.estimated_cost, BigDecimal::from_str("0.001").unwrap());
+            }
+        }
+    }
+
+    #[test]
     fn cached_prompt_tokens_are_mapped_to_sqs_cached_input_tokens() {
         let usage = CompletionUsage {
             prompt_tokens: 100,
@@ -7580,15 +7648,19 @@ mod tests {
             Uuid::parse_str("6142db59-fc0c-413d-8792-579fc1457fe2").unwrap(),
             usage,
             BigDecimal::from_str("0.001").unwrap(),
-            true,
             "continuum".to_string(),
-            "glm-5-3-flash".to_string(),
+            &BillingContext::new(
+                AuthMethod::ApiKey,
+                "glm-5-3-flash".to_string(),
+                Some(crate::client_app::ClientApp::Work),
+            ),
         );
 
         assert_eq!(event.input_tokens, 100);
         assert_eq!(event.output_tokens, 20);
         assert_eq!(event.cached_input_tokens, Some(42));
         assert!(event.is_api_request);
+        assert_eq!(event.client_app, Some(crate::client_app::ClientApp::Work));
         assert_eq!(event.provider_name, "continuum");
         assert_eq!(event.model_name, "glm-5-3-flash");
     }
@@ -7615,9 +7687,8 @@ mod tests {
                 Uuid::parse_str("6142db59-fc0c-413d-8792-579fc1457fe2").unwrap(),
                 usage.clone(),
                 BigDecimal::from_str("0.001").unwrap(),
-                false,
                 provider.to_string(),
-                public_model.to_string(),
+                &BillingContext::new(AuthMethod::Jwt, public_model.to_string(), None),
             );
 
             assert_eq!(event.provider_name, provider);
