@@ -1,5 +1,5 @@
 //! Settings screen: left navigation with content panes, following Maple's
-//! settings layout. Sections: General (defaults), Account, System prompt,
+//! settings layout. Sections: General (defaults), Account, Additional instructions,
 //! Integrations, Keyboard Shortcuts, Usage, About.
 
 use std::collections::HashSet;
@@ -84,7 +84,7 @@ impl Section {
             #[cfg(feature = "proxy")]
             Self::LocalApi => "Local API",
             Self::Shortcuts => "Keyboard Shortcuts",
-            Self::Prompt => "System prompt",
+            Self::Prompt => "Additional instructions",
             Self::Integrations => "Integrations",
             Self::Remote => "Remote computers",
             Self::Usage => "Usage",
@@ -170,7 +170,7 @@ pub struct SettingsScreen {
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<String>,
     integration_saving: HashSet<String>,
-    /// Editor for the opening system prompt text (harness instructions).
+    /// Editor for the user's additional instructions (harness instructions).
     prompt_editor: Entity<TextInput>,
     prompt_notice: Option<String>,
     shortcut_snapshot: ShortcutSnapshot,
@@ -382,12 +382,12 @@ impl SettingsScreen {
             },
         )
         .detach();
-        let prompt_text = settings.effective_harness_instructions();
+        let prompt_text = settings.harness_instructions.clone();
         let application_vim_enabled = settings.application_vim_enabled;
         let application_focus = cx.focus_handle();
         let prompt_application_focus = application_focus.clone();
         let prompt_editor = cx.new(move |cx| {
-            let mut input = TextInput::new("You are …", cx)
+            let mut input = TextInput::new("Add instructions for every task…", cx)
                 .with_tab_index(1)
                 .multiline(16)
                 .spell_check()
@@ -1325,27 +1325,21 @@ impl SettingsScreen {
         self.set_application_vim_enabled(next, cx);
     }
 
-    /// Persist the editor text as the harness instructions and hand it to
-    /// the running backend. Text equal to the default is saved as empty so
-    /// a future default change still applies.
+    /// Persist the editor text as the additional instructions and hand the
+    /// combined harness instructions to the running backend.
     fn save_prompt(&mut self, cx: &mut Context<Self>) {
-        let text = self.prompt_editor.read(cx).text().trim().to_string();
-        self.settings.harness_instructions = if text == settings::DEFAULT_HARNESS_INSTRUCTIONS {
-            String::new()
-        } else {
-            text
-        };
+        self.settings.harness_instructions = self.prompt_editor.read(cx).text().trim().to_string();
         let instructions = self.settings.harness_instructions.clone();
         settings::update_settings_in_background(move |s| s.harness_instructions = instructions);
         self.backend
             .set_harness_instructions(self.settings.effective_harness_instructions());
-        self.prompt_notice = Some("Saved. New tasks use this prompt.".to_string());
+        self.prompt_notice = Some("Saved. New tasks use these instructions.".to_string());
         cx.notify();
     }
 
-    fn reset_prompt(&mut self, cx: &mut Context<Self>) {
+    fn clear_prompt(&mut self, cx: &mut Context<Self>) {
         self.prompt_editor.update(cx, |input, cx| {
-            input.set_text(settings::DEFAULT_HARNESS_INSTRUCTIONS, cx);
+            input.set_text("", cx);
         });
         self.prompt_notice = None;
         cx.notify();
@@ -2358,15 +2352,15 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title("System prompt"))
+            .child(section_title("Additional instructions"))
             .child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(
-                        "Opens every task's system prompt: who the agent is and how it \
-                         behaves. Maple appends its tool and runtime guidance after this \
-                         text. Changes apply to tasks started after you save.",
+                        "Added to every task after Maple's own system prompt. Use it for \
+                         preferences such as tone, language, or how you like to work. \
+                         Changes apply to tasks started after you save.",
                     ),
             )
             .child(
@@ -2397,12 +2391,12 @@ impl SettingsScreen {
                         ),
                     ))
                     .child(self.application_target(
-                        || SettingsTarget::PromptReset,
+                        || SettingsTarget::PromptClear,
                         pill_button(
-                            "prompt-reset".to_string(),
-                            "Reset to default",
+                            "prompt-clear".to_string(),
+                            "Clear",
                             false,
-                            cx.listener(|this, _event, _window, cx| this.reset_prompt(cx)),
+                            cx.listener(|this, _event, _window, cx| this.clear_prompt(cx)),
                         ),
                     )),
             );
