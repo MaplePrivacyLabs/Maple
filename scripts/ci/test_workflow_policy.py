@@ -26,6 +26,8 @@ LISTENERS = frozenset({
 })
 NIX_ACTION = "DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28"
 NIX_INPUTS = {"source-tag": "v3.23.3", "github-token": ""}
+# Installs outside the release and EIF workflows also use HTTP/1.1 for substitution.
+NIX_INPUTS_HTTP1 = {**NIX_INPUTS, "extra-conf": "http2 = false"}
 VERIFY_NIX = "bash scripts/ci/verify-nix-runtime.sh"
 SETUP_NIX = "./.github/actions/setup-nix"
 PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}")
@@ -228,7 +230,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_6_every_nix_install_is_pinned(self):
         composite = load(ROOT / ".github/actions/setup-nix/action.yml")["runs"]["steps"]
         self.assertEqual([(step.get("uses"), step.get("with"), step.get("run")) for step in composite],
-                         [(NIX_ACTION, NIX_INPUTS, None), (None, None, VERIFY_NIX)])
+                         [(NIX_ACTION, NIX_INPUTS_HTTP1, None), (None, None, VERIFY_NIX)])
         for name, config in workflows().items():
             for job_id, job in config["jobs"].items():
                 steps = job.get("steps", [])
@@ -241,7 +243,8 @@ class WorkflowPolicyTests(unittest.TestCase):
                         self.assertTrue(any(s.get("uses", "").startswith("actions/checkout@") for s in steps[:index]))
                         if uses == SETUP_NIX:
                             continue
-                        self.assertEqual((uses, step.get("with")), (NIX_ACTION, NIX_INPUTS))
+                        self.assertEqual(uses, NIX_ACTION)
+                        self.assertIn(step.get("with"), (NIX_INPUTS, NIX_INPUTS_HTTP1))
 
     def test_7_every_job_has_a_timeout(self):
         missing = {(name, job_id) for name, job_id, job in jobs()

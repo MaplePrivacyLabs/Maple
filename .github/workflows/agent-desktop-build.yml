@@ -106,6 +106,9 @@ jobs:
         with:
           source-tag: v3.23.3
           github-token: ""
+          # HTTP/2 stream resets from cache.nixos.org make Nix resume past
+          # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
+          extra-conf: http2 = false
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
@@ -177,6 +180,9 @@ jobs:
         with:
           source-tag: v3.23.3
           github-token: ""
+          # HTTP/2 stream resets from cache.nixos.org make Nix resume past
+          # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
+          extra-conf: http2 = false
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
@@ -420,6 +426,9 @@ jobs:
         with:
           source-tag: v3.23.3
           github-token: ""
+          # HTTP/2 stream resets from cache.nixos.org make Nix resume past
+          # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
+          extra-conf: http2 = false
       - name: Hash the Agent's third-party dependency graph and toolchain
         id: graph
         run: python3 ../../scripts/ci/cargo_graph_key.py Cargo.lock flake.lock >> "$GITHUB_OUTPUT"
