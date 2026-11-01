@@ -251,13 +251,9 @@ if [ ! -e /lib64/ld-linux-x86-64.so.2 ]; then
     echo "Maple needs an x86_64 Linux system with glibc (/lib64/ld-linux-x86-64.so.2). On NixOS, use the Maple flake package or nix-ld." >&2
     exit 127
 fi
-# Keep host audio routing/plugins and keyboard/Compose data instead of paths
-# embedded by a library's build machine. Preserve explicit user overrides.
-if [ -f /usr/share/alsa/alsa.conf ]; then
-    export ALSA_CONFIG_PATH="${ALSA_CONFIG_PATH:-/usr/share/alsa/alsa.conf}"
-    export ALSA_CONFIG_DIR="${ALSA_CONFIG_DIR:-/usr/share/alsa}"
-fi
-if [ -z "${ALSA_PLUGIN_DIR:-}" ]; then
+# ALSA's compiled defaults use the host configuration. Find its distro-specific
+# plugin directory while preserving explicit overrides, including empty values.
+if [ -z "${ALSA_PLUGIN_DIR+x}" ]; then
     for plugins in /usr/lib/x86_64-linux-gnu/alsa-lib /usr/lib64/alsa-lib /usr/lib/alsa-lib; do
         if [ -d "$plugins" ]; then
             export ALSA_PLUGIN_DIR="$plugins"
