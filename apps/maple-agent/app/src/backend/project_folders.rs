@@ -10,7 +10,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::LocalBackend;
+use super::{LocalBackend, SelectedProject};
 
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_NAME_BYTES: usize = 1024;
@@ -48,6 +48,19 @@ pub struct ProjectFolderPage {
 }
 
 impl LocalBackend {
+    pub async fn recent_project_roots(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<maple_agent::agent::RecentProjectRoot>, String> {
+        self.authorize_account(user_id)?;
+        self.open_store()?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .recent_project_roots()
+            .await
+    }
+
     pub async fn browse_project_folders(
         &self,
         user_id: &str,
@@ -58,6 +71,45 @@ impl LocalBackend {
         tokio::task::spawn_blocking(move || browse(request, dirs::home_dir()))
             .await
             .map_err(|_| "Folder browser worker did not complete".to_string())?
+    }
+
+    /// Create on the execution host, then register with the ordinary project
+    /// metadata and trust flow. No user-supplied path or prompt names the folder.
+    pub async fn create_scratch_project(&self, user_id: &str) -> Result<SelectedProject, String> {
+        self.authorize_account(user_id)?;
+        self.open_store()?;
+        let parent = tokio::task::spawn_blocking(|| {
+            maple_agent::agent::default_maple_workspace_path()
+                .ok_or_else(|| "This computer's documents folder is unavailable".to_string())
+        })
+        .await
+        .map_err(|_| "Project creation worker did not complete".to_string())??;
+        self.create_scratch_project_in(user_id, parent).await
+    }
+
+    // Private location seam keeps tests off the real Documents directory. The
+    // host-facing operation above always chooses this execution host's default.
+    async fn create_scratch_project_in(
+        &self,
+        user_id: &str,
+        parent: PathBuf,
+    ) -> Result<SelectedProject, String> {
+        self.authorize_account(user_id)?;
+        self.open_store()?;
+        let handle = self.service.handle_for_user(user_id).await?;
+        let path = tokio::task::spawn_blocking(move || {
+            create_scratch_folder(&parent, || uuid::Uuid::new_v4().to_string())
+        })
+        .await
+        .map_err(|_| "Project creation worker did not complete".to_string())??;
+        let project_root = handle.save_recent_project_root(path).await?;
+        let project = handle
+            .rename_project_root(project_root.clone(), "Untitled project".into())
+            .await?;
+        Ok(SelectedProject {
+            project_root,
+            project,
+        })
     }
 
     pub async fn create_project_folder(
@@ -221,6 +273,27 @@ fn validate_child_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn create_scratch_folder(
+    parent: &Path,
+    mut unique_suffix: impl FnMut() -> String,
+) -> Result<String, String> {
+    path_text(parent)?;
+    fs::create_dir_all(parent).map_err(folder_error)?;
+    let parent = canonical_folder(parent)?;
+    for _ in 0..4 {
+        let path = parent.join(format!("Untitled project-{}", unique_suffix()));
+        path_text(&path)?;
+        // Atomic creation rejects existing directories, files and symlinks.
+        // Never adopt a collision, and never delete files after a later error.
+        match fs::create_dir(&path) {
+            Ok(()) => return path_text(&canonical_folder(&path)?),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(folder_error(error)),
+        }
+    }
+    Err("Could not create a unique project folder. Try again.".into())
+}
+
 fn create(parent: &str, name: &str) -> Result<String, String> {
     validate_child_name(name)?;
     let parent = canonical_folder(absolute_path(parent)?)?;
@@ -243,6 +316,143 @@ mod tests {
             limit: 2,
             show_hidden: false,
         }
+    }
+
+    #[tokio::test]
+    async fn scratch_project_registration_persists_and_can_be_named_later() {
+        const USER: &str = "scratch-project-owner";
+        let storage = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        let parent = folders.path().join("Documents").join("Maple");
+        let backend = LocalBackend::isolated_for_test(storage.path());
+        assert!(backend.persisted_auth.claim_and_persist(
+            &maple_agent::maple_api::MapleApiAuthSnapshot {
+                user_id: USER.into(),
+                access_token: "fixture-token".into(),
+                refresh_token: None,
+                native_instance_id: "fixture-native".into(),
+                session_id: "fixture-session".into(),
+                revision: 1,
+            }
+        ));
+        assert!(
+            backend
+                .create_scratch_project_in("another-account", parent.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            !parent.exists(),
+            "rejection must precede filesystem effects"
+        );
+        let first = backend
+            .create_scratch_project_in(USER, parent.clone())
+            .await
+            .unwrap();
+        let second = backend
+            .create_scratch_project_in(USER, parent.clone())
+            .await
+            .unwrap();
+        assert_ne!(first.project_root, second.project_root);
+        for selected in [&first, &second] {
+            assert_eq!(selected.project.name, "Untitled project");
+            assert_eq!(selected.project.path, selected.project_root);
+            assert!(!selected.project.is_default_workspace);
+            assert_eq!(
+                Path::new(&selected.project_root).parent(),
+                Some(parent.canonicalize().unwrap().as_path())
+            );
+            assert_eq!(fs::read_dir(&selected.project_root).unwrap().count(), 0);
+        }
+        let renamed = backend
+            .rename_project_root(USER, first.project_root.clone(), "My new project".into())
+            .await
+            .unwrap();
+        assert_eq!(renamed.name, "My new project");
+        let snapshot = crate::backend::dispatch(
+            &backend,
+            crate::host::protocol::Request {
+                id: 1,
+                method: "navigation_bootstrap".into(),
+                send_id: None,
+                params: serde_json::json!([USER]),
+            },
+        )
+        .await
+        .unwrap();
+        let snapshot: crate::backend::paging::NavigationBootstrap =
+            serde_json::from_value(snapshot).unwrap();
+        for (selected, name) in [(&first, "My new project"), (&second, "Untitled project")] {
+            let project = snapshot
+                .recent_projects
+                .iter()
+                .find(|project| project.root == selected.project_root)
+                .unwrap();
+            assert_eq!(project.display_name.as_deref(), Some(name));
+            let reselected = backend
+                .select_project_root(USER, selected.project_root.clone())
+                .await
+                .unwrap();
+            assert_eq!(reselected.project.name, name);
+        }
+    }
+
+    #[test]
+    fn scratch_projects_are_distinct_empty_persistent_children() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("Documents").join("Maple");
+        let first = create_scratch_folder(&parent, || uuid::Uuid::new_v4().to_string()).unwrap();
+        let second = create_scratch_folder(&parent, || uuid::Uuid::new_v4().to_string()).unwrap();
+        assert_ne!(first, second);
+        for project in [first, second] {
+            let path = Path::new(&project);
+            assert_eq!(
+                path.parent(),
+                Some(parent.canonicalize().unwrap().as_path())
+            );
+            assert!(
+                path.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("Untitled project-")
+            );
+            assert_eq!(fs::read_dir(path).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn scratch_projects_skip_collisions_and_fail_without_overwriting() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("Untitled project-folder")).unwrap();
+        let file = root.path().join("Untitled project-file");
+        fs::write(&file, b"keep").unwrap();
+        let mut suffixes = ["folder", "file", "fresh"].into_iter();
+        let created =
+            create_scratch_folder(root.path(), || suffixes.next().unwrap().into()).unwrap();
+        assert!(created.ends_with("Untitled project-fresh"));
+        assert!(create_scratch_folder(root.path(), || "file".into()).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"keep");
+        assert!(create_scratch_folder(&file, || "child".into()).is_err());
+        assert!(!file.join("Untitled project-child").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scratch_projects_never_adopt_existing_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("Untitled project-link"))
+            .unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("missing"),
+            root.path().join("Untitled project-broken"),
+        )
+        .unwrap();
+        for suffix in ["link", "broken"] {
+            assert!(create_scratch_folder(root.path(), || suffix.into()).is_err());
+        }
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
     #[test]

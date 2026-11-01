@@ -275,6 +275,8 @@ operations! {
     select_project_root(user_id: (&str), path: (String)) -> SelectedProject;
     browse_project_folders(user_id: (&str), request: (ProjectFolderRequest)) -> ProjectFolderPage;
     create_project_folder(user_id: (&str), parent_path: (String), name: (String)) -> String;
+    create_scratch_project(user_id: (&str)) -> SelectedProject;
+    recent_project_roots(user_id: (&str)) -> Vec<RecentProjectRoot>;
     rename_project_root(user_id: (&str), path: (String), name: (String)) -> RecentProjectRoot;
     archive_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
     create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
