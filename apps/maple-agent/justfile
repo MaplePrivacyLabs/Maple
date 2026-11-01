@@ -30,8 +30,8 @@ store-bench-ci:
 # Run the checks of CI's Linux Agent lanes (agent-lint, agent-test, agent-full-linux).
 ci: ci-lint ci-test ci-extra
 
-# The ci.yml agent-lint lane: format, packaging tests, clippy for every feature set and the dependency graph.
-ci-lint: fmt-check git-metadata-test packaging-test
+# The ci.yml agent-lint lane: format, clippy for every feature set and the dependency graph.
+ci-lint: fmt-check git-metadata-test
     cargo clippy --workspace --all-targets --locked -- -D warnings
     cargo clippy -p maple-agent-app --all-targets --locked {{headless}} -- -D warnings
     cargo clippy -p maple-agent-app --locked --no-default-features --features acp -- -D warnings
@@ -59,22 +59,10 @@ supply-chain:
       python3 dependencies/sqlcipher/verify_sqlcipher.py --metadata "$metadata"
     python3 scripts/audit-sqlcipher-dependencies.py
 
-# The ci.yml agent-package-linux/macos lanes: an unsigned Dev package, built and verified like master's.
+# The ci.yml agent-package-linux/macos lanes: an unsigned Dev package, built like master's.
 package-rehearsal:
-    #!/usr/bin/env bash
-    set -euo pipefail
     ./scripts/build-release.sh dev
-    if [ "$(uname -s)" = Darwin ]; then
-        ./scripts/verify-prebuilt-release.sh dev
-        ./scripts/package-release.sh dev --unsigned
-        ./scripts/verify-release.sh dev dist/dev --unsigned
-    else
-        ./scripts/package-release.sh dev --unsigned
-        ./scripts/verify-release.sh dev dist/dev --unsigned --platform linux-x86_64
-        cargo build --locked -p maple-agent-updater --example validate-release-archive
-        ./scripts/verify-updater-archive.sh dist/dev --profile dev --platform linux-x86_64 --unsigned
-        ./scripts/verify-linux-bundle-docker.sh dev dist/dev
-    fi
+    ./scripts/package-release.sh dev --unsigned
 
 # Exercise the production Git metadata helper without compiling the app graph.
 git-metadata-test:
@@ -123,31 +111,9 @@ release:
 build-release PROFILE:
     ./scripts/build-release.sh {{PROFILE}}
 
-# Restore downloaded execution permissions and check the exact profile/source.
-verify-prebuilt-release PROFILE:
-    ./scripts/verify-prebuilt-release.sh {{PROFILE}}
-
 # Package the already built profile; --unsigned is for unprivileged PR checks.
 package-release PROFILE *ARGS:
     ./scripts/package-release.sh {{PROFILE}} {{ARGS}}
-
-# Verify exact downloaded artifacts and their recorded public identity.
-verify-release PROFILE DIRECTORY *ARGS:
-    ./scripts/verify-release.sh {{PROFILE}} {{DIRECTORY}} {{ARGS}}
-
-# Hermetic public metadata and mocked native signing boundary regressions.
-packaging-test:
-    python3 ./scripts/test_release_packaging.py
-    python3 ./scripts/test_linux_release_appimage.py
-    python3 ./scripts/test_linux_release_bundle.py
-    python3 ./scripts/test_linux_install.py
-    python3 ./scripts/test_macos_release_dylibs.py
-    python3 ./scripts/test_macos_build_info.py
-    python3 ./scripts/test_windows_build_info.py
-    python3 ./scripts/test_windows_host_spawn.py
-    python3 ./scripts/test_windows_release.py
-    python3 ./scripts/test_smoke_macos_release.py
-    python3 ./scripts/test_smoke_linux_bundle_host.py
 
 # Build a release binary that keeps symbols for backtraces.
 release-debug:

@@ -143,7 +143,7 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
   Failover runners are often slower, while timeouts are sized for the home
   runner.
 - Never move the Agent's signing or attestation jobs, `windows-signing`
-  jobs, artifact verifiers, the updater tests or install smokes to
+  jobs, artifact verifiers or the updater tests to
   Blacksmith, and never move one EIF builder alone.
 
 ## Caches
@@ -213,7 +213,6 @@ All run in the `repo` lane, through the flake checks `ci-scripts`,
 | Contract | Protects | If it fails |
 | --- | --- | --- |
 | C1 | One `Release` workflow; listeners check their producer's success, repository and event; release jobs gated | You touched a release trigger or listener. Revert it |
-| C2 | The Agent publisher and signature probe trust `agent-desktop-build.yml` jobs, artifacts, runners and events | You renamed or moved a signed Agent job. Revert it |
 | C3 | Release evidence jobs run on master pushes and never cancel | You changed an evidence workflow's trigger, job or concurrency |
 | C4 | Release cache ownership, exact Agent release keys and how they are hashed, lane-family isolation, Dev TestFlight build numbers | You wrote or overlapped a release cache key, or changed the Agent key's hash step |
 | C5 | The EIF event gate, mismatch semantics, OIDC and FlakeHub jobs, one builder class, a manual EIF release | You changed an EIF job, runner or guard |

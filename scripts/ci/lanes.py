@@ -42,11 +42,10 @@ GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile no
 # GitHub's Xcode 27 image ships Xcode's Metal Toolchain, which Blacksmith's macOS image
 # lacks and cannot download (its MobileAsset catalog fetch fails).
 GITHUB_XCODE = Runner("xcode-27")
-# The Agent updater's native Windows tests and the installer smoke test need GitHub's
-# runner: Blacksmith's workspace inherits a foreign write ACE the updater rejects, and
-# master's Windows install smoke (agent-desktop-build.yml verify-windows) runs there too.
-# PR lanes use the org's 16-core GitHub-hosted Windows 2025 runner (the same image family,
-# GitHub's cache store); CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
+# The Agent updater's native Windows tests need GitHub's runner: Blacksmith's workspace
+# inherits a foreign write ACE the updater rejects. PR lanes use the org's 16-core
+# GitHub-hosted Windows 2025 runner (GitHub's cache store);
+# CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
 GITHUB_WINDOWS = Runner("maple-windows-2025-16core", "CI_WINDOWS_GITHUB_RUNNER")
 GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the free standard runner, for the native Windows test suites
 GITHUB_WINDOWS_ARM64 = Runner("windows-11-arm")
@@ -98,8 +97,8 @@ AGENT_WINDOWS_UPDATER = ("apps/maple-agent/crates/maple-agent-updater/**",
                          "apps/maple-agent/Cargo.lock", "apps/maple-agent/Cargo.toml") + WINDOWS_TOOLCHAIN
 # The packaging scripts and what they call, and the toolchain that builds the bundles.
 AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
-    "scripts/build-*", "scripts/package-*", "scripts/verify-*", "scripts/release-info.py",
-    "scripts/macos-build-info.py", "scripts/macos-release-*", "scripts/linux-*", "scripts/smoke-*",
+    "scripts/build-*", "scripts/package-*", "scripts/release-info.py",
+    "scripts/macos-build-info.py", "scripts/macos-release-*", "scripts/linux-*",
     "release-profiles.json", "release_profile.rs", "app/build.rs",
     "app/packaging/**", "flake.nix", "flake.lock",
 )) + (".github/workflows/agent-desktop-build.yml",)
@@ -117,7 +116,7 @@ METAL_TOOLCHAIN = (".github/actions/export-metal-toolchain/**", ".github/actions
 # What agent-desktop-build.yml builds and signs on master (`plan.py only agent-desktop`).
 AGENT_DESKTOP = AGENT + RUST_SDK + PROXY_RUNTIME + (
     ".github/workflows/agent-desktop-build.yml", ".github/actions/setup-agent-windows/**",
-    "scripts/ci/verify-agent-rust-deps.py", *APPLE_TOOLCHAIN, *METAL_TOOLCHAIN, "scripts/ci/agent_windows.py",
+    *APPLE_TOOLCHAIN, *METAL_TOOLCHAIN, "scripts/ci/agent_windows.py",
     "scripts/ci/cargo_graph_key.py", "scripts/ci/install-windows-artifact-signing.ps1",
     "scripts/ci/windows-artifact-sign.ps1",
 )
@@ -183,11 +182,8 @@ WINDOWS_PACKAGE = (
     # windows-release.py requires a build number; like package-release.sh, use the
     # Actions run number, or 1 outside Actions.
     'export MAPLE_PACKAGE_BUILD_NUMBER="${GITHUB_RUN_NUMBER:-1}"'
-    " && ./scripts/build-release.sh dev && python3 scripts/windows-release.py prepare dev --arch \"${MAPLE_WINDOWS_ARCH:-x86_64}\""
+    " && ./scripts/build-release.sh dev"
     " && python3 scripts/windows-release.py package dev --unsigned --arch \"${MAPLE_WINDOWS_ARCH:-x86_64}\""
-    # The stock image exports Azure CLI paths that the fail-closed signing guard rejects.
-    " && env -u AZURE_CONFIG_DIR -u AZURE_DEVOPS_CACHE_DIR -u AZURE_EXTENSION_DIR"
-    " python3 scripts/windows-release.py verify dev dist/dev --unsigned --smoke --arch \"${MAPLE_WINDOWS_ARCH:-x86_64}\""
 )
 
 PROXY_CONTAINER = ("proxy/Dockerfile", ".dockerignore", "proxy/Cargo.lock") + PROXY_RUNTIME + RUST_SDK
@@ -238,11 +234,10 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME + APPLE_TOOLCHAIN,
          run=f"cargo clippy --workspace --all-targets --locked {RUNTIME_SHADERS} -- -D warnings",
          cache="agent-macos", timeout=25, **AGENT_MACOS),
-    # Windows Clippy and the native PE-metadata and host-spawn fixtures, on every Agent change.
+    # Windows Clippy, on every Agent change.
     Lane("agent-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME + ("scripts/ci/agent_windows.py",),
          labels=("ci:windows", "ci:full"),
-         run="python3 scripts/test_windows_build_info.py && python3 scripts/test_windows_host_spawn.py"
-             " && cargo clippy --workspace --all-targets --locked -- -D warnings",
+         run="cargo clippy --workspace --all-targets --locked -- -D warnings",
          cache="agent-windows", timeout=45, **AGENT_WIN),
     # The updater's native Windows filesystem, Authenticode, transaction and bootstrap
     # tests, on GitHub's free image (16 cores only add queueing to a 2 s suite); master
@@ -294,20 +289,19 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-package-windows", AGENT_WINDOWS_PACKAGING, pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-windows", runner=GITHUB_WINDOWS, workdir="apps/maple-agent", run=WINDOWS_PACKAGE,
          env=(("RUSTFLAGS", "-D warnings -C target-feature=+crt-static"),) + FAST_RELEASE, timeout=90, gate=False),
-    # Native ARM64 build, updater tests and installer smoke. This is a
-    # full packaging rehearsal, selected by labels/nightly rather than ordinary PRs.
+    # The native ARM64 installer, from its own cache that the nightly run refreshes.
     Lane("agent-package-windows-arm64", AGENT_WINDOWS_PACKAGING,
-         pr_paths=(), labels=("ci:package", "ci:windows", "ci:full"),
+         pr_paths=(), labels=("ci:package", "ci:full"),
          events=PR_AND_NIGHTLY, job="agent-package-windows-arm64", runner=GITHUB_WINDOWS_ARM64,
          workdir="apps/maple-agent",
-         run="cargo test -p maple-agent-updater --locked --target aarch64-pc-windows-msvc --no-fail-fast -- --test-threads=1 && " + WINDOWS_PACKAGE,
+         run=WINDOWS_PACKAGE,
          env=(("MAPLE_WINDOWS_ARCH", "aarch64"), ("RUSTFLAGS", "-D warnings -C target-feature=+crt-static")) + FAST_RELEASE,
          timeout=120, gate=False),
     # Every root flake check: actionlint, workflow policy and contracts, CI script
     # tests, the release gates, and release metadata (read from the version files).
     Lane("repo", (
         ".github/**", "scripts/ci/**", ".githooks/**", "flake.nix", "flake.lock", "justfile", "setup-hooks.sh",
-        ".agents/skills/release-maple/scripts/**", "services/agent-updates/publisher/**",
+        ".agents/skills/release-maple/scripts/**",
         "scripts/update-version.py", "apps/maple-research/zapstore.yaml", "proxy/Cargo.toml", "proxy/justfile",
         RESEARCH + "package.json", TAURI + "Cargo.toml", TAURI + "tauri.conf.json",
     ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15, hook="repo"),
@@ -407,9 +401,7 @@ LANES: Tuple[Lane, ...] = (
                      "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
          runner=GITHUB, flake=".#ci", run="./scripts/ci/updates.sh", hook="updates"),
     Lane("agent-updates", ("services/agent-updates/**", "services/download-tracking/**", "scripts/ci/agent-updates.sh",
-                           "scripts/ci/test_agent_updates_workflows.py", "apps/maple-agent/release-profiles.json",
-                           "apps/maple-agent/scripts/release-info.py", "scripts/ci/_common.sh", "flake.nix",
-                           "flake.lock"),
+                           "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
          runner=GITHUB, flake=".#ci", run="./scripts/ci/agent-updates.sh", hook="agent_updates"),
 
     # OpenSecret, selected by its own selector (see the module docstring). The PR

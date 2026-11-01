@@ -117,7 +117,7 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
                 self.assert_routes([path])
 
     def test_update_services_are_independent_but_a_new_service_selects_every_check(self):
-        for path in ("services/agent-updates/src/worker.ts", "services/agent-updates/publisher/publisher.py",
+        for path in ("services/agent-updates/src/worker.ts", "services/agent-updates/publish.py",
                      "services/agent-updates/wrangler.jsonc", "services/agent-updates/README.md",
                      "services/download-tracking/tracking.ts", "services/updates/wrangler.jsonc"):
             with self.subTest(path=path):

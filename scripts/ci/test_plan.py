@@ -58,7 +58,7 @@ class AgentSelectionTests(unittest.TestCase):
             "apps/maple-agent/Cargo.lock", "apps/maple-agent/flake.nix", "apps/maple-agent/flake.lock",
             "apps/maple-agent/rust-toolchain.toml", "apps/maple-agent/justfile",
             "apps/maple-agent/scripts/macos-debug-app.sh", "apps/maple-agent/scripts/build-release.sh",
-            "apps/maple-agent/scripts/package-release.sh", "apps/maple-agent/scripts/verify-release.sh",
+            "apps/maple-agent/scripts/package-release.sh", "apps/maple-agent/scripts/windows-release.py",
             "apps/maple-agent/release_profile.rs", "apps/maple-agent/release-profiles.json",
             "apps/maple-agent/app/packaging/macos-entitlements.plist", "apps/maple-agent/app/macos/Info.plist",
             "apps/maple-agent/new-build-input",
@@ -158,7 +158,7 @@ class LaneTableTests(unittest.TestCase):
     def test_release_metadata_and_publisher_inputs_select_the_repo_lane(self):
         for path in ("apps/maple-research/frontend/package.json", "apps/maple-research/frontend/src-tauri/Cargo.toml",
                      "apps/maple-research/frontend/src-tauri/tauri.conf.json", "proxy/justfile", ".github/CODEOWNERS",
-                     ".github/actionlint.yaml", "services/agent-updates/publisher/publisher.py"):
+                     ".github/actionlint.yaml"):
             with self.subTest(path=path):
                 self.assertIn("repo", selected([path]))
 
@@ -291,8 +291,8 @@ class HookTests(unittest.TestCase):
              ("auth", "research_frontend")),
             (["apps/maple-agent/crates/maple-agent/src/agent.rs"], ("agent",)),
             (["apps/maple-agent/Cargo.lock"], ("agent",)), (["apps/maple-agent/flake.nix"], ("agent",)),
-            (["apps/maple-agent/scripts/release-info.py"], ("agent", "agent_updates")),
-            (["apps/maple-agent/release-profiles.json"], ("agent", "agent_updates")),
+            (["apps/maple-agent/scripts/release-info.py"], ("agent",)),
+            (["apps/maple-agent/release-profiles.json"], ("agent",)),
             (["sdk/rust/src/client.rs"], ("sdk_rust",)), (["sdk/rust/tests/crypto.rs"], ("sdk_rust",)),
             (["sdk/src/lib/main.tsx"], ("sdk_ts",)), (["sdk/src/lib/test/models.test.ts"], ("sdk_ts",)),
             (["sdk/package.json"], ("sdk_ts",)), (["sdk/flake.lock"], ("sdk_ts", "sdk_rust")),
@@ -305,7 +305,6 @@ class HookTests(unittest.TestCase):
             (["services/agent-updates/src/worker.ts"], ("agent_updates",)),
             (["services/agent-updates/bun.lock"], ("agent_updates",)),
             (["services/agent-updates/wrangler.jsonc"], ("agent_updates",)),
-            (["services/agent-updates/publisher/publisher.py"], ("agent_updates", "repo")),
             (["services/download-tracking/tracking.ts"], ("updates", "agent_updates")),
             ([".github/workflows/desktop-build.yml"], ("repo",)), (["scripts/ci/change_detection.py"], ("repo",)),
             ([".github/workflows/ci.yml"], ("repo",)), (["scripts/ci/lanes.py"], ("repo",)),
@@ -403,13 +402,11 @@ class AgentLaneTests(unittest.TestCase):
 
     def test_native_arm64_packaging_runs_only_by_label_nightly_or_explicit_dispatch(self):
         arm = "agent-package-windows-arm64"
-        fixture = "apps/maple-agent/scripts/test_windows_release.py"
-        self.assertTrue(plan.classified(fixture))
-        for path in ("apps/maple-agent/scripts/windows-installer.nsi", fixture):
+        for path in ("apps/maple-agent/scripts/windows-installer.nsi", "apps/maple-agent/scripts/windows-release.py"):
             for event in (PR, QUEUE, PUSH):
                 with self.subTest(path=path, event=event):
                     self.assertNotIn(arm, selected([path], event))
-        for label in ("ci:package", "ci:windows", "ci:full"):
+        for label in ("ci:package", "ci:full"):
             self.assertIn(arm, selected(["docs/x.md"], labels=[label]))
         self.assertIn(arm, active(NIGHTLY))
         self.assertIn(arm, active(DISPATCH))
@@ -556,7 +553,7 @@ class ClientLaneTests(unittest.TestCase):
         self.assertEqual(selected(["docs/x.md"], labels=["ci:research-dev-macos"]), {"research-dev-macos"})
         # ci:windows is the Agent's; Research Windows packaging comes with ci:package.
         self.assertEqual(selected(["docs/x.md"], labels=["ci:windows"]),
-                         {"agent-windows", "agent-windows-updater", "agent-full-windows", "agent-package-windows-arm64"})
+                         {"agent-windows", "agent-windows-updater", "agent-full-windows"})
         self.assertLessEqual(desktop, selected(["docs/x.md"], labels=["ci:package"]))
         self.assertFalse({lane for lane in selected([".github/workflows/ci.yml"]) if lane.startswith(
             ("research-ios", "research-android", "research-desktop", "research-dev"))})

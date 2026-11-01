@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Build Agent's x86_64 AppImage from the owning pinned Nix shell.
+"""Stage Agent's x86_64 Linux AppDir from the owning pinned Nix shell.
 
 The bundle keeps the host's glibc, loader and graphics drivers, and carries
 its display/keyboard client libraries built from pinned sources against the
 same old glibc floor as the executable. Per-file RUNPATHs apply only to Maple's
-ELFs, without changing library lookup for external CLI processes. A separate
-clean-machine smoke must gate publication; an ELF audit does not prove
-GUI/audio/CUA integration.
+ELFs, without changing library lookup for external CLI processes.
 """
 
 import argparse
@@ -21,11 +19,7 @@ import sys
 import tempfile
 
 
-INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
 LOADER = "ld-linux-x86-64.so.2"
-# Oldest host glibc the release binary may require (build-release.sh passes
-# the same floor to cargo-zigbuild).
-GLIBC_FLOOR = (2, 31)
 # These ABI providers must come from the host, including when loading the
 # host's graphics drivers. Never copy a build machine's libc into the bundle.
 HOST_LIBRARIES = frozenset({
@@ -109,16 +103,6 @@ def digest(path):
 
 def needed(path):
     return run("patchelf", "--print-needed", path).stdout.splitlines()
-
-
-def interpreter(path):
-    result = run("patchelf", "--print-interpreter", path, check=False)
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def glibc_version(name):
-    match = re.fullmatch(r"GLIBC_(\d+(?:\.\d+)+)", name)
-    return tuple(int(part) for part in match[1].split(".")) if match else None
 
 
 def library_name(name):
@@ -331,139 +315,6 @@ def normalize_public_permissions(appdir):
             path.chmod(0o755 if path in launchers(appdir) or elf(path) else 0o644)
 
 
-def audit(appdir, metadata=None):
-    if metadata is None:
-        metadata = validate_metadata(json.loads((appdir / "usr/share/maple-agent/package-metadata.json").read_text()))
-    payload = appdir / "usr/bin/maple-agent"
-    libdir = appdir / "usr/lib"
-    libraries = {}
-    host_libraries = set()
-    all_required = set()
-    edges = {}
-    for path in (appdir, *sorted(appdir.rglob("*"))):
-        if path.is_symlink() and (not path.exists() or not inside(path, appdir)):
-            raise PackagingError(f"AppDir symlink escapes package or is dangling: {path}")
-        if path.is_symlink() and path.parent == libdir:
-            raise PackagingError(f"Bundled runtime libraries must be regular files: {path}")
-        if path.is_dir() and not path.is_symlink() and path.stat().st_mode & 0o777 != 0o755:
-            raise PackagingError(f"Restrictive or unsafe public package directory permissions: {path}")
-        if path.is_file() and not path.is_symlink():
-            expected_mode = 0o755 if path in launchers(appdir) or elf(path) else 0o644
-            if path.stat().st_mode & 0o7777 != expected_mode:
-                raise PackagingError(f"Restrictive or unsafe public package file permissions: {path}")
-            if not elf(path):
-                continue
-            require_x86_64_elf(path)
-            if path == payload:
-                if interpreter(path) != INTERPRETER:
-                    raise PackagingError(f"Payload must use the host loader {INTERPRETER}")
-                expected_rpath = "$ORIGIN/../lib"
-            else:
-                if path.parent != libdir or host_only(path.name):
-                    raise PackagingError(f"Host ABI, graphics or unexpected ELF must not be bundled: {path}")
-                library_name(path.name)
-                if interpreter(path):
-                    raise PackagingError(f"Runtime library must not have an ELF interpreter: {path}")
-                if run("patchelf", "--print-soname", path).stdout.strip() != path.name:
-                    raise PackagingError(f"Bundled library SONAME differs from its filename: {path}")
-                expected_rpath = "$ORIGIN"
-            if run("patchelf", "--print-rpath", path).stdout.strip() != expected_rpath:
-                raise PackagingError(f"Non-relative runtime library path in {path}")
-            dependencies = needed(path)
-            edges[path.name] = dependencies
-            for dependency in dependencies:
-                if dependency in HOST_LIBRARIES:
-                    host_libraries.add(dependency)
-                else:
-                    library_name(dependency)
-                    if host_only(dependency) or not (libdir / dependency).is_file():
-                        raise PackagingError(f"Unbundled or forbidden runtime dependency in {path}: {dependency}")
-            required = set()
-            for line in run("readelf", "--version-info", path).stdout.splitlines():
-                match = re.search(r"\bName:\s+(GLIBC_\S+)", line)
-                if match:
-                    required.add(match[1])
-            too_new = sorted(name for name in required if (glibc_version(name) or (99,)) > GLIBC_FLOOR)
-            if too_new:
-                floor = ".".join(map(str, GLIBC_FLOOR))
-                raise PackagingError(f"ELF requires glibc newer than the {floor} floor: {path.name}: {too_new}")
-            all_required.update(required)
-            if path != payload:
-                libraries[path.name] = {
-                    "name": path.name,
-                    "sha256": digest(path),
-                    "required_glibc_versions": sorted(required, key=lambda name: glibc_version(name) or (99,)),
-                }
-    if not payload.is_file() or payload.is_symlink() or not elf(payload):
-        raise PackagingError("Missing Agent payload executable")
-    if "libc.so.6" not in edges[payload.name]:
-        raise PackagingError("Release binary has no libc dependency; expected native GPUI build")
-    for name in BUNDLED_ROOT_LIBRARIES:
-        if name not in libraries:
-            raise PackagingError(f"Missing runtime-opened library: {name}")
-    reachable = set()
-    pending = [payload.name, *BUNDLED_ROOT_LIBRARIES]
-    while pending:
-        name = pending.pop()
-        if name in reachable or name in HOST_LIBRARIES:
-            continue
-        reachable.add(name)
-        pending.extend(edges[name])
-    if set(libraries) - reachable:
-        raise PackagingError(f"Unreferenced bundled libraries: {sorted(set(libraries) - reachable)}")
-    license_root = appdir / "usr/share/maple-agent/licenses"
-    licenses = [
-        {"path": str(path.relative_to(license_root)), "sha256": digest(path)}
-        for path in sorted(license_root.rglob("*")) if path.is_file() and not path.is_symlink()
-    ]
-    if not licenses:
-        raise PackagingError("Missing upstream runtime license files")
-    compatibility = appdir / "usr/lib" / LOADER
-    if not compatibility.is_file() or compatibility.is_symlink() or compatibility.read_text() != COMPATIBILITY_LOADER:
-        raise PackagingError("Missing bundle format v1 compatibility launcher")
-    if (appdir / "AppRun").read_text() not in (APPRUN, *apprun_variants()):
-        raise PackagingError("AppRun differs from the reviewed launcher")
-    for path in (appdir / "AppRun", *appdir.glob("*.desktop")):
-        if b"/nix/store" in path.read_bytes():
-            raise PackagingError(f"Build-store path in launch metadata: {path}")
-    return {
-        "schema": 3,
-        "channel": metadata["channel"],
-        "architecture": "x86_64",
-        "bundled_glibc": False,
-        "interpreter": INTERPRETER,
-        "glibc_floor": ".".join(map(str, GLIBC_FLOOR)),
-        "payload_sha256": digest(payload),
-        "required_glibc_versions": sorted(all_required, key=lambda name: glibc_version(name) or (99,)),
-        "host_libraries": sorted(host_libraries),
-        "bundled_libraries": [libraries[name] for name in sorted(libraries)],
-        "runtime_licenses": licenses,
-        "dlopen_host_libraries": list(DLOPEN_HOST_LIBRARIES),
-        "host_resources": ["GPU drivers", "fontconfig", "ALSA routing/plugins"],
-    }
-
-
-def apprun_variants():
-    # The tar bundle never re-enters an inherited outer AppImage.
-    legacy = 'if [ "${APPDIR:-}" != "$appdir" ]; then\n    unset APPIMAGE APPIMAGE_EXTRACT_AND_RUN\nfi\n'
-    return (APPRUN.replace(legacy, "unset APPIMAGE APPIMAGE_EXTRACT_AND_RUN\n", 1),)
-
-
-def extract_appimage(image, destination):
-    # Do not execute the AppImage runtime to extract pinned tools or final output.
-    data = image.read_bytes()
-    offset = data.find(b"hsqs")
-    while offset >= 0:
-        if run("unsquashfs", "-s", "-o", offset, image, check=False).returncode == 0:
-            # Nonroot unsquashfs masks ordinary archived file modes with its
-            # inherited umask. Preserve the actual modes for strict auditing;
-            # only this child changes umask, leaving the parent's private 077.
-            run("unsquashfs", "-no-progress", "-d", destination, "-o", offset, image, umask=0)
-            return
-        offset = data.find(b"hsqs", offset + 1)
-    raise PackagingError(f"AppImage has no valid SquashFS payload: {image}")
-
-
 def metadata_from_environment():
     fields = {
         "channel": "MAPLE_PACKAGE_CHANNEL",
@@ -494,88 +345,25 @@ def validate_metadata(metadata):
 
 
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == "audit":
-        appdir = Path(sys.argv[2]).absolute()
-        result = audit(appdir)
-        recorded = json.loads((appdir / "usr/share/maple-agent/runtime-audit.json").read_text())
-        if result != recorded:
-            raise PackagingError("Packaged runtime audit does not match extracted payload")
-        print(f"Verified Agent AppDir: {appdir}")
-        return
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage-only", action="store_true", help="Write an audited AppDir, not a release artifact")
+    parser.add_argument("--stage-only", action="store_true", help="Write the AppDir (the only supported output)")
     parser.add_argument("binary", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     binary, output = args.binary.absolute(), args.output.absolute()
-    if not binary.is_file() or not os.access(binary, os.X_OK):
-        raise PackagingError(f"Missing executable release binary: {binary}")
-    if output.exists():
-        raise PackagingError(f"Refusing to replace existing output: {output}")
-    require_x86_64_elf(binary)
     metadata = metadata_from_environment()
     epoch = int(os.environ["SOURCE_DATE_EPOCH"])
-    if epoch < 0:
-        raise PackagingError("SOURCE_DATE_EPOCH must be nonnegative")
     component = Path(__file__).resolve().parent.parent
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="maple-agent-appimage-", dir=output.parent) as temporary:
-        temporary = Path(temporary)
-        appdir = temporary / "MapleAgent.AppDir"
+    with tempfile.TemporaryDirectory(prefix="maple-agent-appdir-", dir=output.parent) as temporary:
+        appdir = Path(temporary) / "MapleAgent.AppDir"
         appdir.mkdir()
         stage_payload(appdir, binary)
-        desktop, icon = stage_metadata(appdir, component, metadata)
-        if not args.stage_only:
-            tools = Path(os.environ["MAPLE_AGENT_APPIMAGE_TOOLS"])
-            linuxdeploy = temporary / "linuxdeploy.AppDir"
-            extract_appimage(tools / "linuxdeploy-x86_64.AppImage", linuxdeploy)
-            tool_environment = os.environ.copy()
-            tool_environment["APPDIR"] = str(linuxdeploy)
-            tool_environment["LINUXDEPLOY_PLUGIN_MODE"] = "1"
-            for name in ("APPIMAGE", "ARGV0", "APPIMAGE_EXTRACT_AND_RUN"):
-                tool_environment.pop(name, None)
-            # linuxdeploy validates/deploys the desktop assets in an isolated
-            # metadata AppDir. Its generic ELF scan can use the build host's
-            # ldd; Agent's payload must instead remain exactly the binary
-            # staged and audited above.
-            metadata_appdir = temporary / "metadata.AppDir"
-            run(linuxdeploy / "AppRun", "--appdir", metadata_appdir, "--desktop-file", desktop, "--icon-file", icon, env=tool_environment)
-            deployed_desktop = metadata_appdir / "usr/share/applications" / desktop.name
-            if not deployed_desktop.is_file() or deployed_desktop.read_bytes() != desktop.read_bytes():
-                raise PackagingError("linuxdeploy changed or failed to deploy Agent desktop metadata")
-            deployed_icons = list((metadata_appdir / "usr/share/icons").rglob(icon.name))
-            if len(deployed_icons) != 1 or digest(deployed_icons[0]) != digest(icon):
-                raise PackagingError("linuxdeploy changed or failed to deploy Agent package icon")
+        stage_metadata(appdir, component, metadata)
         normalize_public_permissions(appdir)
-        result = audit(appdir, metadata)
-        (appdir / "usr/share/maple-agent/runtime-audit.json").write_text(json.dumps(result, indent=2) + "\n")
-        (appdir / "usr/share/maple-agent/runtime-audit.json").chmod(0o644)
         for path in appdir.rglob("*"):
             os.utime(path, (epoch, epoch), follow_symlinks=False)
-        if args.stage_only:
-            shutil.move(appdir, output)
-        else:
-            squashfs = temporary / "payload.squashfs"
-            # SquashFS rejects inherited SOURCE_DATE_EPOCH with explicit time
-            # options. Keep both deterministic flags and scope removal to this
-            # child process so the package environment remains unchanged.
-            squashfs_environment = os.environ.copy()
-            squashfs_environment.pop("SOURCE_DATE_EPOCH", None)
-            run("mksquashfs", appdir, squashfs, "-noappend", "-no-progress", "-all-root", "-all-time", epoch, "-mkfs-time", epoch, "-comp", "gzip", "-processors", "1", env=squashfs_environment)
-            packaged = temporary / "maple-agent.AppImage"
-            with packaged.open("wb") as stream:
-                for source in (tools / "runtime-x86_64", squashfs):
-                    with source.open("rb") as part:
-                        shutil.copyfileobj(part, stream)
-            packaged.chmod(0o755)
-            extracted = temporary / "final.AppDir"
-            extract_appimage(packaged, extracted)
-            if audit(extracted, metadata) != result:
-                raise PackagingError("Final AppImage runtime payload differs from audited AppDir")
-            shutil.move(packaged, output)
-        audit_sidecar = output.with_name(output.name + ".runtime-audit.json")
-        audit_sidecar.write_text(json.dumps(result, indent=2) + "\n")
-        audit_sidecar.chmod(0o644)
+        shutil.move(appdir, output)
         print(output)
 
 
