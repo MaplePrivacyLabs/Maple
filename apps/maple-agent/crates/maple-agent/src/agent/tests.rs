@@ -2010,12 +2010,31 @@ fn model_changes(session: &pi_coding_agent::AgentSession) -> Vec<String> {
     })
 }
 
+/// The texts of a timeline's notices and user messages, in order.
+fn notices_and_prompts(timeline: &[AgentTimelineItem]) -> Vec<String> {
+    timeline
+        .iter()
+        .filter(|row| row.item_type == "system" || row.role.as_deref() == Some("user"))
+        .filter_map(|row| row.text.clone())
+        .collect()
+}
+
 /// A started task switches models with its next run, loaded or not: the
-/// run goes to the new model with the whole history, and the task's model
-/// follows from the start of the run.
+/// run goes to the new model with the whole history, the task's model
+/// follows from the start of the run, and the transcript says where it
+/// switched, live and once stored.
 #[tokio::test]
 async fn a_run_wakes_a_settled_task_and_a_started_task_switches_models() {
     let mut harness = Harness::new().await;
+    let catalog = json!({
+        "object": "list",
+        "data": [
+            {"id": "glm-5-3", "short_name": "GLM 5.3"},
+            {"id": "kimi-k3", "short_name": "Kimi K3"},
+        ],
+        "aliases": [],
+    });
+    harness.serve_catalog(catalog.clone()).await;
     harness.faux.push_text("Hello.");
     let task = harness.create_task().await;
     harness
@@ -2045,10 +2064,18 @@ async fn a_run_wakes_a_settled_task_and_a_started_task_switches_models() {
             _ => None,
         });
     assert_eq!(switched.as_deref(), Some("kimi-k3"));
+    let live = notices_and_prompts(&harness.recorder.live_rows(&run.run_id));
+    assert_eq!(live, ["Switched to Kimi K3", "Again"]);
+    let stored = harness.handle.load_session(task.clone()).await.unwrap();
+    assert_eq!(
+        notices_and_prompts(&stored.timeline),
+        ["Hi", "Switched to Kimi K3", "Again"]
+    );
 
     // After a restart the task opens on Kimi and switches back the same way.
     harness.restart().await;
     harness.start().await;
+    harness.serve_catalog(catalog).await;
     harness.faux.push_text("Hello from GLM.");
     let mut run = harness.send(&task, "Once more").await;
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
@@ -2059,6 +2086,17 @@ async fn a_run_wakes_a_settled_task_and_a_started_task_switches_models() {
     assert_eq!(model_changes(&session), ["glm-5-3", "kimi-k3", "glm-5-3"]);
     let listed = harness.handle.list_sessions(None).await.unwrap();
     assert_eq!(listed[0].model.as_deref(), Some("glm-5-3"));
+    let stored = harness.handle.load_session(task).await.unwrap();
+    assert_eq!(
+        notices_and_prompts(&stored.timeline),
+        [
+            "Hi",
+            "Switched to Kimi K3",
+            "Again",
+            "Switched to GLM 5.3",
+            "Once more"
+        ]
+    );
 }
 
 #[tokio::test]

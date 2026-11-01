@@ -22,44 +22,6 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
-/// Research's compact label precedence, projected once when the catalog loads.
-/// IDs remain the keys used for selection and persisted tasks.
-pub(super) fn catalog_model_labels(
-    catalog: &maple_sdk::ModelCatalogResponse,
-) -> std::collections::HashMap<String, String> {
-    let label = |short: Option<&str>, full: Option<&str>, id: &str| {
-        short
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| full.filter(|value| !value.trim().is_empty()))
-            .unwrap_or(id)
-            .to_string()
-    };
-    catalog
-        .data
-        .iter()
-        .map(|model| {
-            (
-                model.id.clone(),
-                label(
-                    model.short_name.as_deref(),
-                    model.display_name.as_deref(),
-                    &model.id,
-                ),
-            )
-        })
-        .chain(catalog.aliases.iter().map(|alias| {
-            (
-                alias.id.clone(),
-                label(
-                    alias.short_name.as_deref(),
-                    alias.label.as_deref(),
-                    &alias.id,
-                ),
-            )
-        }))
-        .collect()
-}
-
 /// The composer's button row, left to right. The row renders from this
 /// list and application Vim walks it, so a new control is reachable from
 /// the keyboard once it has an entry here, a rendering, and an action.
@@ -1552,36 +1514,4 @@ fn chip(
         .children(leading.map(|name| icon(name, px(16.), color)))
         .child(div().whitespace_nowrap().child(label))
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::catalog_model_labels;
-
-    #[test]
-    fn model_labels_follow_research_catalog_precedence() {
-        let catalog = serde_json::from_value(serde_json::json!({
-            "object": "list",
-            "data": [
-                {"id": "model-a", "short_name": "Compact", "display_name": "Full name"},
-                {"id": "model-b", "display_name": "Server supplied name"},
-                {"id": "model-c", "short_name": " ", "display_name": "Fallback name"},
-                {"id": "model-d"}
-            ],
-            "aliases": [
-                {"id": "alias-a", "short_name": "Alias", "label": "Full alias", "target_model": "model-a"},
-                {"id": "alias-b", "label": "Automatic", "target_model": "model-b"},
-                {"id": "alias-c", "short_name": "", "label": " ", "target_model": "model-c"}
-            ]
-        }))
-        .unwrap();
-        let labels = catalog_model_labels(&catalog);
-        assert_eq!(labels["model-a"], "Compact");
-        assert_eq!(labels["model-b"], "Server supplied name");
-        assert_eq!(labels["model-c"], "Fallback name");
-        assert_eq!(labels["model-d"], "model-d");
-        assert_eq!(labels["alias-a"], "Alias");
-        assert_eq!(labels["alias-b"], "Automatic");
-        assert_eq!(labels["alias-c"], "alias-c");
-    }
 }

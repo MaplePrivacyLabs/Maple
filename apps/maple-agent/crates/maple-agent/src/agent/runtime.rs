@@ -30,9 +30,10 @@ use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
 use super::surface::{AgentSurfaceAccess, SurfaceTask, with_surface_servers};
+use super::timeline::{MAPLE_NOTICE_ENTRY, notice_entry_data, notice_item};
 use super::{
-    AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources, emit_agent_event, login_path,
-    tools,
+    AgentRuntimeStatus, AgentServiceEvent, AgentTimelineItem, MapleAgentHostResources,
+    emit_agent_event, login_path, tools,
 };
 use crate::maple_api::MapleApiSession;
 
@@ -650,13 +651,13 @@ impl AgentRuntime {
         Ok(self.switch_task_session(row, model).await?.0)
     }
 
-    /// [`Self::task_session`], with the model a started task switched from
-    /// when `model` is another one.
+    /// [`Self::task_session`], with the transcript's notice when a started
+    /// task switched to another model.
     pub(super) async fn switch_task_session(
         &self,
         row: &TaskRow,
         model: Model,
-    ) -> Result<(AgentSession, Option<String>), String> {
+    ) -> Result<(AgentSession, Option<AgentTimelineItem>), String> {
         // Read before the sessions are locked: the first read asks a shell,
         // and the resources come from disk.
         let search_path = login_path::login_search_path().await;
@@ -793,8 +794,9 @@ impl AgentRuntime {
         Ok((session, switched))
     }
 
-    /// Move a session to `model`, as Pi's `setModel` does. Returns the model
-    /// a started task switched from.
+    /// Move a session to `model`, as Pi's `setModel` does. A started task
+    /// that switched to another model records a notice in its transcript,
+    /// which is returned to show live.
     ///
     /// Pi's switch takes the thinking default of the session's settings,
     /// read when the session was built. A switch to another model takes the
@@ -804,15 +806,38 @@ impl AgentRuntime {
         session: &AgentSession,
         row: &TaskRow,
         model: Model,
-    ) -> Option<String> {
-        let previous = session.model().map(|previous| previous.id);
-        let changed = previous.as_deref() != Some(model.id.as_str());
+    ) -> Option<AgentTimelineItem> {
+        let changed = session
+            .model()
+            .is_none_or(|previous| previous.id != model.id);
+        let model_id = model.id.clone();
         self.models.register_models([model.clone()]);
         session.set_model(model).await;
-        if changed && let Some(level) = self.thinking_default() {
+        if !changed {
+            return None;
+        }
+        if let Some(level) = self.thinking_default() {
             session.set_thinking_level(level).await;
         }
-        previous.filter(|_| changed && row.message_count > 0)
+        if row.message_count == 0 {
+            return None;
+        }
+        let text = format!("Switched to {}", self.model_label(&model_id).await);
+        let id = format!("model-switch-{}", pi_ai::now_ms());
+        session
+            .extension_context()
+            .append_entry(MAPLE_NOTICE_ENTRY, Some(notice_entry_data(&id, &text)));
+        Some(notice_item(id, "Agent notice", &text, pi_ai::now_ms()))
+    }
+
+    /// The name the catalog shows for a model, or its id.
+    async fn model_label(&self, model_id: &str) -> String {
+        self.api
+            .model_catalog()
+            .await
+            .ok()
+            .and_then(|catalog| super::catalog_model_labels(&catalog).remove(model_id))
+            .unwrap_or_else(|| model_id.to_string())
     }
 
     /// The account's saved thinking default, if it has one.

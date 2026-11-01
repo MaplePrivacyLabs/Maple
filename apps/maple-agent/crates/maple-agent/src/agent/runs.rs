@@ -1545,12 +1545,13 @@ impl AgentRuntime {
                 Some(request.vision_capable),
             )
             .await;
-        let (session, switched_from) = self.switch_task_session(&row, model).await?;
-        if switched_from.is_some()
-            && let Some(switched) = self.store.get(session_id)?
-        {
+        let (session, switched) = self.switch_task_session(&row, model).await?;
+        if let Some(notice) = switched {
             // Surfaces show the task's new model from the start of the run.
-            events.publish(AgentRunEvent::SessionUpdated(switched.summary()));
+            if let Some(row) = self.store.get(session_id)? {
+                events.publish(AgentRunEvent::SessionUpdated(row.summary()));
+            }
+            events.publish(AgentRunEvent::TimelineItem(notice));
         }
         self.failures.clear(session_id);
         self.wake(session_id)?;

@@ -2229,7 +2229,7 @@ impl ChatScreen {
                 this.models_loading = false;
                 if let Ok((mut models, saved, catalog)) = result {
                     if let Some(catalog) = &catalog {
-                        this.model_labels = composer::catalog_model_labels(catalog);
+                        this.model_labels = maple_agent::agent::catalog_model_labels(catalog);
                         // An older execution computer lists every API model,
                         // or every catalog model; offer only what the catalog
                         // describes and does not keep out of Maple Work.
