@@ -3,8 +3,7 @@
 
 use super::config::MAX_ACP_CONNECTIONS;
 use super::convert::{
-    acp_session_config_options, acp_tool_update, client_supports_form_elicitation,
-    timeline_tool_text,
+    acp_config_options, acp_tool_update, client_supports_form_elicitation, timeline_tool_text,
 };
 use super::session::completed_runtime_start;
 use super::transport::is_session_update_line;
@@ -816,8 +815,8 @@ async fn set_mode_is_rejected() {
 }
 
 /// A turn streams to the caller as it happens: thinking and text once each,
-/// tool calls with their results, the locked model selector and the task's
-/// title; it ends with the turn's usage. The task is listed from then on,
+/// tool calls with their results and the task's title; it ends with the
+/// turn's usage. The task is listed from then on,
 /// and a later connection replays it.
 #[tokio::test]
 async fn a_prompt_streams_its_turn_and_a_later_load_replays_it() {
@@ -867,14 +866,8 @@ async fn a_prompt_streams_its_turn_and_a_later_load_replays_it() {
             .contains("Remember the milk."),
         "{last}"
     );
-    let locked = client.take("config_option_update");
-    assert_eq!(
-        locked[0]["update"]["configOptions"][0]["options"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    // The first message changes no option: the model selector stays.
+    assert!(client.take("config_option_update").is_empty());
     let titles = client.take("session_info_update");
     assert_eq!(titles[0]["update"]["title"], "What do the notes say?");
     // Prompted, the task is listed.
@@ -901,6 +894,55 @@ async fn a_prompt_streams_its_turn_and_a_later_load_replays_it() {
     );
     let replayed_calls = client.take("tool_call");
     assert_eq!(replayed_calls[0]["update"]["status"], "completed");
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+/// A started task takes another model: the selector offers every model
+/// after the first prompt, and the next prompt runs on the one picked.
+#[tokio::test]
+async fn a_started_task_switches_to_the_model_picked() {
+    let harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({
+            "object": "list",
+            "data": [{"id": "glm-5-3"}, {"id": "kimi-k3"}],
+            "aliases": [],
+        }))
+        .await;
+    harness.faux.push_text("First.");
+    harness.faux.push_text("Second.");
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let session_id = client.new_session(harness.project.path()).await;
+    let first = client.prompt(&session_id, "One").await;
+    assert_eq!(first["stopReason"], "end_turn");
+
+    let picked = client
+        .call(
+            "session/set_config_option",
+            json!({"sessionId": session_id, "configId": "model", "value": "kimi-k3"}),
+        )
+        .await;
+    let selector = &picked["configOptions"][0];
+    assert_eq!(selector["currentValue"], "kimi-k3", "{picked}");
+    assert_eq!(selector["options"].as_array().unwrap().len(), 2);
+    let second = client.prompt(&session_id, "Two").await;
+    assert_eq!(second["stopReason"], "end_turn");
+
+    let models: Vec<String> = harness
+        .faux
+        .requests()
+        .iter()
+        .map(|request| request.model.id.clone())
+        .collect();
+    assert_eq!(models, ["glm-5-3", "kimi-k3"]);
+    let summary = harness
+        .handle
+        .task_summary(session_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(summary.model.as_deref(), Some("kimi-k3"));
     client.shutdown().await;
     finish(serving).await;
 }
@@ -1502,26 +1544,20 @@ fn prompt_usage_serializes_one_turn_without_session_accumulation() {
     assert_eq!(encoded["cachedWriteTokens"], 1);
 }
 
-/// The model selector is the only config option, and it locks to the
-/// persisted model after the first message.
+/// The model selector is the only config option, and offers every model.
 #[test]
-fn model_selector_locks_to_the_persisted_model_after_first_message() {
+fn model_selector_offers_every_model() {
     let models = vec!["model-a".to_string(), "model-b".to_string()];
-    let fresh = serde_json::to_value(acp_session_config_options("model-b", &models, 0)).unwrap();
-    let locked = serde_json::to_value(acp_session_config_options("model-b", &models, 1)).unwrap();
+    let options = serde_json::to_value(acp_config_options("model-b", &models)).unwrap();
 
     assert_eq!(
-        fresh.as_array().unwrap().len(),
+        options.as_array().unwrap().len(),
         1,
-        "no mode option: {fresh}"
+        "no mode option: {options}"
     );
-    assert_eq!(fresh[0]["id"], "model");
-    assert_eq!(fresh[0]["currentValue"], "model-b");
-    assert_eq!(fresh[0]["options"].as_array().unwrap().len(), 2);
-    assert_eq!(locked.as_array().unwrap().len(), 1);
-    assert_eq!(locked[0]["currentValue"], "model-b");
-    assert_eq!(locked[0]["options"].as_array().unwrap().len(), 1);
-    assert_eq!(locked[0]["options"][0]["value"], "model-b");
+    assert_eq!(options[0]["id"], "model");
+    assert_eq!(options[0]["currentValue"], "model-b");
+    assert_eq!(options[0]["options"].as_array().unwrap().len(), 2);
 }
 
 #[test]

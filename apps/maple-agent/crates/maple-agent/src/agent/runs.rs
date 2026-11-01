@@ -1536,15 +1536,8 @@ impl AgentRuntime {
             .store
             .get(session_id)?
             .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
+        // A started task may run on another model: it switches from this run.
         let model_id = request.model.clone().unwrap_or_else(|| self.model.clone());
-        if row.message_count > 0
-            && let Some(locked) = row.model.as_deref()
-            && locked != model_id
-        {
-            return Err(format!(
-                "This task is locked to model {locked}. Start a new task to use {model_id}."
-            ));
-        }
         let model = self
             .pi_model(
                 &model_id,
@@ -1552,7 +1545,13 @@ impl AgentRuntime {
                 Some(request.vision_capable),
             )
             .await;
-        let session = self.task_session(&row, model).await?;
+        let (session, switched_from) = self.switch_task_session(&row, model).await?;
+        if switched_from.is_some()
+            && let Some(switched) = self.store.get(session_id)?
+        {
+            // Surfaces show the task's new model from the start of the run.
+            events.publish(AgentRunEvent::SessionUpdated(switched.summary()));
+        }
         self.failures.clear(session_id);
         self.wake(session_id)?;
         // Named from the first message with text: images alone say nothing,

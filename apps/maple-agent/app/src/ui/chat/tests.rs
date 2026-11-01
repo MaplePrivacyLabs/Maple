@@ -3198,10 +3198,11 @@ mod state_tests {
         });
     }
 
-    /// Opening a task with a persisted model points the selector at that
-    /// model without changing the account default. New Task restores it.
+    /// Opening a task points the selector at the model it last used without
+    /// changing the account default. Its menu offers every model, and a pick
+    /// becomes the account default, as on New Task.
     #[gpui::test]
-    fn test_existing_task_adopts_its_locked_model(cx: &mut TestAppContext) {
+    fn test_existing_task_opens_on_its_model_and_offers_every_model(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -3221,45 +3222,33 @@ mod state_tests {
             kimi.model = Some("kimi-k3".into());
             kimi.message_count = 3;
 
-            this.set_active_session(kimi, Vec::new(), HashMap::new(), cx);
+            this.set_active_session(kimi.clone(), Vec::new(), HashMap::new(), cx);
             assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
-            assert!(this.model_locked);
             assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
-            assert_eq!(this.model_menu_models(), vec!["kimi-k3".to_string()]);
 
             this.pick_model("glm-5-3".into(), cx);
-            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
-            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
-            assert!(
-                this.notice
-                    .as_ref()
-                    .is_some_and(|notice| notice.as_ref().contains("locked to model kimi-k3")),
-                "picking another model on a locked task must not change the selector"
-            );
-
-            this.set_active_session(glm, Vec::new(), HashMap::new(), cx);
             assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
-            assert!(this.model_locked);
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
+            assert!(this.notice.is_none());
+
+            // Reopened before a message, the task is still on its own model.
+            this.set_active_session(glm, Vec::new(), HashMap::new(), cx);
+            this.set_active_session(kimi, Vec::new(), HashMap::new(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
 
             this.new_session(cx);
             assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
-            assert!(!this.model_locked);
-            assert_eq!(
-                this.model_menu_models(),
-                vec!["glm-5-3".to_string(), "kimi-k3".to_string()]
-            );
-
             this.pick_model("kimi-k3".into(), cx);
             assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
             assert_eq!(this.default_model.as_deref(), Some("kimi-k3"));
-            assert!(!this.model_locked);
         });
     }
 
-    /// A task opened before its first message locks as soon as the runtime
-    /// reports that message, without being opened again.
+    /// A pick waits for the task's next message: updates of the task on its
+    /// old model leave it alone, and a switch the task makes, here or on
+    /// another surface, moves the selector to the new model.
     #[gpui::test]
-    fn test_first_message_locks_the_task_on_screen(cx: &mut TestAppContext) {
+    fn test_a_pick_waits_for_the_next_message_and_switches_follow(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         use maple_agent::agent::AgentRunEvent;
         let screen = screen(cx);
@@ -3274,29 +3263,50 @@ mod state_tests {
             created.message_count = 0;
             this.upsert_session(created.clone(), cx);
             this.set_active_session(created.clone(), Vec::new(), HashMap::new(), cx);
-            assert!(!this.model_locked);
 
             let mut sent = created;
-            sent.message_count = 1;
-            this.handle_run_event("new-task", "r1", AgentRunEvent::SessionUpdated(sent), cx);
-            assert!(this.model_locked);
-            assert_eq!(this.model_menu_models(), vec!["glm-5-3".to_string()]);
+            sent.message_count = 2;
+            this.handle_run_event(
+                "new-task",
+                "r1",
+                AgentRunEvent::SessionUpdated(sent.clone()),
+                cx,
+            );
+            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
 
             this.pick_model("kimi-k3".into(), cx);
-            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
-            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
-            assert!(
-                this.notice
-                    .as_ref()
-                    .is_some_and(|notice| notice.as_ref().contains("locked to model glm-5-3"))
+            sent.updated_ms += 1;
+            this.handle_run_event(
+                "new-task",
+                "r1",
+                AgentRunEvent::SessionUpdated(sent.clone()),
+                cx,
             );
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+
+            let mut switched = sent.clone();
+            switched.model = Some("kimi-k3".into());
+            this.handle_run_event(
+                "new-task",
+                "r2",
+                AgentRunEvent::SessionUpdated(switched.clone()),
+                cx,
+            );
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+
+            // Another surface runs the task on GLM again.
+            let mut elsewhere = switched;
+            elsewhere.model = Some("glm-5-3".into());
+            this.upsert_session(elsewhere, cx);
+            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
+            assert_eq!(this.default_model.as_deref(), Some("kimi-k3"));
         });
     }
 
     /// Deleting the last task of a project leaves an empty screen that uses
-    /// the default model, not the deleted task's lock.
+    /// the default model, not the deleted task's model.
     #[gpui::test]
-    fn test_leaving_a_locked_task_restores_the_default_model(cx: &mut TestAppContext) {
+    fn test_leaving_a_task_restores_the_default_model(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -3310,13 +3320,11 @@ mod state_tests {
             kimi.message_count = 3;
             this.sessions = vec![kimi.clone()];
             this.set_active_session(kimi, Vec::new(), HashMap::new(), cx);
-            assert!(this.model_locked);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
 
             this.remove_session("kimi-task", cx);
             assert!(this.selected_session.is_none());
-            assert!(!this.model_locked);
             assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
-            assert_eq!(this.model_menu_models().len(), 2);
             let request = this.new_session_request().expect("request");
             assert_eq!(request.model.as_deref(), Some("glm-5-3"));
         });

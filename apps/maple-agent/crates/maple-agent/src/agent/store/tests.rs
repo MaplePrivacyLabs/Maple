@@ -222,23 +222,31 @@ fn metadata_compare_and_swap_preserves_a_concurrent_user_rename() {
     assert!(saved.title_user_set);
 }
 
+/// A started task takes a selection for its next run; the session's next
+/// append then records the model the session has.
 #[test]
-fn model_selection_is_locked_by_the_same_transaction_that_observes_first_message() {
+fn a_started_task_takes_a_model_selection_until_its_session_records_one() {
     let (_directory, store) = store();
     store.insert(&row(1, "one", 1)).unwrap();
     store
         .update(&id(1), |row| row.model = Some("initial-selection".into()))
         .unwrap();
-    let result = store.update(&id(1), |row| {
-        let mut session = store.open_session(&id(1), &root("one")).unwrap();
-        session.append_model_change("maple", "initial-selection");
-        session.append_message(user("first message"));
-        row.model = Some("racing-selection".into());
-    });
-    assert!(result.is_err());
+    let mut session = store.open_session(&id(1), &root("one")).unwrap();
+    session.append_model_change("maple", "initial-selection");
+    session.append_message(user("first message"));
+
+    let selected = store
+        .update(&id(1), |row| row.model = Some("next-selection".into()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.model.as_deref(), Some("next-selection"));
+    assert_eq!(selected.message_count, 1);
+
+    session.append_model_change("maple", "next-selection");
+    session.append_message(user("second message"));
     let saved = store.get(&id(1)).unwrap().unwrap();
-    assert_eq!(saved.model.as_deref(), Some("initial-selection"));
-    assert_eq!(saved.message_count, 1);
+    assert_eq!(saved.model.as_deref(), Some("next-selection"));
+    assert_eq!(saved.message_count, 2);
 }
 
 #[test]

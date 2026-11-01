@@ -647,6 +647,16 @@ impl AgentRuntime {
         row: &TaskRow,
         model: Model,
     ) -> Result<AgentSession, String> {
+        Ok(self.switch_task_session(row, model).await?.0)
+    }
+
+    /// [`Self::task_session`], with the model a started task switched from
+    /// when `model` is another one.
+    pub(super) async fn switch_task_session(
+        &self,
+        row: &TaskRow,
+        model: Model,
+    ) -> Result<(AgentSession, Option<String>), String> {
         // Read before the sessions are locked: the first read asks a shell,
         // and the resources come from disk.
         let search_path = login_path::login_search_path().await;
@@ -671,12 +681,13 @@ impl AgentRuntime {
                 return Err("Agent task is being unloaded".into());
             }
             *last_used = Instant::now();
-            // A new context window or vision flag for the same model, or
-            // another model for a task that has not started.
-            if session.model().as_ref() != Some(&model) {
-                self.models.register_models([model.clone()]);
-                session.set_model(model).await;
-            }
+            // Another model, or a new context window or vision flag for the
+            // same one.
+            let switched = if session.model().as_ref() != Some(&model) {
+                self.switch_model(session, row, model).await
+            } else {
+                None
+            };
             // The web switch and the external agents may have changed since
             // the last run.
             tools::sync_web_tools(session, row.web_enabled);
@@ -684,17 +695,28 @@ impl AgentRuntime {
             if let Some(resources) = resources {
                 session.set_resources(resources);
             }
-            return Ok(session.clone());
+            return Ok((session.clone(), switched));
         }
-        // Registered first, so a resumed session finds the model it names.
-        self.models.register_models([model.clone()]);
         let store = Arc::clone(&self.store);
         let (id, cwd) = (row.id.clone(), row.project_root.clone());
         let manager = tokio::task::spawn_blocking(move || store.open_session(&id, &cwd))
             .await
             .map_err(|error| format!("Failed to read the Agent task: {error}"))??;
+        // A started task opens on the model it last used and then switches,
+        // as a loaded one does, so the switch is recorded and announced.
+        let stored = manager
+            .projection()
+            .model
+            .map(|(_, id)| id)
+            .filter(|id| row.message_count > 0 && *id != model.id);
+        let initial = match &stored {
+            Some(id) => self.pi_model(id, None, None).await,
+            None => model.clone(),
+        };
+        // Registered first, so a resumed session finds the model it names.
+        self.models.register_models([initial.clone()]);
         // A model that cannot see images gets them described.
-        let describe = !model.supports_images();
+        let describe = !initial.supports_images();
         let attachments = Arc::new(super::attachments::AgentAttachmentStore::new(
             Arc::clone(self.store.store()),
             self.store.account(),
@@ -702,7 +724,7 @@ impl AgentRuntime {
         let task_models = self.attachment_models(&row.id);
         let mut options =
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, task_models);
-        options.model = Some(model);
+        options.model = Some(initial);
         options.settings = self.settings();
         options.resources = resources.unwrap_or_default();
 
@@ -750,6 +772,10 @@ impl AgentRuntime {
         let session = AgentSession::new(options)
             .await
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
+        let switched = match stored {
+            Some(_) => self.switch_model(&session, row, model).await,
+            None => None,
+        };
         sync_external_agent_tools(&session, &agents, providers);
         sessions.insert(
             row.id.clone(),
@@ -764,7 +790,39 @@ impl AgentRuntime {
         );
         drop(sessions);
         self.evict_idle_tasks(&row.id).await;
-        Ok(session)
+        Ok((session, switched))
+    }
+
+    /// Move a session to `model`, as Pi's `setModel` does. Returns the model
+    /// a started task switched from.
+    ///
+    /// Pi's switch takes the thinking default of the session's settings,
+    /// read when the session was built. A switch to another model takes the
+    /// account's default as it is now, which the composer previews.
+    async fn switch_model(
+        &self,
+        session: &AgentSession,
+        row: &TaskRow,
+        model: Model,
+    ) -> Option<String> {
+        let previous = session.model().map(|previous| previous.id);
+        let changed = previous.as_deref() != Some(model.id.as_str());
+        self.models.register_models([model.clone()]);
+        session.set_model(model).await;
+        if changed && let Some(level) = self.thinking_default() {
+            session.set_thinking_level(level).await;
+        }
+        previous.filter(|_| changed && row.message_count > 0)
+    }
+
+    /// The account's saved thinking default, if it has one.
+    fn thinking_default(&self) -> Option<pi_ai::ThinkingLevel> {
+        super::config::load_agent_config_inner(&self.host.paths, &self.user_id)
+            .map(|config| config.default_thinking_level)
+            .unwrap_or_else(|error| {
+                log::warn!("Failed to read the thinking default: {error}");
+                None
+            })
     }
 
     /// The skills, prompt templates and instruction files of a task in
@@ -805,15 +863,7 @@ impl AgentRuntime {
             http_idle_timeout_ms: Some(0),
             steering_mode: QueueMode::All,
             follow_up_mode: QueueMode::All,
-            default_thinking_level: super::config::load_agent_config_inner(
-                &self.host.paths,
-                &self.user_id,
-            )
-            .map(|config| config.default_thinking_level)
-            .unwrap_or_else(|error| {
-                log::warn!("Failed to read the thinking default: {error}");
-                None
-            }),
+            default_thinking_level: self.thinking_default(),
             append_system_prompt: Some(appended).filter(|text| !text.is_empty()),
             ..Settings::default()
         }

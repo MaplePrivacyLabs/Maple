@@ -1994,9 +1994,28 @@ async fn a_failed_reply_fails_the_run_and_shows_its_error() {
     assert_eq!(error.title.as_deref(), Some("Credits exhausted"));
 }
 
+/// The models a task's session recorded switching to, in order.
+fn model_changes(session: &pi_coding_agent::AgentSession) -> Vec<String> {
+    session.with_session(|manager| {
+        manager
+            .branch()
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                pi_coding_agent::session::EntryKind::ModelChange { model_id, .. } => {
+                    Some(model_id.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// A started task switches models with its next run, loaded or not: the
+/// run goes to the new model with the whole history, and the task's model
+/// follows from the start of the run.
 #[tokio::test]
-async fn a_run_wakes_a_settled_task_and_a_started_task_keeps_its_model() {
-    let harness = Harness::new().await;
+async fn a_run_wakes_a_settled_task_and_a_started_task_switches_models() {
+    let mut harness = Harness::new().await;
     harness.faux.push_text("Hello.");
     let task = harness.create_task().await;
     harness
@@ -2009,15 +2028,37 @@ async fn a_run_wakes_a_settled_task_and_a_started_task_keeps_its_model() {
     let listed = harness.handle.list_sessions(None).await.unwrap();
     assert_eq!(listed[0].state, AgentTaskState::Active);
 
+    harness.faux.push_text("Hello from Kimi.");
     let mut other_model = harness.request(&task, "Again");
     other_model.model = Some("kimi-k3".to_string());
-    let error = harness
-        .handle
-        .send_message(other_model)
-        .await
-        .err()
-        .unwrap();
-    assert!(error.contains("locked to model glm-5-3"), "{error}");
+    let mut run = harness.handle.send_message(other_model).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let request = harness.faux.requests().pop().unwrap();
+    assert_eq!(request.model.id, "kimi-k3");
+    assert_eq!(user_texts(&request), ["Hi", "Again"]);
+    let switched = harness
+        .recorder
+        .run_events(&run.run_id)
+        .into_iter()
+        .find_map(|event| match event {
+            AgentRunEvent::SessionUpdated(summary) => summary.model,
+            _ => None,
+        });
+    assert_eq!(switched.as_deref(), Some("kimi-k3"));
+
+    // After a restart the task opens on Kimi and switches back the same way.
+    harness.restart().await;
+    harness.start().await;
+    harness.faux.push_text("Hello from GLM.");
+    let mut run = harness.send(&task, "Once more").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let request = harness.faux.requests().pop().unwrap();
+    assert_eq!(request.model.id, "glm-5-3");
+    assert_eq!(user_texts(&request), ["Hi", "Again", "Once more"]);
+    let session = harness.runtime().await.loaded_session(&task).await.unwrap();
+    assert_eq!(model_changes(&session), ["glm-5-3", "kimi-k3", "glm-5-3"]);
+    let listed = harness.handle.list_sessions(None).await.unwrap();
+    assert_eq!(listed[0].model.as_deref(), Some("glm-5-3"));
 }
 
 #[tokio::test]
@@ -3286,6 +3327,93 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
             .current,
         ThinkingLevel::Off
     );
+}
+
+/// A started task previews the model it will switch to with the level the
+/// switch gives it, keeps a pick for that model off its current one, and
+/// takes the pick when its next run switches.
+#[tokio::test]
+async fn a_started_task_previews_and_takes_thinking_for_its_next_model() {
+    use ThinkingLevel::{High, Low, Max};
+    let harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({"object":"list","data":[
+            {"id":"glm-5-3", "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"]}},
+            {"id":"kimi-k3", "reasoning":{"supported_efforts":["high","low"]}}
+        ],"aliases":[]}))
+        .await;
+    let task = harness.create_task().await;
+    harness
+        .handle
+        .set_thinking_level(Some(&task), "glm-5-3", Max)
+        .await
+        .unwrap();
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Hello").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    let state = async |model: &str| {
+        harness
+            .handle
+            .thinking_state(Some(&task), model)
+            .await
+            .unwrap()
+    };
+    assert_eq!(
+        state("kimi-k3").await,
+        AgentThinkingState {
+            levels: vec![Low, High],
+            current: High,
+        }
+    );
+    assert_eq!(state("glm-5-3").await.current, Max);
+
+    let picked = harness
+        .handle
+        .set_thinking_level(Some(&task), "kimi-k3", Low)
+        .await
+        .unwrap();
+    assert_eq!(picked.current, Low);
+    let session = harness.runtime().await.loaded_session(&task).await.unwrap();
+    assert_eq!(session.model().unwrap().id, "glm-5-3");
+    assert_eq!(session.thinking_level(), Max);
+
+    harness.faux.push_text("Switched.");
+    let mut kimi = harness.request(&task, "Go on");
+    kimi.model = Some("kimi-k3".to_string());
+    let mut run = harness.handle.send_message(kimi).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(session.model().unwrap().id, "kimi-k3");
+    assert_eq!(session.thinking_level(), Low);
+    assert_eq!(state("kimi-k3").await.current, Low);
+}
+
+/// An ACP or other surface selection on a started task is stored for its
+/// next run, and the run switches to it.
+#[tokio::test]
+async fn a_started_task_takes_a_model_selection_for_its_next_run() {
+    let harness = Harness::new().await;
+    harness.faux.push_text("Hello.");
+    let task = harness.create_task().await;
+    let mut run = harness.send(&task, "Hi").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    let selected = harness
+        .handle
+        .set_task_model(&task, "kimi-k3")
+        .await
+        .unwrap();
+    assert_eq!(selected.model.as_deref(), Some("kimi-k3"));
+    assert_eq!(selected.message_count, 2);
+
+    harness.faux.push_text("Hello from Kimi.");
+    let mut kimi = harness.request(&task, "Again");
+    kimi.model = selected.model;
+    let mut run = harness.handle.send_message(kimi).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(harness.faux.requests().pop().unwrap().model.id, "kimi-k3");
+    let listed = harness.handle.list_sessions(None).await.unwrap();
+    assert_eq!(listed[0].model.as_deref(), Some("kimi-k3"));
 }
 
 #[tokio::test]
