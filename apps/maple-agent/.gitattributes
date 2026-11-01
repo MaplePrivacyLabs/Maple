@@ -2,3 +2,5 @@
 # hashes the raw bytes. Windows Git defaults to CRLF, which changes that hash.
 # Browsers normalize newlines before hashing, so only the test would fail.
 crates/maple-agent/src/sign_in_page.html text eol=lf
+# Keep pinned upstream license notices byte-for-byte, including blank EOF lines.
+scripts/python-licenses/* whitespace=-blank-at-eof
