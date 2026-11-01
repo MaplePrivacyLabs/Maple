@@ -17,11 +17,12 @@ their original source SHA and provenance; they are never relabeled as a newer
 commit. A manual dispatch from `master` forces fresh packages, including when
 the previous run's 30-day artifacts have expired. macOS ARM64 builds are
 Developer ID signed, notarized, and stapled. Linux x86_64 builds are tar bundles
-with a normal application directory. Like Zed, the binary is linked against
-glibc 2.31 and uses the host's glibc, desktop libraries and GPU drivers; it
-ships no libraries of its own. CI checks each downloaded bundle's command-line
-startup and detached host lifecycle in an Ubuntu 24.04 container with only the
-standard desktop libraries added, no Nix installation and no network access. Each master run completes independently. Windows x64 packages are
+with a normal application directory. The binary and bundled application
+libraries target glibc 2.31; glibc and graphics drivers come from the host.
+CI checks each downloaded bundle's command-line startup and detached host
+lifecycle in stock Ubuntu 20.04 and 24.04 containers without installing extra
+desktop libraries, a Nix installation or network access. These checks do not
+establish graphical integration. Each master run completes independently. Windows x64 packages are
 per-user NSIS installers requiring Windows 10 version 1703 (build 15063) or later. Native Windows ARM64 packages require Windows 11 (build 22000) or later and use the same application version and profile identities, with separate architecture-specific installers and update bundles. The x64 baseline supplies the OS `icuuc.dll`
 imported by GPUI; see Microsoft's [Windows ICU version history](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-).
 Trusted master
@@ -156,9 +157,12 @@ associations or script-execution security settings. For a portable launch withou
 installing, run `./maple-agent.app/AppRun` from a terminal (Dev:
 `./maple-agent-dev.app/AppRun`). Its `AppRun` entrypoint starts the
 bundled executable directly with the host's dynamic loader, without an AppImage
-mount or FUSE. The host needs glibc 2.31 or newer, a Vulkan or OpenGL graphics
-driver, and libxkbcommon, libxkbcommon-x11, libX11, libXi, libxcb and ALSA,
-which desktop installations include. On NixOS, use the flake package or nix-ld.
+mount or FUSE. The bundle includes its keyboard, X11 and audio client libraries,
+built from the pinned sources against the same glibc 2.31 floor. Each bundled
+ELF is audited for that floor and resolves its packaged dependencies through
+relative runtime paths; no bundled library path is exported to child CLI tools.
+The host supplies glibc, a desktop session, Vulkan or OpenGL graphics drivers,
+and normal desktop services. On NixOS, use the flake package or nix-ld.
 The host must provide its normal CA certificate trust store for TLS validation;
 existing user certificate-path overrides remain supported. The isolated CI
 container mounts the runner's public `/etc/ssl/certs` read-only and keeps TLS

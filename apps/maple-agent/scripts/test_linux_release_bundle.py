@@ -251,12 +251,18 @@ class LinuxBundleLauncherTests(unittest.TestCase):
             launcher = app / "AppRun"
             launcher.write_text(bundle.bundle_apprun())
             launcher.chmod(0o755)
-            # The host's libraries read their own configuration; AppRun adds
-            # no loader, library, font, locale, audio or GPU driver overrides.
+            # Bundled client libraries use host data. AppRun only discovers
+            # the distro's ALSA plugins; every explicit override is preserved.
             custom = {"FONTCONFIG_FILE": "/custom/fonts.conf", "ALSA_CONFIG_PATH": "/custom/alsa.conf",
+                      "ALSA_CONFIG_DIR": "/custom/alsa", "ALSA_PLUGIN_DIR": "/custom/plugins",
                       "PULSE_SERVER": "unix:/custom/pulse", "VK_DRIVER_FILES": "/custom/vulkan.json",
                       "LD_LIBRARY_PATH": "/custom/lib", "XLOCALEDIR": ""}
-            for inherited in (custom, {}):
+            empty_audio = {key: "" for key in ("ALSA_CONFIG_PATH", "ALSA_CONFIG_DIR", "ALSA_PLUGIN_DIR")}
+            host_plugins = next((str(path) for path in (
+                Path("/usr/lib/x86_64-linux-gnu/alsa-lib"), Path("/usr/lib64/alsa-lib"),
+                Path("/usr/lib/alsa-lib"),
+            ) if path.is_dir()), None)
+            for inherited in (custom, empty_audio, {}):
                 with self.subTest(inherited=sorted(inherited)):
                     # Keep the pinned shell's utilities available inside Nix sandboxes.
                     environment = {"PATH": os.environ["PATH"], "APPDIR": str(app),
@@ -271,7 +277,10 @@ class LinuxBundleLauncherTests(unittest.TestCase):
                     self.assertNotIn("APPIMAGE_EXTRACT_AND_RUN", observed["env"])
                     for key in custom:
                         if key not in inherited:
-                            self.assertNotIn(key, observed["env"])
+                            if key == "ALSA_PLUGIN_DIR" and host_plugins is not None:
+                                self.assertEqual(observed["env"][key], host_plugins)
+                            else:
+                                self.assertNotIn(key, observed["env"])
                     self.assertEqual(observed["argv"], ["--build-info"])
 
 
