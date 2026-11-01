@@ -16,6 +16,17 @@ macos_native() {
     esac
 }
 
+# Apple's timestamp server sometimes returns nothing ("A timestamp was expected
+# but was not found"). --force makes a repeated signature replace the failed one.
+macos_codesign() {
+    local attempt
+    for attempt in 1 2 3 4; do
+        macos_native codesign "$@" && return 0
+        ((attempt == 4)) || sleep $((attempt * 15))
+    done
+    return 1
+}
+
 macos_embed_dylibs() {
     local component="$1" binary="$2" app="$3"
     python3 "$component/scripts/macos-release-dylibs.py" "$binary" "$app"
@@ -158,10 +169,10 @@ print(matches[0])' "$APPLE_TEAM_ID")"
     [[ -z "$macos_release_keychain" ]] || keychain_args=(--keychain "$macos_release_keychain")
     local library
     while IFS= read -r -d '' library; do
-        macos_native codesign --force --sign "$identity" "$timestamp" --options runtime \
+        macos_codesign --force --sign "$identity" "$timestamp" --options runtime \
             "${keychain_args[@]}" "$library"
     done < <(find "$frameworks" -type f -name '*.dylib' -print0)
-    macos_native codesign --force --sign "$identity" "$timestamp" --options "$app_options" \
+    macos_codesign --force --sign "$identity" "$timestamp" --options "$app_options" \
         --identifier "$bundle_id" --entitlements "$component/app/packaging/macos-entitlements.plist" \
         "${keychain_args[@]}" "$app"
 
@@ -205,7 +216,7 @@ print(-(-total//(1024*1024)))' "$image_root")"
         macos_native /bin/df -h "$output_dir" "${TMPDIR:-/tmp}" >&2 || true
         return 1
     fi
-    macos_native codesign --force --sign "$identity" "$timestamp" "${keychain_args[@]}" "$output_dir/$basename.dmg"
+    macos_codesign --force --sign "$identity" "$timestamp" "${keychain_args[@]}" "$output_dir/$basename.dmg"
     if [[ "$unsigned" == false ]]; then
         macos_native xcrun notarytool submit "$output_dir/$basename.dmg" \
             --keychain "$macos_release_keychain" --keychain-profile maple-agent-release \
