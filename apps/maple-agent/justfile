@@ -113,7 +113,7 @@ build: python-prepare
 
 # Stage the debug binary in a stable macOS app bundle. A stable bundle identity
 # is required for honest Accessibility and Screen Recording permission tests.
-debug-app: build
+debug-app: build code-mode-smoke
     ./scripts/macos-debug-app.sh
 
 # Build the release binary.

@@ -32,6 +32,33 @@ macos_embed_dylibs() {
     python3 "$component/scripts/macos-release-dylibs.py" "$binary" "$app"
 }
 
+# The CPython the python tool runs, prepared from its hash pin.
+macos_bundle_python() {
+    local component="$1" app="$2" staging="$3"
+    python3 "$component/scripts/prepare-python.py" --distribution pbs \
+        --destination "$staging/python-runtime/python"
+    cp -R "$staging/python-runtime/python" "$app/Contents/Resources/python"
+}
+
+# Sign the bundled CPython inside-out: every Mach-O, then the interpreter with
+# its own entitlements. Library validation stays off for the interpreter alone,
+# so the python tool can load native extensions of the wheels it installs.
+macos_sign_python() {
+    local component="$1" app="$2" identity="$3" timestamp="$4" options="$5"
+    shift 5
+    local root="$app/Contents/Resources/python" executable code
+    executable="$root/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["executable"])' "$root/runtime.json")"
+    [[ -f "$executable" && ! -L "$executable" ]] || { echo "bundled Python interpreter is missing" >&2; return 1; }
+    while IFS= read -r -d '' code; do
+        [[ "$code" != "$executable" ]] || continue
+        if macos_native file -b "$code" | grep -q 'Mach-O'; then
+            macos_codesign --force --sign "$identity" "$timestamp" --options runtime "$@" "$code"
+        fi
+    done < <(find "$root" -type f -print0)
+    macos_codesign --force --sign "$identity" "$timestamp" --options "$options" \
+        --entitlements "$component/app/packaging/macos-python-entitlements.plist" "$@" "$executable"
+}
+
 macos_archive_app() {
     local staging="$1" app_name="$2" archive="$3"
     # COPYFILE_DISABLE alone still permits BSDtar PAX xattrs and file flags.
@@ -105,6 +132,7 @@ macos_release_main() {
     swift_tool="$(macos_native xcrun --find swift-stdlib-tool)"
     macos_native "$swift_tool" --copy --scan-executable "$executable" --scan-folder "$frameworks" \
         --platform macosx --destination "$frameworks"
+    macos_bundle_python "$component" "$app" "$macos_release_staging"
     # Public bundle contents must remain readable/executable after a CI runner's
     # private umask and ownership are encoded into the DMG and tar archive.
     chmod -R a+rX "$app"
@@ -172,6 +200,7 @@ print(matches[0])' "$APPLE_TEAM_ID")"
         macos_codesign --force --sign "$identity" "$timestamp" --options runtime \
             "${keychain_args[@]}" "$library"
     done < <(find "$frameworks" -type f -name '*.dylib' -print0)
+    macos_sign_python "$component" "$app" "$identity" "$timestamp" "$app_options" "${keychain_args[@]}"
     macos_codesign --force --sign "$identity" "$timestamp" --options "$app_options" \
         --identifier "$bundle_id" --entitlements "$component/app/packaging/macos-entitlements.plist" \
         "${keychain_args[@]}" "$app"

@@ -116,3 +116,11 @@ Development builds prepare the hash-pinned Python Build Standalone runtime with
 worker's protocol suite and `just code-mode-smoke` the native worker through the
 app's package resolver. An executable without a bundled runtime offers no
 `python` tool.
+
+macOS apps carry the runtime in `Contents/Resources/python`. Release packaging
+prepares it from the same hash pin, signs every Mach-O in it with the app's
+identity before sealing the app, and gives the interpreter alone the reviewed
+entitlements in `app/packaging/macos-python-entitlements.plist`: library
+validation is off for it, so native extensions of wheels the tool installs can
+load. `just debug-app` bundles it the same way with ad hoc signatures and runs
+the worker smoke from inside the bundle.
