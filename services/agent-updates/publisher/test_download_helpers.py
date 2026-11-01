@@ -335,7 +335,7 @@ class DownloadTests(unittest.TestCase):
         with patch.object(d.subprocess, "run", side_effect=transfer) as request:
             receipt = d.ProducerDownloader(self.ctx).run(SimpleNamespace(network=True, platform="linux"))
         request.assert_called_once()
-        self.assertLessEqual(request.call_args.kwargs["timeout"], 900)
+        self.assertEqual(request.call_args.kwargs["timeout"], 900)
         self.assertEqual(receipt["files"], self.records(files))
         self.assertEqual(receipt["actual_zip_sha256"], d.sha(zip_bytes))
         self.assertTrue((self.root / "producer-linux-download.json").is_file())
@@ -369,8 +369,18 @@ class DownloadTests(unittest.TestCase):
                 downloader.run(args)
             request.assert_called_once()
             extract.assert_not_called()
-            self.assertLessEqual(request.call_args.kwargs["timeout"], 900)
+            self.assertEqual(request.call_args.kwargs["timeout"], 900)
         self.assertEqual(archive.read_bytes(), partial)
+
+    def test_transfer_budget_has_a_small_artifact_minimum_and_finite_size_bound(self):
+        for size, seconds in ((1, 900), (102_236_160, 900), (102_236_161, 901),
+                              (248_926_519, 2020), (d.MAX_ZIP, 3600)):
+            with self.subTest(size=size):
+                self.assertEqual(d.transfer_timeout(size), seconds)
+        for size in (True, False, 0, -1, d.MAX_ZIP + 1, 1.0, "248926519", None):
+            with self.subTest(size=size):
+                with self.assertRaisesRegex(OperatorError, "invalid ZIP transfer size"):
+                    d.transfer_timeout(size)
 
     def test_producer_attempt_change_during_download_fails_without_receipt(self):
         zip_bytes, _, responses = self.producer_remote()
@@ -403,6 +413,42 @@ class DownloadTests(unittest.TestCase):
         with self.assertRaisesRegex(OperatorError, "output must be absent"):
             d.StageDownloader(self.ctx).run(args)
         self.ctx.gh_get.assert_not_called()
+
+    def test_stage_zip_size_bound_is_unchanged_before_network(self):
+        self.ctx.gh_get = Mock(side_effect=AssertionError("network forbidden"))
+        for size in (True, 0, d.MAX_ZIP + 1):
+            with self.subTest(size=size):
+                args = self.args()
+                args.zip_size = size
+                with self.assertRaisesRegex(OperatorError, "invalid stage artifact bounds"):
+                    d.StageDownloader(self.ctx).run(args)
+                self.assertFalse(args.output_dir.exists())
+        self.ctx.gh_get.assert_not_called()
+
+    def test_stage_local_zip_size_and_digest_must_still_match(self):
+        zip_bytes = self.archive(self.files, "stage-integrity.zip").read_bytes()
+        for changed in ("size", "digest"):
+            with self.subTest(changed=changed):
+                args = self.args()
+                args.zip_size, args.zip_sha256 = len(zip_bytes), d.sha(zip_bytes)
+                args.output_dir = self.root / ("wrong-" + changed)
+                if changed == "size":
+                    args.zip_size += 1
+                else:
+                    args.zip_sha256 = "0" * 64
+                responses, _ = self.remote(args)
+                self.ctx.gh_get = Mock(side_effect=responses)
+                downloader = d.StageDownloader(self.ctx)
+                with patch.object(d, "BundleVerifier") as verifier, \
+                     patch.object(downloader, "download") as transfer, \
+                     patch.object(downloader, "extract") as extract:
+                    verifier.return_value.setup.return_value = self.ctx.bindings, p
+                    transfer.side_effect = lambda artifact, output, maximum, timeout: output.write(zip_bytes)
+                    with self.assertRaisesRegex(OperatorError, "downloaded ZIP size/digest differs"):
+                        downloader.run(args)
+                    extract.assert_not_called()
+                self.assertEqual((args.output_dir / "artifact.zip").read_bytes(), zip_bytes)
+                self.assertFalse((args.output_dir / "download.json").exists())
 
     def test_stage_run_binds_receipt_and_exact_zip_without_live_io(self):
         args = self.args("signed")

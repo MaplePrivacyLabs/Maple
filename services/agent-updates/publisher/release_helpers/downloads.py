@@ -36,8 +36,17 @@ MAX_METADATA = 4 * 1024**2
 MAX_ZIP = MAX_FILE = 512 * 1024**2
 MAX_TOTAL = 1024**3
 CHUNK = 1024**2
-TRANSFER_TIMEOUT_SECONDS = 900
+MIN_TRANSFER_TIMEOUT_SECONDS = 900
+MAX_TRANSFER_TIMEOUT_SECONDS = 3600
+TRANSFER_BYTES_PER_SECOND = 128 * 1024
+TRANSFER_STARTUP_SECONDS = 120
 HEX = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def transfer_timeout(size):
+    need(type(size) is int and 0 < size <= MAX_ZIP, "invalid ZIP transfer size")
+    seconds = TRANSFER_STARTUP_SECONDS + (size + TRANSFER_BYTES_PER_SECOND - 1) // TRANSFER_BYTES_PER_SECOND
+    return min(MAX_TRANSFER_TIMEOUT_SECONDS, max(MIN_TRANSFER_TIMEOUT_SECONDS, seconds))
 
 
 def all_platforms(value):
@@ -230,7 +239,7 @@ class ProducerDownloader(DownloadBase):
              and not directory.exists() and not directory.is_symlink(), "producer destination already exists")
         fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as output:
-            self.download(artifact_id, output, size + 1, TRANSFER_TIMEOUT_SECONDS)
+            self.download(artifact_id, output, size + 1, transfer_timeout(size))
             output.flush()
             os.fsync(output.fileno())
         actual, _ = read_record(archive, MAX_ZIP)
@@ -479,7 +488,7 @@ class StageDownloader(DownloadBase):
         archive = output / "artifact.zip"
         fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as stream:
-            self.download(artifact["id"], stream, args.zip_size + 1, TRANSFER_TIMEOUT_SECONDS)
+            self.download(artifact["id"], stream, args.zip_size + 1, transfer_timeout(args.zip_size))
             stream.flush()
             os.fsync(stream.fileno())
         actual, _ = read_record(archive, MAX_ZIP)
