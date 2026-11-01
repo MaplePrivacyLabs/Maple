@@ -2010,6 +2010,23 @@ fn model_changes(session: &pi_coding_agent::AgentSession) -> Vec<String> {
     })
 }
 
+/// The switch notice a run showed live. It carries the identity of its
+/// stored row, so a reload during the run (after a compaction, for one)
+/// shows it once.
+fn live_switch_notice(harness: &Harness, run_id: &str) -> AgentTimelineItem {
+    let notice = harness
+        .recorder
+        .run_events(run_id)
+        .into_iter()
+        .find_map(|event| match event {
+            AgentRunEvent::TimelineItem(item) if item.id.starts_with("model-switch-") => Some(item),
+            _ => None,
+        })
+        .expect("the run shows the switch");
+    assert!(notice.persisted.is_some(), "{notice:?}");
+    notice
+}
+
 /// The texts of a timeline's notices and user messages, in order.
 fn notices_and_prompts(timeline: &[AgentTimelineItem]) -> Vec<String> {
     timeline
@@ -2066,6 +2083,7 @@ async fn a_run_wakes_a_settled_task_and_a_started_task_switches_models() {
     assert_eq!(switched.as_deref(), Some("kimi-k3"));
     let live = notices_and_prompts(&harness.recorder.live_rows(&run.run_id));
     assert_eq!(live, ["Switched to Kimi K3", "Again"]);
+    live_switch_notice(&harness, &run.run_id);
     let stored = harness.handle.load_session(task.clone()).await.unwrap();
     assert_eq!(
         notices_and_prompts(&stored.timeline),
@@ -3439,6 +3457,8 @@ async fn a_switch_to_a_smaller_window_compacts_with_the_previous_model() {
         .await
         .unwrap();
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let notice = live_switch_notice(&harness, &run.run_id);
+    assert_eq!(notice.text.as_deref(), Some("Switched to Kimi K3"));
 
     let requests = harness.faux.requests();
     let [summary, answer] = &requests[2..] else {

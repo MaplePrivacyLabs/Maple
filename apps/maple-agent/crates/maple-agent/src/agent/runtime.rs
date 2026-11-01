@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use pi_agent_core::QueueMode;
 use pi_ai::Model;
 use pi_coding_agent::resources::Resources;
+use pi_coding_agent::session::EntryKind;
 use pi_coding_agent::settings::{RetrySettings, Settings};
 use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
@@ -652,13 +653,13 @@ impl AgentRuntime {
         Ok(self.switch_task_session(row, model).await?.0)
     }
 
-    /// [`Self::task_session`], with the transcript's notice when a started
-    /// task switched to another model.
+    /// [`Self::task_session`], with the transcript's notice, and the entry
+    /// that holds it, when a started task switched to another model.
     pub(super) async fn switch_task_session(
         &self,
         row: &TaskRow,
         model: Model,
-    ) -> Result<(AgentSession, Option<AgentTimelineItem>), String> {
+    ) -> Result<(AgentSession, Option<(String, AgentTimelineItem)>), String> {
         // Read before the sessions are locked: the first read asks a shell,
         // and the resources come from disk.
         let search_path = login_path::login_search_path().await;
@@ -801,7 +802,7 @@ impl AgentRuntime {
 
     /// Move a session to `model`, as Pi's `setModel` does. A started task
     /// that switched to another model records a notice in its transcript,
-    /// which is returned to show live.
+    /// which is returned with its entry to show live.
     ///
     /// Pi's switch takes the thinking default of the session's settings,
     /// read when the session was built. A switch to another model takes the
@@ -811,7 +812,7 @@ impl AgentRuntime {
         session: &AgentSession,
         row: &TaskRow,
         model: Model,
-    ) -> Option<AgentTimelineItem> {
+    ) -> Option<(String, AgentTimelineItem)> {
         let changed = session
             .model()
             .is_none_or(|previous| previous.id != model.id);
@@ -832,7 +833,28 @@ impl AgentRuntime {
         session
             .extension_context()
             .append_entry(MAPLE_NOTICE_ENTRY, Some(notice_entry_data(&id, &text)));
-        Some(notice_item(id, "Agent notice", &text, pi_ai::now_ms()))
+        let entry_id = session.with_session(|manager| {
+            manager
+                .branch()
+                .iter()
+                .rev()
+                .find_map(|entry| match &entry.kind {
+                    EntryKind::Custom {
+                        custom_type,
+                        data: Some(data),
+                    } if custom_type == MAPLE_NOTICE_ENTRY
+                        && data.get("id").and_then(serde_json::Value::as_str)
+                            == Some(id.as_str()) =>
+                    {
+                        Some(entry.id.clone())
+                    }
+                    _ => None,
+                })
+        })?;
+        Some((
+            entry_id,
+            notice_item(id, "Agent notice", &text, pi_ai::now_ms()),
+        ))
     }
 
     /// A model as the account's catalog offers it to tasks: `None` when the
