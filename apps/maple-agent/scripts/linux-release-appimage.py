@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Build Agent's x86_64 AppImage from the owning pinned Nix shell.
 
-Like other desktop applications, the bundle uses the host's glibc, display
-libraries and GPU drivers. The release binary targets an old glibc floor and
-links only libraries every Linux desktop provides, so host drivers always load
-into a process with the libc they were built for. A separate clean-machine
-smoke must gate publication; an ELF audit does not prove GUI/audio/CUA
-integration.
+The bundle keeps the host's glibc, loader and graphics drivers, and carries
+its display/keyboard client libraries built from pinned sources against the
+same old glibc floor as the executable. Per-file RUNPATHs apply only to Maple's
+ELFs, without changing library lookup for external CLI processes. A separate
+clean-machine smoke must gate publication; an ELF audit does not prove
+GUI/audio/CUA integration.
 """
 
 import argparse
@@ -26,8 +26,8 @@ LOADER = "ld-linux-x86-64.so.2"
 # Oldest host glibc the release binary may require (build-release.sh passes
 # the same floor to cargo-zigbuild).
 GLIBC_FLOOR = (2, 31)
-# The only DT_NEEDED libraries the payload may link. glibc's libraries come
-# from the host loader; the rest ship with every X11/Wayland desktop.
+# These ABI providers must come from the host, including when loading the
+# host's graphics drivers. Never copy a build machine's libc into the bundle.
 HOST_LIBRARIES = frozenset({
     LOADER,
     "libc.so.6",
@@ -36,23 +36,28 @@ HOST_LIBRARIES = frozenset({
     "libpthread.so.0",
     "librt.so.1",
     "libgcc_s.so.1",
+    "libresolv.so.2",
+    "libutil.so.1",
+})
+# Runtime-opened client libraries are roots too: DT_NEEDED alone does not
+# discover GPUI's Wayland backend or CUA's X11 input path.
+BUNDLED_ROOT_LIBRARIES = (
     "libasound.so.2",
     "libX11.so.6",
+    "libX11-xcb.so.1",
     "libXi.so.6",
+    "libXtst.so.6",
     "libxcb.so.1",
     "libxkbcommon.so.0",
     "libxkbcommon-x11.so.0",
-})
-# Opened at runtime from the host, never bundled: GPUI's Vulkan/OpenGL and
-# Wayland backends, fontconfig, and the embedded CUA X11 input path.
-DLOPEN_HOST_LIBRARIES = (
-    "libvulkan.so.1",
-    "libEGL.so.1",
     "libwayland-client.so.0",
     "libwayland-cursor.so.0",
     "libwayland-egl.so.1",
-    "libX11-xcb.so.1",
-    "libXtst.so.6",
+)
+# Graphics dispatch/drivers and desktop font configuration stay on the host.
+DLOPEN_HOST_LIBRARIES = (
+    "libvulkan.so.1",
+    "libEGL.so.1",
     "libfontconfig.so.1",
 )
 
@@ -116,11 +121,117 @@ def glibc_version(name):
     return tuple(int(part) for part in match[1].split(".")) if match else None
 
 
-def stage_payload(appdir, binary):
+def library_name(name):
+    if not re.fullmatch(r"lib[A-Za-z0-9_+.\-]+\.so(?:\.[A-Za-z0-9_.\-]+)*", name):
+        raise PackagingError(f"Invalid runtime library SONAME: {name}")
+    return name
+
+
+def host_only(name):
+    return name in HOST_LIBRARIES or re.match(r"lib(?:GL|EGL|GLES|OpenGL|vulkan|nvidia|cuda|drm)", name)
+
+
+class RuntimeClosure:
+    def __init__(self, paths_file):
+        self.roots = [Path(line) for line in paths_file.read_text().splitlines() if line]
+        if not self.roots or any(not root.is_absolute() or not root.is_dir() for root in self.roots):
+            raise PackagingError("Runtime closure must list existing absolute pinned runtime paths")
+        self.index = {}
+        for root in self.roots:
+            for libdir in (root / "lib", root / "lib64"):
+                if not libdir.is_dir():
+                    continue
+                for source in sorted(libdir.glob("*.so*")):
+                    if source.is_file():
+                        self.index.setdefault(source.name, []).append(source.resolve())
+
+    def library(self, name):
+        library_name(name)
+        candidates = list(dict.fromkeys(self.index.get(name, [])))
+        if not candidates:
+            raise PackagingError(f"Missing pinned runtime library: {name}")
+        if any(not any(inside(source, root) for root in self.roots) for source in candidates):
+            raise PackagingError(f"Runtime library escapes pinned runtime paths: {name}")
+        if len({digest(source) for source in candidates}) != 1:
+            raise PackagingError(f"Ambiguous pinned runtime library: {name}")
+        return candidates[0]
+
+    def stage_licenses(self, appdir):
+        destination = appdir / "usr/share/maple-agent/licenses"
+        count = 0
+        for root in self.roots:
+            source_root = root / "share/licenses"
+            if not source_root.is_dir():
+                raise PackagingError(f"Pinned runtime lacks its upstream license files: {root}")
+            for source in sorted(source_root.rglob("*")):
+                if not source.is_file():
+                    continue
+                if not inside(source, root):
+                    raise PackagingError(f"Runtime license escapes its pinned output: {source}")
+                target = destination / source.relative_to(source_root)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() and digest(target) != digest(source):
+                    raise PackagingError(f"Conflicting upstream runtime license files: {target.name}")
+                shutil.copy2(source, target)
+                target.chmod(0o644)
+                count += 1
+        if not count:
+            raise PackagingError("Pinned runtime contains no upstream license files")
+
+
+def runtime_closure_from_environment():
+    paths_file = os.environ.get("MAPLE_AGENT_LINUX_RUNTIME_CLOSURE_INFO")
+    if not paths_file:
+        derivation = os.environ.get("MAPLE_AGENT_LINUX_RUNTIME_CLOSURE_DRV", "")
+        if not derivation.startswith("/nix/store/") or not derivation.endswith(".drv"):
+            raise PackagingError("Run packaging inside the Agent's pinned Nix shell (missing portable runtime)")
+        outputs = run("nix-store", "--realise", derivation).stdout.splitlines()
+        if len(outputs) != 1 or not outputs[0].startswith("/nix/store/"):
+            raise PackagingError("Pinned portable runtime did not produce exactly one paths file")
+        paths_file = outputs[0]
+    return RuntimeClosure(Path(paths_file))
+
+
+def stage_payload(appdir, binary, closure=None):
+    if closure is None:
+        closure = runtime_closure_from_environment()
     destination = appdir / "usr/bin/maple-agent"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(binary, destination)
     destination.chmod(0o755)
+    pending = [(destination, binary)]
+    copied = {}
+
+    def copy_library(name):
+        library_name(name)
+        if name in copied:
+            return
+        if host_only(name):
+            raise PackagingError(f"Host ABI or graphics library must not be bundled: {name}")
+        source = closure.library(name)
+        require_x86_64_elf(source)
+        soname = run("patchelf", "--print-soname", source).stdout.strip()
+        if soname != name:
+            raise PackagingError(f"Runtime library SONAME differs from its requested name: {name}: {soname}")
+        target = appdir / "usr/lib" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        target.chmod(0o755)
+        copied[name] = target
+        pending.append((target, source))
+
+    for name in BUNDLED_ROOT_LIBRARIES:
+        copy_library(name)
+    cursor = 0
+    while cursor < len(pending):
+        target, source = pending[cursor]
+        cursor += 1
+        for name in needed(source):
+            if name not in HOST_LIBRARIES:
+                copy_library(name)
+        relative = os.path.relpath(appdir / "usr/lib", target.parent)
+        run("patchelf", "--set-rpath", "$ORIGIN" if relative == "." else f"$ORIGIN/{relative}", target)
+    closure.stage_licenses(appdir)
     compatibility = appdir / "usr/lib" / LOADER
     compatibility.parent.mkdir(parents=True, exist_ok=True)
     compatibility.write_text(COMPATIBILITY_LOADER)
@@ -134,11 +245,25 @@ if [ "${APPDIR:-}" != "$appdir" ]; then
     unset APPIMAGE APPIMAGE_EXTRACT_AND_RUN
 fi
 export APPDIR="$appdir"
-# The payload runs on the host's glibc and loads the host's display libraries
-# and GPU drivers, like any other desktop application.
+# The payload uses host glibc and graphics drivers. Its own RUNPATH resolves
+# packaged client libraries without exporting LD_LIBRARY_PATH to CLI children.
 if [ ! -e /lib64/ld-linux-x86-64.so.2 ]; then
     echo "Maple needs an x86_64 Linux system with glibc (/lib64/ld-linux-x86-64.so.2). On NixOS, use the Maple flake package or nix-ld." >&2
     exit 127
+fi
+# Keep host audio routing/plugins and keyboard/Compose data instead of paths
+# embedded by a library's build machine. Preserve explicit user overrides.
+if [ -f /usr/share/alsa/alsa.conf ]; then
+    export ALSA_CONFIG_PATH="${ALSA_CONFIG_PATH:-/usr/share/alsa/alsa.conf}"
+    export ALSA_CONFIG_DIR="${ALSA_CONFIG_DIR:-/usr/share/alsa}"
+fi
+if [ -z "${ALSA_PLUGIN_DIR:-}" ]; then
+    for plugins in /usr/lib/x86_64-linux-gnu/alsa-lib /usr/lib64/alsa-lib /usr/lib/alsa-lib; do
+        if [ -d "$plugins" ]; then
+            export ALSA_PLUGIN_DIR="$plugins"
+            break
+        fi
+    done
 fi
 exec "$appdir/usr/bin/maple-agent" "$@"
 '''
@@ -214,39 +339,89 @@ def audit(appdir, metadata=None):
     if metadata is None:
         metadata = validate_metadata(json.loads((appdir / "usr/share/maple-agent/package-metadata.json").read_text()))
     payload = appdir / "usr/bin/maple-agent"
+    libdir = appdir / "usr/lib"
+    libraries = {}
+    host_libraries = set()
+    all_required = set()
+    edges = {}
     for path in (appdir, *sorted(appdir.rglob("*"))):
         if path.is_symlink() and (not path.exists() or not inside(path, appdir)):
             raise PackagingError(f"AppDir symlink escapes package or is dangling: {path}")
+        if path.is_symlink() and path.parent == libdir:
+            raise PackagingError(f"Bundled runtime libraries must be regular files: {path}")
         if path.is_dir() and not path.is_symlink() and path.stat().st_mode & 0o777 != 0o755:
             raise PackagingError(f"Restrictive or unsafe public package directory permissions: {path}")
         if path.is_file() and not path.is_symlink():
             expected_mode = 0o755 if path in launchers(appdir) or elf(path) else 0o644
             if path.stat().st_mode & 0o7777 != expected_mode:
                 raise PackagingError(f"Restrictive or unsafe public package file permissions: {path}")
-            if elf(path) and path != payload:
-                raise PackagingError(f"Bundled ELF besides the payload; host libraries are never bundled: {path}")
+            if not elf(path):
+                continue
+            require_x86_64_elf(path)
+            if path == payload:
+                if interpreter(path) != INTERPRETER:
+                    raise PackagingError(f"Payload must use the host loader {INTERPRETER}")
+                expected_rpath = "$ORIGIN/../lib"
+            else:
+                if path.parent != libdir or host_only(path.name):
+                    raise PackagingError(f"Host ABI, graphics or unexpected ELF must not be bundled: {path}")
+                library_name(path.name)
+                if interpreter(path):
+                    raise PackagingError(f"Runtime library must not have an ELF interpreter: {path}")
+                if run("patchelf", "--print-soname", path).stdout.strip() != path.name:
+                    raise PackagingError(f"Bundled library SONAME differs from its filename: {path}")
+                expected_rpath = "$ORIGIN"
+            if run("patchelf", "--print-rpath", path).stdout.strip() != expected_rpath:
+                raise PackagingError(f"Non-relative runtime library path in {path}")
+            dependencies = needed(path)
+            edges[path.name] = dependencies
+            for dependency in dependencies:
+                if dependency in HOST_LIBRARIES:
+                    host_libraries.add(dependency)
+                else:
+                    library_name(dependency)
+                    if host_only(dependency) or not (libdir / dependency).is_file():
+                        raise PackagingError(f"Unbundled or forbidden runtime dependency in {path}: {dependency}")
+            required = set()
+            for line in run("readelf", "--version-info", path).stdout.splitlines():
+                match = re.search(r"\bName:\s+(GLIBC_\S+)", line)
+                if match:
+                    required.add(match[1])
+            too_new = sorted(name for name in required if (glibc_version(name) or (99,)) > GLIBC_FLOOR)
+            if too_new:
+                floor = ".".join(map(str, GLIBC_FLOOR))
+                raise PackagingError(f"ELF requires glibc newer than the {floor} floor: {path.name}: {too_new}")
+            all_required.update(required)
+            if path != payload:
+                libraries[path.name] = {
+                    "name": path.name,
+                    "sha256": digest(path),
+                    "required_glibc_versions": sorted(required, key=lambda name: glibc_version(name) or (99,)),
+                }
     if not payload.is_file() or payload.is_symlink() or not elf(payload):
         raise PackagingError("Missing Agent payload executable")
-    require_x86_64_elf(payload)
-    if interpreter(payload) != INTERPRETER:
-        raise PackagingError(f"Payload must use the host loader {INTERPRETER}")
-    if run("patchelf", "--print-rpath", payload).stdout.strip():
-        raise PackagingError("Payload must not carry a runtime library path")
-    libraries = needed(payload)
-    unexpected = sorted(set(libraries) - HOST_LIBRARIES)
-    if unexpected:
-        raise PackagingError(f"Payload links libraries a desktop host may not provide: {unexpected}")
-    if "libc.so.6" not in libraries:
+    if "libc.so.6" not in edges[payload.name]:
         raise PackagingError("Release binary has no libc dependency; expected native GPUI build")
-    required = set()
-    for line in run("readelf", "--version-info", payload).stdout.splitlines():
-        match = re.search(r"\bName:\s+(GLIBC_\S+)", line)
-        if match:
-            required.add(match[1])
-    too_new = sorted(name for name in required if (glibc_version(name) or (99,)) > GLIBC_FLOOR)
-    if too_new:
-        floor = ".".join(map(str, GLIBC_FLOOR))
-        raise PackagingError(f"Payload requires glibc newer than the {floor} floor: {too_new}")
+    for name in BUNDLED_ROOT_LIBRARIES:
+        if name not in libraries:
+            raise PackagingError(f"Missing runtime-opened library: {name}")
+    reachable = set()
+    pending = [payload.name, *BUNDLED_ROOT_LIBRARIES]
+    while pending:
+        name = pending.pop()
+        if name in reachable or name in HOST_LIBRARIES:
+            continue
+        reachable.add(name)
+        pending.extend(edges[name])
+    if set(libraries) - reachable:
+        raise PackagingError(f"Unreferenced bundled libraries: {sorted(set(libraries) - reachable)}")
+    license_root = appdir / "usr/share/maple-agent/licenses"
+    licenses = [
+        {"path": str(path.relative_to(license_root)), "sha256": digest(path)}
+        for path in sorted(license_root.rglob("*")) if path.is_file() and not path.is_symlink()
+    ]
+    if not licenses:
+        raise PackagingError("Missing upstream runtime license files")
     compatibility = appdir / "usr/lib" / LOADER
     if not compatibility.is_file() or compatibility.is_symlink() or compatibility.read_text() != COMPATIBILITY_LOADER:
         raise PackagingError("Missing bundle format v1 compatibility launcher")
@@ -256,15 +431,17 @@ def audit(appdir, metadata=None):
         if b"/nix/store" in path.read_bytes():
             raise PackagingError(f"Build-store path in launch metadata: {path}")
     return {
-        "schema": 2,
+        "schema": 3,
         "channel": metadata["channel"],
         "architecture": "x86_64",
         "bundled_glibc": False,
         "interpreter": INTERPRETER,
         "glibc_floor": ".".join(map(str, GLIBC_FLOOR)),
         "payload_sha256": digest(payload),
-        "required_glibc_versions": sorted(required, key=lambda name: glibc_version(name) or (99,)),
-        "host_libraries": sorted(libraries),
+        "required_glibc_versions": sorted(all_required, key=lambda name: glibc_version(name) or (99,)),
+        "host_libraries": sorted(host_libraries),
+        "bundled_libraries": [libraries[name] for name in sorted(libraries)],
+        "runtime_licenses": licenses,
         "dlopen_host_libraries": list(DLOPEN_HOST_LIBRARIES),
         "host_resources": ["GPU drivers", "fontconfig", "ALSA routing/plugins"],
     }

@@ -188,6 +188,11 @@
           ] ++ linuxRuntimeInputs;
           isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           mkDevShell = if isDarwin then pkgs.mkShellNoCC else pkgs.mkShell;
+          portableRuntime =
+            if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64 then
+              import ./scripts/linux-runtime.nix { inherit pkgs; }
+            else
+              null;
           xcrun = pkgs.writeShellScriptBin "xcrun" ''
             exec /usr/bin/xcrun "$@"
           '';
@@ -267,6 +272,10 @@
               # run-linux-payload.sh runs release binaries on this runtime.
               export MAPLE_AGENT_LINUX_GLIBC="${pkgs.glibc}"
               export MAPLE_AGENT_LINUX_RUNTIME_PATH="${pkgs.lib.makeLibraryPath (linuxBuildInputs ++ [ pkgs.stdenv.cc.cc.lib ])}"
+            '' + pkgs.lib.optionalString (portableRuntime != null) ''
+              # Instantiate the pinned runtime here, but build it only when
+              # packaging requests it. Lint/test shells need no library rebuild.
+              export MAPLE_AGENT_LINUX_RUNTIME_CLOSURE_DRV="${builtins.unsafeDiscardOutputDependency portableRuntime.runtimePaths.drvPath}"
             '' + pkgs.lib.optionalString (appimageTools != null) ''
               export MAPLE_AGENT_APPIMAGE_TOOLS="${appimageTools}"
             '' + pkgs.lib.optionalString isDarwin ''

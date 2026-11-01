@@ -31,11 +31,15 @@ METADATA = {
 }
 
 
-def write_elf(path, needed=("libc.so.6",), rpath="", interpreter="/lib64/ld-linux-x86-64.so.2", requires=("GLIBC_2.2.5",)):
+def write_elf(path, needed=("libc.so.6",), rpath="", interpreter=None, requires=("GLIBC_2.2.5",), soname=None):
+    if soname is None:
+        soname = path.name if ".so" in path.name else ""
+    if interpreter is None:
+        interpreter = "" if soname else "/lib64/ld-linux-x86-64.so.2"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(
         HEADER + json.dumps({
-            "needed": list(needed), "rpath": rpath, "interpreter": interpreter, "requires": list(requires),
+            "needed": list(needed), "rpath": rpath, "interpreter": interpreter, "requires": list(requires), "soname": soname,
         }, sort_keys=True).encode()
     )
     path.chmod(0o755)
@@ -56,6 +60,11 @@ class ElfTools:
             stdout = "\n".join(state["needed"])
         elif option == "--print-rpath":
             stdout = state["rpath"]
+        elif option == "--print-soname":
+            stdout = state["soname"]
+        elif option == "--set-rpath":
+            state["rpath"] = args[2]
+            path.write_bytes(HEADER + json.dumps(state, sort_keys=True).encode())
         elif option == "--print-interpreter":
             stdout = state["interpreter"]
             returncode = 0 if stdout else 1
@@ -75,6 +84,24 @@ class AppImageTests(unittest.TestCase):
             needed=("libxkbcommon.so.0", "libX11.so.6", "libasound.so.2", "libgcc_s.so.1", "libm.so.6", "libc.so.6"),
             requires=("GLIBC_2.2.5", "GLIBC_2.17", "GLIBC_2.31"),
         )
+        self.runtime = self.root / "runtime"
+        dependencies = {
+            "libX11.so.6": ("libxcb.so.1", "libc.so.6"),
+            "libxcb.so.1": ("libXau.so.6", "libXdmcp.so.6", "libc.so.6"),
+            "libxkbcommon-x11.so.0": ("libxkbcommon.so.0", "libxcb-xkb.so.1", "libxcb.so.1", "libc.so.6"),
+            "libwayland-client.so.0": ("libffi.so.8", "libc.so.6"),
+        }
+        names = {*packaging.BUNDLED_ROOT_LIBRARIES, "libXau.so.6", "libXdmcp.so.6", "libxcb-xkb.so.1", "libffi.so.8"}
+        for name in names:
+            write_elf(self.runtime / "lib" / name, needed=dependencies.get(name, ("libc.so.6",)))
+        license_path = self.runtime / "share/licenses/fixture/COPYING"
+        license_path.parent.mkdir(parents=True)
+        license_path.write_text("The upstream runtime fixture license.\n")
+        self.runtime_paths = self.root / "runtime-paths"
+        self.runtime_paths.write_text(f"{self.runtime}\n")
+        self.environment = mock.patch.dict(os.environ, {"MAPLE_AGENT_LINUX_RUNTIME_CLOSURE_INFO": str(self.runtime_paths)})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
         self.component = self.root / "component"
         icons = self.component / "app/packaging"
         icons.mkdir(parents=True)
@@ -91,16 +118,24 @@ class AppImageTests(unittest.TestCase):
         packaging.normalize_public_permissions(appdir)
         return appdir
 
-    def test_payload_uses_host_glibc_and_desktop_libraries_only(self):
+    def test_payload_bundles_client_library_closure_while_using_host_glibc(self):
         appdir = self.stage()
         result = packaging.audit(appdir)
         self.assertFalse(result["bundled_glibc"])
         self.assertEqual(result["interpreter"], packaging.INTERPRETER)
         self.assertEqual(result["glibc_floor"], "2.31")
         self.assertEqual(result["required_glibc_versions"], ["GLIBC_2.2.5", "GLIBC_2.17", "GLIBC_2.31"])
-        self.assertIn("libxkbcommon.so.0", result["host_libraries"])
+        bundled = {item["name"]: item for item in result["bundled_libraries"]}
+        self.assertIn("libxkbcommon-x11.so.0", bundled)
+        self.assertIn("libxcb-xkb.so.1", bundled)
+        self.assertIn("libffi.so.8", bundled)
+        self.assertEqual(bundled["libxkbcommon-x11.so.0"]["sha256"], packaging.digest(appdir / "usr/lib/libxkbcommon-x11.so.0"))
+        self.assertNotIn("libxkbcommon.so.0", result["host_libraries"])
         elves = [path for path in appdir.rglob("*") if path.is_file() and packaging.elf(path)]
-        self.assertEqual(elves, [appdir / "usr/bin/maple-agent"])
+        self.assertEqual(len(elves), 1 + len(bundled))
+        self.assertFalse((appdir / "usr/lib/libc.so.6").exists())
+        self.assertEqual((appdir / "usr/share/maple-agent/licenses/fixture/COPYING").read_text(), "The upstream runtime fixture license.\n")
+        self.assertEqual(result["runtime_licenses"][0]["path"], "fixture/COPYING")
         compatibility = appdir / "usr/lib" / packaging.LOADER
         self.assertEqual(compatibility.read_text(), packaging.COMPATIBILITY_LOADER)
         self.assertEqual(compatibility.stat().st_mode & 0o777, 0o755)
@@ -109,29 +144,97 @@ class AppImageTests(unittest.TestCase):
     def test_audit_rejects_glibc_above_the_floor_and_private_versions(self):
         appdir = self.stage()
         for version in ("GLIBC_2.34", "GLIBC_2.39", "GLIBC_PRIVATE", "GLIBC_ABI_DT_RELR"):
-            write_elf(appdir / "usr/bin/maple-agent", requires=("GLIBC_2.2.5", version))
+            write_elf(appdir / "usr/bin/maple-agent", rpath="$ORIGIN/../lib", requires=("GLIBC_2.2.5", version))
             with self.assertRaisesRegex(packaging.PackagingError, "newer than the 2.31 floor"):
                 packaging.audit(appdir)
 
-    def test_audit_rejects_libraries_a_desktop_may_not_provide(self):
+    def test_audit_rejects_unbundled_dependencies(self):
         appdir = self.stage()
-        write_elf(appdir / "usr/bin/maple-agent", needed=("libssl.so.3", "libc.so.6"))
-        with self.assertRaisesRegex(packaging.PackagingError, "may not provide: \\['libssl.so.3'\\]"):
+        write_elf(appdir / "usr/bin/maple-agent", rpath="$ORIGIN/../lib", needed=("libssl.so.3", "libc.so.6"))
+        with self.assertRaisesRegex(packaging.PackagingError, "Unbundled or forbidden runtime dependency"):
             packaging.audit(appdir)
 
-    def test_audit_rejects_bundled_loader_paths_and_libraries(self):
+    def test_audit_rejects_bundled_glibc_and_gpu_libraries_and_wrong_paths(self):
         appdir = self.stage()
         payload = appdir / "usr/bin/maple-agent"
-        write_elf(payload, rpath="$ORIGIN/../lib")
+        write_elf(payload)
         with self.assertRaisesRegex(packaging.PackagingError, "runtime library path"):
             packaging.audit(appdir)
-        write_elf(payload, interpreter="/nix/store/glibc/lib/ld-linux-x86-64.so.2")
+        write_elf(payload, rpath="$ORIGIN/../lib", interpreter="/nix/store/glibc/lib/ld-linux-x86-64.so.2")
         with self.assertRaisesRegex(packaging.PackagingError, "host loader"):
             packaging.audit(appdir)
-        write_elf(payload)
-        write_elf(appdir / "usr/lib/libxkbcommon.so.0")
-        with self.assertRaisesRegex(packaging.PackagingError, "host libraries are never bundled"):
+        write_elf(payload, rpath="$ORIGIN/../lib")
+        for name in ("libc.so.6", "libEGL.so.1", "libvulkan.so.1", packaging.LOADER):
+            path = appdir / "usr/lib" / name
+            previous = path.read_bytes() if path.exists() else None
+            write_elf(path, rpath="$ORIGIN")
+            with self.assertRaisesRegex(packaging.PackagingError, "must not be bundled"):
+                packaging.audit(appdir)
+            if previous is None:
+                path.unlink()
+            else:
+                path.write_bytes(previous)
+
+    def test_audit_applies_glibc_floor_to_transitive_library_too(self):
+        appdir = self.stage()
+        library = appdir / "usr/lib/libxcb-xkb.so.1"
+        write_elf(library, rpath="$ORIGIN", requires=("GLIBC_2.34",))
+        with self.assertRaisesRegex(packaging.PackagingError, "newer than the 2.31 floor.*libxcb-xkb"):
             packaging.audit(appdir)
+
+    def test_audit_checks_runtime_opened_library_and_transitive_lookup_paths(self):
+        appdir = self.stage()
+        library = appdir / "usr/lib/libxcb-xkb.so.1"
+        write_elf(library, rpath="/nix/store/unsafe/lib")
+        with self.assertRaisesRegex(packaging.PackagingError, "Non-relative runtime library path"):
+            packaging.audit(appdir)
+        write_elf(library, rpath="$ORIGIN")
+        (appdir / "usr/lib/libXtst.so.6").unlink()
+        with self.assertRaisesRegex(packaging.PackagingError, "Missing runtime-opened library: libXtst"):
+            packaging.audit(appdir)
+
+    def test_audit_rejects_library_alias_or_unreferenced_injected_elf(self):
+        appdir = self.stage()
+        injected = appdir / "usr/lib/libinjected.so.1"
+        write_elf(injected, rpath="$ORIGIN")
+        with self.assertRaisesRegex(packaging.PackagingError, "Unreferenced bundled libraries"):
+            packaging.audit(appdir)
+        injected.unlink()
+        library = appdir / "usr/lib/libxcb-xkb.so.1"
+        library.unlink()
+        library.symlink_to("libxcb.so.1")
+        with self.assertRaisesRegex(packaging.PackagingError, "must be regular files"):
+            packaging.audit(appdir)
+
+    def test_runtime_requires_upstream_license_bytes(self):
+        (self.runtime / "share/licenses/fixture/COPYING").unlink()
+        with self.assertRaisesRegex(packaging.PackagingError, "no upstream license files"):
+            self.stage()
+
+    def test_staging_requires_complete_unambiguous_pinned_library_closure(self):
+        library = self.runtime / "lib/libxcb-xkb.so.1"
+        library.unlink()
+        with self.assertRaisesRegex(packaging.PackagingError, "Missing pinned runtime library: libxcb-xkb"):
+            self.stage()
+        write_elf(library)
+        duplicate = self.root / "other-runtime"
+        write_elf(duplicate / "lib/libxcb-xkb.so.1", requires=("GLIBC_2.17",))
+        self.runtime_paths.write_text(f"{self.runtime}\n{duplicate}\n")
+        with self.assertRaisesRegex(packaging.PackagingError, "Ambiguous pinned runtime library"):
+            self.stage()
+
+    def test_staging_rejects_library_escape_and_absolute_dependencies(self):
+        library = self.runtime / "lib/libxcb-xkb.so.1"
+        outside = self.root / "outside.so"
+        shutil.copy2(library, outside)
+        library.unlink()
+        library.symlink_to(outside)
+        with self.assertRaisesRegex(packaging.PackagingError, "escapes pinned runtime paths"):
+            self.stage()
+        library.unlink()
+        write_elf(library, needed=("/nix/store/bad/libc.so.6",))
+        with self.assertRaisesRegex(packaging.PackagingError, "Invalid runtime library SONAME"):
+            self.stage()
 
     def test_audit_requires_reviewed_launchers(self):
         appdir = self.stage()
@@ -218,7 +321,13 @@ class AppImageTests(unittest.TestCase):
         payload = self.root / "script-payload"
         payload.write_text('#!/bin/sh\nprintf "library_env=%s\\nappdir=%s\\n" "${LD_LIBRARY_PATH-unset}" "$APPDIR"\nprintf "%s\\n" "$@"\n')
         payload.chmod(0o755)
-        packaging.stage_payload(appdir, payload)
+        destination = appdir / "usr/bin/maple-agent"
+        destination.parent.mkdir(parents=True)
+        shutil.copy2(payload, destination)
+        compatibility = appdir / "usr/lib" / packaging.LOADER
+        compatibility.parent.mkdir(parents=True)
+        compatibility.write_text(packaging.COMPATIBILITY_LOADER)
+        compatibility.chmod(0o755)
         launcher = appdir / "AppRun"
         launcher.write_text(packaging.APPRUN)
         launcher.chmod(0o755)
