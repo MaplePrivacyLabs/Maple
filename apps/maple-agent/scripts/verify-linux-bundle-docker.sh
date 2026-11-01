@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Start a Linux bundle in a stock Ubuntu container with no Nix and no network,
+# Start a Linux bundle in stock Ubuntu containers with no Nix and no network,
 # and check its embedded build identity against the package's build-info.json.
-# The container adds only the desktop libraries every Linux desktop provides;
-# the bundle brings no glibc or other libraries of its own.
+# Install no extra libraries: the bundle must supply its application dependencies
+# on both the oldest supported glibc and a newer distribution. Graphics drivers
+# and a desktop session are separate from this CLI/host lifecycle check.
 # Usage: verify-linux-bundle-docker.sh PROFILE PACKAGE_DIRECTORY
 set -euo pipefail
 profile="$1"
@@ -13,15 +14,11 @@ archives=("$package"/*-linux-x86_64.tar.gz)
 test "${#archives[@]}" -eq 1
 test -d /etc/ssl/certs
 portable="$(mktemp)"
-image="maple-agent-linux-smoke:$$"
-trap 'rm -f "$portable"; docker image rm -f "$image" >/dev/null 2>&1 || true' EXIT
-docker build --quiet --platform linux/amd64 --tag "$image" - >/dev/null <<'DOCKERFILE'
-FROM ubuntu@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-    libasound2t64 libx11-6 libxcb1 libxi6 libxkbcommon0 libxkbcommon-x11-0 \
- && rm -rf /var/lib/apt/lists/*
-DOCKERFILE
+trap 'rm -f "$portable"' EXIT
+# Official Ubuntu amd64 image manifests, pinned independently of mutable tags.
+for image in \
+    ubuntu@sha256:c664f8f86ed5a386b0a340d981b8f81714e21a8b9c73f658c4bea56aa179d54a \
+    ubuntu@sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d; do
 docker run --rm --platform linux/amd64 --user 65534:65534 \
   --network none --read-only --tmpfs /tmp:exec,mode=1777 \
   --volume "$package:/artifacts:ro" \
@@ -43,3 +40,4 @@ if actual != expected or actual.get("profile") != sys.argv[1]:
     raise SystemExit("portable Linux bundle build profile differs from verified package")
 print("Verified Agent launch and embedded profile without a Nix installation")
 PY
+done

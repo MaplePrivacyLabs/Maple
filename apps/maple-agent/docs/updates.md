@@ -130,8 +130,9 @@ safely if the filesystem changes afterward.
 
 Linux x86_64 uses a persistent user-local directory bundle distributed as a
 `.tar.gz`, with launcher and desktop integration. The binary targets glibc
-2.31 and runs on the host's glibc, desktop libraries, graphics drivers, CA
-certificates and desktop services; users need no FUSE mount or Nix runtime. Read-only,
+2.31 and includes its application client libraries. The host supplies glibc,
+graphics drivers, CA certificates and desktop services; users need no FUSE mount
+or Nix runtime. Read-only,
 inconsistent or unsupported installations offer the signed manual download.
 Unsupported architectures do not install another architecture's payload.
 See [desktop builds](desktop-builds.md) for installation commands.

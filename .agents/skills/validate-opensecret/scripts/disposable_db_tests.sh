@@ -187,7 +187,7 @@ cargo test --locked --all-features models::response_compaction::tests::db_ \
 compaction_count="$(awk '/^models::response_compaction::tests::db_.*: test$/ { count++ }
   END { print count + 0 }' "$workdir/compaction-tests.list")"
 # Keep the selected persistence contract explicit: a missing ignored test is a failure.
-test "$compaction_count" -eq 20
+test "$compaction_count" -eq 21
 
 cargo test --locked --all-features aead_db_tamper_tests \
   -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/aead-tests.log"
