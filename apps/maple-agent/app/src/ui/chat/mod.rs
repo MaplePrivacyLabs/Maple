@@ -549,8 +549,6 @@ pub struct ChatScreen {
     thinking_loading: bool,
     thinking_generation: u64,
     thinking_saving: bool,
-    /// The task on screen has a persisted model after its first message.
-    model_locked: bool,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Local-store policy, independent of the selected execution computer.
@@ -1410,7 +1408,6 @@ impl ChatScreen {
             thinking_loading: false,
             thinking_generation: 0,
             thinking_saving: false,
-            model_locked: false,
             notify_enabled: settings.desktop_notifications,
             notify_details: settings.notification_details_enabled(),
             window_active: true,
@@ -2232,7 +2229,7 @@ impl ChatScreen {
                 this.models_loading = false;
                 if let Ok((mut models, saved, catalog)) = result {
                     if let Some(catalog) = &catalog {
-                        this.model_labels = composer::catalog_model_labels(catalog);
+                        this.model_labels = maple_agent::agent::catalog_model_labels(catalog);
                         // An older execution computer lists every API model,
                         // or every catalog model; offer only what the catalog
                         // describes and does not keep out of Maple Work.
@@ -2254,7 +2251,7 @@ impl ChatScreen {
                             .or(saved.filter(offered))
                             .or_else(|| models.first().cloned());
                     }
-                    if !this.model_locked && this.selected_model.is_none() {
+                    if this.selected_model.is_none() {
                         this.selected_model = this.default_model.clone();
                     }
                     this.models = models;
@@ -3303,7 +3300,7 @@ impl ChatScreen {
         self.draft = false;
         self.draft_mcp_defaults = None;
         self.draft_mcp_changes.clear();
-        // The lock belongs to the task; the empty screen uses the default.
+        // The empty screen uses the default, not the last task's model.
         self.restore_default_model(cx);
         self.sync_sidebar_selection(cx);
         self.set_queue(Vec::new());
@@ -5510,22 +5507,9 @@ impl ChatScreen {
         );
     }
 
+    /// Pick the model of the next message, in a task or a new one. It also
+    /// becomes the account default for new tasks.
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
-        if self.model_locked {
-            self.popup.close(cx);
-            if self.selected_model.as_deref() != Some(model.as_str())
-                && let Some(locked) = self.selected_model.as_deref()
-            {
-                self.notice = Some(
-                    format!(
-                        "This task is locked to model {locked}. Start a new task to use {model}."
-                    )
-                    .into(),
-                );
-            }
-            cx.notify();
-            return;
-        }
         self.selected_model = Some(model.clone());
         self.default_model = Some(model.clone());
         self.refresh_thinking(cx);
@@ -5553,35 +5537,26 @@ impl ChatScreen {
         self.refresh_context_usage(cx);
     }
 
-    /// New Task and unlocked sessions use the account default, not the
-    /// last opened task's locked model.
+    /// New Task and drafts use the account default, not the last opened
+    /// task's model.
     fn restore_default_model(&mut self, cx: &mut Context<Self>) {
-        self.model_locked = false;
         self.set_composer_model(self.default_model.clone(), cx);
         self.refresh_thinking(cx);
     }
 
+    /// A started task opens on the model it last used.
     fn apply_session_model(&mut self, session: &AgentSessionSummary, cx: &mut Context<Self>) {
-        let locked = session.message_count > 0 && session.model.is_some();
-        if locked {
-            self.model_locked = true;
-            self.set_composer_model(session.model.clone(), cx);
-            self.refresh_thinking(cx);
-        } else {
-            self.restore_default_model(cx);
+        match session.model.clone().filter(|_| session.message_count > 0) {
+            Some(model) => {
+                self.set_composer_model(Some(model), cx);
+                self.refresh_thinking(cx);
+            }
+            None => self.restore_default_model(cx),
         }
     }
 
     fn model_label<'a>(&'a self, model: &'a str) -> &'a str {
         self.model_labels.get(model).map_or(model, String::as_str)
-    }
-
-    fn model_menu_models(&self) -> Vec<String> {
-        if self.model_locked {
-            self.selected_model.iter().cloned().collect()
-        } else {
-            self.models.clone()
-        }
     }
 
     /// Re-measure one row after it changed in place. The list keeps the
@@ -5750,15 +5725,18 @@ impl ChatScreen {
             if session_summary_eq(existing, &session) {
                 return false;
             }
-            let mut selected = None;
+            let mut switched = None;
             if self.selected_session.as_deref() == Some(session.id.as_str()) {
                 self.web_enabled = session.web_enabled;
-                selected = Some(session.clone());
+                // Follow a switch the task made, here or on another surface;
+                // a pick waiting for the next message stays.
+                if existing.model != session.model {
+                    switched = Some(session.clone());
+                }
             }
             *existing = session;
-            // The first message locks the task on screen to its model.
-            if let Some(selected) = selected {
-                self.apply_session_model(&selected, cx);
+            if let Some(switched) = switched {
+                self.apply_session_model(&switched, cx);
             }
         } else {
             self.sessions.insert(0, session);

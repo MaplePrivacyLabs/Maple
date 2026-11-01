@@ -448,20 +448,15 @@ impl AcpConnectionContext {
             let changed = {
                 let mut sessions = self.sessions.lock().await;
                 sessions.get_mut(session_id).and_then(|session| {
-                    let changed = session.message_count != summary.message_count
-                        || summary
-                            .model
-                            .as_ref()
-                            .is_some_and(|model| model != &session.model);
-                    session.message_count = summary.message_count;
-                    if let Some(model) = &summary.model
-                        && model != &session.model
-                    {
-                        session.model = model.clone();
-                        session.catalog = None;
-                        session.thinking = None;
-                    }
-                    changed.then(|| session.config_options())
+                    // Follow a model the task switched to elsewhere.
+                    let model = summary
+                        .model
+                        .as_ref()
+                        .filter(|model| **model != session.model)?;
+                    session.model = model.clone();
+                    session.catalog = None;
+                    session.thinking = None;
+                    Some(session.config_options())
                 })
             };
             if let Some(options) = changed {

@@ -355,6 +355,17 @@ impl RunEvents {
         }
     }
 
+    /// Publish the row of an entry Maple appended itself, linked to the row
+    /// the store keeps for that entry.
+    fn publish_entry_row(&self, entry_id: &str, item: AgentTimelineItem) {
+        {
+            let mut live = lock(&self.order);
+            live.drain_changes(&self.session_id);
+            live.note_entry_row(entry_id, &item.id);
+        }
+        self.publish(AgentRunEvent::TimelineItem(item));
+    }
+
     fn watch_store(&self, store: &Arc<crate::store::Store>, account: crate::store::AccountId) {
         let mut live = lock(&self.order);
         live.changes = Some(store.subscribe_changes());
@@ -1536,15 +1547,8 @@ impl AgentRuntime {
             .store
             .get(session_id)?
             .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
+        // A started task may run on another model: it switches from this run.
         let model_id = request.model.clone().unwrap_or_else(|| self.model.clone());
-        if row.message_count > 0
-            && let Some(locked) = row.model.as_deref()
-            && locked != model_id
-        {
-            return Err(format!(
-                "This task is locked to model {locked}. Start a new task to use {model_id}."
-            ));
-        }
         let model = self
             .pi_model(
                 &model_id,
@@ -1552,7 +1556,14 @@ impl AgentRuntime {
                 Some(request.vision_capable),
             )
             .await;
-        let session = self.task_session(&row, model).await?;
+        let (session, switched) = self.switch_task_session(&row, model).await?;
+        if let Some((entry_id, notice)) = switched {
+            // Surfaces show the task's new model from the start of the run.
+            if let Some(row) = self.store.get(session_id)? {
+                events.publish(AgentRunEvent::SessionUpdated(row.summary()));
+            }
+            events.publish_entry_row(&entry_id, notice);
+        }
         self.failures.clear(session_id);
         self.wake(session_id)?;
         // Named from the first message with text: images alone say nothing,

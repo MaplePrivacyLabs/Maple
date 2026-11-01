@@ -113,7 +113,8 @@ pub struct TaskPatch {
     pub provisional: Option<bool>,
     pub web_enabled: Option<bool>,
     pub settings: Option<Value>,
-    /// A selection before the first conversation. Source appends own it afterward.
+    /// A selection for the task's next run. Its next source append records
+    /// the model the session then has.
     pub model: Option<String>,
 }
 
@@ -328,14 +329,6 @@ impl Store {
                 return Ok((None, None));
             };
             if expected.is_some_and(|expected| !same_task_metadata(expected, &row)) {
-                return Err(StoreError::Conflict);
-            }
-            if patch
-                .model
-                .as_ref()
-                .is_some_and(|model| row.facts.model.as_ref() != Some(model))
-                && row.facts.message_count != 0
-            {
                 return Err(StoreError::Conflict);
             }
             let project = match &patch.project_root {
