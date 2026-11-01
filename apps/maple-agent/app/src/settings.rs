@@ -128,8 +128,8 @@ pub struct AppSettings {
     /// this, so it is a Maple setting.
     #[serde(default)]
     pub reduce_motion: bool,
-    /// Opening system prompt text for agents this app hosts. Empty means
-    /// [`DEFAULT_HARNESS_INSTRUCTIONS`].
+    /// The user's additional instructions, appended after
+    /// [`MAPLE_HARNESS_INSTRUCTIONS`]. Empty means none.
     #[serde(default)]
     pub harness_instructions: String,
     /// Window size and state from the last run.
@@ -237,24 +237,26 @@ impl WindowState {
 }
 
 /// Opening system prompt for agents this app hosts: the agent is Maple.
-/// The runtime appends its tool and runtime guidance after this text.
-pub const DEFAULT_HARNESS_INSTRUCTIONS: &str =
+/// Always sent; users add to it through their additional instructions and
+/// cannot replace it. The runtime appends its tool and runtime guidance.
+pub const MAPLE_HARNESS_INSTRUCTIONS: &str =
     "You are a general-purpose AI agent called Maple, created by Maple AI.
-You run in the Maple app's Agent Mode; users know you simply as Maple.";
+You run in the Maple app's Agent Mode; users know you simply as Maple.
+If the user asks about Maple itself, such as its features, models, plans, privacy, or how to use it, you can learn more about yourself from Maple's official website at https://maple.ai and its documentation at https://maple.ai/docs. When web tools are available, open the relevant maple.ai pages before answering; otherwise, point the user to those links rather than guessing.";
 
 impl AppSettings {
     pub fn notification_details_enabled(&self) -> bool {
         !self.store_password_mode || self.password_notification_details
     }
 
-    /// The harness instructions to hand the runtime: the saved text, or the
-    /// default when nothing is saved.
+    /// The harness instructions to hand the runtime: Maple's own, then the
+    /// user's additional instructions when any are saved.
     pub fn effective_harness_instructions(&self) -> String {
-        let saved = self.harness_instructions.trim();
-        if saved.is_empty() {
-            DEFAULT_HARNESS_INSTRUCTIONS.to_string()
+        let additional = self.harness_instructions.trim();
+        if additional.is_empty() {
+            MAPLE_HARNESS_INSTRUCTIONS.to_string()
         } else {
-            saved.to_string()
+            format!("{MAPLE_HARNESS_INSTRUCTIONS}\n\n{additional}")
         }
     }
 }
