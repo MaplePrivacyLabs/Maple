@@ -29,12 +29,13 @@ def host_target():
     key = (platform.system(), platform.machine().lower())
     targets = {
         ("Darwin", "arm64"): "aarch64-apple-darwin",
-        ("Darwin", "x86_64"): "x86_64-apple-darwin",
         ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+        ("Linux", "aarch64"): "aarch64-unknown-linux-gnu",
         ("Windows", "amd64"): "x86_64-pc-windows-msvc",
+        ("Windows", "arm64"): "aarch64-pc-windows-msvc",
     }
     if key not in targets:
-        raise ValueError(f"No PBS delivery for {key}; Linux ARM64 must use the explicit Nix fixture")
+        raise ValueError(f"No pinned Python Build Standalone delivery for {key}")
     return targets[key]
 
 

@@ -1030,7 +1030,7 @@ mod tests {
                 executable: root.join("missing-python"),
                 worker: root.join("worker.py"),
                 implementation: "cpython".into(),
-                version: "3.13.15".into(),
+                version: "3.14.7".into(),
                 distribution: "test".into(),
             },
             cwd: root.to_path_buf(),

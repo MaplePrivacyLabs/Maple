@@ -24,8 +24,8 @@ def main():
     try:
         manifest_path = args.manifest.resolve(strict=True)
         manifest = json.loads(manifest_path.read_text())
-        if manifest["implementation"] != "cpython" or manifest["version"] != "3.13.15":
-            raise ValueError("Tests require the declared CPython 3.13.15 fixture")
+        if manifest["implementation"] != "cpython" or manifest["version"] != "3.14.7":
+            raise ValueError("Tests require the declared CPython 3.14.7 fixture")
         interpreter = (manifest_path.parent / manifest["executable"]).resolve(strict=True)
         worker = (manifest_path.parent / manifest["worker"]).resolve(strict=True)
         source = REPO / "crates/maple-code-mode/python/worker.py"
