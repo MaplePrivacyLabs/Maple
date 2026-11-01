@@ -3367,6 +3367,141 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
     );
 }
 
+/// The start of the oldest message of [`long_task`], which a small window
+/// cannot summarize.
+const OLDEST_MESSAGE: &str = "Oldest request";
+
+/// A runtime whose catalog offers GLM 5.3 with a large window and Kimi K3
+/// with a small one, and a task on GLM long enough to compact on Kimi:
+/// its oldest message is about 30k tokens and its newest 25k stay.
+async fn long_task() -> (Harness, String) {
+    let harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({
+            "object": "list",
+            "data": [
+                {"id": "glm-5-3", "short_name": "GLM 5.3", "context_window": 200_000},
+                {"id": "kimi-k3", "short_name": "Kimi K3", "context_window": 40_000},
+            ],
+            "aliases": [],
+        }))
+        .await;
+    let task = harness.create_task().await;
+    for (text, reply) in [
+        (
+            format!("{OLDEST_MESSAGE} {}", "x".repeat(120_000)),
+            "Noted.",
+        ),
+        (
+            format!("Recent request {}", "y".repeat(100_000)),
+            "Noted again.",
+        ),
+    ] {
+        harness.faux.push_text(reply);
+        let mut run = harness.send(&task, &text).await;
+        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    }
+    (harness, task)
+}
+
+fn on_kimi(harness: &Harness, task: &str, text: &str) -> AgentSendMessageRequest {
+    AgentSendMessageRequest {
+        model: Some("kimi-k3".to_string()),
+        context_limit: Some(40_000),
+        ..harness.request(task, text)
+    }
+}
+
+/// What a request asked to summarize, or `None` for a task's turn.
+fn summarized(request: &pi_ai::faux::FauxRequest) -> Option<String> {
+    let system = request
+        .context
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            pi_ai::Message::System(system) => Some(system.content.clone()),
+            _ => None,
+        })?;
+    (system == pi_coding_agent::compaction::SUMMARIZATION_SYSTEM_PROMPT)
+        .then(|| last_user_text(request))
+}
+
+/// A switch to a smaller window compacts before the next prompt with the
+/// model that wrote the history, and the run continues on the new one.
+#[tokio::test]
+async fn a_switch_to_a_smaller_window_compacts_with_the_previous_model() {
+    let (harness, task) = long_task().await;
+    harness.faux.push_text("Summary by GLM.");
+    harness.faux.push_text("Answer from Kimi.");
+    let mut run = harness
+        .handle
+        .send_message(on_kimi(&harness, &task, "Go on"))
+        .await
+        .unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    let requests = harness.faux.requests();
+    let [summary, answer] = &requests[2..] else {
+        panic!("a summary and a turn: {}", requests.len())
+    };
+    assert_eq!(summary.model.id, "glm-5-3");
+    assert!(summarized(summary).unwrap().contains(OLDEST_MESSAGE));
+    assert_eq!(answer.model.id, "kimi-k3");
+    assert_eq!(summarized(answer), None);
+    let context = user_texts(answer).join("\n");
+    assert!(context.contains("Summary by GLM."), "{context:.200}");
+    assert!(!context.contains(OLDEST_MESSAGE));
+
+    let detail = harness.handle.load_session(task).await.unwrap();
+    let shown = notices_and_prompts(&detail.timeline);
+    assert_eq!(
+        shown[shown.len() - 3..],
+        [
+            "Switched to Kimi K3",
+            "Earlier messages were summarized to make room in the context.",
+            "Go on"
+        ]
+    );
+    assert_eq!(
+        detail.timeline.last().unwrap().text.as_deref(),
+        Some("Answer from Kimi.")
+    );
+}
+
+/// When the previous model cannot summarize, the new one summarizes the
+/// history trimmed to its window, and the run continues.
+#[tokio::test]
+async fn a_failed_previous_summary_falls_back_to_trimmed_history_on_the_new_model() {
+    let (harness, task) = long_task().await;
+    harness
+        .faux
+        .push_error("The Maple inference endpoint was not found");
+    harness.faux.push_text("Summary by Kimi.");
+    harness.faux.push_text("Answer from Kimi.");
+    let mut run = harness
+        .handle
+        .send_message(on_kimi(&harness, &task, "Go on"))
+        .await
+        .unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    let requests = harness.faux.requests();
+    let [failed, trimmed, answer] = &requests[2..] else {
+        panic!("two summaries and a turn: {}", requests.len())
+    };
+    assert_eq!(failed.model.id, "glm-5-3");
+    assert!(summarized(failed).is_some());
+    assert_eq!(trimmed.model.id, "kimi-k3");
+    let input = summarized(trimmed).unwrap();
+    assert!(
+        !input.contains(OLDEST_MESSAGE),
+        "the oldest message is left out"
+    );
+    assert!(input.contains("Noted."), "newer messages stay");
+    assert_eq!(answer.model.id, "kimi-k3");
+    assert!(user_texts(answer).join("\n").contains("Summary by Kimi."));
+}
+
 /// A started task previews the model it will switch to with the level the
 /// switch gives it, keeps a pick for that model off its current one, and
 /// takes the pick when its next run switches.

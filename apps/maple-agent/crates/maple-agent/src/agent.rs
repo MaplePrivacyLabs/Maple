@@ -30,6 +30,7 @@ mod runtime;
 mod side_models;
 mod store;
 mod surface;
+mod switch_compaction;
 mod tasks;
 mod thinking;
 pub(crate) mod timeline;

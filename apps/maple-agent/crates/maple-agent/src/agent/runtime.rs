@@ -30,6 +30,7 @@ use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
 use super::surface::{AgentSurfaceAccess, SurfaceTask, with_surface_servers};
+use super::switch_compaction::{OfferedModel, switch_compaction_extension};
 use super::timeline::{MAPLE_NOTICE_ENTRY, notice_entry_data, notice_item};
 use super::{
     AgentRuntimeStatus, AgentServiceEvent, AgentTimelineItem, MapleAgentHostResources,
@@ -770,6 +771,10 @@ impl AgentRuntime {
         options.extensions.push(mcp.extension());
         let task_cua = TaskCua::new(&self.account_scope, &row.id, self.models.clone());
         options.extensions.push(task_cua.extension());
+        // After a switch to a smaller window, the previous model summarizes.
+        options
+            .extensions
+            .push(switch_compaction_extension(self.offered_model()));
         let session = AgentSession::new(options)
             .await
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
@@ -828,6 +833,27 @@ impl AgentRuntime {
             .extension_context()
             .append_entry(MAPLE_NOTICE_ENTRY, Some(notice_entry_data(&id, &text)));
         Some(notice_item(id, "Agent notice", &text, pi_ai::now_ms()))
+    }
+
+    /// A model as the account's catalog offers it to tasks: `None` when the
+    /// catalog does not offer it, or cannot be read.
+    fn offered_model(&self) -> OfferedModel {
+        let api = Arc::clone(&self.api);
+        Arc::new(move |model_id: String| {
+            let api = Arc::clone(&api);
+            Box::pin(async move {
+                let catalog = api.model_catalog().await.ok()?;
+                if !super::catalog::selectable_catalog_models(&catalog).contains(&model_id) {
+                    return None;
+                }
+                let entry = catalog_entry(&catalog, &model_id);
+                Some(maple_model(
+                    &model_id,
+                    entry.as_ref(),
+                    context_limit_override(),
+                ))
+            })
+        })
     }
 
     /// The name the catalog shows for a model, or its id.
