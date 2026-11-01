@@ -135,9 +135,10 @@ async fn write_model_catalog(
 }
 
 /// The catalog's chat models a task may pick, in catalog order. Aliases are
-/// left out: the server may retarget them, and a local agent cannot follow a
-/// switch in context window or vision mid-task. A model without
-/// `available_in_agent` is offered, since older servers do not send it.
+/// left out: the server may retarget one, which would change a task's
+/// context window or vision without a switch the task records. A model
+/// without `available_in_agent` is offered, since older servers do not
+/// send it.
 pub(super) fn selectable_catalog_models(catalog: &maple_sdk::ModelCatalogResponse) -> Vec<String> {
     let mut seen = HashSet::new();
     catalog

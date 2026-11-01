@@ -70,6 +70,11 @@ agent runtime; its desktop Agent page points users to Maple Work.
   attachments (picker, paste, or drag and drop), a per-message Copy button,
   and a context-window indicator. Every tool call runs without asking for
   approval.
+- A task can switch models between messages: its model menu offers every
+  model, a pick applies from the next message, and the transcript notes the
+  switch. When the new model's context window is smaller, the model that
+  wrote the history summarizes it before the next message if it no longer
+  fits, as `crates/maple-agent/src/agent/switch_compaction.rs` describes.
 - Shell tool calls start in the task's saved folder on the execution computer.
   A `cd` inside a command does not affect later calls. Repository searches
   should name the intended checkout/worktree with explicit absolute paths.

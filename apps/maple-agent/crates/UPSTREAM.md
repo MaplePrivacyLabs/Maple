@@ -14,6 +14,15 @@ review's PR records its adopt/skip decisions and any new differences.
 This file records the storage follow-up's adaptations; it does not claim a
 complete audit of every earlier difference.
 
+## Fidelity to upstream
+
+The crates mirror upstream Pi's behavior, including its bugs. Change them
+locally only for a blocker, and say in the PR why no hook or adapter could
+carry the fix. A review finding that matches upstream is recorded in the
+review's PR and left as it is. Maple-specific behavior belongs in
+`maple-agent`, usually as a Pi extension: `agent/switch_compaction.rs`, for
+one, changes which model summarizes through `before_compact`.
+
 ## Storage adaptations
 
 | Interface | Reason and boundary | Regression evidence |
