@@ -767,6 +767,7 @@ pub(crate) fn friendly_tool_label(name: &str) -> String {
     let bare = name.rsplit("__").next().unwrap_or(name);
     match bare {
         "bash" | "powershell" | "shell" => "Terminal".to_string(),
+        "python" => "Python".to_string(),
         "text_editor" | "str_replace_editor" | "str_replace_based_edit_tool" => {
             "Editor".to_string()
         }
@@ -793,6 +794,21 @@ pub(crate) fn descriptive_tool_title<T: Serialize>(
     // Most-descriptive argument per tool, in priority order. Only a shell
     // is described by its command; an editor call is about the file.
     let bare_name = tool_name.rsplit("__").next().unwrap_or(tool_name);
+    if bare_name == "python" {
+        let first_line = arguments
+            .get("code")
+            .and_then(|code| code.as_str())
+            .map(str::trim)
+            .filter(|code| !code.is_empty())
+            .and_then(|code| code.lines().next());
+        return Some(match first_line {
+            Some(line) => format!(
+                "Python: {}",
+                bounded_timeline_text(line, MAX_AGENT_SESSION_TITLE_CHARS)
+            ),
+            None => "Python".to_string(),
+        });
+    }
     let keys: &[&str] = if matches!(bare_name, "bash" | "powershell" | "shell") {
         &[
             "command",
@@ -871,3 +887,28 @@ pub(crate) fn format_tool_title(name: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod python_title_tests {
+    use super::*;
+
+    #[test]
+    fn python_titles_keep_one_bounded_code_line_and_label_reset_only_calls() {
+        assert_eq!(friendly_tool_label("python"), "Python");
+        assert_eq!(
+            descriptive_tool_title(
+                "python",
+                &json!({"code": "\nvalues = [2, 3, 5]\nsum(values)"})
+            ),
+            Some("Python: values = [2, 3, 5]".to_string())
+        );
+        assert_eq!(
+            descriptive_tool_title("python", &json!({"code": "", "reset": true})),
+            Some("Python".to_string())
+        );
+        let title = descriptive_tool_title("python", &json!({"code": "é".repeat(1_024)}))
+            .expect("Python title");
+        assert!(title.chars().count() <= "Python: ".len() + MAX_AGENT_SESSION_TITLE_CHARS + 1);
+        assert!(!title.contains('\n'));
+    }
+}
