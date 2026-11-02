@@ -23,20 +23,20 @@
           (final: prev: {
             # Keep bun on versions.bun (and setup-bun's Windows pin) when nixpkgs moves ahead.
             bun = prev.bun.overrideAttrs (old: rec {
-              version = "1.3.5";
+              version = versions.bun;
               src = passthru.sources.${final.stdenv.hostPlatform.system};
               passthru = old.passthru // {
                 sources = {
                   aarch64-darwin = final.fetchurl {
-                    url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.5/bun-darwin-aarch64.zip";
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-darwin-aarch64.zip";
                     hash = "sha256-2xdYikrqiASFaCXUvq0/BeHzcnbKYG8342m09y810/s=";
                   };
                   aarch64-linux = final.fetchurl {
-                    url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.5/bun-linux-aarch64.zip";
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-linux-aarch64.zip";
                     hash = "sha256-7QEAD4W9l3hSKK0oRdySoYYLgFSFaCbXMXaQrI+O50s=";
                   };
                   x86_64-linux = final.fetchurl {
-                    url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.5/bun-linux-x64.zip";
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-linux-x64.zip";
                     hash = "sha256-cFHYapJK7+o+C5YhO1/Y95wHk/nK5lNCM+Yn5cPbRmk=";
                   };
                 };
