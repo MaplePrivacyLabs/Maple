@@ -211,7 +211,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             apps/maple-agent/target
-      - name: Build, package, verify and smoke-test an unsigned Dev bundle
+      - name: Build and package an unsigned Dev bundle
         run: python3 scripts/ci/plan.py run agent-package-linux
       - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
         if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
@@ -274,7 +274,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             apps/maple-agent/target
-      - name: Build, package and verify an unsigned Dev app
+      - name: Build and package an unsigned Dev app
         run: python3 scripts/ci/plan.py run agent-package-macos
       - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
         if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}

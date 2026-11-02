@@ -130,6 +130,10 @@ Blacksmith and the org's 16-core GitHub Windows runner are billed per minute.
 - **Windows packaging (`agent-package-windows`, `research-desktop-windows`,
   release `build-windows`) uses `maple-windows-2025-16core`.** The bundles
   gain from cores.
+- **Native Windows ARM64 (`agent-package-windows-arm64`, the Agent's
+  `windows-arm64-build`) runs on GitHub's `windows-11-arm`.** Native
+  compilation there is slow (35-50 minutes), so it runs only by label,
+  nightly, on dispatch and for releases, never on an unlabelled PR or a push.
 - **The Agent's master Windows build runs on Blacksmith Windows.** The
   fat-LTO link is single-threaded, so 16 cores are no faster.
 - **The Agent's signing and attestation, `windows-signing` jobs and artifact
@@ -182,7 +186,9 @@ and the others have no better fallback.
   version bump of them, the commonest Agent lockfile change, keeps the fat-LTO
   build warm. Any other lockfile change makes it fully cold; that cost is
   known and accepted. Only Prod pushes save it; the nightly Dev and dispatch
-  builds only restore it. No `ci.yml` lane reads it.
+  builds only restore it. The Windows ARM64 builder never runs on a push, so
+  it keeps its own exact `ci-v1-agent-arm64-release-<graph hash>` and saves it
+  from whichever run misses. No `ci.yml` lane reads either.
 - **Reserved prefixes.** `release.yml` restores the families in
   `test_contracts.RESERVED_PREFIXES` by prefix. Only the signed master
   workflows write them. `ci.yml` only restores keys that master saves. No

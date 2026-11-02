@@ -42,13 +42,14 @@ GITHUB = Runner("ubuntu-latest")  # free GitHub runner for lanes that compile no
 # GitHub's Xcode 27 image ships Xcode's Metal Toolchain, which Blacksmith's macOS image
 # lacks and cannot download (its MobileAsset catalog fetch fails).
 GITHUB_XCODE = Runner("xcode-27")
-# The Agent updater's native Windows tests need GitHub's runner: Blacksmith's workspace
-# inherits a foreign write ACE the updater rejects. PR lanes use the org's 16-core
-# GitHub-hosted Windows 2025 runner (GitHub's cache store);
+# The org's 16-core GitHub-hosted Windows 2025 runner (GitHub's cache store), for the
+# Windows packaging lanes, whose bundles gain from cores;
 # CI_WINDOWS_GITHUB_RUNNER=windows-2025 falls back to the standard one.
 GITHUB_WINDOWS = Runner("maple-windows-2025-16core", "CI_WINDOWS_GITHUB_RUNNER")
-GITHUB_WINDOWS_FREE = Runner("windows-2025")  # the free standard runner, for the native Windows test suites
-GITHUB_WINDOWS_ARM64 = Runner("windows-11-arm")
+# The free standard runner, for the Agent's native Windows suites: Blacksmith's workspace
+# inherits a foreign write ACE the updater rejects.
+GITHUB_WINDOWS_FREE = Runner("windows-2025")
+GITHUB_WINDOWS_ARM64 = Runner("windows-11-arm")  # native ARM64 Windows packaging
 # .github/actions/setup-agent-windows pins this toolchain (Windows has no Nix);
 # agent-lint checks that the Agent flake's rustc still reports it.
 AGENT_WINDOWS_RUST = "1.98.0"

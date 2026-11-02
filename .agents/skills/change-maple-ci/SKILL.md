@@ -99,7 +99,7 @@ Typical PR selections (confirm with `explain`):
 
 | Change | Lanes |
 | --- | --- |
-| Agent source | `agent-lint`, `agent-test` (Linux), `agent-macos`, `agent-windows` (Clippy). Warm `ci-ok` in about 5 minutes; `agent-windows` is the long pole |
+| Agent source | `agent-lint`, `agent-test` (Linux), `agent-macos`, `agent-windows` (Clippy). Warm `ci-ok` in about 4-6 minutes; `agent-macos` or `agent-test` usually finishes last |
 | Agent `Cargo.lock` or `Cargo.toml` | Those four, plus `agent-windows-updater`, `agent-supply-chain`, `agent-provider` |
 | Agent packaging or installer scripts | Only the four; packaging needs `ci:package` |
 | Research frontend; Research `src-tauri` | `research-web`; `research-rust` |
@@ -127,7 +127,7 @@ fields in `lanes.py` are authoritative.
 | Label | Adds | Use when |
 | --- | --- | --- |
 | `ci:windows` | The native updater tests and full Windows suite (Windows Clippy already runs on every Agent PR) | Path, filesystem, process or terminal code behaves differently on Windows |
-| `ci:package` | Unsigned Agent packages and Research desktop bundles on all three OSes, plus the Research Dev macOS app | Packaging or release scripts, flakes, toolchains, or bundled assets, entitlements or updater metadata change. Also a gpui/zed revision bump, an Xcode pin change or an edit to the Metal Toolchain actions: PR lanes build gpui with runtime shaders, and only the macOS rehearsal compiles them before master's signed build |
+| `ci:package` | Unsigned Agent packages (native Windows ARM64 included) and Research desktop bundles on all three OSes, plus the Research Dev macOS app | Packaging or release scripts, flakes, toolchains, or bundled assets, entitlements or updater metadata change. Also a gpui/zed revision bump, an Xcode pin change or an edit to the Metal Toolchain actions: PR lanes build gpui with runtime shaders, and only the macOS rehearsal compiles them before master's signed build |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build | Research changes reach native mobile code or mobile-only plugins that their paths do not select |
 | `ci:research-dev-macos` | The unsigned Research Dev app | Research Dev OAuth profile work |
 | `ci:eif` | Dev and prod OpenSecret EIF candidates (`os-eif`) | The selector misses a measured input. Works only on a same-repository PR to `master` that edits no PCR approval |

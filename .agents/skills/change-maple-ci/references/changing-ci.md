@@ -135,7 +135,7 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
 | `MACOS` (Blacksmith macOS) | `CI_MACOS_RUNNER` |
 | `WINDOWS` (Blacksmith Windows) | `CI_WINDOWS_RUNNER` |
 | `GITHUB_WINDOWS` (`maple-windows-2025-16core`) | `CI_WINDOWS_GITHUB_RUNNER`, read only by special jobs |
-| `GITHUB`, `GITHUB_WINDOWS_FREE`, `GITHUB_XCODE` (`xcode-27`), `EIF_BUILDER`, inline `ubuntu-24.04-arm` | none |
+| `GITHUB`, `GITHUB_WINDOWS_FREE` (`windows-2025`), `GITHUB_WINDOWS_ARM64` (`windows-11-arm`), `GITHUB_XCODE` (`xcode-27`), `EIF_BUILDER`, inline `ubuntu-24.04-arm` | none |
 
 - Matrix lanes resolve their runner when `plan` runs. A new matrix variable
   must be passed in the `plan` step's `env`; `lint` checks this.

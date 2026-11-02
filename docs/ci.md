@@ -57,7 +57,7 @@ PCR approval edit).
 | --- | --- |
 | Pull request | Selected lanes, each a few minutes; the iOS and Android builds when their native inputs change, and the OpenSecret EIF candidate for measured inputs. Desktop bundles and packaging rehearsals never block a PR; add `ci:package` to run them. A new push cancels the superseded run. |
 | Master push | The selected lanes that also run on push: the Research web, Rust and platform lanes and `auth` run only on pull requests, because `frontend-tests.yml`, `rust-tests.yml`, `web-build.yml`, the signed builds and `auth-pages-ci.yml` cover master. Agent inputs add the full Agent suites on Linux and macOS. Also the signed builds (Agent: Prod only), the release-evidence workflows and CodeQL. Never cancelled. |
-| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories, packaging rehearsals and the Agent's native Windows suites included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures and [quarantined lanes](#quarantine) open or update one `ci-nightly` issue, whose report waits up to two hours for `ci.yml`'s run to finish; a green night closes it. CodeQL also runs nightly, and `agent-desktop-build.yml` builds, signs and verifies the Agent Dev packages; the `ci-nightly` issue covers neither of these. The crons say 04:17 (`ci.yml`), 05:28 (CodeQL), 05:47 (`nightly.yml`) and 10:37 UTC (Agent Dev), but GitHub starts scheduled runs hours late, so nothing may depend on exact times. |
+| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories, packaging rehearsals and the Agent's native Windows suites included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures and [quarantined lanes](#quarantine) open or update one `ci-nightly` issue, whose report waits up to two hours for `ci.yml`'s run to finish; a green night closes it. CodeQL also runs nightly, and `agent-desktop-build.yml` builds and signs the Agent Dev packages for every platform, Windows ARM64 included; the `ci-nightly` issue covers neither of these. The crons say 04:17 (`ci.yml`), 05:28 (CodeQL), 05:47 (`nightly.yml`) and 10:37 UTC (Agent Dev), but GitHub starts scheduled runs hours late, so nothing may depend on exact times. |
 | On demand | PR labels (below), or a `ci.yml` dispatch with comma-separated lane ids or `all`. Dispatch runs never save caches. `os-eif` cannot be dispatched: an id that is not a dispatch lane, a typo included, makes the run fall back to every dispatch lane. |
 
 `master` requires `ci-ok` and auto-merge is on. Branches need not be up to
@@ -83,7 +83,7 @@ later push runs the labelled lanes again until the label is removed.
 | Label | Adds |
 | --- | --- |
 | `ci:full` | Every lane except the OpenSecret EIF candidate |
-| `ci:package` | Unsigned Agent and Research desktop packages on every OS, and the unsigned Research Dev app |
+| `ci:package` | Unsigned Agent and Research desktop packages on every OS, the native Windows ARM64 Agent installer included, and the unsigned Research Dev app |
 | `ci:windows` | The Agent's Windows Clippy, native updater tests and full Windows suite |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build |
 | `ci:research-dev-macos` | The unsigned Research Dev app |
