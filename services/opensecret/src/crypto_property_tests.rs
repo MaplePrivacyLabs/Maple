@@ -152,7 +152,8 @@ proptest! {
 
         let changed_kind = match kind {
             CredentialKind::Password => CredentialKind::OAuth,
-            CredentialKind::OAuth => CredentialKind::Password,
+            CredentialKind::OAuth => CredentialKind::Recovery,
+            CredentialKind::Recovery => CredentialKind::Password,
         };
         prop_assert!(decrypt_seed_v1(
             &root_key,

@@ -33,6 +33,9 @@ impl PasswordResetRequest {
             .filter(password_reset_requests::user_id.eq(lookup_user_id))
             .filter(password_reset_requests::encrypted_code.eq(lookup_encrypted_code))
             .filter(password_reset_requests::is_reset.eq(false))
+            // Codes can repeat across a user's open requests; pick the newest
+            // so every lookup with the same code selects the same row.
+            .order(password_reset_requests::id.desc())
             .first::<PasswordResetRequest>(conn)
             .optional()
             .map_err(PasswordResetError::DatabaseError)
