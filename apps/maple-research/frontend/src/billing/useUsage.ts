@@ -9,7 +9,9 @@ import type { UsageQuery } from "./usageApi";
 const USAGE_STALE_MS = 60_000;
 const REQUESTS_STALE_MS = 30_000;
 const PRICES_STALE_MS = 60 * 60_000;
-const REQUESTS_PAGE_SIZE = 50;
+// Recent requests open short; each "Load more" fetches a larger page.
+const REQUESTS_FIRST_PAGE_SIZE = 10;
+const REQUESTS_MORE_PAGE_SIZE = 50;
 
 export const usageKeys = {
   all: (accountId: string) => ["usage", accountId] as const,
@@ -45,7 +47,10 @@ export function useUsageRequests(accountId: string | undefined) {
   return useInfiniteQuery({
     queryKey: usageKeys.requests(accountId ?? "signed-out"),
     queryFn: ({ pageParam }) =>
-      getBillingService().getUsageRequests({ cursor: pageParam, limit: REQUESTS_PAGE_SIZE }),
+      getBillingService().getUsageRequests({
+        cursor: pageParam,
+        limit: pageParam ? REQUESTS_MORE_PAGE_SIZE : REQUESTS_FIRST_PAGE_SIZE
+      }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
     enabled: !!accountId,

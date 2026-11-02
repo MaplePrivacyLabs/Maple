@@ -122,7 +122,7 @@ const prices = {
 type FakeService = {
   getBillingStatus: () => Promise<BillingStatus>;
   getUsage: (query: UsageQuery) => Promise<UsageResponse>;
-  getUsageRequests: () => Promise<UsageRequestsPage>;
+  getUsageRequests: (query: { cursor?: string; limit?: number }) => Promise<UsageRequestsPage>;
   getUsagePrices: () => Promise<typeof prices>;
   getTeamStatus: () => Promise<unknown>;
 };
@@ -263,6 +263,37 @@ describe("Usage settings page", () => {
     }
     // Llama reported no cached tokens: the model row and the request show "—".
     expect(content).toContain("—");
+    // Monthly history sits right under the model table, above the request log.
+    const order = ["By model", "Last 12 months", "Recent requests", "Current model prices"].map(
+      (heading) => content.indexOf(heading)
+    );
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  test("recent requests open with 10 rows and load 50 more at a time", async () => {
+    const pages: Array<{ cursor?: string; limit?: number }> = [];
+    await mount(
+      {
+        getBillingStatus: () => Promise.resolve(pro),
+        getUsageRequests: (query) => {
+          pages.push(query);
+          return Promise.resolve({ ...requests, next_cursor: pages.length === 1 ? "next" : null });
+        }
+      },
+      pro
+    );
+    expect(pages).toEqual([{ cursor: undefined, limit: 10 }]);
+    const loadMore = renderer!.root.findAll(
+      (node) => node.props.onClick && textContent(node) === "Load more"
+    )[0];
+    await act(async () => {
+      loadMore.props.onClick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(pages).toEqual([
+      { cursor: undefined, limit: 10 },
+      { cursor: "next", limit: 50 }
+    ]);
   });
 
   test("a usage failure keeps the plan meter and offers a retry", async () => {

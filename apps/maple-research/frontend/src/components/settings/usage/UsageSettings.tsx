@@ -159,11 +159,11 @@ export function UsageSettings() {
         today={today}
         periodStartDate={planWindow ? localDate(new Date(planWindow.start), tz) : null}
       />
-      <RecentRequests accountId={accountId} kind={kind} tz={tz} />
-      <PricingTable usedModels={usedModels} />
       {kind !== "free" && usage.data && (
         <LastTwelveMonths months={usage.data.months} currentMonth={today.slice(0, 7)} />
       )}
+      <RecentRequests accountId={accountId} kind={kind} tz={tz} />
+      <PricingTable usedModels={usedModels} />
       <AboutNumbers
         kind={kind}
         planName={status.product_name}
