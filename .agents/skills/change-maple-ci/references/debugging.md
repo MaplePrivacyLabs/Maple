@@ -59,8 +59,9 @@ the cancellation to finish, so rapid re-pushes each add some delay.
   PRs never save, so the PR stays cold until master or the nightly run saves.
   Do not shrink timeouts to warm times.
 - **Nightly-only caches.** `agent-full-windows` and the `agent-package-*`
-  lanes save only from the 04:17 UTC nightly run. A labelled run right after
-  a lockfile change restores by prefix and is slower.
+  lanes save only from `ci.yml`'s nightly run, which GitHub starts hours
+  after its 04:17 UTC cron. A labelled run right after a lockfile change
+  restores by prefix and is slower.
 - **Agent master builds.** The exact-key release cache misses when a
   third-party package, a dependency edge, `flake.lock` or, for macOS,
   `scripts/ci/apple-toolchain.json` changes (a version
@@ -85,12 +86,15 @@ the cancellation to finish, so rapid re-pushes each add some delay.
 
 ## Nightly failures
 
-The 04:17 `ci.yml` run and the 05:47 `nightly.yml` run report through one
-`ci-nightly` issue: `nightly.yml` opens or updates it, and a green night
-closes it. A missing or unfinished `ci.yml` nightly run counts as a failure,
-and active quarantines keep the issue open. The 05:28 CodeQL scan and the
-10:37 Agent Dev desktop build are not in the issue; their failures show only
-as red checks on the master commit.
+The scheduled `ci.yml` and `nightly.yml` runs report through one
+`ci-nightly` issue: `nightly.yml`'s Report job opens or updates it, and a
+green night closes it. GitHub starts scheduled runs hours after their cron
+times, so the report waits up to two hours for the day's `ci.yml` run to
+finish; a run still missing or unfinished after that counts as a failure, and
+active quarantines keep the issue open. The nightly CodeQL scan and Agent Dev
+desktop build are not in the issue; their failures show only as red checks
+on the master commit. Never reason from the cron times: compare a run's
+`created_at` instead.
 
 ## Quarantine
 

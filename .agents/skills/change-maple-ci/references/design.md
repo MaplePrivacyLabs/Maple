@@ -206,13 +206,15 @@ nightly master run saves those caches.
 
 ## Agent Dev builds run nightly
 
-`agent-desktop-build.yml` builds Prod on master pushes, Dev nightly at 10:37
-UTC, and both on dispatch. Prod no longer waits on, or gets skipped by, a
+`agent-desktop-build.yml` builds Prod on master pushes, Dev nightly (cron
+10:37 UTC), and both on dispatch. Prod no longer waits on, or gets skipped by, a
 failed Dev leg, and pushes no longer spend runner time on Dev packages. Only a
 dispatch with `release=true` publishes. Windows ARM64 compiles natively on
 GitHub's slow ARM image (35-50 minutes), so it builds only nightly, on dispatch
-and for releases, never on a push. The hour avoids the other scheduled runs
-and the top of the hour. Research iOS Dev TestFlight stays on push.
+and for releases, never on a push. The cron sits hours after the other
+scheduled runs and off the top of the hour. GitHub starts every scheduled run
+hours late, so nothing may depend on the exact time or on the other nightly
+runs having finished. Research iOS Dev TestFlight stays on push.
 
 ## CodeQL only has to be "not red"
 

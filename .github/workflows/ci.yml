@@ -14,6 +14,8 @@ on:
     branches: [master]
   schedule:
     # The nightly lanes on the master tip: refreshes caches and catches misroutes.
+    # GitHub starts scheduled runs late, often by hours, so nothing may depend on
+    # exact times (nightly.yml's report waits for this run).
     - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:

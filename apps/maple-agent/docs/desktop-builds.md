@@ -6,7 +6,8 @@ builds the desktop packages:
 - **Master push** that changes Agent inputs: signed Prod for macOS, Linux and
   Windows x64. Its `changes` job runs `scripts/ci/plan.py only agent-desktop`;
   an unusable diff builds.
-- **Nightly** (10:37 UTC): Dev for every platform.
+- **Nightly** (cron 10:37 UTC; GitHub starts scheduled runs hours late): Dev
+  for every platform.
 - **Dispatch**: Dev and Prod for every platform, or, with `release=true`, Prod
   for every platform plus publication ([releasing](updates.md#releasing)).
 

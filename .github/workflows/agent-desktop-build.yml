@@ -8,8 +8,9 @@ on:
   push:
     branches: [master]
   schedule:
-    # Dev packages, when few master pushes land and after ci.yml's 04:17
-    # nightly, so they rarely compete with a Prod build for runners.
+    # Dev packages, when few master pushes land, so they rarely compete with a
+    # Prod build for runners. GitHub starts scheduled runs late, often by hours,
+    # so nothing may depend on exact times or on ci.yml's nightly having finished.
     - cron: "37 10 * * *"
   workflow_dispatch:
     inputs:
