@@ -5919,6 +5919,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "maple-code-mode"
+version = "0.0.16"
+dependencies = [
+ "libc",
+ "log",
+ "process-wrap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "maple-proxy"
 version = "0.4.5"
 dependencies = [
@@ -8224,6 +8239,7 @@ dependencies = [
  "indexmap 2.14.0",
  "nix 0.31.3",
  "tokio",
+ "windows 0.62.2",
 ]
 
 [[package]]
