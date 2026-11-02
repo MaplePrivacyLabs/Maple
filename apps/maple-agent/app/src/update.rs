@@ -244,7 +244,12 @@ impl Controller {
             Some(BlockedReason::UnsupportedInstallation)
         } else {
             match snapshot.state {
-                State::Ready | State::Installing | State::Current | State::Idle => None,
+                // An Available offer is downloaded on remote request.
+                State::Ready
+                | State::Available
+                | State::Installing
+                | State::Current
+                | State::Idle => None,
                 State::Disabled => Some(BlockedReason::UpdatesDisabled),
                 State::Checking | State::Downloading => Some(BlockedReason::Busy),
                 _ => Some(BlockedReason::UpdateNotReady),
@@ -712,6 +717,70 @@ impl Controller {
                 self.fail("Could not download or verify the update. Retry when you are ready.")
             }
         }
+    }
+    /// Download and verify exactly `target` for an admitted remote request,
+    /// following the same signed download and staging path as a local click.
+    /// Nothing is stopped here; installation still revalidates the candidate.
+    /// A failed attempt restores the prior Available offer, so that computer
+    /// shows no local error and another request can retry. The receipt reports
+    /// the failure instead.
+    pub(crate) async fn download_remote(
+        &self,
+        target: &crate::remote::update::ReleaseIdentity,
+    ) -> Result<(), &'static str> {
+        self.download_remote_with(target, |release| async move {
+            if let Ok(service) = self.service().await {
+                self.download_inner(service, release).await;
+            }
+        })
+        .await
+    }
+
+    async fn download_remote_with<D, F>(
+        &self,
+        target: &crate::remote::update::ReleaseIdentity,
+        download: D,
+    ) -> Result<(), &'static str>
+    where
+        D: FnOnce(VerifiedRelease) -> F,
+        F: std::future::Future<Output = ()>,
+    {
+        const CHANGED: &str = "The remote update changed before it was downloaded";
+        if self.0.cancel.is_cancelled() || self.restart_path().is_some() {
+            return Err(CHANGED);
+        }
+        let Ok(_operation) = self.0.operation.try_lock() else {
+            return Err("The updater is busy");
+        };
+        let previous = self.snapshot();
+        if previous.remote_candidate.as_ref() != Some(target)
+            || previous.primary == Some(UpdateAction::ManualDownload)
+        {
+            return Err(CHANGED);
+        }
+        match previous.state {
+            State::Ready => return Ok(()),
+            State::Available => {}
+            _ => return Err(CHANGED),
+        }
+        let release = self
+            .0
+            .releases
+            .lock()
+            .await
+            .release
+            .clone()
+            .filter(|release| release_identity(release) == *target)
+            .ok_or(CHANGED)?;
+        download(release).await;
+        let after = self.snapshot();
+        if after.state == State::Ready && after.remote_candidate.as_ref() == Some(target) {
+            return Ok(());
+        }
+        if after.state == State::Error {
+            self.publish(previous);
+        }
+        Err(crate::remote_updates::DOWNLOAD_FAILED)
     }
     /// Apply on the UI thread accepting the current settings generation. A
     /// delayed runtime task must never overwrite a newer saved opt-out.
@@ -1491,10 +1560,154 @@ mod tests {
         }
     }
 
+    fn available_remote_fixture() -> (Controller, Snapshot, VerifiedRelease) {
+        let feed = "https://updates.trymaple.ai/agent/stable/latest.json"
+            .parse()
+            .unwrap();
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        let release = maple_agent_updater::manifest::verify_envelope(
+            include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"),
+            &feed,
+            &[key],
+        )
+        .unwrap();
+        let controller = Controller::new(false);
+        controller.0.releases.try_lock().unwrap().release = Some(release.clone());
+        let mut available = Snapshot::new(State::Available, "v0.0.2 is available");
+        available.version = Some(release.manifest.version.clone());
+        available.remote_candidate = Some(release_identity(&release));
+        available.primary = Some(UpdateAction::Download);
+        available.primary_label = "Download";
+        available.show_banner = true;
+        controller.publish(available.clone());
+        (controller, available, release)
+    }
+
+    #[tokio::test]
+    async fn remote_download_prepares_only_the_exact_available_candidate() {
+        use std::sync::atomic::AtomicUsize;
+        let (controller, available, _release) = available_remote_fixture();
+        let target = available.remote_candidate.clone().unwrap();
+        assert!(controller.remote_status().blocked.is_none());
+        let calls = AtomicUsize::new(0);
+        controller
+            .download_remote_with(&target, |downloaded| {
+                assert_eq!(release_identity(&downloaded), target);
+                calls.fetch_add(1, Ordering::SeqCst);
+                let mut ready = available.clone();
+                ready.state = State::Ready;
+                ready.primary = Some(UpdateAction::Restart);
+                controller.publish(ready);
+                async {}
+            })
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(controller.snapshot().state, State::Ready);
+        // Already prepared: nothing is downloaded again.
+        controller
+            .download_remote_with(&target, |_| async { panic!("Ready needs no download") })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_remote_download_restores_the_retryable_offer_without_a_local_error() {
+        let (controller, available, _release) = available_remote_fixture();
+        let target = available.remote_candidate.clone().unwrap();
+        for _attempt in 0..2 {
+            let result = controller
+                .download_remote_with(&target, |_| {
+                    controller
+                        .fail("Could not download or verify the update. Retry when you are ready.");
+                    async {}
+                })
+                .await;
+            assert_eq!(result, Err(crate::remote_updates::DOWNLOAD_FAILED));
+            assert_eq!(controller.snapshot(), available);
+            let status = controller.remote_status();
+            assert_eq!(status.state, crate::remote::update::UpdateState::Available);
+            assert!(
+                status.blocked.is_none(),
+                "a failed attempt must stay retryable"
+            );
+        }
+        // A download that ends anywhere but Ready for this target is a failure.
+        let result = controller
+            .download_remote_with(&target, |_| {
+                controller.publish(Snapshot::new(State::Current, "Withdrawn"));
+                async {}
+            })
+            .await;
+        assert_eq!(result, Err(crate::remote_updates::DOWNLOAD_FAILED));
+        assert_eq!(controller.snapshot().state, State::Current);
+    }
+
+    #[tokio::test]
+    async fn remote_download_refuses_changed_busy_or_manual_offers_without_downloading() {
+        let (controller, available, _release) = available_remote_fixture();
+        let target = available.remote_candidate.clone().unwrap();
+        let never = |_| async { panic!("must not download") };
+        let mut changed = target.clone();
+        changed.manifest_sha256 = "c".repeat(64);
+        assert!(
+            controller
+                .download_remote_with(&changed, never)
+                .await
+                .is_err()
+        );
+        let operation = controller.0.operation.lock().await;
+        assert!(
+            controller
+                .download_remote_with(&target, never)
+                .await
+                .is_err()
+        );
+        drop(operation);
+        let mut manual = available.clone();
+        manual.primary = Some(UpdateAction::ManualDownload);
+        controller.publish(manual);
+        assert!(
+            controller
+                .download_remote_with(&target, never)
+                .await
+                .is_err()
+        );
+        let mut downloading = available.clone();
+        downloading.state = State::Downloading;
+        controller.publish(downloading);
+        assert!(
+            controller
+                .download_remote_with(&target, never)
+                .await
+                .is_err()
+        );
+        // The verified release itself must still match, not only the snapshot.
+        controller.publish(available);
+        controller
+            .0
+            .releases
+            .lock()
+            .await
+            .release
+            .as_mut()
+            .unwrap()
+            .envelope
+            .push('\n');
+        assert!(
+            controller
+                .download_remote_with(&target, never)
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn current_and_unchecked_computers_have_no_false_missing_download_warning() {
         let controller = Controller::new(true);
-        for state in [State::Current, State::Idle] {
+        for state in [State::Current, State::Idle, State::Available] {
             controller.publish(Snapshot::new(state, "No prepared update"));
             assert!(controller.remote_status().blocked.is_none());
             assert!(controller.remote_status().offered.is_none());
