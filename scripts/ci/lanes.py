@@ -101,6 +101,7 @@ AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/macos-build-info.py", "scripts/macos-release-*", "scripts/linux-*",
     "release-profiles.json", "release_profile.rs", "app/build.rs",
     "app/packaging/**", "flake.nix", "flake.lock",
+    "scripts/prepare-python.py", "scripts/python-runtime.json", "scripts/python-licenses/**",
 )) + (".github/workflows/agent-desktop-build.yml",)
 # The Windows packaging lane's Windows-specific inputs: the Windows packaging scripts,
 # the build script's Windows branch, the release identity the installer and the
