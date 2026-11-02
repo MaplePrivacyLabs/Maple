@@ -161,7 +161,14 @@ is recovered. If confirmation cannot be recovered, ordinary access is preserved
 but remote installation requires confirming or pairing that computer again.
 
 Installation requires the remote computer's running desktop updater and its
-exact prepared, signed candidate. A daemon without its desktop reports that
+exact signed candidate. When that candidate is offered but not yet downloaded,
+the execution computer downloads and verifies it through its ordinary updater
+first, without stopping work; only a verified download of the same candidate
+continues to installation, and a failed download is reported on the request's
+receipt while the offer stays available to retry. Hosts without
+`remote_update_download_v1` (0.0.16 and earlier) are still asked, refuse before
+accepting the request, and the controller explains that the update must be
+downloaded on that computer first. A daemon without its desktop reports that
 installation is unavailable. Password-protected computers cannot install
 remotely, including while unlocked. Update those computers locally; this feature
 does not send passwords, transfer unlock keys or add an unlock handoff.

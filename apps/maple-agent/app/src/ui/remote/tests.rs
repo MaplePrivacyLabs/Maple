@@ -341,6 +341,123 @@ fn remote_eligibility_depends_on_the_remote_candidate_and_authority_only() {
     );
 }
 
+fn available_peer() -> PeerInfo {
+    let mut info = ready_peer();
+    info.update.state = UpdateState::Available;
+    info
+}
+
+/// Agent 0.0.14: management 7.1.0 without the download capability, which
+/// reports an offer it has not downloaded as not ready.
+fn older_available_peer() -> PeerInfo {
+    let mut info = available_peer();
+    info.protocol
+        .capabilities
+        .retain(|value| value != crate::remote::update::DOWNLOAD_CAPABILITY);
+    info.update.blocked = Some(crate::remote::update::BlockedReason::UpdateNotReady);
+    info
+}
+
+#[test]
+fn an_available_offer_can_be_requested_without_downloading_it_first() {
+    use crate::remote::update::BlockedReason;
+    assert!(install_blocked(&available_peer()).is_none());
+    // Older hosts are still asked; they answer with a definite refusal.
+    assert!(install_blocked(&older_available_peer()).is_none());
+    for blocked in [
+        BlockedReason::PasswordProtected,
+        BlockedReason::UnsupportedInstallation,
+        BlockedReason::Busy,
+        BlockedReason::DesktopUnavailable,
+    ] {
+        for mut info in [available_peer(), older_available_peer()] {
+            info.update.blocked = Some(blocked);
+            assert_eq!(
+                install_blocked(&info).as_deref(),
+                Some(blocked.message()),
+                "{blocked:?}"
+            );
+        }
+    }
+    let mut info = available_peer();
+    info.update.blocked = Some(BlockedReason::UpdateNotReady);
+    assert!(
+        install_blocked(&info).is_some(),
+        "a download-capable host's own block is authoritative"
+    );
+    let mut info = older_available_peer();
+    info.update.state = UpdateState::Error;
+    assert!(install_blocked(&info).is_some());
+    let mut info = available_peer();
+    info.update.operation = Some(crate::remote::update::RemoteUpdateOperation {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        target: target_release(),
+        state: OperationState::Installing,
+        message: None,
+    });
+    assert!(install_blocked(&info).is_some(), "one request at a time");
+}
+
+#[gpui::test]
+fn update_button_is_enabled_for_an_available_offer_on_new_and_older_hosts(cx: &mut TestAppContext) {
+    for info in [available_peer(), older_available_peer()] {
+        let (screen, cx) = show_update(cx);
+        screen.update(cx, |screen, _| {
+            screen.apply_peer_info("a", [1; 16], 1, Ok(Some(info.clone())));
+            assert!(screen.can_install("a"));
+        });
+        cx.run_until_parked();
+        let button = cx.debug_bounds("update-remote-a").unwrap();
+        cx.simulate_click(button.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        screen.read_with(cx, |screen, _| {
+            let confirmation = screen.install_confirmation.as_ref().unwrap();
+            assert_eq!(confirmation.request.target, target_release());
+        });
+    }
+}
+
+#[gpui::test]
+fn an_older_hosts_download_refusal_is_definite_and_short(cx: &mut TestAppContext) {
+    use crate::remote::update::InstallRefusal;
+    let screen = screen(cx);
+    screen.update(cx, |screen, _| {
+        seed_update(screen, "a", [1; 16]);
+        screen.apply_peer_info("a", [1; 16], 1, Ok(Some(older_available_peer())));
+        assert!(screen.can_install("a"));
+        let request = InstallRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            target: target_release(),
+        };
+        screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
+            request: request.clone(),
+            phase: InstallPhase::Sending,
+            label: String::new(),
+        });
+        screen.apply_install_reply(
+            "a",
+            [1; 16],
+            &request,
+            Ok(InstallReply::Refused {
+                reason: InstallRefusal::DownloadRequired,
+            }),
+        );
+        let attempt = screen.computer_updates["a"].attempt.as_ref().unwrap();
+        assert_eq!(attempt.phase, InstallPhase::Failed);
+        assert!(attempt.label.contains("must download the update first"));
+        assert!(!attempt.label.contains("Do not resend"));
+        // Nothing was admitted there; a fresh check allows another try.
+        screen.apply_peer_info_result(
+            "a",
+            [1; 16],
+            1,
+            PeerInfoQuery::Check,
+            Ok(Some(older_available_peer())),
+        );
+        assert!(screen.can_install("a"));
+    });
+}
+
 #[test]
 fn version_advisory_uses_known_app_versions_not_protocol_or_package_identity() {
     let mut info = ready_peer();
@@ -1325,6 +1442,7 @@ fn definite_install_refusal_is_not_uncertain_and_requires_a_new_check(cx: &mut T
             InstallRefusal::AccountChanged,
             InstallRefusal::Busy,
             InstallRefusal::Unavailable,
+            InstallRefusal::DownloadRequired,
         ] {
             seed_update(screen, "a", [1; 16]);
             let request = InstallRequest {

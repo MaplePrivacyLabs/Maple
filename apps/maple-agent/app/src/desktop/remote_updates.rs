@@ -14,7 +14,7 @@ use crate::{
         AttachRequest, CompleteRequest, DesktopCommand, DesktopLease, DesktopRefreshCommand,
         PublishRequest, RefreshCompleteRequest, RefreshFailure, TakeRequest,
     },
-    update::{Controller, Snapshot, State},
+    update::{Controller, Snapshot, State, UpdateAction},
 };
 
 use super::{
@@ -52,15 +52,15 @@ impl Bridge {
         &self,
         backend: Arc<AgentBackend>,
         account: Option<String>,
-        status: RemoteUpdateStatus,
         updater: Controller,
     ) -> Option<Pending> {
         let account = account.filter(|_| !backend.is_retired_after_update());
         let caller = backend.clone();
+        let published = updater.clone();
         let pending = self
             .poll_with(
                 account.clone(),
-                status,
+                move || published.remote_status(),
                 Duration::from_secs(5),
                 move |method, params| {
                     let backend = caller.clone();
@@ -153,18 +153,22 @@ impl Bridge {
         })
     }
 
-    async fn poll_with<C, F>(
+    /// `status` is read after taking the registration, so publications are
+    /// serialized and an older snapshot never overwrites a newer one.
+    async fn poll_with<C, F, S>(
         &self,
         account: Option<String>,
-        status: RemoteUpdateStatus,
+        status: S,
         completion_timeout: Duration,
         mut call: C,
     ) -> Option<Pending>
     where
         C: FnMut(&'static str, serde_json::Value) -> F,
         F: Future<Output = Result<serde_json::Value, String>>,
+        S: FnOnce() -> RemoteUpdateStatus,
     {
         let mut registration = self.0.lock().await;
+        let status = status();
         let Some(account) = account else {
             *registration = None;
             return None;
@@ -256,6 +260,48 @@ impl Bridge {
     }
 }
 
+impl Pending {
+    /// Publish the updater's current status for this lease before the typed
+    /// stop, which admits only a published Ready or Installing offer.
+    async fn publish_with<C, F>(
+        &self,
+        status: impl FnOnce() -> RemoteUpdateStatus,
+        mut call: C,
+    ) -> bool
+    where
+        C: FnMut(&'static str, serde_json::Value) -> F,
+        F: Future<Output = Result<serde_json::Value, String>>,
+    {
+        let mut registration = self.bridge.0.lock().await;
+        let Some(current) = registration
+            .as_mut()
+            .filter(|current| current.account == self.account && current.lease.id == self.lease)
+        else {
+            return false;
+        };
+        let status = status();
+        let published = tokio::time::timeout(
+            Duration::from_secs(5),
+            request::<(), _, _>(
+                &mut call,
+                "remote_update_publish",
+                PublishRequest {
+                    expected_account: self.account.clone(),
+                    lease: self.lease.clone(),
+                    status: status.clone(),
+                },
+            ),
+        )
+        .await;
+        if matches!(published, Ok(Ok(()))) {
+            current.published = Some(status);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl PendingRefresh {
     async fn owned(&self) -> bool {
         self.bridge.0.lock().await.as_ref().is_some_and(|current| {
@@ -321,31 +367,50 @@ struct Admission {
     closing: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Begin {
+    Refuse,
+    /// Download and verify the exact offer first; nothing is stopped yet.
+    Download,
+    Install,
+}
+
 fn may_begin(
     current_account: Option<&str>,
     expected_account: &str,
     snapshot: &Snapshot,
     target: &ReleaseIdentity,
     admission: Admission,
-) -> bool {
-    current_account == Some(expected_account)
-        && admission.store_ready
-        && admission.store_open
-        && admission.local_backend
-        && !admission.prompt_pending
-        && !admission.closing
-        && snapshot.state == State::Ready
-        && snapshot.remote_candidate.as_ref() == Some(target)
+) -> Begin {
+    if current_account != Some(expected_account)
+        || !admission.store_ready
+        || !admission.store_open
+        || !admission.local_backend
+        || admission.prompt_pending
+        || admission.closing
+        || snapshot.remote_candidate.as_ref() != Some(target)
+    {
+        return Begin::Refuse;
+    }
+    match snapshot.state {
+        State::Ready => Begin::Install,
+        State::Available if snapshot.primary != Some(UpdateAction::ManualDownload) => {
+            Begin::Download
+        }
+        _ => Begin::Refuse,
+    }
 }
 
-async fn failed(backend: &AgentBackend, pending: Pending) {
+const NOT_COMPLETED: &str = "The remote update did not complete. Open Maple on that computer to review it before trying again.";
+
+async fn failed(backend: &AgentBackend, pending: Pending, error: &'static str) {
     if backend.is_retired_after_update() {
         return;
     }
-    queue_completion(pending).await;
+    queue_completion(pending, error).await;
 }
 
-async fn queue_completion(pending: Pending) {
+async fn queue_completion(pending: Pending, error: &'static str) {
     let mut registration = pending.bridge.0.lock().await;
     if let Some(current) = registration
         .as_mut()
@@ -356,15 +421,19 @@ async fn queue_completion(pending: Pending) {
             expected_account: pending.account,
             lease: pending.lease,
             operation_id: pending.command.operation_id,
-            error: Some("The remote update did not complete. Open Maple on that computer to review it before trying again.".into()),
+            error: Some(error.into()),
         });
     }
 }
 
 impl MapleApp {
-    pub(super) fn begin_remote_install(&mut self, pending: Pending, cx: &mut Context<Self>) {
+    fn remote_install_admission(
+        &self,
+        pending: &Pending,
+        cx: &mut Context<Self>,
+    ) -> (Begin, Option<DesktopLifecycle>) {
         let lifecycle = cx.try_global::<DesktopLifecycle>().cloned();
-        let allowed = lifecycle.as_ref().is_some_and(|lifecycle| {
+        let begin = lifecycle.as_ref().map_or(Begin::Refuse, |lifecycle| {
             may_begin(
                 self.user_id.as_deref(),
                 &pending.account,
@@ -379,20 +448,90 @@ impl MapleApp {
                 },
             )
         });
-        if !allowed {
-            let backend = self.backend.clone();
-            drop(
-                self.backend
-                    .spawn(async move { failed(&backend, pending).await }),
-            );
-            return;
+        (begin, lifecycle)
+    }
+
+    pub(super) fn begin_remote_install(&mut self, pending: Pending, cx: &mut Context<Self>) {
+        match self.remote_install_admission(&pending, cx) {
+            (Begin::Install, Some(lifecycle)) => self.install_remote_update(pending, lifecycle, cx),
+            (Begin::Download, Some(_)) => self.download_remote_update(pending, cx),
+            _ => self.refuse_remote_install(pending, NOT_COMPLETED),
         }
+    }
+
+    fn refuse_remote_install(&self, pending: Pending, error: &'static str) {
+        let backend = self.backend.clone();
+        drop(
+            self.backend
+                .spawn(async move { failed(&backend, pending, error).await }),
+        );
+    }
+
+    /// Download the exact offer while this desktop keeps working normally.
+    /// Only a verified Ready result for the same target proceeds to the
+    /// existing stop-and-install path; anything else reports a failed receipt.
+    fn download_remote_update(&mut self, pending: Pending, cx: &mut Context<Self>) {
+        let updater = self.updater.clone();
+        let backend = self.backend.clone();
+        let bridge = cx.spawn(async move |this, cx| {
+            let work = backend.clone();
+            let downloaded = backend
+                .spawn(async move {
+                    let result = updater.download_remote(&pending.command.target).await;
+                    if result.is_ok() {
+                        let caller = work.clone();
+                        let status = updater.clone();
+                        let published = pending
+                            .publish_with(
+                                move || status.remote_status(),
+                                move |method, params| {
+                                    let backend = caller.clone();
+                                    async move { backend.remote_setting(method, params).await }
+                                },
+                            )
+                            .await;
+                        if !published {
+                            return (pending, Err(NOT_COMPLETED));
+                        }
+                    }
+                    (pending, result)
+                })
+                .await;
+            let Ok((pending, result)) = downloaded else {
+                return;
+            };
+            if let Err(error) = result {
+                drop(
+                    backend
+                        .clone()
+                        .spawn(async move { failed(&backend, pending, error).await }),
+                );
+                return;
+            }
+            // Admission is checked again: an account switch, a local restart
+            // prompt or quitting during the download refuses the install. A
+            // closed window leaves the receipt to the host's lease expiry.
+            let _ = this.update(cx, |this, cx| {
+                match this.remote_install_admission(&pending, cx) {
+                    (Begin::Install, Some(lifecycle)) => {
+                        this.install_remote_update(pending, lifecycle, cx)
+                    }
+                    _ => this.refuse_remote_install(pending, NOT_COMPLETED),
+                }
+            });
+        });
+        crate::ui::task::retain(&self.remote_bridges, bridge);
+    }
+
+    fn install_remote_update(
+        &mut self,
+        pending: Pending,
+        lifecycle: DesktopLifecycle,
+        cx: &mut Context<Self>,
+    ) {
         // This is the execution computer's lifecycle. The controller's local
         // updater, selected remote chat and other paired computers are untouched.
-        lifecycle
-            .expect("checked desktop lifecycle")
-            .closing
-            .set(true);
+        lifecycle.closing.set(true);
         self.restart_prompt_pending = true;
         persist_window_state();
         let updater: Controller = self.updater.clone();
@@ -418,7 +557,9 @@ impl MapleApp {
                 // Reporting completion is independent of closing/reopening the
                 // local UI. The status pump owns retry until acknowledgement or
                 // lease loss; it cannot keep the desktop stuck in closing.
-                drop(backend.spawn(async move { failed(&completing, pending).await }));
+                drop(
+                    backend.spawn(async move { failed(&completing, pending, NOT_COMPLETED).await }),
+                );
             }
             let _ = this.update(cx, |this, cx| {
                 this.restart_prompt_pending = false;
@@ -697,7 +838,7 @@ mod tests {
         bridge
             .poll_with(
                 account.map(str::to_owned),
-                ready_status(),
+                ready_status,
                 Duration::from_millis(10),
                 move |method, params| HostFixture::call(fixture.clone(), method, params),
             )
@@ -721,7 +862,7 @@ mod tests {
             .await
             .unwrap();
         let operation = pending.command.operation_id.clone();
-        queue_completion(pending).await;
+        queue_completion(pending, NOT_COMPLETED).await;
 
         assert!(
             poll_fixture(&bridge, &fixture, Some("account-a"))
@@ -776,7 +917,7 @@ mod tests {
             .await
             .unwrap();
         let operation = pending.command.operation_id.clone();
-        queue_completion(pending).await;
+        queue_completion(pending, NOT_COMPLETED).await;
         assert!(
             poll_fixture(&bridge, &fixture, Some("account-a"))
                 .await
@@ -809,7 +950,7 @@ mod tests {
             .await
             .unwrap();
         let delayed = copy_pending(&pending);
-        queue_completion(pending).await;
+        queue_completion(pending, NOT_COMPLETED).await;
         {
             let mut host = fixture.lock().unwrap();
             host.account = "account-b".into();
@@ -820,7 +961,7 @@ mod tests {
                 .await
                 .is_none()
         );
-        queue_completion(delayed).await;
+        queue_completion(delayed, NOT_COMPLETED).await;
         let registration = bridge.0.lock().await;
         let current = registration.as_ref().unwrap();
         assert_eq!(current.account, "account-b");
@@ -836,7 +977,7 @@ mod tests {
         let pending = poll_fixture(&bridge, &fixture, Some("account-a"))
             .await
             .unwrap();
-        queue_completion(pending).await;
+        queue_completion(pending, NOT_COMPLETED).await;
         fixture.lock().unwrap().lease = "lease-replacement".into();
         assert!(
             poll_fixture(&bridge, &fixture, Some("account-a"))
@@ -873,59 +1014,165 @@ mod tests {
             prompt_pending: false,
             closing: false,
         };
-        assert!(may_begin(
-            Some("account-a"),
-            "account-a",
-            &snapshot,
-            &target,
-            admission
-        ));
-        assert!(!may_begin(
-            Some("account-b"),
-            "account-a",
-            &snapshot,
-            &target,
-            admission
-        ));
-        assert!(!may_begin(
-            Some("account-a"),
-            "account-a",
-            &snapshot,
-            &target,
+        let begin = |account, snapshot: &Snapshot, admission| {
+            may_begin(account, "account-a", snapshot, &target, admission)
+        };
+        assert_eq!(
+            begin(Some("account-a"), &snapshot, admission),
+            Begin::Install
+        );
+        assert_eq!(
+            begin(Some("account-b"), &snapshot, admission),
+            Begin::Refuse
+        );
+        for refused in [
             Admission {
                 local_backend: false,
                 ..admission
-            }
-        ));
-        assert!(!may_begin(
-            Some("account-a"),
-            "account-a",
-            &snapshot,
-            &target,
+            },
             Admission {
                 store_open: false,
                 ..admission
-            }
-        ));
-        assert!(!may_begin(
-            Some("account-a"),
-            "account-a",
-            &snapshot,
-            &target,
+            },
+            Admission {
+                store_ready: false,
+                ..admission
+            },
             Admission {
                 closing: true,
                 ..admission
-            }
-        ));
+            },
+            Admission {
+                prompt_pending: true,
+                ..admission
+            },
+        ] {
+            assert_eq!(begin(Some("account-a"), &snapshot, refused), Begin::Refuse);
+        }
         let mut changed = target.clone();
         changed.manifest_sha256 = "c".repeat(64);
-        snapshot.remote_candidate = Some(changed);
-        assert!(!may_begin(
-            Some("account-a"),
-            "account-a",
-            &snapshot,
-            &target,
-            admission
-        ));
+        let mut different = snapshot.clone();
+        different.remote_candidate = Some(changed);
+        assert_eq!(
+            begin(Some("account-a"), &different, admission),
+            Begin::Refuse
+        );
+    }
+
+    #[test]
+    fn an_available_offer_is_downloaded_before_anything_is_stopped() {
+        let target = target();
+        let mut snapshot = Snapshot::initial();
+        snapshot.state = State::Available;
+        snapshot.remote_candidate = Some(target.clone());
+        snapshot.primary = Some(UpdateAction::Download);
+        let admission = Admission {
+            store_ready: true,
+            store_open: true,
+            local_backend: true,
+            prompt_pending: false,
+            closing: false,
+        };
+        let begin = |snapshot: &Snapshot, admission| {
+            may_begin(Some("account-a"), "account-a", snapshot, &target, admission)
+        };
+        assert_eq!(begin(&snapshot, admission), Begin::Download);
+        // Every admission condition still applies before the download starts.
+        for refused in [
+            Admission {
+                closing: true,
+                ..admission
+            },
+            Admission {
+                prompt_pending: true,
+                ..admission
+            },
+            Admission {
+                store_open: false,
+                ..admission
+            },
+        ] {
+            assert_eq!(begin(&snapshot, refused), Begin::Refuse);
+        }
+        let mut manual = snapshot.clone();
+        manual.primary = Some(UpdateAction::ManualDownload);
+        assert_eq!(begin(&manual, admission), Begin::Refuse);
+        let mut changed = snapshot.clone();
+        let mut other = target.clone();
+        other.build = "552".into();
+        changed.remote_candidate = Some(other);
+        assert_eq!(begin(&changed, admission), Begin::Refuse);
+        for state in [
+            State::Downloading,
+            State::Checking,
+            State::Error,
+            State::Installing,
+            State::Current,
+        ] {
+            let mut busy = snapshot.clone();
+            busy.state = state;
+            assert_eq!(begin(&busy, admission), Begin::Refuse, "{state:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_download_reports_its_controlled_reason_once() {
+        let bridge = Bridge::default();
+        let fixture = HostFixture::new([]);
+        let pending = poll_fixture(&bridge, &fixture, Some("account-a"))
+            .await
+            .unwrap();
+        let operation = pending.command.operation_id.clone();
+        queue_completion(pending, crate::remote_updates::DOWNLOAD_FAILED).await;
+        assert!(
+            poll_fixture(&bridge, &fixture, Some("account-a"))
+                .await
+                .is_none()
+        );
+        let host = fixture.lock().unwrap();
+        assert_eq!(host.operation, Some((operation, OperationState::Failed)));
+        assert_eq!(host.completions.len(), 1);
+        assert_eq!(
+            host.completions[0]["error"],
+            crate::remote_updates::DOWNLOAD_FAILED
+        );
+        assert_eq!(host.claims, 1);
+    }
+
+    #[tokio::test]
+    async fn the_downloaded_offer_is_published_only_on_the_commands_own_lease() {
+        let bridge = Bridge::default();
+        let fixture = HostFixture::new([]);
+        let pending = poll_fixture(&bridge, &fixture, Some("account-a"))
+            .await
+            .unwrap();
+        let heartbeats = fixture.lock().unwrap().heartbeats;
+        let caller = fixture.clone();
+        assert!(
+            pending
+                .publish_with(ready_status, move |method, params| {
+                    HostFixture::call(caller.clone(), method, params)
+                })
+                .await
+        );
+        assert_eq!(fixture.lock().unwrap().heartbeats, heartbeats + 1);
+        assert_eq!(
+            bridge.0.lock().await.as_ref().unwrap().published,
+            Some(ready_status())
+        );
+
+        // A replaced desktop lease never receives the old command's status.
+        let stale = Pending {
+            lease: "another-lease".into(),
+            ..copy_pending(&pending)
+        };
+        assert!(
+            !stale
+                .publish_with(
+                    || panic!("a stale command must not read status"),
+                    |_, _| async { panic!("a stale command must not publish") },
+                )
+                .await
+        );
     }
 }

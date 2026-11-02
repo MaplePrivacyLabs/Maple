@@ -150,13 +150,17 @@ fn install_blocked(info: &PeerInfo) -> Option<String> {
     if !info.supports_remote_updates() {
         return Some("This version does not support remote update installation.".into());
     }
-    if let Some(reason) = &info.update.blocked {
+    // An older host reports an offer it has not downloaded as not ready. It
+    // is still asked: it refuses before admitting work, and the reply says so.
+    if let Some(reason) = &info.update.blocked
+        && !info.install_requestable()
+    {
         return Some(reason.message().into());
     }
     if operation_pending(info) {
         return Some("A remote update request is already pending on this computer. Refresh its status before continuing.".into());
     }
-    if info.update.state != UpdateState::Ready {
+    if !info.install_requestable() {
         return Some("The update must be downloaded and ready on this computer first.".into());
     }
     let Some(target) = &info.update.offered else {
