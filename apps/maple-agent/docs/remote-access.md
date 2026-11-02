@@ -145,17 +145,21 @@ Quit or `maple-agent host stop` completes local shutdown.
 ## Experimental remote updates
 
 In **Settings → Remote computers**, each paired execution computer can report
-its running application version and update status. **Refresh update status**
-requests a new check by that computer's running desktop. Opening the view or
-reading status in the background only reads its last reported updater state.
-The explicit check requires a compatible peer with remote-refresh support;
-older peers need a local check. Automatic downloads still follow the execution
-computer's saved preference. Neither action installs an update or checks the
-controller's installation. A failed check retains the last reported values as
-history and cannot make a cached offer eligible for installation.
-When available, the row shows the offered version and whether its verified
-download is ready. Numeric package build numbers may be absent from running
-executable metadata; the UI does not infer them from the protocol version.
+its running application version and update status. Each card shows one status
+line, at most one short note and the one action its state allows (**Update**
+or **Check again**); **Check for updates**, **Rename…** and **Unpair** are in
+its **⋯** menu. **Check for updates** requests a new check by that computer's
+running desktop. Opening the view or reading status in the background only
+reads its last reported updater state. The explicit check requires a compatible
+peer with remote-refresh support; older peers need a local check. Automatic
+downloads still follow the execution computer's saved preference. Neither
+action installs an update or checks the controller's installation. A failed
+check retains the last reported values as history and cannot make a cached
+offer eligible for installation. When available, the card shows the running and
+offered versions; an offer the execution computer has not downloaded yet is
+downloaded when you update it. Numeric package build numbers may be absent from
+running executable metadata; the UI does not infer them from the protocol
+version.
 Status reads remain available while a confirmed pairing from an older version
 is recovered. If confirmation cannot be recovered, ordinary access is preserved
 but remote installation requires confirming or pairing that computer again.
@@ -174,8 +178,9 @@ remotely, including while unlocked. Update those computers locally; this feature
 does not send passwords, transfer unlock keys or add an unlock handoff.
 
 The controller does not need to run or download the execution computer's target
-release first. Different reported application versions show a nonblocking warning;
-they do not disable remote installation. The confirmation also names the target
+release first. Different reported application versions show a short note when
+no offered update would bring them together; they do not disable remote
+installation. The confirmation also names the target
 and client versions when the update would leave them different. Version equality
 does not prove protocol compatibility, and unknown versions do not imply a match.
 The execution computer still binds its exact prepared, signed platform document
@@ -192,7 +197,7 @@ another way to access the execution computer.
 A remote install request carries a stable operation ID and the exact candidate,
 never a download URL, signing key or executable path. The host persists admission
 and acknowledges the request before its desktop can consume it. A lost response
-is uncertain: choose **Refresh update status**; the controller never automatically
+is uncertain: choose **Check again**; the controller never automatically
 resends installation. Interrupted host receipts are not automatically resumed
 after a restart. The restarted host records success only when it observes the
 requested version and source running, checking the package build when known.

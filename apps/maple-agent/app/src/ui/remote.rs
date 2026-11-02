@@ -6,9 +6,19 @@ use crate::{
         manager::{PairingWindow, Status},
         update::{InstallReply, InstallRequest, OperationState, PeerInfo, UpdateState},
     },
-    ui::{task, text_input::TextInput, theme, widgets},
+    ui::{
+        icons::icon,
+        popup::{Menu, MenuItem, Placement, Popup},
+        settings::setting_copy,
+        task,
+        text_input::TextInput,
+        theme, widgets,
+    },
 };
-use gpui::{Context, Div, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
+use gpui::{
+    Context, Div, Entity, EventEmitter, Focusable, Render, SharedString, Window, div, prelude::*,
+    px,
+};
 use maple_sdk::remote::RemoteDevice;
 use std::{
     cell::RefCell,
@@ -21,7 +31,6 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-pub struct ConnectComputer(pub String);
 pub struct ComputersChanged(pub Status);
 pub struct ComputerNamed {
     pub key: String,
@@ -91,6 +100,43 @@ struct InstallAttempt {
     request: InstallRequest,
     phase: InstallPhase,
     label: String,
+    /// Recovered from the host's receipt rather than sent from this view.
+    from_receipt: bool,
+}
+
+/// Colour of a card's badge or note. Every tone is an existing theme color.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Tone {
+    #[default]
+    Muted,
+    Accent,
+    Success,
+    Warning,
+    Error,
+}
+
+impl Tone {
+    fn color(self) -> u32 {
+        match self {
+            Self::Muted => theme::text_muted(),
+            Self::Accent => theme::accent(),
+            Self::Success => theme::status_success(),
+            Self::Warning => theme::status_warning(),
+            Self::Error => theme::status_error(),
+        }
+    }
+}
+
+/// What the card says next to the computer's name. One status line, at
+/// most one short note, and the state's one action, all precomputed when
+/// the observation changes rather than in render.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CardAction {
+    #[default]
+    None,
+    Update,
+    /// The state can only move on after a fresh status check.
+    CheckAgain,
 }
 
 #[derive(Default)]
@@ -100,10 +146,10 @@ struct ComputerUpdate {
     query: PeerInfoQuery,
     check_required: bool,
     info: Option<PeerInfo>,
-    running_label: String,
-    update_label: String,
-    version_warning: Option<String>,
-    blocked_label: Option<String>,
+    badge: Option<(&'static str, Tone)>,
+    status_line: String,
+    note: Option<(String, Tone)>,
+    action: CardAction,
     install_available: bool,
     attempt: Option<InstallAttempt>,
 }
@@ -112,6 +158,7 @@ struct InstallConfirmation {
     peer: String,
     grant: [u8; 16],
     generation: u64,
+    title: String,
     action_label: String,
     request: InstallRequest,
     detail: String,
@@ -127,28 +174,22 @@ struct InstallIntent {
     request: InstallRequest,
 }
 
-const UNCONFIRMED_INSTALL: &str = "The update request could not be confirmed. Do not resend it. Refresh this computer’s status, or check the remote computer directly.";
-const PROTOCOL_UPDATE_REQUIRED: &str = "Update required. The computers use incompatible remote protocols. Update Maple on each computer before reconnecting.";
+/// A lost reply may already have taken effect: never resend it blindly.
+const UNCONFIRMED_INSTALL: &str = "Not confirmed. Don’t resend; check again first.";
+const PROTOCOL_UPDATE_REQUIRED: &str = "Update Maple on both computers to reconnect.";
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const CLIENT_VERSION_LABEL: &str = concat!(
-    "Client v",
-    env!("CARGO_PKG_VERSION"),
-    " · client updates are manual"
-);
 
-fn version_warning(info: &PeerInfo, client_version: &str) -> Option<String> {
+/// A quiet note when the two computers run different app versions. Equal
+/// or unknown versions say nothing.
+fn version_note(info: &PeerInfo, client_version: &str) -> Option<String> {
     let client = semver::Version::parse(client_version).ok()?;
     let remote = semver::Version::parse(&info.running.version).ok()?;
-    (client != remote).then(|| {
-        format!(
-            "⚠ Different app versions: client v{client}, remote v{remote}. Some features may be unavailable. Client updates are manual."
-        )
-    })
+    (client != remote).then(|| format!("This computer runs v{client}."))
 }
 
 fn install_blocked(info: &PeerInfo) -> Option<String> {
     if !info.supports_remote_updates() {
-        return Some("This version does not support remote update installation.".into());
+        return Some("This version can’t be updated remotely.".into());
     }
     // An older host reports an offer it has not downloaded as not ready. It
     // is still asked: it refuses before admitting work, and the reply says so.
@@ -158,16 +199,16 @@ fn install_blocked(info: &PeerInfo) -> Option<String> {
         return Some(reason.message().into());
     }
     if operation_pending(info) {
-        return Some("A remote update request is already pending on this computer. Refresh its status before continuing.".into());
+        return Some("An update request is already in progress there.".into());
     }
     if !info.install_requestable() {
-        return Some("The update must be downloaded and ready on this computer first.".into());
+        return Some("The update isn’t ready there yet.".into());
     }
     let Some(target) = &info.update.offered else {
-        return Some("No verified update is ready on this computer.".into());
+        return Some("No update is offered there.".into());
     };
     if info.running.matches_release(target) {
-        return Some("This release is already running on the remote computer.".into());
+        return Some("It already runs this version.".into());
     }
     None
 }
@@ -184,72 +225,117 @@ fn operation_pending(info: &PeerInfo) -> bool {
     })
 }
 
+fn version_label(version: &str) -> String {
+    format!("v{version}")
+}
+
 impl ComputerUpdate {
     fn refresh_presentation(&mut self) {
         self.install_available = false;
+        self.badge = None;
+        self.note = None;
+        self.action = CardAction::None;
+        let loading = self.phase == PeerInfoPhase::Loading;
+        let checking = self.query == PeerInfoQuery::Check;
         let Some(info) = &self.info else {
-            self.running_label = "Version unavailable".into();
-            self.update_label = match self.phase {
-                PeerInfoPhase::Loading if self.query == PeerInfoQuery::Check => "Checking for updates on this computer…",
-                PeerInfoPhase::Loading => "Reading reported update status…",
-                PeerInfoPhase::Unsupported => "Remote update status is unavailable. Use Open projects for ordinary remote access.",
-                PeerInfoPhase::Unreachable if self.query == PeerInfoQuery::Check => "Could not check for updates. Check that this computer is online, then refresh.",
-                PeerInfoPhase::Unreachable => "Could not read update status. Check that this computer is online, then refresh.",
-                PeerInfoPhase::Incompatible => PROTOCOL_UPDATE_REQUIRED,
-                _ => "Refresh to read this computer’s version and update status.",
-            }.into();
-            self.blocked_label = None;
-            self.version_warning = None;
+            self.status_line = match self.phase {
+                PeerInfoPhase::Loading if checking => "Checking for updates…",
+                PeerInfoPhase::Loading => "Checking status…",
+                PeerInfoPhase::Unsupported | PeerInfoPhase::Unchecked => "Version unknown",
+                PeerInfoPhase::Unreachable => "Version unknown",
+                PeerInfoPhase::Incompatible => "Different remote protocol",
+                PeerInfoPhase::Loaded => "Version unknown",
+            }
+            .into();
+            match self.phase {
+                PeerInfoPhase::Unreachable => {
+                    self.badge = Some(("Not reachable", Tone::Muted));
+                    self.action = CardAction::CheckAgain;
+                }
+                PeerInfoPhase::Incompatible => {
+                    self.badge = Some(("Update needed", Tone::Warning));
+                    self.note = Some((PROTOCOL_UPDATE_REQUIRED.into(), Tone::Muted));
+                }
+                _ => {}
+            }
             return;
         };
-        let prefix = if self.phase == PeerInfoPhase::Loaded {
-            "Running"
-        } else {
-            "Last reported"
-        };
-        self.running_label = match &info.running.build {
-            Some(build) => format!("{prefix} v{} · build {build}", info.running.version),
-            None => format!("{prefix} v{}", info.running.version),
-        };
-        self.update_label = if self.phase == PeerInfoPhase::Loading {
-            if self.query == PeerInfoQuery::Check {
-                "Checking for updates on this computer…"
-            } else {
-                "Reading reported update status…"
-            }
-            .into()
-        } else if self.phase == PeerInfoPhase::Unreachable {
-            if self.query == PeerInfoQuery::Check && !info.supports_remote_refresh() {
-                "This version cannot check for updates remotely. Check on that computer; its last reported status is shown above."
-            } else if self.query == PeerInfoQuery::Check {
-                "Could not check for updates. The last reported version is shown above."
-            } else {
-                "Could not read update status. The last reported version is shown above."
-            }.into()
-        } else if self.phase == PeerInfoPhase::Incompatible {
-            PROTOCOL_UPDATE_REQUIRED.into()
-        } else {
-            let status = if let Some(offered) = &info.update.offered {
-                format!("v{} · {}", offered.version, info.update.state.label())
-            } else {
-                info.update.state.label().into()
-            };
-            if self.phase == PeerInfoPhase::Loaded && self.query == PeerInfoQuery::Check {
-                format!("Update check: {status}")
-            } else {
-                format!("Last reported update: {status}")
-            }
-        };
-        // Cached observations remain useful as history, but must not look like
-        // a current offer, policy decision or version comparison after failure.
-        if self.phase != PeerInfoPhase::Loaded {
-            self.version_warning = None;
-            self.blocked_label = None;
+        let running = version_label(&info.running.version);
+        let offered = info.update.offered.as_ref();
+        if loading {
+            self.status_line = format!(
+                "{running} · {}",
+                if checking {
+                    "checking for updates…"
+                } else {
+                    "checking status…"
+                }
+            );
             return;
         }
-        self.version_warning = version_warning(info, CLIENT_VERSION);
+        // Cached observations stay as history only: they never look like a
+        // current offer, policy decision or version comparison.
+        match self.phase {
+            PeerInfoPhase::Unreachable => {
+                self.status_line = format!("{running} when last seen");
+                self.badge = Some(("Not reachable", Tone::Muted));
+                if checking && !info.supports_remote_refresh() {
+                    self.note = Some((
+                        "This version checks for updates only on that computer.".into(),
+                        Tone::Muted,
+                    ));
+                }
+                self.action = CardAction::CheckAgain;
+                return;
+            }
+            PeerInfoPhase::Incompatible => {
+                self.status_line = running;
+                self.badge = Some(("Update needed", Tone::Warning));
+                self.note = Some((PROTOCOL_UPDATE_REQUIRED.into(), Tone::Muted));
+                return;
+            }
+            PeerInfoPhase::Loaded => {}
+            _ => {
+                self.status_line = format!("{running} when last seen");
+                return;
+            }
+        }
         let blocked = install_blocked(info);
-        let healthy_without_offer = info.update.offered.is_none()
+        let up_to_date = offered.is_none_or(|target| info.running.matches_release(target))
+            && matches!(info.update.state, UpdateState::Current | UpdateState::Idle);
+        let target = offered.map(|target| version_label(&target.version));
+        let (status_line, badge) = match (info.update.state, target.as_deref()) {
+            _ if up_to_date && info.update.state == UpdateState::Current => {
+                (running.clone(), Some(("Up to date", Tone::Success)))
+            }
+            // The Update button already says so; the line names the versions.
+            (UpdateState::Available | UpdateState::Ready, Some(target)) => {
+                (format!("{running} · {target} available"), None)
+            }
+            (UpdateState::Downloading, Some(target)) => {
+                (format!("{running} · downloading {target}…"), None)
+            }
+            (UpdateState::Downloading, None) => (format!("{running} · downloading…"), None),
+            (UpdateState::Checking, _) => (format!("{running} · checking for updates…"), None),
+            (UpdateState::Installing, _) => (
+                format!("{running} · updating…"),
+                Some(("Updating", Tone::Accent)),
+            ),
+            (UpdateState::RestartRequired, _) => (
+                format!("{running} · restart needed there"),
+                Some(("Restart needed", Tone::Warning)),
+            ),
+            (UpdateState::Error, _) => (
+                running.clone(),
+                Some(("Updater needs attention", Tone::Warning)),
+            ),
+            _ => (running.clone(), None),
+        };
+        self.status_line = status_line;
+        self.badge = badge;
+        // At most one note, in order of what matters most: this view's own
+        // request, a reason the offer cannot be installed, then versions.
+        let healthy_without_offer = offered.is_none()
             && matches!(
                 info.update.state,
                 UpdateState::Current | UpdateState::Idle | UpdateState::Checking
@@ -259,30 +345,72 @@ impl ComputerUpdate {
                 None | Some(crate::remote::update::BlockedReason::UpdateNotReady)
             )
             && !operation_pending(info);
-        self.blocked_label = if healthy_without_offer {
-            None
-        } else {
-            blocked.clone()
-        };
         let pending = self
             .attempt
             .as_ref()
             .is_some_and(|attempt| match attempt.phase {
                 InstallPhase::Sending | InstallPhase::Accepted | InstallPhase::Uncertain => true,
-                InstallPhase::Succeeded => {
-                    info.update.offered.as_ref() == Some(&attempt.request.target)
-                }
+                InstallPhase::Succeeded => offered == Some(&attempt.request.target),
                 InstallPhase::Failed => false,
             });
-        self.install_available = self.phase == PeerInfoPhase::Loaded
-            && !pending
-            && !self.check_required
-            && blocked.is_none();
-        if self.check_required && self.blocked_label.is_none() {
-            self.blocked_label = Some(
-                "Refresh this computer’s update status before reviewing another update request."
-                    .into(),
-            );
+        self.install_available = !pending && !self.check_required && blocked.is_none();
+        if let Some(attempt) = &self.attempt {
+            let target = version_label(&attempt.request.target.version);
+            match attempt.phase {
+                InstallPhase::Sending => {
+                    self.status_line = format!("{running} · sending update…");
+                    self.badge = Some(("Updating", Tone::Accent));
+                }
+                InstallPhase::Accepted => {
+                    self.status_line = format!("{running} · updating to {target}…");
+                    self.badge = Some(("Updating", Tone::Accent));
+                    self.note = Some((attempt.label.clone(), Tone::Muted));
+                }
+                InstallPhase::Uncertain => {
+                    self.badge = Some(("Unconfirmed", Tone::Warning));
+                    self.note = Some((attempt.label.clone(), Tone::Warning));
+                    self.action = CardAction::CheckAgain;
+                }
+                // This view's own declined request explains itself until a
+                // new check. A recovered receipt matters only while its
+                // target is still the offer and is not already running.
+                InstallPhase::Failed
+                    if !attempt.from_receipt
+                        || (offered == Some(&attempt.request.target)
+                            && !info.running.matches_release(&attempt.request.target)) =>
+                {
+                    self.note = Some((attempt.label.clone(), Tone::Error));
+                }
+                // A past success is history once its target runs: say nothing.
+                InstallPhase::Succeeded | InstallPhase::Failed => {}
+            }
+        }
+        if self.note.is_none()
+            && !healthy_without_offer
+            && let Some(reason) = blocked.as_ref().filter(|_| !self.install_available)
+            && !operation_pending(info)
+            && offered.is_some()
+            && !matches!(
+                info.update.state,
+                UpdateState::Downloading | UpdateState::Checking
+            )
+        {
+            self.note = Some((reason.clone(), Tone::Muted));
+        }
+        if self.check_required {
+            self.action = CardAction::CheckAgain;
+        } else if self.install_available {
+            self.action = CardAction::Update;
+        }
+        // Different versions matter only when nothing will bring them
+        // together: an offered update or one in progress says enough.
+        if self.note.is_none()
+            && self.action == CardAction::None
+            && self.badge.is_none_or(|(label, _)| label == "Up to date")
+            && offered.is_none()
+            && let Some(note) = version_note(info, CLIENT_VERSION)
+        {
+            self.note = Some((note, Tone::Muted));
         }
     }
 
@@ -302,6 +430,7 @@ impl ComputerUpdate {
                 },
                 phase: InstallPhase::Uncertain,
                 label: UNCONFIRMED_INSTALL.into(),
+                from_receipt: true,
             });
         }
         let Some(attempt) = &mut self.attempt else {
@@ -326,35 +455,30 @@ impl ComputerUpdate {
         {
             return;
         }
+        let target = version_label(&attempt.request.target.version);
         match operation.state {
             OperationState::PendingAck => {
                 attempt.phase = InstallPhase::Accepted;
-                attempt.label =
-                    "Waiting for the update request acknowledgement. Installation has not started."
-                        .into();
+                attempt.label = "Waiting for it to acknowledge. Nothing has started.".into();
             }
             OperationState::Queued | OperationState::Installing => {
                 attempt.phase = InstallPhase::Accepted;
-                attempt.label = "Update accepted. Remote access will disconnect while this computer restarts. Refresh to check when it returns.".into();
+                attempt.label = ACCEPTED_INSTALL.into();
             }
             OperationState::Succeeded => {
                 attempt.phase = InstallPhase::Succeeded;
-                attempt.label = format!(
-                    "The remote computer confirmed that requested v{} was running after this earlier update request.",
-                    attempt.request.target.version
-                );
+                attempt.label = format!("Updated to {target}.");
             }
             OperationState::Failed => {
                 attempt.phase = InstallPhase::Failed;
-                attempt.label = format!(
-                    "The earlier remote update request for v{} did not complete.",
-                    attempt.request.target.version
-                );
+                attempt.label = format!("The update to {target} didn’t finish.");
             }
             OperationState::Unknown => {}
         }
     }
 }
+
+const ACCEPTED_INSTALL: &str = "It restarts when done. Check again once it’s back.";
 
 pub struct RemoteScreen {
     backend: Arc<AgentBackend>,
@@ -374,9 +498,10 @@ pub struct RemoteScreen {
     computer_updates: HashMap<String, ComputerUpdate>,
     next_update_generation: u64,
     install_confirmation: Option<InstallConfirmation>,
+    /// One overflow menu per paired computer, keyed by its endpoint.
+    popup: Popup<RemoteScreen, String>,
     bridges: RefCell<Vec<gpui::Task<()>>>,
 }
-impl EventEmitter<ConnectComputer> for RemoteScreen {}
 impl EventEmitter<ComputersChanged> for RemoteScreen {}
 impl EventEmitter<ComputerNamed> for RemoteScreen {}
 
@@ -418,6 +543,7 @@ impl RemoteScreen {
             computer_updates: HashMap::new(),
             next_update_generation: 0,
             install_confirmation: None,
+            popup: Popup::new(|this| &mut this.popup, cx),
             bridges: RefCell::new(Vec::new()),
         };
         screen.refresh(false, cx);
@@ -682,22 +808,15 @@ impl RemoteScreen {
         let install_focus = cx.focus_handle();
         let previous_focus = window.focused(cx);
         window.focus(&cancel_focus, cx);
-        let version_notice = if target.version != CLIENT_VERSION {
-            format!(
-                "The remote will run v{} while this client stays on v{CLIENT_VERSION}. Some features may be unavailable between different versions. ",
-                target.version
-            )
-        } else {
-            String::new()
-        };
+        let version = version_label(&target.version);
         self.install_confirmation = Some(InstallConfirmation {
             peer,
             grant,
             generation: update.generation,
+            title: format!("Update {name} to {version}?"),
             action_label: format!("Update {name}"),
             detail: format!(
-                "Install v{} on {name}? This will stop running work and restart Maple on that computer. Remote access may not return, and you may need to restart, update or repair Maple directly on it. {version_notice}A later manual update of this client may affect compatibility with your other computers. Continue only if you have another way to access {name}. This client will not update or restart automatically.",
-                target.version
+                "{name} stops its running tasks, installs {version} and restarts. Remote access may not return; if it doesn’t, open Maple on {name} directly. This computer stays on v{CLIENT_VERSION} and won’t restart."
             ),
             request: InstallRequest {
                 operation_id: uuid::Uuid::new_v4().to_string(),
@@ -755,7 +874,8 @@ impl RemoteScreen {
         update.attempt = Some(InstallAttempt {
             request: request.clone(),
             phase: InstallPhase::Sending,
-            label: "Requesting the remote update…".into(),
+            label: "Sending the update request…".into(),
+            from_receipt: false,
         });
         update.refresh_presentation();
         let backend = self.backend.clone();
@@ -804,11 +924,11 @@ impl RemoteScreen {
                     && receipt.target == request.target =>
             {
                 attempt.phase = InstallPhase::Accepted;
-                attempt.label = "Update accepted. Remote access will disconnect while this computer restarts. Refresh to check when it returns.".into();
+                attempt.label = ACCEPTED_INSTALL.into();
             }
             Ok(InstallReply::Refused { reason }) => {
                 attempt.phase = InstallPhase::Failed;
-                attempt.label = format!("Update request declined: {}", reason.message());
+                attempt.label = format!("Not updated. {}", reason.message());
                 update.check_required = true;
             }
             _ => {
@@ -1164,7 +1284,8 @@ impl Drop for RemoteScreen {
     }
 }
 impl Render for RemoteScreen {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.popup.sync_focus(window, cx);
         div()
             .id("remote-devices")
             .w_full()
@@ -1176,12 +1297,6 @@ impl Render for RemoteScreen {
                 div().text_color(gpui::rgb(theme::text_secondary())).child(
                     "Work on another computer, or allow a paired computer to work on this one.",
                 ),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(CLIENT_VERSION_LABEL),
             )
             .when_some(self.busy, |view, message| {
                 view.child(div().text_sm().child(message))
@@ -1204,7 +1319,7 @@ impl Render for RemoteScreen {
             .child(self.render_discovery(cx))
             .when(
                 self.status.as_ref().is_some_and(|s| !s.peers.is_empty()),
-                |view| view.child(self.render_paired(cx)),
+                |view| view.child(self.render_paired(window, cx)),
             )
     }
 }
@@ -1212,56 +1327,157 @@ impl Render for RemoteScreen {
 impl RemoteScreen {
     fn render_this_computer(&self, cx: &mut Context<Self>) -> Div {
         let enabled = self.status.as_ref().is_some_and(|s| s.enabled);
-        widgets::card_row().flex().flex_col().gap_4()
+        let access = if self.status.is_none() {
+            "Loading…"
+        } else if enabled && !self.status.as_ref().is_some_and(|s| s.ready) {
+            "Starting. Waiting for a connection…"
+        } else if enabled {
+            "On. Only paired computers can connect."
+        } else {
+            "Off. Other computers can’t connect here."
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                widgets::card_row()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(setting_copy("Remote access", access))
+                    .when(self.status.is_some(), |row| {
+                        row.child(
+                            widgets::switch("remote-enable", enabled)
+                                .aria_label(if enabled {
+                                    "Turn off remote access"
+                                } else {
+                                    "Enable remote access"
+                                })
+                                .on_click(cx.listener(move |screen, _, _, cx| {
+                                    screen.action("remote_enable", serde_json::json!([!enabled]), cx)
+                                })),
+                        )
+                    }),
+            )
             .when_some(self.status.as_ref(), |view, status| {
-                view.child(div().flex().items_center().gap_3().justify_between()
-                    .child(div().flex_1().flex().flex_col().gap_1()
-                        .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child("Computer name"))
-                        .child(div().text_lg().child(status.name.clone())))
-                    .when(self.local_name_input.is_none(), |row| row.child(
-                        widgets::ghost_button("rename-this-computer").aria_label("Rename this computer").child("Rename")
-                            .debug_selector(|| "rename-this-computer".to_string())
-                            .on_click(cx.listener(|screen, _, window, cx| screen.rename_this_computer(window, cx))))))
+                view.child(match &self.local_name_input {
+                    None => widgets::card_row()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_4()
+                        .child(setting_copy(&status.name, "This computer’s name on your other computers."))
+                        .child(
+                            widgets::ghost_button("rename-this-computer")
+                                .aria_label("Rename this computer")
+                                .child("Rename")
+                                .debug_selector(|| "rename-this-computer".to_string())
+                                .on_click(cx.listener(|screen, _, window, cx| {
+                                    screen.rename_this_computer(window, cx)
+                                })),
+                        ),
+                    Some(input) => widgets::card_row().child(
+                        div()
+                            .id("this-computer-name-editor")
+                            .debug_selector(|| "this-computer-name-editor".to_string())
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(widgets::input_frame().flex_1().min_w_0().child(input.clone()))
+                                    .child(
+                                        widgets::secondary_button("save-this-computer-name")
+                                            .aria_label("Save computer name")
+                                            .child("Save")
+                                            .on_click(cx.listener(|screen, _, _, cx| {
+                                                screen.save_this_computer_name(cx)
+                                            })),
+                                    )
+                                    .child(
+                                        widgets::ghost_button("cancel-this-computer-name")
+                                            .aria_label("Cancel rename")
+                                            .child("Cancel")
+                                            .debug_selector(|| "cancel-this-computer-name".to_string())
+                                            .on_click(cx.listener(|screen, _, _, cx| {
+                                                screen.local_name_input = None;
+                                                screen.error = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(theme::text_muted()))
+                                    .child("Shown to your other computers. This doesn’t change the system hostname."),
+                            ),
+                    ),
+                })
             })
-            .when_some(self.local_name_input.as_ref(), |view, input| {
-                view.child(div().id("this-computer-name-editor").flex().flex_col().gap_2()
-                    .debug_selector(|| "this-computer-name-editor".to_string())
-                    .child(div().border_1().border_color(gpui::rgb(theme::border())).rounded_lg().p_3().child(input.clone()))
-                    .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child("Shown to your other computers. This does not change the system hostname."))
-                    .child(div().flex().gap_2()
-                        .child(widgets::secondary_button("save-this-computer-name").aria_label("Save computer name").child("Save")
-                            .on_click(cx.listener(|screen, _, _, cx| screen.save_this_computer_name(cx))))
-                        .child(widgets::ghost_button("cancel-this-computer-name").aria_label("Cancel rename").child("Cancel")
-                            .debug_selector(|| "cancel-this-computer-name".to_string())
-                            .on_click(cx.listener(|screen, _, _, cx| { screen.local_name_input = None; screen.error = None; cx.notify(); })))))
+            .when(enabled, |view| {
+                view.child(match self.local_code.as_ref() {
+                    None => widgets::card_row()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_4()
+                        .child(setting_copy(
+                            "Pair a new computer",
+                            "Show a one-time code here, then enter it on the other computer.",
+                        ))
+                        .child(
+                            widgets::primary_button("pairing-window")
+                                .aria_label("Show pairing code")
+                                .child("Show pairing code")
+                                .on_click(cx.listener(|screen, _, _, cx| {
+                                    screen.action("remote_begin_pairing", serde_json::json!([]), cx)
+                                })),
+                        ),
+                    Some((code, deadline)) => {
+                        let left = deadline.saturating_duration_since(Instant::now()).as_secs();
+                        widgets::card_row()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(setting_copy(
+                                "Pair a new computer",
+                                "On the other computer, choose Find computers, select this one, and enter this code.",
+                            ))
+                            .child(pairing_code_boxes(code))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_4()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(gpui::rgb(theme::text_muted()))
+                                            .child(format!(
+                                                "One attempt · expires in {}:{:02}",
+                                                left / 60,
+                                                left % 60
+                                            )),
+                                    )
+                                    .child(
+                                        widgets::secondary_button("cancel-window")
+                                            .aria_label("Cancel pairing")
+                                            .child("Cancel pairing")
+                                            .on_click(cx.listener(|screen, _, _, cx| {
+                                                screen.action("remote_cancel_pairing", serde_json::json!([]), cx)
+                                            })),
+                                    ),
+                            )
+                    }
+                })
             })
-            .child(div().flex().gap_4().items_center().justify_between()
-                .child(div().flex_1().flex().flex_col().gap_1()
-                    .child(div().text_lg().child("This computer"))
-                    .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                        .child(if self.status.is_none() { "Loading remote access status…" }
-                            else if enabled && !self.status.as_ref().is_some_and(|s| s.ready) { "Starting remote access. Waiting for a connection…" }
-                            else if enabled { "Remote access is on. Only paired computers can connect." }
-                            else { "Remote access is off. Other computers cannot connect here." })))
-                .when(self.status.is_some(), |row| row.child(widgets::secondary_button("remote-enable")
-                    .aria_label(if enabled { "Turn off remote access" } else { "Enable remote access" })
-                    .child(if enabled { "Turn off" } else { "Enable remote access" })
-                    .on_click(cx.listener(move |screen, _, _, cx| screen.action("remote_enable", serde_json::json!([!enabled]), cx))))))
-            .when(enabled && self.local_code.is_none(), |view| view.child(div().flex().gap_4().items_center().justify_between()
-                .child(div().flex_1().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                    .child("To pair a new computer, show a one-time code here and enter it there."))
-                .child(widgets::primary_button("pairing-window").aria_label("Show pairing code").child("Show pairing code")
-                    .on_click(cx.listener(|screen, _, _, cx| screen.action("remote_begin_pairing", serde_json::json!([]), cx))))))
-            .when_some(self.local_code.as_ref(), |view, (code, deadline)| view.child(div().flex().flex_col().gap_3()
-                .child(div().text_sm().child("On the other computer, choose Find computers, select this computer, and enter this code."))
-                .child(pairing_code_boxes(code))
-                .child(div().flex().items_center().gap_4().justify_between()
-                    .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                        .child(format!("One attempt · expires in {}:{:02}",
-                            deadline.saturating_duration_since(Instant::now()).as_secs() / 60,
-                            deadline.saturating_duration_since(Instant::now()).as_secs() % 60)))
-                    .child(widgets::secondary_button("cancel-window").aria_label("Cancel pairing").child("Cancel pairing")
-                        .on_click(cx.listener(|screen, _, _, cx| screen.action("remote_cancel_pairing", serde_json::json!([]), cx)))))))
     }
 
     fn render_discovery(&self, cx: &mut Context<Self>) -> Div {
@@ -1271,19 +1487,42 @@ impl RemoteScreen {
                 .iter()
                 .all(|device| self.can_connect(&device.endpoint))
         });
-        widgets::card_row().flex().flex_col().gap_3()
-            .child(div().flex().items_center().gap_4().justify_between()
-                .child(div().text_lg().child("Connect to another computer"))
-                .child(widgets::secondary_button("discover")
-                    .aria_label(if searched { "Refresh devices" } else { "Find computers" })
-                    .child(if searched { "Refresh devices" } else { "Find computers" })
-                    .on_click(cx.listener(|screen, _, _, cx| screen.refresh(true, cx)))))
-            .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                .child("Find computers signed into your Maple account. On the other computer, enable remote access and choose Show pairing code."))
-            .when(no_devices, |view| view.child(div().text_sm()
-                .child("No new computers found. Check the other computer is online and signed in, then refresh.")))
-            .children(self.devices.iter().flatten().filter(|device| !self.can_connect(&device.endpoint))
-                .map(|device| self.render_device(device, cx)))
+        widgets::card_row()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(setting_copy(
+                        "Connect to another computer",
+                        "Find computers signed in to your account. Turn on remote access there and show a pairing code.",
+                    ))
+                    .child(
+                        widgets::secondary_button("discover")
+                            .aria_label(if searched { "Refresh devices" } else { "Find computers" })
+                            .child(if searched { "Search again" } else { "Find computers" })
+                            .on_click(cx.listener(|screen, _, _, cx| screen.refresh(true, cx))),
+                    ),
+            )
+            .when(no_devices, |view| {
+                view.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child("No new computers found. Check it’s online and signed in, then search again."),
+                )
+            })
+            .children(
+                self.devices
+                    .iter()
+                    .flatten()
+                    .filter(|device| !self.can_connect(&device.endpoint))
+                    .map(|device| self.render_device(device, cx)),
+            )
     }
 
     fn render_device(&self, device: &RemoteDevice, cx: &mut Context<Self>) -> Div {
@@ -1399,187 +1638,339 @@ impl RemoteScreen {
             })
     }
 
-    fn render_paired(&self, cx: &mut Context<Self>) -> Div {
-        widgets::card_row().flex().flex_col().gap_3()
-            .child(div().text_lg().child("Paired computers"))
-            .children(self.status.iter().flat_map(|s| s.peers.iter()).map(|(key, peer)| {
-                let connect = key.clone();
-                let revoke = key.clone();
-                let confirm = key.clone();
-                let rename = key.clone();
-                let name = computer_name(key, &peer.name, self.names.get(key).map_or("", String::as_str));
-                let editing = self.renaming.as_ref().filter(|(target, _)| target == key);
-                div().flex().flex_col().gap_2().p_3().border_1()
-                    .border_color(gpui::rgb(theme::border())).rounded(theme::RADIUS_MD)
-                    .child(div().flex().gap_3().items_center()
-                        .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
-                            .child(name.clone())
-                            .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                                .child(match (peer.can_connect, peer.controls_this_computer) {
-                                    (true, true) => "Can connect in both directions",
-                                    (true, false) => "Its projects are available in your sidebar",
-                                    (false, true) => "Can use this computer’s projects and tools",
-                                    (false, false) => "Pairing needs confirmation",
-                                })))
-                        .child(widgets::ghost_button(format!("rename-{key}")).aria_label("Set local nickname").child("Nickname")
-                            .on_click(cx.listener(move |screen, _, _, cx| screen.rename(rename.clone(), name.clone(), cx))))
-                        .when(peer.can_connect, |row| row.child(widgets::secondary_button(format!("connect-{key}")).aria_label("Open projects").child("Open projects")
-                            .on_click(cx.listener(move |_, _, _, cx| cx.emit(ConnectComputer(connect.clone()))))))
-                        .child(widgets::ghost_button(format!("revoke-{key}")).aria_label("Unpair").child("Unpair")
-                            .on_click(cx.listener(move |screen, _, _, cx| screen.action("remote_revoke", serde_json::json!([revoke]), cx)))))
-                    .when(peer.can_connect, |row| row.child(self.render_computer_update(key, cx)))
-                    .when_some(editing, |row, (_, input)| row.child(div().flex().gap_2().items_center()
-                        .child(widgets::input_frame().flex_1().child(input.clone()))
-                        .child(widgets::secondary_button(format!("save-name-{key}")).aria_label("Save name").child("Save name")
-                            .on_click(cx.listener(|screen, _, _, cx| screen.save_name(cx))))))
-                    .when(peer.pending_confirmation.is_some(), |row| row.child(
-                        widgets::secondary_button(format!("confirm-{key}")).aria_label("Confirm previous pairing").child("Confirm previous pairing")
-                            .on_click(cx.listener(move |screen, _, _, cx| screen.action("remote_reconcile", serde_json::json!([confirm]), cx)))))
-            }))
-    }
-
-    fn render_computer_update(&self, peer: &str, cx: &mut Context<Self>) -> Div {
-        let update = self.computer_updates.get(peer);
-        let loading = update.is_some_and(|update| update.phase == PeerInfoPhase::Loading);
-        let can_install = self.can_install(peer);
-        let blocked_label = update
-            .and_then(|update| update.blocked_label.clone())
-            .or_else(|| {
-                (self.install_grant(peer).is_none()
-                    && update.is_some_and(|update| {
-                        update.phase == PeerInfoPhase::Loaded
-                            && update
-                                .info
-                                .as_ref()
-                                .is_some_and(PeerInfo::supports_remote_updates)
-                    }))
-                .then(|| {
-                    crate::remote::update::BlockedReason::PairingConfirmationRequired
-                        .message()
-                        .to_owned()
-                })
-            });
-        let has_offer = update.is_some_and(|update| {
-            update
-                .info
-                .as_ref()
-                .is_some_and(|info| info.supports_remote_updates() && info.update.offered.is_some())
-        });
-        let refresh = peer.to_owned();
-        let install = peer.to_owned();
+    fn render_paired(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         div()
-            .w_full()
-            .min_w_0()
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div().text_sm().child(
-                    update
-                        .map_or("Version unavailable", |update| {
-                            update.running_label.as_str()
-                        })
-                        .to_owned(),
-                ),
+            .child(div().pt_2().pb_1().text_lg().child("Paired computers"))
+            .children(
+                self.status
+                    .iter()
+                    .flat_map(|status| status.peers.iter())
+                    .map(|(key, peer)| self.render_computer(key, peer, window, cx)),
             )
+    }
+
+    /// One paired computer: who it is, whether it is current, and the one
+    /// action its state calls for. Nickname, status checks and Unpair live
+    /// in its overflow menu.
+    fn render_computer(
+        &self,
+        key: &str,
+        peer: &maple_agent::store::records::RemotePeer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let name = computer_name(
+            key,
+            &peer.name,
+            self.names.get(key).map_or("", String::as_str),
+        );
+        let editing = self
+            .renaming
+            .as_ref()
+            .filter(|(target, _)| target == key)
+            .map(|(_, input)| input.clone());
+        let update = self.computer_updates.get(key).filter(|_| peer.can_connect);
+        let loading = update.is_some_and(|update| update.phase == PeerInfoPhase::Loading);
+        let (badge, status_line, mut note, action) = match update {
+            Some(update) => (
+                update.badge,
+                update.status_line.clone(),
+                update.note.clone(),
+                update.action,
+            ),
+            None if peer.can_connect => {
+                (None, "Version unknown".to_owned(), None, CardAction::None)
+            }
+            None => (
+                None,
+                if peer.controls_this_computer {
+                    "Can use this computer’s projects and tools"
+                } else {
+                    "Pairing needs confirmation"
+                }
+                .to_owned(),
+                None,
+                CardAction::None,
+            ),
+        };
+        let can_install = self.can_install(key);
+        if note.is_none()
+            && self.install_grant(key).is_none()
+            && update.is_some_and(|update| {
+                update.phase == PeerInfoPhase::Loaded
+                    && update
+                        .info
+                        .as_ref()
+                        .is_some_and(PeerInfo::supports_remote_updates)
+            })
+        {
+            note = Some((
+                crate::remote::update::BlockedReason::PairingConfirmationRequired
+                    .message()
+                    .to_owned(),
+                Tone::Muted,
+            ));
+        }
+
+        let renaming = editing.is_some();
+        let title = match editing {
+            Some(input) => div()
+                .id(SharedString::from(format!("rename-editor-{key}")))
+                .debug_selector({
+                    let key = key.to_owned();
+                    move || format!("rename-editor-{key}")
+                })
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(widgets::input_frame().flex_1().min_w_0().child(input))
+                .child(
+                    widgets::secondary_button(SharedString::from(format!("save-name-{key}")))
+                        .aria_label("Save name")
+                        .child("Save")
+                        .on_click(cx.listener(|screen, _, _, cx| screen.save_name(cx))),
+                )
+                .child(
+                    widgets::ghost_button(SharedString::from(format!("cancel-name-{key}")))
+                        .aria_label("Cancel rename")
+                        .child("Cancel")
+                        .on_click(cx.listener(|screen, _, _, cx| {
+                            screen.renaming = None;
+                            screen.error = None;
+                            cx.notify();
+                        })),
+                ),
+            None => div()
+                .id(SharedString::from(format!("computer-title-{key}")))
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(name.clone()),
+                )
+                .when_some(badge, |row, (label, tone)| {
+                    row.child(widgets::status_badge(label, tone.color()))
+                }),
+        };
+        let details = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(title)
             .child(
                 div()
-                    .text_sm()
+                    .id(SharedString::from(format!("computer-status-{key}")))
+                    .debug_selector({
+                        let key = key.to_owned();
+                        move || format!("computer-status-{key}")
+                    })
+                    .text_xs()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(
-                        update
-                            .map_or(
-                                "Refresh to read this computer’s version and update status.",
-                                |update| update.update_label.as_str(),
-                            )
-                            .to_owned(),
-                    ),
+                    .child(status_line),
             )
-            .when_some(
-                update.and_then(|update| update.version_warning.as_ref()),
-                |row, warning| {
-                    row.child(
-                        div()
-                            .id(format!("remote-version-warning-{peer}"))
-                            .debug_selector({
-                                let peer = peer.to_owned();
-                                move || format!("remote-version-warning-{peer}")
-                            })
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::status_warning()))
-                            .child(warning.clone()),
-                    )
-                },
-            )
-            .when_some(blocked_label.as_ref(), |row, reason| {
-                row.child(
+            .when_some(note, |details, (note, tone)| {
+                details.child(
                     div()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(reason.clone()),
+                        .id(SharedString::from(format!("computer-note-{key}")))
+                        .debug_selector({
+                            let key = key.to_owned();
+                            move || format!("computer-note-{key}")
+                        })
+                        .text_xs()
+                        .text_color(gpui::rgb(tone.color()))
+                        .child(note),
                 )
-            })
-            .when_some(
-                update.and_then(|update| update.attempt.as_ref()),
-                |row, attempt| row.child(div().text_sm().child(attempt.label.clone())),
-            )
+            });
+
+        let install = key.to_owned();
+        let check = key.to_owned();
+        let confirm = key.to_owned();
+        let confirming = self
+            .install_confirmation
+            .as_ref()
+            .is_some_and(|confirmation| confirmation.peer == key);
+        // While the name is edited, its Save and Cancel are the only actions.
+        let actions = (!renaming).then(|| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_2()
+                .when(
+                    action == CardAction::Update && can_install && !confirming,
+                    |row| {
+                        row.child(
+                            widgets::primary_button(SharedString::from(format!(
+                                "update-remote-{key}"
+                            )))
+                            .debug_selector({
+                                let key = key.to_owned();
+                                move || format!("update-remote-{key}")
+                            })
+                            .aria_label(format!("Update {name}"))
+                            .child("Update")
+                            .on_click(cx.listener(
+                                move |screen, _, window, cx| {
+                                    screen.ask_remote_install(install.clone(), window, cx)
+                                },
+                            )),
+                        )
+                    },
+                )
+                .when(action == CardAction::CheckAgain && !loading, |row| {
+                    row.child(
+                        widgets::ghost_button(SharedString::from(format!("check-again-{key}")))
+                            .debug_selector({
+                                let key = key.to_owned();
+                                move || format!("check-again-{key}")
+                            })
+                            .aria_label("Check this computer for updates again")
+                            .child("Check again")
+                            .on_click(cx.listener(move |screen, _, _, cx| {
+                                screen.check_peer_update(check.clone(), cx)
+                            })),
+                    )
+                })
+                .when(peer.pending_confirmation.is_some(), |row| {
+                    row.child(
+                        widgets::secondary_button(SharedString::from(format!("confirm-{key}")))
+                            .aria_label("Confirm previous pairing")
+                            .child("Confirm pairing")
+                            .on_click(cx.listener(move |screen, _, _, cx| {
+                                screen.action("remote_reconcile", serde_json::json!([confirm]), cx)
+                            })),
+                    )
+                })
+                .child(self.render_computer_menu(key, &name, peer.can_connect, loading, window, cx))
+        });
+
+        widgets::card_row()
+            .id(SharedString::from(format!("computer-{key}")))
+            .flex()
+            .flex_col()
+            .gap_3()
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .gap_2()
+                    .items_center()
+                    .gap_3()
                     .child(
-                        widgets::ghost_button(format!("refresh-update-{peer}"))
-                            .debug_selector({
-                                let peer = peer.to_owned();
-                                move || format!("refresh-update-{peer}")
-                            })
-                            .aria_label("Check this computer for updates and refresh its status")
-                            .child(if loading {
-                                if update.is_some_and(|update| update.query == PeerInfoQuery::Check)
-                                {
-                                    "Checking for updates…"
-                                } else {
-                                    "Reading status…"
-                                }
-                            } else {
-                                "Refresh update status"
-                            })
-                            .when(loading, |button| button.opacity(0.5))
-                            .when(!loading, |button| {
-                                button.on_click(cx.listener(move |screen, _, _, cx| {
-                                    screen.check_peer_update(refresh.clone(), cx)
-                                }))
-                            }),
+                        div()
+                            .size(px(36.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(theme::RADIUS_SM)
+                            .bg(gpui::rgb(theme::bg_sidebar_card()))
+                            .border_1()
+                            .border_color(gpui::rgb(theme::border_subtle()))
+                            .child(icon("monitor", widgets::ROW_ICON, theme::text_secondary())),
                     )
-                    .when(has_offer, |row| {
-                        row.child(
-                            widgets::secondary_button(format!("update-remote-{peer}"))
-                                .debug_selector({
-                                    let peer = peer.to_owned();
-                                    move || format!("update-remote-{peer}")
-                                })
-                                .aria_label(if can_install {
-                                    "Review experimental remote update"
-                                } else {
-                                    "Remote update is unavailable"
-                                })
-                                .child("Update remotely…")
-                                .when(!can_install, |button| button.opacity(0.5))
-                                .when(can_install, |button| {
-                                    button.on_click(cx.listener(move |screen, _, window, cx| {
-                                        screen.ask_remote_install(install.clone(), window, cx)
-                                    }))
-                                }),
-                        )
-                    }),
+                    .child(details)
+                    .children(actions),
             )
             .when_some(
                 self.install_confirmation
                     .as_ref()
-                    .filter(|confirmation| confirmation.peer == peer),
-                |row, confirmation| row.child(self.render_install_confirmation(confirmation, cx)),
+                    .filter(|confirmation| confirmation.peer == key),
+                |card, confirmation| card.child(self.render_install_confirmation(confirmation, cx)),
             )
+    }
+
+    fn render_computer_menu(
+        &self,
+        key: &str,
+        name: &str,
+        can_connect: bool,
+        loading: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let menu_key = key.to_owned();
+        let open = self.popup.is_open(&menu_key);
+        let menu = open.then(|| {
+            let check = key.to_owned();
+            let rename = key.to_owned();
+            let rename_name = name.to_owned();
+            let revoke = key.to_owned();
+            let mut menu = Menu::new(SharedString::from(format!("computer-menu-{key}")), px(200.))
+                .label(format!("{name} options"));
+            if can_connect {
+                menu = menu.item(
+                    MenuItem::new(
+                        SharedString::from(format!("refresh-update-{key}")),
+                        "Check for updates",
+                        move |screen: &mut Self, _, cx| screen.check_peer_update(check.clone(), cx),
+                    )
+                    .icon("download")
+                    .enabled(!loading),
+                );
+            }
+            menu = menu
+                .item(
+                    MenuItem::new(
+                        SharedString::from(format!("rename-{key}")),
+                        "Rename…",
+                        move |screen: &mut Self, window, cx| {
+                            screen.rename(rename.clone(), rename_name.clone(), cx);
+                            if let Some((_, input)) = &screen.renaming {
+                                window.focus(&input.focus_handle(cx), cx);
+                            }
+                        },
+                    )
+                    .icon("pencil"),
+                )
+                .separator()
+                .item(
+                    MenuItem::new(
+                        SharedString::from(format!("revoke-{key}")),
+                        "Unpair",
+                        move |screen: &mut Self, _, cx| {
+                            screen.action("remote_revoke", serde_json::json!([revoke]), cx)
+                        },
+                    )
+                    .icon("trash-2"),
+                );
+            self.popup.render(menu, Placement::BelowEnd, window, cx)
+        });
+        let toggle = menu_key.clone();
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                self.popup.trigger(
+                    menu_key,
+                    widgets::icon_button(
+                        SharedString::from(format!("computer-more-{key}")),
+                        "ellipsis",
+                        "More",
+                        px(16.),
+                        theme::text_secondary(),
+                    )
+                    .debug_selector({
+                        let key = key.to_owned();
+                        move || format!("computer-more-{key}")
+                    }),
+                    cx,
+                    move |screen, _, cx| {
+                        screen.popup.toggle(toggle.clone(), cx);
+                    },
+                ),
+            )
+            .children(menu)
     }
 
     fn render_install_confirmation(
@@ -1597,8 +1988,9 @@ impl RemoteScreen {
             .min_w_0()
             .p_4()
             .rounded(theme::RADIUS_MD)
+            .bg(gpui::rgb(theme::bg_sidebar_card()))
             .border_1()
-            .border_color(gpui::rgb(theme::status_warning()))
+            .border_color(gpui::rgb(theme::border_subtle()))
             .flex()
             .flex_col()
             .gap_3()
@@ -1634,16 +2026,31 @@ impl RemoteScreen {
                     cx.stop_propagation();
                 }),
             )
-            .child(div().text_lg().child("Experimental remote update"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child(confirmation.title.clone()),
+                    )
+                    .child(widgets::status_badge(
+                        "Experimental",
+                        theme::status_warning(),
+                    )),
+            )
             .child(
                 div()
                     .id("remote-update-warning")
                     .debug_selector(|| "remote-update-warning".into())
                     .w_full()
                     .min_w_0()
-                    .max_h(px(240.))
-                    .overflow_y_scroll()
                     .text_sm()
+                    .text_color(gpui::rgb(theme::text_secondary()))
                     .child(confirmation.detail.clone()),
             )
             .child(
@@ -1668,7 +2075,7 @@ impl RemoteScreen {
                             .aria_label(confirmation.action_label.clone())
                             .track_focus(&confirmation.install_focus)
                             .focus_visible(widgets::focus_ring)
-                            .child("Update remote computer")
+                            .child("Update")
                             .on_click(cx.listener(|screen, _, window, cx| {
                                 screen.confirm_remote_install(window, cx)
                             })),
