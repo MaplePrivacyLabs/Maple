@@ -125,7 +125,8 @@ verify_linux_deb_package_executable_metadata "$FIXTURE_TAURI/target/release/bund
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usr/bin/maple: OK", result.stdout)
-        self.assertIn("usr/share/maple/resource with spaces: OK", result.stdout)
+        # coreutils 9.11+ quotes names with spaces in --check output.
+        self.assertRegex(result.stdout, r"(?m)^'?usr/share/maple/resource with spaces'?: OK$")
         self.assertNotIn("maple-link: OK", result.stdout)
         result = self.run_shell('''
 (cd "$FIXTURE_TAURI" && ar x target/release/bundle/deb/Maple.deb)

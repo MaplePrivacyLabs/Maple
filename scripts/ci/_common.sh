@@ -2733,11 +2733,18 @@ EOF
     chmod +x "${tool_bin}/patchelf"
   fi
 
+  # bubblewrap 0.12 refuses to mount on a symlink. On merged-/usr hosts /bin
+  # already resolves into the /usr bind, whose bin holds bash and sh.
+  local bin_bind=()
+  if [ ! -L /bin ]; then
+    bin_bind=(--bind "${bin_dir}" /bin)
+  fi
+
   local status
   set +e
   GDK_PIXBUF_MODULEDIR="${GDK_PIXBUF_MODULEDIR:-/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders}" \
     PATH="${tool_bin}:${PATH}" \
-    bwrap --dev-bind / / --bind "${bin_dir}" /bin --bind "${usr_root}" /usr -- "$@"
+    bwrap --dev-bind / / "${bin_bind[@]}" --bind "${usr_root}" /usr -- "$@"
   status=$?
   set -e
   rm -rf "${bin_dir}"
