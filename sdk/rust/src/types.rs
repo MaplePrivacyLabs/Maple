@@ -568,11 +568,21 @@ impl std::fmt::Debug for CompletePasswordResetRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CompletePasswordResetResponse {
     pub message: String,
     pub access_token: String,
     pub refresh_token: String,
+}
+
+impl std::fmt::Debug for CompletePasswordResetResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompletePasswordResetResponse")
+            .field("message", &self.message)
+            .field("access_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 // Recovery Code Types
@@ -1675,9 +1685,11 @@ mod tests {
             "client-reset-secret",
             "new-password",
             "current-password",
+            "reset-access-token",
+            "reset-refresh-token",
         ];
         let debug = format!(
-            "{:?} {:?} {:?}",
+            "{:?} {:?} {:?} {:?}",
             CompletePasswordResetRequest {
                 proof: reset_proof(),
                 new_password: "new-password".to_string(),
@@ -1690,6 +1702,11 @@ mod tests {
             },
             RecoveryCodeResponse {
                 recovery_code: "MPLRC1-SECRET".to_string(),
+            },
+            CompletePasswordResetResponse {
+                message: "Password reset successful.".to_string(),
+                access_token: "reset-access-token".to_string(),
+                refresh_token: "reset-refresh-token".to_string(),
             },
         );
         for secret in secrets {

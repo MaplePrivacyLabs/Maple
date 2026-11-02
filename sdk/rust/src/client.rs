@@ -2274,14 +2274,28 @@ impl OpenSecretClient {
             new_password,
             mode,
         };
-        let response: CompletePasswordResetResponse = self
+        // A sign-in or sign-out while the reset is in flight supersedes it.
+        // Install the reset account's tokens only into the token state this
+        // request started from.
+        let token_generation = self
+            .session_manager
+            .get_credential_snapshot()?
+            .token_generation;
+        let mut response: CompletePasswordResetResponse = self
             .encrypted_api_call("/password-reset/v2/complete", "POST", Some(request))
             .await?;
 
-        self.session_manager.set_tokens(
+        if !self.session_manager.set_tokens_if_generation(
+            token_generation,
             response.access_token.clone(),
             Some(response.refresh_token.clone()),
-        )?;
+        )? {
+            response.access_token.zeroize();
+            response.refresh_token.zeroize();
+            return Err(Error::Authentication(
+                "Authentication changed during password reset; the new password is set".to_string(),
+            ));
+        }
 
         Ok(response)
     }
@@ -3281,6 +3295,109 @@ mod tests {
         assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
         assert!(client.current_transport_session().unwrap().is_none());
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    /// Completes a V2 password reset whose response is delayed, running
+    /// `in_flight` once the request reaches the server.
+    async fn complete_password_reset_with_in_flight_change(
+        in_flight: impl FnOnce(&OpenSecretClient),
+    ) -> (Arc<OpenSecretClient>, Result<CompletePasswordResetResponse>) {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        state.queue_delayed_json_response(
+            200,
+            serde_json::json!({
+                "message": "Password reset successful.",
+                "access_token": "reset-access",
+                "refresh_token": "reset-refresh",
+            }),
+            std::time::Duration::from_millis(500),
+        );
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x9a; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(OpenSecretClient::new(server.uri()).unwrap());
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .complete_password_reset(
+                        "user@example.test".to_string(),
+                        "ABCD1234".to_string(),
+                        "client-reset-secret".to_string(),
+                        "new-password".to_string(),
+                        Uuid::nil(),
+                        PasswordResetCompletion::Destructive {
+                            acknowledge_data_loss: true,
+                        },
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.captured_requests().len() == 1 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("password reset request was not observed");
+        in_flight(&client);
+
+        let result = pending.await.unwrap();
+        (client, result)
+    }
+
+    #[tokio::test]
+    async fn password_reset_installs_tokens_when_credentials_are_unchanged() {
+        let (client, result) = complete_password_reset_with_in_flight_change(|_| {}).await;
+
+        assert_eq!(result.unwrap().access_token, "reset-access");
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "reset-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("reset-refresh"));
+    }
+
+    #[tokio::test]
+    async fn password_reset_response_cannot_overwrite_a_newer_sign_in() {
+        let (client, result) = complete_password_reset_with_in_flight_change(|client| {
+            client
+                .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+                .unwrap();
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Authentication(_))));
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "new-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+    }
+
+    #[tokio::test]
+    async fn password_reset_response_cannot_undo_a_sign_out() {
+        let (client, result) = complete_password_reset_with_in_flight_change(|client| {
+            client.session_manager.clear_tokens().unwrap();
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Authentication(_))));
+        assert!(client.get_tokens().unwrap().is_none());
     }
 
     #[tokio::test]
