@@ -4,6 +4,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 mod desktop_app_profile;
 #[cfg(test)]
 mod ios_app_variant;
+#[cfg(target_os = "ios")]
+mod ios_webview_background;
 #[cfg(any(desktop, target_os = "ios"))]
 mod legacy_tts_cleanup;
 mod native_oauth;
@@ -515,6 +517,7 @@ pub fn run() {
     // iOS-specific configuration
     #[cfg(all(not(desktop), target_os = "ios"))]
     let app = builder
+        .on_page_load(ios_webview_background::on_page_load)
         .invoke_handler(tauri::generate_handler![
             storekit_experiment::storekit_experiment_enabled,
             pdf_extractor::extract_document_content,
