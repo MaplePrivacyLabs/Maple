@@ -3854,8 +3854,10 @@ verify_linux_deb_package_executable_metadata() {
   (
     cd "${tmp}" &&
     ar x "${deb}" &&
-    mkdir data &&
+    mkdir control data &&
+    tar -xzf control.tar.gz -C control &&
     tar -xzf data.tar.gz -C data &&
+    (cd data && md5sum --strict --check ../control/md5sums) &&
     verify_linux_package_executable_metadata "${tmp}/data/usr/bin/maple" &&
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect deb "${tmp}/data/usr/bin/maple"
   ) || status=$?
@@ -3938,6 +3940,11 @@ normalize_deb_package() {
     tar -xzf control.tar.gz -C control
     tar -xzf data.tar.gz -C data
     sanitize_linux_deb_payload "${tmp}/data"
+    # Payload sanitization changes the executable after Tauri generated md5sums.
+    (
+      cd "${tmp}/data"
+      find . -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r md5sum
+    ) > "${tmp}/control/md5sums"
     archive_tree_as_root_tar_gz "${tmp}/control" "${tmp}/control.tar.gz"
     archive_tree_as_root_tar_gz "${tmp}/data" "${tmp}/data.tar.gz"
     printf '2.0\n' > debian-binary

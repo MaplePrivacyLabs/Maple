@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise RPM staging identity and packaging failures without native builds."""
+"""Exercise Debian integrity, RPM staging identity, and packaging failures."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -92,6 +93,53 @@ extract_appimage_tool fixture.AppImage "$TAURI_DIR/extracted"
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.tauri / "extracted/AppRun").exists())
+
+    def test_deb_normalization_refreshes_checksums_and_verifier_rejects_tampering(self):
+        self.deb.unlink()
+        payload = self.root / "deb-input"
+        (payload / "usr/bin").mkdir(parents=True)
+        (payload / "usr/share/maple").mkdir(parents=True)
+        (payload / "DEBIAN").mkdir()
+        binary = payload / "usr/bin/maple"
+        binary.write_bytes(b"before sanitization")
+        resource = payload / "usr/share/maple/resource with spaces"
+        resource.write_bytes(b"unchanged resource")
+        (payload / "usr/bin/maple-link").symlink_to("maple")
+        (payload / "DEBIAN/md5sums").write_text(
+            f"{hashlib.md5(binary.read_bytes()).hexdigest()}  usr/bin/maple\n"
+            f"{hashlib.md5(resource.read_bytes()).hexdigest()}  usr/share/maple/resource with spaces\n"
+        )
+        result = self.run_shell('''
+archive_tree_as_root_tar_gz "$FIXTURE_TAURI/../deb-input/DEBIAN" "$FIXTURE_TAURI/control.tar.gz"
+archive_tree_as_root_tar_gz "$FIXTURE_TAURI/../deb-input/usr" "$FIXTURE_TAURI/usr.tar.gz"
+mkdir -p "$FIXTURE_TAURI/data/usr"
+tar -xzf "$FIXTURE_TAURI/usr.tar.gz" -C "$FIXTURE_TAURI/data/usr"
+archive_tree_as_root_tar_gz "$FIXTURE_TAURI/data" "$FIXTURE_TAURI/data.tar.gz"
+printf '2.0\\n' > "$FIXTURE_TAURI/debian-binary"
+(cd "$FIXTURE_TAURI" && ar crD target/release/bundle/deb/Maple.deb debian-binary control.tar.gz data.tar.gz)
+sanitize_linux_deb_payload() { printf 'after sanitization' > "$1/usr/bin/maple"; }
+verify_linux_package_executable_metadata() { :; }
+python3_runner() { echo true; }
+normalize_deb_package "$FIXTURE_TAURI/target/release/bundle/deb/Maple.deb"
+verify_linux_deb_package_executable_metadata "$FIXTURE_TAURI/target/release/bundle/deb/Maple.deb"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usr/bin/maple: OK", result.stdout)
+        self.assertIn("usr/share/maple/resource with spaces: OK", result.stdout)
+        self.assertNotIn("maple-link: OK", result.stdout)
+        result = self.run_shell('''
+(cd "$FIXTURE_TAURI" && ar x target/release/bundle/deb/Maple.deb)
+mkdir "$FIXTURE_TAURI/tampered"
+tar -xzf "$FIXTURE_TAURI/data.tar.gz" -C "$FIXTURE_TAURI/tampered"
+printf tampered > "$FIXTURE_TAURI/tampered/usr/bin/maple"
+archive_tree_as_root_tar_gz "$FIXTURE_TAURI/tampered" "$FIXTURE_TAURI/data.tar.gz"
+(cd "$FIXTURE_TAURI" && ar crD target/release/bundle/deb/Maple.deb debian-binary control.tar.gz data.tar.gz)
+verify_linux_package_executable_metadata() { :; }
+python3_runner() { echo true; }
+verify_linux_deb_package_executable_metadata "$FIXTURE_TAURI/target/release/bundle/deb/Maple.deb"
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("usr/bin/maple: FAILED", result.stdout)
 
     def fake_rpmbuild(self, exit_code):
         tool = self.bin / "rpmbuild"
