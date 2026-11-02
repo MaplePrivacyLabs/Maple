@@ -28,6 +28,18 @@
               '';
             });
           })
+          (final: prev: prev.lib.optionalAttrs prev.stdenv.isLinux {
+            # Keep the Linux WebKitGTK/AppImage closure on the libsoup release
+            # fixing CVE-2026-102556 through CVE-2026-102560.
+            libsoup_3 = prev.libsoup_3.overrideAttrs (old: {
+              version = "3.8.0";
+              src = final.fetchurl {
+                url = "mirror://gnome/sources/libsoup/3.8/libsoup-3.8.0.tar.xz";
+                hash = "sha256-u/CPo+A6iMMaPSeg2Hy0IulJDy0I4UkhEQPfbWOKIjg=";
+              };
+              buildInputs = (old.buildInputs or [ ]) ++ [ final.zstd ];
+            });
+          })
         ];
         pkgs = import nixpkgs {
           inherit system overlays;
