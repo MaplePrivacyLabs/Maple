@@ -124,3 +124,11 @@ entitlements in `app/packaging/macos-python-entitlements.plist`: library
 validation is off for it, so native extensions of wheels the tool installs can
 load. `just debug-app` bundles it the same way with ad hoc signatures and runs
 the worker smoke from inside the bundle.
+
+Linux bundles stage it into `usr/share/maple-agent/python` when the AppDir is
+built. The Nix package copies the locked nixpkgs `python314` (the same version
+as the pin) into `share/maple-agent/python`.
+
+Every runtime leaves out Tcl/Tk, tkinter, IDLE and turtledemo: the worker has no
+use for Tk GUIs, and Python Build Standalone's Linux Tcl/Tk libraries carry an
+absolute build-host library path.

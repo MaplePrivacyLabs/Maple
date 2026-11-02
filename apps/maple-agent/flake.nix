@@ -30,6 +30,34 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       forPackageSystems = nixpkgs.lib.genAttrs packageSystems;
+      # The python tool's CPython for the Nix package. The store reference in
+      # runtime.json retains exactly this interpreter and its closure; the
+      # version must equal scripts/python-runtime.json's.
+      mkPythonRuntime =
+        pkgs:
+        let
+          python = pkgs.python314;
+          version = python.version;
+          manifest = {
+            protocol_version = 1;
+            implementation = "cpython";
+            inherit version;
+            distribution = "nix-${python.name}-${builtins.baseNameOf (toString python)}";
+            executable = "${python}/bin/python3.14";
+            worker = "worker.py";
+          };
+        in
+        assert version == (builtins.fromJSON (builtins.readFile ./scripts/python-runtime.json)).version;
+        pkgs.runCommand "maple-python-${version}" { nativeBuildInputs = [ python ]; } ''
+          runtime="$out/share/maple-agent/python"
+          mkdir -p "$runtime/licenses"
+          cp ${./crates/maple-code-mode/python/worker.py} "$runtime/worker.py"
+          cat > "$runtime/runtime.json" <<'JSON'
+          ${builtins.toJSON manifest}
+          JSON
+          tar -xOf ${python.src} Python-${version}/LICENSE > "$runtime/licenses/Python-LICENSE.txt"
+          ${python}/bin/python3.14 -I -B -c 'import sys, sysconfig, ssl, sqlite3, ctypes, zlib, bz2, lzma; assert sys.version_info[:3] == tuple(map(int, "${version}".split("."))); assert not sysconfig.get_config_var("Py_GIL_DISABLED")'
+        '';
     in
     {
       packages = forPackageSystems (
@@ -68,8 +96,10 @@
             fontconfig
             freetype
           ] ++ linuxRuntimeInputs;
+          pythonRuntime = mkPythonRuntime pkgs;
         in
         {
+          python-runtime = pythonRuntime;
           default = rustPlatform.buildRustPackage {
             pname = "maple-agent";
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
@@ -133,6 +163,12 @@
             # The upstream CI runs the complete workspace and feature matrix.
             # Keep the package derivation focused on producing the release binary.
             doCheck = false;
+
+            # The python tool finds its CPython beside the binary's bin/.
+            postInstall = ''
+              mkdir -p "$out/share/maple-agent"
+              cp -R ${pythonRuntime}/share/maple-agent/python "$out/share/maple-agent/python"
+            '';
 
             # GPUI loads the Wayland and Vulkan libraries at runtime, so they are
             # not discovered by ELF dependency scanning. Prefer the NixOS GPU
