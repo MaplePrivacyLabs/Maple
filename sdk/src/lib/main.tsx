@@ -143,6 +143,63 @@ export type OpenSecretContextType = {
     newPassword: string
   ) => Promise<void>;
   /**
+   * Reports which completions a pending password reset supports
+   * @param email - The email address the reset was requested for
+   * @param alphanumericCode - The code from the password reset email
+   * @param plaintextSecret - The plaintext secret hashed in requestPasswordReset
+   * @returns Whether the account has an enrolled recovery code
+   * @throws {Error} With the same generic message for every invalid proof
+   *
+   * The reset request stays active, so this can be called before choosing
+   * how to complete the reset.
+   */
+  getPasswordResetOptions: (
+    email: string,
+    alphanumericCode: string,
+    plaintextSecret: string
+  ) => Promise<api.PasswordResetOptions>;
+  /**
+   * Completes a password reset and signs the user in with the new password
+   * @param email - The email address the reset was requested for
+   * @param alphanumericCode - The code from the password reset email
+   * @param plaintextSecret - The plaintext secret hashed in requestPasswordReset
+   * @param newPassword - The new password
+   * @param completion - Preserve data with the recovery code, or acknowledge data loss
+   * @throws {Error} With the same generic message for every rejection
+   *
+   * A well-formed but wrong recovery code consumes the reset request; the
+   * user must request a new reset email before trying again.
+   */
+  completePasswordReset: (
+    email: string,
+    alphanumericCode: string,
+    plaintextSecret: string,
+    newPassword: string,
+    completion: api.PasswordResetCompletion
+  ) => Promise<void>;
+  /**
+   * Fetches whether the signed-in user has an enrolled recovery code
+   */
+  getRecoveryCodeStatus: () => Promise<api.RecoveryCodeStatus>;
+  /**
+   * Enrolls a recovery code for the signed-in email-and-password user
+   * @param currentPassword - The user's current password
+   * @returns The recovery code; the server never returns it again
+   * @throws {Error} With status 409 when a recovery code is already enrolled
+   */
+  enrollRecoveryCode: (currentPassword: string) => Promise<api.RecoveryCodeResponse>;
+  /**
+   * Replaces the enrolled recovery code; the previous code stops working
+   * @param currentPassword - The user's current password
+   * @returns The replacement code; the server never returns it again
+   */
+  rotateRecoveryCode: (currentPassword: string) => Promise<api.RecoveryCodeResponse>;
+  /**
+   * Removes the enrolled recovery code, so later password resets are destructive
+   * @param currentPassword - The user's current password
+   */
+  disableRecoveryCode: (currentPassword: string) => Promise<void>;
+  /**
    * Initiates the account deletion process for logged-in users
    * @param hashedSecret - Client-side hashed secret for verification
    * @returns A promise resolving to void
@@ -884,6 +941,20 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   refreshAccessToken: api.refreshToken,
   requestPasswordReset: async () => {},
   confirmPasswordReset: async () => {},
+  getPasswordResetOptions: async () => ({
+    recovery_enrolled: false,
+    destructive_reset_available: false
+  }),
+  completePasswordReset: async () => {},
+  getRecoveryCodeStatus: async () => ({
+    enrolled: false,
+    enrolled_at: null,
+    last_used_at: null,
+    use_count: 0
+  }),
+  enrollRecoveryCode: async () => ({ recovery_code: "" }),
+  rotateRecoveryCode: async () => ({ recovery_code: "" }),
+  disableRecoveryCode: async () => {},
   requestAccountDeletion: async () => {},
   confirmAccountDeletion: async () => {},
   initiateGitHubAuth: async () => ({ auth_url: "", csrf_token: "" }),
@@ -1137,6 +1208,26 @@ export function OpenSecretProvider({
     }
   }
 
+  async function completePasswordReset(
+    email: string,
+    alphanumericCode: string,
+    plaintextSecret: string,
+    newPassword: string,
+    completion: api.PasswordResetCompletion
+  ) {
+    await api.completePasswordReset(
+      email,
+      alphanumericCode,
+      plaintextSecret,
+      newPassword,
+      clientId,
+      completion
+    );
+    // Clear API key on the new sign-in to ensure user-scoped keys
+    setApiKey(undefined);
+    await fetchUser();
+  }
+
   async function signUp(email: string, password: string, inviteCode: string, name?: string) {
     try {
       await api.fetchSignUp(email, password, inviteCode, clientId, name || null);
@@ -1307,6 +1398,16 @@ export function OpenSecretProvider({
       plaintextSecret: string,
       newPassword: string
     ) => api.confirmPasswordReset(email, alphanumericCode, plaintextSecret, newPassword, clientId),
+    getPasswordResetOptions: (email, alphanumericCode, plaintextSecret) =>
+      api.fetchPasswordResetOptions(email, alphanumericCode, plaintextSecret, clientId),
+    completePasswordReset,
+    getRecoveryCodeStatus: () => api.fetchRecoveryCodeStatus(authenticatedUserId),
+    enrollRecoveryCode: (currentPassword) =>
+      api.enrollRecoveryCode(currentPassword, authenticatedUserId),
+    rotateRecoveryCode: (currentPassword) =>
+      api.rotateRecoveryCode(currentPassword, authenticatedUserId),
+    disableRecoveryCode: (currentPassword) =>
+      api.disableRecoveryCode(currentPassword, authenticatedUserId),
     requestAccountDeletion: (hashedSecret) =>
       api.requestAccountDeletion(hashedSecret, authenticatedUserId),
     confirmAccountDeletion: (confirmationCode, plaintextSecret) =>
