@@ -377,6 +377,18 @@ fn make_pipe(
     path: &std::path::Path,
     first: bool,
 ) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
+    // An elevated token's default owner may be Administrators, while clients
+    // authenticate the server against TokenUser. Set that same owner at creation.
+    let user = os_user_identity()?;
+    make_pipe_with_sddl(path, first, &format!("O:{user}D:P(A;;GA;;;OW)(A;;GA;;;SY)"))
+}
+
+#[cfg(windows)]
+fn make_pipe_with_sddl(
+    path: &std::path::Path,
+    first: bool,
+    sddl: &str,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
     use windows_sys::Win32::{
         Foundation::LocalFree,
         Security::{
@@ -386,7 +398,7 @@ fn make_pipe(
     };
     // Owner rights and SYSTEM only. Named-pipe defaults also grant Everyone
     // read access, so the default DACL is not sufficient for a control endpoint.
-    let descriptor: Vec<u16> = "D:P(A;;GA;;;OW)(A;;GA;;;SY)\0".encode_utf16().collect();
+    let descriptor: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
     let mut security = std::ptr::null_mut();
     let ok = unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -488,52 +500,57 @@ fn os_user_identity() -> Result<String, String> {
 
 #[cfg(windows)]
 fn os_user_identity() -> Result<String, String> {
-    use std::{
-        os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-        ptr::null_mut,
-    };
-    use windows_sys::Win32::{
-        Foundation::LocalFree,
-        Security::{
-            Authorization::ConvertSidToStringSidW, GetTokenInformation, TOKEN_QUERY, TOKEN_USER,
-            TokenUser,
-        },
-        System::Threading::{GetCurrentProcess, OpenProcessToken},
-    };
-    unsafe {
-        let mut token = null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(std::io::Error::last_os_error().to_string());
+    crate::windows_ownership::user_identity().map_err(|error| error.to_string())
+}
+
+#[cfg(all(windows, test))]
+mod windows_pipe_tests {
+    use super::*;
+    use std::os::windows::io::AsRawHandle;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn every_pipe_instance_is_owned_by_the_connecting_user() {
+        let fixture = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::for_test(fixture.path().to_path_buf());
+        let mut listener = endpoint.bind().unwrap();
+        // The first-instance guard must still reject a second server.
+        assert!(endpoint.bind().is_err());
+        for _ in 0..3 {
+            // Check the actual kernel object, including each replacement
+            // instance created by accept, before any client is admitted.
+            verify_pipe_owner(listener.inner.as_raw_handle()).unwrap();
+            let (client, server) = tokio::join!(endpoint.connect(), listener.accept());
+            let mut client = client.unwrap();
+            let mut server = server.unwrap();
+            client.write_all(b"ping").await.unwrap();
+            let mut message = [0; 4];
+            server.read_exact(&mut message).await.unwrap();
+            assert_eq!(&message, b"ping");
         }
-        let token = OwnedHandle::from_raw_handle(token);
-        let mut size = 0;
-        GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut size);
-        if size == 0 {
-            return Err("Cannot read local user identity".into());
-        }
-        let mut storage = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
-        if GetTokenInformation(
-            token.as_raw_handle(),
-            TokenUser,
-            storage.as_mut_ptr().cast(),
-            size,
-            &mut size,
-        ) == 0
+        verify_pipe_owner(listener.inner.as_raw_handle()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_rejects_a_pipe_owned_by_the_tokens_other_default_owner() {
+        // Elevated tokens can have an Administrators default owner even
+        // though TokenUser is the interactive user. Exercise the real client
+        // rejection wherever that token context is available.
+        if crate::windows_ownership::default_owner_identity().unwrap()
+            == os_user_identity().unwrap()
         {
-            return Err(std::io::Error::last_os_error().to_string());
+            eprintln!("TokenOwner equals TokenUser; no different-owner fixture in this context");
+            return;
         }
-        let user = &*storage.as_ptr().cast::<TOKEN_USER>();
-        let mut text = null_mut();
-        if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        let mut len = 0;
-        while *text.add(len) != 0 {
-            len += 1;
-        }
-        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
-        LocalFree(text.cast());
-        Ok(sid)
+        let fixture = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::for_test(fixture.path().to_path_buf());
+        let _server =
+            make_pipe_with_sddl(endpoint.address(), true, "D:P(A;;GA;;;OW)(A;;GA;;;SY)").unwrap();
+        let error = match endpoint.connect().await {
+            Ok(_) => panic!("admitted a pipe belonging to a different owner"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "Maple host belongs to another OS user");
     }
 }
 

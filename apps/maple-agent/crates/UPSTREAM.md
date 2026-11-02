@@ -5,12 +5,23 @@ product policy, storage formats, account rules and UI reconciliation belong in
 `maple-agent` and the app. A generic API still needs an explicit reason when it
 adds behavior absent from Pi.
 
-The initial reference is Pi `v1.0.4`
-(`7c10bd4337495ee613f2224843ecdf349b80d1df`). The initial port and its accepted
-language/API differences are recorded in
-[Maple #1104](https://github.com/MaplePrivacyLabs/Maple/pull/1104).
+The crates follow Pi `v1.4.0` (`4a080252f06caf63a525d7873c5d94d3c23887e0`,
+2026-10-22), the end of the latest full review below; start the next review
+there. The initial port from Pi `v1.0.4` and its accepted language/API
+differences are recorded in
+[Maple #1104](https://github.com/MaplePrivacyLabs/Maple/pull/1104); each
+review's PR records its adopt/skip decisions and any new differences.
 This file records the storage follow-up's adaptations; it does not claim a
 complete audit of every earlier difference.
+
+## Fidelity to upstream
+
+The crates mirror upstream Pi's behavior, including its bugs. Change them
+locally only for a blocker, and say in the PR why no hook or adapter could
+carry the fix. A review finding that matches upstream is recorded in the
+review's PR and left as it is. Maple-specific behavior belongs in
+`maple-agent`, usually as a Pi extension: `agent/switch_compaction.rs`, for
+one, changes which model summarizes through `before_compact`.
 
 ## Storage adaptations
 
@@ -55,3 +66,14 @@ There is no automatic line-by-line update or requirement to adopt every release.
   (`71023aec1546d6d677a65669c5665c0927ce0dd0`): ordinary message persistence
   still does not emit it. This was a focused contract check, not a full upstream
   review or a Pi update.
+- 2026-10-30: full review of Pi `v1.0.4`..`v1.4.0` (`packages/ai/src`,
+  `packages/agent/src`, `packages/coding-agent/src/core` and `src/utils`) in
+  [Maple #1389](https://github.com/MaplePrivacyLabs/Maple/pull/1389):
+  22 upstream commits adopted, among them dropping another model's thinking,
+  thinking-free summaries without a fixed output cap, and `before_agent_start`
+  for custom-message runs; provider, catalog, terminal and unported features
+  skipped. Upstream's session manager and tool output did not change, so the
+  storage adaptations stay. Skipped `bd3c9b823` (activating extension tools
+  registered after a branch recorded its tools): it needs every tool the
+  branch ever named, which a `SessionBase` does not carry. Validated with
+  `just ci`.

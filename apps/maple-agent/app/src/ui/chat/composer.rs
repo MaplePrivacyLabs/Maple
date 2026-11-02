@@ -11,7 +11,7 @@ use super::commands::ChatCommand;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
-    SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
+    SIDE_THREAD_PLACEHOLDER, Section,
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
@@ -21,44 +21,6 @@ use crate::ui::text_input::vim::VimMode;
 use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
-
-/// Research's compact label precedence, projected once when the catalog loads.
-/// IDs remain the keys used for selection and persisted tasks.
-pub(super) fn catalog_model_labels(
-    catalog: &maple_sdk::ModelCatalogResponse,
-) -> std::collections::HashMap<String, String> {
-    let label = |short: Option<&str>, full: Option<&str>, id: &str| {
-        short
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| full.filter(|value| !value.trim().is_empty()))
-            .unwrap_or(id)
-            .to_string()
-    };
-    catalog
-        .data
-        .iter()
-        .map(|model| {
-            (
-                model.id.clone(),
-                label(
-                    model.short_name.as_deref(),
-                    model.display_name.as_deref(),
-                    &model.id,
-                ),
-            )
-        })
-        .chain(catalog.aliases.iter().map(|alias| {
-            (
-                alias.id.clone(),
-                label(
-                    alias.short_name.as_deref(),
-                    alias.label.as_deref(),
-                    &alias.id,
-                ),
-            )
-        }))
-        .collect()
-}
 
 /// The composer's button row, left to right. The row renders from this
 /// list and application Vim walks it, so a new control is reachable from
@@ -96,12 +58,15 @@ impl ChatScreen {
         let sidebar_width = super::SIDEBAR_RAIL_WIDTH
             + (super::SIDEBAR_WIDTH - super::SIDEBAR_RAIL_WIDTH) * sidebar_expansion;
         // Compensate for the moving pane so the toggle stays beside the
-        // window controls throughout the transition.
-        let toolbar_left = super::SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET - sidebar_width;
+        // window controls throughout the transition, or follows the logo.
+        let toolbar_left = super::header_toolbar_left(sidebar_expansion) - sidebar_width;
         let toolbar_width = window.rem_size() * 5.75;
         let header_gap = window.rem_size() * 0.75;
         let expanded_inset = window.rem_size();
-        let collapsed_inset = SIDEBAR_COLLAPSED_INSET + toolbar_width + header_gap * 2. + px(1.);
+        let collapsed_inset = super::header_toolbar_left(0.) - super::SIDEBAR_RAIL_WIDTH
+            + toolbar_width
+            + header_gap * 2.
+            + px(1.);
         let inset = expanded_inset + (collapsed_inset - expanded_inset) * collapsed_progress;
         titlebar::drag_region(
             div()
@@ -137,25 +102,25 @@ impl ChatScreen {
                             3,
                         ),
                         (
-                            "header-new-task",
-                            "square-pen",
-                            "New task",
-                            &super::NewTask,
-                            ChatCommand::NewTask,
-                            4,
-                        ),
-                        (
                             "header-search",
                             "search",
                             "Search",
                             &super::FocusSearch,
                             ChatCommand::FocusSearch,
+                            4,
+                        ),
+                        (
+                            "header-new-task",
+                            "square-pen",
+                            "New task",
+                            &super::NewTask,
+                            ChatCommand::NewTask,
                             5,
                         ),
                     ]
                     .into_iter()
                     .filter(|(_, _, _, _, command, _)| {
-                        collapsed_progress > 0. || matches!(command, ChatCommand::ToggleSidebar)
+                        collapsed_progress > 0. || !matches!(command, ChatCommand::NewTask)
                     })
                     .map(|(id, name, label, action, command, tab_index)| {
                         widgets::icon_button_for_action(
@@ -168,7 +133,7 @@ impl ChatScreen {
                         )
                         .debug_selector(move || id.to_string())
                         .tab_index(tab_index)
-                        .when(!matches!(command, ChatCommand::ToggleSidebar), |button| {
+                        .when(matches!(command, ChatCommand::NewTask), |button| {
                             button
                                 .opacity(collapsed_progress)
                                 .tab_stop(self.sidebar_collapsed)
@@ -212,6 +177,17 @@ impl ChatScreen {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::rgb(theme::text_primary()))
                 .child(title),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(14.))
+                .h(px(14.))
+                .debug_selector(|| "navigation-loading-slot".to_string())
+                .when(
+                    self.loading_session.is_some() || self.root_selecting || self.booting,
+                    |slot| slot.child(spinner("navigation-loading", px(14.), theme::text_muted())),
+                ),
         )
         .child(
             self.with_menu(
@@ -356,7 +332,7 @@ impl ChatScreen {
                     ChatPopup::Model,
                     chip(
                         "model-picker",
-                        self.model_locked.then_some("lock"),
+                        None,
                         label,
                         true,
                         self.popup.is_open(&ChatPopup::Model),
@@ -548,27 +524,21 @@ impl ChatScreen {
 
     fn model_menu(&self) -> Menu<Self> {
         let selected = self.selected_model.as_deref();
-        let locked = self.model_locked;
+        // A task offers every model; a pick applies from its next message.
         Menu::new("model-menu", px(320.))
             .label("Model")
             .max_height(px(320.))
             .application_vim(self.application_vim_enabled)
-            .items(self.model_menu_models().into_iter().map(|model| {
+            .items(self.models.iter().map(|model| {
                 let pick = model.clone();
-                let item = MenuItem::new(
+                MenuItem::new(
                     SharedString::from(format!("model-{model}")),
-                    self.model_label(&model).to_string(),
+                    self.model_label(model).to_string(),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_model(pick.clone(), cx);
                     },
                 )
-                .current(selected == Some(model.as_str()));
-                // A task keeps the model of its first message.
-                if locked {
-                    item.note("Locked to this task. Start a new task to switch.")
-                } else {
-                    item
-                }
+                .current(selected == Some(model.as_str()))
             }))
     }
 
@@ -720,7 +690,12 @@ impl ChatScreen {
     }
 
     fn toggle_plan_collapsed(&mut self, cx: &mut Context<Self>) {
-        self.plan_collapsed = !self.plan_collapsed;
+        let Some(session) = self.selected_session.clone() else {
+            return;
+        };
+        if !self.plan_collapsed.remove(&session) {
+            self.plan_collapsed.insert(session);
+        }
         cx.notify();
     }
 
@@ -981,10 +956,13 @@ impl ChatScreen {
     }
 
     pub(super) fn render_plan_card(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.plan.is_empty() {
+        if !self.plan_card_visible() {
             return None;
         }
-        let collapsed = self.plan_collapsed;
+        let collapsed = self
+            .selected_session
+            .as_ref()
+            .is_some_and(|session| self.plan_collapsed.contains(session));
         let done = self.plan_done;
         let header = div()
             .id("plan-card-header")
@@ -1047,14 +1025,45 @@ impl ChatScreen {
         Some(card)
     }
 
+    /// The composer's controls, held back while the runtime boots or the
+    /// first model load is in flight with no model chosen, then faded in
+    /// once. Held controls keep their layout and take no clicks.
+    fn reveal_composer_controls(
+        &mut self,
+        controls: Vec<gpui::AnyElement>,
+    ) -> (gpui::AnyElement, bool) {
+        let row = div().flex().items_center().gap_1().children(controls);
+        if self.selected_model.is_none() && (self.booting || self.models_loading) {
+            self.controls_held = true;
+            return (row.invisible().into_any_element(), true);
+        }
+        if std::mem::take(&mut self.controls_held) {
+            let generation = self
+                .controls_revealed
+                .map_or(0, |(_, generation)| generation + 1);
+            self.controls_revealed = Some((std::time::Instant::now(), generation));
+        }
+        let row = match self.controls_revealed {
+            Some((at, generation)) if at.elapsed() < motion::REVEAL * 2 => {
+                motion::fade_in(row, ("composer-controls-reveal", generation as usize))
+                    .into_any_element()
+            }
+            _ => row.into_any_element(),
+        };
+        (row, false)
+    }
+
     pub(super) fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
         // The first send's create keeps the composer's text on show and
         // the composer waiting, like the runtime boot does.
         let pending_create = self.selected_session.is_none() && self.session_setup_pending;
-        let disabled = self.booting || pending_create || self.send_pending();
+        let disabled =
+            self.booting || self.loading_session.is_some() || pending_create || self.send_pending();
         let status_label = if self.booting {
             "Starting Maple…"
+        } else if self.loading_session.is_some() {
+            "Opening task…"
         } else if pending_create {
             "Creating the task…"
         } else {
@@ -1121,6 +1130,7 @@ impl ChatScreen {
                 self.render_composer_control(control, selected_control == Some(control), window, cx)
             })
             .collect::<Vec<_>>();
+        let (controls, controls_held) = self.reveal_composer_controls(controls);
         let drafts = &self.draft_attachments;
         let upload = self
             .selected_upload()
@@ -1315,12 +1325,15 @@ impl ChatScreen {
                     .pb_2()
                     .pt_1()
                     .debug_selector(|| "composer-chips".to_string())
-                    .children(controls)
+                    .relative()
+                    .child(controls)
                     .children(vim_badge)
                     .when(disabled, |row| {
                         row.child(
                             div()
                                 .debug_selector(|| "composer-status".to_string())
+                                // Over the held-back controls rather than after their space.
+                                .when(controls_held, |status| status.absolute().left_2())
                                 .flex()
                                 .items_center()
                                 .gap_1p5()
@@ -1501,36 +1514,4 @@ fn chip(
         .children(leading.map(|name| icon(name, px(16.), color)))
         .child(div().whitespace_nowrap().child(label))
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::catalog_model_labels;
-
-    #[test]
-    fn model_labels_follow_research_catalog_precedence() {
-        let catalog = serde_json::from_value(serde_json::json!({
-            "object": "list",
-            "data": [
-                {"id": "model-a", "short_name": "Compact", "display_name": "Full name"},
-                {"id": "model-b", "display_name": "Server supplied name"},
-                {"id": "model-c", "short_name": " ", "display_name": "Fallback name"},
-                {"id": "model-d"}
-            ],
-            "aliases": [
-                {"id": "alias-a", "short_name": "Alias", "label": "Full alias", "target_model": "model-a"},
-                {"id": "alias-b", "label": "Automatic", "target_model": "model-b"},
-                {"id": "alias-c", "short_name": "", "label": " ", "target_model": "model-c"}
-            ]
-        }))
-        .unwrap();
-        let labels = catalog_model_labels(&catalog);
-        assert_eq!(labels["model-a"], "Compact");
-        assert_eq!(labels["model-b"], "Server supplied name");
-        assert_eq!(labels["model-c"], "Fallback name");
-        assert_eq!(labels["model-d"], "model-d");
-        assert_eq!(labels["alias-a"], "Alias");
-        assert_eq!(labels["alias-b"], "Automatic");
-        assert_eq!(labels["alias-c"], "alias-c");
-    }
 }

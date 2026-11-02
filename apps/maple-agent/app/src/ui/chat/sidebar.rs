@@ -20,7 +20,10 @@ mod ordering;
 mod paging;
 #[path = "sidebar_prefix.rs"]
 mod prefix;
-use super::computers::{Computer, Destination, Navigate, ProjectRenameRequest, ProjectTarget};
+use super::computers::{
+    Computer, Destination, Navigate, ProjectRenameRequest, ProjectTarget, TaskAction,
+    TaskActionRequest,
+};
 use computers::{ComputerPages, OtherTask};
 use paging::{PageKind, SidebarPages};
 
@@ -73,6 +76,7 @@ pub(crate) struct BrowseState {
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString,
@@ -87,7 +91,8 @@ use super::navigation::SidebarTarget;
 use super::{ChatScreen, section_label};
 use crate::backend::AgentBackend;
 use crate::settings::{SidebarGroup, SidebarItemKey, SidebarOrder, SidebarSort, SidebarView};
-use crate::ui::icons::{icon, spinner_with_id, wordmark};
+use crate::ui::icons::{icon, wordmark};
+use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
@@ -99,15 +104,25 @@ const SEARCH_ROW_RADIUS: gpui::Pixels = px(6.);
 /// Corner radius of a sidebar row's hover and selected highlight.
 const ROW_RADIUS: gpui::Pixels = px(6.);
 
+/// How far a cut-off task title fades into its row.
+const ROW_FADE: gpui::Pixels = px(20.);
+
 /// Geometry shared by the expanded wordmark row and the collapsed mark.
 pub(super) const WORDMARK_LEFT: gpui::Pixels = px(16.);
 pub(super) const WORDMARK_HEIGHT: gpui::Pixels = px(16.);
 pub(super) const TOP_ROW_HEIGHT: gpui::Pixels = px(28.);
 pub(super) const TOP_ROW_GUTTER: gpui::Pixels = px(12.);
 
+/// Top of the wordmark row. Under traffic lights it starts below them,
+/// with the wordmark under the header's line. Without them the wordmark
+/// moves up into their corner, centered on the header's line.
 pub(super) fn wordmark_row_top() -> gpui::Pixels {
-    titlebar::top_row_top(TOP_ROW_GUTTER)
-        .max(super::CHAT_HEADER_HEIGHT - (TOP_ROW_HEIGHT - WORDMARK_HEIGHT) / 2.)
+    if titlebar::TRANSPARENT_TITLEBAR {
+        titlebar::TRAFFIC_LIGHT_ROW
+            .max(super::CHAT_HEADER_HEIGHT - (TOP_ROW_HEIGHT - WORDMARK_HEIGHT) / 2.)
+    } else {
+        (super::CHAT_HEADER_HEIGHT - TOP_ROW_HEIGHT) / 2.
+    }
 }
 
 pub(super) fn session_from_summary(
@@ -143,6 +158,11 @@ pub(super) enum SidebarEvent {
     },
     Navigate(Navigate),
     RenameProject(ProjectRenameRequest),
+    TaskAction(TaskActionRequest),
+    ConfirmTaskDelete {
+        target: SidebarItemKey,
+        title: String,
+    },
     PreferencesChanged,
     ProjectsChanged(Vec<RecentProjectRoot>),
     /// Show a task.
@@ -174,15 +194,71 @@ pub(super) enum SidebarEvent {
 /// Activity a task row indicates beside its title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SessionActivity {
+    /// A question waits for the user's answer.
+    NeedsYou,
     Running,
+    /// The last run failed and the task was not opened since.
+    Failed,
     CompletedUnread,
+}
+
+/// Which tasks wait on the user, run, or ended while nobody watched. The
+/// screen owns these sets and pushes them together.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TaskActivity {
+    pub(crate) running: HashSet<String>,
+    /// Tasks with a question waiting for an answer.
+    pub(crate) waiting: HashSet<String>,
+    pub(crate) failed: HashSet<String>,
+    pub(crate) unread: HashSet<String>,
+}
+
+impl TaskActivity {
+    /// What a task's row shows. A question outranks the run it paused,
+    /// and a run outranks how the previous one ended.
+    pub(super) fn of(&self, session_id: &str) -> Option<SessionActivity> {
+        if self.waiting.contains(session_id) {
+            Some(SessionActivity::NeedsYou)
+        } else if self.running.contains(session_id) {
+            Some(SessionActivity::Running)
+        } else if self.failed.contains(session_id) {
+            Some(SessionActivity::Failed)
+        } else if self.unread.contains(session_id) {
+            Some(SessionActivity::CompletedUnread)
+        } else {
+            None
+        }
+    }
 }
 
 /// What an inline rename edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum RenameTarget {
     Task(String),
+    OtherTask(Arc<SidebarItemKey>),
     Project(ProjectTarget),
+}
+
+#[derive(Clone)]
+enum TaskTarget {
+    Own(Arc<str>),
+    Other(Arc<SidebarItemKey>),
+}
+
+impl TaskTarget {
+    fn rename_target(&self) -> RenameTarget {
+        match self {
+            Self::Own(id) => RenameTarget::Task(id.to_string()),
+            Self::Other(target) => RenameTarget::OtherTask(target.clone()),
+        }
+    }
+
+    fn popup_key(&self) -> SidebarPopup {
+        match self {
+            Self::Own(id) => SidebarPopup::Task(id.clone()),
+            Self::Other(target) => SidebarPopup::OtherTask(target.clone()),
+        }
+    }
 }
 
 /// Strings and element ids one sidebar task row shows, built when the
@@ -208,8 +284,9 @@ pub(super) struct SidebarRow {
     pub(super) menu_archive_id: SharedString,
     pub(super) menu_delete_id: SharedString,
     pub(super) menu_reopen_id: SharedString,
+    /// The title on one line (see [`one_line`]).
     pub(super) title: SharedString,
-    /// Display name of the task's project, for metadata, search and accessibility.
+    /// Display name of the task's project on one line.
     pub(super) project_name: SharedString,
     connection_name: SharedString,
     metadata: SharedString,
@@ -219,9 +296,17 @@ pub(super) struct SidebarRow {
 
 impl SidebarRow {
     fn build(session: &AgentSessionSummary, project_name: &str, connection: &str) -> Self {
-        let id = &session.id;
+        Self::build_scoped(session, project_name, connection, &session.id)
+    }
+
+    fn build_scoped(
+        session: &AgentSessionSummary,
+        project_name: &str,
+        connection: &str,
+        id: &str,
+    ) -> Self {
         Self {
-            id: Arc::from(id.as_str()),
+            id: Arc::from(session.id.as_str()),
             element_id: SharedString::from(format!("session-{id}")),
             group: SharedString::from(format!("task-row-{id}")),
             rename_id: SharedString::from(format!("rename-session-{id}")),
@@ -236,16 +321,24 @@ impl SidebarRow {
             menu_archive_id: SharedString::from(format!("archive-task-{id}")),
             menu_delete_id: SharedString::from(format!("delete-task-{id}")),
             menu_reopen_id: SharedString::from(format!("reopen-task-{id}")),
-            title: SharedString::from(session.title.clone()),
-            project_name: SharedString::from(project_name.to_string()),
+            title: one_line(&session.title),
+            project_name: one_line(project_name),
             connection_name: connection.to_owned().into(),
-            metadata: if connection.is_empty() {
+            metadata: one_line(&if connection.is_empty() {
                 project_name.to_owned()
             } else {
                 format!("{project_name} · {connection}")
-            }
-            .into(),
+            }),
             search: session.title.to_lowercase(),
+        }
+    }
+
+    /// Preserve raw-title identity when line breaks are flattened.
+    fn built_from(&self, title: &str) -> bool {
+        if title.contains(['\r', '\n']) {
+            self.search == title.to_lowercase() && *self.title == *one_line(title)
+        } else {
+            !self.search.contains(['\r', '\n']) && *self.title == *title
         }
     }
 }
@@ -271,6 +364,7 @@ enum SidebarPopup {
     NewProject,
     /// A task row's overflow menu, by the row's shared id.
     Task(Arc<str>),
+    OtherTask(Arc<SidebarItemKey>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -388,8 +482,6 @@ impl TaskRung {
 /// Why the task list has no rows to show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SidebarEmpty {
-    /// No tasks exist yet.
-    NoTasks,
     /// The search filter matched nothing.
     NoMatches,
 }
@@ -411,6 +503,7 @@ pub(super) enum SidebarSection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidebarHoverSection {
     Projects,
+    Computer(usize),
     Section(SidebarSection),
     Archived,
 }
@@ -549,10 +642,7 @@ pub(super) struct Sidebar {
     // What the screen pushes in.
     sessions: Vec<AgentSessionSummary>,
     selected: Option<String>,
-    /// Tasks with a run in flight.
-    running: HashSet<String>,
-    /// Tasks that finished while not on screen.
-    unread: HashSet<String>,
+    activity: TaskActivity,
     recent_roots: Vec<String>,
     application_vim_enabled: bool,
     /// Application Vim's region is the sidebar, so rows show its
@@ -607,6 +697,7 @@ pub(super) struct Sidebar {
     filter: String,
     search_input: Entity<TextInput>,
     search_visible: bool,
+    search_pointer_dismissal_pending: bool,
     search_focus_out: Option<Subscription>,
     rename: Option<RenameTarget>,
     rename_input: Option<Entity<TextInput>>,
@@ -884,8 +975,7 @@ impl Sidebar {
             chat,
             sessions: Vec::new(),
             selected: None,
-            running: HashSet::new(),
-            unread: HashSet::new(),
+            activity: TaskActivity::default(),
             recent_roots: Vec::new(),
             application_vim_enabled,
             vim_active: false,
@@ -929,6 +1019,7 @@ impl Sidebar {
             filter: String::new(),
             search_input,
             search_visible: false,
+            search_pointer_dismissal_pending: false,
             search_focus_out: None,
             rename: None,
             rename_input: None,
@@ -993,20 +1084,14 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// Which tasks run and which finished unread; both drive the row
-    /// indicator and the active section.
-    pub(super) fn set_activity(
-        &mut self,
-        running: HashSet<String>,
-        unread: HashSet<String>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.running == running && self.unread == unread {
+    /// Which tasks wait on the user, run, or ended unseen. All of it
+    /// drives the row indicator; running also decides the active section.
+    pub(super) fn set_activity(&mut self, activity: TaskActivity, cx: &mut Context<Self>) {
+        if self.activity == activity {
             return;
         }
-        let sections_changed = self.running != running;
-        self.running = running;
-        self.unread = unread;
+        let sections_changed = self.activity.running != activity.running;
+        self.activity = activity;
         if sections_changed {
             self.rebuild_sections();
         }
@@ -1489,13 +1574,7 @@ impl Sidebar {
     // ---- Sections --------------------------------------------------------
 
     pub(super) fn session_activity(&self, session_id: &str) -> Option<SessionActivity> {
-        if self.running.contains(session_id) {
-            Some(SessionActivity::Running)
-        } else if self.unread.contains(session_id) {
-            Some(SessionActivity::CompletedUnread)
-        } else {
-            None
-        }
+        self.activity.of(session_id)
     }
 
     pub(super) fn set_archived_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
@@ -1503,7 +1582,7 @@ impl Sidebar {
             return;
         }
         self.archived_expanded = expanded;
-        if expanded && self.pages.enabled {
+        if expanded && self.pages.enabled && !self.pages.has_started(PageKind::Archived) {
             self.load_page(PageKind::Archived, cx);
         }
         self.refresh_computer_pages(cx);
@@ -1516,20 +1595,47 @@ impl Sidebar {
     }
 
     pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_visible = true;
-        self.reveal_row(1, cx);
-        self.list.remeasure_items(1..2);
+        self.search_pointer_dismissal_pending = false;
+        if !self.search_visible {
+            self.search_visible = true;
+            self.rebuild_entries();
+        }
+        if let Some(row) = self
+            .entries
+            .iter()
+            .position(|entry| *entry == SidebarEntry::Search)
+        {
+            self.reveal_row(row, cx);
+        }
         let handle = self.search_input.read(cx).focus_handle(cx);
         handle.focus(window, cx);
         self.search_focus_out = Some(cx.on_focus_out(&handle, window, |_this, _, window, cx| {
             cx.defer_in(window, |this, window, cx| {
-                if !this.search_input.read(cx).menu_open() && !this.search_input_focused(window, cx)
+                if !this.search_pointer_dismissal_pending
+                    && !this.search_input.read(cx).menu_open()
+                    && !this.search_input_focused(window, cx)
                 {
                     this.hide_empty_search(cx);
                 }
             });
         }));
         cx.notify();
+    }
+
+    fn finish_search_pointer_dismissal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search_pointer_dismissal_pending {
+            return;
+        }
+        // Keep rows in place until the release has activated its original target.
+        cx.defer_in(window, |this, window, cx| {
+            if !this.search_pointer_dismissal_pending {
+                return;
+            }
+            this.search_pointer_dismissal_pending = false;
+            if !this.search_input.read(cx).menu_open() && !this.search_input_focused(window, cx) {
+                this.hide_empty_search(cx);
+            }
+        });
     }
 
     pub(super) fn search_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
@@ -1544,7 +1650,7 @@ impl Sidebar {
             return false;
         }
         self.search_visible = false;
-        self.list.remeasure_items(1..2);
+        self.rebuild_entries();
         cx.notify();
         true
     }
@@ -1568,7 +1674,7 @@ impl Sidebar {
         for (index, session) in self.sessions.iter().enumerate() {
             if self.pages.enabled
                 && !self.pages.contains(&session.id, filtering)
-                && !self.running.contains(&session.id)
+                && !self.activity.running.contains(&session.id)
                 && self.selected.as_ref() != Some(&session.id)
             {
                 continue;
@@ -1582,7 +1688,7 @@ impl Sidebar {
             }
             // The cached count updates when a run ends. Its first run
             // already makes the task visible while that count is still zero.
-            if session.message_count == 0 && !self.running.contains(&session.id) {
+            if session.message_count == 0 && !self.activity.running.contains(&session.id) {
                 continue;
             }
             if scoped.is_some_and(|scoped| scoped != root) {
@@ -1645,7 +1751,7 @@ impl Sidebar {
         if let Some(prefix) = self.local_task_prefix() {
             listed.retain(|&ix| {
                 let task = &self.sessions[ix];
-                self.running.contains(&task.id)
+                self.activity.running.contains(&task.id)
                     || self.selected.as_ref() == Some(&task.id)
                     || self.pages.is_live(&task.id)
                     || prefix.allows(&self.task_prefix_position(
@@ -1714,12 +1820,15 @@ impl Sidebar {
     /// task active the moment a run starts on it; the running set covers
     /// the frame before its updated record lands.
     fn session_is_active(&self, session: &AgentSessionSummary) -> bool {
-        self.running.contains(&session.id) || session.state != AgentTaskState::Settled
+        self.activity.running.contains(&session.id) || session.state != AgentTaskState::Settled
     }
 
     /// Project bounded local-cache rows through the selected grouping.
     fn local_entries(&self) -> Vec<SidebarEntry> {
-        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::Search];
+        let mut entries = vec![SidebarEntry::NewTask];
+        if self.search_visible {
+            entries.push(SidebarEntry::Search);
+        }
         let empty_known = self.filter.is_empty() && self.pages.non_archived_complete();
         let pinned_roots: HashSet<&str> = self
             .pinned_rows
@@ -1788,7 +1897,16 @@ impl Sidebar {
                 }
             }
         }
-        if !self.archived_rows.is_empty() || (self.pages.enabled && self.filter.is_empty()) {
+        // Folded sections still hold tasks; only an empty list says so.
+        let empty = self.pinned_rows.is_empty()
+            && self.archived_rows.is_empty()
+            && self.sections.iter().all(|(section, rows)| {
+                !matches!(section, SidebarSection::Project(_)) && rows.is_empty()
+            });
+        if empty && !self.pages.any_loading() && !self.filter.is_empty() {
+            entries.push(SidebarEntry::Empty(SidebarEmpty::NoMatches));
+        }
+        if !self.archived_rows.is_empty() {
             entries.push(SidebarEntry::ArchivedHeader);
             if self.archived_expanded {
                 entries.extend(self.archived_rows.iter().map(|&session| {
@@ -1801,21 +1919,11 @@ impl Sidebar {
                 }));
             }
         }
-        if self.archived_expanded && self.pages.has_more(PageKind::Archived) {
+        if self.pages.has_more(PageKind::Archived)
+            && (self.archived_expanded
+                || (self.archived_rows.is_empty() && !self.pages.loading(PageKind::Archived)))
+        {
             entries.push(SidebarEntry::LoadMore(PageKind::Archived));
-        }
-        // Folded sections still hold tasks; only an empty list says so.
-        let empty = self.pinned_rows.is_empty()
-            && self.archived_rows.is_empty()
-            && self.sections.iter().all(|(section, rows)| {
-                !matches!(section, SidebarSection::Project(_)) && rows.is_empty()
-            });
-        if empty && !self.pages.any_loading() {
-            entries.push(SidebarEntry::Empty(if self.filter.is_empty() {
-                SidebarEmpty::NoTasks
-            } else {
-                SidebarEmpty::NoMatches
-            }));
         }
         entries
     }
@@ -1841,8 +1949,14 @@ impl Sidebar {
                     SidebarEntry::SectionLabel(label) => {
                         section = Some(SidebarHoverSection::Section(*label))
                     }
+                    SidebarEntry::Computer(index) => {
+                        section = Some(SidebarHoverSection::Computer(*index))
+                    }
                     SidebarEntry::ArchivedHeader => section = Some(SidebarHoverSection::Archived),
-                    SidebarEntry::Task(_) | SidebarEntry::OtherTask(_) => {}
+                    SidebarEntry::Task(_)
+                    | SidebarEntry::OtherTask(_)
+                    | SidebarEntry::ComputerProject(_)
+                    | SidebarEntry::ComputerMore(_) => {}
                     _ => section = None,
                 }
                 section
@@ -1852,6 +1966,13 @@ impl Sidebar {
             SidebarEntry::Task(task) => !task.archived,
             SidebarEntry::OtherTask(index) => !self.other_tasks[*index].archived,
             _ => false,
+        };
+        let project_header = |entry: &SidebarEntry| {
+            matches!(
+                entry,
+                SidebarEntry::SectionLabel(SidebarSection::Project(_))
+                    | SidebarEntry::ComputerProject(_)
+            )
         };
         let row_spacing = entries
             .iter()
@@ -1864,7 +1985,20 @@ impl Sidebar {
                     ix.checked_sub(1).and_then(|ix| entries.get(ix)),
                     Some(SidebarEntry::SectionLabel(_) | SidebarEntry::ArchivedHeader)
                 ),
-                after: unarchived_task(entry) && !entries.get(ix + 1).is_some_and(unarchived_task),
+                after: (project_header(entry) && entries.get(ix + 1).is_some_and(project_header))
+                    || match entry {
+                        SidebarEntry::SectionLabel(SidebarSection::Project(index)) => self
+                            .collapsed_projects
+                            .contains(&self.project_roots[*index].target),
+                        SidebarEntry::ComputerProject(index) => self
+                            .collapsed_projects
+                            .contains(&self.computer_projects[*index].target),
+                        SidebarEntry::ProjectEmpty(_) => true,
+                        _ => {
+                            unarchived_task(entry)
+                                && !entries.get(ix + 1).is_some_and(unarchived_task)
+                        }
+                    },
             })
             .collect();
         let old_spacing = std::mem::replace(&mut self.row_spacing, row_spacing);
@@ -1927,6 +2061,10 @@ impl Sidebar {
                         .get(task.session)
                         .is_some_and(|session| session.id == *id))
             }),
+            RenameTarget::OtherTask(target) => self.entries.iter().position(|entry| {
+                matches!(entry, SidebarEntry::OtherTask(index)
+                    if self.other_tasks[*index].target == *target)
+            }),
             RenameTarget::Project(target) => self
                 .drag_ranges
                 .get(&SidebarDragItem::Project(target.clone()))
@@ -1949,7 +2087,7 @@ impl Sidebar {
         let fresh = self.rows.len() == self.sessions.len()
             && self.rows.iter().zip(&self.sessions).all(|(row, session)| {
                 *row.id == *session.id
-                    && row.title.as_ref() == session.title
+                    && row.built_from(&session.title)
                     && row.connection_name.as_ref() == connection
                     && self.root_name_matches(&session.project_root, &row.project_name)
             });
@@ -2179,7 +2317,7 @@ impl Sidebar {
 
     /// Whether a cached row still has the current owner name or pending preview.
     fn root_name_matches(&self, root: &str, name: &str) -> bool {
-        self.root_name(root) == name
+        *one_line(&self.root_name(root)) == *name
     }
 
     // ---- Rename ------------------------------------------------------------
@@ -2197,6 +2335,12 @@ impl Sidebar {
                 .iter()
                 .find(|session| &session.id == id)
                 .map(|session| session.title.clone())
+                .unwrap_or_default(),
+            RenameTarget::OtherTask(target) => self
+                .other_tasks
+                .iter()
+                .find(|task| task.target == *target)
+                .map(|task| task.session.title.clone())
                 .unwrap_or_default(),
             RenameTarget::Project(target) => self
                 .computer_projects
@@ -2306,6 +2450,12 @@ impl Sidebar {
                         Err(message) => cx.emit(SidebarEvent::Notice(message.into())),
                     },
                 );
+            }
+            RenameTarget::OtherTask(target) => {
+                cx.emit(SidebarEvent::TaskAction(TaskActionRequest {
+                    target: target.as_ref().clone(),
+                    action: TaskAction::Rename(name),
+                }))
             }
             RenameTarget::Project(root) => {
                 if self.pending_project_names.contains_key(&root) {
@@ -2424,30 +2574,43 @@ impl Sidebar {
     }
 
     /// Task actions are grouped by organization/editing, workflow, then deletion.
+    #[cfg(test)]
     fn task_menu_items(&self, task: SidebarTaskEntry) -> Option<TaskMenuItems> {
         let row = self.rows.get(task.session)?;
-        let rung = TaskRung::of(task);
+        Some(self.task_menu_items_for(
+            row,
+            TaskTarget::Own(row.id.clone()),
+            task.pinned,
+            TaskRung::of(task),
+        ))
+    }
+
+    fn task_menu_items_for(
+        &self,
+        row: &SidebarRow,
+        target: TaskTarget,
+        pinned: bool,
+        rung: TaskRung,
+    ) -> TaskMenuItems {
         let mut actions = Vec::new();
         if rung == TaskRung::Active {
-            let task_id = row.id.to_string();
+            let pin_target = target.clone();
             actions.push(SidebarMenuItem {
                 id: row.menu_pin_id.clone(),
                 icon: "pin",
-                label: if task.pinned {
-                    "Unpin task"
-                } else {
-                    "Pin task"
-                },
-                on_click: Box::new(move |this, cx| this.toggle_task_pin(&task_id, cx)),
+                label: if pinned { "Unpin task" } else { "Pin task" },
+                on_click: Box::new(move |this, cx| {
+                    this.toggle_task_target_pin(&pin_target, pinned, cx)
+                }),
             });
         }
-        let rename_id = row.id.to_string();
+        let rename_target = target.clone();
         actions.push(SidebarMenuItem {
             id: row.menu_rename_id.clone(),
             icon: "pencil",
             label: "Rename task",
             on_click: Box::new(move |this, cx| {
-                this.begin_rename(RenameTarget::Task(rename_id.clone()), cx)
+                this.begin_rename(rename_target.rename_target(), cx)
             }),
         });
         let moves: &[(TaskMove, &SharedString, &'static str, &'static str)] = match rung {
@@ -2489,27 +2652,71 @@ impl Sidebar {
         let workflow = moves
             .iter()
             .map(|&(to, id, icon, label)| {
-                let task_id = row.id.to_string();
+                let target = target.clone();
                 SidebarMenuItem {
                     id: id.clone(),
                     icon,
                     label,
-                    on_click: Box::new(move |this, cx| this.move_task(&task_id, to, cx)),
+                    on_click: Box::new(move |this, cx| this.move_task_target(&target, to, cx)),
                 }
             })
             .collect();
-        let task_id = row.id.to_string();
+        let delete_target = target.clone();
         let delete = SidebarMenuItem {
             id: row.menu_delete_id.clone(),
             icon: "trash-2",
             label: "Delete task",
-            on_click: Box::new(move |this, cx| this.move_task(&task_id, TaskMove::Deleted, cx)),
+            on_click: Box::new(move |this, cx| {
+                this.move_task_target(&delete_target, TaskMove::Deleted, cx)
+            }),
         };
-        Some(TaskMenuItems {
+        TaskMenuItems {
             actions,
             workflow,
             delete,
-        })
+        }
+    }
+
+    fn toggle_task_target_pin(
+        &mut self,
+        target: &TaskTarget,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            TaskTarget::Own(id) => self.toggle_task_pin(id, cx),
+            TaskTarget::Other(target) => cx.emit(SidebarEvent::TaskAction(TaskActionRequest {
+                target: target.as_ref().clone(),
+                action: TaskAction::Pin(!pinned),
+            })),
+        }
+    }
+
+    fn move_task_target(&mut self, target: &TaskTarget, to: TaskMove, cx: &mut Context<Self>) {
+        let TaskTarget::Other(target) = target else {
+            if let TaskTarget::Own(id) = target {
+                self.move_task(id, to, cx);
+            }
+            return;
+        };
+        let action = match to {
+            TaskMove::Active => TaskAction::SetState(AgentTaskState::Active),
+            TaskMove::Settled => TaskAction::SetState(AgentTaskState::Settled),
+            TaskMove::Archived => TaskAction::SetState(AgentTaskState::Archived),
+            TaskMove::Deleted => {
+                if let Some(task) = self.other_tasks.iter().find(|task| task.target == *target) {
+                    cx.emit(SidebarEvent::ConfirmTaskDelete {
+                        target: target.as_ref().clone(),
+                        title: task.session.title.clone(),
+                    });
+                }
+                return;
+            }
+        };
+        cx.emit(SidebarEvent::TaskAction(TaskActionRequest {
+            target: target.as_ref().clone(),
+            action,
+        }));
     }
 
     /// Send a task to a rung. The runtime owns the state, so every move
@@ -2836,17 +3043,16 @@ impl Sidebar {
         let active = !self.filter.is_empty();
         div()
             .debug_selector(|| "sidebar-search".to_string())
-            // Most of the sidebar takes no focus, so a press anywhere else
-            // must end the search itself: drop the cursor, and return to
-            // the Search row when nothing was typed.
+            // Most rows take no focus. Blur on press, but keep the field in
+            // place until release so the row under the pointer cannot shift.
             .on_mouse_down_out(cx.listener(|this, _event, window, cx| {
                 if this.search_input.read(cx).menu_open() {
                     return;
                 }
+                this.search_pointer_dismissal_pending = true;
                 if this.search_input_focused(window, cx) {
                     window.blur();
                 }
-                this.hide_empty_search(cx);
             }))
             .flex()
             .items_center()
@@ -2905,7 +3111,6 @@ impl Sidebar {
     ) -> AnyElement {
         let selected = self.selected.as_deref();
         let chat = self.chat.clone();
-        // Adjacent folded headings keep only their pill margins.
         let spacing = self.row_spacing.get(ix).copied().unwrap_or_default();
         let heading_gap = spacing.before;
         let entry = match self.entries.get(ix).copied() {
@@ -2936,7 +3141,7 @@ impl Sidebar {
                             "New Task",
                             ChatCommand::NewTask,
                             &super::NewTask,
-                            theme::text_sidebar(),
+                            theme::text_primary(),
                         )
                     };
                 div()
@@ -2960,6 +3165,16 @@ impl Sidebar {
                     .gap_2()
                     .text_sm()
                     .text_color(gpui::rgb(color))
+                    .when(!search, |row| {
+                        row.my_0()
+                            .mb_2()
+                            .px(px(10.))
+                            .h_9()
+                            .rounded(theme::RADIUS_SM)
+                            .border_1()
+                            .border_color(gpui::transparent_black())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                    })
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -3035,44 +3250,35 @@ impl Sidebar {
                     ))
                     .into_any_element()
             }
-            Some(SidebarEntry::Empty(reason)) => {
-                let (title, hint) = match reason {
-                    SidebarEmpty::NoTasks => ("No tasks yet", "Start one with ⌘N"),
-                    SidebarEmpty::NoMatches => ("Nothing matches", "Try another search"),
-                };
-                div()
-                    .mt_6()
-                    .px_4()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .when(reason == SidebarEmpty::NoMatches, |column| {
-                        column.child(icon("search", px(18.), theme::text_faint()))
-                    })
-                    .child(div().mt_1().child(title))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(hint),
-                    )
-                    .when(reason == SidebarEmpty::NoMatches, |column| {
-                        column.child(
-                            widgets::ghost_button("clear-search-empty")
-                                .mt_2()
-                                .text_xs()
-                                .py_1()
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.clear_search(cx);
-                                }))
-                                .child("Clear search"),
-                        )
-                    })
-                    .into_any_element()
-            }
+            Some(SidebarEntry::Empty(SidebarEmpty::NoMatches)) => div()
+                .debug_selector(|| "sidebar-empty".to_string())
+                .px_4()
+                .flex()
+                .flex_col()
+                .mt_6()
+                .items_center()
+                .gap_1()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .child(icon("search", px(18.), theme::text_faint()))
+                .child(div().mt_1().child("Nothing matches"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child("Try another search"),
+                )
+                .child(
+                    widgets::ghost_button("clear-search-empty")
+                        .mt_2()
+                        .text_xs()
+                        .py_1()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.clear_search(cx);
+                        }))
+                        .child("Clear search"),
+                )
+                .into_any_element(),
             Some(SidebarEntry::ArchivedHeader) => {
                 let expanded = self.archived_expanded;
                 let count = if self.uses_computer_projection() && self.project_filter.is_none() {
@@ -3102,12 +3308,12 @@ impl Sidebar {
                     .w_auto()
                     .mx_2()
                     .my(px(1.))
-                    .when(heading_gap, |row| row.mt_3())
+                    .when(heading_gap, |row| row.mt_2())
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
                     .px_2()
-                    .py_1()
+                    .h(px(34.))
                     .rounded(ROW_RADIUS)
                     .hover(|style| {
                         style
@@ -3118,7 +3324,14 @@ impl Sidebar {
                         this.toggle_archived_visibility(cx);
                         this.hover_heading(SidebarEntry::ArchivedHeader, cx);
                     }))
-                    .child(section_label("Archived"))
+                    .child(icon("archive", px(16.), theme::text_muted()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.))
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child("Archived"),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -3134,14 +3347,8 @@ impl Sidebar {
             }
             None => div().into_any_element(),
         };
-        let entry = if matches!(
-            self.entries.get(ix),
-            Some(SidebarEntry::Task(_) | SidebarEntry::OtherTask(_))
-        ) {
-            div()
-                .when(spacing.after, |row| row.mb_2())
-                .child(entry)
-                .into_any_element()
+        let entry = if spacing.after {
+            div().mb_2().child(entry).into_any_element()
         } else {
             entry
         };
@@ -3300,7 +3507,8 @@ impl Sidebar {
     fn section_hovered(&self, section: SidebarHoverSection) -> bool {
         self.hovered_section == Some(section)
             || (section == SidebarHoverSection::Projects
-                && matches!(self.hovered_section, Some(SidebarHoverSection::Section(label)) if label != SidebarSection::Pinned))
+                && (matches!(self.hovered_section, Some(SidebarHoverSection::Computer(_)))
+                    || matches!(self.hovered_section, Some(SidebarHoverSection::Section(label)) if label != SidebarSection::Pinned)))
     }
 
     /// Reserve the chevron's space; a folded section always shows it.
@@ -3382,8 +3590,7 @@ impl Sidebar {
         };
         div()
             .group("projects-header-actions")
-            .mt_3()
-            .mb_1()
+            .h_7()
             .px_4()
             .w_full()
             .flex()
@@ -3407,7 +3614,13 @@ impl Sidebar {
                         this.set_projects_expanded(!this.projects_expanded, cx);
                         this.hover_heading(SidebarEntry::ProjectsHeader, cx);
                     }))
-                    .child(section_label(label))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .child(label),
+                    )
                     .child(self.section_chevron(
                         expanded,
                         "projects-header-actions",
@@ -3432,6 +3645,9 @@ impl Sidebar {
     fn view_button(&self, open: bool) -> gpui::Stateful<Div> {
         header_button("view-options", "list-filter", "View options", open)
             .debug_selector(|| "view-options".into())
+            .tab_index(5)
+            .focus_visible(|style| widgets::focus_ring(style.opacity(1.)))
+            .on_key_down(ChatScreen::sidebar_button_key_down)
             .when(!open, |button| {
                 button
                     .opacity(0.)
@@ -3774,27 +3990,27 @@ impl Sidebar {
     fn task_menu_trigger(
         &self,
         row: &SidebarRow,
-        task: SidebarTaskEntry,
+        target: TaskTarget,
+        pinned: bool,
+        rung: TaskRung,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let key = SidebarPopup::Task(row.id.clone());
+        let key = target.popup_key();
         let open = self.popup.is_open(&key);
         let menu = open.then(|| {
             let mut menu = Menu::new(row.menu_panel_id.clone(), px(180.))
                 .label("Task options")
                 .application_vim(self.application_vim_enabled);
-            if let Some(items) = self.task_menu_items(task) {
-                menu = menu
-                    .items(items.actions.into_iter().map(menu_item))
-                    .separator()
-                    .items(items.workflow.into_iter().map(menu_item))
-                    .separator()
-                    .item(menu_item(items.delete));
-            }
+            let items = self.task_menu_items_for(row, target.clone(), pinned, rung);
+            menu = menu
+                .items(items.actions.into_iter().map(menu_item))
+                .separator()
+                .items(items.workflow.into_iter().map(menu_item))
+                .separator()
+                .item(menu_item(items.delete));
             self.popup.render(menu, Placement::BelowStart, window, cx)
         });
-        let session = row.id.clone();
         div()
             .relative()
             .child(
@@ -3805,7 +4021,12 @@ impl Sidebar {
                             button.tooltip(widgets::tooltip("More", None))
                         }),
                     cx,
-                    move |this, _, cx| this.toggle_task_menu(session.clone(), cx),
+                    move |this, _, cx| match &target {
+                        TaskTarget::Own(id) => this.toggle_task_menu(id.clone(), cx),
+                        TaskTarget::Other(_) => {
+                            this.popup.toggle(target.popup_key(), cx);
+                        }
+                    },
                 ),
             )
             .children(menu)
@@ -3831,6 +4052,75 @@ impl Sidebar {
             }
             _ => None,
         }
+    }
+
+    fn other_task_rename_field(
+        &self,
+        target: &Arc<SidebarItemKey>,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<Div>> {
+        match self.rename.as_ref() {
+            Some(RenameTarget::OtherTask(renaming)) if renaming == target => {
+                self.rename_field().map(|field| {
+                    field.on_mouse_down_out(
+                        cx.listener(|this, _event, _window, cx| this.leave_rename(cx)),
+                    )
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn task_hover_actions(
+        &self,
+        row: &SidebarRow,
+        target: TaskTarget,
+        state: (bool, TaskRung),
+        hover_bg: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (pinned, rung) = state;
+        let rename = target.clone();
+        let advance = target.clone();
+        let step = rung.step();
+        hover_actions(&row.group, hover_bg)
+            .pl_0()
+            .when(pinned, |overlay| overlay.right(px(26.)))
+            .when(!pinned, |overlay| overlay.right_0().rounded_r(ROW_RADIUS))
+            .pr_4()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_full()
+                    .w(ROW_FADE)
+                    .group_hover(row.group.clone(), |style| {
+                        style.bg(row_fade_background(hover_bg))
+                    }),
+            )
+            .child(self.task_menu_trigger(row, target, pinned, rung, window, cx))
+            .child(row_action(
+                row.rename_id.clone(),
+                &row.group,
+                "pencil",
+                "Rename",
+                cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.begin_rename(rename.rename_target(), cx);
+                }),
+            ))
+            .child(row_action(
+                row.step_id.clone(),
+                &row.group,
+                step.icon,
+                step.row_label,
+                cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.move_task_target(&advance, rung.next(), cx);
+                }),
+            ))
     }
 
     /// The rename field for the project being edited, if it is this one.
@@ -3879,10 +4169,7 @@ impl Sidebar {
             .then(|| self.session_activity(&row.id))
             .flatten();
         let session_id = Arc::clone(&row.id);
-        let step_id = Arc::clone(&row.id);
-        let rename_id = Arc::clone(&row.id);
         let rung = TaskRung::of(task);
-        let step = rung.step();
         let pin_task_id = Arc::clone(&row.id);
         let rename_field = self.task_rename_field(&row.id, cx);
         let renaming = rename_field.is_some();
@@ -3891,6 +4178,12 @@ impl Sidebar {
         } else {
             theme::bg_sidebar_row_hover()
         };
+        let row_bg = if is_selected {
+            theme::bg_sidebar_row_selected()
+        } else {
+            theme::bg_sidebar()
+        };
+        let hover_group = (!renaming && !self.dragging).then_some(&row.group);
         div()
             .relative()
             .w_auto()
@@ -3934,21 +4227,19 @@ impl Sidebar {
                     .flex_col()
                     .map(|column| match rename_field {
                         Some(field) => column.child(field),
-                        None => column
-                            .child(div().line_clamp(1).text_ellipsis().child(row.title.clone())),
+                        None => {
+                            column.child(row_line(row.title.clone(), hover_group, row_bg, hover_bg))
+                        }
                     })
                     .when(self.show_task_metadata(is_pinned, archived), |column| {
                         column.child(
-                            div()
+                            row_line(row.metadata.clone(), hover_group, row_bg, hover_bg)
                                 .text_xs()
                                 .text_color(gpui::rgb(if is_selected {
                                     theme::text_secondary()
                                 } else {
                                     theme::text_muted()
-                                }))
-                                .line_clamp(1)
-                                .text_ellipsis()
-                                .child(row.metadata.clone()),
+                                })),
                         )
                     }),
             )
@@ -3980,35 +4271,14 @@ impl Sidebar {
                 )
             })
             .when(!renaming && !self.dragging, |el| {
-                el.child(
-                    hover_actions(&row.group, hover_bg)
-                        .when(is_pinned, |overlay| overlay.right(px(26.)))
-                        .when(!is_pinned, |overlay| {
-                            overlay.right_0().rounded_r(ROW_RADIUS)
-                        })
-                        .pr_4()
-                        .child(self.task_menu_trigger(row, task, window, cx))
-                        .child(row_action(
-                            row.rename_id.clone(),
-                            &row.group,
-                            "pencil",
-                            "Rename",
-                            cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
-                            }),
-                        ))
-                        .child(row_action(
-                            row.step_id.clone(),
-                            &row.group,
-                            step.icon,
-                            step.row_label,
-                            cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                this.move_task(&step_id, rung.next(), cx);
-                            }),
-                        )),
-                )
+                el.child(self.task_hover_actions(
+                    row,
+                    TaskTarget::Own(row.id.clone()),
+                    (is_pinned, rung),
+                    hover_bg,
+                    window,
+                    cx,
+                ))
             })
     }
 }
@@ -4048,6 +4318,23 @@ impl Render for Sidebar {
         })
         .size_full();
         div()
+            // The search row is virtualized; keep release handling on the root
+            // so scrolling it out of view during a press cannot strand dismissal.
+            .capture_any_mouse_up(cx.listener(|this, _, window, cx| {
+                this.finish_search_pointer_dismissal(window, cx);
+            }))
+            .map(|root| {
+                gpui::MouseButton::all()
+                    .into_iter()
+                    .fold(root, |root, button| {
+                        root.on_mouse_up_out(
+                            button,
+                            cx.listener(|this, _, window, cx| {
+                                this.finish_search_pointer_dismissal(window, cx);
+                            }),
+                        )
+                    })
+            })
             .size_full()
             .flex()
             .flex_col()
@@ -4060,8 +4347,8 @@ impl Render for Sidebar {
                     .justify_between()
                     .pl(WORDMARK_LEFT)
                     .pr(TOP_ROW_GUTTER)
-                    // The wordmark row sits under the traffic lights, not
-                    // beside them; the space above it is still the bar.
+                    // Under traffic lights the wordmark row sits below them,
+                    // not beside them; the space above it is still the bar.
                     .pt(wordmark_row_top())
                     .pb_2()
                     .child(
@@ -4090,7 +4377,7 @@ impl Render for Sidebar {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .pt_6()
+                    .pt_3()
                     .child(list)
                     .child(crate::ui::scrollbar::scrollbar(
                         "sidebar-scrollbar",
@@ -4098,23 +4385,112 @@ impl Render for Sidebar {
                     )),
             )
             // Settings stays opaque outside this cached, fading subtree.
-            .child(div().h_12().flex_none())
+            .child(div().h(px(54.)).flex_none())
     }
 }
 
-/// A spinner while the task runs, a dot once it completed unseen. The
-/// spinner keeps the sidebar repainting while any task runs; `spinner_id`
-/// is prebuilt so render allocates nothing.
+/// Replace each line break, including CRLF, with one space.
+fn one_line(text: &str) -> SharedString {
+    text.replace("\r\n", " ").replace(['\r', '\n'], " ").into()
+}
+
+/// Fade a line into its row background; renames and drags omit the hover group.
+fn row_line(
+    text: SharedString,
+    hover_group: Option<&SharedString>,
+    row_bg: u32,
+    hover_bg: u32,
+) -> Div {
+    div()
+        .relative()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .child(text)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(ROW_FADE)
+                .bg(row_fade_background(row_bg))
+                .when_some(hover_group, |fade, group| {
+                    fade.group_hover(group.clone(), |style| {
+                        style.bg(row_fade_background(hover_bg))
+                    })
+                }),
+        )
+}
+
+/// Left to right from clear to `color`.
+fn row_fade_background(color: u32) -> gpui::Background {
+    let color = gpui::rgb(color);
+    gpui::linear_gradient(
+        90.,
+        gpui::linear_color_stop(color.alpha(0.), 0.),
+        gpui::linear_color_stop(color, 1.),
+    )
+}
+
+/// One breath of the running ring's dot.
+const RUNNING_BREATH: Duration = Duration::from_millis(1600);
+
+/// A coral dot while a question waits, a ring with a breathing dot while
+/// the task runs, an alert once a run failed unseen, and a green dot once
+/// one completed unseen. The two dots differ by color; the ring and the
+/// alert differ by shape. The ring runs on the shared low-rate clock, so
+/// any number of running rows cost one repaint per interval; `spinner_id`
+/// is prebuilt so render allocates nothing. Every state sits centered in
+/// one box the size of the largest, so the center stays put as states
+/// change.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
-    match activity {
-        SessionActivity::Running => spinner_with_id(spinner_id.clone(), px(13.), theme::accent()),
-        SessionActivity::CompletedUnread => div()
+    let dot = |color: u32| {
+        div()
             .size(px(8.))
-            .flex_none()
             .rounded_full()
-            .bg(gpui::rgb(theme::status_success()))
-            .into_any_element(),
-    }
+            .bg(gpui::rgb(color))
+            .into_any_element()
+    };
+    div()
+        .size(px(13.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(match activity {
+            SessionActivity::NeedsYou => dot(theme::accent()),
+            SessionActivity::Running => running_ring(spinner_id.clone()),
+            SessionActivity::Failed => {
+                icon("circle-alert", px(13.), theme::status_error()).into_any_element()
+            }
+            SessionActivity::CompletedUnread => dot(theme::status_success()),
+        })
+        .into_any_element()
+}
+
+/// The running state: a coral ring whose center dot fades in and out. A
+/// fade reads as smooth at the shared clock's low frame rate, where a
+/// turning arc steps visibly.
+fn running_ring(id: SharedString) -> AnyElement {
+    motion::ticker(id, RUNNING_BREATH, |phase| {
+        div()
+            .size(px(12.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .border_1()
+            .border_color(gpui::rgb(theme::accent()))
+            .child(
+                div()
+                    .size(px(6.))
+                    .rounded_full()
+                    .bg(gpui::rgb(theme::accent()))
+                    .opacity(motion::pulse(phase, 0., 0.3, 1.)),
+            )
+            .into_any_element()
+    })
+    .into_any_element()
 }
 
 /// The strip over a row's end that holds its hover buttons, with the
@@ -4280,6 +4656,121 @@ fn remote_root_display_name(root: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{remote_root_display_name, root_display_name};
+
+    #[gpui::test]
+    fn collapsed_and_empty_projects_keep_the_expanded_task_gap(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
+        let folded = Navigate {
+            computer: Some("remote".into()),
+            destination: Destination::Project("/tmp/b".into()),
+        };
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view.sort = SidebarSort::Manual;
+            let mut computer = Computer::pending("remote".into(), "Remote".into(), None);
+            computer.backend = Some(Arc::new(AgentBackend::for_remote_test("remote").unwrap()));
+            computer.loading = false;
+            computer.projects = ["a", "b", "c", "d"]
+                .into_iter()
+                .map(|name| super::super::computers::Project {
+                    path: format!("/tmp/{name}"),
+                    label: name.into(),
+                })
+                .collect();
+            computer.sessions = ["a", "b", "d"]
+                .into_iter()
+                .map(|name| AgentSessionSummary {
+                    id: name.into(),
+                    title: format!("Task {name}"),
+                    project_root: format!("/tmp/{name}"),
+                    created_ms: 0,
+                    updated_ms: 0,
+                    message_count: 1,
+                    model: None,
+                    web_enabled: true,
+                    state: AgentTaskState::Active,
+                    acp: false,
+                })
+                .collect();
+            sidebar.computers = Arc::new(vec![computer]);
+            sidebar.collapsed_projects.insert(ProjectTarget {
+                computer: folded.computer.clone(),
+                path: "/tmp/b".into(),
+            });
+            sidebar.seed_computer_snapshot_pages_for_test();
+            sidebar.list =
+                gpui::ListState::new(sidebar.entries.len(), gpui::ListAlignment::Top, px(0.));
+        });
+        struct Host(Entity<Sidebar>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let list = sidebar.update(cx, |sidebar, _| sidebar.list.clone());
+        let (_host, cx) = cx.add_window_view(|_, _| Host(sidebar.clone()));
+        cx.simulate_resize(gpui::size(px(300.), px(700.)));
+        let rows = |cx: &mut gpui::VisualTestContext| {
+            sidebar.update(cx, |sidebar, _| {
+                let task = sidebar.entries.iter().position(|entry| {
+                    matches!(entry, SidebarEntry::OtherTask(index)
+                        if sidebar.other_tasks[*index].session.id == "a")
+                });
+                let project = |path| {
+                    sidebar.entries.iter().position(|entry| {
+                        matches!(entry, SidebarEntry::ComputerProject(index)
+                            if sidebar.computer_projects[*index].root == path)
+                    })
+                };
+                [
+                    task.unwrap(),
+                    project("/tmp/b").unwrap(),
+                    project("/tmp/c").unwrap(),
+                ]
+            })
+        };
+        for group in [SidebarGroup::Project, SidebarGroup::Connection] {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.view.group = group;
+                sidebar.rebuild_entries();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            for (step, expanded) in [false, true, false, true, false].into_iter().enumerate() {
+                if step > 0 {
+                    sidebar.update(cx, |sidebar, cx| {
+                        assert!(sidebar.toggle_computer_group(&folded, cx));
+                    });
+                    cx.run_until_parked();
+                }
+                let [task, folded_row, empty] = rows(cx);
+                let task_height = list.bounds_for_item(task).unwrap().size.height;
+                let folded_height = list.bounds_for_item(folded_row).unwrap().size.height;
+                let empty_height = list.bounds_for_item(empty).unwrap().size.height;
+                assert_eq!(
+                    empty_height, task_height,
+                    "empty project ends with the task gap"
+                );
+                if expanded {
+                    assert!(
+                        folded_height < task_height,
+                        "expanded header stays beside its task"
+                    );
+                } else {
+                    assert_eq!(
+                        folded_height, task_height,
+                        "collapsed project ends with the task gap"
+                    );
+                }
+            }
+        }
+    }
 
     #[gpui::test]
     fn sidebar_remeasures_an_offscreen_heading_when_its_gap_changes(cx: &mut gpui::TestAppContext) {

@@ -271,6 +271,7 @@
               bash
               binutils
               coreutils
+              findutils
               desktop-file-utils
               diffutils
               file
@@ -738,14 +739,13 @@
           '';
 
           # Every scripts/ci test (workflow policy, contracts, the planner, the
-          # release and publication scripts) and the Agent update publisher.
+          # release and publication scripts).
           ci-scripts = pkgs.runCommand "maple-ci-scripts-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash git jq minisign python3 unzip yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash binutils findutils git jq minisign python3 unzip yq-go ];
             src = ./.;
           } ''
             cd "$src"
             python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'
-            python3 -I -m unittest discover -s services/agent-updates/publisher -p 'test_*.py'
             touch "$out"
           '';
 
@@ -780,7 +780,9 @@
           release-gates = pkgs.runCommand "maple-release-gates-check" {
             nativeBuildInputs = with pkgs; [
               mapleBash
+              binutils
               coreutils
+              findutils
               git
               jq
               python3

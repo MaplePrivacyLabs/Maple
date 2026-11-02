@@ -41,7 +41,9 @@ use super::{
 };
 
 mod live;
+mod shell_progress;
 use live::LiveSnapshot;
+use shell_progress::ShellProgress;
 
 const AGENT_RUN_EVENT_CAPACITY: usize = 256;
 const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
@@ -351,6 +353,17 @@ impl RunEvents {
         if let Err(mpsc::error::TrySendError::Full(_)) = self.sender.try_send(event) {
             self.overflowed.store(true, Ordering::Release);
         }
+    }
+
+    /// Publish the row of an entry Maple appended itself, linked to the row
+    /// the store keeps for that entry.
+    fn publish_entry_row(&self, entry_id: &str, item: AgentTimelineItem) {
+        {
+            let mut live = lock(&self.order);
+            live.drain_changes(&self.session_id);
+            live.note_entry_row(entry_id, &item.id);
+        }
+        self.publish(AgentRunEvent::TimelineItem(item));
     }
 
     fn watch_store(&self, store: &Arc<crate::store::Store>, account: crate::store::AccountId) {
@@ -1534,15 +1547,8 @@ impl AgentRuntime {
             .store
             .get(session_id)?
             .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
+        // A started task may run on another model: it switches from this run.
         let model_id = request.model.clone().unwrap_or_else(|| self.model.clone());
-        if row.message_count > 0
-            && let Some(locked) = row.model.as_deref()
-            && locked != model_id
-        {
-            return Err(format!(
-                "This task is locked to model {locked}. Start a new task to use {model_id}."
-            ));
-        }
         let model = self
             .pi_model(
                 &model_id,
@@ -1550,7 +1556,14 @@ impl AgentRuntime {
                 Some(request.vision_capable),
             )
             .await;
-        let session = self.task_session(&row, model).await?;
+        let (session, switched) = self.switch_task_session(&row, model).await?;
+        if let Some((entry_id, notice)) = switched {
+            // Surfaces show the task's new model from the start of the run.
+            if let Some(row) = self.store.get(session_id)? {
+                events.publish(AgentRunEvent::SessionUpdated(row.summary()));
+            }
+            events.publish_entry_row(&entry_id, notice);
+        }
         self.failures.clear(session_id);
         self.wake(session_id)?;
         // Named from the first message with text: images alone say nothing,
@@ -1588,7 +1601,11 @@ impl AgentRuntime {
         } = run;
         let attachments =
             AgentAttachmentStore::new(Arc::clone(self.store.store()), self.store.account());
-        let watch = RunWatch::default();
+        let watch = RunWatch {
+            state: Arc::default(),
+            shells: ShellProgress::new(session.extension_context().cwd()),
+        };
+        let shell_status = watch.shells.start(events.clone());
         let listener = session.subscribe({
             let events = events.clone();
             let watch = watch.clone();
@@ -1749,6 +1766,7 @@ impl AgentRuntime {
             run.accepting = false;
         }
         session.unsubscribe(listener);
+        shell_status.stop().await;
 
         let cancelled = stopped.is_cancelled();
         if cancelled || failure.is_some() || deferred.failure.is_some() {
@@ -1982,9 +2000,10 @@ struct DrivenRun {
 
 /// What a run's listener saw: the usage of its replies and whether Pi
 /// retried.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RunWatch {
     state: Arc<Mutex<RunWatchState>>,
+    shells: Arc<ShellProgress>,
 }
 
 #[derive(Default)]
@@ -2030,6 +2049,7 @@ impl RunWatch {
                 } else {
                     let tool = match event {
                         pi_agent_core::AgentEvent::ToolExecutionStart { tool_call_id, .. }
+                        | pi_agent_core::AgentEvent::ToolExecutionUpdate { tool_call_id, .. }
                         | pi_agent_core::AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
                             Some(tool_call_id.as_str())
                         }
@@ -2037,9 +2057,7 @@ impl RunWatch {
                     };
                     (projected, tool, false)
                 };
-                for row in rows {
-                    events.publish_row(AgentRunEvent::TimelineItem(row), tool, completed);
-                }
+                self.shells.publish(event, rows, tool, completed, events);
             }
             AgentSessionEvent::EntryAppended { entry } => events.note_source(entry),
             AgentSessionEvent::RetryStart { .. } => lock(&self.state).retried = true,

@@ -32,6 +32,9 @@ static OVERFLOW: LazyLock<RegexSet> = LazyLock::new(|| {
         r"(?i)context[_ ]length[_ ]exceeded",
         r"(?i)too many tokens",
         r"(?i)token limit exceeded",
+        // An HTTP 413 is a request too large for the provider, whatever its body says.
+        // Errors start with the status, or with a provider's own prefix.
+        r"(?i)^(?:[\w -]+ API error \(413\):|413(?:\s|:|$))",
     ])
     .expect("overflow patterns compile")
 });
@@ -96,6 +99,7 @@ static ACCOUNT_LIMIT: LazyLock<Regex> = LazyLock::new(|| {
         r"(?i)GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance",
         r"|insufficient_quota|out of budget|quota exceeded|billing",
         r"|subscription_sharing_usage_limit_exceeded",
+        r"|subscription_sharing_workplace_individual_usage_limit_exceeded",
     ))
     .expect("pattern compiles")
 });
@@ -104,13 +108,20 @@ static RETRYABLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?i)overloaded|server_busy|servers are currently busy|high demand|at capacity",
         r"|rate.?limit|too many requests",
-        r"|\b(?:429|500|502|503|504|520|524)\b|service.?unavailable|server.?error|internal.?error",
-        r"|provider.?returned.?error|exceeded request buffer limit while retrying upstream",
+        // A status code, but not digits inside a longer word or number, such as a
+        // request id or a byte count.
+        r"|(?:^|[^a-z0-9])(?:429|500|502|503|504|520|524)(?:[^a-z0-9]|$)",
+        r"|service.?(?:is.?)?(?:temporarily.?)?unavailable|server.?error|internal.?error",
+        r"|provider.?returned.?(?:an.?)?error|exceeded request buffer limit while retrying upstream",
+        r"|unable to forward upstream|upstream.?request.?failed|upstream_stream_read_error",
+        r"|stream was interrupted|http/?2 stream failed",
         r"|network.?error|connection.?(?:error|refused|lost|reset)",
-        r"|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect",
+        r"|other side closed|fetch failed|request to \S+ failed, reason:",
+        r"|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect",
         r"|reset before headers|socket hang up|socket connection was closed|timed? ?out",
         r"|terminated|websocket.?(?:closed|error)",
         r"|ended without|stream ended|http2 request did not get a response",
+        r"|stream disconnected before completion",
         r"|pending stream has been canceled|retry delay",
         r"|retry your request|try your request again|ResourceExhausted",
         r"|subscription_sharing_(?:usage|user)_unavailable",
@@ -207,14 +218,15 @@ mod tests {
     }
 
     #[test]
-    fn bodyless_400_and_413_errors_are_overflow_only_from_cerebras() {
-        for error in ["400 status code (no body)", "413 status code (no body)"] {
-            let mut message = failed(error);
-            message.provider = "cerebras".into();
-            assert!(is_context_overflow(&message, Some(131_072)), "{error}");
-            message.provider = "opencode-go".into();
-            assert!(!is_context_overflow(&message, Some(1_000_000)), "{error}");
-        }
+    fn a_bodyless_400_is_overflow_only_from_cerebras() {
+        let mut message = failed("400 status code (no body)");
+        message.provider = "cerebras".into();
+        assert!(is_context_overflow(&message, Some(131_072)));
+        message.provider = "opencode-go".into();
+        assert!(!is_context_overflow(&message, Some(1_000_000)));
+        // A 413 is overflow from every provider.
+        message.error_message = Some("413 status code (no body)".into());
+        assert!(is_context_overflow(&message, Some(1_000_000)));
     }
 
     #[test]
@@ -279,12 +291,53 @@ mod tests {
             "Request timed out",
             "{\"code\":\"server_busy\",\"message\":\"Busy\"}",
             "Our servers are currently busy, please come back later",
+            "The service is temporarily unavailable",
+            "The upstream provider returned an error",
+            "Unable to forward upstream stream",
+            "upstream_error: Upstream request failed",
+            "upstream_stream_read_error",
+            "The stream was interrupted",
+            "Upstream HTTP/2 stream failed",
+            "request to https://oauth2.googleapis.com/token failed, reason: ",
+            "stream disconnected before completion: stream closed before response.completed",
+            "status_503",
         ] {
             assert!(is_retryable_error(&failed(error)), "{error}");
         }
-        for error in ["401 invalid api key", "400 bad request: unknown field"] {
+        for error in [
+            "401 invalid api key",
+            "400 bad request: unknown field",
+            // Digits inside a request id or a byte count are no status code.
+            "400 invalid request req_011CU503xyz",
+            "400 the body exceeds 5242880 bytes",
+        ] {
             assert!(!is_retryable_error(&failed(error)), "{error}");
         }
+    }
+
+    #[test]
+    fn a_413_is_overflow_whatever_its_body_says() {
+        for error in [
+            "413 {\"message\":\"failed to parse request\",\"code\":\"\"}",
+            "413",
+            "413: Payload Too Large",
+            "github-copilot API error (413): {\"message\":\"failed to parse request\"}",
+        ] {
+            assert!(is_context_overflow(&failed(error), None), "{error}");
+        }
+        // Only the status, not a number in the body or a longer one.
+        for error in [
+            "github-copilot API error (400): {\"message\":\"failed to parse request: invalid value 413\"}",
+            "custom-provider API error (400): upstream mentioned OpenAI API error (413): invalid input",
+            "custom-provider API error (4130): invalid input",
+            "4130 failed to parse request",
+        ] {
+            assert!(!is_context_overflow(&failed(error), None), "{error}");
+        }
+        // Only for a failed response.
+        let mut stopped = failed("413 Payload Too Large");
+        stopped.stop_reason = StopReason::Aborted;
+        assert!(!is_context_overflow(&stopped, None));
     }
 
     #[test]
@@ -295,6 +348,7 @@ mod tests {
             "Rate limit: quota exceeded for this key",
             "402 billing hard limit reached",
             "subscription_sharing_usage_limit_exceeded",
+            "429 subscription_sharing_workplace_individual_usage_limit_exceeded",
         ] {
             assert!(!is_retryable_error(&failed(error)), "{error}");
         }

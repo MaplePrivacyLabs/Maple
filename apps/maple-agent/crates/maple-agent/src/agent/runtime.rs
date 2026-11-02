@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use pi_agent_core::QueueMode;
 use pi_ai::Model;
 use pi_coding_agent::resources::Resources;
+use pi_coding_agent::session::EntryKind;
 use pi_coding_agent::settings::{RetrySettings, Settings};
 use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
@@ -30,9 +31,11 @@ use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
 use super::surface::{AgentSurfaceAccess, SurfaceTask, with_surface_servers};
+use super::switch_compaction::{OfferedModel, switch_compaction_extension};
+use super::timeline::{MAPLE_NOTICE_ENTRY, notice_entry_data, notice_item};
 use super::{
-    AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources, emit_agent_event, login_path,
-    tools,
+    AgentRuntimeStatus, AgentServiceEvent, AgentTimelineItem, MapleAgentHostResources,
+    emit_agent_event, login_path, tools,
 };
 use crate::maple_api::MapleApiSession;
 
@@ -647,6 +650,16 @@ impl AgentRuntime {
         row: &TaskRow,
         model: Model,
     ) -> Result<AgentSession, String> {
+        Ok(self.switch_task_session(row, model).await?.0)
+    }
+
+    /// [`Self::task_session`], with the transcript's notice, and the entry
+    /// that holds it, when a started task switched to another model.
+    pub(super) async fn switch_task_session(
+        &self,
+        row: &TaskRow,
+        model: Model,
+    ) -> Result<(AgentSession, Option<(String, AgentTimelineItem)>), String> {
         // Read before the sessions are locked: the first read asks a shell,
         // and the resources come from disk.
         let search_path = login_path::login_search_path().await;
@@ -671,12 +684,13 @@ impl AgentRuntime {
                 return Err("Agent task is being unloaded".into());
             }
             *last_used = Instant::now();
-            // A new context window or vision flag for the same model, or
-            // another model for a task that has not started.
-            if session.model().as_ref() != Some(&model) {
-                self.models.register_models([model.clone()]);
-                session.set_model(model).await;
-            }
+            // Another model, or a new context window or vision flag for the
+            // same one.
+            let switched = if session.model().as_ref() != Some(&model) {
+                self.switch_model(session, row, model).await
+            } else {
+                None
+            };
             // The web switch and the external agents may have changed since
             // the last run.
             tools::sync_web_tools(session, row.web_enabled);
@@ -684,17 +698,28 @@ impl AgentRuntime {
             if let Some(resources) = resources {
                 session.set_resources(resources);
             }
-            return Ok(session.clone());
+            return Ok((session.clone(), switched));
         }
-        // Registered first, so a resumed session finds the model it names.
-        self.models.register_models([model.clone()]);
         let store = Arc::clone(&self.store);
         let (id, cwd) = (row.id.clone(), row.project_root.clone());
         let manager = tokio::task::spawn_blocking(move || store.open_session(&id, &cwd))
             .await
             .map_err(|error| format!("Failed to read the Agent task: {error}"))??;
+        // A started task opens on the model it last used and then switches,
+        // as a loaded one does, so the switch is recorded and announced.
+        let stored = manager
+            .projection()
+            .model
+            .map(|(_, id)| id)
+            .filter(|id| row.message_count > 0 && *id != model.id);
+        let initial = match &stored {
+            Some(id) => self.pi_model(id, None, None).await,
+            None => model.clone(),
+        };
+        // Registered first, so a resumed session finds the model it names.
+        self.models.register_models([initial.clone()]);
         // A model that cannot see images gets them described.
-        let describe = !model.supports_images();
+        let describe = !initial.supports_images();
         let attachments = Arc::new(super::attachments::AgentAttachmentStore::new(
             Arc::clone(self.store.store()),
             self.store.account(),
@@ -702,7 +727,7 @@ impl AgentRuntime {
         let task_models = self.attachment_models(&row.id);
         let mut options =
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, task_models);
-        options.model = Some(model);
+        options.model = Some(initial);
         options.settings = self.settings();
         options.resources = resources.unwrap_or_default();
 
@@ -747,9 +772,17 @@ impl AgentRuntime {
         options.extensions.push(mcp.extension());
         let task_cua = TaskCua::new(&self.account_scope, &row.id, self.models.clone());
         options.extensions.push(task_cua.extension());
+        // After a switch to a smaller window, the previous model summarizes.
+        options
+            .extensions
+            .push(switch_compaction_extension(self.offered_model()));
         let session = AgentSession::new(options)
             .await
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
+        let switched = match stored {
+            Some(_) => self.switch_model(&session, row, model).await,
+            None => None,
+        };
         sync_external_agent_tools(&session, &agents, providers);
         sessions.insert(
             row.id.clone(),
@@ -764,7 +797,105 @@ impl AgentRuntime {
         );
         drop(sessions);
         self.evict_idle_tasks(&row.id).await;
-        Ok(session)
+        Ok((session, switched))
+    }
+
+    /// Move a session to `model`, as Pi's `setModel` does. A started task
+    /// that switched to another model records a notice in its transcript,
+    /// which is returned with its entry to show live.
+    ///
+    /// Pi's switch takes the thinking default of the session's settings,
+    /// read when the session was built. A switch to another model takes the
+    /// account's default as it is now, which the composer previews.
+    async fn switch_model(
+        &self,
+        session: &AgentSession,
+        row: &TaskRow,
+        model: Model,
+    ) -> Option<(String, AgentTimelineItem)> {
+        let changed = session
+            .model()
+            .is_none_or(|previous| previous.id != model.id);
+        let model_id = model.id.clone();
+        self.models.register_models([model.clone()]);
+        session.set_model(model).await;
+        if !changed {
+            return None;
+        }
+        if let Some(level) = self.thinking_default() {
+            session.set_thinking_level(level).await;
+        }
+        if row.message_count == 0 {
+            return None;
+        }
+        let text = format!("Switched to {}", self.model_label(&model_id).await);
+        let id = format!("model-switch-{}", pi_ai::now_ms());
+        session
+            .extension_context()
+            .append_entry(MAPLE_NOTICE_ENTRY, Some(notice_entry_data(&id, &text)));
+        let entry_id = session.with_session(|manager| {
+            manager
+                .branch()
+                .iter()
+                .rev()
+                .find_map(|entry| match &entry.kind {
+                    EntryKind::Custom {
+                        custom_type,
+                        data: Some(data),
+                    } if custom_type == MAPLE_NOTICE_ENTRY
+                        && data.get("id").and_then(serde_json::Value::as_str)
+                            == Some(id.as_str()) =>
+                    {
+                        Some(entry.id.clone())
+                    }
+                    _ => None,
+                })
+        })?;
+        Some((
+            entry_id,
+            notice_item(id, "Agent notice", &text, pi_ai::now_ms()),
+        ))
+    }
+
+    /// A model as the account's catalog offers it to tasks: `None` when the
+    /// catalog does not offer it, or cannot be read.
+    fn offered_model(&self) -> OfferedModel {
+        let api = Arc::clone(&self.api);
+        Arc::new(move |model_id: String| {
+            let api = Arc::clone(&api);
+            Box::pin(async move {
+                let catalog = api.model_catalog().await.ok()?;
+                if !super::catalog::selectable_catalog_models(&catalog).contains(&model_id) {
+                    return None;
+                }
+                let entry = catalog_entry(&catalog, &model_id);
+                Some(maple_model(
+                    &model_id,
+                    entry.as_ref(),
+                    context_limit_override(),
+                ))
+            })
+        })
+    }
+
+    /// The name the catalog shows for a model, or its id.
+    async fn model_label(&self, model_id: &str) -> String {
+        self.api
+            .model_catalog()
+            .await
+            .ok()
+            .and_then(|catalog| super::catalog_model_labels(&catalog).remove(model_id))
+            .unwrap_or_else(|| model_id.to_string())
+    }
+
+    /// The account's saved thinking default, if it has one.
+    fn thinking_default(&self) -> Option<pi_ai::ThinkingLevel> {
+        super::config::load_agent_config_inner(&self.host.paths, &self.user_id)
+            .map(|config| config.default_thinking_level)
+            .unwrap_or_else(|error| {
+                log::warn!("Failed to read the thinking default: {error}");
+                None
+            })
     }
 
     /// The skills, prompt templates and instruction files of a task in
@@ -793,7 +924,11 @@ impl AgentRuntime {
     /// delivered together, the saved thinking default, and the host's opening
     /// instructions after Pi's own.
     fn settings(&self) -> Settings {
-        let appended = self.host.harness_instructions().trim().to_string();
+        let appended = format!(
+            "{}\n\n{}",
+            tools::shell::GUIDANCE,
+            self.host.harness_instructions().trim()
+        );
         Settings {
             retry: RETRY,
             // The transport times out a response that does not start or
@@ -801,15 +936,7 @@ impl AgentRuntime {
             http_idle_timeout_ms: Some(0),
             steering_mode: QueueMode::All,
             follow_up_mode: QueueMode::All,
-            default_thinking_level: super::config::load_agent_config_inner(
-                &self.host.paths,
-                &self.user_id,
-            )
-            .map(|config| config.default_thinking_level)
-            .unwrap_or_else(|error| {
-                log::warn!("Failed to read the thinking default: {error}");
-                None
-            }),
+            default_thinking_level: self.thinking_default(),
             append_system_prompt: Some(appended).filter(|text| !text.is_empty()),
             ..Settings::default()
         }

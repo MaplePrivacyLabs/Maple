@@ -5,9 +5,8 @@ import argparse
 import base64
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import plistlib
-import posixpath
 import re
 import sys
 import tarfile
@@ -20,6 +19,8 @@ PUBLIC_FIELDS = (
     "update_feed_url", "update_public_keys",
 )
 BUILD_FIELDS = set(PUBLIC_FIELDS) | {"profile", "version", "git_revision", "source_sha"}
+WINDOWS_PLATFORMS = ("windows-x86_64", "windows-aarch64")
+PLATFORMS = ("macos-aarch64", "linux-x86_64", *WINDOWS_PLATFORMS)
 
 
 def read_info(profile, path, source_sha=None, platform=None):
@@ -51,14 +52,16 @@ def validate_info(profile, info, source_sha=None, platform=None):
     profiles = json.loads((COMPONENT / "release-profiles.json").read_text())
     if profile not in ("dev", "prod"):
         raise ValueError("release profile must be dev or prod")
-    if platform not in (None, "macos-aarch64", "linux-x86_64", "windows-x86_64"):
+    if platform not in (None, *PLATFORMS):
         raise ValueError("unsupported artifact platform")
     if not isinstance(info, dict) or set(info) != BUILD_FIELDS:
         raise ValueError("build-info must contain only the documented public release fields")
     if info["profile"] != profile:
         raise ValueError("binary release profile does not match the requested package")
     for field in PUBLIC_FIELDS:
-        if field == "update_feed_url" and platform == "windows-x86_64":
+        if field == "update_feed_url" and platform == "windows-aarch64":
+            expected = profiles[profile]["windows_arm64_update_feed_url"]
+        elif field == "update_feed_url" and platform == "windows-x86_64":
             expected = profiles[profile]["windows_update_feed_url"]
         elif field == "update_feed_url" and platform == "linux-x86_64":
             expected = profiles[profile]["linux_update_feed_url"]
@@ -128,12 +131,16 @@ def linux_package_name(info):
     return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-linux-x86_64.tar.gz"
 
 
-def windows_package_name(info):
-    return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-windows-x86_64-setup.exe"
+def windows_package_name(info, platform="windows-x86_64"):
+    if platform not in WINDOWS_PLATFORMS:
+        raise ValueError("unsupported Windows package architecture")
+    return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-{platform}-setup.exe"
 
 
-def windows_archive_name(info):
-    return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-windows-x86_64.tar.gz"
+def windows_archive_name(info, platform="windows-x86_64"):
+    if platform not in WINDOWS_PLATFORMS:
+        raise ValueError("unsupported Windows package architecture")
+    return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-{platform}.tar.gz"
 
 
 def public_files(directory):
@@ -145,10 +152,10 @@ def public_files(directory):
 
 def write_manifest(info, directory, platform, unsigned, build_number=None):
     directory = Path(directory)
-    if platform not in ("macos-aarch64", "linux-x86_64", "windows-x86_64"):
+    if platform not in PLATFORMS:
         raise ValueError("unsupported artifact platform")
     files = public_files(directory)
-    suffix = {"macos-aarch64": ".dmg", "linux-x86_64": ".tar.gz", "windows-x86_64": "-setup.exe"}[platform]
+    suffix = {"macos-aarch64": ".dmg", "linux-x86_64": ".tar.gz", "windows-x86_64": "-setup.exe", "windows-aarch64": "-setup.exe"}[platform]
     packages = sorted(name for name in files if name.endswith(suffix))
     if len(packages) != 1:
         raise ValueError("artifact directory must contain exactly one platform package")
@@ -173,16 +180,16 @@ def write_manifest(info, directory, platform, unsigned, build_number=None):
         # do not describe a SHA-256 file as a detached cryptographic signature.
         manifest["macos_signing"] = None
         manifest["linux_integrity"] = "sha256"
-    if platform == "windows-x86_64":
+    if platform in WINDOWS_PLATFORMS:
         if not isinstance(build_number, str) or not re.fullmatch(r"[1-9][0-9]{0,17}", build_number):
             raise ValueError("Windows package build number must be a positive decimal string")
-        expected = {"build-info.json", windows_package_name(info), windows_archive_name(info)}
-        if packages[0] != windows_package_name(info) or not expected <= files or files - expected - {"manifest.json", "SHA256SUMS"}:
+        expected = {"build-info.json", windows_package_name(info, platform), windows_archive_name(info, platform)}
+        if packages[0] != windows_package_name(info, platform) or not expected <= files or files - expected - {"manifest.json", "SHA256SUMS"}:
             raise ValueError("Windows artifact directory must contain only the expected installer, updater bundle and public metadata")
         manifest["macos_signing"] = None
         manifest["windows_signing"] = "unsigned" if unsigned else "authenticode"
         manifest["build"] = build_number
-        manifest["updater"] = windows_archive_name(info)
+        manifest["updater"] = windows_archive_name(info, platform)
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     files = sorted(p for p in directory.iterdir() if p.is_file() and p.name != "SHA256SUMS")
     (directory / "SHA256SUMS").write_text("".join(
@@ -194,162 +201,18 @@ def write_manifest(info, directory, platform, unsigned, build_number=None):
     directory.chmod(0o755)
 
 
-def verify_artifacts(profile, directory, unsigned, source_sha=None, platform=None):
-    directory = Path(directory).resolve()
-    files = public_files(directory)
-    manifest = json.loads((directory / "manifest.json").read_text())
-    manifest_platform = manifest.get("platform")
-    if manifest_platform not in ("macos-aarch64", "linux-x86_64", "windows-x86_64"):
-        raise ValueError("unsupported artifact platform")
-    if platform is not None and manifest_platform != platform:
-        raise ValueError("manifest platform does not match the requested platform")
-    platform = manifest_platform
-    info = read_info(profile, directory / "build-info.json", source_sha, platform)
-    if manifest.get("schema_version") != 1 or any(
-        manifest.get(key) != info[key] for key in ("profile", "source_sha", "version")
-    ):
-        raise ValueError("manifest does not match the binary build information")
-    if manifest.get("distribution") != ("unsigned-pr" if unsigned else "master"):
-        raise ValueError("unsigned PR artifact cannot satisfy signed master verification")
-    if platform == "macos-aarch64" and manifest.get("macos_signing") != (
-        "ad-hoc" if unsigned else "developer-id-notarized"
-    ):
-        raise ValueError("unexpected macOS signing policy")
-    if platform == "linux-x86_64":
-        if manifest.get("macos_signing", "missing") is not None or manifest.get("linux_integrity") != "sha256":
-            raise ValueError("unexpected Linux integrity policy")
-        if manifest.get("package") != linux_package_name(info) or files != {
-            "build-info.json", "manifest.json", "SHA256SUMS", linux_package_name(info),
-        }:
-            raise ValueError("Linux artifact directory must contain exactly the expected bundle and public metadata")
-    if platform == "windows-x86_64":
-        if manifest.get("macos_signing", "missing") is not None or manifest.get("windows_signing") != ("unsigned" if unsigned else "authenticode"):
-            raise ValueError("unexpected Windows signing policy")
-        if manifest.get("package") != windows_package_name(info) or files != {
-            "build-info.json", "manifest.json", "SHA256SUMS", windows_package_name(info), windows_archive_name(info),
-        }:
-            raise ValueError("Windows artifact directory must contain exactly the expected installer, updater bundle and public metadata")
-        if (manifest.get("updater") != windows_archive_name(info)
-                or not isinstance(manifest.get("build"), str)
-                or not re.fullmatch(r"[1-9][0-9]{0,17}", manifest["build"])):
-            raise ValueError("Windows manifest must bind its exact updater bundle and positive build number")
-        if set(manifest) != {"schema_version", "profile", "platform", "source_sha", "version", "package", "distribution", "macos_signing", "windows_signing", "build", "updater"}:
-            raise ValueError("Windows manifest has unexpected metadata fields")
-    lines = (directory / "SHA256SUMS").read_text().splitlines()
-    checked = set()
-    for line in lines:
-        match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9._-]+)", line)
-        if not match:
-            raise ValueError("malformed checksum entry")
-        digest, name = match.groups()
-        if name in checked or name == "SHA256SUMS":
-            raise ValueError("duplicate or self-referential checksum entry")
-        path = directory / name
-        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-            raise ValueError(f"artifact checksum failed: {name}")
-        checked.add(name)
-    if checked != files - {"SHA256SUMS"}:
-        raise ValueError("artifact directory contains unchecked files or directories")
-    package = manifest.get("package", "")
-    suffix = {"macos-aarch64": ".dmg", "linux-x86_64": ".tar.gz", "windows-x86_64": "-setup.exe"}[platform]
-    if package not in checked or not package.endswith(suffix):
-        raise ValueError("manifest package is missing or has the wrong format")
-    return manifest
-
-
-def extract_app_archive(archive, output, app_name):
-    """Extract one app without allowing tar links or names to escape its root."""
-    root_name = f"{app_name}.app"
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, "r:gz") as source:
-        members = source.getmembers()
-        paths = set()
-        for member in members:
-            path = PurePosixPath(member.name)
-            if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != root_name:
-                raise ValueError("app archive contains an absolute, traversal, or unexpected root path")
-            normalized = str(path)
-            if normalized in paths:
-                raise ValueError("app archive contains duplicate paths")
-            paths.add(normalized)
-            if not (member.isfile() or member.isdir() or member.issym()):
-                raise ValueError("app archive contains a hard link or unsupported special file")
-            if member.mode & 0o6000 or not member.mode & 0o004 or (member.isdir() and not member.mode & 0o001):
-                raise ValueError("app archive contains unsafe or private public file permissions")
-            if member.issym():
-                link = PurePosixPath(member.linkname)
-                resolved = PurePosixPath(posixpath.normpath(str(path.parent / link)))
-                if link.is_absolute() or not resolved.parts or resolved.parts[0] != root_name:
-                    raise ValueError("app archive symlink escapes the expected app")
-        if root_name not in paths or not any(member.name == root_name and member.isdir() for member in members):
-            raise ValueError("app archive does not contain exactly one expected app root")
-        # Directories and regular files first, then internal symlinks. Refuse
-        # descendants of a symlink, rather than trusting archive order/filtering.
-        symlinks = {str(PurePosixPath(member.name)) for member in members if member.issym()}
-        for member in members:
-            path = PurePosixPath(member.name)
-            if any(str(parent) in symlinks for parent in path.parents):
-                raise ValueError("app archive writes through a symlink")
-        for member in sorted(members, key=lambda member: (len(PurePosixPath(member.name).parts), member.name)):
-            destination = output / member.name
-            if destination.exists() or destination.is_symlink():
-                raise ValueError("app archive destination already contains a member")
-            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-            if member.isdir():
-                destination.mkdir(mode=member.mode & 0o777)
-                destination.chmod(member.mode & 0o777)
-            elif member.isfile():
-                with source.extractfile(member) as data, destination.open("xb") as file:
-                    while chunk := data.read(1024 * 1024):
-                        file.write(chunk)
-                destination.chmod(member.mode & 0o777)
-        for member in members:
-            if member.issym():
-                (output / member.name).symlink_to(member.linkname)
-    return output / root_name
-
-
-def compare_app_payloads(first, second):
-    def payload(directory):
-        directory = Path(directory)
-        result = {}
-        for path in sorted(directory.rglob("*")):
-            relative = str(path.relative_to(directory))
-            if path.is_symlink():
-                result[relative] = ("symlink", path.readlink().as_posix())
-            elif path.is_file():
-                result[relative] = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
-            elif path.is_dir():
-                result[relative] = ("directory",)
-            else:
-                raise ValueError("app payload contains an unsupported special file")
-        return result
-    if payload(first) != payload(second):
-        raise ValueError("app archive payload differs from the verified disk-image app")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("validate", "field", "bundle-name", "plist", "manifest", "verify", "extract-app", "compare-apps"))
+    parser.add_argument("operation", choices=("field", "bundle-name", "plist", "manifest"))
     parser.add_argument("profile", choices=("dev", "prod"))
     parser.add_argument("path")
     parser.add_argument("--source-sha")
     parser.add_argument("--field")
     parser.add_argument("--build-number")
     parser.add_argument("--output")
-    parser.add_argument("--platform", choices=("macos-aarch64", "linux-x86_64", "windows-x86_64"))
+    parser.add_argument("--platform", choices=PLATFORMS)
     parser.add_argument("--unsigned", action="store_true")
     args = parser.parse_args()
-    if args.operation == "verify":
-        print(json.dumps(verify_artifacts(args.profile, args.path, args.unsigned, args.source_sha, args.platform)))
-        return
-    if args.operation == "extract-app":
-        extract_app_archive(args.path, args.output, macos_bundle_name(args.profile))
-        return
-    if args.operation == "compare-apps":
-        compare_app_payloads(args.path, args.output)
-        return
     info = read_info(args.profile, args.path, args.source_sha, args.platform)
     if args.operation == "bundle-name":
         print(macos_bundle_name(args.profile))

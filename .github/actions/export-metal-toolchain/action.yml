@@ -1,0 +1,30 @@
+name: Export the Metal Toolchain
+description: >-
+  Download the selected Xcode's Metal Toolchain and upload it as this run's
+  one-day `metal-toolchain` artifact. Blacksmith's macOS image has no Metal
+  Toolchain and cannot download it (its MobileAsset catalog fetch fails), so a
+  GitHub xcode-27 job exports it and the Blacksmith jobs import it. Run it after
+  selecting the pinned Xcode.
+runs:
+  using: composite
+  steps:
+    - name: Download and export the Metal Toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        export_dir="$RUNNER_TEMP/metal-toolchain"
+        mkdir -p "$export_dir"
+        xcodebuild -downloadComponent metalToolchain -exportPath "$export_dir"
+        # Keep symlinks and modes intact; artifacts flatten them.
+        tar -C "$export_dir" -cf "$RUNNER_TEMP/metal-toolchain.tar" .
+    - name: Upload the Metal Toolchain
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: metal-toolchain
+        path: ${{ runner.temp }}/metal-toolchain.tar
+        if-no-files-found: error
+        # Re-run all jobs uploads it again under the same name.
+        overwrite: true
+        # Apple's toolchain, re-hosted only for this run's jobs.
+        retention-days: 1
+        compression-level: 0

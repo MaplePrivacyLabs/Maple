@@ -61,9 +61,9 @@ use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
 #[cfg(test)]
 use self::sidebar::SessionActivity;
-use self::sidebar::{Sidebar, SidebarEvent, root_display_name, session_summary_eq};
+use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, root_display_name, session_summary_eq};
 use self::transcript::{
-    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_question_card,
+    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, plan_finished, render_question_card,
     render_waiting_indicator,
 };
 
@@ -136,13 +136,23 @@ impl SidebarTransition {
 }
 /// Height of the task header and the clear strip above the collapsed rail.
 const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
-/// Left inset for the header beside the rail: the traffic lights reach
-/// 30 px past it, followed by an 8 px gap when the bar is transparent.
-const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = if titlebar::TRANSPARENT_TITLEBAR {
-    px(38.)
-} else {
-    px(16.)
-};
+/// Where the header's toolbar starts, from the window's left edge, as the
+/// sidebar goes from collapsed (0) to expanded (1). Beside traffic lights
+/// it stays put: they reach 30 px past the rail, followed by an 8 px gap.
+/// Without them the Maple logo holds the top row's corner, and the
+/// toolbar follows it at its own 4 px button gap: after the rail's mark
+/// button, or after the wordmark with the same padding, on a whole pixel.
+fn header_toolbar_left(sidebar_expansion: f32) -> gpui::Pixels {
+    if titlebar::TRANSPARENT_TITLEBAR {
+        return SIDEBAR_RAIL_WIDTH + px(38.);
+    }
+    let padding = (sidebar::TOP_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
+    let mark = sidebar::WORDMARK_LEFT - padding + sidebar::TOP_ROW_HEIGHT;
+    let wordmark = sidebar::WORDMARK_LEFT
+        + crate::ui::icons::wordmark_width(sidebar::WORDMARK_HEIGHT)
+        + padding;
+    (mark + (wordmark - mark) * sidebar_expansion + px(4.)).round()
+}
 /// Reading width shared by the transcript and the composer; they must
 /// stay in one column.
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
@@ -192,6 +202,9 @@ mod notification_policy_tests {
 
 /// How long a notice stays before it clears itself.
 const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+/// How long the plan card stays after its last item is checked off live,
+/// so the final check is seen before the card goes.
+const PLAN_DONE_HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
 
 const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder…";
 const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)…";
@@ -245,6 +258,7 @@ pub(super) enum ChatPopup {
     Model,
     Thinking,
     Integrations,
+    Settings,
     /// The transcript's right-click menu, at a window position.
     Transcript(gpui::Point<gpui::Pixels>),
 }
@@ -452,6 +466,9 @@ pub struct ChatScreen {
     /// terminal event. This is intentionally independent of selection and
     /// project grouping; the sidebar derives presentation from it.
     completed_unread_sessions: HashSet<String>,
+    /// Tasks whose last run failed and that have not been opened since;
+    /// kept the same way as `completed_unread_sessions`.
+    failed_unread_sessions: HashSet<String>,
     /// Ids of runs whose Finished event already arrived, newest last and
     /// capped at `FINISHED_RUNS_KEPT`. A send that returns after its run
     /// finished must not mark that run active again.
@@ -532,8 +549,6 @@ pub struct ChatScreen {
     thinking_loading: bool,
     thinking_generation: u64,
     thinking_saving: bool,
-    /// The task on screen has a persisted model after its first message.
-    model_locked: bool,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Local-store policy, independent of the selected execution computer.
@@ -620,22 +635,37 @@ pub struct ChatScreen {
     model_catalog: HashMap<String, CatalogEntry>,
     /// Friendly labels from the advanced catalog; selection always uses IDs.
     model_labels: HashMap<String, String>,
+    /// The first model load is in flight. Until it lands with no model
+    /// chosen, the composer controls are laid out but not shown, so the
+    /// row appears once in its final shape instead of shifting.
+    models_loading: bool,
+    /// The controls were held back on the last frame; the next frame that
+    /// shows them fades them in.
+    controls_held: bool,
+    /// When the held-back controls were revealed, and a counter that gives
+    /// each reveal its own animation.
+    controls_revealed: Option<(std::time::Instant, u32)>,
     /// MCP servers with their enabled state for the selected task.
     session_mcp: Vec<AgentSessionMcpServer>,
     /// Count of enabled servers in `session_mcp`, for the composer chip.
     mcp_enabled_count: usize,
     /// Composer fills the pane (fullscreen editing).
     composer_expanded: bool,
-    /// Latest todo list from the selected task, pinned above the composer.
+    /// Latest todo list from the selected task, pinned above the composer
+    /// while any entry is unfinished. A finished list stays in the
+    /// transcript.
     plan: Vec<PlanEntry>,
     /// Count of completed entries in `plan`, for the card header.
     plan_done: usize,
+    /// Set while a plan that just finished live keeps its card for
+    /// `PLAN_DONE_HOLD`; the task clears it.
+    plan_hold: Option<gpui::Task<()>>,
     /// Open `/btw` side question, if any. Never part of the transcript.
     btw: Option<SideQuestionPanel>,
     /// Counter for side question request ids.
     btw_sequence: u64,
-    /// The pinned plan card shows only its header.
-    plan_collapsed: bool,
+    /// Tasks whose pinned plan card shows only its header.
+    plan_collapsed: HashSet<String>,
     /// External agents working for the selected task, pinned above the
     /// composer. Empty unless an external agent is working.
     subagents: Vec<ActiveSubagent>,
@@ -705,6 +735,9 @@ pub struct ChatScreen {
     question_step: usize,
     /// Answers recorded for earlier steps of the current card, by index.
     question_step_answers: HashMap<usize, Vec<String>>,
+    /// The question card is folded to its header so the transcript above
+    /// it can be read; a new question or any answer key unfolds it.
+    question_collapsed: bool,
     /// Full-size image shown over the chat until dismissed.
     lightbox: Option<Arc<gpui::Image>>,
     /// Sent prompts, oldest first, for Up/Down recall in the composer.
@@ -896,6 +929,10 @@ impl ChatScreen {
         match event.clone() {
             SidebarEvent::Navigate(request) => cx.emit(request),
             SidebarEvent::RenameProject(request) => cx.emit(request),
+            SidebarEvent::TaskAction(request) => cx.emit(request),
+            SidebarEvent::ConfirmTaskDelete { target, title } => {
+                self.request_delete_computer_task(target, title, cx);
+            }
             SidebarEvent::PreferencesChanged => {
                 self.refresh_project_caption(cx);
                 cx.emit(NavigationChanged);
@@ -940,22 +977,52 @@ impl ChatScreen {
     }
 
     /// Push everything the sidebar shows: sessions, the selection, which
-    /// tasks run or finished unread, and the recent roots. Called when
+    /// tasks wait, run, or ended unseen, and the recent roots. Called when
     /// any of them changed; the sidebar rebuilds only what moved.
     fn sync_sidebar(&mut self, cx: &mut Context<Self>) {
         let sessions = self.sessions.clone();
         let selected = self.selected_session.clone();
-        let running: HashSet<String> = self.active_runs.keys().cloned().collect();
-        let unread = self.completed_unread_sessions.clone();
+        let activity = self.task_activity();
         let roots = self.recent_roots.clone();
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_sessions(sessions, cx);
             sidebar.set_selected(selected, cx);
-            sidebar.set_activity(running, unread, cx);
+            sidebar.set_activity(activity, cx);
             sidebar.set_recent_roots(roots, cx);
         });
         self.refresh_selected_title();
         cx.emit(NavigationChanged);
+    }
+
+    /// Push only the row indicators: a question arrived or went away.
+    /// Other computers' sidebars show them too.
+    fn sync_sidebar_activity(&mut self, cx: &mut Context<Self>) {
+        let activity = self.task_activity();
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_activity(activity, cx));
+        cx.emit(NavigationChanged);
+    }
+
+    /// Which tasks wait on the user, run, or ended unseen.
+    fn task_activity(&self) -> TaskActivity {
+        TaskActivity {
+            running: self.active_runs.keys().cloned().collect(),
+            waiting: self
+                .pending_questions
+                .iter()
+                .map(|question| question.session_id.clone())
+                .collect(),
+            failed: self.failed_unread_sessions.clone(),
+            unread: self.completed_unread_sessions.clone(),
+        }
+    }
+
+    /// Seeing a task reads how its last run ended. Reports whether that
+    /// cleared a marker.
+    fn mark_seen(&mut self, session_id: &str) -> bool {
+        let completed = self.completed_unread_sessions.remove(session_id);
+        let failed = self.failed_unread_sessions.remove(session_id);
+        completed || failed
     }
 
     fn sync_sidebar_selection(&mut self, cx: &mut Context<Self>) {
@@ -985,6 +1052,9 @@ impl ChatScreen {
                 started: now,
                 duration: SIDEBAR_TRANSITION_DURATION.mul_f32(distance),
             });
+        if self.popup.is_open(&ChatPopup::Settings) {
+            self.popup.close(cx);
+        }
         if collapsed {
             self.sidebar.update(cx, |sidebar, cx| {
                 sidebar.close_popups(cx);
@@ -1302,6 +1372,7 @@ impl ChatScreen {
             pages: paging::TranscriptPages::default(),
             active_runs: HashMap::new(),
             completed_unread_sessions: HashSet::new(),
+            failed_unread_sessions: HashSet::new(),
             finished_runs: std::collections::VecDeque::new(),
             session_setup_pending: false,
             first_send_waiting_for_mcp: false,
@@ -1337,7 +1408,6 @@ impl ChatScreen {
             thinking_loading: false,
             thinking_generation: 0,
             thinking_saving: false,
-            model_locked: false,
             notify_enabled: settings.desktop_notifications,
             notify_details: settings.notification_details_enabled(),
             window_active: true,
@@ -1373,6 +1443,9 @@ impl ChatScreen {
             attachment_picking: false,
             model_catalog: HashMap::new(),
             model_labels: HashMap::new(),
+            models_loading: false,
+            controls_held: false,
+            controls_revealed: None,
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
             composer_expanded: false,
@@ -1408,6 +1481,7 @@ impl ChatScreen {
             question_selected: HashMap::new(),
             question_step: 0,
             question_step_answers: HashMap::new(),
+            question_collapsed: false,
             lightbox: None,
             prompt_history: Vec::new(),
             history_index: None,
@@ -1436,9 +1510,10 @@ impl ChatScreen {
             summaries_enabled: settings.tool_summaries,
             plan: Vec::new(),
             plan_done: 0,
+            plan_hold: None,
             btw: None,
             btw_sequence: 0,
-            plan_collapsed: false,
+            plan_collapsed: HashSet::new(),
             subagents: Vec::new(),
             subagent_tick_pending: std::cell::Cell::new(false),
             runtime_running_seen: false,
@@ -1603,6 +1678,7 @@ impl ChatScreen {
                     }
                 }
                 this.booting = false;
+                cx.emit(NavigationChanged);
                 this.dispatch_prepared_uploads(cx);
                 cx.notify();
                 this.refresh_models(cx);
@@ -1781,7 +1857,14 @@ impl ChatScreen {
             self.clear_selected_session_presentation(cx);
         }
         self.set_project_context(Some(project_root), cx);
-        self.refresh_sessions(cx);
+        // Starting a draft changes no task inventory. Reloading every host's
+        // sidebar here discards its prepared rows on every workspace button.
+        if !self.draft {
+            let generation = self.selection_generation;
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.refresh_visible_pages_for_generation(generation, cx)
+            });
+        }
     }
 
     /// Persist `root` as the default for new tasks and the next launch
@@ -1939,12 +2022,7 @@ impl ChatScreen {
         self.restore_selected_project(registration.project, cx);
         self.refresh_roots(cx);
         self.land_project_selection(registration.project_root, self.selection_generation, cx);
-        if self.navigation_only {
-            self.navigation_only = false;
-            self.booting = true;
-            self.refresh_slash_commands(cx);
-            self.start_runtime(cx);
-        }
+        self.leave_catalog(cx);
         self.screen_focus_pending = true;
     }
 
@@ -2132,44 +2210,48 @@ impl ChatScreen {
             .unwrap_or_else(|| "Choose folder".to_string())
     }
 
-    fn refresh_model_labels(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.model_catalog(&user_id).await },
-            cx,
-            |this, result, cx| {
-                if let Ok(catalog) = result {
-                    this.model_labels = composer::catalog_model_labels(&catalog);
-                    cx.notify();
-                }
-            },
-        );
-    }
-
-    fn refresh_models(&self, cx: &mut Context<Self>) {
-        // Presentation metadata loads independently so failure or latency does
-        // not affect the existing model list or default selection.
-        self.refresh_model_labels(cx);
+    fn refresh_models(&mut self, cx: &mut Context<Self>) {
+        self.models_loading = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let env_model = backend.configured_model();
         self.call(
             async move {
+                // Ids, labels and the saved pick land in one update, so the
+                // chip never shows a raw id before its label.
+                let catalog = backend.model_catalog(&user_id).await.ok();
                 let saved = backend.saved_model(&user_id).await;
                 let models = backend.available_model_ids(&user_id).await?;
-                Ok((models, saved))
+                Ok((models, saved, catalog))
             },
             cx,
             move |this, result, cx| {
-                if let Ok((models, saved)) = result {
-                    if this.default_model.is_none() {
-                        // Env override wins, then the account's saved
-                        // default, then the first catalog entry.
-                        this.default_model =
-                            env_model.or(saved).or_else(|| models.first().cloned());
+                this.models_loading = false;
+                if let Ok((mut models, saved, catalog)) = result {
+                    if let Some(catalog) = &catalog {
+                        this.model_labels = maple_agent::agent::catalog_model_labels(catalog);
+                        // An older execution computer lists every API model,
+                        // or every catalog model; offer only what the catalog
+                        // describes and does not keep out of Maple Work.
+                        let described = |model: &String| {
+                            catalog.data.iter().any(|entry| {
+                                &entry.id == model && entry.available_in_agent != Some(false)
+                            })
+                        };
+                        if models.iter().any(described) {
+                            models.retain(described);
+                        }
                     }
-                    if !this.model_locked && this.selected_model.is_none() {
+                    if this.default_model.is_none() {
+                        // Env override wins, then the user's last pick while
+                        // it is still offered, then the host's default, which
+                        // it lists first.
+                        let offered = |model: &String| models.is_empty() || models.contains(model);
+                        this.default_model = env_model
+                            .or(saved.filter(offered))
+                            .or_else(|| models.first().cloned());
+                    }
+                    if this.selected_model.is_none() {
                         this.selected_model = this.default_model.clone();
                     }
                     this.models = models;
@@ -2912,38 +2994,6 @@ impl ChatScreen {
         }
     }
 
-    /// Overlay shown over the pane while a task snapshot is in flight.
-    fn render_loading_overlay(&self) -> Option<Div> {
-        self.loading_session.as_ref()?;
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(theme::loading_veil())
-                .child(motion::fade_in(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_4()
-                        .py_2()
-                        .rounded_full()
-                        .bg(gpui::rgb(theme::bg_elevated()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        .shadow_md()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .child(spinner("open-task", px(14.), theme::accent()))
-                        .child("Opening task…"),
-                    "loading-overlay-reveal",
-                )),
-        )
-    }
-
     /// Install a new timeline and reset every per-item structure that is
     /// keyed by its contents.
     fn replace_timeline(&mut self, timeline: Vec<AgentTimelineItem>) {
@@ -3250,7 +3300,7 @@ impl ChatScreen {
         self.draft = false;
         self.draft_mcp_defaults = None;
         self.draft_mcp_changes.clear();
-        // The lock belongs to the task; the empty screen uses the default.
+        // The empty screen uses the default, not the last task's model.
         self.restore_default_model(cx);
         self.sync_sidebar_selection(cx);
         self.set_queue(Vec::new());
@@ -3292,6 +3342,9 @@ impl ChatScreen {
         stored_summaries: HashMap<String, SharedString>,
         cx: &mut Context<Self>,
     ) {
+        // Every snapshot installation completes the matching open, including
+        // recovery and a newly created task. Keep a newer pending open intact.
+        self.finish_loading(&session.id);
         let changed = self.selected_session.as_deref() != Some(session.id.as_str());
         if changed {
             // Everything the previous task showed goes; the new task's own
@@ -3304,11 +3357,11 @@ impl ChatScreen {
         }
         self.tool_summaries.extend(stored_summaries);
         let project_root = session.project_root.clone();
-        // Opening the task is what reads its completion, so the unread
-        // marker goes. Only an explicit settle ever moves a task out of
-        // the active inbox.
+        // Opening the task is what reads how its last run ended, so the
+        // unread or failed marker goes. Only an explicit settle ever moves
+        // a task out of the active inbox.
         if self.visible {
-            self.completed_unread_sessions.remove(&session.id);
+            self.mark_seen(&session.id);
         }
         self.selected_session = Some(session.id.clone());
         self.draft = false;
@@ -3360,6 +3413,7 @@ impl ChatScreen {
         self.question_selected.clear();
         self.question_step = 0;
         self.question_step_answers.clear();
+        self.question_collapsed = false;
         if let Some(input) = self.pending_question_input.take() {
             input.update(cx, |input, cx| input.clear(cx));
         }
@@ -3765,90 +3819,31 @@ impl ChatScreen {
         }
     }
 
-    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<Div> {
+    /// What the Settings menu says about the updater, when it has
+    /// something for the user: the row label and whether it failed.
+    fn update_notice(&self) -> Option<(&'static str, bool)> {
         let snapshot = &self.update;
         if !snapshot.show_banner {
             return None;
         }
-        let action = snapshot.primary;
-        Some(
-            div()
-                .debug_selector(|| "update-banner".to_string())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .rounded(theme::RADIUS_SM)
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .border_1()
-                .border_color(gpui::rgb(theme::border()))
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_start()
-                        .gap_3()
-                        .child(div().flex_shrink_0().child(icon(
-                            "arrow-up",
-                            px(14.),
-                            theme::accent(),
-                        )))
-                        .child(
-                            div()
-                                .debug_selector(|| "update-banner-label".to_string())
-                                .flex_1()
-                                .min_w_0()
-                                .child(snapshot.label.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .justify_end()
-                        .gap_2()
-                        .when_some(action, |row, action| {
-                            row.child(
-                                div()
-                                    .id("update-primary")
-                                    .debug_selector(|| "update-primary".to_string())
-                                    .flex_shrink_0()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(theme::RADIUS_SM)
-                                    .text_color(gpui::rgb(theme::accent()))
-                                    .hover(|style| {
-                                        style.bg(theme::overlay_hover()).cursor_pointer()
-                                    })
-                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.emit(crate::update::UpdateRequested(action));
-                                    }))
-                                    .child(snapshot.primary_label),
-                            )
-                        })
-                        .child(
-                            div()
-                                .id("update-later")
-                                .debug_selector(|| "update-later".to_string())
-                                .flex_shrink_0()
-                                .px_2()
-                                .py_0p5()
-                                .rounded(theme::RADIUS_SM)
-                                .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                                .on_click(cx.listener(|_, _, _, cx| {
-                                    cx.emit(crate::update::UpdateRequested(
-                                        crate::update::UpdateAction::Later,
-                                    ));
-                                }))
-                                .child("Later"),
-                        ),
-                ),
-        )
+        Some(match snapshot.state {
+            crate::update::State::Error => ("Update failed", true),
+            crate::update::State::RestartRequired => ("Restart to finish update", false),
+            _ => ("Update available", false),
+        })
+    }
+
+    /// A ready update opens the restart confirmation; anything else
+    /// (manual download, a failure) opens About, which shows the full
+    /// message and actions.
+    fn open_update(&mut self, cx: &mut Context<Self>) {
+        if self.update.state == crate::update::State::Ready {
+            cx.emit(crate::update::UpdateRequested(
+                crate::update::UpdateAction::Restart,
+            ));
+        } else {
+            cx.emit(OpenSettingsSection(Section::About));
+        }
     }
 
     /// Keep a sent prompt for Up/Down recall. Repeats move to the end.
@@ -4098,13 +4093,7 @@ impl ChatScreen {
 
     #[cfg(test)]
     fn session_activity(&self, session_id: &str) -> Option<SessionActivity> {
-        if self.active_runs.contains_key(session_id) {
-            Some(SessionActivity::Running)
-        } else if self.completed_unread_sessions.contains(session_id) {
-            Some(SessionActivity::CompletedUnread)
-        } else {
-            None
-        }
+        self.task_activity().of(session_id)
     }
 
     /// Open the task before or after the selected one, in sidebar order.
@@ -4135,6 +4124,10 @@ impl ChatScreen {
         let Some(question) = self.current_question() else {
             return;
         };
+        if self.question_collapsed {
+            self.toggle_question_collapsed(cx);
+            return;
+        }
         let step = self
             .question_step
             .min(question.questions.len().saturating_sub(1));
@@ -4328,7 +4321,7 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// Right-click menu over the transcript: copy the selection, select all.
+    /// Right-click menu over the transcript: copy a link or the selection, select all.
     fn render_transcript_menu(
         &self,
         window: &mut Window,
@@ -4346,9 +4339,23 @@ impl ChatScreen {
                 this.execute_command(command, window, cx);
             }
         };
-        let menu = Menu::new("transcript-menu", px(160.))
+        let mut menu = Menu::new("transcript-menu", px(160.))
             .label("Transcript")
-            .application_vim(self.application_vim_enabled)
+            .application_vim(self.application_vim_enabled);
+        if let Some(url) = self
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.read(cx).context_link())
+        {
+            let url = url.to_owned();
+            menu = menu.item(
+                MenuItem::new("transcript-menu-copy-link", "Copy Link", move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+                })
+                .icon("copy"),
+            );
+        }
+        let menu = menu
             .item(
                 MenuItem::new(
                     "transcript-menu-copy",
@@ -4418,6 +4425,11 @@ impl ChatScreen {
     }
 
     fn send_text_with(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
+        // The previous task stays visible until the requested snapshot lands.
+        // An inline indicator must not let Enter send into that previous task.
+        if self.loading_session.is_some() {
+            return;
+        }
         if self.host_recovery.unavailable {
             self.notice = Some(
                 "Wait for the host connection and task history to recover before sending.".into(),
@@ -4430,6 +4442,9 @@ impl ChatScreen {
             cx.notify();
             return;
         }
+        // A catalog would drop the reply's transcript rows. Leave it first;
+        // the existing startup gate holds the send while its runtime warms.
+        self.leave_catalog(cx);
         if self.booting {
             self.notice = Some("Agent runtime is still starting".into());
             cx.notify();
@@ -4475,6 +4490,7 @@ impl ChatScreen {
             // The run is blocked on the question; sending here would queue a
             // message nobody reads and look like a stall.
             self.notice = Some("Answer the question above first".into());
+            self.question_collapsed = false;
             self.question_focus_pending = true;
             cx.notify();
             return;
@@ -5254,6 +5270,7 @@ impl ChatScreen {
         self.pending_questions
             .retain(|queued| queued.request_id != question.request_id);
         self.reset_question_card(cx);
+        self.sync_sidebar_activity(cx);
         cx.notify();
         self.call(
             async move { backend.answer_question(&user_id, &request_id, answer).await },
@@ -5281,6 +5298,14 @@ impl ChatScreen {
     }
     /// Dismiss a question: cancel the run like the Stop button and
     /// unblock the tool with an empty answer if it is still waiting.
+    pub(super) fn toggle_question_collapsed(&mut self, cx: &mut Context<Self>) {
+        self.question_collapsed = !self.question_collapsed;
+        if !self.question_collapsed {
+            self.question_focus_pending = true;
+        }
+        cx.notify();
+    }
+
     fn skip_question(&mut self, cx: &mut Context<Self>) {
         let Some(question) = self.current_question().cloned() else {
             return;
@@ -5288,6 +5313,7 @@ impl ChatScreen {
         self.pending_questions
             .retain(|queued| queued.request_id != question.request_id);
         self.reset_question_card(cx);
+        self.sync_sidebar_activity(cx);
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -5347,6 +5373,8 @@ impl ChatScreen {
 
     /// Vim navigation moves the cursor without checking multi-select options.
     fn focus_question_option(&mut self, step: usize, index: usize, cx: &mut Context<Self>) {
+        // Keys never change a choice the user cannot see.
+        self.question_collapsed = false;
         if self
             .current_question()
             .and_then(|q| q.questions.get(step))
@@ -5479,22 +5507,9 @@ impl ChatScreen {
         );
     }
 
+    /// Pick the model of the next message, in a task or a new one. It also
+    /// becomes the account default for new tasks.
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
-        if self.model_locked {
-            self.popup.close(cx);
-            if self.selected_model.as_deref() != Some(model.as_str())
-                && let Some(locked) = self.selected_model.as_deref()
-            {
-                self.notice = Some(
-                    format!(
-                        "This task is locked to model {locked}. Start a new task to use {model}."
-                    )
-                    .into(),
-                );
-            }
-            cx.notify();
-            return;
-        }
         self.selected_model = Some(model.clone());
         self.default_model = Some(model.clone());
         self.refresh_thinking(cx);
@@ -5522,35 +5537,26 @@ impl ChatScreen {
         self.refresh_context_usage(cx);
     }
 
-    /// New Task and unlocked sessions use the account default, not the
-    /// last opened task's locked model.
+    /// New Task and drafts use the account default, not the last opened
+    /// task's model.
     fn restore_default_model(&mut self, cx: &mut Context<Self>) {
-        self.model_locked = false;
         self.set_composer_model(self.default_model.clone(), cx);
         self.refresh_thinking(cx);
     }
 
+    /// A started task opens on the model it last used.
     fn apply_session_model(&mut self, session: &AgentSessionSummary, cx: &mut Context<Self>) {
-        let locked = session.message_count > 0 && session.model.is_some();
-        if locked {
-            self.model_locked = true;
-            self.set_composer_model(session.model.clone(), cx);
-            self.refresh_thinking(cx);
-        } else {
-            self.restore_default_model(cx);
+        match session.model.clone().filter(|_| session.message_count > 0) {
+            Some(model) => {
+                self.set_composer_model(Some(model), cx);
+                self.refresh_thinking(cx);
+            }
+            None => self.restore_default_model(cx),
         }
     }
 
     fn model_label<'a>(&'a self, model: &'a str) -> &'a str {
         self.model_labels.get(model).map_or(model, String::as_str)
-    }
-
-    fn model_menu_models(&self) -> Vec<String> {
-        if self.model_locked {
-            self.selected_model.iter().cloned().collect()
-        } else {
-            self.models.clone()
-        }
     }
 
     /// Re-measure one row after it changed in place. The list keeps the
@@ -5709,7 +5715,7 @@ impl ChatScreen {
         });
         // An archived row shows no indicator; drop a marker it may carry.
         if session.state == AgentTaskState::Archived {
-            self.completed_unread_sessions.remove(&session.id);
+            self.mark_seen(&session.id);
         }
         if let Some(existing) = self
             .sessions
@@ -5719,15 +5725,18 @@ impl ChatScreen {
             if session_summary_eq(existing, &session) {
                 return false;
             }
-            let mut selected = None;
+            let mut switched = None;
             if self.selected_session.as_deref() == Some(session.id.as_str()) {
                 self.web_enabled = session.web_enabled;
-                selected = Some(session.clone());
+                // Follow a switch the task made, here or on another surface;
+                // a pick waiting for the next message stays.
+                if existing.model != session.model {
+                    switched = Some(session.clone());
+                }
             }
             *existing = session;
-            // The first message locks the task on screen to its model.
-            if let Some(selected) = selected {
-                self.apply_session_model(&selected, cx);
+            if let Some(switched) = switched {
+                self.apply_session_model(&switched, cx);
             }
         } else {
             self.sessions.insert(0, session);
@@ -5756,7 +5765,7 @@ impl ChatScreen {
             return;
         };
         if let Some(plan) = plan {
-            self.set_plan(plan);
+            self.update_live_plan(plan, cx);
         }
         self.follow_application_stream();
         // A newer item after a thinking block finalizes the block; that is
@@ -5863,7 +5872,7 @@ impl ChatScreen {
         let user = self.user_id.clone();
         let selected = self.selected_session.clone();
         let subscription_intent = backend.next_subscription_intent();
-        self.runtime_error = Some("Connected. Refreshing task history…".into());
+        self.runtime_error = None;
         self.call(
             async move {
                 let boot = backend.navigation_bootstrap(&user).await?;
@@ -5976,21 +5985,25 @@ impl ChatScreen {
                         this.handle_service_events(events, cx);
                         this.host_recovery.unavailable = false;
                         this.runtime_error = None;
-                        this.booting = !running && !this.navigation_only;
+                        this.booting = !running;
                         this.check_unresolved_sends(cx);
                         this.dispatch_prepared_uploads(cx);
                         cx.emit(NavigationChanged);
-                        if !this.navigation_only {
-                            this.refresh_models(cx);
-                            this.refresh_roots(cx);
-                            this.refresh_slash_commands(cx);
-                        }
+                        // Warm connected computers before their first click.
+                        // Catalog mode still suppresses transcript selection and
+                        // execution events; warming never opens or runs a task.
                         if this.booting {
                             // A host another client restarted may not have a
                             // runtime yet. Restore catalog/tool availability;
                             // this never replays an admitted prompt. Prepared
                             // uploads still wait for this readiness result.
                             this.start_runtime(cx);
+                        } else {
+                            this.refresh_models(cx);
+                            this.refresh_roots(cx);
+                            this.refresh_slash_commands(cx);
+                            this.refresh_sidebar_plan(cx);
+                            this.refresh_audio_capabilities(cx);
                         }
                         this.finish_navigation_bootstrap(cx);
                     }
@@ -6217,6 +6230,7 @@ impl ChatScreen {
                 if showing {
                     self.question_selected.clear();
                 }
+                self.sync_sidebar_activity(cx);
             }
             AgentServiceEvent::ThinkingChanged { session_id, state } => {
                 self.apply_thinking_changed(&session_id, state, cx);
@@ -6298,10 +6312,12 @@ impl ChatScreen {
                     request_id,
                     questions,
                 });
+                self.sync_sidebar_activity(cx);
                 if shows_now {
                     // A fresh question takes the card; follow-ups queue
                     // behind it and keep the user's picks on this one.
                     self.question_selected.clear();
+                    self.question_collapsed = false;
                     self.ensure_question_input(cx);
                     self.question_focus_pending = true;
                 }
@@ -6358,8 +6374,11 @@ impl ChatScreen {
         let before = self.pending_questions.len();
         self.pending_questions
             .retain(|question| question.session_id != session_id);
-        if self.pending_questions.len() != before && self.is_selected(session_id) {
-            self.reset_question_card(cx);
+        if self.pending_questions.len() != before {
+            if self.is_selected(session_id) {
+                self.reset_question_card(cx);
+            }
+            self.sync_sidebar_activity(cx);
         }
     }
 
@@ -6469,15 +6488,22 @@ impl ChatScreen {
                     .is_none_or(|active| active == run_id);
                 if owns_session {
                     self.active_runs.remove(session_id);
-                    // The marker follows the latest terminal: only a
-                    // successful completion off screen sets it. Opening the
-                    // task (`set_active_session`) is the only other writer.
-                    self.completed_unread_sessions.remove(session_id);
-                    if matches!(terminal, maple_agent::agent::AgentRunTerminal::Completed)
-                        && !(self.visible && self.is_selected(session_id))
-                    {
-                        self.completed_unread_sessions
-                            .insert(session_id.to_string());
+                    // The markers follow the latest terminal: a completion
+                    // or a failure off screen sets one; a stop sets none.
+                    // Opening the task (`set_active_session`) is the only
+                    // other writer.
+                    self.mark_seen(session_id);
+                    if !(self.visible && self.is_selected(session_id)) {
+                        match terminal {
+                            maple_agent::agent::AgentRunTerminal::Completed => {
+                                self.completed_unread_sessions
+                                    .insert(session_id.to_string());
+                            }
+                            maple_agent::agent::AgentRunTerminal::Failed => {
+                                self.failed_unread_sessions.insert(session_id.to_string());
+                            }
+                            maple_agent::agent::AgentRunTerminal::Cancelled => {}
+                        }
                     }
                     // Waking or retiring a run moves a task between
                     // sections; the entries must follow the same frame.
@@ -6587,6 +6613,28 @@ fn transcript_list_state() -> gpui::ListState {
     state
 }
 
+/// The update mark beside Settings and on its menu row: a download glyph
+/// on the accent, or a muted alert when the update failed.
+fn update_badge(size: gpui::Pixels, failed: bool) -> Div {
+    let badge = div()
+        .flex_none()
+        .size(size)
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center();
+    if failed {
+        badge
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
+            .child(icon("circle-alert", size * 0.67, theme::text_muted()))
+    } else {
+        badge
+            .bg(gpui::rgb(theme::accent()))
+            .child(icon("download", size * 0.6, theme::on_accent()))
+    }
+}
+
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Refreshed every frame; activation changes force a redraw, so
@@ -6653,7 +6701,6 @@ impl Render for ChatScreen {
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
         let sidebar_expansion = self.sidebar_expansion(window, cx);
-        let loading_overlay = self.render_loading_overlay();
         let main = if empty {
             self.render_empty_state(window, cx)
         } else {
@@ -6688,6 +6735,7 @@ impl Render for ChatScreen {
                     container.child(render_question_card(
                         question,
                         step,
+                        self.question_collapsed,
                         input,
                         &self.question_selected,
                         cx,
@@ -6719,18 +6767,6 @@ impl Render for ChatScreen {
                         .children(self.render_slash_palette(cx))
                         .children(self.render_persistence_failure(cx)),
                 )
-        };
-        let main = match loading_overlay {
-            Some(overlay) => div()
-                .relative()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .h_full()
-                .min_w_0()
-                .child(main)
-                .child(overlay),
-            None => main,
         };
         div()
             .key_context(self.application_vim_context())
@@ -6782,7 +6818,7 @@ impl Render for ChatScreen {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .child(self.render_sidebar(sidebar_expansion, cx))
+                    .child(self.render_sidebar(sidebar_expansion, window, cx))
                     .child(
                         div()
                             .relative()
@@ -6872,7 +6908,12 @@ impl Render for ChatScreen {
 }
 
 impl ChatScreen {
-    fn render_sidebar(&self, expansion: f32, cx: &mut Context<Self>) -> Div {
+    fn render_sidebar(
+        &mut self,
+        expansion: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let width = SIDEBAR_RAIL_WIDTH + (SIDEBAR_WIDTH - SIDEBAR_RAIL_WIDTH) * expansion;
         div()
             .relative()
@@ -6882,7 +6923,9 @@ impl ChatScreen {
             .bg(gpui::rgb(theme::bg_sidebar()))
             // Clip only during motion: settled sidebar menus may extend
             // into the content pane as before.
-            .when(expansion < 1., |column| column.overflow_hidden())
+            .when(expansion > 0. && expansion < 1., |column| {
+                column.overflow_hidden()
+            })
             .when(expansion < 1., |column| {
                 column.child(self.render_sidebar_rail(cx))
             })
@@ -6907,65 +6950,226 @@ impl ChatScreen {
                         ),
                 )
             })
-            .when(expansion > 0.95, |column| {
-                column.child(
-                    widgets::ghost_button("send-feedback")
-                        .aria_label("Send feedback")
-                        .debug_selector(|| "send-feedback".to_string())
-                        .absolute()
-                        .bottom_2()
-                        .right_2()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .tab_index(7)
-                        .child("Send feedback")
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.open_feedback(window, cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.open_feedback(window, cx)),
-                        ),
-                )
+            .child(self.render_sidebar_settings(expansion, window, cx))
+    }
+
+    fn render_sidebar_settings(
+        &mut self,
+        expansion: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let expanded = expansion > 0.95;
+        let open = self.popup.is_open(&ChatPopup::Settings);
+        let update = self.update_notice();
+        let button = widgets::ghost_button("open-settings")
+            .aria_label(if update.is_some() {
+                "Settings menu, update available"
+            } else {
+                "Settings menu"
             })
-            // Keep one opaque Settings control outside the fading sidebar.
+            .a11y_synthetic_children(|tree| {
+                tree.parent_node()
+                    .set_has_popup(gpui::accesskit::HasPopup::Menu);
+            })
+            .debug_selector(|| "open-settings".to_string())
+            .w_full()
+            .h(px(40.))
+            .px_2()
+            .rounded(theme::RADIUS_SM)
+            .tab_index(6)
+            .on_key_down(Self::sidebar_button_key_down)
+            .when(open, |button| {
+                button.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+            })
             .child(
                 div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .w(SIDEBAR_RAIL_WIDTH)
-                    .h_12()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgb(theme::bg_sidebar()))
-                    .child(
-                        widgets::icon_button_for_action(
-                            "open-settings",
-                            "settings",
-                            "Settings",
-                            px(16.),
-                            theme::text_secondary(),
-                            &OpenAppSettings,
+                    .relative()
+                    .flex_none()
+                    .child(icon("settings", px(16.), theme::text_secondary()))
+                    // Collapsed, a dot on the gear stands in for the badge.
+                    .when(!expanded && update.is_some(), |gear| {
+                        gear.child(
+                            div()
+                                .debug_selector(|| "settings-update-dot".to_string())
+                                .absolute()
+                                .top(px(-2.))
+                                .right(px(-2.))
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::accent())),
                         )
-                        .debug_selector(|| "open-settings".to_string())
-                        .size(px(32.))
-                        .rounded_full()
-                        .tab_index(6)
-                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                            cx.stop_propagation();
-                        })
-                        .on_key_down(Self::sidebar_button_key_down)
-                        .on_click(cx.listener(
-                            |this, _event, window, cx| {
-                                this.execute_command(ChatCommand::OpenSettings, window, cx);
-                            },
-                        )),
-                    ),
+                    }),
             )
+            .when(expanded, |button| {
+                button
+                    .justify_start()
+                    .gap_2()
+                    .child("Settings")
+                    .when_some(update, |button, (_, failed)| {
+                        button.child(
+                            update_badge(px(18.), failed)
+                                .debug_selector(|| "settings-update-badge".to_string()),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
+                            icon.with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                std::f32::consts::PI,
+                            )))
+                        }),
+                    )
+            });
+        let button = self
+            .popup
+            .trigger(ChatPopup::Settings, button, cx, |this, _, cx| {
+                this.popup.toggle(ChatPopup::Settings, cx);
+            });
+        let mut footer = div()
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .w(if expanded {
+                SIDEBAR_WIDTH
+            } else {
+                SIDEBAR_RAIL_WIDTH
+            })
+            .h(px(54.))
+            .px_2()
+            .py(px(6.))
+            .border_t_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            .child(button);
+        if open {
+            let usage_label = self.sidebar_plan.as_ref().map_or_else(
+                || "Usage unavailable. Open Usage settings".to_string(),
+                |plan| {
+                    format!(
+                        "Usage, {} percent used. {}, resets {}. Open Usage settings",
+                        plan.percent_used, plan.plan_label, plan.resets_label
+                    )
+                },
+            );
+            let usage = div()
+                .w_full()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child("Usage"),
+                        )
+                        .children(self.sidebar_plan.as_ref().map(|plan| {
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(format!("{}% used", plan.percent_used))
+                        }))
+                        .child(icon("chevron-right", px(12.), theme::text_muted())),
+                )
+                .when_some(self.sidebar_plan.as_ref(), |usage, plan| {
+                    usage
+                        .child(
+                            div()
+                                .debug_selector(|| "settings-usage-meter".to_string())
+                                .h(px(6.))
+                                .w_full()
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::border()))
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(gpui::relative(
+                                            (f32::from(plan.percent_used) / 100.).clamp(0., 1.),
+                                        ))
+                                        .rounded_full()
+                                        .bg(gpui::rgb(theme::accent())),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .gap_2()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child(plan.plan_label.clone())
+                                .child(format!("Resets {}", plan.resets_label)),
+                        )
+                })
+                .when(self.sidebar_plan.is_none(), |usage| {
+                    usage.child(
+                        div()
+                            .debug_selector(|| "settings-usage-unavailable".to_string())
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child("Usage unavailable"),
+                    )
+                });
+            let menu = Menu::new("settings-menu", SIDEBAR_WIDTH - px(16.))
+                .label("Settings")
+                .application_vim(self.application_vim_enabled)
+                .item(
+                    MenuItem::new("settings-menu-usage", usage_label, |_: &mut Self, _, cx| {
+                        cx.emit(OpenSettingsSection(Section::Usage));
+                    })
+                    .content(usage),
+                )
+                .separator()
+                .items(update.map(|(label, failed)| {
+                    MenuItem::new("settings-menu-update", label, |this: &mut Self, _, cx| {
+                        this.open_update(cx);
+                    })
+                    .content(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            // The badge overhangs the icon column by 2 px a
+                            // side, so its label lines up with the rows below.
+                            .child(update_badge(px(18.), failed).mx(px(-2.)))
+                            .child(label),
+                    )
+                }))
+                .item(
+                    MenuItem::new("settings-menu-account", "Account", |_: &mut Self, _, cx| {
+                        cx.emit(OpenSettingsSection(Section::Account));
+                    })
+                    .icon("user"),
+                )
+                .item(
+                    MenuItem::new(
+                        "settings-menu-all",
+                        "All settings",
+                        |this: &mut Self, window, cx| {
+                            this.execute_command(ChatCommand::OpenSettings, window, cx);
+                        },
+                    )
+                    .icon("settings"),
+                )
+                .item(
+                    MenuItem::new(
+                        "send-feedback",
+                        "Send feedback",
+                        |this: &mut Self, window, cx| {
+                            this.open_feedback(window, cx);
+                        },
+                    )
+                    .icon("message-square"),
+                );
+            footer = footer.child(self.popup.render(menu, Placement::AboveStart, window, cx));
+        }
+        footer
     }
 
     /// Keep unsaved-work feedback beside the composer that produced it.
@@ -7163,7 +7367,6 @@ impl ChatScreen {
                         column.child(widgets::banner(theme::status_error()).child(error))
                     })
                     .children(self.render_persistence_failure(cx))
-                    .children(self.render_update_banner(cx))
                     .children(self.render_notice(cx)),
             );
         div()
@@ -7176,12 +7379,43 @@ impl ChatScreen {
     }
 
     /// Replace the plan and the completed count the card header shows.
+    /// A finished plan from history shows no card.
     fn set_plan(&mut self, plan: Vec<PlanEntry>) {
         self.plan_done = plan
             .iter()
             .filter(|entry| entry.status == PlanStatus::Completed)
             .count();
         self.plan = plan;
+        self.plan_hold = None;
+    }
+
+    /// Replace the plan from a live update. When the update finishes the
+    /// plan on screen, the card keeps the final check for
+    /// `PLAN_DONE_HOLD`, then goes; the finished list stays in the
+    /// transcript.
+    fn update_live_plan(&mut self, plan: Vec<PlanEntry>, cx: &mut Context<Self>) {
+        let showing = self.plan_card_visible();
+        // A repeat of the finished list keeps the running hold.
+        let hold = self.plan_hold.take();
+        self.set_plan(plan);
+        if showing && plan_finished(&self.plan) {
+            self.plan_hold = hold.or_else(|| {
+                Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(PLAN_DONE_HOLD).await;
+                    this.update(cx, |this, cx| {
+                        this.plan_hold = None;
+                        cx.notify();
+                    })
+                    .ok();
+                }))
+            });
+        }
+    }
+
+    /// The pinned card shows an unfinished plan, and a finished one only
+    /// while it holds its final check.
+    fn plan_card_visible(&self) -> bool {
+        !self.plan.is_empty() && (self.plan_done < self.plan.len() || self.plan_hold.is_some())
     }
 
     /// Replace the session's MCP servers and the enabled count the
@@ -7240,8 +7474,8 @@ impl ChatScreen {
         crate::notify::notify(cx, tag, title, &body, &[]);
     }
 
-    /// Load the plan card from the Maple billing API. Failures keep the
-    /// previous card; the token-total fallback covers the first load.
+    /// Load the usage preview from the Maple billing API. Failures keep
+    /// the previous value; without one, the menu shows usage as unavailable.
     fn refresh_sidebar_plan(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();

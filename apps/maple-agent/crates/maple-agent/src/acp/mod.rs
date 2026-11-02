@@ -301,7 +301,6 @@ impl AcpConnectionContext {
                 thinking: None,
                 projection: AcpProjection::default(),
                 advertised_title: Some(created.detail.session.title.clone()),
-                message_count: created.detail.session.message_count,
                 created_here: true,
                 prompted: false,
                 project_root: project_root.clone(),
@@ -593,13 +592,6 @@ impl AcpConnectionContext {
                 .data("The requested task does not exist in the supplied project directory"));
         }
         let available_models = self.available_models().await?;
-        if let Some(model) = persisted.model.as_ref()
-            && !available_models.iter().any(|available| available == model)
-        {
-            return Err(agent_client_protocol::Error::invalid_request().data(format!(
-                "This Maple Work task uses model '{model}', which is no longer available; the task remains available in Maple Desktop"
-            )));
-        }
         let session_servers = prepare_session_mcp(&request.mcp_servers)?;
         let protocol_session_id = SessionId::new(session_id.clone());
         // Rebuilding announces HistoryReplaced. Finish before registering this
@@ -630,11 +622,14 @@ impl AcpConnectionContext {
             return Err(agent_client_protocol::Error::invalid_request()
                 .data("The task's project changed while loading"));
         }
+        // A task whose model is no longer offered opens on the default and
+        // switches with its next prompt.
         let Some(model) = attached
             .detail
             .session
             .model
             .clone()
+            .filter(|model| available_models.contains(model))
             .or_else(|| available_models.first().cloned())
         else {
             lease.release().await;
@@ -642,7 +637,6 @@ impl AcpConnectionContext {
                 .await;
             return Err(internal_acp_error("Maple returned no models".to_string()));
         };
-        let message_count = attached.detail.session.message_count;
         let finalization = self.finalization.lock().await;
         if self.closed.load(Ordering::SeqCst) || operation.cancellation.is_cancelled() {
             drop(finalization);
@@ -679,7 +673,6 @@ impl AcpConnectionContext {
                 thinking: None,
                 projection: AcpProjection::default(),
                 advertised_title: Some(persisted.title.clone()),
-                message_count,
                 created_here: false,
                 prompted: false,
                 project_root: project_root.clone(),
@@ -962,8 +955,6 @@ impl AcpConnectionContext {
             let session = sessions.get_mut(session_id).ok_or_else(|| {
                 agent_client_protocol::Error::resource_not_found(Some(session_id.into()))
             })?;
-            session.message_count = usize::try_from(summary.message_count)
-                .map_err(|_| paged::replay_error("Invalid Maple task message count"))?;
             if let Some(model) = summary.model
                 && session.model != model
             {
@@ -1017,10 +1008,7 @@ impl AcpConnectionContext {
                         agent_client_protocol::Error::invalid_params().data("Unknown Maple model")
                     );
                 }
-                if session.message_count > 0 && session.model != model {
-                    return Err(agent_client_protocol::Error::invalid_params()
-                        .data("Maple tasks are model-locked after their first message"));
-                }
+                // A started task switches with its next prompt.
                 let model = model.to_string();
                 drop(sessions);
                 self.agent
@@ -1628,26 +1616,14 @@ impl AcpConnectionContext {
             .lock()
             .await
             .insert(session_id.to_string(), run.run_id.clone());
-        let locked_config_options = {
-            let mut sessions = self.sessions.lock().await;
-            sessions.get_mut(session_id).and_then(|session| {
-                session.prompted = true;
-                let first_message = session.message_count == 0;
-                session.message_count = session.message_count.saturating_add(1);
-                first_message.then(|| session.config_options())
-            })
-        };
+        if let Some(session) = self.sessions.lock().await.get_mut(session_id) {
+            session.prompted = true;
+        }
         self.stats.active_runs.fetch_add(1, Ordering::SeqCst);
         let mut terminal = run.terminal.clone();
         let usage = run.usage.clone();
         let result = self
-            .stream_run(
-                cx,
-                &protocol_session_id,
-                run,
-                locked_config_options,
-                cancellation,
-            )
+            .stream_run(cx, &protocol_session_id, run, cancellation)
             .await;
         let (result, stopped_early) = match result {
             Ok((response, stopped)) => (Ok(response), stopped),
@@ -1696,34 +1672,12 @@ impl AcpConnectionContext {
         cx: &ConnectionTo<Client>,
         protocol_session_id: &SessionId,
         run: crate::agent::AgentRunHandle,
-        locked_config_options: Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
         cancellation: &CancellationToken,
     ) -> Result<(PromptResponse, bool), agent_client_protocol::Error> {
         let session_id = protocol_session_id.0.to_string();
         let mut events = run.events;
         let mut terminal = run.terminal;
         let overflowed = run.event_overflowed;
-        if let Some(config_options) = locked_config_options {
-            let update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(config_options));
-            match self
-                .send_session_update(
-                    cx,
-                    SessionNotification::new(protocol_session_id.clone(), update),
-                    cancellation,
-                )
-                .await
-            {
-                Ok(()) => {}
-                Err(AcpOutboundSendError::Cancelled) => {
-                    return Ok((PromptResponse::new(StopReason::Cancelled), true));
-                }
-                Err(AcpOutboundSendError::UpdateTooLarge) => {
-                    return Err(agent_client_protocol::Error::internal_error()
-                        .data("Maple's locked model selector exceeded the ACP update limit"));
-                }
-                Err(AcpOutboundSendError::Transport(error)) => return Err(error),
-            }
-        }
         let operation = self
             .session_operations
             .lock()

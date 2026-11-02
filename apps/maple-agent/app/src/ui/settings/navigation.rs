@@ -52,7 +52,7 @@ pub(super) enum SettingsTarget {
     Shortcut(String),
     PromptEditor,
     PromptSave,
-    PromptReset,
+    PromptClear,
     Integration(String),
     IntegrationSetup(String),
     McpAdd,
@@ -91,6 +91,7 @@ impl SettingsScreen {
         let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
         inputs.extend(self.account.inputs());
         inputs.push(self.api_keys.name.clone());
+        inputs.push(self.billing.credits.custom.clone());
         #[cfg(feature = "proxy")]
         inputs.push(self.local_api.port.clone());
         if let Some(editor) = &self.mcp_editor {
@@ -163,7 +164,7 @@ impl SettingsScreen {
             Section::Prompt => vec![
                 SettingsTarget::PromptEditor,
                 SettingsTarget::PromptSave,
-                SettingsTarget::PromptReset,
+                SettingsTarget::PromptClear,
             ],
             Section::Integrations => self
                 .integrations
@@ -359,7 +360,9 @@ impl SettingsScreen {
             Some(SettingsTarget::Account(target)) => {
                 self.activate_account_target(target, window, cx)
             }
-            Some(SettingsTarget::Billing(target)) => self.activate_billing_target(target, cx),
+            Some(SettingsTarget::Billing(target)) => {
+                self.activate_billing_target(target, window, cx)
+            }
             Some(SettingsTarget::ApiKeys(target)) => {
                 self.activate_api_keys_target(target, window, cx)
             }
@@ -373,7 +376,7 @@ impl SettingsScreen {
                 window.focus(&handle, cx);
             }
             Some(SettingsTarget::PromptSave) => self.save_prompt(cx),
-            Some(SettingsTarget::PromptReset) => self.reset_prompt(cx),
+            Some(SettingsTarget::PromptClear) => self.clear_prompt(cx),
             Some(SettingsTarget::Integration(id)) => self.toggle_integration(&id, cx),
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),

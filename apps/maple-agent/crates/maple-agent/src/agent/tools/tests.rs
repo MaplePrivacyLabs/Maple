@@ -128,6 +128,8 @@ fn the_model_gets_read_a_shell_edit_and_write() {
     };
     assert_eq!(tools.builtin, ["read", shell, "edit", "write"]);
     assert!(tools.options.powershell.spawn_hook.is_some());
+    assert!(tools.options.bash.operations.is_some());
+    assert!(tools.options.powershell.operations.is_some());
 }
 
 fn tool(tools: &TaskTools, name: &str) -> Arc<dyn pi_agent_core::AgentTool> {
@@ -233,6 +235,7 @@ fn near_miss_questions_take_the_schema_shape() {
         ask.declaration(),
         &pi_ai::ToolCall {
             id: "call-1".to_string(),
+            arguments_error: None,
             partial_json: None,
             name: "request_user_input".to_string(),
             arguments: match expected {

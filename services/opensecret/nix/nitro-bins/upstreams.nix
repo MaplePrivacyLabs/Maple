@@ -4,12 +4,12 @@
   rust.version = "1.97.1";
 
   sdkC = {
-    version = "0.4.5";
-    tag = "v0.4.5";
+    version = "0.4.6";
+    tag = "v0.4.6";
     owner = "aws";
     repo = "aws-nitro-enclaves-sdk-c";
-    rev = "cd61b6187c8b20867ba4368d1ae62c5790c0269a";
-    hash = "sha256-w+/D1uL5A2DLn0+b0kEcYcO3RmFL0mi/U83c4bfn+bE=";
+    rev = "f2dbc3fb1ab9b4496ff8ebc077d24e5f24265923";
+    hash = "sha256-LMsopWrSEKgx62ak0lG6NVLo6gjD8MNP0RRFrL5zRfo=";
   };
   nsmApi = {
     version = "0.5.2";

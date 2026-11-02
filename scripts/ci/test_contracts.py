@@ -22,9 +22,8 @@ from unittest import mock
 
 import cargo_graph_key
 import plan
-import windows_signature_reference as signature_probe
 from test_workflow_policy import (ENVIRONMENTS, GITHUB_HOSTED, LISTENERS, ROOT, cache_writer, environment, jobs,
-                                  load, permissions, runner_labels, triggers, workflows)
+                                  permissions, runner_labels, triggers, workflows)
 
 
 def module(name: str, path: str):
@@ -34,7 +33,6 @@ def module(name: str, path: str):
     return loaded
 
 
-publisher = module("agent_publisher", "services/agent-updates/publisher/publisher.py")
 ci_evidence = module("ci_evidence", ".agents/skills/release-maple/scripts/ci_evidence.py")
 
 # Master workflows whose caches release.yml restores by prefix.
@@ -51,11 +49,11 @@ AGENT_RELEASE_WRITERS = frozenset(("agent-desktop-build.yml", job) for job in ("
 AGENT_RELEASE_READERS: frozenset = frozenset()
 # The packaging rehearsals build thin LTO into their own cache, saved only by
 # ci.yml's nightly master run.
-AGENT_PACKAGE_JOBS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos", "windows"))
+AGENT_PACKAGE_JOBS = frozenset(("ci.yml", f"agent-package-{os}") for os in ("linux", "macos", "windows", "windows-arm64"))
 # Jobs that may mint an OIDC token: attestation, signing identity, FlakeHub, registries.
 OIDC_JOBS = frozenset({
     ("agent-desktop-build.yml", "macos"), ("agent-desktop-build.yml", "windows"),
-    ("agent-desktop-build.yml", "attest-linux"), ("android-build.yml", "build-android"),
+    ("agent-desktop-build.yml", "publish"), ("android-build.yml", "build-android"),
     ("desktop-build.yml", "build-macos"), ("desktop-build.yml", "build-linux"), ("desktop-build.yml", "build-windows"),
     ("dev-credential-requester-image.yml", "build"), ("ios-dev-testflight.yml", "build-ios-dev"),
     ("mobile-build.yml", "build-ios"), ("opensecret-eif-release.yml", "build"),
@@ -72,7 +70,7 @@ FLAKEHUB_JOBS = frozenset({("ci.yml", "os-eif"), ("opensecret-eif.yml", "eif-tru
 CONSUMERS = {
     ("agent-desktop-build.yml", "macos"): "desktop-signing",
     ("agent-desktop-build.yml", "windows"): "windows-signing",
-    **{("agent-updates-publish.yml", job): "updates-production" for job in ("reserve", "sign", "publish")},
+    ("agent-desktop-build.yml", "publish"): "updates-production",
     ("android-build.yml", "build-android"): "android-signing",
     ("auth-pages-dev-publish.yml", "development"): "auth-pages-development",
     ("auth-pages-dev-publish.yml", "preview"): "auth-pages-development",
@@ -105,65 +103,13 @@ def condition(job: dict) -> str:
 
 
 def variants(job: dict, event: str) -> list:
-    """The job's `variant` matrix on `event`: a list, or `fromJSON(<condition> && '[...]' || '[...]')`."""
+    """The job's `variant` matrix on `event` (no release input): a list, or a `fromJSON(...)` expression."""
     matrix = job.get("strategy", {}).get("matrix", {}).get("variant")
     if matrix is None or isinstance(matrix, list):
         return matrix or [None]
     text = matrix.strip().removeprefix("${{").removesuffix("}}").strip().removeprefix("fromJSON(").removesuffix(")")
     return json.loads(expression_value(text.replace("&&", " and ").replace("||", " or "),
-                                       {"github.event_name": event}))
-
-
-def job_results(config: dict, event: str) -> dict:
-    """Which agent-desktop-build.yml jobs run on a master `event` that changes Agent
-    inputs, if every job that runs succeeds: each job's `if:` and `needs`, evaluated."""
-    results: dict = {}
-    pending = dict(config["jobs"])
-    while pending:
-        ready = [job_id for job_id, job in pending.items()
-                 if set(needs_of(job)) <= set(results)]
-        if not ready:
-            raise ValueError(f"unresolvable needs: {sorted(pending)}")
-        for job_id in ready:
-            job = pending.pop(job_id)
-            succeeded = all(results[need] == "success" for need in needs_of(job))
-            if "if" not in job:
-                runs = succeeded
-            else:
-                text = expression(job)
-                if not re.search(r"\b(?:always|cancelled|failure|success)\(\)", str(job["if"])):
-                    text = f"{succeeded} and ({text})"  # GitHub's implicit success()
-                context = {"NOT_CANCELLED": True, "github.repository": publisher.REPOSITORY,
-                           "github.ref": "refs/heads/master", "github.event_name": event,
-                           "needs.changes.outputs.agent": "true" if results.get("changes") == "success" else ""}
-                context.update({f"needs.{need}.result": results[need] for need in needs_of(job)})
-                runs = evaluate(text, dict(sorted(context.items(), key=lambda item: -len(item[0]))))
-            results[job_id] = "success" if runs else "skipped"
-    return results
-
-
-def needs_of(job: dict) -> list:
-    value = job.get("needs", [])
-    return [value] if isinstance(value, str) else list(value)
-
-
-def desktop_run(config: dict, run_id: int, event: str = "push"):
-    """The job inventory (with runner labels) and artifacts of one agent-desktop-build.yml
-    run on master in which every job that runs succeeds; a job its `if:` skips is skipped."""
-    def expand(text, variant):
-        return text.replace("${{ matrix.variant }}", str(variant)).replace("${{ github.run_id }}", str(run_id))
-
-    results = job_results(config, event)
-    inventory, artifacts = [], []
-    for job_id, job in config["jobs"].items():
-        for variant in variants(job, event):
-            inventory.append({"name": expand(job.get("name", job_id), variant), "status": "completed",
-                              "conclusion": results[job_id], "labels": [job["runs-on"]]})
-            if results[job_id] == "success":
-                artifacts += [{"name": expand(step["with"]["name"], variant), "expired": False}
-                              for step in job.get("steps", [])
-                              if step.get("uses", "").startswith("actions/upload-artifact@")]
-    return inventory, artifacts
+                                       {"inputs.release": False, "github.event_name": event}))
 
 
 def cache_steps():
@@ -242,129 +188,6 @@ class ContractTests(unittest.TestCase):
                             "github.event.workflow_run.event == 'release'"):
                 self.assertIn(control, gate, name)
 
-    def test_c2_agent_publisher_accepts_this_workflows_jobs_and_artifacts(self):
-        config = load(ROOT / publisher.WORKFLOW)
-        self.assertIn("master", config["on"]["push"]["branches"])
-        self.assertIn("workflow_dispatch", config["on"])
-        self.assertTrue(config["on"].get("schedule"))  # Dev packages build nightly
-        run_id = 4242
-        for job_id, job in config["jobs"].items():
-            attests = any(step.get("uses", "").startswith("actions/attest@") for step in job.get("steps", []))
-            if attests:  # the publisher verifies with --deny-self-hosted-runners
-                self.assertTrue(GITHUB_HOSTED.fullmatch(job["runs-on"]), job_id)
-            if attests or environment(job) or job.get("name", "").startswith("Verify"):
-                self.assertFalse([step for step in job.get("steps", []) if step.get("uses", "").startswith(
-                    ("actions/cache", "Swatinem/rust-cache@"))], f"{job_id} must restore no cache")
-        # Each job's `if:` and `needs` decide whether it runs: a Prod job they skip fails the publisher.
-        # A push builds only Prod, the nightly run only Dev (never published), a dispatch both.
-        profiles = {"push": ["prod"], "workflow_dispatch": ["dev", "prod"], "schedule": ["dev"]}
-        for event, expected in profiles.items():
-            results = job_results(config, event)
-            for job_id, job in config["jobs"].items():
-                if "variant" in job.get("strategy", {}).get("matrix", {}):
-                    self.assertEqual((results[job_id], variants(job, event)), ("success", expected), (event, job_id))
-            inventory, artifacts = desktop_run(config, run_id, event)
-            run = {"id": run_id, "run_attempt": 1, "run_number": 77, "path": publisher.WORKFLOW,
-                   "head_branch": "master", "event": event, "status": "completed", "head_sha": "a" * 40,
-                   "created_at": "2026-01-01T00:00:00Z", "repository": {"full_name": publisher.REPOSITORY},
-                   "head_repository": {"full_name": publisher.REPOSITORY}}
-            responses = {"": run, "jobs": {"total_count": len(inventory), "jobs": inventory},
-                         "artifacts": {"total_count": len(artifacts), "artifacts": artifacts}}
-            with self.subTest(event=event), mock.patch.object(
-                    publisher, "gh_json", lambda path: responses[re.sub(r".*/runs/\d+/?([a-z]*).*", r"\1", path)]):
-                if "prod" not in expected:
-                    with self.assertRaises(publisher.PublishError):
-                        publisher.trust_run(run_id, linux=True, windows=True)
-                    # Even a nightly run with every Prod job and artifact is never published.
-                    inventory, artifacts = desktop_run(config, run_id, "push")
-                    responses.update(jobs={"total_count": len(inventory), "jobs": inventory},
-                                     artifacts={"total_count": len(artifacts), "artifacts": artifacts})
-                    with self.assertRaisesRegex(publisher.PublishError, "untrusted build workflow or ref"):
-                        publisher.trust_run(run_id, linux=True, windows=True)
-                    continue
-                proof = publisher.trust_run(run_id, linux=True, windows=True)
-                self.assertEqual(proof["build"], "77")  # run_number is the Agent build number
-        # The publisher checks the Windows package's build against that run number.
-        windows = [job for job in config["jobs"].values()
-                   if re.search(r"windows-release\.py (?:package|verify)", json.dumps(job.get("steps", [])))]
-        self.assertTrue(windows)
-        for job in windows:
-            self.assertEqual(job.get("env", {}).get("MAPLE_PACKAGE_BUILD_NUMBER"), "${{ github.run_number }}",
-                             job.get("name"))
-
-    def test_c2_prebuilt_binary_handoff_preserves_the_packagers_release_path(self):
-        config = load(ROOT / publisher.WORKFLOW)
-        for platform, binary in (("macos", "maple-agent"), ("windows", "maple-agent.exe")):
-            with self.subTest(platform=platform):
-                producer = config["jobs"][platform + "-build"]["steps"]
-                consumer = config["jobs"][platform]["steps"]
-                upload = next(step["with"] for step in producer
-                              if step.get("uses", "").startswith("actions/upload-artifact@")
-                              and "-prebuilt-" in step["with"]["name"])
-                download = next(step["with"] for step in consumer
-                                if step.get("uses", "").startswith("actions/download-artifact@"))
-                # A single uploaded file is stored at the artifact root. The
-                # consumer must place that basename back under target/release.
-                expected = Path("apps/maple-agent/target/release") / binary
-                self.assertEqual(upload["path"].splitlines(), [expected.as_posix()])
-                self.assertEqual(download["name"], upload["name"])
-                self.assertEqual(Path(download["path"]) / binary, expected)
-
-    def test_c2_windows_packaging_lanes_pass_a_build_number(self):
-        # windows-release.py package and verify refuse to run without MAPLE_PACKAGE_BUILD_NUMBER.
-        # A lane passes the Actions run number, or 1 outside Actions. Run each such lane's
-        # command with stand-ins for the build script and Python, and read what they received.
-        packaging = [lane for lane in plan.LANES if re.search(r"windows-release\.py (?:package|verify)", lane.run)]
-        self.assertTrue(packaging)
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            stubs = {root / "scripts/build-release.sh": "exit 0\n",
-                     root / "bin/python3": 'printf "%s|%s\\n" "${MAPLE_PACKAGE_BUILD_NUMBER-unset}" "$*" >> "$CALLS"\n'}
-            for path, body in stubs.items():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("#!/bin/sh\n" + body)
-                path.chmod(0o755)
-            calls = root / "calls"
-            for lane, run_number in itertools.product(packaging, ("77", None)):
-                calls.write_text("")
-                env = {key: value for key, value in os.environ.items()
-                       if key not in ("GITHUB_RUN_NUMBER", "MAPLE_PACKAGE_BUILD_NUMBER")}
-                env.update(dict(lane.env), PATH=f"{root / 'bin'}{os.pathsep}{env['PATH']}", CALLS=str(calls))
-                if run_number:
-                    env["GITHUB_RUN_NUMBER"] = run_number
-                result = subprocess.run([shutil.which("bash"), "--noprofile", "--norc", "-euo", "pipefail", "-c",
-                                         lane.run], cwd=root, env=env, capture_output=True, text=True)
-                with self.subTest(lane=lane.id, run_number=run_number):
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    received = [line.split("|")[0] for line in calls.read_text().splitlines()
-                                if re.search(r"windows-release\.py (?:package|verify) ", line)]
-                    self.assertGreaterEqual(len(received), 2)  # package, then verify
-                    self.assertEqual(set(received), {run_number or "1"})
-
-    def test_c2_windows_signature_probe_accepts_this_workflows_prod_run(self):
-        self.assertEqual(signature_probe.PRODUCER, publisher.WORKFLOW)
-        self.assertEqual(signature_probe.REPOSITORY, publisher.REPOSITORY)
-        run_id, source = 4242, "a" * 40
-        inventory, artifacts = desktop_run(load(ROOT / publisher.WORKFLOW), run_id)
-        signed = f"maple-agent-prod-windows-x86_64-{run_id}"
-        self.assertIn(signed, [artifact["name"] for artifact in artifacts])
-        jobs_ = [dict(job, id=index, started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:10:00Z")
-                 for index, job in enumerate(inventory, 1)]
-        run = {"id": run_id, "run_attempt": 1, "head_sha": source, "head_branch": "master", "event": "push",
-               "path": publisher.WORKFLOW, "repository": {"full_name": publisher.REPOSITORY, "id": 1},
-               "head_repository": {"full_name": publisher.REPOSITORY}, "status": "completed",
-               "conclusion": "success"}
-        artifact = {"id": 7, "expired": False, "name": signed, "size_in_bytes": 1000, "digest": "sha256:" + "b" * 64,
-                    "created_at": "2026-01-01T00:05:00Z", "workflow_run": {
-                        "id": run_id, "head_sha": source, "repository_id": 1, "head_repository_id": 1}}
-        selected = signature_probe.selection({
-            "MAPLE_PROBE_RUN": str(run_id), "MAPLE_PROBE_ATTEMPT": "1", "MAPLE_PROBE_ARTIFACT": "7",
-            "MAPLE_PROBE_ZIP_BYTES": "1000", "MAPLE_PROBE_SOURCE": source, "MAPLE_PROBE_ZIP_SHA": "b" * 64,
-            "MAPLE_PROBE_PE_MEMBER": "setup.exe", "MAPLE_PROBE_PE_SHA": "c" * 64})
-        chosen = signature_probe.validate_producer(
-            selected, run, artifact, {"total_count": len(jobs_), "jobs": jobs_})
-        self.assertEqual([job["name"] for job in chosen], list(signature_probe.JOBS))
-
     def test_c3_release_preflight_finds_its_evidence_jobs_on_master_pushes(self):
         for name, required in ci_evidence.WORKFLOWS.items():
             config = workflows().get(name)
@@ -417,8 +240,13 @@ class ContractTests(unittest.TestCase):
                     if step["uses"].startswith("actions/cache/save@"):
                         self.assertIn("refs/heads/master' && github.event_name == 'schedule'", step["if"])
                     else:
-                        self.assertTrue(step["with"]["key"].startswith("ci-v1-agent-package-${{ runner.os }}-"))
-                        self.assertEqual(step["with"]["restore-keys"], "ci-v1-agent-package-${{ runner.os }}-")
+                        # macOS also leads with the Xcode pin, so a prefix restore never
+                        # brings back objects built against another SDK.
+                        prefix = "ci-v1-agent-package-${{ runner.os }}-" + {
+                            "agent-package-macos": "${{ hashFiles('scripts/ci/apple-toolchain.json') }}-",
+                            "agent-package-windows-arm64": "${{ runner.arch }}-"}.get(job_id, "")
+                        self.assertTrue(step["with"]["key"].startswith(prefix))
+                        self.assertEqual(step["with"]["restore-keys"], prefix)
             elif name == "ci.yml":
                 with self.subTest(job=job_id):
                     self.assertTrue(step["uses"].startswith("actions/cache/restore@"))
@@ -459,7 +287,12 @@ class ContractTests(unittest.TestCase):
         # empty or misnamed output would turn the exact key into a prefix that restores any
         # entry of the family.
         agent = ROOT / "apps/maple-agent"
-        expected = cargo_graph_key.key((agent / "Cargo.lock").read_text(), (agent / "flake.lock").read_text())
+        lockfiles = ((agent / "Cargo.lock").read_text(), (agent / "flake.lock").read_text())
+        # The macOS builder also hashes the Xcode pin, so an Xcode upgrade never restores
+        # objects built against the previous SDK.
+        apple = ((ROOT / "scripts/ci/apple-toolchain.json").read_text(),)
+        expected = {job: cargo_graph_key.key(*lockfiles, apple if job == "macos-build" else ())
+                    for _, job in AGENT_RELEASE_WRITERS}
         pattern = r"ci-v1-agent-release-\$\{\{ runner\.os \}\}-\$\{\{ steps\.([\w-]+)\.outputs\.([\w-]+) \}\}"
         with tempfile.TemporaryDirectory() as temporary:
             working = Path(temporary) / "bin/python3"
@@ -497,7 +330,7 @@ class ContractTests(unittest.TestCase):
                     output = Path(temporary) / f"{job_id}.output"
                     result = run(step, directory, working, output)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(output.read_text().splitlines(), [f"{reference[2]}={expected}"])
+                    self.assertEqual(output.read_text().splitlines(), [f"{reference[2]}={expected[job_id]}"])
                     failed = Path(temporary) / f"{job_id}.failed"
                     self.assertNotEqual(run(step, directory, failing, failed).returncode, 0)
                     self.assertEqual(failed.read_text() if failed.exists() else "", "")

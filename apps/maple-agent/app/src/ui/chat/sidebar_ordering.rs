@@ -361,12 +361,12 @@ impl Sidebar {
                 SidebarGroup::Project | SidebarGroup::Connection => TaskGroup::Project(target),
                 SidebarGroup::Status => {
                     let running = if target.computer.as_deref() == self.backend.remote_host() {
-                        self.running.contains(id)
+                        self.activity.running.contains(id)
                     } else {
                         self.computers
                             .iter()
                             .find(|computer| computer.key == target.computer)
-                            .is_some_and(|computer| computer.running.contains(id))
+                            .is_some_and(|computer| computer.activity.running.contains(id))
                     };
                     TaskGroup::Status(state == AgentTaskState::Settled && !running)
                 }
@@ -640,7 +640,7 @@ impl Sidebar {
         }
         for host in self.computers.iter() {
             for task in &host.sessions {
-                if task.message_count > 0 || host.running.contains(&task.id) {
+                if task.message_count > 0 || host.activity.running.contains(&task.id) {
                     loaded
                         .entry(SidebarItemKey {
                             computer: host.key.clone(),
@@ -656,7 +656,7 @@ impl Sidebar {
             }
         }
         for task in self.sessions.iter() {
-            if task.message_count > 0 || self.running.contains(&task.id) {
+            if task.message_count > 0 || self.activity.running.contains(&task.id) {
                 loaded
                     .entry(SidebarItemKey {
                         computer: computer.clone(),

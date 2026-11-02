@@ -8,6 +8,7 @@ use std::sync::Arc;
 use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
 use maple_agent::agent::{
     AgentTimelineItem, EXTERNAL_AGENT_ACTIVITY_KEY, ExternalAgentActivity, ExternalAgentRef,
+    USAGE_LIMIT_MESSAGE,
 };
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
@@ -18,6 +19,7 @@ use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
+use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::typography;
@@ -165,6 +167,13 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .min_h_0()
+            .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if event.button == gpui::MouseButton::Right
+                    && let Some(selection) = &this.selection
+                {
+                    selection.update(cx, |selection, _| selection.clear_context_link());
+                }
+            }))
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -356,8 +365,12 @@ pub(super) fn render_timeline_item(
             // Dispatch on payload shape; runtime titles are humanized
             // ("todo write", "ask user") and vary by detail suffix.
             if has_tool_input(item, "todos") {
-                // The pinned plan card above the composer shows the list.
-                return div().into_any_element();
+                // The pinned card above the composer shows an unfinished
+                // list; a finished one stays here as a foldable row.
+                match render_finished_plan(item, revision, expanded, transcript) {
+                    Some(plan) => plan,
+                    None => return div().into_any_element(),
+                }
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
@@ -366,7 +379,7 @@ pub(super) fn render_timeline_item(
                 render_tool(item, revision, expanded, transcript)
             }
         }
-        "error" => render_error(item),
+        "error" => render_error(item, transcript),
         "permission" => render_permission_row(item),
         _ => render_system(item),
     };
@@ -378,7 +391,9 @@ pub(super) fn render_timeline_item(
     match role {
         Some(role) => {
             let (position, count) = transcript.position;
-            row.id(SharedString::from(format!("timeline-row-{item_id}")))
+            let row_id = SharedString::from(format!("timeline-row-{item_id}"));
+            row.id(row_id.clone())
+                .debug_selector(move || row_id.to_string())
                 .role(role)
                 .when_some(label, |row, label| row.aria_label(label))
                 .accessibility_id(item_id)
@@ -840,6 +855,94 @@ pub(super) fn plan_entries(item: &AgentTimelineItem) -> Option<Vec<PlanEntry>> {
     )
 }
 
+/// A list with every entry checked off. An empty list clears the plan and
+/// is never finished.
+pub(super) fn plan_finished(plan: &[PlanEntry]) -> bool {
+    !plan.is_empty()
+        && plan
+            .iter()
+            .all(|entry| entry.status == PlanStatus::Completed)
+}
+
+/// The transcript row of a finished todo list: a foldable card like a tool
+/// call's, or `None` while the list is unfinished and the pinned card
+/// shows it.
+fn render_finished_plan(
+    item: &AgentTimelineItem,
+    revision: u64,
+    details: bool,
+    transcript: &TranscriptCtx,
+) -> Option<Div> {
+    let derived = transcript.derived.get(item, revision);
+    let plan = derived.plan.as_deref().filter(|plan| plan_finished(plan))?;
+    let count = format!("{}/{}", plan.len(), plan.len());
+    let item_id = item.id.clone();
+    let chat = transcript.chat.clone();
+    let mut card = div()
+        .id(SharedString::from(format!("plan-toggle-{item_id}")))
+        .debug_selector(|| "plan-row".to_string())
+        .role(gpui::Role::DisclosureTriangle)
+        .aria_label(SharedString::from(format!("Plan, {count} done")))
+        .aria_expanded(details)
+        .flex()
+        .flex_col()
+        .gap_1()
+        .px_3()
+        .py_2()
+        .rounded(theme::RADIUS_SM)
+        .bg(gpui::rgb(theme::bg_tool_card()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border_subtle()))
+        .hover(|style| {
+            style
+                .border_color(gpui::rgb(theme::border()))
+                .cursor_pointer()
+        })
+        .on_click(move |_event, _window, cx: &mut gpui::App| {
+            chat.update(cx, |chat, cx| chat.toggle_tool(&item_id, cx))
+                .ok();
+        })
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child("Plan"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(count),
+                )
+                .child(icon(
+                    if details {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    },
+                    px(14.),
+                    theme::text_muted(),
+                )),
+        );
+    if details {
+        card = card.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .children(plan.iter().map(render_plan_row)),
+        );
+    }
+    Some(div().child(card))
+}
+
 /// One row of the subagent card: what the subagent was asked to do, the
 /// tool it is running now, and how long it has worked. An external agent's
 /// row also carries a Stop control.
@@ -1130,7 +1233,7 @@ fn render_tool(
         let raw = item.title.as_deref().unwrap_or(&item.item_type);
         SharedString::from(tool_label_title(raw).to_string())
     });
-    let card = div()
+    let mut card = div()
         .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
         .debug_selector(|| "tool-card".to_string())
         .role(gpui::Role::DisclosureTriangle)
@@ -1201,8 +1304,20 @@ fn render_tool(
                     theme::text_muted(),
                 )),
         );
-    // Collapsed: the header alone; the summary takes over the title when
-    // it lands. Only expanded cards pay for the derived payload strings.
+    if running
+        && shell_execution(item).is_some()
+        && let Some(status) = &transcript.derived.get(item, revision).shell_status
+    {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .debug_selector(|| "shell-execution-status".to_string())
+                .child(status.clone()),
+        );
+    }
+    // Collapsed: the header and live shell status; the summary takes over the title when
+    // it lands. Expanded cards also show the cached arguments and output.
     if !details {
         return div().child(card);
     }
@@ -1390,6 +1505,30 @@ pub(super) fn tool_output_markdown(item: &AgentTimelineItem) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+fn shell_execution(item: &AgentTimelineItem) -> Option<&serde_json::Value> {
+    item.output
+        .as_ref()?
+        .get("structuredContent")?
+        .get("shellExecution")
+}
+
+pub(super) fn shell_execution_status(item: &AgentTimelineItem) -> Option<String> {
+    let execution = shell_execution(item)?;
+    let cwd = execution.get("cwd")?.as_str()?;
+    let elapsed = execution.get("elapsedSeconds")?.as_u64()?;
+    let idle = execution.get("outputIdleSeconds")?.as_u64()?;
+    let deadline = execution
+        .get("timeoutSeconds")
+        .and_then(serde_json::Value::as_f64)
+        .map_or_else(
+            || "no deadline".to_string(),
+            |seconds| format!("deadline {seconds}s"),
+        );
+    Some(format!(
+        "Started in {cwd}\nRunning {elapsed}s · no output for {idle}s · {deadline} · Stop cancels command"
+    ))
+}
+
 fn extract_output_text(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(text) => Some(text.clone()),
@@ -1421,7 +1560,7 @@ fn extract_output_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn render_error(item: &AgentTimelineItem) -> Div {
+fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
     let text = item
         .text
         .clone()
@@ -1430,7 +1569,34 @@ fn render_error(item: &AgentTimelineItem) -> Div {
     if text.trim().is_empty() {
         return div();
     }
-    widgets::banner(theme::status_error()).child(text)
+    if !text.contains(USAGE_LIMIT_MESSAGE) {
+        return widgets::banner(theme::status_error()).child(text);
+    }
+    let chat = transcript.chat.clone();
+    let button_id = format!("open-billing-{}", item.id);
+    widgets::banner(theme::status_error())
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap_2()
+        .child(USAGE_LIMIT_MESSAGE)
+        .child(
+            widgets::secondary_button(button_id.clone())
+                .debug_selector({
+                    let button_id = button_id.clone();
+                    move || button_id.clone()
+                })
+                .child("Open Billing")
+                .on_click(move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    let Some(chat) = chat.upgrade() else {
+                        return;
+                    };
+                    chat.update(cx, |_chat, cx| {
+                        cx.emit(OpenSettingsSection(Section::Billing));
+                    });
+                }),
+        )
 }
 
 /// The row for an MCP elicitation ("Input requested"). It has no answer
@@ -1487,6 +1653,7 @@ fn render_system(item: &AgentTimelineItem) -> Div {
 pub(super) fn render_question_card(
     question: &crate::backend::PendingQuestion,
     step: usize,
+    collapsed: bool,
     input: Option<Entity<TextInput>>,
     selected: &HashMap<usize, QuestionSelection>,
     cx: &mut Context<ChatScreen>,
@@ -1508,14 +1675,67 @@ pub(super) fn render_question_card(
         .border_color(gpui::rgb(theme::status_running()))
         .flex()
         .flex_col()
+        .gap_2();
+    let step = step.min(question.questions.len().saturating_sub(1));
+    // Folding works like the Plan card: the header stays, naming the
+    // question, so the transcript above can be read before answering.
+    let header = div()
+        .id("question-card-header")
+        .debug_selector(|| "question-card-header".to_string())
+        .role(gpui::Role::DisclosureTriangle)
+        .aria_label("Question from Maple")
+        .aria_expanded(!collapsed)
+        .flex()
+        .items_center()
         .gap_2()
+        .min_w_0()
+        .cursor_pointer()
+        .on_click(cx.listener(|this, _event, _window, cx| {
+            this.toggle_question_collapsed(cx);
+        }))
+        .child(icon(
+            if collapsed {
+                "chevron-right"
+            } else {
+                "chevron-down"
+            },
+            px(14.),
+            theme::text_secondary(),
+        ))
         .child(
             div()
+                .flex_none()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::rgb(theme::text_primary()))
                 .child("Question from Maple"),
+        )
+        .when_some(
+            collapsed
+                .then(|| question.questions.get(step))
+                .flatten()
+                .map(|entry| {
+                    if entry.header.trim().is_empty() {
+                        entry.question.clone()
+                    } else {
+                        entry.header.clone()
+                    }
+                }),
+            |header, summary| {
+                header.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(summary),
+                )
+            },
         );
-    let step = step.min(question.questions.len().saturating_sub(1));
+    card = card.child(header);
+    if collapsed {
+        return card;
+    }
     let has_more = step + 1 < question.questions.len();
     for (question_index, entry) in question
         .questions

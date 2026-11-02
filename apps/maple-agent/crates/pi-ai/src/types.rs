@@ -67,6 +67,10 @@ pub struct ToolCall {
     pub name: String,
     #[serde(default)]
     pub arguments: Map<String, Value>,
+    /// Why the call's complete argument text was not a JSON object, with that text, as
+    /// Pi's `argumentsError`. `arguments` is then empty, and validation fails with this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments_error: Option<String>,
     /// The argument JSON received so far, while [`crate::apply_event`] follows the call
     /// as it streams; `arguments` holds its parse. `None` once the call has ended. Never
     /// saved.
@@ -139,6 +143,7 @@ impl AssistantContent {
             id: id.into(),
             name: name.into(),
             arguments,
+            arguments_error: None,
             partial_json: None,
         })
     }

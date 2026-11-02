@@ -3,7 +3,7 @@
 
 use super::SharedRuntimeStart;
 use super::config::{AgentAcpConfig, AgentAcpStats};
-use super::convert::acp_session_config_options;
+use super::convert::acp_config_options;
 use super::observer::ObserverMailbox;
 use super::transport::AcpOutboundTracker;
 #[cfg(test)]
@@ -67,7 +67,6 @@ pub(super) struct AcpSession {
     /// The session title last advertised to the caller; semantic-title
     /// updates are only sent when the title moves past this.
     pub(super) advertised_title: Option<String>,
-    pub(super) message_count: usize,
     pub(super) created_here: bool,
     pub(super) prompted: bool,
     pub(super) project_root: PathBuf,
@@ -141,8 +140,7 @@ impl AcpSessionOperation {
 
 impl AcpSession {
     pub(super) fn config_options(&self) -> Vec<SessionConfigOption> {
-        let mut options =
-            acp_session_config_options(&self.model, &self.available_models, self.message_count);
+        let mut options = acp_config_options(&self.model, &self.available_models);
         if let Some(state) = &self.thinking {
             super::convert::add_thinking_option(&mut options, state);
         }

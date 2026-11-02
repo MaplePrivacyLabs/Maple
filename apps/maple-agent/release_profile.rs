@@ -20,6 +20,7 @@ pub struct ReleaseProfile {
     pub update_feed_url: Option<String>,
     pub linux_update_feed_url: Option<String>,
     pub windows_update_feed_url: Option<String>,
+    pub windows_arm64_update_feed_url: Option<String>,
     pub update_public_keys: Vec<String>,
     pub prerelease: bool,
 }
@@ -27,11 +28,12 @@ pub struct ReleaseProfile {
 impl ReleaseProfile {
     /// The platform feed is compiled into both constants and build metadata.
     /// Unsupported targets never inherit another platform's update protocol.
-    pub fn update_feed_for_target_os(&self, target_os: &str) -> Option<&str> {
-        match target_os {
-            "macos" => self.update_feed_url.as_deref(),
-            "linux" => self.linux_update_feed_url.as_deref(),
-            "windows" => self.windows_update_feed_url.as_deref(),
+    pub fn update_feed_for_target(&self, target_os: &str, target_arch: &str) -> Option<&str> {
+        match (target_os, target_arch) {
+            ("macos", "aarch64") => self.update_feed_url.as_deref(),
+            ("linux", "x86_64") => self.linux_update_feed_url.as_deref(),
+            ("windows", "x86_64") => self.windows_update_feed_url.as_deref(),
+            ("windows", "aarch64") => self.windows_arm64_update_feed_url.as_deref(),
             _ => None,
         }
     }
@@ -114,6 +116,12 @@ fn validate_profiles(profiles: &BTreeMap<String, ReleaseProfile>) -> Result<(), 
                 } else {
                     None
                 }
+            || profile.windows_arm64_update_feed_url.as_deref()
+                != if channel == "prod" {
+                    Some("https://updates.maple.ai/agent/stable/windows-arm64/latest.json")
+                } else {
+                    None
+                }
             || (channel == "dev" && !profile.update_public_keys.is_empty())
             || !matches!(profile.update_public_keys.len(), 0 | 2)
             || profile
@@ -170,6 +178,7 @@ pub fn select_profile(
         profile.update_feed_url = None;
         profile.linux_update_feed_url = None;
         profile.windows_update_feed_url = None;
+        profile.windows_arm64_update_feed_url = None;
         profile.update_public_keys.clear();
         // Local/MDE builds keep the existing explicit PCR override. Invalid
         // values still fail runtime validation rather than being normalized.
@@ -246,7 +255,8 @@ pub fn emit(manifest_path: &str, helper_path: &str, app: bool) {
         "pub const AUTH_ORIGIN: Option<&str> = {auth_origin};\n"
     ));
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("Cargo target OS");
-    let update_feed_url = match profile.update_feed_for_target_os(&target_os) {
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("Cargo target architecture");
+    let update_feed_url = match profile.update_feed_for_target(&target_os, &target_arch) {
         Some(url) => format!(
             "Some({})",
             serde_json::to_string(url).expect("profile update feed URL")
@@ -299,6 +309,7 @@ mod tests {
         assert_eq!(dev.update_feed_url, None);
         assert_eq!(dev.linux_update_feed_url, None);
         assert_eq!(dev.windows_update_feed_url, None);
+        assert_eq!(dev.windows_arm64_update_feed_url, None);
         assert!(dev.update_public_keys.is_empty());
         assert_eq!(
             prod.update_feed_url.as_deref(),
@@ -335,6 +346,7 @@ mod tests {
         assert_eq!(profile.update_feed_url, None);
         assert_eq!(profile.linux_update_feed_url, None);
         assert_eq!(profile.windows_update_feed_url, None);
+        assert_eq!(profile.windows_arm64_update_feed_url, None);
         assert!(profile.update_public_keys.is_empty());
     }
 
@@ -379,24 +391,36 @@ mod tests {
     fn compiled_update_feeds_match_platform_and_disable_unsupported_targets() {
         let (_, prod) = select_profile(Some("prod"), None).unwrap();
         assert_eq!(
-            prod.update_feed_for_target_os("macos"),
+            prod.update_feed_for_target("macos", "aarch64"),
             Some("https://updates.maple.ai/agent/stable/latest.json")
         );
         assert_eq!(
-            prod.update_feed_for_target_os("linux"),
+            prod.update_feed_for_target("linux", "x86_64"),
             Some("https://updates.maple.ai/agent/stable/linux/latest.json")
         );
         assert_eq!(
-            prod.update_feed_for_target_os("windows"),
+            prod.update_feed_for_target("windows", "x86_64"),
             Some("https://updates.maple.ai/agent/stable/windows/latest.json")
         );
-        for target_os in ["freebsd", ""] {
-            assert_eq!(prod.update_feed_for_target_os(target_os), None);
+        assert_eq!(
+            prod.update_feed_for_target("windows", "aarch64"),
+            Some("https://updates.maple.ai/agent/stable/windows-arm64/latest.json")
+        );
+        for (target_os, target_arch) in [
+            ("freebsd", "x86_64"),
+            ("", ""),
+            ("macos", "x86_64"),
+            ("linux", "aarch64"),
+            ("windows", "x86"),
+        ] {
+            assert_eq!(prod.update_feed_for_target(target_os, target_arch), None);
         }
         for channel in [None, Some("dev")] {
             let (_, profile) = select_profile(channel, None).unwrap();
             for target_os in ["macos", "linux", "windows"] {
-                assert_eq!(profile.update_feed_for_target_os(target_os), None);
+                for target_arch in ["aarch64", "x86_64"] {
+                    assert_eq!(profile.update_feed_for_target(target_os, target_arch), None);
+                }
             }
         }
         for channel in ["dev", "prod"] {
@@ -408,10 +432,19 @@ mod tests {
                     channel == "dev" && configured["dev"].linux_update_feed_url.is_none()
                 );
                 let mut configured = profiles().unwrap();
-                configured.get_mut(channel).unwrap().windows_update_feed_url = feed;
+                configured.get_mut(channel).unwrap().windows_update_feed_url = feed.clone();
                 assert_eq!(
                     validate_profiles(&configured).is_ok(),
                     channel == "dev" && configured["dev"].windows_update_feed_url.is_none()
+                );
+                let mut configured = profiles().unwrap();
+                configured
+                    .get_mut(channel)
+                    .unwrap()
+                    .windows_arm64_update_feed_url = feed;
+                assert_eq!(
+                    validate_profiles(&configured).is_ok(),
+                    channel == "dev" && configured["dev"].windows_arm64_update_feed_url.is_none()
                 );
             }
         }

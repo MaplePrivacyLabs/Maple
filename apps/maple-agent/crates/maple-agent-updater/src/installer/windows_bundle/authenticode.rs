@@ -40,6 +40,8 @@ use windows_sys::Win32::{
     },
 };
 
+use super::{InstallError, Result};
+
 const EXPECTED_PUBLISHER: &str = "Mutiny Wallet Inc. dba OpenSecret";
 const MAX_NAME_UNITS: u32 = 512;
 
@@ -300,7 +302,7 @@ fn pe_has_no_certificate(reader: &mut (impl Read + Seek)) -> bool {
 /// Windows may retrieve certificate-chain/revocation material under its trust
 /// policy; an unavailable or untrusted chain fails closed.
 pub(super) fn verify(path: &Path) -> bool {
-    verify_for_purpose(path, false, Purpose::Admission)
+    verify_or_unsigned(path, false)
 }
 
 /// Only the caller's embedded Dev profile may opt into unsigned local builds.
@@ -308,7 +310,7 @@ pub(super) fn verify(path: &Path) -> bool {
 /// including when unsigned Dev files are permitted. Production updates call
 /// `verify`, and never enter this exception.
 pub(super) fn verify_or_unsigned(path: &Path, allow_unsigned: bool) -> bool {
-    verify_for_purpose(path, allow_unsigned, Purpose::Admission)
+    verify_or_unsigned_detailed(path, allow_unsigned).is_ok()
 }
 
 /// Reauthenticate an already admitted installed executable at normal startup.
@@ -316,33 +318,34 @@ pub(super) fn verify_or_unsigned(path: &Path, allow_unsigned: bool) -> bool {
 /// retrieval; it still requires Windows trust, exact publisher and timestamp.
 /// Installation and update mutation must continue to use the admission APIs.
 pub(super) fn verify_startup_or_unsigned(path: &Path, allow_unsigned: bool) -> bool {
-    verify_for_purpose(path, allow_unsigned, Purpose::Startup)
+    verify_for_purpose(path, allow_unsigned, Purpose::Startup).is_ok()
 }
 
-fn verify_for_purpose(path: &Path, allow_unsigned: bool, purpose: Purpose) -> bool {
+/// Preserve the native trust failure for installer diagnostics. The boolean
+/// admission APIs use the same result and accept only `Ok(())`.
+pub(super) fn verify_or_unsigned_detailed(path: &Path, allow_unsigned: bool) -> Result<()> {
+    verify_for_purpose(path, allow_unsigned, Purpose::Admission)
+}
+
+fn verify_for_purpose(path: &Path, allow_unsigned: bool, purpose: Purpose) -> Result<()> {
     if !path.is_absolute() {
-        return false;
+        return Err(InstallError::CodeSignature);
     }
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     if wide.is_empty() || wide.len() > 32_766 || wide.contains(&0) {
-        return false;
+        return Err(InstallError::CodeSignature);
     }
     wide.push(0);
     // Deny concurrent writes/deletion while the same handle is authenticated.
     // The caller separately validates every staging ancestor and archive hash.
-    let Ok(file) = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-    else {
-        return false;
-    };
-    let Ok(metadata) = file.metadata() else {
-        return false;
-    };
+        .open(path)?;
+    let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return false;
+        return Err(InstallError::CodeSignature);
     }
     let mut info = WINTRUST_FILE_INFO {
         cbStruct: size_of::<WINTRUST_FILE_INFO>() as u32,
@@ -364,19 +367,21 @@ fn verify_for_purpose(path: &Path, allow_unsigned: bool, purpose: Purpose) -> bo
         (status, GetLastError())
     };
     if allow_unsigned && status == TRUST_E_NOSIGNATURE && reason == TRUST_E_NOSIGNATURE as u32 {
-        return pe_has_no_certificate(&mut &file)
-            && no_catalog_membership(catalog_memberships(&file));
+        return if pe_has_no_certificate(&mut &file)
+            && no_catalog_membership(catalog_memberships(&file))
+        {
+            Ok(())
+        } else {
+            Err(InstallError::CodeSignature)
+        };
     }
-    // WinVerifyTrust returns LONG, not HRESULT. Only exactly zero is success.
-    if status != 0 || state.0.hWVTStateData.is_null() {
-        return false;
-    }
+    verified_trust_state(status, state.0.hWVTStateData)?;
     // SAFETY: provider pointers are owned by the successful state and remain
     // valid until its guard closes it. No provider-owned memory is modified.
     unsafe {
         let provider = WTHelperProvDataFromStateData(state.0.hWVTStateData);
         if provider.is_null() || (*provider).dwError != 0 {
-            return false;
+            return Err(InstallError::CodeSignature);
         }
         let signer = WTHelperGetProvSignerFromChain(provider, 0, 0, 0);
         if signer.is_null()
@@ -384,11 +389,11 @@ fn verify_for_purpose(path: &Path, allow_unsigned: bool, purpose: Purpose) -> bo
             || (*signer).csCertChain == 0
             || (*signer).csCounterSigners == 0
         {
-            return false;
+            return Err(InstallError::CodeSignature);
         }
         let certificate = WTHelperGetProvCertFromChain(signer, 0);
         if certificate.is_null() || (*certificate).dwError != 0 || (*certificate).pCert.is_null() {
-            return false;
+            return Err(InstallError::CodeSignature);
         }
         let count = CertGetNameStringW(
             (*certificate).pCert,
@@ -399,7 +404,7 @@ fn verify_for_purpose(path: &Path, allow_unsigned: bool, purpose: Purpose) -> bo
             0,
         );
         if !(2..=MAX_NAME_UNITS).contains(&count) {
-            return false;
+            return Err(InstallError::CodeSignature);
         }
         let mut name = vec![0u16; count as usize];
         if CertGetNameStringW(
@@ -412,11 +417,29 @@ fn verify_for_purpose(path: &Path, allow_unsigned: bool, purpose: Purpose) -> bo
         ) != count
             || !publisher_matches(&name)
         {
-            return false;
+            return Err(InstallError::CodeSignature);
         }
         let timestamp = WTHelperGetProvSignerFromChain(provider, 0, 1, 0);
-        valid_timestamp(timestamp)
+        if valid_timestamp(timestamp) {
+            Ok(())
+        } else {
+            Err(InstallError::CodeSignature)
+        }
     }
+}
+
+// WinVerifyTrust returns LONG, not HRESULT. Retain all returned bits for
+// diagnostics; neither positive status values nor a missing state mean success.
+fn verified_trust_state(status: i32, state_data: *mut c_void) -> Result<()> {
+    if status != 0 {
+        return Err(InstallError::WindowsCodeSignature {
+            status: status as u32,
+        });
+    }
+    if state_data.is_null() {
+        return Err(InstallError::CodeSignature);
+    }
+    Ok(())
 }
 
 unsafe fn valid_timestamp(timestamp: *const CRYPT_PROVIDER_SGNR) -> bool {
@@ -438,6 +461,40 @@ unsafe fn valid_timestamp(timestamp: *const CRYPT_PROVIDER_SGNR) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_trust_status_preserves_every_failure_bit_and_requires_verified_state() {
+        let state = std::ptr::dangling_mut::<c_void>();
+        assert!(verified_trust_state(0, state).is_ok());
+        assert!(matches!(
+            verified_trust_state(0, std::ptr::null_mut()),
+            Err(InstallError::CodeSignature)
+        ));
+        for status in [1, -1, 0x800B_0109_u32 as i32, 0x8009_2013_u32 as i32] {
+            for state in [state, std::ptr::null_mut()] {
+                let result = verified_trust_state(status, state);
+                assert!(matches!(
+                    result,
+                    Err(InstallError::WindowsCodeSignature { status: actual }) if actual == status as u32
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn native_detailed_admission_preserves_file_error_and_boolean_apis_refuse_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        let missing = temporary.path().join("missing-signed-application.exe");
+        for allow_unsigned in [false, true] {
+            let error = verify_or_unsigned_detailed(&missing, allow_unsigned).unwrap_err();
+            assert!(
+                matches!(error, InstallError::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+            );
+            assert!(!verify_or_unsigned(&missing, allow_unsigned));
+        }
+        assert!(!verify(&missing));
+        assert!(!verify_startup_or_unsigned(&missing, false));
+    }
 
     #[test]
     fn catalog_presence_and_lookup_errors_never_enable_unsigned_dev() {

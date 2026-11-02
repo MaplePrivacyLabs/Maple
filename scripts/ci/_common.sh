@@ -1115,6 +1115,18 @@ tree_hash_digest() {
   )
 }
 
+# iOS 27 SDK builds abort at launch unless the app adopts the UIScene life cycle.
+# tauri-cli merges the manifest from src-tauri/Info.ios.plist at build time; the
+# committed gen/apple plist has none, so check the built app itself.
+require_ios_scene_manifest() {
+  local app="$1" delegate
+  delegate="$(plutil -extract UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName raw "${app}/Info.plist" 2>/dev/null || true)"
+  if [ "${delegate}" != "TaoSceneDelegate" ]; then
+    echo "${app} declares no TaoSceneDelegate scene (found '${delegate:-nothing}'); iOS 27 SDK builds abort at launch without it. tauri-cli merges it from src-tauri/Info.ios.plist." >&2
+    return 1
+  fi
+}
+
 print_canonical_ios_app_hash() {
   local bundle="$1"
   local label="${2:-$(repo_relative_path "${bundle}")}"
@@ -1255,6 +1267,47 @@ linuxdeploy_tools_arch() {
       return 1
       ;;
   esac
+}
+
+# tauri-cli runs target/.tauri/linuxdeploy-<hash>-<arch>.AppImage and downloads
+# an unpinned linuxdeploy when that file is missing, so the pinned wrapper is
+# installed under that name. The hash is LINUXDEPLOY_COMMIT_HASH in the
+# tauri-bundler of @tauri-apps/cli TAURI_LINUXDEPLOY_CLI; bumping the CLI fails
+# require_tauri_linuxdeploy_hash until both are updated together.
+TAURI_LINUXDEPLOY_HASH="07333c6"
+TAURI_LINUXDEPLOY_CLI="2.12.3"
+
+tauri_linuxdeploy_wrapper() {
+  local arch
+  arch="$(linuxdeploy_tools_arch)" || return 1
+  printf '%s\n' "${TAURI_DIR}/target/.tauri/linuxdeploy-${TAURI_LINUXDEPLOY_HASH}-${arch}.AppImage"
+}
+
+# Before bundling, so an unpinned linuxdeploy never runs with the signing key in
+# its environment: the installed CLI is the one the hash was read from.
+require_tauri_linuxdeploy_hash() {
+  local manifest="${FRONTEND_DIR}/node_modules/@tauri-apps/cli/package.json" installed
+  installed="$(jq -er .version "${manifest}")" || {
+    echo "Cannot read the installed @tauri-apps/cli version from ${manifest}." >&2
+    return 1
+  }
+  if [ "${installed}" != "${TAURI_LINUXDEPLOY_CLI}" ]; then
+    echo "@tauri-apps/cli ${installed} may run another linuxdeploy than ${TAURI_LINUXDEPLOY_HASH}, which is pinned for ${TAURI_LINUXDEPLOY_CLI}. Set TAURI_LINUXDEPLOY_HASH in scripts/ci/_common.sh to its tauri-bundler's LINUXDEPLOY_COMMIT_HASH and TAURI_LINUXDEPLOY_CLI to ${installed}." >&2
+    return 1
+  fi
+}
+
+# After bundling, as a backstop: tauri-cli fetched no linuxdeploy of its own.
+verify_tauri_used_pinned_linuxdeploy() {
+  local arch file wrapper
+  arch="$(linuxdeploy_tools_arch)" || return 1
+  wrapper="$(tauri_linuxdeploy_wrapper)" || return 1
+  for file in "${TAURI_DIR}/target/.tauri"/linuxdeploy-*-"${arch}".AppImage; do
+    if [ -e "${file}" ] && [ "${file}" != "${wrapper}" ]; then
+      echo "tauri-cli fetched $(basename "${file}") instead of the pinned $(basename "${wrapper}"); update TAURI_LINUXDEPLOY_HASH in scripts/ci/_common.sh." >&2
+      return 1
+    fi
+  done
 }
 
 write_chmod_patchelf_wrapper() {
@@ -1434,6 +1487,7 @@ prepare_tauri_linuxdeploy_tools_cache() {
     echo "MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS is required for reproducible AppImage bundling." >&2
     return 1
   fi
+  require_tauri_linuxdeploy_hash
 
   local arch linuxdeploy_arch tools cache internal linuxdeploy_wrapper appimage_wrapper linuxdeploy_appdir_bin plugin_bin runtime_file appimage_real_appimage appimage_appdir gtk_real_plugin gstreamer_real_plugin
   arch="$(linuxdeploy_tools_arch)"
@@ -1441,7 +1495,7 @@ prepare_tauri_linuxdeploy_tools_cache() {
   tools="${MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS}"
   cache="${TAURI_DIR}/target/.tauri"
   internal="${cache}/maple-linuxdeploy-tools"
-  linuxdeploy_wrapper="${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage"
+  linuxdeploy_wrapper="$(tauri_linuxdeploy_wrapper)"
   appimage_wrapper="${cache}/linuxdeploy-plugin-appimage.AppImage"
   linuxdeploy_appdir_bin="${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir/usr/bin"
   plugin_bin="${internal}/plugins"
@@ -1470,8 +1524,9 @@ prepare_tauri_linuxdeploy_tools_cache() {
   wrap_linuxdeploy_appdir_patchelf "${linuxdeploy_appdir_bin}"
 
   rm -f "${linuxdeploy_appdir_bin}"/linuxdeploy-plugin-*
-  write_linuxdeploy_input_plugin_wrapper "${cache}/linuxdeploy-plugin-gtk.sh" "maple-linuxdeploy-tools/linuxdeploy-plugin-gtk.real.sh"
-  write_linuxdeploy_input_plugin_wrapper "${cache}/linuxdeploy-plugin-gstreamer.sh" "maple-linuxdeploy-tools/linuxdeploy-plugin-gstreamer.real.sh"
+  # tauri-cli also writes its own embedded linuxdeploy-plugin-*.sh into the
+  # cache. The wrapper replaces PATH and unsets APPIMAGE, so linuxdeploy only
+  # finds the pinned plugins below.
   write_linuxdeploy_input_plugin_wrapper "${plugin_bin}/linuxdeploy-plugin-gtk" "../linuxdeploy-plugin-gtk.real.sh"
   write_linuxdeploy_input_plugin_wrapper "${plugin_bin}/linuxdeploy-plugin-gstreamer" "../linuxdeploy-plugin-gstreamer.real.sh"
 
@@ -1809,7 +1864,7 @@ EOF
   print_file_hashes \
     "${cache}/AppRun-${arch}" \
     "${cache}/linuxdeploy-${linuxdeploy_arch}.real.AppImage" \
-    "${cache}/linuxdeploy-${linuxdeploy_arch}.AppImage" \
+    "${linuxdeploy_wrapper}" \
     "${cache}/linuxdeploy-${linuxdeploy_arch}.AppDir/AppRun" \
     "${plugin_bin}/linuxdeploy-plugin-appimage" \
     "${plugin_bin}/linuxdeploy-plugin-gtk" \
@@ -1817,9 +1872,7 @@ EOF
     "${appimage_real_appimage}" \
     "${cache}/linuxdeploy-plugin-appimage.AppImage" \
     "${appimage_appdir}/AppRun" \
-    "${runtime_file}" \
-    "${cache}/linuxdeploy-plugin-gtk.sh" \
-    "${cache}/linuxdeploy-plugin-gstreamer.sh"
+    "${runtime_file}"
 }
 
 verify_linuxdeploy_plugin_metadata() {
@@ -2805,7 +2858,7 @@ verify_ios_onnxruntime_pinned_hashes() {
   local version xcode_build xcframework manifest file expected actual status
 
   version="$(ios_onnxruntime_version)"
-  xcode_build="${MAPLE_XCODE_BUILD_VERSION:-17F42}"
+  xcode_build="${MAPLE_XCODE_BUILD_VERSION:-27A9275}"
   xcframework="$(ios_onnxruntime_xcframework_dir)"
   manifest="$(ios_onnxruntime_manifest_file)"
   status=0
@@ -3801,8 +3854,10 @@ verify_linux_deb_package_executable_metadata() {
   (
     cd "${tmp}" &&
     ar x "${deb}" &&
-    mkdir data &&
+    mkdir control data &&
+    tar -xzf control.tar.gz -C control &&
     tar -xzf data.tar.gz -C data &&
+    (cd data && md5sum --strict --check ../control/md5sums) &&
     verify_linux_package_executable_metadata "${tmp}/data/usr/bin/maple" &&
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect deb "${tmp}/data/usr/bin/maple"
   ) || status=$?
@@ -3885,6 +3940,11 @@ normalize_deb_package() {
     tar -xzf control.tar.gz -C control
     tar -xzf data.tar.gz -C data
     sanitize_linux_deb_payload "${tmp}/data"
+    # Payload sanitization changes the executable after Tauri generated md5sums.
+    (
+      cd "${tmp}/data"
+      find . -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r md5sum
+    ) > "${tmp}/control/md5sums"
     archive_tree_as_root_tar_gz "${tmp}/control" "${tmp}/control.tar.gz"
     archive_tree_as_root_tar_gz "${tmp}/data" "${tmp}/data.tar.gz"
     printf '2.0\n' > debian-binary
@@ -4307,15 +4367,28 @@ import_apple_developer_certificate() {
 
   security create-keychain -p "${keychain_password}" "${keychain}"
   security default-keychain -s "${keychain}"
+  # Identity validation and codesign resolve the certificate chain through the
+  # user search list, which a new keychain is not on. Keep the existing entries.
+  local search_list=() search_path
+  while IFS= read -r search_path; do
+    search_path="$(printf '%s' "${search_path}" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+    [ -n "${search_path}" ] && search_list+=("${search_path}")
+  done < <(security list-keychains -d user)
+  security list-keychains -d user -s "${keychain}" ${search_list[@]+"${search_list[@]}"}
   security unlock-keychain -p "${keychain_password}" "${keychain}"
   security set-keychain-settings -t 3600 -u "${keychain}"
   security import "${cert_file}" -k "${keychain}" -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign -T /usr/bin/productbuild
+  # Apple's Developer ID intermediate (www.apple.com/certificateauthority/DeveloperIDG2CA.cer,
+  # SHA-256 F16CD3C5...43D2DF3A). GitHub's macOS images preinstall it, Blacksmith's
+  # macOS 27 image does not, and without it the identity is not valid.
+  security import "${REPO_ROOT}/scripts/ci/apple-developer-id-g2.pem" -k "${keychain}"
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${keychain_password}" "${keychain}"
 
   cert_info="$(security find-identity -v -p codesigning "${keychain}" | grep "Developer ID Application" | head -n 1 || true)"
   if [ -z "${cert_info}" ]; then
     echo "No Developer ID Application identity found in imported Apple certificate." >&2
-    security find-identity -v -p codesigning "${keychain}" >&2 || true
+    # Without -v, invalid identities are listed with the reason they failed.
+    security find-identity -p codesigning "${keychain}" >&2 || true
     return 1
   fi
 

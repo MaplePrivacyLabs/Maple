@@ -5,6 +5,7 @@ mod attempt;
 pub(crate) mod context;
 mod executor;
 pub(crate) mod policy;
+mod progress;
 mod source;
 mod summary;
 pub(super) mod telemetry;
@@ -35,6 +36,7 @@ use context::{CheckpointPayload, ContextItem, ContextItemKey, ContextItemKind};
 use executor::SummaryExecutionError;
 pub(super) use executor::{is_context_rejection, SummaryExecutor};
 use policy::CompactionPolicy;
+pub use progress::CompactionProgress;
 use secp256k1::SecretKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -65,7 +67,8 @@ pub(super) struct CompactionBudget {
     sources: Mutex<source::SourceLoader>,
     non_reducing: Mutex<HashSet<AttemptKey>>,
     advisory_failed: AtomicBool,
-    preaccept_deadline: Mutex<Option<tokio::time::Instant>>,
+    initial_preparation_deadline: Mutex<Option<tokio::time::Instant>>,
+    progress: progress::ProgressPublisher,
 }
 
 impl CompactionBudget {
@@ -73,29 +76,36 @@ impl CompactionBudget {
         self.metrics.clone()
     }
 
-    /// Limit helper work before durable acceptance without shortening the
-    /// logical Response's execution deadline or its later tool turns.
-    pub(super) fn set_preaccept_deadline(&self, deadline: tokio::time::Instant) {
+    /// Bound the initial preparation after durable acceptance without shortening
+    /// the logical Response's absolute deadline or its later tool turns.
+    pub(super) fn set_initial_preparation_deadline(&self, deadline: tokio::time::Instant) {
         let mut current = self
-            .preaccept_deadline
+            .initial_preparation_deadline
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         // A repeated preparation must never renew this phase's allowance.
         *current = Some(current.map_or(deadline, |previous| previous.min(deadline)));
     }
 
-    pub(super) fn clear_preaccept_deadline(&self) {
+    pub(super) fn clear_initial_preparation_deadline(&self) {
         *self
-            .preaccept_deadline
+            .initial_preparation_deadline
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
-    fn preaccept_deadline(&self) -> Option<tokio::time::Instant> {
+    fn initial_preparation_deadline(&self) -> Option<tokio::time::Instant> {
         *self
-            .preaccept_deadline
+            .initial_preparation_deadline
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(super) fn set_progress_sender(
+        &self,
+        sender: tokio::sync::mpsc::Sender<super::handlers::StorageMessage>,
+    ) {
+        self.progress.set_sender(sender);
     }
 
     fn begin_call(&self) -> Result<(), ApiError> {
@@ -467,6 +477,9 @@ async fn summarize_checkpoint(
         has_previous_summary = work.previous_summary.is_some(),
         "Responses compaction candidate started"
     );
+    // The identity remains stable over non-reducing batches and publication
+    // conflicts. Only a successfully published checkpoint completes the item.
+    executor.budget.progress.begin().await;
     let summary = executor.summarize(&work, policy).await?;
     complete_candidate(checkpoint, work, summary, attempt).map(Some)
 }
@@ -673,6 +686,9 @@ pub(super) async fn prepare_prompt(
             force,
         )
         .await;
+        // Optional fallback, a non-reducing draft, or a failed preparation must
+        // never turn an advisory pending item into a completed checkpoint.
+        executor.budget.progress.abandon().await;
         match &result {
             Ok(prompt) => tracing::info!(
                 event = "responses.compaction.prepare_completed",
@@ -1145,7 +1161,11 @@ async fn prepare_prompt_inner(
             let digest = source
                 .coverage_fingerprint(&covered_items)
                 .map_err(|_| ApiError::InternalServerError)?;
-            let uuid = Uuid::new_v4();
+            let uuid = executor
+                .budget
+                .progress
+                .item_id()
+                .ok_or(ApiError::InternalServerError)?;
             let after_item_uuid = source
                 .items
                 .iter()
@@ -1231,6 +1251,11 @@ async fn prepare_prompt_inner(
                     continue;
                 }
                 CompactionPublishResult::Published(record) => {
+                    executor
+                        .budget
+                        .progress
+                        .finish(CompactionOutput::from(&record))
+                        .await;
                     executor.budget.metrics.checkpoint_published();
                     tracing::info!(event = "responses.compaction.checkpoint_published", checkpoint_uuid = %record.uuid,
                         generation = record.generation, covered_items = covered_keys(&next).len(),
@@ -1535,8 +1560,8 @@ mod tests {
     }
 
     #[test]
-    fn preaccept_budget_fallback_requires_a_fitting_nonforced_live_prompt() {
-        let error = SummaryExecutionError::PreacceptBudget;
+    fn initial_preparation_budget_fallback_requires_a_fitting_nonforced_live_prompt() {
+        let error = SummaryExecutionError::InitialPreparationBudget;
         assert!(may_use_original_prompt(
             &error, false, 100, 100, false, false
         ));
@@ -2151,18 +2176,18 @@ mod tests {
     }
 
     #[test]
-    fn preaccept_deadline_cannot_be_renewed_and_acceptance_only_clears_the_phase_limit() {
+    fn initial_preparation_deadline_cannot_be_renewed_and_only_clears_the_phase_limit() {
         use tokio::time::{Duration, Instant};
 
         let budget = CompactionBudget::default();
-        assert_eq!(budget.preaccept_deadline(), None);
-        let deadline = Instant::now() + Duration::from_secs(60);
-        budget.set_preaccept_deadline(deadline);
-        budget.set_preaccept_deadline(deadline + Duration::from_secs(10));
-        assert_eq!(budget.preaccept_deadline(), Some(deadline));
+        assert_eq!(budget.initial_preparation_deadline(), None);
+        let deadline = Instant::now() + Duration::from_secs(300);
+        budget.set_initial_preparation_deadline(deadline);
+        budget.set_initial_preparation_deadline(deadline + Duration::from_secs(10));
+        assert_eq!(budget.initial_preparation_deadline(), Some(deadline));
         budget.begin_call().unwrap();
-        budget.clear_preaccept_deadline();
-        assert_eq!(budget.preaccept_deadline(), None);
+        budget.clear_initial_preparation_deadline();
+        assert_eq!(budget.initial_preparation_deadline(), None);
         assert_eq!(budget.calls.load(Ordering::Acquire), 1);
         assert!(budget.has_paid_work());
     }

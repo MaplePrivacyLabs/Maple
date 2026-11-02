@@ -70,6 +70,29 @@ agent runtime; its desktop Agent page points users to Maple Work.
   attachments (picker, paste, or drag and drop), a per-message Copy button,
   and a context-window indicator. Every tool call runs without asking for
   approval.
+- A task can switch models between messages: its model menu offers every
+  model, a pick applies from the next message, and the transcript notes the
+  switch. When the new model's context window is smaller, the model that
+  wrote the history summarizes it before the next message if it no longer
+  fits, as `crates/maple-agent/src/agent/switch_compaction.rs` describes.
+- Shell tool calls start in the task's saved folder on the execution computer.
+  A `cd` inside a command does not affect later calls. Repository searches
+  should name the intended checkout/worktree with explicit absolute paths.
+  Maple supplies a 30-minute default deadline to allow slow builds, and the
+  call can request a longer
+  `timeout` explicitly. Search guidance asks for a short timeout (normally
+  30 seconds) and a narrower scope if it expires; that shorter limit applies
+  only when the call requests it.
+  Quiet commands report their starting folder, elapsed time, time since output and
+  deadline every five seconds, including on collapsed tool cards. Stop and
+  deadlines use Pi's process-group cleanup on Unix (process-tree cleanup on Windows).
+  Maple bounds the whole operation, including setup and stdin delivery, and allows
+  up to one second for cooperative cancellation before dropping a stuck operation.
+  The execution policy and progress reporting live in Maple; the Pi crates are unchanged.
+  These are execution safeguards, not a filesystem sandbox: repository searches
+  must still choose the correct folder and bounded scope, and deliberately
+  detached processes can escape a Unix process group. `head` bounds output,
+  not runtime.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. Skills and prompt templates appear in the same list.
@@ -138,7 +161,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
   and restore. Unknown or malformed View preferences fall back to defaults.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
-  speech voice and speed), Keyboard Shortcuts, System prompt, Integrations
+  speech voice and speed), Keyboard Shortcuts, Additional instructions, Integrations
   (detected built-ins and custom MCP servers), Usage (the plan meter from
   the billing API), and About.
 - Dark and light themes; the default follows the system.
@@ -158,7 +181,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
 
 ### Integrations preview
 
-On macOS and Linux, Settings > Integrations can set up computer use inside
+On macOS, Linux and Windows, Settings > Integrations can set up computer use inside
 Maple itself. The embedded CUA runtime uses the pinned Cua Driver Rust SDK; it
 does not need a separate daemon, executable, or MCP child process.
 
@@ -169,7 +192,8 @@ first time a task captures the screen or sends input. Under GNOME on Wayland
 the `winrects@cua` GNOME Shell extension that ships with the SDK is required,
 because Mutter exposes no window geometry or screen capture to an ordinary
 client; Settings reports it as an unmet requirement until it is installed and
-the session has been restarted once.
+the session has been restarted once. Windows asks for no permission at all, so
+enabling computer use in Settings is the only consent step there.
 
 A desktop task with CUA on gets its tools as `cua-driver__<tool>`, bound
 anew at each run. CUA keeps its native screenshot defaults. Every model
@@ -410,6 +434,8 @@ A pure Darwin package is not exposed: the pinned Nix Swift/SDK combination
 cannot build the CUA bridges with the SDK required for recording. The supported
 macOS path uses Xcode's Swift and Metal toolchains and is also used by CI.
 Linux builds use Nix-provided ALSA, font, keyboard, Wayland and Vulkan libraries.
+Release bundles link against glibc 2.31 with `cargo zigbuild` and run on the
+host's own libraries; see [desktop builds](docs/desktop-builds.md).
 
 ### Shared Rust build cache
 

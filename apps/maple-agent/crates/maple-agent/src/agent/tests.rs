@@ -16,6 +16,9 @@ use crate::maple_api::test_maple_api_session;
 #[path = "image_persistence_tests.rs"]
 mod image_persistence_tests;
 
+#[path = "shell_tests.rs"]
+mod shell_tests;
+
 const USER: &str = "slice@example.com";
 
 #[derive(Default)]
@@ -1991,9 +1994,64 @@ async fn a_failed_reply_fails_the_run_and_shows_its_error() {
     assert_eq!(error.title.as_deref(), Some("Credits exhausted"));
 }
 
+/// The models a task's session recorded switching to, in order.
+fn model_changes(session: &pi_coding_agent::AgentSession) -> Vec<String> {
+    session.with_session(|manager| {
+        manager
+            .branch()
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                pi_coding_agent::session::EntryKind::ModelChange { model_id, .. } => {
+                    Some(model_id.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// The switch notice a run showed live. It carries the identity of its
+/// stored row, so a reload during the run (after a compaction, for one)
+/// shows it once.
+fn live_switch_notice(harness: &Harness, run_id: &str) -> AgentTimelineItem {
+    let notice = harness
+        .recorder
+        .run_events(run_id)
+        .into_iter()
+        .find_map(|event| match event {
+            AgentRunEvent::TimelineItem(item) if item.id.starts_with("model-switch-") => Some(item),
+            _ => None,
+        })
+        .expect("the run shows the switch");
+    assert!(notice.persisted.is_some(), "{notice:?}");
+    notice
+}
+
+/// The texts of a timeline's notices and user messages, in order.
+fn notices_and_prompts(timeline: &[AgentTimelineItem]) -> Vec<String> {
+    timeline
+        .iter()
+        .filter(|row| row.item_type == "system" || row.role.as_deref() == Some("user"))
+        .filter_map(|row| row.text.clone())
+        .collect()
+}
+
+/// A started task switches models with its next run, loaded or not: the
+/// run goes to the new model with the whole history, the task's model
+/// follows from the start of the run, and the transcript says where it
+/// switched, live and once stored.
 #[tokio::test]
-async fn a_run_wakes_a_settled_task_and_a_started_task_keeps_its_model() {
-    let harness = Harness::new().await;
+async fn a_run_wakes_a_settled_task_and_a_started_task_switches_models() {
+    let mut harness = Harness::new().await;
+    let catalog = json!({
+        "object": "list",
+        "data": [
+            {"id": "glm-5-3", "short_name": "GLM 5.3"},
+            {"id": "kimi-k3", "short_name": "Kimi K3"},
+        ],
+        "aliases": [],
+    });
+    harness.serve_catalog(catalog.clone()).await;
     harness.faux.push_text("Hello.");
     let task = harness.create_task().await;
     harness
@@ -2006,15 +2064,57 @@ async fn a_run_wakes_a_settled_task_and_a_started_task_keeps_its_model() {
     let listed = harness.handle.list_sessions(None).await.unwrap();
     assert_eq!(listed[0].state, AgentTaskState::Active);
 
+    harness.faux.push_text("Hello from Kimi.");
     let mut other_model = harness.request(&task, "Again");
     other_model.model = Some("kimi-k3".to_string());
-    let error = harness
-        .handle
-        .send_message(other_model)
-        .await
-        .err()
-        .unwrap();
-    assert!(error.contains("locked to model glm-5-3"), "{error}");
+    let mut run = harness.handle.send_message(other_model).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let request = harness.faux.requests().pop().unwrap();
+    assert_eq!(request.model.id, "kimi-k3");
+    assert_eq!(user_texts(&request), ["Hi", "Again"]);
+    let switched = harness
+        .recorder
+        .run_events(&run.run_id)
+        .into_iter()
+        .find_map(|event| match event {
+            AgentRunEvent::SessionUpdated(summary) => summary.model,
+            _ => None,
+        });
+    assert_eq!(switched.as_deref(), Some("kimi-k3"));
+    let live = notices_and_prompts(&harness.recorder.live_rows(&run.run_id));
+    assert_eq!(live, ["Switched to Kimi K3", "Again"]);
+    live_switch_notice(&harness, &run.run_id);
+    let stored = harness.handle.load_session(task.clone()).await.unwrap();
+    assert_eq!(
+        notices_and_prompts(&stored.timeline),
+        ["Hi", "Switched to Kimi K3", "Again"]
+    );
+
+    // After a restart the task opens on Kimi and switches back the same way.
+    harness.restart().await;
+    harness.start().await;
+    harness.serve_catalog(catalog).await;
+    harness.faux.push_text("Hello from GLM.");
+    let mut run = harness.send(&task, "Once more").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let request = harness.faux.requests().pop().unwrap();
+    assert_eq!(request.model.id, "glm-5-3");
+    assert_eq!(user_texts(&request), ["Hi", "Again", "Once more"]);
+    let session = harness.runtime().await.loaded_session(&task).await.unwrap();
+    assert_eq!(model_changes(&session), ["glm-5-3", "kimi-k3", "glm-5-3"]);
+    let listed = harness.handle.list_sessions(None).await.unwrap();
+    assert_eq!(listed[0].model.as_deref(), Some("glm-5-3"));
+    let stored = harness.handle.load_session(task).await.unwrap();
+    assert_eq!(
+        notices_and_prompts(&stored.timeline),
+        [
+            "Hi",
+            "Switched to Kimi K3",
+            "Again",
+            "Switched to GLM 5.3",
+            "Once more"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -3285,6 +3385,230 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
     );
 }
 
+/// The start of the oldest message of [`long_task`], which a small window
+/// cannot summarize.
+const OLDEST_MESSAGE: &str = "Oldest request";
+
+/// A runtime whose catalog offers GLM 5.3 with a large window and Kimi K3
+/// with a small one, and a task on GLM long enough to compact on Kimi:
+/// its oldest message is about 30k tokens and its newest 25k stay.
+async fn long_task() -> (Harness, String) {
+    let harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({
+            "object": "list",
+            "data": [
+                {"id": "glm-5-3", "short_name": "GLM 5.3", "context_window": 200_000},
+                {"id": "kimi-k3", "short_name": "Kimi K3", "context_window": 40_000},
+            ],
+            "aliases": [],
+        }))
+        .await;
+    let task = harness.create_task().await;
+    for (text, reply) in [
+        (
+            format!("{OLDEST_MESSAGE} {}", "x".repeat(120_000)),
+            "Noted.",
+        ),
+        (
+            format!("Recent request {}", "y".repeat(100_000)),
+            "Noted again.",
+        ),
+    ] {
+        harness.faux.push_text(reply);
+        let mut run = harness.send(&task, &text).await;
+        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    }
+    (harness, task)
+}
+
+fn on_kimi(harness: &Harness, task: &str, text: &str) -> AgentSendMessageRequest {
+    AgentSendMessageRequest {
+        model: Some("kimi-k3".to_string()),
+        context_limit: Some(40_000),
+        ..harness.request(task, text)
+    }
+}
+
+/// What a request asked to summarize, or `None` for a task's turn.
+fn summarized(request: &pi_ai::faux::FauxRequest) -> Option<String> {
+    let system = request
+        .context
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            pi_ai::Message::System(system) => Some(system.content.clone()),
+            _ => None,
+        })?;
+    (system == pi_coding_agent::compaction::SUMMARIZATION_SYSTEM_PROMPT)
+        .then(|| last_user_text(request))
+}
+
+/// A switch to a smaller window compacts before the next prompt with the
+/// model that wrote the history, and the run continues on the new one.
+#[tokio::test]
+async fn a_switch_to_a_smaller_window_compacts_with_the_previous_model() {
+    let (harness, task) = long_task().await;
+    harness.faux.push_text("Summary by GLM.");
+    harness.faux.push_text("Answer from Kimi.");
+    let mut run = harness
+        .handle
+        .send_message(on_kimi(&harness, &task, "Go on"))
+        .await
+        .unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let notice = live_switch_notice(&harness, &run.run_id);
+    assert_eq!(notice.text.as_deref(), Some("Switched to Kimi K3"));
+
+    let requests = harness.faux.requests();
+    let [summary, answer] = &requests[2..] else {
+        panic!("a summary and a turn: {}", requests.len())
+    };
+    assert_eq!(summary.model.id, "glm-5-3");
+    assert!(summarized(summary).unwrap().contains(OLDEST_MESSAGE));
+    assert_eq!(answer.model.id, "kimi-k3");
+    assert_eq!(summarized(answer), None);
+    let context = user_texts(answer).join("\n");
+    assert!(context.contains("Summary by GLM."), "{context:.200}");
+    assert!(!context.contains(OLDEST_MESSAGE));
+
+    let detail = harness.handle.load_session(task).await.unwrap();
+    let shown = notices_and_prompts(&detail.timeline);
+    assert_eq!(
+        shown[shown.len() - 3..],
+        [
+            "Switched to Kimi K3",
+            "Earlier messages were summarized to make room in the context.",
+            "Go on"
+        ]
+    );
+    assert_eq!(
+        detail.timeline.last().unwrap().text.as_deref(),
+        Some("Answer from Kimi.")
+    );
+}
+
+/// When the previous model cannot summarize, the new one summarizes the
+/// history trimmed to its window, and the run continues.
+#[tokio::test]
+async fn a_failed_previous_summary_falls_back_to_trimmed_history_on_the_new_model() {
+    let (harness, task) = long_task().await;
+    harness
+        .faux
+        .push_error("The Maple inference endpoint was not found");
+    harness.faux.push_text("Summary by Kimi.");
+    harness.faux.push_text("Answer from Kimi.");
+    let mut run = harness
+        .handle
+        .send_message(on_kimi(&harness, &task, "Go on"))
+        .await
+        .unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    let requests = harness.faux.requests();
+    let [failed, trimmed, answer] = &requests[2..] else {
+        panic!("two summaries and a turn: {}", requests.len())
+    };
+    assert_eq!(failed.model.id, "glm-5-3");
+    assert!(summarized(failed).is_some());
+    assert_eq!(trimmed.model.id, "kimi-k3");
+    let input = summarized(trimmed).unwrap();
+    assert!(
+        !input.contains(OLDEST_MESSAGE),
+        "the oldest message is left out"
+    );
+    assert!(input.contains("Noted."), "newer messages stay");
+    assert_eq!(answer.model.id, "kimi-k3");
+    assert!(user_texts(answer).join("\n").contains("Summary by Kimi."));
+}
+
+/// A started task previews the model it will switch to with the level the
+/// switch gives it, keeps a pick for that model off its current one, and
+/// takes the pick when its next run switches.
+#[tokio::test]
+async fn a_started_task_previews_and_takes_thinking_for_its_next_model() {
+    use ThinkingLevel::{High, Low, Max};
+    let harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({"object":"list","data":[
+            {"id":"glm-5-3", "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"]}},
+            {"id":"kimi-k3", "reasoning":{"supported_efforts":["high","low"]}}
+        ],"aliases":[]}))
+        .await;
+    let task = harness.create_task().await;
+    harness
+        .handle
+        .set_thinking_level(Some(&task), "glm-5-3", Max)
+        .await
+        .unwrap();
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Hello").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    let state = async |model: &str| {
+        harness
+            .handle
+            .thinking_state(Some(&task), model)
+            .await
+            .unwrap()
+    };
+    assert_eq!(
+        state("kimi-k3").await,
+        AgentThinkingState {
+            levels: vec![Low, High],
+            current: High,
+        }
+    );
+    assert_eq!(state("glm-5-3").await.current, Max);
+
+    let picked = harness
+        .handle
+        .set_thinking_level(Some(&task), "kimi-k3", Low)
+        .await
+        .unwrap();
+    assert_eq!(picked.current, Low);
+    let session = harness.runtime().await.loaded_session(&task).await.unwrap();
+    assert_eq!(session.model().unwrap().id, "glm-5-3");
+    assert_eq!(session.thinking_level(), Max);
+
+    harness.faux.push_text("Switched.");
+    let mut kimi = harness.request(&task, "Go on");
+    kimi.model = Some("kimi-k3".to_string());
+    let mut run = harness.handle.send_message(kimi).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(session.model().unwrap().id, "kimi-k3");
+    assert_eq!(session.thinking_level(), Low);
+    assert_eq!(state("kimi-k3").await.current, Low);
+}
+
+/// An ACP or other surface selection on a started task is stored for its
+/// next run, and the run switches to it.
+#[tokio::test]
+async fn a_started_task_takes_a_model_selection_for_its_next_run() {
+    let harness = Harness::new().await;
+    harness.faux.push_text("Hello.");
+    let task = harness.create_task().await;
+    let mut run = harness.send(&task, "Hi").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    let selected = harness
+        .handle
+        .set_task_model(&task, "kimi-k3")
+        .await
+        .unwrap();
+    assert_eq!(selected.model.as_deref(), Some("kimi-k3"));
+    assert_eq!(selected.message_count, 2);
+
+    harness.faux.push_text("Hello from Kimi.");
+    let mut kimi = harness.request(&task, "Again");
+    kimi.model = selected.model;
+    let mut run = harness.handle.send_message(kimi).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(harness.faux.requests().pop().unwrap().model.id, "kimi-k3");
+    let listed = harness.handle.list_sessions(None).await.unwrap();
+    assert_eq!(listed[0].model.as_deref(), Some("kimi-k3"));
+}
+
 #[tokio::test]
 async fn viewing_unloaded_task_thinking_and_history_does_not_load_context() {
     let harness = Harness::new().await;
@@ -3534,5 +3858,117 @@ async fn history_preparation_rechecks_completion_before_starting_another_epoch()
                 event, AgentServiceEvent::HistoryReplaced { session_id, .. } if session_id == &task
             )),
         "waiting foreground open must not schedule a redundant rebuild"
+    );
+}
+
+/// A new task starts on the user's pick while the catalog offers it, then
+/// on the catalog's suggestion. Disabled, deprecated, alias and non-chat
+/// entries are never offered, and the list survives a restart on the disk
+/// cache alone.
+#[tokio::test]
+async fn new_tasks_default_to_the_pick_then_the_catalogs_suggestion() {
+    let mut harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({
+            "object": "list",
+            "data": [
+                {"id": "glm-5-3"},
+                {"id": "kimi-k3"},
+                {"id": "deepseek-v4-1-flash"},
+                {"id": "retired", "enabled": false},
+                {"id": "old", "deprecated": true},
+                {"id": "nomic-embed-text"},
+            ],
+            "aliases": [{"id": "auto:quick", "target_model": "glm-5-3"}],
+            "defaults": {"quick": "auto:quick", "agent": "kimi-k3"},
+        }))
+        .await;
+    // The harness starts on glm-5-3, the old built-in default: not a pick.
+    assert_eq!(harness.handle.model_choice().await.unwrap(), None);
+    assert_eq!(
+        harness.handle.available_model_ids().await.unwrap(),
+        ["kimi-k3", "glm-5-3", "deepseek-v4-1-flash"]
+    );
+
+    harness
+        .handle
+        .save_model_choice("deepseek-v4-1-flash".into())
+        .await
+        .unwrap();
+    harness.restart().await;
+    harness.start().await;
+    assert_eq!(
+        harness.handle.model_choice().await.unwrap().as_deref(),
+        Some("deepseek-v4-1-flash")
+    );
+    assert_eq!(
+        harness.handle.available_model_ids().await.unwrap(),
+        ["deepseek-v4-1-flash", "glm-5-3", "kimi-k3"]
+    );
+}
+
+/// The server keeps a model out of Maple Work with `available_in_agent:
+/// false`. A server that predates the field offers every model.
+#[test]
+fn only_models_the_catalog_offers_maple_work_are_selectable() {
+    use super::catalog::selectable_catalog_models;
+    let catalog: maple_sdk::ModelCatalogResponse = serde_json::from_value(json!({
+        "object": "list",
+        "data": [
+            {"id": "deepseek-v4-1-flash", "available_in_agent": true},
+            {"id": "gpt-oss-120b", "available_in_agent": false},
+            {"id": "glm-5-3"},
+        ],
+    }))
+    .unwrap();
+    assert_eq!(
+        selectable_catalog_models(&catalog),
+        ["deepseek-v4-1-flash", "glm-5-3"]
+    );
+}
+
+/// A pick or suggestion the catalog no longer offers falls through to the
+/// next source; with no catalog at all, the pick or the started model stands.
+#[test]
+fn a_default_the_catalog_no_longer_offers_falls_through() {
+    use super::catalog::resolve_default_model;
+    let models = ["glm-5-3", "kimi-k3"].map(String::from);
+    assert_eq!(
+        resolve_default_model(&models, Some("removed"), Some("kimi-k3"), "started"),
+        "kimi-k3"
+    );
+    assert_eq!(
+        resolve_default_model(&models, Some("removed"), Some("also-removed"), "started"),
+        "glm-5-3"
+    );
+    let with_built_in = ["glm-5-3", DEFAULT_AGENT_MODEL].map(String::from);
+    assert_eq!(
+        resolve_default_model(&with_built_in, None, None, "started"),
+        DEFAULT_AGENT_MODEL
+    );
+    assert_eq!(
+        resolve_default_model(&[], Some("pick"), Some("x"), "started"),
+        "pick"
+    );
+    assert_eq!(resolve_default_model(&[], None, None, "started"), "started");
+}
+
+/// An older build kept a pick only as `defaultModel`. Anything but its
+/// built-in default is adopted as the pick, once.
+#[tokio::test]
+async fn an_older_builds_saved_model_is_adopted_as_the_pick_once() {
+    let harness = Harness::new().await;
+    let mut config = harness.handle.load_config().await.unwrap();
+    config.default_model = "kimi-k3".into();
+    harness.handle.save_config(config.clone()).await.unwrap();
+    assert_eq!(
+        harness.handle.model_choice().await.unwrap().as_deref(),
+        Some("kimi-k3")
+    );
+    config.default_model = "glm-5-3-flash".into();
+    harness.handle.save_config(config).await.unwrap();
+    assert_eq!(
+        harness.handle.model_choice().await.unwrap().as_deref(),
+        Some("kimi-k3")
     );
 }

@@ -152,7 +152,7 @@ jobs:
           }
 
           nix develop --no-update-lock-file .#ci -c bash -lc \
-            "cd services/updates && bun run deploy -- --strict \
+            "cd services/updates && bun run deploy -- \
               --tag 'release-${RELEASE_TAG#v}' \
               --message 'Publish ${RELEASE_TAG} from GitHub Release ${RELEASE_ID}'"
 

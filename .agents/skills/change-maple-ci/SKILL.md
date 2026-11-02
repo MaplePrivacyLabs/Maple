@@ -126,8 +126,8 @@ fields in `lanes.py` are authoritative.
 
 | Label | Adds | Use when |
 | --- | --- | --- |
-| `ci:windows` | The native updater tests and the full Windows suite (Windows Clippy already runs on every Agent PR) | Path, filesystem, process or terminal code behaves differently on Windows |
-| `ci:package` | Unsigned Agent packages and Research desktop bundles on all three OSes, plus the Research Dev macOS app | Packaging or release scripts, flakes, toolchains, or bundled assets, entitlements or updater metadata change |
+| `ci:windows` | The native updater tests and full Windows suite (Windows Clippy already runs on every Agent PR) | Path, filesystem, process or terminal code behaves differently on Windows |
+| `ci:package` | Unsigned Agent packages and Research desktop bundles on all three OSes, plus the Research Dev macOS app | Packaging or release scripts, flakes, toolchains, or bundled assets, entitlements or updater metadata change. Also a gpui/zed revision bump, an Xcode pin change or an edit to the Metal Toolchain actions: PR lanes build gpui with runtime shaders, and only the macOS rehearsal compiles them before master's signed build |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build | Research changes reach native mobile code or mobile-only plugins that their paths do not select |
 | `ci:research-dev-macos` | The unsigned Research Dev app | Research Dev OAuth profile work |
 | `ci:eif` | Dev and prod OpenSecret EIF candidates (`os-eif`) | The selector misses a measured input. Works only on a same-repository PR to `master` that edits no PCR approval |
@@ -163,7 +163,8 @@ Agent inputs (`plan.py only agent-desktop`) and Dev packages nightly. For Dev
 packages, download the newest nightly run's `maple-agent-dev-*` artifacts
 (kept 30 days). With the owner's go,
 `gh workflow run agent-desktop-build.yml --ref master` builds and signs Dev
-and Prod now, and its Prod packages are publishable. Research signed builds
+and Prod now; `-f release=true` builds Prod and publishes it as the next
+Agent update ([releasing](../../../apps/maple-agent/docs/updates.md#releasing)). Research signed builds
 follow `scripts/ci/change_detection.py`. These belong to the release process
 ([boundary](#production-boundary)).
 
@@ -188,8 +189,8 @@ jobs, runners, caches and guard tests. In short:
 
 - **Runners.** Blacksmith for compiles people wait on; free GitHub runners
   for light work; GitHub-hosted for the Agent's signing and attestation,
-  `windows-signing`, artifact verifiers, and the Windows updater tests and
-  install smokes ([CI runners](../../../docs/ci.md#runners)).
+  `windows-signing`, artifact verifiers, and the Windows updater tests
+  ([CI runners](../../../docs/ci.md#runners)).
 - **Caches.** rust-cache, prefix `ci-v2`; only master pushes and the nightly
   run save. Never let an action save implicitly on a PR path.
 - **Timeouts.** Size them for a cold run on the home runner. The 10-minute
@@ -259,7 +260,7 @@ Read [`$release-maple`](../release-maple/SKILL.md),
 [signing environments](../../../docs/app-signing-environments.md),
 [Pages](../../../docs/pages-deployments.md),
 [Agent builds](../../../apps/maple-agent/docs/desktop-builds.md),
-[Agent updates](../../../services/agent-updates/README.md#publication-and-authority),
+[Agent updates](../../../apps/maple-agent/docs/updates.md#releasing),
 [SDK publishing](../../../docs/sdk-publishing.md#run-a-release),
 [EIF CI](../../../services/opensecret/docs/nitro-deploy.md#ci-approval-checks)
 and [PCR compatibility](../../../services/opensecret/docs/pcr-compatibility.md).

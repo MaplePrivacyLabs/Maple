@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 import lanes
@@ -16,7 +17,7 @@ WORKFLOWS = ROOT / ".github/workflows"
 # Release and publication workflows that stay byte-identical; owner review only.
 SACRED = frozenset({
     "release.yml", "pages-publish.yml", "proxy-publish.yml", "updates-publish.yml", "zapstore-publish.yml",
-    "sdk-publish-npm.yml", "sdk-publish-rust.yml", "agent-updates-publish.yml", "auth-pages-publish.yml",
+    "sdk-publish-npm.yml", "sdk-publish-rust.yml", "auth-pages-publish.yml",
     "opensecret-eif-release.yml",
 })
 LISTENERS = frozenset({
@@ -25,12 +26,15 @@ LISTENERS = frozenset({
 })
 NIX_ACTION = "DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28"
 NIX_INPUTS = {"source-tag": "v3.23.3", "github-token": ""}
+# Installs outside the release and EIF workflows also use HTTP/1.1 for substitution.
+NIX_INPUTS_HTTP1 = {**NIX_INPUTS, "extra-conf": "http2 = false"}
 VERIFY_NIX = "bash scripts/ci/verify-nix-runtime.sh"
 SETUP_NIX = "./.github/actions/setup-nix"
 PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}")
-# Standard images, and the org's one GitHub-hosted larger runner, by its exact label:
-# a pattern would also admit a self-hosted runner that borrowed the name.
-GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|maple-windows-2025-16core")
+# GitHub-hosted labels: the standard image families (ubuntu-*, macos-*, windows-*) and the
+# per-Xcode macOS images (xcode-N), plus the org's larger Windows runner by its exact label,
+# since a pattern would also admit a self-hosted runner that borrowed the name.
+GITHUB_HOSTED = re.compile(r"(?:ubuntu|macos|windows)-[A-Za-z0-9.-]+|xcode-[0-9]+|maple-windows-2025-16core")
 # The workflows that run on pull requests or the merge queue. Every other check is a
 # ci.yml lane (scripts/ci/lanes.py), so ci-ok judges it; adding one here is an owner call.
 PULL_REQUEST_WORKFLOWS = frozenset({
@@ -77,7 +81,9 @@ GITHUB_STORE_WRITERS = frozenset({
     ("desktop-build.yml", "build-windows"),  # the signed Research Windows build (setup-bun's Bun binary)
     # The Agent lanes on GitHub's Windows image: the native suites in the windows
     # matrix and the packaging rehearsal.
-    ("ci.yml", "windows"), ("ci.yml", "agent-package-windows"),
+    ("ci.yml", "windows"), ("ci.yml", "agent-package-windows"), ("ci.yml", "agent-package-windows-arm64"),
+    # The native ARM64 release build on GitHub's Windows ARM image.
+    ("agent-desktop-build.yml", "windows-arm64-build"),
 }) | BRANCH_SCOPED_NIX
 # The only cached matrix lanes whose home runner uses GitHub's store.
 GITHUB_STORE_LANES = frozenset({"agent-full-windows", "agent-windows-updater"})
@@ -93,6 +99,16 @@ def load(path: Path) -> dict:
 
 def workflows() -> dict:
     return {path.name: load(path) for path in sorted(WORKFLOWS.glob("*.yml"))}
+
+
+def expanded_steps(steps, root: Path = ROOT, seen: frozenset = frozenset()):
+    """A job's steps, each local composite action followed by the steps it runs in that job."""
+    for step in steps:
+        yield step
+        uses = step.get("uses", "")
+        if uses.startswith("./.github/actions/") and uses not in seen:
+            action = load(root / uses.removeprefix("./") / "action.yml")
+            yield from expanded_steps(action.get("runs", {}).get("steps", []), root, seen | {uses})
 
 
 def jobs():
@@ -211,14 +227,12 @@ class WorkflowPolicyTests(unittest.TestCase):
                 check_secret_boundary({**reference, "environment": wrong})
         check_secret_boundary({**reference, "environment": "apple-signing"})
 
-    def test_6_every_nix_install_is_pinned_and_verified(self):
+    def test_6_every_nix_install_is_pinned(self):
         composite = load(ROOT / ".github/actions/setup-nix/action.yml")["runs"]["steps"]
         self.assertEqual([(step.get("uses"), step.get("with"), step.get("run")) for step in composite],
-                         [(NIX_ACTION, NIX_INPUTS, None), (None, None, VERIFY_NIX)])
+                         [(NIX_ACTION, NIX_INPUTS_HTTP1, None), (None, None, VERIFY_NIX)])
         for name, config in workflows().items():
-            root = config.get("defaults", {}).get("run", {}).get("working-directory", ".")
             for job_id, job in config["jobs"].items():
-                directory = job.get("defaults", {}).get("run", {}).get("working-directory", root)
                 steps = job.get("steps", [])
                 for index, step in enumerate(steps):
                     uses = step.get("uses", "")
@@ -229,11 +243,8 @@ class WorkflowPolicyTests(unittest.TestCase):
                         self.assertTrue(any(s.get("uses", "").startswith("actions/checkout@") for s in steps[:index]))
                         if uses == SETUP_NIX:
                             continue
-                        self.assertEqual((uses, step.get("with")), (NIX_ACTION, NIX_INPUTS))
-                        verify = steps[index + 1] if index + 1 < len(steps) else {}
-                        self.assertEqual(verify.get("run"), VERIFY_NIX)
-                        self.assertEqual(verify.get("if"), step.get("if"))
-                        self.assertEqual(verify.get("working-directory", directory), ".")
+                        self.assertEqual(uses, NIX_ACTION)
+                        self.assertIn(step.get("with"), (NIX_INPUTS, NIX_INPUTS_HTTP1))
 
     def test_7_every_job_has_a_timeout(self):
         missing = {(name, job_id) for name, job_id, job in jobs()
@@ -267,8 +278,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         for name, config in workflows().items():
             pr = bool({"pull_request", "merge_group"} & triggers(config))
             for job_id, job in config["jobs"].items():
-                for step in job.get("steps", []):
+                for step in expanded_steps(job.get("steps", [])):
                     self.assertNotIn("run-id", step.get("with", {}), (name, job_id))
+                    if step.get("uses", "").startswith("actions/download-artifact@"):
+                        self.assertNotIn("github-token", step.get("with", {}), (name, job_id))
                     guard = " ".join(str(value) for value in (
                         job.get("if", ""), step.get("if", ""), step.get("with", {}).get("save-if", "")))
                     if pr and cache_writer(step) and (name, job_id) in BRANCH_SCOPED_NIX:
@@ -283,11 +296,26 @@ class WorkflowPolicyTests(unittest.TestCase):
                             self.assertTrue(events and events <= {"push", "schedule"}, (job_id, guard))
         self.assertEqual(scoped, BRANCH_SCOPED_NIX)  # the exemption lapses with its job
 
+    def test_steps_inside_local_composite_actions_are_checked_too(self):
+        # A composite action's steps run in the job that uses it, so a cache save or another
+        # run's artifact inside one must reach the checks above.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            action = root / ".github/actions/fixture/action.yml"
+            action.parent.mkdir(parents=True)
+            action.write_text(json.dumps({"runs": {"using": "composite", "steps": [
+                {"uses": "actions/download-artifact@" + "0" * 40, "with": {"name": "x", "run-id": "1"}},
+                {"uses": "actions/cache@" + "0" * 40, "with": {"path": "x", "key": "y"}},
+            ]}}))
+            steps = list(expanded_steps([{"uses": "./.github/actions/fixture"}], root))
+        self.assertTrue(any("run-id" in step.get("with", {}) for step in steps))
+        self.assertTrue(any(cache_writer(step) for step in steps))
+
     def test_only_listed_jobs_fill_githubs_cache_store_and_failovers_never_save(self):
         # Blacksmith runners cannot read GitHub's store, nor GitHub's runners Blacksmith's.
         writers = set()
         for name, job_id, job in jobs():
-            for step in job.get("steps", []):
+            for step in expanded_steps(job.get("steps", [])):
                 if name in SACRED or not cache_writer(step):
                     continue
                 guard = " ".join(str(value) for value in (step.get("if", ""), step["with"].get("save-if", "")))

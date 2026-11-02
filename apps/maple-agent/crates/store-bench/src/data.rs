@@ -205,6 +205,7 @@ pub fn entry(task: &TaskSpec, seq: usize) -> SessionEntry {
                             id: format!("call-{seq}"),
                             name: (if seq % 61 == 1 { "todo_write" } else { "read" }).into(),
                             arguments: arguments.as_object().cloned().unwrap_or_else(Map::new),
+                            arguments_error: None,
                             partial_json: None,
                         }));
                     }
@@ -241,6 +242,7 @@ pub fn oversized_entry(task: &TaskSpec, seq: usize, len: usize) -> SessionEntry 
                 id: format!("oversized-{seq}"),
                 name: "write".into(),
                 arguments: arguments.as_object().unwrap().clone(),
+                arguments_error: None,
                 partial_json: None,
             })],
             api: "openai-completions".into(),

@@ -30,6 +30,7 @@ mod runtime;
 mod side_models;
 mod store;
 mod surface;
+mod switch_compaction;
 mod tasks;
 mod thinking;
 pub(crate) mod timeline;
@@ -43,6 +44,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::maple_api::{MapleApiSession, account_scope};
 pub use attachments::{AgentAttachment, AgentImageUpload};
+pub use catalog::catalog_model_labels;
 use config::*;
 pub use config::{
     MAPLE_WORKSPACE_DIRECTORY_NAME, MAPLE_WORKSPACE_DISPLAY_NAME, default_maple_workspace_path,
@@ -51,7 +53,7 @@ pub use config::{
 };
 pub use integrations::begin_integration_setup;
 pub(crate) use projects::owner_project_display_name;
-pub use provider::CatalogEntry;
+pub use provider::{CatalogEntry, USAGE_LIMIT_MESSAGE};
 pub use questions::QuestionResponder;
 pub use runs::AgentRunHandle;
 use runtime::AgentRuntime;
@@ -62,8 +64,12 @@ pub use surface::{
 pub use tasks::NOTHING_TO_COMPACT_ERROR;
 pub use types::*;
 
-/// The model a new account starts on.
-const DEFAULT_AGENT_MODEL: &str = "glm-5-3";
+/// The model a new task starts on when the user has not picked one and the
+/// catalog suggests none it offers.
+const DEFAULT_AGENT_MODEL: &str = "deepseek-v4-1-flash";
+/// The built-in default before it; a saved `defaultModel` equal to it was
+/// not a pick.
+const PREVIOUS_BUILT_IN_AGENT_MODEL: &str = "glm-5-3";
 /// Earlier defaults; an account still saved with one moves to the current one.
 const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
 const PREVIOUS_RECOMMENDED_AGENT_MODEL: &str = "glm-5-2";
