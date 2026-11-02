@@ -403,6 +403,51 @@
 }
 
 @layer components {
+  /*
+   * Usage page charts. Validated with the dataviz checker (adjacent CVD ΔE >= 8,
+   * normal vision >= 15) against the light and dark card surfaces. Coral stays
+   * reserved for the plan meter and "Maple apps"; models never use it.
+   */
+  .usage-viz {
+    --series-1: #2f7ed8;
+    --series-2: #1a9e7a;
+    --series-3: #e09b12;
+    --series-4: #7a5cc8;
+    --series-5: #d2578f;
+    --series-other: #a3a3a3;
+    --src-app: #e5683f;
+    --src-api: #3f3f46;
+    --pool-plan: #8a8b9a;
+    --pool-extra: #e5683f;
+    --tok-cached: #94a3b8;
+    --tok-input: #64748b;
+    --tok-output: #334155;
+    --viz-grid: #ededed;
+    --viz-axis: #d4d4d4;
+    --viz-muted: #8a8a8a;
+    --viz-ring: #ffffff;
+  }
+
+  .dark .usage-viz {
+    --series-1: #3987e5;
+    --series-2: #199e70;
+    --series-3: #c98500;
+    --series-4: #9085e9;
+    --series-5: #d55181;
+    --series-other: #6b6b6b;
+    --src-app: #dd6236;
+    --src-api: #d4d4d8;
+    --pool-plan: #8a8b9a;
+    --pool-extra: #dd6236;
+    --tok-cached: #475569;
+    --tok-input: #7c8ba1;
+    --tok-output: #cbd5e1;
+    --viz-grid: #262626;
+    --viz-axis: #3a3a3a;
+    --viz-muted: #8a8a8a;
+    --viz-ring: #171717;
+  }
+
   /* Marketing UI specific components */
   .marketing-card {
     @apply bg-[hsl(var(--background))]/80 border border-[hsl(var(--foreground))]/10 dark:bg-[hsl(var(--background))]/80 dark:border-[hsl(var(--foreground))]/10

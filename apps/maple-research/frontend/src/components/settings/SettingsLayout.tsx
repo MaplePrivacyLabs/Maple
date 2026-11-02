@@ -4,6 +4,7 @@ import { Link, Outlet, useLocation, useRouter } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
 import {
   ArrowLeft,
+  BarChart3,
   BookOpen,
   CreditCard,
   Database,
@@ -34,6 +35,8 @@ import {
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
+import { FEATURE_FLAGS } from "@/services/flags";
+import { useFeatureFlag } from "@/services/useFeatureFlag";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
@@ -46,6 +49,7 @@ type SettingsNavItem = {
     | "/settings/preferences"
     | "/settings/security"
     | "/settings/billing"
+    | "/settings/usage"
     | "/settings/team"
     | "/settings/api"
     | "/settings/history"
@@ -222,6 +226,8 @@ function SettingsLayoutContent() {
     enabled: !!os.auth.user && isTeamPlan
   });
 
+  const usagePageEnabled = useFeatureFlag(os.auth.user?.user.id, FEATURE_FLAGS.USAGE_PAGE) === true;
+
   if (os.auth.loading || !os.auth.user) {
     return null;
   }
@@ -242,6 +248,9 @@ function SettingsLayoutContent() {
       label: "Plan",
       items: [
         { label: "Billing", to: "/settings/billing", icon: CreditCard },
+        ...(usagePageEnabled
+          ? [{ label: "Usage", to: "/settings/usage" as const, icon: BarChart3 }]
+          : []),
         ...(isTeamPlan
           ? [
               {
