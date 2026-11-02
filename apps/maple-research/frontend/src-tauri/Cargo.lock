@@ -3607,6 +3607,7 @@ dependencies = [
  "log",
  "maple-proxy",
  "maple-sdk",
+ "objc2 0.6.4",
  "objc2-app-kit",
  "objc2-foundation 0.3.2",
  "office_oxide",
