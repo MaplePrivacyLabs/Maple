@@ -14,6 +14,8 @@ on:
     branches: [master]
   schedule:
     # The nightly lanes on the master tip: refreshes caches and catches misroutes.
+    # GitHub starts scheduled runs late, often by hours, so nothing may depend on
+    # exact times (nightly.yml's report waits for this run).
     - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
@@ -209,7 +211,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             apps/maple-agent/target
-      - name: Build, package, verify and smoke-test an unsigned Dev bundle
+      - name: Build and package an unsigned Dev bundle
         run: python3 scripts/ci/plan.py run agent-package-linux
       - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
         if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
@@ -272,7 +274,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             apps/maple-agent/target
-      - name: Build, package and verify an unsigned Dev app
+      - name: Build and package an unsigned Dev app
         run: python3 scripts/ci/plan.py run agent-package-macos
       - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
         if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
@@ -362,8 +364,10 @@ jobs:
         id: package-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          key: ci-v1-agent-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
-          restore-keys: ci-v1-agent-package-${{ runner.os }}-${{ runner.arch }}-
+          # ARM64 leads, so neither this family nor the x64 Windows one
+          # (ci-v1-agent-package-Windows-) restores the other's objects by prefix.
+          key: ci-v1-agent-package-ARM64-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          restore-keys: ci-v1-agent-package-ARM64-${{ runner.os }}-
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache

@@ -130,6 +130,10 @@ Blacksmith and the org's 16-core GitHub Windows runner are billed per minute.
 - **Windows packaging (`agent-package-windows`, `research-desktop-windows`,
   release `build-windows`) uses `maple-windows-2025-16core`.** The bundles
   gain from cores.
+- **Native Windows ARM64 (`agent-package-windows-arm64`, the Agent's
+  `windows-arm64-build`) runs on GitHub's `windows-11-arm`.** Native
+  compilation there is slow (35-50 minutes), so it runs only by label,
+  nightly, on dispatch and for releases, never on an unlabelled PR or a push.
 - **The Agent's master Windows build runs on Blacksmith Windows.** The
   fat-LTO link is single-threaded, so 16 cores are no faster.
 - **The Agent's signing and attestation, `windows-signing` jobs and artifact
@@ -182,7 +186,9 @@ and the others have no better fallback.
   version bump of them, the commonest Agent lockfile change, keeps the fat-LTO
   build warm. Any other lockfile change makes it fully cold; that cost is
   known and accepted. Only Prod pushes save it; the nightly Dev and dispatch
-  builds only restore it. No `ci.yml` lane reads it.
+  builds only restore it. The Windows ARM64 builder never runs on a push, so
+  it keeps its own exact `ci-v1-agent-arm64-release-<graph hash>` and saves it
+  from whichever run misses. No `ci.yml` lane reads either.
 - **Reserved prefixes.** `release.yml` restores the families in
   `test_contracts.RESERVED_PREFIXES` by prefix. Only the signed master
   workflows write them. `ci.yml` only restores keys that master saves. No
@@ -196,19 +202,25 @@ The owner chose fat LTO with one codegen unit for Agent release builds
 measured clearly larger binaries. The consequence is a slow master Agent
 build, mostly single-threaded compile and link, which bigger runners do not
 speed up. The `ci:package` rehearsals deliberately build thin LTO
-(`FAST_RELEASE` in `lanes.py`) into their own `ci-v1-agent-package-*` caches.
-They prove the packaging, not the optimizer. Only the nightly master run
-saves those caches.
+(`FAST_RELEASE` in `lanes.py`) into their own `ci-v1-agent-package-*` caches,
+one family per target: `ci-v1-agent-package-<os>-`, and
+`ci-v1-agent-package-ARM64-Windows-` for native ARM64. The cache action
+restores by prefix, so no family's key or restore prefix may match another
+cache's keys (C4); `ARM64` leads because `<os>` would make the x64 Windows
+prefix match ARM64 keys. They prove the packaging, not the optimizer. Only the
+nightly master run saves those caches.
 
 ## Agent Dev builds run nightly
 
-`agent-desktop-build.yml` builds Prod on master pushes, Dev nightly at 10:37
-UTC, and both on dispatch. Prod no longer waits on, or gets skipped by, a
+`agent-desktop-build.yml` builds Prod on master pushes, Dev nightly (cron
+10:37 UTC), and both on dispatch. Prod no longer waits on, or gets skipped by, a
 failed Dev leg, and pushes no longer spend runner time on Dev packages. Only a
 dispatch with `release=true` publishes. Windows ARM64 compiles natively on
 GitHub's slow ARM image (35-50 minutes), so it builds only nightly, on dispatch
-and for releases, never on a push. The hour avoids the other scheduled runs
-and the top of the hour. Research iOS Dev TestFlight stays on push.
+and for releases, never on a push. The cron sits hours after the other
+scheduled runs and off the top of the hour. GitHub starts every scheduled run
+hours late, so nothing may depend on the exact time or on the other nightly
+runs having finished. Research iOS Dev TestFlight stays on push.
 
 ## CodeQL only has to be "not red"
 

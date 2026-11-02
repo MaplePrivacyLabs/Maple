@@ -7,7 +7,9 @@ name: Nightly
 
 on:
   schedule:
-    - cron: "47 5 * * *" # after ci.yml's 04:17 run, so the report includes it
+    # GitHub starts scheduled runs late, often by hours, so nothing may depend on
+    # exact times or on which schedule starts first: the report waits for ci.yml's run.
+    - cron: "47 5 * * *"
   workflow_dispatch: # a dry run: the report is printed, not written to the issue
 
 permissions:
@@ -69,7 +71,7 @@ jobs:
     needs: [bun-audit, agent-provider]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 135 # CI_WAIT_MINUTES, plus the report
     permissions:
       contents: read
       actions: read # ci.yml's latest scheduled run
@@ -84,4 +86,8 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           CI_QUARANTINE: ${{ vars.CI_QUARANTINE }}
           DRY_RUN: ${{ github.event_name != 'schedule' }}
+          # Wait up to two hours for today's scheduled ci.yml run to finish, so a
+          # late-starting run is judged by its result, not reported as still running.
+          # Dry runs report at once.
+          CI_WAIT_MINUTES: ${{ github.event_name == 'schedule' && '120' || '0' }}
         run: python3 scripts/ci/nightly_report.py

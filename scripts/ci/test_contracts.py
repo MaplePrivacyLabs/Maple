@@ -119,6 +119,47 @@ def cache_steps():
                 yield name, job_id, step
 
 
+EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+PRIMARY_KEY = re.compile(r"\$\{\{ steps\.([\w-]+)\.outputs\.cache-primary-key \}\}")
+RUNNER_OS = (("ubuntu", "Linux"), ("macos", "macOS"), ("xcode", "macOS"), ("windows", "Windows"))
+
+
+def resolved(text: str, label: str) -> tuple:
+    """`text` on runner `label`: its literal head with `runner.os` filled in, and whether an
+    expression this test cannot evaluate (a hash, a step output, an unknown OS) follows it."""
+    systems = {system for word, system in RUNNER_OS if word in label}
+    if len(systems) == 1:
+        text = re.sub(r"\$\{\{\s*runner\.os\s*\}\}", systems.pop(), text)
+    parts = EXPRESSION.split(text, maxsplit=1)
+    return parts[0], len(parts) > 1
+
+
+def may_restore(prefix: tuple, key: tuple) -> bool:
+    """Whether a restore by `prefix` can match `key` for any value of their unevaluated parts."""
+    (literal, _), (head, unresolved) = prefix, key
+    return head.startswith(literal) or (unresolved and literal.startswith(head))
+
+
+def cache_families():
+    """(workflow, job, key, prefixes) for each cache step and runner label of its job, resolved.
+
+    The cache action matches its key, then each restore key, as a prefix of saved keys, so
+    the key leads the prefixes. A save keyed by a restore step's primary key is that step's.
+    """
+    for name, job_id, job in jobs():
+        steps = [step for step in job.get("steps", [])
+                 if step.get("uses", "").startswith(("actions/cache", "irgaly/xcode-cache@"))]
+        for step in steps:
+            key = str(step["with"]["key"]).strip()
+            reference = PRIMARY_KEY.fullmatch(key)
+            if reference and reference[1] in {other.get("id") for other in steps if other is not step}:
+                continue
+            prefixes = [key] + [line.strip() for line in str(step["with"].get("restore-keys", "")).splitlines()
+                                if line.strip()]
+            for label in sorted(runner_labels(name, job_id, job)):
+                yield name, job_id, resolved(key, label), [resolved(prefix, label) for prefix in prefixes]
+
+
 def expression(job: dict) -> str:
     """A job's `if:` as a Python expression with equivalent semantics for these gates."""
     text = job["if"].strip().removeprefix("${{").removesuffix("}}").replace("&&", " and ").replace("||", " or ")
@@ -242,9 +283,11 @@ class ContractTests(unittest.TestCase):
                     else:
                         # macOS also leads with the Xcode pin, so a prefix restore never
                         # brings back objects built against another SDK.
-                        prefix = "ci-v1-agent-package-${{ runner.os }}-" + {
-                            "agent-package-macos": "${{ hashFiles('scripts/ci/apple-toolchain.json') }}-",
-                            "agent-package-windows-arm64": "${{ runner.arch }}-"}.get(job_id, "")
+                        prefix = {
+                            "agent-package-macos":
+                                "ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('scripts/ci/apple-toolchain.json') }}-",
+                            "agent-package-windows-arm64": "ci-v1-agent-package-ARM64-${{ runner.os }}-",
+                        }.get(job_id, "ci-v1-agent-package-${{ runner.os }}-")
                         self.assertTrue(step["with"]["key"].startswith(prefix))
                         self.assertEqual(step["with"]["restore-keys"], prefix)
             elif name == "ci.yml":
@@ -252,6 +295,21 @@ class ContractTests(unittest.TestCase):
                     self.assertTrue(step["uses"].startswith("actions/cache/restore@"))
                     if not step["with"]["key"].startswith("ci-v1-agent-release-"):  # the next test
                         self.assertIn((step["with"]["key"], step["with"]["path"].strip()), saved)
+
+    def test_c4_agent_package_families_never_restore_each_other_or_another_cache(self):
+        # Each packaging rehearsal restores only its own target's thin-LTO objects: neither its
+        # key nor its restore prefix, on its own runner, may match another family's key (as
+        # the x64 Windows prefix once matched the ARM64 keys), and no other cache's prefix
+        # may match a packaging key.
+        families = list(cache_families())
+        packages = [family for family in families if family[:2] in AGENT_PACKAGE_JOBS]
+        self.assertEqual({family[:2] for family in packages}, AGENT_PACKAGE_JOBS)
+        for name, job_id, key, prefixes in packages:
+            for other_name, other_job, other_key, other_prefixes in families:
+                if (other_name, other_job) != (name, job_id):
+                    with self.subTest(job=job_id, other=f"{other_name} {other_job}"):
+                        self.assertFalse([prefix for prefix in prefixes if may_restore(prefix, other_key)])
+                        self.assertFalse([prefix for prefix in other_prefixes if may_restore(prefix, key)])
 
     def test_c4_agent_release_cache_is_exact_and_written_only_by_master_builders(self):
         restores = [(name, job_id, step["with"]) for name, job_id, step in cache_steps()

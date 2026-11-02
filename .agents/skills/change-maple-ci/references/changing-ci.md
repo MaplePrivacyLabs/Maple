@@ -135,7 +135,7 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
 | `MACOS` (Blacksmith macOS) | `CI_MACOS_RUNNER` |
 | `WINDOWS` (Blacksmith Windows) | `CI_WINDOWS_RUNNER` |
 | `GITHUB_WINDOWS` (`maple-windows-2025-16core`) | `CI_WINDOWS_GITHUB_RUNNER`, read only by special jobs |
-| `GITHUB`, `GITHUB_WINDOWS_FREE`, `GITHUB_XCODE` (`xcode-27`), `EIF_BUILDER`, inline `ubuntu-24.04-arm` | none |
+| `GITHUB`, `GITHUB_WINDOWS_FREE` (`windows-2025`), `GITHUB_WINDOWS_ARM64` (`windows-11-arm`), `GITHUB_XCODE` (`xcode-27`), `EIF_BUILDER`, inline `ubuntu-24.04-arm` | none |
 
 - Matrix lanes resolve their runner when `plan` runs. A new matrix variable
   must be passed in the `plan` step's `env`; `lint` checks this.
@@ -158,7 +158,12 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
 - `ci.yml` may read another workflow's cache only with
   `actions/cache/restore`, and only for a key a push-only workflow saves.
 - Never write a release-reserved prefix (`test_contracts.RESERVED_PREFIXES`,
-  plus `ci-v1-agent-release-`) from `ci.yml` or a PR job.
+  plus `ci-v1-agent-release-` and `ci-v1-agent-arm64-release-`) from `ci.yml`
+  or a PR job.
+- The cache action matches its key, then each restore key, as a prefix. A new
+  family's key and restore keys must not be a prefix of another family's keys,
+  either way round; C4 checks the Agent packaging families against every cache
+  key, with each job's `runner.os` filled in.
 - The Agent release key's hash is a step output from
   `scripts/ci/cargo_graph_key.py`, not `hashFiles`. C4 runs that step, with
   the script working and failing, so an empty or misnamed output cannot turn
@@ -214,7 +219,7 @@ All run in the `repo` lane, through the flake checks `ci-scripts`,
 | --- | --- | --- |
 | C1 | One `Release` workflow; listeners check their producer's success, repository and event; release jobs gated | You touched a release trigger or listener. Revert it |
 | C3 | Release evidence jobs run on master pushes and never cancel | You changed an evidence workflow's trigger, job or concurrency |
-| C4 | Release cache ownership, exact Agent release keys and how they are hashed, lane-family isolation, Dev TestFlight build numbers | You wrote or overlapped a release cache key, or changed the Agent key's hash step |
+| C4 | Release cache ownership, exact Agent release keys and how they are hashed, lane- and packaging-family isolation, Dev TestFlight build numbers | You wrote or overlapped a release or packaging cache key, or changed the Agent key's hash step |
 | C5 | The EIF event gate, mismatch semantics, OIDC and FlakeHub jobs, one builder class, a manual EIF release | You changed an EIF job, runner or guard |
 | C6 | Each protected environment has fixed consumer jobs; `windows-signing` is GitHub-hosted | You added, moved or renamed an `environment:` |
 | C7 | Docs name only existing workflow files and display names | A doc names a missing `.yml` file, or a backticked or bold name before "workflow" that is not a display name |

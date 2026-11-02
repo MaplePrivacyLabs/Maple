@@ -99,7 +99,7 @@ Typical PR selections (confirm with `explain`):
 
 | Change | Lanes |
 | --- | --- |
-| Agent source | `agent-lint`, `agent-test` (Linux), `agent-macos`, `agent-windows` (Clippy). Warm `ci-ok` in about 5 minutes; `agent-windows` is the long pole |
+| Agent source | `agent-lint`, `agent-test` (Linux), `agent-macos`, `agent-windows` (Clippy). Warm `ci-ok` in about 4-6 minutes; `agent-macos` or `agent-test` usually finishes last |
 | Agent `Cargo.lock` or `Cargo.toml` | Those four, plus `agent-windows-updater`, `agent-supply-chain`, `agent-provider` |
 | Agent packaging or installer scripts | Only the four; packaging needs `ci:package` |
 | Research frontend; Research `src-tauri` | `research-web`; `research-rust` |
@@ -114,7 +114,7 @@ Typical PR selections (confirm with `explain`):
 | Pull request | Lanes selected by paths and labels. A new push cancels the superseded run. A few advisory workflows also run on matching paths ([CI](../../../docs/ci.md)); they are not part of `ci-ok`. |
 | Merge | Auto-merge is on. There is no merge queue and no up-to-date rule (`ci.yml` already handles `merge_group` if a queue is ever enabled). The master push run catches semantic conflicts. |
 | Master push | `ci.yml` runs the push lanes, adding `agent-full-linux` and `agent-full-macos` for Agent changes. The Research and Auth PR lanes do not run here; their master workflows cover them. The run is never cancelled and saves caches. Also: signed builds (Agent: Prod only), release-evidence workflows and CodeQL. |
-| Nightly (UTC) | 04:17 `ci.yml` nightly lanes: `agent-full-*`, packaging rehearsals, `deps-*` advisories, cache refresh. 05:28 CodeQL. 05:47 `nightly.yml`: Bun audits, the SQLCipher provider suite on three OSes, and the single `ci-nightly` issue. 10:37 Agent Dev desktop builds, which the issue does not cover. |
+| Nightly | `ci.yml` nightly lanes: `agent-full-*`, packaging rehearsals, `deps-*` advisories, cache refresh. CodeQL. `nightly.yml`: Bun audits, the SQLCipher provider suite on three OSes, and the single `ci-nightly` issue, whose report waits up to two hours for `ci.yml`'s run. Agent Dev desktop builds, which the issue does not cover. The crons say 04:17, 05:28, 05:47 and 10:37 UTC, but GitHub starts scheduled runs hours late (often 5-7 hours): never rely on exact times or order. |
 | Dispatch | `ci.yml` with lane ids ([below](#dispatch-ciyml)). |
 
 ## Trigger what you need
@@ -127,7 +127,7 @@ fields in `lanes.py` are authoritative.
 | Label | Adds | Use when |
 | --- | --- | --- |
 | `ci:windows` | The native updater tests and full Windows suite (Windows Clippy already runs on every Agent PR) | Path, filesystem, process or terminal code behaves differently on Windows |
-| `ci:package` | Unsigned Agent packages and Research desktop bundles on all three OSes, plus the Research Dev macOS app | Packaging or release scripts, flakes, toolchains, or bundled assets, entitlements or updater metadata change. Also a gpui/zed revision bump, an Xcode pin change or an edit to the Metal Toolchain actions: PR lanes build gpui with runtime shaders, and only the macOS rehearsal compiles them before master's signed build |
+| `ci:package` | Unsigned Agent packages (native Windows ARM64 included) and Research desktop bundles on all three OSes, plus the Research Dev macOS app | Packaging or release scripts, flakes, toolchains, or bundled assets, entitlements or updater metadata change. Also a gpui/zed revision bump, an Xcode pin change or an edit to the Metal Toolchain actions: PR lanes build gpui with runtime shaders, and only the macOS rehearsal compiles them before master's signed build |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build | Research changes reach native mobile code or mobile-only plugins that their paths do not select |
 | `ci:research-dev-macos` | The unsigned Research Dev app | Research Dev OAuth profile work |
 | `ci:eif` | Dev and prod OpenSecret EIF candidates (`os-eif`) | The selector misses a measured input. Works only on a same-repository PR to `master` that edits no PCR approval |

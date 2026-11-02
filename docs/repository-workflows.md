@@ -85,8 +85,11 @@ branches in step with the lane table.
   Windows ARM64 build never runs on a push, so it saves its own
   `ci-v1-agent-arm64-release-<graph hash>` from whichever run misses. The
   Agent packaging lanes build thin LTO into their own
-  `ci-v1-agent-package-<os>-*` caches, which only the nightly master run
-  saves. The Agent's signing and publish jobs restore nothing.
+  `ci-v1-agent-package-<os>-*` caches (`ci-v1-agent-package-ARM64-Windows-*`
+  for the native ARM64 lane), which only the nightly master run saves. No
+  packaging family's key or restore prefix matches another cache's keys, so
+  a target never restores another target's objects. The Agent's signing and
+  publish jobs restore nothing.
 
 ## Concurrency
 
