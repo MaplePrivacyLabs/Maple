@@ -23,24 +23,27 @@ LABEL = "ci-nightly"
 TITLE = "Nightly CI failures"
 QUARANTINED = "is quarantined (`CI_QUARANTINE`)"
 POLL_SECONDS = 60
+# A hung API call fails instead of holding the job until its timeout.
+GH_TIMEOUT_SECONDS = 60
 
 
 def gh(path: str, method: str = "GET", payload: Optional[dict] = None) -> object:
     result = subprocess.run(["gh", "api", "--method", method, path, *(["--input", "-"] if payload else [])],
                             input=json.dumps(payload) if payload else None,
-                            check=True, capture_output=True, text=True)
+                            check=True, capture_output=True, text=True, timeout=GH_TIMEOUT_SECONDS)
     return json.loads(result.stdout or "null")
 
 
 def scheduled_ci_run(repo: str, today: str, wait_seconds: float) -> Optional[dict]:
     """The newest scheduled ci.yml run on master, once today's has finished or after
-    `wait_seconds`, whichever comes first. An API error while waiting is retried."""
+    `wait_seconds`, whichever comes first. A failed or timed-out API call while waiting
+    is retried."""
     deadline = time.monotonic() + wait_seconds
     while True:
         remaining = deadline - time.monotonic()
         try:
             runs = gh(f"repos/{repo}/actions/workflows/ci.yml/runs?event=schedule&branch=master&per_page=1")
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             if remaining <= 0:
                 raise
         else:

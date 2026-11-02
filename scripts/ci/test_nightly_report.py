@@ -9,6 +9,8 @@ import unittest
 from unittest import mock
 
 import nightly_report
+from test_contracts import expression_value
+from test_workflow_policy import WORKFLOWS, load
 
 DAY = "2026-10-26"
 GREEN = {"status": "completed", "conclusion": "success", "created_at": DAY + "T04:17:00Z", "html_url": "https://ci/1"}
@@ -84,9 +86,16 @@ class NightlyReportTests(unittest.TestCase):
         yesterday = dict(GREEN, created_at="2026-10-25T04:17:00Z")
         self.assertEqual(self.scheduled([yesterday, None, RUNNING, RUNNING, GREEN], 7200),
                          (GREEN, [60, 60, 60, 60]))
-        # A transient API error while waiting is retried.
+        # A red or cancelled run has finished too: it ends the wait and is reported as it is.
+        for conclusion in ("failure", "cancelled"):
+            finished = dict(GREEN, conclusion=conclusion)
+            self.assertEqual(self.scheduled([finished], 7200), (finished, []))
+            self.assertEqual(self.scheduled([RUNNING, finished], 7200), (finished, [60]))
+        # A transient API error or a hung call while waiting is retried.
         failed = subprocess.CalledProcessError(1, "gh")
         self.assertEqual(self.scheduled([failed, GREEN], 7200), (GREEN, [60]))
+        hung = subprocess.TimeoutExpired("gh", nightly_report.GH_TIMEOUT_SECONDS)
+        self.assertEqual(self.scheduled([hung, GREEN], 7200), (GREEN, [60]))
         # The wait is bounded: after it, the report names the unfinished or missing run.
         self.assertEqual(self.scheduled([RUNNING], 150), (RUNNING, [60, 60, 30]))
         self.assertEqual(self.scheduled([yesterday], 150), (yesterday, [60, 60, 30]))
@@ -94,6 +103,16 @@ class NightlyReportTests(unittest.TestCase):
             self.scheduled([failed], 150)
         # Without a wait it reads the run once.
         self.assertEqual(self.scheduled([RUNNING], 0), (RUNNING, []))
+
+    def test_every_api_call_is_bounded(self):
+        # A hung call fails and, while waiting, is retried, instead of holding the job.
+        def run(args, **kwargs):
+            self.assertGreater(kwargs.get("timeout") or 0, 0)
+            return subprocess.CompletedProcess(args, 0, stdout='{"ok": true}')
+
+        with mock.patch.object(nightly_report.subprocess, "run", run):
+            self.assertEqual(nightly_report.gh("repos/o/r"), {"ok": True})
+            self.assertEqual(nightly_report.gh("repos/o/r/issues", "POST", {"body": "x"}), {"ok": True})
 
     def run_main(self, dry_run, open_issues, needs, runs=None, wait=""):
         calls, runs = [], list(runs or [dict(GREEN, created_at=today() + "T04:17:00Z")])
@@ -120,11 +139,28 @@ class NightlyReportTests(unittest.TestCase):
                          [("POST", "repos/o/r/issues/5/comments"), ("PATCH", "repos/o/r/issues/5")])
 
     def test_a_green_ci_run_that_finishes_while_the_report_waits_closes_the_issue(self):
+        # 2026-10-30: the report ran at 11:49:49 and ci.yml's run finished at 11:52:23, three
+        # polls later. CI_WAIT_MINUTES is minutes: read as seconds, 120 would end the wait first.
         running, green = (dict(run, created_at=today() + "T10:54:36Z") for run in (RUNNING, GREEN))
         closed = [("POST", "repos/o/r/issues/5/comments"), ("PATCH", "repos/o/r/issues/5")]
-        self.assertEqual(self.run_main("false", [5], {}, [running, running, green], wait="120"), closed)
+        self.assertEqual(self.run_main("false", [5], {}, [running, running, running, green], wait="120"), closed)
         # Without the wait, the same night reported "still in_progress" and kept the issue open.
         self.assertEqual(self.run_main("false", [5], {}, [running, green]), [("POST", "repos/o/r/issues/5/comments")])
+
+    def test_the_report_job_outlasts_its_wait(self):
+        # nightly.yml's Report job must still have time to write the report after the longest
+        # wait (and a last slow poll), or a timeout leaves the night unreported.
+        job = load(WORKFLOWS / "nightly.yml")["jobs"]["report"]
+        step = next(step for step in job["steps"] if "nightly_report.py" in step.get("run", ""))
+        wait = step["env"]["CI_WAIT_MINUTES"].strip().removeprefix("${{").removesuffix("}}")
+        wait = wait.replace("&&", " and ").replace("||", " or ")
+        waits = {event: float(expression_value(wait, {"github.event_name": event}))
+                 for event in ("schedule", "workflow_dispatch")}
+        self.assertGreater(waits["schedule"], 0)
+        self.assertEqual(waits["workflow_dispatch"], 0)  # a dry run reports at once
+        for event, minutes in waits.items():
+            with self.subTest(event=event):
+                self.assertGreaterEqual(job["timeout-minutes"] - minutes, 5)
 
 
 if __name__ == "__main__":

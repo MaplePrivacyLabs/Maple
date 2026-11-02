@@ -158,7 +158,8 @@ The `Runner` constants at the top of `lanes.py` are authoritative.
 - `ci.yml` may read another workflow's cache only with
   `actions/cache/restore`, and only for a key a push-only workflow saves.
 - Never write a release-reserved prefix (`test_contracts.RESERVED_PREFIXES`,
-  plus `ci-v1-agent-release-`) from `ci.yml` or a PR job.
+  plus `ci-v1-agent-release-` and `ci-v1-agent-arm64-release-`) from `ci.yml`
+  or a PR job.
 - The cache action matches its key, then each restore key, as a prefix. A new
   family's key and restore keys must not be a prefix of another family's keys,
   either way round; C4 checks the Agent packaging families against every cache
