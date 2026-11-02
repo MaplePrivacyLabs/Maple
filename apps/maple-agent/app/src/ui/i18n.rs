@@ -15,6 +15,46 @@ fluent_templates::static_loader! {
 }
 
 const ENGLISH: LanguageIdentifier = langid!("en");
+
+/// Preview opt-in, fixed for this process in every build profile.
+pub(super) fn enabled() -> bool {
+    #[cfg(not(test))]
+    {
+        static ENABLED: LazyLock<bool> =
+            LazyLock::new(|| crate::env::env_flag("MAPLE_ENABLE_LOCALIZATION"));
+        *ENABLED
+    }
+    #[cfg(test)]
+    TEST_ENABLED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Scoped UI-thread override: tests never mutate the process environment.
+#[cfg(test)]
+pub(super) struct TestLocalizationGuard(bool);
+
+#[cfg(test)]
+impl TestLocalizationGuard {
+    pub(super) fn enable() -> Self {
+        Self(TEST_ENABLED.with(|enabled| enabled.replace(true)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestLocalizationGuard {
+    fn drop(&mut self) {
+        TEST_ENABLED.with(|enabled| enabled.set(self.0));
+    }
+}
+
+fn gated_locale(enabled: bool, locale: impl FnOnce() -> LanguageIdentifier) -> LanguageIdentifier {
+    if enabled { locale() } else { ENGLISH }
+}
+
 /// Enabled catalogs. None is the persisted system preference. Add a language
 /// here only when its catalog has passed the completeness checks.
 pub(super) const LANGUAGES: &[Option<&str>] = &[None, Some("en")];
@@ -43,7 +83,7 @@ static SYSTEM: LazyLock<LanguageIdentifier> = LazyLock::new(|| {
     }
     #[cfg(not(test))]
     {
-        resolve(sys_locale::get_locale().as_deref())
+        gated_locale(enabled(), || resolve(sys_locale::get_locale().as_deref()))
     }
 });
 
@@ -103,7 +143,9 @@ pub(crate) fn initialize_saved_preference(preference: Option<&str>) {
         if state.loaded {
             return;
         }
-        state.locale = preference.map_or_else(|| SYSTEM.clone(), |value| resolve(Some(value)));
+        state.locale = gated_locale(enabled(), || {
+            preference.map_or_else(|| SYSTEM.clone(), |value| resolve(Some(value)))
+        });
         state.messages.clear();
         state.system_label = None;
         state.loaded = true;

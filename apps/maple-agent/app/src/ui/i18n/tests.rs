@@ -67,6 +67,7 @@ fn missing_keys_and_locales_fall_back_without_blank_text() {
 
 #[test]
 fn saved_preference_is_loaded_once_and_plain_labels_are_cached() {
+    let _localization = TestLocalizationGuard::enable();
     ACTIVE.with_borrow_mut(|state| {
         state.locale = langid!("fr");
         state.loaded = false;
@@ -284,4 +285,22 @@ fn partial_catalog_falls_back_per_message_including_format_errors() {
             expected
         );
     }
+}
+
+#[test]
+fn localization_gate_defaults_off_and_ignores_locale_sources() {
+    assert!(!enabled());
+    assert_eq!(
+        gated_locale(false, || panic!("disabled gate must not read locale")),
+        ENGLISH
+    );
+    assert_eq!(gated_locale(true, || langid!("fr")), langid!("fr"));
+    ACTIVE.with_borrow_mut(|state| {
+        state.locale = langid!("fr");
+        state.loaded = false;
+        state.messages.clear();
+    });
+    initialize_saved_preference(Some("fr"));
+    ACTIVE.with_borrow(|state| assert_eq!(state.locale, ENGLISH));
+    assert_eq!(tr("update-confirmation-later").as_ref(), "Later");
 }

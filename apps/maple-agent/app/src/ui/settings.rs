@@ -932,6 +932,9 @@ impl SettingsScreen {
     /// open one. Like a native popup button, the menu opens on the saved
     /// value.
     pub(super) fn toggle_setting_menu(&mut self, menu: SettingMenu, cx: &mut Context<Self>) {
+        if menu == SettingMenu::Language && !super::i18n::enabled() {
+            return;
+        }
         if self.popup.is_open(&menu) {
             self.popup.close(cx);
         } else {
@@ -1132,6 +1135,9 @@ impl SettingsScreen {
     ) {
         match menu {
             SettingMenu::Language => {
+                if !super::i18n::enabled() {
+                    return;
+                }
                 let Some(locale) = super::i18n::LANGUAGES.get(index) else {
                     return;
                 };
@@ -1775,14 +1781,16 @@ impl SettingsScreen {
                             cx,
                         ),
                     ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Language),
-                        self.setting_menu_row(
-                            &super::i18n::tr("settings-language"),
-                            &super::i18n::tr("settings-language-description"),
-                            SettingMenu::Language, window, cx,
-                        ),
-                    ))
+                    .when(super::i18n::enabled(), |pane| {
+                        pane.child(self.application_target(
+                            || SettingsTarget::General(GeneralTarget::Language),
+                            self.setting_menu_row(
+                                &super::i18n::tr("settings-language"),
+                                &super::i18n::tr("settings-language-description"),
+                                SettingMenu::Language, window, cx,
+                            ),
+                        ))
+                    })
                     .child(section_title("Chat appearance"))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::ChatFont),

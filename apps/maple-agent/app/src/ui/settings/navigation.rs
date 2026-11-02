@@ -149,6 +149,7 @@ impl SettingsScreen {
                 GeneralTarget::SpeechSpeed,
             ]
             .into_iter()
+            .filter(|target| *target != GeneralTarget::Language || crate::ui::i18n::enabled())
             .map(SettingsTarget::General)
             .collect(),
             Section::Account => self.account_targets(),
@@ -1185,7 +1186,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn language_gate_hides_selector_and_preserves_saved_preference(cx: &mut TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        assert!(!crate::ui::i18n::enabled());
+        crate::settings::install_test_settings(crate::settings::AppSettings {
+            locale: Some("en".into()),
+            ..Default::default()
+        });
+        let (settings, cx) = dropdown_window(cx, true);
+        assert!(cx.debug_bounds("setting-value-language").is_none());
+        settings.update(cx, |this, cx| {
+            this.settings.locale = crate::settings::load_settings().locale;
+            assert!(
+                !this
+                    .visible_application_targets()
+                    .contains(&SettingsTarget::General(GeneralTarget::Language))
+            );
+            this.toggle_setting_menu(SettingMenu::Language, cx);
+            assert_eq!(this.popup.open_key(), None);
+            this.pick_setting_option(SettingMenu::Language, 0, cx);
+            assert_eq!(this.settings.locale.as_deref(), Some("en"));
+        });
+        crate::settings::discard_decrypted_cache();
+    }
+
+    #[gpui::test]
     fn language_dropdown_supports_pointer_and_keyboard_selection(cx: &mut TestAppContext) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         crate::settings::install_test_settings(crate::settings::AppSettings::default());
         let (settings, cx) = dropdown_window(cx, false);
@@ -1205,6 +1232,7 @@ mod tests {
 
     #[gpui::test]
     fn picking_from_the_dropdown_persists_in_reopened_store(cx: &mut TestAppContext) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         let root = tempfile::tempdir().unwrap();
         let paths = maple_agent::store::StorePaths::new(root.path());

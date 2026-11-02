@@ -6,6 +6,24 @@ text) and the language setting. English is the only enabled catalog. Most of
 the app is still English; this is infrastructure for incremental extraction,
 not a claim of complete localization.
 
+## Preview gate
+
+Localization is off by default in unpackaged, Dev, and Prod builds. Set
+`MAPLE_ENABLE_LOCALIZATION=1` in the application's launch environment to enable
+it (`true` and `yes` also work, case-insensitively). The value is read once per
+process; quit and reopen to change it. For hosted Dev from this component:
+
+```sh
+MAPLE_RELEASE_PROFILE=dev MAPLE_ENABLE_LOCALIZATION=1 \
+  nix develop --no-update-lock-file -c just run
+```
+
+Without the opt-in, the Language row and its keyboard-navigation target are
+hidden, locale selection stays English, and existing saved language preferences
+are preserved but ignored. Fluent catalogs/helpers remain compiled in. This is
+a local preview gate, not a server-controlled rollout or an authorization check.
+Tests default to the gate off and explicitly opt in for selector coverage.
+
 ## Locale and lifetime
 
 Settings → General → Language offers System and English. The optional `locale`
