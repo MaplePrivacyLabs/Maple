@@ -141,11 +141,29 @@ pub struct DisableRecoveryRequest {
 pub struct RecoveryStatusResponse {
     pub enrolled: bool,
     pub enrolled_at: Option<DateTime<Utc>>,
+    /// Last successful preserving reset that used the enrolled code. Lets the
+    /// owner notice silent use of a long-lived recovery credential.
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub use_count: i32,
 }
 
 #[derive(Serialize)]
 pub struct RecoveryCodeResponse {
-    pub recovery_code: String,
+    /// Zeroized on drop so the one-time code does not linger in freed heap once
+    /// `encrypt_response` has sealed the response. `Serialize` comes from
+    /// `Zeroizing`'s own impl, so no plaintext copy is made.
+    pub recovery_code: zeroize::Zeroizing<String>,
+}
+
+/// Redacts the code. The deny-list invariant only catches a *derived* `Debug`,
+/// so this manual impl keeps the redaction explicit and lets handlers log a
+/// response without leaking the one-time code.
+impl std::fmt::Debug for RecoveryCodeResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryCodeResponse")
+            .field("recovery_code", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Serialize)]
@@ -1458,7 +1476,9 @@ pub async fn recovery_status(
     })?;
     let response = RecoveryStatusResponse {
         enrolled: status.is_some(),
-        enrolled_at: status.map(|wrap| wrap.created_at),
+        enrolled_at: status.as_ref().map(|wrap| wrap.created_at),
+        last_used_at: status.as_ref().and_then(|wrap| wrap.recovery_last_used_at),
+        use_count: status.as_ref().map_or(0, |wrap| wrap.recovery_use_count),
     };
     encrypt_response(&data, &transport_session, &response).await
 }
@@ -1521,10 +1541,8 @@ pub async fn enroll_recovery(
     let response = RecoveryCodeResponse {
         // Shown to the user exactly once in the encrypted response; never
         // logged, stored in a path, or included in any other channel. The
-        // intermediate copy inside the serialized response body is not
-        // separately zeroized; it lives only until `encrypt_response` seals
-        // it into the encrypted transport frame.
-        recovery_code: code.display().to_string(),
+        // serialized copy is zeroized with the response.
+        recovery_code: code.display(),
     };
     encrypt_response(&data, &transport_session, &response).await
 }
@@ -1581,7 +1599,7 @@ pub async fn rotate_recovery(
 
     info!("Recovery code rotated for user {}", user.uuid);
     let response = RecoveryCodeResponse {
-        recovery_code: code.display().to_string(),
+        recovery_code: code.display(),
     };
     encrypt_response(&data, &transport_session, &response).await
 }

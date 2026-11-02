@@ -214,7 +214,10 @@ async fn recovery_status_reports_enrollment_state_for_a_password_user() {
     .await;
     assert_eq!(before.status(), StatusCode::OK);
     let body = response_json(before).await;
-    assert_eq!(body, json!({ "enrolled": false, "enrolled_at": null }));
+    assert_eq!(
+        body,
+        json!({ "enrolled": false, "enrolled_at": null, "last_used_at": null, "use_count": 0 })
+    );
 
     let enroll = enroll_request(app.clone(), fixture.password, token.clone()).await;
     assert_eq!(enroll.status(), StatusCode::OK);
@@ -1451,6 +1454,9 @@ fn kv_marker_exists(app_state: &AppState, user_id: Uuid, marker_id: i64) -> bool
         == 1
 }
 
+/// Compares the security-relevant wrap material. `updated_at` is excluded
+/// because the row's update trigger moves it whenever the use counter bumps,
+/// which a *successful* preserving reset always does.
 fn wrap_rows_identical(a: &UserSeedWrapping, b: &UserSeedWrapping) -> bool {
     a.id == b.id
         && a.user_id == b.user_id
@@ -1459,7 +1465,6 @@ fn wrap_rows_identical(a: &UserSeedWrapping, b: &UserSeedWrapping) -> bool {
         && a.wrapping_version == b.wrapping_version
         && a.seed_enc == b.seed_enc
         && a.created_at == b.created_at
-        && a.updated_at == b.updated_at
 }
 
 fn assert_recovery_wrap_unchanged(app_state: &AppState, user_id: Uuid, before: &UserSeedWrapping) {
@@ -1599,8 +1604,22 @@ async fn password_reset_v2_preserving_completion_preserves_seed_wrap_and_encrypt
         "preserving reset must keep the seed unchanged"
     );
 
-    // The recovery wrap survives byte-for-byte.
+    // The recovery wrap survives byte-for-byte; only its use tracking moves.
     assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+    let wrap_after = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap lookup should work")
+        .expect("the recovery wrap must survive the preserving reset");
+    assert_eq!(
+        wrap_after.recovery_use_count,
+        wrap_before.recovery_use_count + 1,
+        "a successful preserving reset must count as one use"
+    );
+    assert!(
+        wrap_after.recovery_last_used_at.is_some(),
+        "a successful preserving reset must stamp the last-used time"
+    );
     assert_eq!(
         app_state
             .decrypt_seed_for_auth_context(&fixture.user, &oauth_context)
@@ -2702,5 +2721,193 @@ async fn legacy_password_reset_confirm_rejects_any_recovery_code_before_mutation
     );
     assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
 
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+// ---------------------------------------------------------------------------
+// Review probes (independent of the PR's own assertions). Added while
+// reviewing PR 904; safe to drop.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn probe_empty_string_recovery_code_preserves_the_request() {
+    let fixture = authenticated_password_fixture("probe-emptycode").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+    enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context).await;
+
+    let secret = "probe-emptycode-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PEEEEEE1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PEEEEEE1", secret, project.client_id);
+
+    let response = complete_request(
+        app,
+        complete_body(&proof, "probe-emptycode-pw", preserve_mode("")),
+    )
+    .await;
+    assert_generic_bad_request(response).await;
+    assert!(!reset_request_by_id(app_state, selected.id).is_reset);
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn probe_replaying_a_consumed_preserving_reset_is_generic() {
+    let fixture = authenticated_password_fixture("probe-replay").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+    let code =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+
+    let secret = "probe-replay-secret";
+    insert_reset_request_fixture(app_state, &project, &fixture.user, "PFFFFFF1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PFFFFFF1", secret, project.client_id);
+
+    let first = complete_request(
+        app.clone(),
+        complete_body(&proof, "probe-replay-pw", preserve_mode(&code)),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let replay = complete_request(
+        app,
+        complete_body(&proof, "probe-replay-pw2", preserve_mode(&code)),
+    )
+    .await;
+    assert_generic_bad_request(replay).await;
+
+    // The first password still works; the replay did not change it.
+    assert!(app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            "probe-replay-pw".to_string(),
+            fixture.user.project_id
+        )
+        .await
+        .expect("authentication check should run")
+        .is_some());
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn probe_cross_user_recovery_code_fails_and_burns_the_selected_request() {
+    let victim = authenticated_password_fixture("probe-xvictim").await;
+    let attacker = authenticated_password_fixture("probe-xattacker").await;
+    let app_state = &victim.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+    let attacker_code =
+        enroll_recovery_over_authenticated_seed(app_state, &attacker.user, &attacker.auth_context)
+            .await;
+    // Both users must be enrolled, otherwise the victim fails at
+    // RecoveryNotEnrolled (which correctly does not burn the request).
+    let _victim_code =
+        enroll_recovery_over_authenticated_seed(app_state, &victim.user, &victim.auth_context)
+            .await;
+
+    let secret = "probe-xvictim-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &victim.user, "PGGGGGG1", secret, 24);
+    let proof = proof_fixture(&victim.email, "PGGGGGG1", secret, project.client_id);
+
+    let response = complete_request(
+        app,
+        complete_body(&proof, "probe-xvictim-pw", preserve_mode(&attacker_code)),
+    )
+    .await;
+    assert_generic_bad_request(response).await;
+    assert!(
+        reset_request_by_id(app_state, selected.id).is_reset,
+        "a well-formed foreign code burns the selected request, as documented"
+    );
+    let _ = app_state.db.delete_user(&victim.user);
+    let _ = app_state.db.delete_user(&attacker.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn probe_preserving_reset_works_when_the_password_wrap_row_is_missing() {
+    let fixture = authenticated_password_fixture("probe-nowrap").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+    let code =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+
+    let conn = &mut app_state.db.get_pool().get().unwrap();
+    diesel::delete(
+        crate::models::schema::user_seed_wrappings::table
+            .filter(crate::models::schema::user_seed_wrappings::user_id.eq(fixture.user.uuid))
+            .filter(crate::models::schema::user_seed_wrappings::credential_kind.eq("password")),
+    )
+    .execute(conn)
+    .expect("password wrap should delete");
+
+    let secret = "probe-nowrap-secret";
+    insert_reset_request_fixture(app_state, &project, &fixture.user, "PHHHHHH1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PHHHHHH1", secret, project.client_id);
+
+    let response = complete_request(
+        app,
+        complete_body(&proof, "probe-nowrap-pw", preserve_mode(&code)),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the recovery wrap alone should be enough to install a new password"
+    );
+    assert!(app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            "probe-nowrap-pw".to_string(),
+            fixture.user.project_id
+        )
+        .await
+        .expect("authentication check should run")
+        .is_some());
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn probe_normalized_code_with_spaces_and_lowercase_is_accepted() {
+    let fixture = authenticated_password_fixture("probe-normalize").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+    let code =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+
+    let mangled = code
+        .to_lowercase()
+        .replace('-', "")
+        .as_bytes()
+        .chunks(8)
+        .map(|chunk| String::from_utf8_lossy(chunk).to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let secret = "probe-normalize-secret";
+    insert_reset_request_fixture(app_state, &project, &fixture.user, "PJJJJJJ1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PJJJJJJ1", secret, project.client_id);
+
+    let response = complete_request(
+        app,
+        complete_body(&proof, "probe-normalize-pw", preserve_mode(&mangled)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
     let _ = app_state.db.delete_user(&fixture.user);
 }

@@ -234,7 +234,14 @@ pub fn recovery_credential_lookup_hash(
 // secret). The recovery reset completion opens the stored wrap through
 // `decrypt_seed_v1` with `compute_recovery_auth_binding`; there is no
 // separate recovery-wrap key/AAD envelope representation.
-
+//
+// INVARIANT: a recovery wrap is bound to the exact seed bytes it was sealed
+// over, and nothing re-checks that binding later. Every flow that REPLACES a
+// user's stored seed must therefore delete or re-seal the recovery wrap in the
+// same transaction, or a preserving reset will happily install a password
+// credential over the abandoned seed. Today only the destructive reset creates
+// a new seed, and it deletes every wrapping row; a future seed-rotation or
+// seed-restore flow owns the same obligation.
 pub fn new_recovery_seed_wrapping(
     root_key: &[u8],
     user: &User,

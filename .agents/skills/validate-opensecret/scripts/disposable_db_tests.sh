@@ -4,19 +4,36 @@ umask 077
 export LC_ALL=C
 
 usage() {
-  printf 'usage: %s [--redo-latest]\n' "${0##*/}" >&2
+  printf 'usage: %s [--redo-latest [COUNT]]\n' "${0##*/}" >&2
 }
 
+# COUNT is how many trailing migrations the redo cycle walks, newest first. A
+# diff that adds more than one migration needs COUNT >= its migration count,
+# otherwise the older ones are never exercised down/up.
 redo_latest=0
+redo_count=1
 case "${1:-}" in
   "") ;;
-  --redo-latest) redo_latest=1 ;;
+  --redo-latest)
+    redo_latest=1
+    if [ "$#" -gt 1 ]; then
+      case "$2" in
+        '' | *[!0-9]*) usage; exit 2 ;;
+      esac
+      redo_count="$2"
+      shift
+    fi
+    ;;
   *)
     usage
     exit 2
     ;;
 esac
 if [ "$#" -gt 1 ]; then
+  usage
+  exit 2
+fi
+if [ "$redo_count" -lt 1 ]; then
   usage
   exit 2
 fi
@@ -166,9 +183,11 @@ test "$expected_migrations" -gt 0
 assert_migration_count
 
 if [ "$redo_latest" -eq 1 ]; then
-  diesel migration redo --locked-schema \
-    --database-url "$AEAD_TAMPER_TEST_DATABASE_URL"
-  assert_migration_count
+  for ((redo = 0; redo < redo_count; redo++)); do
+    diesel migration redo --locked-schema \
+      --database-url "$AEAD_TAMPER_TEST_DATABASE_URL"
+    assert_migration_count
+  done
 fi
 
 cargo test --locked --all-features aead_db_tamper_tests \
@@ -250,7 +269,7 @@ done
 recovery_count=0
 for recovery_suite in \
   recovery_db_tests::=12 \
-  recovery_route_tests::=24 \
+  recovery_route_tests::=29 \
   transport_v2::gateway::tests::db_recovery_=1; do
   recovery_filter="${recovery_suite%=*}"
   expected_count="${recovery_suite##*=}"

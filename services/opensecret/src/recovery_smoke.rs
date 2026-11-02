@@ -321,7 +321,9 @@ async fn encrypted_account_flow() {
     let options = "/password-reset/v2/options";
     let completion = "/password-reset/v2/complete";
     let status = client.call("GET", base, None, Some(old_token), 200).await;
-    assert!(status == json!({"enrolled":false,"enrolled_at":null}));
+    assert!(
+        status == json!({"enrolled":false,"enrolled_at":null,"last_used_at":null,"use_count":0})
+    );
     for (method, path, body) in [
         ("GET", base, None),
         (
@@ -702,6 +704,15 @@ async fn encrypted_account_flow() {
     assert!(
         wrap.id == after.id && wrap.seed_enc == after.seed_enc,
         "recovery wrap unchanged"
+    );
+    assert_eq!(
+        after.recovery_use_count,
+        wrap.recovery_use_count + 1,
+        "the preserving reset must be counted as a use"
+    );
+    assert!(
+        after.recovery_last_used_at.is_some(),
+        "the preserving reset must stamp the last-used time"
     );
     println!("PASS proof permutations, malformed/checksum/Unicode codes, explicit modes, legacy guard, preserving reset and token lifecycle");
 

@@ -287,7 +287,12 @@ async fn db_recovery_flow_v1_rejected_v2_completes() {
     assert_eq!(status, 200);
     assert_eq!(
         body,
-        serde_json::json!({ "enrolled": false, "enrolled_at": null })
+        serde_json::json!({
+            "enrolled": false,
+            "enrolled_at": null,
+            "last_used_at": null,
+            "use_count": 0
+        })
     );
 
     let (status, body) = recovery_v2_request(

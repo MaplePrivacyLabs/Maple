@@ -162,7 +162,10 @@ mod crockford {
         let mut bits = 0;
 
         for ch in input.chars() {
-            let val = decode_char(ch)?;
+            // Crockford input is case-insensitive. Normalize here rather than
+            // relying on callers, so `decode` stays correct for raw input and a
+            // future caller cannot silently produce wrong bytes.
+            let val = decode_char(ch.to_ascii_uppercase())?;
             buffer = (buffer << 5) | (val as u64);
             bits += 5;
             while bits >= 8 {
@@ -182,10 +185,17 @@ mod crockford {
         Ok(out)
     }
 
+    /// Uppercase-only by contract: `decode` uppercases each character first, so
+    /// the lowercase aliases are handled there instead of in a second set of
+    /// arms. `U` is excluded from the alphabet.
     fn decode_char(ch: char) -> Result<u8, super::RecoveryCodeError> {
+        debug_assert!(
+            !ch.is_ascii_lowercase(),
+            "decode must uppercase before matching"
+        );
         match ch {
-            '0' | 'O' | 'o' => Ok(0),
-            '1' | 'I' | 'i' | 'L' | 'l' => Ok(1),
+            '0' | 'O' => Ok(0),
+            '1' | 'I' | 'L' => Ok(1),
             '2' => Ok(2),
             '3' => Ok(3),
             '4' => Ok(4),
@@ -194,28 +204,28 @@ mod crockford {
             '7' => Ok(7),
             '8' => Ok(8),
             '9' => Ok(9),
-            'A' | 'a' => Ok(10),
-            'B' | 'b' => Ok(11),
-            'C' | 'c' => Ok(12),
-            'D' | 'd' => Ok(13),
-            'E' | 'e' => Ok(14),
-            'F' | 'f' => Ok(15),
-            'G' | 'g' => Ok(16),
-            'H' | 'h' => Ok(17),
-            'J' | 'j' => Ok(18),
-            'K' | 'k' => Ok(19),
-            'M' | 'm' => Ok(20),
-            'N' | 'n' => Ok(21),
-            'P' | 'p' => Ok(22),
-            'Q' | 'q' => Ok(23),
-            'R' | 'r' => Ok(24),
-            'S' | 's' => Ok(25),
-            'T' | 't' => Ok(26),
-            'V' | 'v' => Ok(27),
-            'W' | 'w' => Ok(28),
-            'X' | 'x' => Ok(29),
-            'Y' | 'y' => Ok(30),
-            'Z' | 'z' => Ok(31),
+            'A' => Ok(10),
+            'B' => Ok(11),
+            'C' => Ok(12),
+            'D' => Ok(13),
+            'E' => Ok(14),
+            'F' => Ok(15),
+            'G' => Ok(16),
+            'H' => Ok(17),
+            'J' => Ok(18),
+            'K' => Ok(19),
+            'M' => Ok(20),
+            'N' => Ok(21),
+            'P' => Ok(22),
+            'Q' => Ok(23),
+            'R' => Ok(24),
+            'S' => Ok(25),
+            'T' => Ok(26),
+            'V' => Ok(27),
+            'W' => Ok(28),
+            'X' => Ok(29),
+            'Y' => Ok(30),
+            'Z' => Ok(31),
             _ => Err(super::RecoveryCodeError::InvalidCharacter),
         }
     }
@@ -276,6 +286,24 @@ mod tests {
         let displayed = code.display();
         let parsed = RecoveryCode::parse(&displayed).unwrap();
         assert_eq!(*code.secret_bytes(), *parsed.secret_bytes());
+    }
+
+    /// `decode` must be case-insensitive on its own, not only through `parse`'s
+    /// normalization, so a future caller cannot feed it raw input safely by
+    /// accident.
+    #[test]
+    fn crockford_decode_is_case_insensitive_without_parse_normalization() {
+        let upper = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
+        assert_eq!(
+            crockford::decode(upper).unwrap(),
+            crockford::decode(&upper.to_ascii_lowercase()).unwrap()
+        );
+        // Crockford aliases survive lowercasing: 8 chars is a whole number of
+        // bytes, so there are no padding bits to satisfy.
+        assert_eq!(
+            crockford::decode("0O1ILl23").unwrap(),
+            crockford::decode("00111123").unwrap()
+        );
     }
 
     #[test]

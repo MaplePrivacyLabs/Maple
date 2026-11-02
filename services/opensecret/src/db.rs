@@ -1306,7 +1306,7 @@ impl DBConnection for PostgresConnection {
         new_password_enc: Vec<u8>,
         new_wrapping: NewUserSeedWrapping,
     ) -> Result<(), DBError> {
-        use crate::models::schema::{password_reset_requests, users};
+        use crate::models::schema::{password_reset_requests, user_seed_wrappings, users};
 
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
 
@@ -1390,6 +1390,23 @@ impl DBConnection for PostgresConnection {
                 CredentialKind::Password.as_str(),
             )?;
             new_wrapping.insert(conn)?;
+
+            // Use tracking for the surviving recovery credential. These columns
+            // are metadata only: nothing compares them, so bumping them cannot
+            // disturb a race that the checks above already resolved.
+            diesel::update(
+                user_seed_wrappings::table
+                    .filter(user_seed_wrappings::user_id.eq(user.uuid))
+                    .filter(
+                        user_seed_wrappings::credential_kind.eq(CredentialKind::Recovery.as_str()),
+                    ),
+            )
+            .set((
+                user_seed_wrappings::recovery_last_used_at.eq(diesel::dsl::now),
+                user_seed_wrappings::recovery_use_count
+                    .eq(user_seed_wrappings::recovery_use_count + 1),
+            ))
+            .execute(conn)?;
             Ok(())
         })
     }

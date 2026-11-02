@@ -32,6 +32,8 @@ struct RecoveryWrappingRow {
     seed_enc: Option<Vec<u8>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    recovery_last_used_at: Option<DateTime<Utc>>,
+    recovery_use_count: i32,
 }
 
 #[derive(Queryable, Identifiable, Clone, Debug)]
@@ -45,6 +47,11 @@ pub struct UserSeedWrapping {
     pub seed_enc: Vec<u8>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Last successful preserving reset that opened this wrap. `None` until the
+    /// code is first used. A rotation replaces the row, so the count restarts.
+    pub recovery_last_used_at: Option<DateTime<Utc>>,
+    /// Successful preserving resets that opened this wrap.
+    pub recovery_use_count: i32,
 }
 
 impl UserSeedWrapping {
@@ -79,6 +86,8 @@ impl UserSeedWrapping {
                 ),
                 w::created_at,
                 w::updated_at,
+                w::recovery_last_used_at,
+                w::recovery_use_count,
             ))
             .limit(2)
             .load::<RecoveryWrappingRow>(conn)?;
@@ -107,6 +116,8 @@ impl UserSeedWrapping {
             seed_enc,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            recovery_last_used_at: row.recovery_last_used_at,
+            recovery_use_count: row.recovery_use_count,
         }))
     }
 
