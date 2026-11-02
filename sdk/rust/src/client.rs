@@ -2197,6 +2197,12 @@ impl OpenSecretClient {
 
     /// Confirms a password reset with the code from email
     /// Note: This does not require authentication but still uses encryption
+    ///
+    /// This legacy reset is always destructive: the account receives a fresh
+    /// seed and loses its encrypted data. Use
+    /// [`get_password_reset_options`](Self::get_password_reset_options) and
+    /// [`complete_password_reset`](Self::complete_password_reset) to offer a
+    /// seed-preserving reset when a recovery code is enrolled.
     pub async fn confirm_password_reset(
         &self,
         email: String,
@@ -2214,6 +2220,108 @@ impl OpenSecretClient {
         };
         let _: serde_json::Value = self
             .encrypted_api_call("/password-reset/confirm", "POST", Some(request))
+            .await?;
+        Ok(())
+    }
+
+    /// Reports which completions a pending password reset supports.
+    ///
+    /// The server verifies the emailed code and client secret before revealing
+    /// whether the account has an enrolled recovery code, and does not consume
+    /// the reset request. Every proof failure returns the same generic error.
+    pub async fn get_password_reset_options(
+        &self,
+        email: String,
+        alphanumeric_code: String,
+        plaintext_secret: String,
+        client_id: Uuid,
+    ) -> Result<PasswordResetOptions> {
+        let request = PasswordResetOptionsRequest {
+            proof: PasswordResetProof {
+                email,
+                alphanumeric_code,
+                plaintext_secret,
+                client_id,
+            },
+        };
+        self.encrypted_api_call("/password-reset/v2/options", "POST", Some(request))
+            .await
+    }
+
+    /// Completes a password reset and signs in with the new password.
+    ///
+    /// A [`PasswordResetCompletion::Preserve`] completion with a well-formed
+    /// but wrong recovery code consumes the reset request, so the user must
+    /// request a new reset email before trying again. A malformed code leaves
+    /// the request active. The server returns the same generic error for every
+    /// rejection.
+    pub async fn complete_password_reset(
+        &self,
+        email: String,
+        alphanumeric_code: String,
+        plaintext_secret: String,
+        new_password: String,
+        client_id: Uuid,
+        mode: PasswordResetCompletion,
+    ) -> Result<CompletePasswordResetResponse> {
+        let request = CompletePasswordResetRequest {
+            proof: PasswordResetProof {
+                email,
+                alphanumeric_code,
+                plaintext_secret,
+                client_id,
+            },
+            new_password,
+            mode,
+        };
+        let response: CompletePasswordResetResponse = self
+            .encrypted_api_call("/password-reset/v2/complete", "POST", Some(request))
+            .await?;
+
+        self.session_manager.set_tokens(
+            response.access_token.clone(),
+            Some(response.refresh_token.clone()),
+        )?;
+
+        Ok(response)
+    }
+
+    /// Fetches the recovery-code enrollment status for the signed-in user.
+    pub async fn get_recovery_code_status(&self) -> Result<RecoveryCodeStatus> {
+        self.authenticated_api_call("/protected/recovery-code", "GET", None::<()>)
+            .await
+    }
+
+    /// Enrolls a recovery code that can preserve encrypted data across a
+    /// password reset. Only email-and-password accounts can enroll, and the
+    /// server returns the code only once. Fails with status 409 when a code is
+    /// already enrolled.
+    pub async fn enroll_recovery_code(
+        &self,
+        current_password: String,
+    ) -> Result<RecoveryCodeResponse> {
+        let request = RecoveryCodePasswordRequest { current_password };
+        self.authenticated_api_call("/protected/recovery-code/enroll", "POST", Some(request))
+            .await
+    }
+
+    /// Replaces the enrolled recovery code; the previous code stops working.
+    /// The server returns the replacement code only once.
+    pub async fn rotate_recovery_code(
+        &self,
+        current_password: String,
+    ) -> Result<RecoveryCodeResponse> {
+        let request = RecoveryCodePasswordRequest { current_password };
+        self.authenticated_api_call("/protected/recovery-code/rotate", "POST", Some(request))
+            .await
+    }
+
+    /// Removes the enrolled recovery code, so later password resets are
+    /// destructive. Succeeds when no code is enrolled.
+    pub async fn disable_recovery_code(&self, current_password: String) -> Result<()> {
+        let request = RecoveryCodePasswordRequest { current_password };
+        let _: serde_json::Value = self
+            .authenticated_api_call("/protected/recovery-code", "DELETE", Some(request))
             .await?;
         Ok(())
     }

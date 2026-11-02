@@ -2,6 +2,11 @@
 export type {
   LoginResponse,
   UserResponse,
+  PasswordResetOptions,
+  PasswordResetCompletion,
+  CompletePasswordResetResponse,
+  RecoveryCodeStatus,
+  RecoveryCodeResponse,
   GithubAuthResponse,
   GoogleAuthResponse,
   NativeHandoffGrantResponse,
