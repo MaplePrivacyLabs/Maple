@@ -196,9 +196,13 @@ The owner chose fat LTO with one codegen unit for Agent release builds
 measured clearly larger binaries. The consequence is a slow master Agent
 build, mostly single-threaded compile and link, which bigger runners do not
 speed up. The `ci:package` rehearsals deliberately build thin LTO
-(`FAST_RELEASE` in `lanes.py`) into their own `ci-v1-agent-package-*` caches.
-They prove the packaging, not the optimizer. Only the nightly master run
-saves those caches.
+(`FAST_RELEASE` in `lanes.py`) into their own `ci-v1-agent-package-*` caches,
+one family per target: `ci-v1-agent-package-<os>-`, and
+`ci-v1-agent-package-ARM64-Windows-` for native ARM64. The cache action
+restores by prefix, so no family's key or restore prefix may match another
+cache's keys (C4); `ARM64` leads because `<os>` would make the x64 Windows
+prefix match ARM64 keys. They prove the packaging, not the optimizer. Only the
+nightly master run saves those caches.
 
 ## Agent Dev builds run nightly
 

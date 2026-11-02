@@ -362,8 +362,10 @@ jobs:
         id: package-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          key: ci-v1-agent-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
-          restore-keys: ci-v1-agent-package-${{ runner.os }}-${{ runner.arch }}-
+          # ARM64 leads, so neither this family nor the x64 Windows one
+          # (ci-v1-agent-package-Windows-) restores the other's objects by prefix.
+          key: ci-v1-agent-package-ARM64-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
+          restore-keys: ci-v1-agent-package-ARM64-${{ runner.os }}-
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
