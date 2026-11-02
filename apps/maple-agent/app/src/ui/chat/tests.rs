@@ -11901,7 +11901,7 @@ mod state_tests {
     mod remote_draft_navigation_tests {
         use super::*;
 
-        /// This also exercises Settings' first "Open projects" after pairing.
+        /// This also exercises opening a newly paired computer's Overview.
         #[gpui::test]
         fn opening_a_computer_catalog_does_not_open_its_latest_task(cx: &mut TestAppContext) {
             let chat = screen(cx);

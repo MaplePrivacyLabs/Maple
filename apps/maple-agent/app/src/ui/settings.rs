@@ -260,7 +260,6 @@ struct McpEditor {
 pub struct OpenSettingsSection(pub Section);
 
 impl EventEmitter<super::remote::ComputersChanged> for SettingsScreen {}
-impl EventEmitter<super::remote::ConnectComputer> for SettingsScreen {}
 impl EventEmitter<super::remote::ComputerNamed> for SettingsScreen {}
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<crate::update::UpdateRequested> for SettingsScreen {}
@@ -370,15 +369,6 @@ impl SettingsScreen {
             &remote_screen,
             |_, _, event: &super::remote::ComputersChanged, cx| {
                 cx.emit(super::remote::ComputersChanged(event.0.clone()));
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &remote_screen,
-            |_, _, event: &super::remote::ConnectComputer, cx| {
-                // The desktop accepts this only from its current settings
-                // screen and closes that same screen before navigating.
-                cx.emit(super::remote::ConnectComputer(event.0.clone()));
             },
         )
         .detach();
@@ -2635,7 +2625,7 @@ impl SettingsScreen {
                             .text_color(gpui::rgb(theme::text_primary()))
                             .child(display_name),
                     )
-                    .child(integration_status_badge(availability, availability_color)),
+                    .child(widgets::status_badge(availability, availability_color)),
             )
             .when(!description.is_empty(), |col| {
                 col.child(
@@ -3095,18 +3085,6 @@ fn cua_backend_label(_integration: &AgentIntegration) -> &'static str {
     "Built into Maple"
 }
 
-fn integration_status_badge(label: &'static str, color: u32) -> Div {
-    div()
-        .px_2()
-        .py_0p5()
-        .rounded_full()
-        .bg(gpui::rgb(theme::bg_sidebar_pill()))
-        .text_xs()
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(gpui::rgb(color))
-        .child(label)
-}
-
 fn integration_metadata_badge(label: &'static str) -> Div {
     div()
         .px_2()
@@ -3288,7 +3266,7 @@ fn portable_keystroke_token(keystroke: &gpui::Keystroke) -> String {
 }
 
 /// Title and description column shared by every settings row.
-fn setting_copy(title: &str, description: &str) -> Div {
+pub(crate) fn setting_copy(title: &str, description: &str) -> Div {
     div()
         .flex()
         .flex_col()

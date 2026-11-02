@@ -284,6 +284,21 @@ pub fn switch_track(on: bool) -> Div {
         )
 }
 
+/// Small status pill beside a card's title (an integration's availability,
+/// a paired computer's update state). `color` tints only the label.
+pub fn status_badge(label: &'static str, color: u32) -> Div {
+    div()
+        .flex_none()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .bg(gpui::rgb(theme::bg_sidebar_pill()))
+        .text_xs()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(color))
+        .child(label)
+}
+
 /// Card chrome for a settings-style row: padded elevated surface with a
 /// subtle border.
 pub fn card_row() -> Div {

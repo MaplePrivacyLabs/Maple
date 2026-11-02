@@ -2074,24 +2074,6 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             &screen,
-            |app, emitter, event: &ui::remote::ConnectComputer, cx| {
-                if !app.is_current_settings_screen(&emitter) {
-                    return;
-                }
-                let settings = emitter.read(cx).settings_snapshot();
-                app.close_settings(settings, cx);
-                app.navigate(
-                    Navigate {
-                        computer: Some(event.0.clone()),
-                        destination: Destination::Overview,
-                    },
-                    cx,
-                );
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &screen,
             |app: &mut MapleApp, emitter, event: &SettingsClosed, cx| {
                 if app.is_current_settings_screen(&emitter) {
                     app.close_settings(event.0.clone(), cx);
@@ -4614,33 +4596,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn connecting_from_settings_keeps_the_refreshed_notification_policy(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
-        let app = project_shell_locked(cx, &settings);
-        app.update(cx, |app, cx| {
-            app.settings.store_password_mode = false;
-            app.settings.desktop_notifications = true;
-            app.show_settings(Section::Remote, cx);
-            let mut refreshed = app.settings.clone();
-            refreshed.store_password_mode = true;
-            app.apply_refreshed_password_settings(refreshed, cx);
-        });
-        let screen = active_settings(&app, cx);
-        screen.update(cx, |_, cx| {
-            cx.emit(ui::remote::ConnectComputer("east".into()));
-        });
-        cx.run_until_parked();
-        app.update(cx, |app, cx| {
-            assert!(matches!(app.screen, Screen::Chat(_)));
-            assert_eq!(app.selected_host.as_deref(), Some("east"));
-            assert!(app.settings.store_password_mode);
-            assert_chat_notification_policy(app, false, cx);
-        });
-    }
-
-    #[gpui::test]
     fn a_free_reading_holds_every_screen_until_a_paid_one(cx: &mut gpui::TestAppContext) {
         use crate::billing::PlanAccess;
         let settings = crate::settings::SETTINGS_IO_LOCK.lock();
@@ -4752,15 +4707,11 @@ mod tests {
             app.apply_refreshed_password_settings(refreshed, cx);
         });
         let current = active_settings(&app, cx);
-        retired.update(cx, |_, cx| {
-            cx.emit(SettingsClosed(stale));
-            cx.emit(ui::remote::ConnectComputer("east".into()));
-        });
+        retired.update(cx, |_, cx| cx.emit(SettingsClosed(stale)));
         cx.run_until_parked();
         app.update(cx, |app, cx| {
             assert!(app.is_current_settings_screen(&current));
             assert!(app.settings.store_password_mode);
-            assert!(app.selected_host.is_none());
             assert_chat_notification_policy(app, false, cx);
         });
     }
