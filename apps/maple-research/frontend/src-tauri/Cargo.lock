@@ -3665,7 +3665,7 @@ dependencies = [
 
 [[package]]
 name = "maple-sdk"
-version = "4.1.3"
+version = "4.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
