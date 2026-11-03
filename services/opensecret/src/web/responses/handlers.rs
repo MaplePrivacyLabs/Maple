@@ -9,26 +9,29 @@ use crate::{
         auto_model::{
             AutoModelDecision, AutoModelRequirements, ExcludedAutoCandidate, PromptTokenEstimate,
         },
-        AttemptFailure, AttemptFailureKind, AttemptTerminal, InferenceIntent, InferenceSurface,
-        ReplaySafety, WorkloadClass,
+        AttemptFailure, AttemptFailureKind, AttemptTerminal, InferenceSurface, ReplaySafety,
+        WorkloadClass,
     },
     jwt::AuthContext,
     model_config::{
         model_config, model_reasoning_history_strategy, model_reasoning_replay,
         resolve_public_model_id, ModelAliasTargets, ModelPlan, ReasoningEffort,
-        ResponsesModelConfig, SamplingConfig,
+        ResponsesModelConfig, SamplingConfig, AUTO_QUICK_MODEL_ID,
     },
     models::responses::{
         NewToolCall, NewToolOutput, NewUserMessage, ResponseStatus, ResponsesError,
     },
     models::users::User,
     provider_cache::CacheNamespaceRoot,
+    provider_routing::ProviderRouter,
+    proxy_config::ProxyRouter,
     tokens::count_tokens,
     web::{
         encryption_middleware::{decrypt_request, encrypt_response, Decrypted, TransportSession},
         model_request_policy::{
             apply_model_request_policy, clamp_reasoning_effort, resolve_reasoning_effort,
-            EffectiveReasoningEffort, ModelSelection, RESPONSES_REASONING_EFFORT_PARAM,
+            EffectiveReasoningEffort, ModelSelection, CHAT_REASONING_EFFORT_PARAM,
+            RESPONSES_REASONING_EFFORT_PARAM,
         },
         openai::{
             ensure_completion_model_access, finish_started_completion,
@@ -708,17 +711,17 @@ mod tests {
         image_description_attempt_failure_class, maple_kagi_web_search_prompt,
         model_turn_request_without_user_payload, normalize_responses_input,
         reserve_response_message_uuid_with_check, resolve_responses_model,
-        resolve_responses_sampling, response_cancellation_ack_decision,
+        resolve_responses_sampling, resolve_title_model, response_cancellation_ack_decision,
         response_execution_for_status, responses_pre_persistence_api_error, run_response_worker,
-        send_storage_message, wait_for_local_response_execution_quiescence, web_search_is_selected,
-        web_search_tool_turn_limit, web_search_tool_turn_limit_error,
+        send_storage_message, title_user_prompt, wait_for_local_response_execution_quiescence,
+        web_search_is_selected, web_search_tool_turn_limit, web_search_tool_turn_limit_error,
         web_search_tool_turn_limit_reached, AssistantTurnOutcome, ClientResponseState,
         ConversationParam, ImageAttachment, ImageDescriptionFailureClass, ImageDescriptionInput,
         ImageDescriptionToolPair, InputMessage, MessageContent, MessageContentPart, MessageInput,
         PublicResponseFailure, ResponseCancellationAckDecision, ResponseExecutionPolicy,
         ResponseTerminal, ResponsesCreateRequest, ResponsesReasoningRequest, StorageMessage,
         StreamedToolCall, MAX_WEB_SEARCH_TOOL_TURNS_FREE, MAX_WEB_SEARCH_TOOL_TURNS_PAID,
-        READ_IMAGE_TOOL_NAME, TITLE_MODEL_ID,
+        READ_IMAGE_TOOL_NAME,
     };
     use crate::web::model_request_policy::{
         resolve_reasoning_effort, EffectiveReasoningEffort, ModelSelection,
@@ -3230,15 +3233,100 @@ mod tests {
     }
 
     #[test]
-    fn title_requests_use_the_free_quick_model_without_reasoning() {
-        let request = build_title_request(&"x".repeat(800));
-        assert_eq!(request["model"], crate::model_config::QUICK_MODEL_ID);
-        assert!(ModelPlan::Free.allows_model(TITLE_MODEL_ID));
-        assert_eq!(request["reasoning_effort"], "none");
-        assert_eq!(request["include_reasoning"], false);
-        assert_eq!(request["stream"], false);
-        let prompt = request["messages"][1]["content"].as_str().unwrap();
+    fn titles_follow_the_quick_tier_and_its_paid_fallback() {
+        use crate::inference::auto_model::AutoModelReason;
+        use crate::inference::health::ShadowObservationMode;
+        use crate::inference::{AttemptFailure, AttemptFailureKind, AttemptStage, ReplaySafety};
+        use crate::model_config::{
+            AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+        };
+        use crate::provider_registry::{ProviderId, RouteSelectionSource};
+        use crate::provider_routing::ProviderRouter;
+        use crate::proxy_config::ProxyRouter;
+
+        let provider_router = ProviderRouter::default();
+        // Without a Maple proxy, DeepSeek's only configured route is Tinfoil.
+        let proxy_router = ProxyRouter::new(
+            "http://continuum.example.com".to_string(),
+            None,
+            "http://tinfoil.example.com".to_string(),
+        );
+        let account = Uuid::from_u128(7);
+        let prompt = title_user_prompt("hello");
+        let resolve =
+            |plan| resolve_title_model(&provider_router, &proxy_router, account, plan, &prompt);
+
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            let healthy = resolve(plan).expect("healthy Quick model");
+            assert_eq!(healthy.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        }
+
+        let mut failure = AttemptFailure::new(
+            AttemptFailureKind::CapacityRejected,
+            AttemptStage::AwaitingResponse,
+            ReplaySafety::ProvenPreAcceptance,
+        );
+        failure.status = Some(503);
+        failure.retry_after = Some(Duration::from_secs(60));
+        let route = RouteIdentity::new(
+            ProviderId::Tinfoil,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            RouteSelectionSource::StaticSplit,
+            None,
+        );
+        let intent = InferenceIntent::new(
+            account,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            ModelPlan::Paid,
+            InferenceSurface::Responses,
+            WorkloadClass::Interactive,
+        );
+        provider_router.observe_attempt_terminal(
+            &AttemptTerminal::Failed {
+                attempt: intent.begin_execution().begin_attempt(route),
+                failure,
+            },
+            ShadowObservationMode::Update,
+        );
+
+        let fallback = resolve(ModelPlan::Paid).expect("GLM Flash alternate");
+        assert_eq!(fallback.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(
+            fallback.auto_decision().expect("decision").reason,
+            AutoModelReason::HealthFallback
+        );
+        let intent = fallback.intent(
+            account,
+            AUTO_QUICK_MODEL_ID,
+            ModelPlan::Paid,
+            InferenceSurface::Internal,
+            WorkloadClass::Background,
+        );
+        assert_eq!(intent.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert!(matches!(
+            resolve(ModelPlan::Free),
+            Err(ApiError::InferenceCapacity { .. })
+        ));
+    }
+
+    #[test]
+    fn title_requests_ask_each_model_for_the_least_reasoning_it_accepts() {
+        let prompt = title_user_prompt(&"x".repeat(800));
         assert!(prompt.contains(&"x".repeat(500)) && !prompt.contains(&"x".repeat(501)));
+        for (model, effort) in [
+            (crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID, "none"),
+            (crate::model_config::GLM_5_3_FLASH_MODEL_ID, "low"),
+        ] {
+            let request = build_title_request(&prompt, model);
+            assert_eq!(request["model"], model);
+            assert_eq!(request["reasoning_effort"], effort, "{model}");
+            assert_eq!(request["include_reasoning"], false);
+            assert_eq!(request["stream"], false);
+            assert_eq!(request["messages"][1]["content"], prompt);
+        }
     }
 
     #[test]
@@ -5402,15 +5490,46 @@ struct PersistedData {
     last_item_created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Titles use the Quick tier's model, which every plan may use.
-const TITLE_MODEL_ID: &str = crate::model_config::QUICK_MODEL_ID;
-
-/// The bounded, thinking-free title request for a conversation's first message.
-fn build_title_request(user_content: &str) -> Value {
-    // Truncate content to first 500 characters
+/// The user message of a title request, from at most 500 characters of the
+/// conversation's first message.
+fn title_user_prompt(user_content: &str) -> String {
     let truncated_content: String = user_content.chars().take(500).collect();
+    format!("Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{}\"", truncated_content)
+}
+
+/// Titles ask the Quick tier for the account's plan, so they follow its Auto
+/// fallback like any other Quick request.
+fn resolve_title_model(
+    provider_router: &ProviderRouter,
+    proxy_router: &ProxyRouter,
+    account_uuid: Uuid,
+    plan: ModelPlan,
+    title_prompt: &str,
+) -> Result<ResolvedInferenceModel, ApiError> {
+    resolve_inference_model(
+        provider_router,
+        proxy_router,
+        ModelResolutionRequest {
+            account_uuid,
+            surface: InferenceSurface::Internal,
+            requested_model_id: AUTO_QUICK_MODEL_ID,
+            alias_target: ModelAliasTargets::for_plan(plan).resolve(AUTO_QUICK_MODEL_ID),
+            model_plan: plan,
+            excluded: None,
+        },
+        || AutoModelRequirements {
+            vision: false,
+            kimi_tool_history_compatible: true,
+            prompt_tokens: PromptTokenEstimate::Known(count_tokens(title_prompt)),
+        },
+    )
+}
+
+/// The title request for the model Auto chose, with the least reasoning that
+/// model accepts: a title needs none, and GLM's cannot be switched off.
+fn build_title_request(title_prompt: &str, model: &str) -> Value {
     let mut title_request = json!({
-        "model": TITLE_MODEL_ID,
+        "model": model,
         "messages": [
             {
                 "role": ROLE_SYSTEM,
@@ -5418,17 +5537,23 @@ fn build_title_request(user_content: &str) -> Value {
             },
             {
                 "role": ROLE_USER,
-                "content": format!("Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{}\"", truncated_content)
+                "content": title_prompt
             }
         ],
-        "stream": false
+        "stream": false,
+        "include_reasoning": false
     });
-    if let Some(sampling) = model_config(TITLE_MODEL_ID).responses.sampling {
+    if let Some(sampling) = model_config(model).responses.sampling {
         sampling.apply_to_request(&mut title_request, false);
     }
-    // DeepSeek treats `none` as chat mode; a title needs no reasoning.
-    title_request["include_reasoning"] = json!(false);
-    title_request["reasoning_effort"] = json!("none");
+    let effort = clamp_reasoning_effort(
+        model,
+        Some(&json!(ReasoningEffort::None.as_str())),
+        CHAT_REASONING_EFFORT_PARAM,
+    );
+    if let Some(request) = title_request.as_object_mut() {
+        apply_model_request_policy(request, model, effort);
+    }
     title_request
 }
 
@@ -5461,20 +5586,34 @@ fn spawn_title_generation_task(
             conversation_uuid
         );
 
-        let title_request = build_title_request(&user_content);
+        let title_prompt = title_user_prompt(&user_content);
+        let plan = routing.model_plan();
+        let resolved = match resolve_title_model(
+            &state.provider_router,
+            &state.proxy_router,
+            user.uuid,
+            plan,
+            &title_prompt,
+        ) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                error!("Title generation: failed to choose a model: {:?}", error);
+                return;
+            }
+        };
+        let title_request = build_title_request(&title_prompt, resolved.public_model_id());
 
         // Call the completions API with empty headers (no special headers needed)
         // Responses API always uses JWT auth (not API key)
         let headers = HeaderMap::new();
         let billing_context = crate::web::openai::BillingContext::new(
             crate::web::openai_auth::AuthMethod::Jwt,
-            TITLE_MODEL_ID.to_string(),
+            resolved.public_model_id().to_string(),
         );
-        let title_intent = InferenceIntent::new(
+        let title_intent = resolved.intent(
             user.uuid,
-            TITLE_MODEL_ID,
-            TITLE_MODEL_ID,
-            ModelPlan::Free,
+            AUTO_QUICK_MODEL_ID,
+            plan,
             InferenceSurface::Internal,
             WorkloadClass::Background,
         );
@@ -7545,7 +7684,7 @@ async fn create_streaming_preparation_response(
                             &work.prepared.message_content,
                         ),
                         work.cache_policy.clone(),
-                        work.routing.with_model_plan(ModelPlan::Free),
+                        work.routing,
                     );
                 }
                 setup_completion_processor(
@@ -8225,7 +8364,7 @@ async fn create_response_stream_inner(
             context.conversation.uuid,
             prepared.user_key,
             MessageContentConverter::extract_text_for_token_counting(&prepared.message_content),
-            routing.with_model_plan(ModelPlan::Free),
+            routing,
         )
     });
     let assistant_message_id = prepared.assistant_message_id;

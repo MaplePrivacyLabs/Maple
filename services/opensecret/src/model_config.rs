@@ -377,6 +377,9 @@ struct ModelConfigEntry {
     capabilities: ModelCapabilities,
     badges: &'static [&'static str],
     listed: bool,
+    /// Listed for paid plans only. Other listed models stay discoverable on
+    /// every plan with their access metadata.
+    paid_catalog_only: bool,
     api_listed: bool,
     /// Maple Work offers the model for new tasks. The catalog still lists it
     /// for Research and the API either way.
@@ -561,6 +564,7 @@ impl ModelConfigEntry {
             capabilities,
             badges,
             listed,
+            paid_catalog_only: false,
             api_listed: listed,
             available_in_agent: listed,
             enabled,
@@ -602,6 +606,7 @@ impl ModelConfigEntry {
             capabilities,
             badges,
             listed: false,
+            paid_catalog_only: false,
             api_listed: true,
             available_in_agent: false,
             enabled,
@@ -639,6 +644,18 @@ impl ModelConfigEntry {
 
     const fn with_developer_role_as_system(mut self) -> Self {
         self.config.developer_role_as_system = true;
+        self
+    }
+
+    /// Keep a listed model out of Maple Work's model list.
+    const fn unavailable_in_agent(mut self) -> Self {
+        self.available_in_agent = false;
+        self
+    }
+
+    /// Keep a Pro model out of the Free plan's chat catalog.
+    const fn paid_catalog_only(mut self) -> Self {
+        self.paid_catalog_only = true;
         self
     }
 
@@ -975,9 +992,9 @@ const LLAMA3_3_70B_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModel
 );
 
 const MODEL_CONFIGS: &[ModelConfigEntry] = &[
-    // GPT-OSS and Llama 3.3 have left the chat selector and the Free plan. Paid
-    // API callers and released clients' helper requests still name them.
-    ModelConfigEntry::api_only(
+    // GPT-OSS and Llama 3.3 have left the Free plan. Paid chat, API callers and
+    // released clients' helper requests still use them.
+    ModelConfigEntry::new(
         GPT_OSS_120B_MODEL_ID,
         "OpenAI GPT-OSS 120B",
         "GPT-OSS",
@@ -986,12 +1003,15 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         ModelCapabilities::chat(true, false),
         &[],
         true,
+        true,
         false,
         10,
         131_072,
         GPT_OSS_RESPONSES_MODEL_CONFIG,
     )
-    .with_reasoning(GPT_OSS_REASONING),
+    .with_reasoning(GPT_OSS_REASONING)
+    .unavailable_in_agent()
+    .paid_catalog_only(),
     ModelConfigEntry::new(
         "gemma4-31b",
         "Gemma 4 31B",
@@ -1122,7 +1142,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         Some("552B"),
         Some("16B"),
     )),
-    ModelConfigEntry::api_only(
+    ModelConfigEntry::new(
         "llama3-3-70b",
         "Llama 3.3 70B",
         "Llama 3.3",
@@ -1131,11 +1151,14 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         ModelCapabilities::chat(false, false),
         &[],
         true,
+        true,
         false,
         80,
         131_072,
         LLAMA3_3_70B_RESPONSES_MODEL_CONFIG,
-    ),
+    )
+    .unavailable_in_agent()
+    .paid_catalog_only(),
     ModelConfigEntry::api_only(
         "gpt-oss-safeguard-120b",
         "OpenAI GPT-OSS Safeguard 120B",
@@ -1248,12 +1271,13 @@ pub(crate) fn alias_reasoning(alias: &str, plan: ModelPlan) -> Option<ModelReaso
     Some(reasoning)
 }
 
-/// Listed models remain discoverable on every plan. Their access metadata and
-/// completion authorization enforce the existing Free/Pro boundary.
+/// Listed models remain discoverable on every plan unless marked paid-only.
+/// Their access metadata and completion authorization enforce the existing
+/// Free/Pro boundary.
 pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
     let data = MODEL_CONFIGS
         .iter()
-        .filter(|entry| entry.listed)
+        .filter(|entry| entry.listed && (plan.is_paid() || !entry.paid_catalog_only))
         .map(|entry| entry.catalog_json())
         .collect::<Vec<_>>();
     let aliases = MODEL_ALIAS_ENTRIES
@@ -1697,20 +1721,24 @@ mod tests {
 
     #[test]
     fn test_catalog_says_which_models_maple_work_offers() {
-        let api_only = ["gpt-oss-120b", "llama3-3-70b"];
+        let not_in_agent = ["gpt-oss-120b", "llama3-3-70b"];
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
             let catalog = model_catalog_response(plan);
             for model in catalog["data"].as_array().expect("catalog data") {
                 let id = model["id"].as_str().expect("model ID");
-                assert_eq!(model["available_in_agent"], true, "{id}");
+                assert_eq!(
+                    model["available_in_agent"],
+                    !not_in_agent.contains(&id),
+                    "{id}"
+                );
             }
-            // Research no longer offers them; the API keeps both.
-            for id in api_only {
-                assert!(!has_model(&catalog, id), "{id}");
+            // Paid Research keeps both; Free no longer offers them.
+            for id in not_in_agent {
+                assert_eq!(has_model(&catalog, id), plan.is_paid(), "{id}");
             }
         }
         let models = openai_models_response();
-        for id in api_only {
+        for id in not_in_agent {
             assert!(has_model(&models, id), "{id}");
         }
     }
