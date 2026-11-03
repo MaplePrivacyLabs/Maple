@@ -161,7 +161,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
   and restore. Unknown or malformed View preferences fall back to defaults.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
-  speech voice and speed), Keyboard Shortcuts, Additional instructions, Integrations
+  speech voice and speed, and the `maple-agent` command), Keyboard Shortcuts, Additional instructions, Integrations
   (detected built-ins and custom MCP servers), Usage (the plan meter from
   the billing API), and About.
 - Dark and light themes; the default follows the system.
@@ -490,6 +490,15 @@ maple-agent host stop       Stop this profile's host and its running tasks.
 maple-agent --version       Print the version.
 ```
 
+The Linux installer puts `maple-agent` (Dev: `maple-agent-dev`) in
+`~/.local/bin`. On macOS, **Install** under General > Command line writes it
+to `/usr/local/bin`, through macOS's administrator prompt when that folder is
+not writable. The command is a marked script that execs the installed app, so
+updates and the app's own path stay unchanged. Maple refuses an app still on
+its disk image or translocated, never replaces or removes a file it did not
+write, and says when the folder is not on the login shell's PATH. Windows does
+not offer the button yet; run `maple-agent.exe` from the install folder.
+
 ### `maple-agent login`
 
 Prompts for the account email (or takes `--email`) and the password, signs
@@ -603,6 +612,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |
 | `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
+| `MAPLE_CLI_LAUNCHER_TARGET` | Unpackaged builds only: the executable General > Command line installs a launcher for, to exercise that row without a package. | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
 ### File locations

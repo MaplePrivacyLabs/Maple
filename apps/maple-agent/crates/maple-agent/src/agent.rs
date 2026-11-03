@@ -52,6 +52,7 @@ pub use config::{
     maple_workspace_directory, startup_project_root,
 };
 pub use integrations::begin_integration_setup;
+pub use login_path::login_search_path;
 pub(crate) use projects::owner_project_display_name;
 pub use provider::{CatalogEntry, USAGE_LIMIT_MESSAGE};
 pub use questions::QuestionResponder;

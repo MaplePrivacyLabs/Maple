@@ -198,7 +198,7 @@ static LOGIN_SEARCH_PATH: tokio::sync::OnceCell<Option<String>> =
 
 /// The login shell's search path, joined, or `None` when it could not be
 /// read (or on Windows, where processes inherit the user's PATH).
-pub(crate) async fn login_search_path() -> Option<String> {
+pub async fn login_search_path() -> Option<String> {
     LOGIN_SEARCH_PATH
         .get_or_init(resolve_login_search_path)
         .await
