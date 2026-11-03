@@ -161,7 +161,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
   and restore. Unknown or malformed View preferences fall back to defaults.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
-  speech voice and speed), Keyboard Shortcuts, Additional instructions, Integrations
+  speech voice and speed, and the `maple-agent` command), Keyboard Shortcuts, Additional instructions, Integrations
   (detected built-ins and custom MCP servers), Usage (the plan meter from
   the billing API), and About.
 - Dark and light themes; the default follows the system.
@@ -489,6 +489,14 @@ maple-agent unlock          Unlock the local store using a hidden TTY prompt.
 maple-agent host stop       Stop this profile's host and its running tasks.
 maple-agent --version       Print the version.
 ```
+
+The Linux installer puts `maple-agent` (Dev: `maple-agent-dev`) in
+`~/.local/bin`. On macOS, **Install** under General > Command line writes the
+same command there: a marked script that execs the installed app, so updates
+and the app's own path stay unchanged. It refuses an app still on its disk
+image or translocated, never replaces or removes a file it did not write, and
+says when `~/.local/bin` is not on the login shell's PATH. Windows does not
+offer the button yet; run `maple-agent.exe` from the install folder.
 
 ### `maple-agent login`
 

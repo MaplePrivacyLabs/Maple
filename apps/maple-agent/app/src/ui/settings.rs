@@ -35,6 +35,7 @@ mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
+mod command_line;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
@@ -42,6 +43,7 @@ mod navigation;
 use self::account::AccountState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
+use self::command_line::CommandLineState;
 #[cfg(feature = "proxy")]
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
@@ -189,6 +191,7 @@ pub struct SettingsScreen {
     application_anchor: ScrollAnchor,
     advanced: advanced::AdvancedState,
     advanced_subscriptions: Vec<Subscription>,
+    command_line: CommandLineState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -453,6 +456,7 @@ impl SettingsScreen {
             application_anchor,
             advanced: advanced::AdvancedState::new(cx),
             advanced_subscriptions: Vec::new(),
+            command_line: CommandLineState::default(),
         };
         this.load_account(cx);
         this.load_billing(cx);
@@ -461,6 +465,7 @@ impl SettingsScreen {
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
         this.load_advanced_status(cx);
+        this.load_command_line(cx);
         #[cfg(feature = "proxy")]
         let this = {
             let mut this = this;
@@ -1875,7 +1880,9 @@ impl SettingsScreen {
                             window,
                             cx,
                         ),
-                    ));
+                    ))
+                    .child(section_title("Command line"))
+                    .child(self.render_command_line_row(cx));
             }
             Section::Account => {
                 pane = pane.child(self.render_account_pane(cx));

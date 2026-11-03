@@ -9,6 +9,8 @@ mod audio;
 mod backend;
 mod billing;
 #[cfg(feature = "desktop")]
+mod cli_launcher;
+#[cfg(feature = "desktop")]
 mod desktop;
 mod env;
 #[cfg(feature = "desktop")]

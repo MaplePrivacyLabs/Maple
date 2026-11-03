@@ -39,6 +39,7 @@ pub(super) enum GeneralTarget {
     ApplicationVim,
     Voice,
     SpeechSpeed,
+    CommandLine,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,6 +148,10 @@ impl SettingsScreen {
                 GeneralTarget::SpeechSpeed,
             ]
             .into_iter()
+            .chain(
+                self.command_line_action()
+                    .map(|_| GeneralTarget::CommandLine),
+            )
             .map(SettingsTarget::General)
             .collect(),
             Section::Account => self.account_targets(),
@@ -405,6 +410,7 @@ impl SettingsScreen {
             }
             GeneralTarget::Voice => self.toggle_setting_menu(SettingMenu::Voice, cx),
             GeneralTarget::SpeechSpeed => self.toggle_setting_menu(SettingMenu::SpeechSpeed, cx),
+            GeneralTarget::CommandLine => self.run_command_line_action(cx),
         }
     }
 
