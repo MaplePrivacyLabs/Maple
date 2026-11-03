@@ -491,12 +491,13 @@ maple-agent --version       Print the version.
 ```
 
 The Linux installer puts `maple-agent` (Dev: `maple-agent-dev`) in
-`~/.local/bin`. On macOS, **Install** under General > Command line writes the
-same command there: a marked script that execs the installed app, so updates
-and the app's own path stay unchanged. It refuses an app still on its disk
-image or translocated, never replaces or removes a file it did not write, and
-says when `~/.local/bin` is not on the login shell's PATH. Windows does not
-offer the button yet; run `maple-agent.exe` from the install folder.
+`~/.local/bin`. On macOS, **Install** under General > Command line writes it
+to `/usr/local/bin`, through macOS's administrator prompt when that folder is
+not writable. The command is a marked script that execs the installed app, so
+updates and the app's own path stay unchanged. Maple refuses an app still on
+its disk image or translocated, never replaces or removes a file it did not
+write, and says when the folder is not on the login shell's PATH. Windows does
+not offer the button yet; run `maple-agent.exe` from the install folder.
 
 ### `maple-agent login`
 
@@ -611,6 +612,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |
 | `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
+| `MAPLE_CLI_LAUNCHER_TARGET` | Unpackaged builds only: the executable General > Command line installs a launcher for, to exercise that row without a package. | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
 ### File locations

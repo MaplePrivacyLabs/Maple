@@ -1,12 +1,14 @@
 //! The `maple-agent` command for terminals and ACP clients.
 //!
-//! An installed app can write a small launcher script to `~/.local/bin` that
-//! execs the app where it is installed. A script rather than a copy keeps the
-//! command current across updates, which replace the app in place; rather
-//! than a symlink, it keeps `current_exe()` inside the bundle, which macOS
-//! would otherwise report as the symlink's path. Maple replaces or removes
-//! only a file that carries its own marker. The Linux installer already writes
-//! its own wrapper at the same path, which this treats as installed.
+//! An installed app can write a small launcher script that execs the app
+//! where it is installed: `/usr/local/bin` on macOS, through an administrator
+//! prompt when the folder is not writable, and `~/.local/bin` on Linux. A
+//! script rather than a copy keeps the command current across updates, which
+//! replace the app in place; rather than a symlink, it keeps `current_exe()`
+//! inside the bundle, which macOS would otherwise report as the symlink's
+//! path. Maple replaces or removes only a file that carries its own marker.
+//! The Linux installer already writes its own wrapper at the same path, which
+//! this treats as installed.
 
 use std::path::{Path, PathBuf};
 
@@ -38,9 +40,9 @@ pub enum LauncherState {
 pub struct LauncherStatus {
     pub state: LauncherState,
     pub command: &'static str,
-    /// The launcher's path with the home folder shown as `~`.
+    /// The launcher's path, with the home folder shown as `~`.
     pub display_path: String,
-    /// The launcher's folder with the home folder shown as `~`.
+    /// The launcher's folder, with the home folder shown as `~`.
     pub display_dir: String,
     /// Whether the launcher's folder is on the login shell's PATH; `None`
     /// when that is unknown or does not matter.
@@ -92,21 +94,40 @@ fn command_name() -> &'static str {
     }
 }
 
+/// Local builds can name the executable to launch, so the row can be
+/// exercised without a package. Installed builds ignore it.
+const TARGET_OVERRIDE: &str = "MAPLE_CLI_LAUNCHER_TARGET";
+
 fn plan() -> Result<Plan, &'static str> {
-    if !crate::profile::PACKAGED {
-        return Err("Available in installed builds of Maple Work. \
-                    Development builds run through their own launcher.");
-    }
+    let target = if crate::profile::PACKAGED {
+        installed_target()?
+    } else {
+        crate::env::env_string(TARGET_OVERRIDE)
+            .map(PathBuf::from)
+            .ok_or(
+                "Available in installed builds of Maple Work. \
+                 Development builds run through their own launcher.",
+            )?
+    };
     let home = dirs::home_dir().ok_or("Could not find your home folder.")?;
-    let target = installed_target()?;
     let command = command_name();
-    let launcher = home.join(".local").join("bin").join(command);
+    let launcher = launcher_dir(&home).join(command);
     Ok(Plan {
         home,
         launcher,
         target,
         command,
     })
+}
+
+/// `/usr/local/bin` is on macOS's default PATH; `~/.local/bin` is where the
+/// Linux installer puts the command.
+fn launcher_dir(home: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        PathBuf::from("/usr/local/bin")
+    } else {
+        home.join(".local").join("bin")
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -208,14 +229,110 @@ fn path_contains(search_path: &str, dir: &Path) -> bool {
     })
 }
 
+/// Single quotes keep every byte literal; a quote closes, escapes and reopens.
 #[cfg(unix)]
-fn launcher_script(target: &Path) -> Result<String, String> {
-    let target = target
+fn shell_quote(path: &Path) -> Result<String, String> {
+    let text = path
         .to_str()
         .ok_or("Maple Work's install path is not valid UTF-8")?;
-    // Single quotes keep every byte literal; a quote closes, escapes and reopens.
-    let quoted = format!("'{}'", target.replace('\'', r"'\''"));
-    Ok(format!("#!/bin/sh\n{MARKER}\nexec {quoted} \"$@\"\n"))
+    Ok(quote_text(text))
+}
+
+#[cfg(unix)]
+fn quote_text(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+#[cfg(unix)]
+fn launcher_script(target: &Path) -> Result<String, String> {
+    Ok(format!(
+        "#!/bin/sh\n{MARKER}\nexec {} \"$@\"\n",
+        shell_quote(target)?
+    ))
+}
+
+/// The launcher folder exists but this user cannot write it, or it does not
+/// exist yet. Only macOS's system folder takes an administrator prompt.
+#[cfg(target_os = "macos")]
+fn needs_admin(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return true;
+    };
+    // SAFETY: `path` is a NUL-terminated string that outlives the call.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) != 0 }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn needs_admin(_dir: &Path) -> bool {
+    false
+}
+
+/// One `sh` command line that writes the launcher through a staged file and
+/// a rename. Every line is a separate quoted `printf` argument, so the
+/// command has no newline for AppleScript to carry. `create_only` refuses a
+/// file that appeared after the unprivileged check.
+#[cfg(unix)]
+fn privileged_write_script(
+    launcher: &Path,
+    script: &str,
+    create_only: bool,
+) -> Result<String, String> {
+    let dir = launcher.parent().ok_or("The command folder is invalid")?;
+    let name = launcher
+        .file_name()
+        .ok_or("The command path is invalid")?
+        .to_string_lossy();
+    let staged = shell_quote(&dir.join(format!(".{name}.maple-tmp")))?;
+    let target = shell_quote(launcher)?;
+    let lines: Vec<String> = script.lines().map(quote_text).collect();
+    let guard = if create_only {
+        format!("[ ! -e {target} ] && [ ! -L {target} ] && ")
+    } else {
+        String::new()
+    };
+    Ok(format!(
+        "umask 022 && /bin/mkdir -p {dir} && {guard}/bin/rm -f {staged} && \
+         /usr/bin/printf '%s\\n' {lines} > {staged} && /bin/chmod 0755 {staged} && \
+         /bin/mv -f {staged} {target}",
+        dir = shell_quote(dir)?,
+        lines = lines.join(" "),
+    ))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn run_as_admin(_command: &str) -> Result<(), String> {
+    Err("Administrator rights are not available here".to_string())
+}
+
+/// Run `command` as root after macOS's own administrator prompt.
+#[cfg(target_os = "macos")]
+fn run_as_admin(command: &str) -> Result<(), String> {
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(format!(
+            "do shell script \"{}\" with administrator privileges",
+            applescript_escape(command)
+        ))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|_| "Could not ask for administrator rights".to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    // -128 is AppleScript's "User canceled."
+    if String::from_utf8_lossy(&output.stderr).contains("(-128)") {
+        Err("Cancelled; nothing was changed".to_string())
+    } else {
+        Err("Could not change /usr/local/bin with administrator rights".to_string())
+    }
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn applescript_escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(unix)]
@@ -269,13 +386,22 @@ fn install_plan(plan: &Plan) -> Result<(), String> {
         .launcher
         .parent()
         .ok_or("The command folder is invalid")?;
-    std::fs::create_dir_all(dir)
-        .map_err(|error| format!("Could not create {}: {error}", display(&plan.home, dir)))?;
     let shown = display(&plan.home, &plan.launcher);
     let failed = |error: std::io::Error| format!("Could not write {shown}: {error}");
-    match classify_file(&plan.launcher, &script).map_err(failed)? {
+    let state = classify_file(&plan.launcher, &script).map_err(failed)?;
+    if matches!(state, LauncherState::Missing | LauncherState::Stale) && needs_admin(dir) {
+        let create_only = state == LauncherState::Missing;
+        return run_as_admin(&privileged_write_script(
+            &plan.launcher,
+            &script,
+            create_only,
+        )?);
+    }
+    match state {
         LauncherState::Installed | LauncherState::InstalledByInstaller => Ok(()),
-        LauncherState::Missing => write_new(&plan.launcher, &script).map_err(failed),
+        LauncherState::Missing => std::fs::create_dir_all(dir)
+            .and_then(|()| write_new(&plan.launcher, &script))
+            .map_err(failed),
         LauncherState::Stale => replace_own(&plan.launcher, &script).map_err(failed),
         LauncherState::Foreign | LauncherState::Unavailable(_) => Err(format!(
             "{shown} was not created by Maple Work; nothing was changed"
@@ -296,7 +422,10 @@ fn remove_plan(plan: &Plan) -> Result<(), String> {
     match classify_file(&plan.launcher, &script).map_err(failed)? {
         LauncherState::Missing => Ok(()),
         LauncherState::Installed | LauncherState::Stale => {
-            std::fs::remove_file(&plan.launcher).map_err(failed)
+            match plan.launcher.parent().filter(|dir| needs_admin(dir)) {
+                Some(_) => run_as_admin(&format!("/bin/rm -f {}", shell_quote(&plan.launcher)?)),
+                None => std::fs::remove_file(&plan.launcher).map_err(failed),
+            }
         }
         _ => Err(format!(
             "{shown} was not created by Maple Work; nothing was changed"
@@ -509,6 +638,60 @@ mod tests {
         ] {
             assert!(macos_target(PathBuf::from(rejected)).is_err(), "{rejected}");
         }
+    }
+
+    fn run_sh(command: &str) -> bool {
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(command)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[test]
+    fn the_privileged_command_writes_the_same_launcher() {
+        let root = tempfile::tempdir().unwrap();
+        let launcher = root.path().join("usr local/bin/maple-agent");
+        let target = Path::new("/Applications/Maple's Work.app/Contents/MacOS/maple-agent");
+        let script = launcher_script(target).unwrap();
+
+        let create = privileged_write_script(&launcher, &script, true).unwrap();
+        assert!(
+            !create.contains('\n'),
+            "AppleScript gets one line: {create}"
+        );
+        assert!(run_sh(&create));
+        assert_eq!(std::fs::read_to_string(&launcher).unwrap(), script);
+        let mode = std::fs::metadata(&launcher).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+
+        // A file that appeared after the check is not replaced by a create.
+        std::fs::write(&launcher, "someone else's").unwrap();
+        assert!(!run_sh(&create));
+        assert_eq!(
+            std::fs::read_to_string(&launcher).unwrap(),
+            "someone else's"
+        );
+
+        // An update replaces Maple's own launcher and leaves nothing staged.
+        let update = privileged_write_script(&launcher, &script, false).unwrap();
+        assert!(run_sh(&update));
+        assert_eq!(std::fs::read_to_string(&launcher).unwrap(), script);
+        assert_eq!(
+            std::fs::read_dir(launcher.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn applescript_strings_keep_quotes_and_backslashes() {
+        assert_eq!(
+            applescript_escape(r#"printf '%s\n' 'a "b"' '\''"#),
+            r#"printf '%s\\n' 'a \"b\"' '\\''"#
+        );
     }
 
     #[test]
