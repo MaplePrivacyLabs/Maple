@@ -142,15 +142,15 @@ fn account_team_name(project_name: &str, org_name: &str) -> String {
 
 fn account_support_email(project_name: &str) -> &'static str {
     if is_maple_project(project_name) {
-        "support@trymaple.ai"
+        "support@maple.ai"
     } else {
         "support@opensecret.cloud"
     }
 }
 
-/// Maple sends from email.trymaple.ai, which has no inbox, so a reply to that
-/// address bounces. Point replies at support instead. Other projects keep
-/// whatever their own sending address does with replies.
+/// Point Maple account replies at its support inbox rather than relying on
+/// the project-configured sending address to receive mail. Other projects
+/// keep their configured sending address for replies.
 fn account_reply_to(project_name: &str) -> Option<&'static str> {
     is_maple_project(project_name).then_some(account_support_email(project_name))
 }
@@ -1096,8 +1096,7 @@ mod tests {
     use resend_rs::types::CreateEmailBaseOptions;
 
     const VERIFY_CODE: &str = "3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
-    const VERIFY_URL: &str =
-        "https://trymaple.ai/verify-email/3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
+    const VERIFY_URL: &str = "https://maple.ai/verify-email/3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
     const RESET_CODE: &str = "7KQ2M9XA";
     const DELETE_CODE: &str = "b81e4f0a-2c6d-4a93-8e57-d1f3a9c20b64";
 
@@ -1211,7 +1210,7 @@ mod tests {
             ),
         ] {
             for (project, org, support) in [
-                ("Maple", "OpenSecret", "support@trymaple.ai"),
+                ("Maple", "OpenSecret", "support@maple.ai"),
                 ("Other", "Other Org", "support@opensecret.cloud"),
             ] {
                 let message =
@@ -1232,6 +1231,7 @@ mod tests {
                     assert!(message.html.contains("tile-reset-done.png"));
                     assert!(message.html.contains("The Maple team"));
                     assert!(!message.html.contains("opensecret.cloud"));
+                    assert!(!message.html.contains("trymaple.ai"));
                 }
             }
         }
@@ -1255,6 +1255,12 @@ mod tests {
             assert!(used.html.contains("same recovery code still works"));
             assert!(!used.html.contains("This reset deleted"));
             let removed = render(PasswordResetRecovery::Removed);
+            if project == "Maple" {
+                for message in [&used, &removed] {
+                    assert!(message.html.contains("mailto:support@maple.ai"));
+                    assert!(!message.html.contains("trymaple.ai"));
+                }
+            }
             assert!(removed
                 .html
                 .contains("This reset deleted your encrypted data"));
@@ -1285,14 +1291,15 @@ mod tests {
 
     #[test]
     fn maple_projects_get_the_redesigned_emails() {
-        assert_eq!(account_reply_to("Maple"), Some("support@trymaple.ai"));
+        assert_eq!(account_reply_to("Maple"), Some("support@maple.ai"));
         for (email, expected) in every_account_email() {
             let message = maple_message(email);
             assert_eq!(message.subject, expected.maple_subject);
             let html = &message.html;
             assert!(html.starts_with("<!DOCTYPE html>"));
             assert!(html.contains(&format!("{}wordmark.png", maple_templates::ASSET_BASE)));
-            assert!(html.contains("support@trymaple.ai"));
+            assert!(html.contains("support@maple.ai"));
+            assert!(!html.contains("trymaple.ai"));
             assert!(!html.contains("OpenSecret") && !html.contains("opensecret.cloud"));
             assert!(!html.contains("{{") && !html.contains("}}"));
             if !matches!(email, AccountEmail::Welcome) {
@@ -1365,7 +1372,7 @@ mod tests {
                 2
             };
             assert_eq!(html.matches("utm_campaign=").count(), tagged);
-            assert!(!html.contains("mailto:support@trymaple.ai?utm_"));
+            assert!(!html.contains("mailto:support@maple.ai?utm_"));
             assert!(!html.contains("x.com/trymapleai?utm_"));
             assert!(!html.contains("MaplePrivacyLabs/Maple?utm_"));
             assert!(!html.contains(&format!("{VERIFY_URL}?utm_")));
@@ -1413,19 +1420,16 @@ mod tests {
     fn account_mail_keeps_sender_reply_to_and_html_payload() {
         let maple = maple_message(AccountEmail::Welcome);
         let email = CreateEmailBaseOptions::new(
-            sender("Maple", "hello@email.trymaple.ai"),
+            sender("Maple", "hello@email.maple.ai"),
             ["you@example.com"],
             maple.subject,
         )
         .with_html(&maple.html)
         .with_scheduled_at("2026-10-08T19:15:00Z");
         let payload = serde_json::to_value(with_account_reply_to(email, "Maple")).unwrap();
-        assert_eq!(payload["from"], "Maple <hello@email.trymaple.ai>");
+        assert_eq!(payload["from"], "Maple <hello@email.maple.ai>");
         assert_eq!(payload["to"], serde_json::json!(["you@example.com"]));
-        assert_eq!(
-            payload["reply_to"],
-            serde_json::json!(["support@trymaple.ai"])
-        );
+        assert_eq!(payload["reply_to"], serde_json::json!(["support@maple.ai"]));
         assert!(payload["html"]
             .as_str()
             .unwrap()
@@ -1459,8 +1463,8 @@ mod tests {
     #[test]
     fn project_mail_is_sent_under_the_project_name() {
         assert_eq!(
-            sender("Maple", "hello@email.trymaple.ai"),
-            "Maple <hello@email.trymaple.ai>"
+            sender("Maple", "hello@email.maple.ai"),
+            "Maple <hello@email.maple.ai>"
         );
         assert_eq!(
             sender("Acme, Inc.", "hi@acme.test"),
