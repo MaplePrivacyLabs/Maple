@@ -3253,8 +3253,16 @@ mod tests {
         );
         let account = Uuid::from_u128(7);
         let prompt = title_user_prompt("hello");
-        let resolve =
-            |plan| resolve_title_model(&provider_router, &proxy_router, account, plan, &prompt);
+        let resolve = |plan| {
+            resolve_title_model(
+                &provider_router,
+                &proxy_router,
+                account,
+                plan,
+                &prompt,
+                None,
+            )
+        };
 
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
             let healthy = resolve(plan).expect("healthy Quick model");
@@ -3309,6 +3317,47 @@ mod tests {
         assert!(matches!(
             resolve(ModelPlan::Free),
             Err(ApiError::InferenceCapacity { .. })
+        ));
+    }
+
+    #[test]
+    fn a_title_that_lost_its_model_decides_once_more_without_it() {
+        use crate::inference::auto_model::ExcludedAutoCandidate;
+        use crate::model_config::{DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID};
+        use crate::provider_routing::ProviderRouter;
+        use crate::proxy_config::ProxyRouter;
+
+        let provider_router = ProviderRouter::default();
+        let proxy_router = ProxyRouter::new(
+            "http://continuum.example.com".to_string(),
+            None,
+            "http://tinfoil.example.com".to_string(),
+        );
+        let prompt = title_user_prompt("hello");
+        let lost = ExcludedAutoCandidate::unavailable(
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            Some(Duration::from_secs(25)),
+        );
+        let resolve = |plan| {
+            resolve_title_model(
+                &provider_router,
+                &proxy_router,
+                Uuid::from_u128(8),
+                plan,
+                &prompt,
+                Some(&lost),
+            )
+        };
+
+        let second = resolve(ModelPlan::Paid).expect("paid alternate");
+        assert_eq!(second.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        // Free Quick has no alternate, so the title is skipped with a capacity result.
+        assert!(matches!(
+            resolve(ModelPlan::Free),
+            Err(ApiError::InferenceCapacity {
+                retry_after: Some(retry_after),
+                ..
+            }) if retry_after == Duration::from_secs(25)
         ));
     }
 
@@ -5498,13 +5547,15 @@ fn title_user_prompt(user_content: &str) -> String {
 }
 
 /// Titles ask the Quick tier for the account's plan, so they follow its Auto
-/// fallback like any other Quick request.
+/// fallback like any other Quick request. `excluded` is the model an earlier
+/// attempt of this title lost before sending.
 fn resolve_title_model(
     provider_router: &ProviderRouter,
     proxy_router: &ProxyRouter,
     account_uuid: Uuid,
     plan: ModelPlan,
     title_prompt: &str,
+    excluded: Option<&ExcludedAutoCandidate>,
 ) -> Result<ResolvedInferenceModel, ApiError> {
     resolve_inference_model(
         provider_router,
@@ -5515,7 +5566,7 @@ fn resolve_title_model(
             requested_model_id: AUTO_QUICK_MODEL_ID,
             alias_target: ModelAliasTargets::for_plan(plan).resolve(AUTO_QUICK_MODEL_ID),
             model_plan: plan,
-            excluded: None,
+            excluded,
         },
         || AutoModelRequirements {
             vision: false,
@@ -5557,6 +5608,77 @@ fn build_title_request(title_prompt: &str, model: &str) -> Value {
     title_request
 }
 
+/// Starts the title completion. A chosen model that loses its routes or its
+/// first-send claim earns one further decision without it, as on the Chat
+/// Completions path; neither case has reached a provider, so nothing replays.
+async fn start_title_completion(
+    state: &Arc<AppState>,
+    user: &User,
+    title_prompt: &str,
+    routing: InferenceRoutingContext,
+    cache_policy: &CompletionCachePolicy,
+) -> Result<crate::web::openai::CompletionStream, CompletionExecutionError> {
+    let plan = routing.model_plan();
+    // Call the completions API with empty headers (no special headers needed)
+    let headers = HeaderMap::new();
+    let mut excluded = None;
+    loop {
+        let resolved = resolve_title_model(
+            &state.provider_router,
+            &state.proxy_router,
+            user.uuid,
+            plan,
+            title_prompt,
+            excluded.as_ref(),
+        )
+        .map_err(CompletionExecutionError::Request)?;
+        let can_reselect = excluded.is_none();
+        let model = resolved.public_model_id().to_string();
+        let intent = resolved.intent(
+            user.uuid,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            InferenceSurface::Internal,
+            WorkloadClass::Background,
+        );
+        let retry_after = match prepare_completion_request(state, user, intent, routing).await {
+            Ok(pinned) => {
+                // Responses API always uses JWT auth (not API key)
+                let billing_context = crate::web::openai::BillingContext::new(
+                    crate::web::openai_auth::AuthMethod::Jwt,
+                    model.clone(),
+                );
+                debug!("Title generation: about to call get_chat_completion_response");
+                match get_chat_completion_response(
+                    state,
+                    user,
+                    build_title_request(title_prompt, &model),
+                    &headers,
+                    CompletionExecutionContext::new(billing_context, routing, cache_policy),
+                    &pinned,
+                )
+                .await
+                {
+                    // A `Request` failure precedes any provider attempt by construction.
+                    Err(CompletionExecutionError::Request(ApiError::InferenceCapacity {
+                        retry_after,
+                        ..
+                    })) if can_reselect => retry_after,
+                    result => return result,
+                }
+            }
+            Err(ApiError::InferenceCapacity { retry_after, .. }) if can_reselect => retry_after,
+            Err(error) => return Err(CompletionExecutionError::Request(error)),
+        };
+        info!(
+            "Title model lost its route before send; deciding again without it: model={}, retry_after_seconds={:?}",
+            model,
+            retry_after.map(|hint| hint.as_secs())
+        );
+        excluded = Some(ExcludedAutoCandidate::unavailable(model, retry_after));
+    }
+}
+
 /// Spawns a background task to generate a conversation title using AI
 ///
 /// This function runs asynchronously and independently - it will not block the response stream.
@@ -5587,59 +5709,7 @@ fn spawn_title_generation_task(
         );
 
         let title_prompt = title_user_prompt(&user_content);
-        let plan = routing.model_plan();
-        let resolved = match resolve_title_model(
-            &state.provider_router,
-            &state.proxy_router,
-            user.uuid,
-            plan,
-            &title_prompt,
-        ) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                error!("Title generation: failed to choose a model: {:?}", error);
-                return;
-            }
-        };
-        let title_request = build_title_request(&title_prompt, resolved.public_model_id());
-
-        // Call the completions API with empty headers (no special headers needed)
-        // Responses API always uses JWT auth (not API key)
-        let headers = HeaderMap::new();
-        let billing_context = crate::web::openai::BillingContext::new(
-            crate::web::openai_auth::AuthMethod::Jwt,
-            resolved.public_model_id().to_string(),
-        );
-        let title_intent = resolved.intent(
-            user.uuid,
-            AUTO_QUICK_MODEL_ID,
-            plan,
-            InferenceSurface::Internal,
-            WorkloadClass::Background,
-        );
-        let pinned_completion =
-            match prepare_completion_request(&state, &user, title_intent, routing).await {
-                Ok(pinned) => pinned,
-                Err(error) => {
-                    error!(
-                        "Title generation: failed to prepare inference route: {:?}",
-                        error
-                    );
-                    return;
-                }
-            };
-
-        debug!("Title generation: about to call get_chat_completion_response");
-        match get_chat_completion_response(
-            &state,
-            &user,
-            title_request,
-            &headers,
-            CompletionExecutionContext::new(billing_context, routing, &cache_policy),
-            &pinned_completion,
-        )
-        .await
-        {
+        match start_title_completion(&state, &user, &title_prompt, routing, &cache_policy).await {
             Ok(mut completion) => {
                 debug!("Title generation: received completion stream from API");
                 // Get the FullResponse chunk (title generation is non-streaming)
