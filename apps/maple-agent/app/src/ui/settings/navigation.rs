@@ -1081,6 +1081,31 @@ mod tests {
     }
 
     #[gpui::test]
+    fn spanish_general_preserves_controls_and_saved_values(cx: &mut TestAppContext) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::initialize_saved_preference(Some("es"));
+        let (settings, cx) = dropdown_window(cx, true);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("setting-value-appearance").is_some());
+        assert!(cx.debug_bounds("setting-value-text-size").is_some());
+        settings.update(cx, |this, cx| {
+            assert_eq!(this.menu_value(SettingMenu::Appearance), "Sistema");
+            assert_eq!(this.menu_value(SettingMenu::ChatFont), "Sistema");
+            let voices = this.menu_options(SettingMenu::Voice);
+            assert_eq!(voices.len(), crate::settings::TTS_VOICES.len());
+            assert_eq!(voices[8].label, "Con acento español — Femenina");
+            this.pick_setting_option(SettingMenu::Voice, 8, cx);
+            assert_eq!(this.settings.tts_voice, "es_female");
+            assert_eq!(this.menu_value(SettingMenu::Voice), voices[8].label);
+            this.pick_setting_option(SettingMenu::Appearance, 1, cx);
+            assert_eq!(this.settings.theme, "dark");
+            assert_eq!(this.menu_value(SettingMenu::Appearance), "Oscuro");
+            assert_eq!(Section::General.id(), "General");
+            assert_eq!(Section::Advanced.label().as_ref(), "Privacidad y seguridad");
+        });
+    }
+
+    #[gpui::test]
     fn dropdown_rows_select_highlight_and_close(cx: &mut TestAppContext) {
         let (settings, cx) = dropdown_window(cx, false);
         // Opening highlights the saved voice.

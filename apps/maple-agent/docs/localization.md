@@ -2,7 +2,9 @@
 
 The localization foundation uses embedded Fluent catalogs.
 It currently covers the update confirmation dialog (including accessibility
-text) and the language setting. English and Spanish are enabled in the preview.
+text), the full General settings pane (including dropdown choices, the chat
+preview and test notification), and shared Settings navigation. English and
+Spanish are enabled in the preview.
 Most of the app is still English; this is infrastructure for incremental
 extraction, not a claim of complete localization.
 

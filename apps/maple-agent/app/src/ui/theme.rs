@@ -39,14 +39,6 @@ impl Preference {
             Self::Light => "light",
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::System => "System",
-            Self::Dark => "Dark",
-            Self::Light => "Light",
-        }
-    }
 }
 
 static PREFERENCE: AtomicU8 = AtomicU8::new(0);

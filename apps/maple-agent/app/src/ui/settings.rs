@@ -35,7 +35,9 @@ mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
+mod general;
 mod language;
+use general::{font_label, theme_label, voice_label};
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
@@ -78,7 +80,7 @@ pub enum Section {
 }
 
 impl Section {
-    fn label(self) -> &'static str {
+    fn id(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Account => "Account",
@@ -94,6 +96,24 @@ impl Section {
             Self::About => "About",
             Self::Advanced => "Privacy & Security",
         }
+    }
+
+    fn label(self) -> gpui::SharedString {
+        super::i18n::tr(match self {
+            Self::General => "settings-section-general",
+            Self::Account => "settings-section-account",
+            Self::Billing => "settings-section-billing",
+            Self::ApiKeys => "settings-section-api-keys",
+            #[cfg(feature = "proxy")]
+            Self::LocalApi => "settings-section-local-api",
+            Self::Shortcuts => "settings-section-shortcuts",
+            Self::Prompt => "settings-section-prompt",
+            Self::Integrations => "settings-section-integrations",
+            Self::Remote => "settings-section-remote",
+            Self::Usage => "settings-section-usage",
+            Self::About => "settings-section-about",
+            Self::Advanced => "settings-section-advanced",
+        })
     }
 
     const ALL: &[Self] = &[
@@ -978,14 +998,14 @@ impl SettingsScreen {
             ]
             .iter()
             .map(|&preference| SettingOption {
-                label: preference.label().to_string(),
+                label: theme_label(preference).to_string(),
                 current: self.theme == preference,
             })
             .collect(),
             SettingMenu::ChatFont => crate::ui::typography::ChatFontFamily::ALL
                 .iter()
                 .map(|&family| SettingOption {
-                    label: family.label().to_string(),
+                    label: font_label(family).to_string(),
                     current: crate::ui::typography::ChatFontFamily::parse(
                         &self.settings.chat_font_family,
                     ) == family,
@@ -1002,8 +1022,8 @@ impl SettingsScreen {
                 .collect(),
             SettingMenu::Voice => settings::TTS_VOICES
                 .iter()
-                .map(|(id, label)| SettingOption {
-                    label: label.to_string(),
+                .map(|(id, _)| SettingOption {
+                    label: voice_label(id),
                     current: *id == self.settings.tts_voice,
                 })
                 .collect(),
@@ -1023,17 +1043,16 @@ impl SettingsScreen {
             SettingMenu::Language => {
                 super::i18n::preference_label(self.settings.locale.as_deref()).to_string()
             }
-            SettingMenu::Appearance => self.theme.label().to_string(),
-            SettingMenu::ChatFont => {
-                crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family)
-                    .label()
-                    .to_string()
-            }
+            SettingMenu::Appearance => theme_label(self.theme).to_string(),
+            SettingMenu::ChatFont => font_label(crate::ui::typography::ChatFontFamily::parse(
+                &self.settings.chat_font_family,
+            ))
+            .to_string(),
             SettingMenu::ChatSize => format!(
                 "{} px",
                 crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size)
             ),
-            SettingMenu::Voice => settings::tts_voice_label(&self.settings.tts_voice).to_string(),
+            SettingMenu::Voice => voice_label(&self.settings.tts_voice),
             SettingMenu::SpeechSpeed => format!("{:.1}\u{d7}", self.settings.tts_speed),
         }
     }
@@ -1052,85 +1071,6 @@ impl SettingsScreen {
         } else {
             label.into_any_element()
         }
-    }
-
-    fn chat_appearance_preview(&self) -> Div {
-        let family = crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family);
-        let size = crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size);
-        let speaker = |name: &'static str| {
-            div()
-                .text_xs()
-                .font_family(crate::assets::FONT_BODY)
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(name)
-        };
-        // The settings pane and user bubbles both sit on elevated fills in
-        // dark mode. Recess a real chat well (`bg_app`) so assistant text
-        // and the user bubble separate from the card, matching the transcript.
-        widgets::card_row()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .font_family(crate::assets::FONT_BODY)
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(format!("Live preview · {} · {size} px", family.label())),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .rounded(theme::RADIUS_MD)
-                    .border_1()
-                    .border_color(gpui::rgb(theme::border()))
-                    .bg(gpui::rgb(if theme::is_light() {
-                        theme::bg_sidebar()
-                    } else {
-                        theme::bg_app()
-                    }))
-                    .px_3()
-                    .py_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        crate::ui::typography::chat_reading(div())
-                            .max_w(gpui::relative(0.82))
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .child(speaker("Assistant"))
-                            .child(
-                                "Clear, comfortable text makes longer conversations easier to follow.",
-                            )
-                            .child(
-                                div()
-                                    .font_weight(crate::ui::typography::emphasis_weight())
-                                    .child("Bold should look crisp, not blurry."),
-                            ),
-                    )
-                    .child(
-                        div().w_full().flex().justify_end().child(
-                            crate::ui::typography::chat_reading(div())
-                                .px_3()
-                                .py_2()
-                                .rounded(theme::RADIUS_MD)
-                                .bg(gpui::rgb(theme::bg_user_bubble()))
-                                .border_1()
-                                .border_color(gpui::rgb(theme::user_bubble_border()))
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .text_color(gpui::rgb(theme::text_primary()))
-                                .child(speaker("You"))
-                                .child("This size feels just right."),
-                        ),
-                    ),
-            )
     }
 
     /// Apply the option at `index`: an absolute set, so the local copy
@@ -1250,8 +1190,11 @@ impl SettingsScreen {
             crate::notify::notify(
                 cx,
                 "settings:test",
-                "Desktop notifications on",
-                &format!("You will see alerts like this at {enabled_at}."),
+                &super::i18n::tr("settings-notification-test-title"),
+                &super::i18n::tr_args(
+                    "settings-notification-test-body",
+                    [("time", enabled_at.into())],
+                ),
                 &[],
             );
         }
@@ -1280,7 +1223,11 @@ impl SettingsScreen {
             let options = self.menu_options(menu);
             let dropdown = Menu::new(
                 gpui::SharedString::from(format!("setting-menu-{}", menu.id())),
-                px(260.),
+                px(if menu == SettingMenu::Voice {
+                    360.
+                } else {
+                    260.
+                }),
             )
             .label(title.to_string())
             .max_height(px(320.))
@@ -1304,11 +1251,15 @@ impl SettingsScreen {
             }));
             self.popup.render(dropdown, Placement::BelowEnd, window, cx)
         });
-        let slug = if menu == SettingMenu::Language {
-            menu.id().to_owned()
-        } else {
-            title.to_lowercase().replace(' ', "-")
-        };
+        let slug = match menu {
+            SettingMenu::Appearance => "appearance",
+            SettingMenu::Language => "language",
+            SettingMenu::ChatFont => "chat-font",
+            SettingMenu::ChatSize => "text-size",
+            SettingMenu::Voice => "speech-voice",
+            SettingMenu::SpeechSpeed => "speech-speed",
+        }
+        .to_owned();
         let button =
             widgets::secondary_button(gpui::SharedString::from(format!("setting-value-{slug}")))
                 .debug_selector(move || format!("setting-value-{slug}"))
@@ -1319,11 +1270,14 @@ impl SettingsScreen {
                 .child(self.menu_value_label(menu))
                 .child(icon("chevron-down", px(12.), theme::text_muted()));
         widgets::card_row()
-            .id(if menu == SettingMenu::Language {
-                gpui::SharedString::from("setting-language")
-            } else {
-                setting_row_id(title)
-            })
+            .id(gpui::SharedString::from(format!(
+                "setting-{}",
+                match menu {
+                    SettingMenu::ChatSize => "text-size",
+                    SettingMenu::Voice => "speech-voice",
+                    _ => menu.id(),
+                }
+            )))
             .flex()
             .items_center()
             .justify_between()
@@ -1641,13 +1595,13 @@ impl Render for SettingsScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.close(cx);
                             }))
-                            .child("← Back"),
+                            .child(super::i18n::tr("settings-back")),
                     )
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child("Settings"),
+                            .child(super::i18n::tr("settings-title")),
                     )
                     .child(div().flex_1())
                     .child(
@@ -1669,7 +1623,7 @@ impl Render for SettingsScreen {
                             .on_click(cx.listener(|_this, _event, _window, cx| {
                                 cx.emit(SignOutRequested);
                             }))
-                            .child("Sign out"),
+                            .child(super::i18n::tr("settings-sign-out")),
                     ),
             ))
             .child(
@@ -1700,7 +1654,7 @@ impl SettingsScreen {
         div()
             .id("settings-nav")
             .role(gpui::Role::TabList)
-            .aria_label("Settings sections")
+            .aria_label(super::i18n::tr("settings-sections"))
             .aria_orientation(gpui::Orientation::Vertical)
             .w(gpui::px(220.))
             .h_full()
@@ -1717,7 +1671,7 @@ impl SettingsScreen {
                 div()
                     .id(gpui::SharedString::from(format!(
                         "settings-nav-{}",
-                        section.label()
+                        section.id()
                     )))
                     .role(gpui::Role::Tab)
                     .aria_label(section.label())
@@ -1770,171 +1724,7 @@ impl SettingsScreen {
                 pane = pane.child(self.render_advanced(cx));
             }
             Section::General => {
-                pane = pane
-                    .child(section_title("Defaults"))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Web),
-                        toggle_row(
-                            "New tasks can use the web",
-                            "Offers web_search and open_url to the model. Each task can \
-                             switch web access on or off from its composer.",
-                            self.settings.default_web_enabled,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_web_default(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Appearance),
-                        self.setting_menu_row(
-                            "Appearance",
-                            "Follow the system theme, or force dark or light.",
-                            SettingMenu::Appearance,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .when(super::i18n::enabled(), |pane| {
-                        pane.child(self.application_target(
-                            || SettingsTarget::General(GeneralTarget::Language),
-                            self.setting_menu_row(
-                                &super::i18n::tr("settings-language"),
-                                &super::i18n::tr("settings-language-description"),
-                                SettingMenu::Language, window, cx,
-                            ),
-                        ))
-                    })
-                    .when(self.language_restart_visible(), |pane| {
-                        pane.child(self.language_restart_notice(cx))
-                    })
-                    .child(section_title("Chat appearance"))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ChatFont),
-                        self.setting_menu_row(
-                            "Chat font",
-                            crate::ui::typography::ChatFontFamily::parse(
-                                &self.settings.chat_font_family,
-                            )
-                            .note(),
-                            SettingMenu::ChatFont,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ChatSize),
-                        self.setting_menu_row(
-                            "Text size",
-                            "Size of conversation and composer text. Sidebar and buttons stay Manrope.",
-                            SettingMenu::ChatSize,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .child(self.chat_appearance_preview())
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ToolDetails),
-                        toggle_row(
-                            "Show tool call details",
-                            "Tool cards include their input and output payloads.",
-                            self.settings.tool_details,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_tool_details(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Notifications),
-                        toggle_row(
-                            "Desktop notifications",
-                            "Notify when a task finishes or needs your input while \
-                             the window is not focused.",
-                            self.settings.desktop_notifications,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_desktop_notifications(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::PasswordNotificationDetails),
-                        toggle_row(
-                            "Show task details in password mode",
-                            "Include task titles and questions in desktop notifications. \
-                             Your operating system may retain this text after Maple quits.",
-                            self.settings.password_notification_details,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_password_notification_details(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ReduceMotion),
-                        toggle_row(
-                            "Reduce motion",
-                            "Hold spinners and pulsing dots still and skip reveal \
-                             animations.",
-                            self.settings.reduce_motion,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_reduce_motion(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ToolSummaries),
-                        toggle_row(
-                            "Summarize tool calls",
-                            "Completed tool calls with long output get a one-line \
-                             summary on their cards.",
-                            self.settings.tool_summaries,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_tool_summaries(cx);
-                            }),
-                        ),
-                    ))
-                    .child(section_title("Editing"))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ComposerVim),
-                        toggle_row(
-                            "Vim mode in composer",
-                            "Use Normal, Insert, and Visual editing modes in the main chat composer. Other text fields stay unchanged.",
-                            self.settings.composer_vim_enabled,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_composer_vim(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ApplicationVim),
-                        toggle_row(
-                            "Vim navigation across the app",
-                            "Navigate stable sidebar, transcript, dialog, and Settings targets. Ordinary text fields still edit normally.",
-                            self.settings.application_vim_enabled,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_application_vim(cx);
-                            }),
-                        ),
-                    ))
-                    .child(section_title("Voice"))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Voice),
-                        self.setting_menu_row(
-                            "Speech voice",
-                            "The voice that reads messages aloud.",
-                            SettingMenu::Voice,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::SpeechSpeed),
-                        self.setting_menu_row(
-                            "Speech speed",
-                            "How fast messages are read aloud.",
-                            SettingMenu::SpeechSpeed,
-                            window,
-                            cx,
-                        ),
-                    ));
+                pane = self.render_general(pane, window, cx);
             }
             Section::Account => {
                 pane = pane.child(self.render_account_pane(cx));

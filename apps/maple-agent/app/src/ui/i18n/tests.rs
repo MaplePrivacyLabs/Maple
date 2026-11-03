@@ -302,6 +302,8 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     // outside the gate rather than freezing hundreds of existing literals.
     let mut visitor = UiStrings::default();
     visitor.visit_file(&syn::parse_file(include_str!("../update_confirmation.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/general.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/language.rs")).unwrap());
     assert!(
         visitor.literals.is_empty(),
         "inline UI text: {:?}",
