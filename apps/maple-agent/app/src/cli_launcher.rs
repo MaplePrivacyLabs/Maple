@@ -22,6 +22,8 @@ const LINUX_INSTALLER_MARKER: &str = "# maple-agent-user-install-v1";
 const MAX_LAUNCHER_BYTES: u64 = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+// Windows only reports `Unavailable` until its installer adds the command.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub enum LauncherState {
     /// This build cannot install the command; the text says why.
     Unavailable(&'static str),
