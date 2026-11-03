@@ -85,6 +85,9 @@ RUST_SDK = ("sdk/rust/Cargo.toml", "sdk/rust/build.rs", "sdk/rust/src/**", "sdk/
 PROXY_RUNTIME = ("proxy/Cargo.toml", "proxy/build.rs", "proxy/src/**")
 # Build scripts Cargo would pick up if they were added; lint allows them to be absent.
 NOT_YET_TRACKED = frozenset({"sdk/rust/build.rs", "proxy/build.rs"})
+# What Research builds from the in-tree TypeScript SDK.
+SDK_TS_BUILD = ("sdk/src/**", "!sdk/src/lib/test/**", "sdk/package.json", "sdk/bun.lock",
+                "sdk/bunfig.toml", "sdk/tsconfig*.json", "sdk/vite.config.ts", "sdk/.npmrc")
 SDK_TS = ("sdk/src/**", "sdk/package.json", "sdk/bun.lock", "sdk/bunfig.toml",
           "sdk/tsconfig*.json", "sdk/vite.config.ts", "sdk/.npmrc", "sdk/flake.*")
 
@@ -336,8 +339,9 @@ LANES: Tuple[Lane, ...] = (
 
     # Research web and Rust on PRs; frontend-tests.yml, web-build.yml and
     # rust-tests.yml verify master (rust-tests.yml also writes research-rust's cache).
-    Lane("research-web", (RESEARCH + "**", "!" + TAURI + "**", "scripts/prepare-*.sh", "scripts/ci/frontend.sh",
-                          "scripts/ci/web.sh", "scripts/ci/_common.sh", "flake.nix", "flake.lock"),
+    Lane("research-web", (RESEARCH + "**", "!" + TAURI + "**", *SDK_TS_BUILD, "scripts/prepare-*.sh",
+                          "scripts/ci/frontend.sh", "scripts/ci/web.sh", "scripts/ci/_common.sh",
+                          "flake.nix", "flake.lock"),
          events=PR_SIDE, runner=GITHUB, flake=".#ci",
          run="./scripts/ci/frontend.sh && MAPLE_WEB_ENVIRONMENT=pr ./scripts/ci/web.sh", hook="research_frontend"),
     Lane("research-rust", (TAURI + "**", "!" + TAURI + "gen/**", "scripts/ci/rust.sh",

@@ -1,6 +1,7 @@
 pub mod attestation;
 mod cbor;
 pub mod client;
+mod client_app;
 pub mod crypto;
 pub mod error;
 pub mod pcr;
@@ -17,6 +18,7 @@ pub use client::{
     OpenSecretClient, OpenSecretResponseBody, PreparedNativeOAuthHandoff,
     TransportV2CacheNamespaceRoot,
 };
+pub use client_app::ClientApp;
 pub use error::{Error, Result};
 pub use pcr::{Pcr0Environment, Pcr0TrustPolicy};
 pub use push::*;

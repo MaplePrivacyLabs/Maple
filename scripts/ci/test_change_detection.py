@@ -82,14 +82,20 @@ class ChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_routes([path])
 
-    def test_typescript_sdk_changes_do_not_select_app_lanes(self) -> None:
+    def test_typescript_sdk_build_inputs_select_the_frontend(self) -> None:
+        # Research links the in-tree SDK, so a change here must run its checks.
         for path in (
             "sdk/src/lib/index.ts",
             "sdk/package.json",
             "sdk/bun.lock",
-            "sdk/README.md",
-            "sdk/rust/README.md",
+            "sdk/tsconfig.build.json",
+            "sdk/vite.config.ts",
         ):
+            with self.subTest(path=path):
+                self.assert_routes([path], "frontend")
+
+    def test_sdk_docs_and_tests_do_not_select_app_lanes(self) -> None:
+        for path in ("sdk/README.md", "sdk/rust/README.md", "sdk/src/lib/test/ai.test.ts"):
             with self.subTest(path=path):
                 self.assert_routes([path])
 

@@ -8,9 +8,9 @@ export function ScopeNote() {
     <div className="flex items-start gap-2.5 rounded-xl border border-border/70 bg-muted/40 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
       <Layers className="mt-0.5 h-4 w-4 shrink-0 text-foreground/70" />
       <p>
-        <span className="font-medium text-foreground">Your whole account.</span> Includes Maple
-        Research and Maple Work on every device, plus requests made with your API keys. It is not
-        limited to this device.
+        <span className="font-medium text-foreground">Your whole account.</span> Includes Maple Chat
+        and Maple Work on every device, plus requests made with your API keys. It is not limited to
+        this device.
       </p>
     </div>
   );

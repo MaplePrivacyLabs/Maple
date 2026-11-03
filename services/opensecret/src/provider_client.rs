@@ -1236,6 +1236,10 @@ fn skipped_forward_headers(source: &HeaderMap) -> HashSet<HeaderName> {
     ]);
     skipped.insert(HeaderName::from_static("keep-alive"));
     skipped.insert(HeaderName::from_static("proxy-connection"));
+    // Client attribution is for our usage telemetry, never an upstream header.
+    skipped.insert(HeaderName::from_static(
+        crate::client_app::CLIENT_APP_HEADER,
+    ));
 
     for value in source.get_all(header::CONNECTION) {
         for token in value.as_bytes().split(|byte| *byte == b',') {
@@ -1946,6 +1950,10 @@ mod tests {
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
         headers.insert("x-hop", HeaderValue::from_static("remove-me"));
         headers.insert("x-request-id", HeaderValue::from_static("request-123"));
+        headers.append(
+            crate::client_app::CLIENT_APP_HEADER,
+            HeaderValue::from_static("work"),
+        );
 
         let body = br#"{"model":"glm-5-3","messages":[],"stream":true}"#.to_vec();
         let request = client
@@ -1981,10 +1989,30 @@ mod tests {
         );
         assert!(!request.headers().contains_key(header::CONNECTION));
         assert!(!request.headers().contains_key("x-hop"));
+        assert!(!request
+            .headers()
+            .contains_key(crate::client_app::CLIENT_APP_HEADER));
         assert_eq!(
             request.body().and_then(|body| body.as_bytes()),
             Some(body.as_slice())
         );
+    }
+
+    #[test]
+    fn client_app_attribution_is_never_forwarded_to_a_provider() {
+        let mut source = HeaderMap::new();
+        source.append(
+            crate::client_app::CLIENT_APP_HEADER,
+            HeaderValue::from_static("chat"),
+        );
+        source.append(
+            crate::client_app::CLIENT_APP_HEADER,
+            HeaderValue::from_static("work"),
+        );
+        source.insert("x-safe", HeaderValue::from_static("preserved"));
+        let forwarded = forwarded_headers(&source);
+        assert!(!forwarded.contains_key(crate::client_app::CLIENT_APP_HEADER));
+        assert_eq!(forwarded["x-safe"], "preserved");
     }
 
     #[test]

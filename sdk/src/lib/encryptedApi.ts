@@ -3,7 +3,8 @@ import {
   guardAccountResponse,
   isAccountCredentialMismatchError
 } from "./credentialIdentity";
-import { getApiPcrConfig, getApiUrl } from "./api";
+import { getApiClientApp, getApiPcrConfig, getApiUrl } from "./api";
+import { snapshotClientApp, withClientAppHeader, type ClientApp } from "./clientApp";
 import { getPlatformApiUrl, getPlatformPcrConfig } from "./platformApi";
 import { snapshotPcrConfig, type PcrConfig } from "./pcr";
 import { getOrCreateTransportV2CacheRoot, readTransportV2Credentials } from "./transportV2/auth";
@@ -35,6 +36,7 @@ export interface EncryptedApiDependencies {
   readCredentials: typeof readTransportV2Credentials;
   getApiPcrConfig: typeof getApiPcrConfig;
   getApiUrl: typeof getApiUrl;
+  getApiClientApp?: typeof getApiClientApp;
   getPlatformApiUrl: typeof getPlatformApiUrl;
   getPlatformPcrConfig: typeof getPlatformPcrConfig;
 }
@@ -45,6 +47,7 @@ const defaultDependencies: EncryptedApiDependencies = {
   readCredentials: readTransportV2Credentials,
   getApiPcrConfig: () => getApiPcrConfig(),
   getApiUrl: () => getApiUrl(),
+  getApiClientApp: () => getApiClientApp(),
   getPlatformApiUrl: () => getPlatformApiUrl(),
   getPlatformPcrConfig: () => getPlatformPcrConfig()
 };
@@ -53,26 +56,33 @@ function isPlatformUrl(url: string): boolean {
   return new URL(url).pathname.includes("/platform/");
 }
 
-function endpoint(
-  url: string,
-  dependencies: EncryptedApiDependencies
-): { apiUrl: string; pcrConfig: PcrConfig; kind: "user" | "platform"; target: string } {
+function endpoint(url: string, dependencies: EncryptedApiDependencies): ApiEndpointSnapshot {
   const kind = isPlatformUrl(url) ? "platform" : "user";
   const apiUrl = kind === "platform" ? dependencies.getPlatformApiUrl() : dependencies.getApiUrl();
   return endpointFor(
     url,
     apiUrl,
     kind === "platform" ? dependencies.getPlatformPcrConfig() : dependencies.getApiPcrConfig(),
-    kind
+    kind,
+    dependencies.getApiClientApp?.()
   );
+}
+
+interface ApiEndpointSnapshot {
+  apiUrl: string;
+  pcrConfig: PcrConfig;
+  kind: "user" | "platform";
+  target: string;
+  clientApp?: ClientApp;
 }
 
 function endpointFor(
   url: string,
   apiUrl: string,
   pcrConfig: PcrConfig | undefined,
-  kind: "user" | "platform"
-): { apiUrl: string; pcrConfig: PcrConfig; kind: "user" | "platform"; target: string } {
+  kind: "user" | "platform",
+  clientApp?: ClientApp
+): ApiEndpointSnapshot {
   if ((kind === "platform") !== isPlatformUrl(url)) {
     throw new Error("Transport v2 authenticated request authority kind does not match its route.");
   }
@@ -80,7 +90,8 @@ function endpointFor(
     apiUrl,
     pcrConfig: snapshotPcrConfig(pcrConfig),
     kind,
-    target: transportV2LogicalTarget(apiUrl, url)
+    target: transportV2LogicalTarget(apiUrl, url),
+    clientApp: kind === "user" ? snapshotClientApp(clientApp) : undefined
   };
 }
 
@@ -235,7 +246,7 @@ async function performTransportV2Call<T, U>(
         cacheNamespaceRoot,
         method: method.toUpperCase(),
         target: resolved.target,
-        headers: logicalHeaders(body),
+        headers: withClientAppHeader(logicalHeaders(body), resolved.clientApp),
         body
       }
     });
@@ -411,7 +422,7 @@ export async function authenticatedApiCallWithAuthority<T, U>(
 ): Promise<TransportV2AuthenticatedCallResult<U>> {
   return performAuthenticatedApiCall(
     url,
-    endpointFor(url, scope.apiUrl, scope.pcrConfig, scope.kind),
+    endpointFor(url, scope.apiUrl, scope.pcrConfig, scope.kind, getApiClientApp()),
     method,
     data,
     errorFallback,
@@ -430,7 +441,7 @@ export async function authenticatedApiCallWithAuthorityAndDependencies<T, U>(
 ): Promise<TransportV2AuthenticatedCallResult<U>> {
   return performAuthenticatedApiCall(
     url,
-    endpointFor(url, scope.apiUrl, scope.pcrConfig, scope.kind),
+    endpointFor(url, scope.apiUrl, scope.pcrConfig, scope.kind, dependencies.getApiClientApp?.()),
     method,
     data,
     errorFallback,
@@ -451,7 +462,7 @@ export async function authenticatedApiCallWithSelectedAuthority<T, U>(
     authority: TransportV2Authority;
   }
 ): Promise<U> {
-  const resolved = endpointFor(url, scope.apiUrl, scope.pcrConfig, scope.kind);
+  const resolved = endpointFor(url, scope.apiUrl, scope.pcrConfig, scope.kind, getApiClientApp());
   if (
     scope.authority.snapshot.kind !== resolved.kind ||
     scope.authority.snapshot.apiOrigin !== new URL(resolved.apiUrl).origin

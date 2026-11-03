@@ -1518,7 +1518,8 @@ impl LocalBackend {
         self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?;
+            .map_err(|_| "Maple API authentication failed".to_string())?
+            .with_client_app(maple_sdk::ClientApp::Work);
         let response = client
             .login(email, password, self.client_id)
             .await
@@ -1543,7 +1544,8 @@ impl LocalBackend {
         self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?;
+            .map_err(|_| "Maple API authentication failed".to_string())?
+            .with_client_app(maple_sdk::ClientApp::Work);
         let response = client
             .login_with_id(account_id, password, self.client_id)
             .await
@@ -1762,6 +1764,7 @@ impl LocalBackend {
     fn oauth_client(&self) -> Result<OpenSecretClient, String> {
         let environment = configured_pcr0_environment()?;
         OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
+            .map(|client| client.with_client_app(maple_sdk::ClientApp::Work))
             .map_err(|_| "Maple API authentication failed".to_string())
     }
 

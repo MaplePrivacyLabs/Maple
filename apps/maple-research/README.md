@@ -14,9 +14,8 @@ desktop service. Agent work lives in Maple Work
 them to Maple Work.
 
 The Maple SDK source and its upstream Git history live under
-[`sdk/`](../../sdk/README.md). Research selects published TypeScript and Rust
-versions independently in its manifests and lockfiles, with local links
-supported during development. See the
+[`sdk/`](../../sdk/README.md). Research builds both the TypeScript and Rust SDKs
+from that source. See the
 [SDK consumer version policy](../../docs/sdk-publishing.md#consumer-version-policy).
 The proxy source and its upstream history live under
 [`proxy/`](../../proxy/README.md); desktop Maple consumes that in-tree crate too.

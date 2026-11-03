@@ -15,12 +15,13 @@ import { cn } from "@/utils/utils";
 import { Legend, ShareBar, SplitBar, StackedBars, Swatch, type StackDatum } from "./charts";
 import {
   modelColor,
-  SOURCE_COLOR,
-  SOURCE_LABEL,
-  SOURCES,
+  ORIGIN_COLOR,
+  ORIGIN_LABEL,
+  ORIGINS,
   TOKEN_COLOR,
   TOKEN_KINDS,
-  TOKEN_LABEL
+  TOKEN_LABEL,
+  type UsageOrigin
 } from "./palette";
 import { ErrorBlock, LoadingBlock, SectionHeader, Segmented, StatTile } from "./ui";
 import {
@@ -32,12 +33,14 @@ import {
   fmtDay,
   fmtPct,
   fmtWeekday,
+  originMix,
   rangeLabel,
   rangeOptions,
   sortModels,
   summarizeDays,
   tokenTotal,
   type DayBucket,
+  type OriginCredits,
   type Metric,
   type RangeSummary,
   type Split,
@@ -154,6 +157,7 @@ function StatTiles({
     );
   }
   const team = kind === "team";
+  const origins = usedOrigins(summary.origins);
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       <StatTile label="Credits used" value={fmt(summary.credits)} sub={label} />
@@ -167,26 +171,32 @@ function StatTiles({
         }
       />
       <StatTile
-        label="Maple apps vs API keys"
-        sub={`${fmtPct(summary.app, summary.credits)} apps · ${fmtPct(summary.api, summary.credits)} API`}
+        label="Apps"
+        sub={
+          summary.api > 0
+            ? `${fmtPct(summary.api, summary.credits)} through API keys, in any app`
+            : undefined
+        }
       >
         <div className="mt-3">
           <SplitBar
-            parts={SOURCES.map((s) => ({
-              key: s,
-              label: SOURCE_LABEL[s],
-              value: summary[s],
-              color: SOURCE_COLOR[s]
+            parts={origins.map((origin) => ({
+              key: origin,
+              label: ORIGIN_LABEL[origin],
+              value: summary.origins[origin],
+              color: ORIGIN_COLOR[origin]
             }))}
           />
         </div>
         <div className="mt-2.5 space-y-1 text-xs">
-          {SOURCES.map((s) => (
-            <div key={s} className="flex items-center justify-between gap-2">
+          {origins.map((origin) => (
+            <div key={origin} className="flex items-center justify-between gap-2">
               <span className="inline-flex items-center gap-1.5 text-foreground/80">
-                <Swatch color={SOURCE_COLOR[s]} /> {SOURCE_LABEL[s]}
+                <Swatch color={ORIGIN_COLOR[origin]} /> {ORIGIN_LABEL[origin]}
               </span>
-              <span className="tabular-nums text-muted-foreground">{fmt(summary[s])}</span>
+              <span className="tabular-nums text-muted-foreground">
+                {fmt(summary.origins[origin])}
+              </span>
             </div>
           ))}
         </div>
@@ -213,6 +223,10 @@ function StatTiles({
   );
 }
 
+function usedOrigins(credits: OriginCredits): UsageOrigin[] {
+  return ORIGINS.filter((origin) => credits[origin] > 0);
+}
+
 function dayFooter(day: DayBucket, metric: Metric, free: boolean) {
   return (
     <span className="block space-y-0.5">
@@ -236,7 +250,7 @@ function dayFooter(day: DayBucket, metric: Metric, free: boolean) {
 
 const SPLIT_WORD: Record<Split, string> = {
   model: "model",
-  source: "Maple apps and API keys",
+  origin: "app",
   pool: "which balance paid",
   token: "input, cached input and output"
 };
@@ -293,7 +307,7 @@ function DailyChart({
     m === "credits" ? "Credits" : m === "requests" ? (free ? "Messages" : "Requests") : "Tokens";
   const splitOptions: Array<{ value: Split; label: string }> = [
     { value: "model", label: "Model" },
-    ...(free ? [] : [{ value: "source" as const, label: "Apps / API" }]),
+    ...(free ? [] : [{ value: "origin" as const, label: "App" }]),
     ...(kind === "credits" && metric === "credits"
       ? [{ value: "pool" as const, label: "Plan / Extra" }]
       : []),
@@ -401,11 +415,7 @@ function ModelTable({ summary, free }: { summary: RangeSummary; free: boolean })
                       </div>
                       {!free && (
                         <p className="ml-[18px] mt-0.5 whitespace-nowrap text-[11px] text-muted-foreground">
-                          {row.api === 0
-                            ? SOURCE_LABEL.app
-                            : row.app === 0
-                              ? SOURCE_LABEL.api
-                              : `${fmtPct(row.app, row.credits)} apps · ${fmtPct(row.api, row.credits)} API`}
+                          {originMix(row.origins, row.credits)}
                         </p>
                       )}
                     </td>

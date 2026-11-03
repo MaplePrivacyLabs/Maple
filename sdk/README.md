@@ -32,6 +32,41 @@ the embedded proxy remains desktop-only. See the
 [consumer version policy](../docs/sdk-publishing.md#consumer-version-policy)
 for switching sources and preparing client releases.
 
+## Client application attribution
+
+First-party clients can identify their host application with `chat`, `proxy`, or
+`work`. The TypeScript provider accepts `clientApp`:
+
+```tsx
+<OpenSecretProvider apiUrl={apiUrl} clientId={clientId} clientApp="chat">
+  {children}
+</OpenSecretProvider>
+```
+
+The Rust client exposes the same values through `ClientApp`:
+
+```rust,ignore
+use maple_sdk::{ClientApp, OpenSecretClient};
+
+let client = OpenSecretClient::new(api_url)?.with_client_app(ClientApp::Work);
+```
+
+An embedded proxy retains its host application's identity: Chat uses `chat`,
+Work uses `work`, and the standalone proxy uses `proxy`. Each application can
+use either account or API-key credentials. Generic SDK clients omit attribution
+unless configured; old or unrecognized values remain unattributed.
+
+The SDK sends `x-maple-client-app` inside Transport V2's encrypted logical
+headers. A configured identity replaces conflicting caller-provided values.
+This is client-reported reporting metadata, independent of authentication,
+authorization, pricing, funding pools, and provider selection.
+
+Roll out backend attribution handling and provider-header filtering before
+enabling client emission. Older backends accept the logical header but may
+forward it to inference providers. No Transport V2 metadata-version change is
+required, and changing SDK source does not publish a package or update an
+installed application.
+
 ## Package identity migration
 
 The package names are `@mapleai/sdk` and `maple-sdk`, first published at

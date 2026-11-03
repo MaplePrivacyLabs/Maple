@@ -34,6 +34,18 @@ INERT_FILES = frozenset(
 INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/download-tracking/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/")
 PURE_FRONTEND_PREFIXES = ("apps/maple-research/frontend/public/", "apps/maple-research/frontend/src/")
 PURE_FRONTEND_FILES = frozenset({"apps/maple-research/frontend/icon.svg", "apps/maple-research/frontend/index.html"})
+# Research builds the in-tree TypeScript SDK, so these are its build inputs.
+TS_SDK_SOURCE_PREFIX = "sdk/src/"
+TS_SDK_TEST_PREFIX = "sdk/src/lib/test/"
+TS_SDK_BUILD_FILES = frozenset({
+    "sdk/.npmrc",
+    "sdk/bun.lock",
+    "sdk/bunfig.toml",
+    "sdk/package.json",
+    "sdk/tsconfig.build.json",
+    "sdk/tsconfig.json",
+    "sdk/vite.config.ts",
+})
 RUST_SDK_PREFIX = "sdk/rust/"
 RUST_SDK_INERT_PREFIXES = ("sdk/rust/tests/", "sdk/rust/examples/", "sdk/rust/.githooks/")
 RUST_SDK_INERT_FILES = frozenset({"sdk/rust/Cargo.lock", "sdk/rust/LICENSE", "sdk/rust/README.md"})
@@ -158,9 +170,12 @@ def classify_path(path: str) -> frozenset[str]:
             return frozenset()
         return NATIVE_PLATFORMS
     if path.startswith("sdk/"):
-        # Frontends build whatever TypeScript SDK source their own manifests
-        # select. Changing that manifest (a pin bump or a local link) selects
-        # the app's lanes.
+        # Research links the in-tree SDK, so its source reaches the frontend
+        # build. Auth pins a published version and only moves with its manifest.
+        if path in TS_SDK_BUILD_FILES or (
+            path.startswith(TS_SDK_SOURCE_PREFIX) and not path.startswith(TS_SDK_TEST_PREFIX)
+        ):
+            return frozenset({"frontend"})
         return frozenset()
     if path == "proxy/Cargo.toml" or path.startswith(PROXY_RUNTIME_PREFIXES):
         return DESKTOP_PLATFORMS

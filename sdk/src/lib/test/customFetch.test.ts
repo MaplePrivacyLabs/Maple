@@ -8,6 +8,7 @@ import {
   type CustomFetchDependencies
 } from "../ai";
 import type { PcrConfig } from "../pcr";
+import type { ClientApp } from "../clientApp";
 import type { StoredTransportV2Credentials } from "../transportV2/auth";
 import type { TransportV2RuntimeRequest, TransportV2RuntimeResponse } from "../transportV2/runtime";
 
@@ -116,6 +117,74 @@ function copyRequest(input: TransportV2RuntimeRequest): TransportV2RuntimeReques
     }
   };
 }
+
+describe("createCustomFetch application reporting", () => {
+  test("invalid application configuration is rejected before transport work", () => {
+    const configured = dependencies(async () => result(new Response("ok")));
+    for (const clientApp of ["unknown", null]) {
+      expect(() =>
+        createCustomFetchWithDependencies({ clientApp: clientApp as ClientApp }, configured)
+      ).toThrow("clientApp must be");
+    }
+    expect(configured.runtime.request).not.toHaveBeenCalled();
+  });
+
+  for (const target of ["/v1/chat/completions", "/v1/responses", "/v1/systemone"]) {
+    for (const apiKey of [undefined, "explicit-api-key"]) {
+      test(`${target} keeps the configured chat host with ${apiKey ? "API key" : "session"} authentication`, async () => {
+        let seen: TransportV2RuntimeRequest | undefined;
+        const customFetch = createCustomFetchWithDependencies(
+          { apiUrl, apiKey, clientApp: "chat" },
+          dependencies(async (input) => {
+            seen = copyRequest(input);
+            return result(new Response("ok"));
+          }, userCredentials())
+        );
+
+        await customFetch(`${apiUrl}${target}`, {
+          method: "POST",
+          headers: { "X-Maple-Client-App": "proxy", "x-example": "preserved" },
+          body: JSON.stringify({ model: "model" })
+        });
+
+        expect(seen?.request.headers).toContainEqual({ name: "x-maple-client-app", value: "chat" });
+        expect(
+          seen?.request.headers?.filter(({ name }) => name === "x-maple-client-app")
+        ).toHaveLength(1);
+        expect(seen?.request.headers).toContainEqual({ name: "x-example", value: "preserved" });
+        expect(seen?.request.credential?.kind).toBe(apiKey ? "api_key" : "bearer");
+        expect(seen?.request).not.toHaveProperty("client_app");
+      });
+    }
+  }
+
+  test("unconfigured third-party adapters inject no application identity", async () => {
+    let seen: TransportV2RuntimeRequest | undefined;
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "explicit-api-key", apiUrl },
+      dependencies(async (input) => {
+        seen = copyRequest(input);
+        return result(new Response("ok"));
+      })
+    );
+    await customFetch(`${apiUrl}/v1/chat/completions`, { method: "POST", body: "{}" });
+    expect(seen?.request.headers?.some(({ name }) => name === "x-maple-client-app")).toBe(false);
+  });
+
+  test("a configured provider default is captured when an adapter is created", async () => {
+    const seen: TransportV2RuntimeRequest[] = [];
+    const configured = dependencies(async (input) => {
+      seen.push(copyRequest(input));
+      return result(new Response("ok"));
+    }, userCredentials());
+    let defaultApp: "work" | "proxy" = "work";
+    configured.getApiClientApp = () => defaultApp;
+    const customFetch = createCustomFetchWithDependencies(undefined, configured);
+    defaultApp = "proxy";
+    await customFetch(`${apiUrl}/v1/responses`, { method: "POST", body: "{}" });
+    expect(seen[0].request.headers).toContainEqual({ name: "x-maple-client-app", value: "work" });
+  });
+});
 
 describe("createCustomFetch inference-capacity contract", () => {
   for (const status of [429, 503] as const) {
