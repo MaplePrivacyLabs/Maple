@@ -701,13 +701,14 @@ mod tests {
         append_streamed_tool_calls, apply_responses_model_defaults,
         assistant_turn_finished_with_tool_call, await_initial_response_step,
         build_internal_system_prompt_for_now, build_model_turn_request, build_provider_tools,
-        consume_assistant_turn, ensure_prompt_fits_model, final_assistant_finish_reason,
-        finalize_first_model_tool_call, forward_authoritative_response_terminal,
-        has_streamed_tool_call_entries, image_attachments, image_description_access,
-        image_description_api_error, image_description_attempt_failure_class,
-        maple_kagi_web_search_prompt, model_turn_request_without_user_payload,
-        normalize_responses_input, reserve_response_message_uuid_with_check,
-        resolve_responses_model, resolve_responses_sampling, response_cancellation_ack_decision,
+        build_title_request, consume_assistant_turn, ensure_prompt_fits_model,
+        final_assistant_finish_reason, finalize_first_model_tool_call,
+        forward_authoritative_response_terminal, has_streamed_tool_call_entries, image_attachments,
+        image_description_access, image_description_api_error,
+        image_description_attempt_failure_class, maple_kagi_web_search_prompt,
+        model_turn_request_without_user_payload, normalize_responses_input,
+        reserve_response_message_uuid_with_check, resolve_responses_model,
+        resolve_responses_sampling, response_cancellation_ack_decision,
         response_execution_for_status, responses_pre_persistence_api_error, run_response_worker,
         send_storage_message, wait_for_local_response_execution_quiescence, web_search_is_selected,
         web_search_tool_turn_limit, web_search_tool_turn_limit_error,
@@ -717,7 +718,7 @@ mod tests {
         PublicResponseFailure, ResponseCancellationAckDecision, ResponseExecutionPolicy,
         ResponseTerminal, ResponsesCreateRequest, ResponsesReasoningRequest, StorageMessage,
         StreamedToolCall, MAX_WEB_SEARCH_TOOL_TURNS_FREE, MAX_WEB_SEARCH_TOOL_TURNS_PAID,
-        READ_IMAGE_TOOL_NAME,
+        READ_IMAGE_TOOL_NAME, TITLE_MODEL_ID,
     };
     use crate::web::model_request_policy::{
         resolve_reasoning_effort, EffectiveReasoningEffort, ModelSelection,
@@ -3229,6 +3230,18 @@ mod tests {
     }
 
     #[test]
+    fn title_requests_use_the_free_quick_model_without_reasoning() {
+        let request = build_title_request(&"x".repeat(800));
+        assert_eq!(request["model"], crate::model_config::QUICK_MODEL_ID);
+        assert!(ModelPlan::Free.allows_model(TITLE_MODEL_ID));
+        assert_eq!(request["reasoning_effort"], "none");
+        assert_eq!(request["include_reasoning"], false);
+        assert_eq!(request["stream"], false);
+        let prompt = request["messages"][1]["content"].as_str().unwrap();
+        assert!(prompt.contains(&"x".repeat(500)) && !prompt.contains(&"x".repeat(501)));
+    }
+
+    #[test]
     fn test_build_model_turn_request_applies_reasoning_history_template_kwargs() {
         let kimi = responses_request_for_model("kimi-k3");
         let kimi_request =
@@ -5389,6 +5402,36 @@ struct PersistedData {
     last_item_created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Titles use the Quick tier's model, which every plan may use.
+const TITLE_MODEL_ID: &str = crate::model_config::QUICK_MODEL_ID;
+
+/// The bounded, thinking-free title request for a conversation's first message.
+fn build_title_request(user_content: &str) -> Value {
+    // Truncate content to first 500 characters
+    let truncated_content: String = user_content.chars().take(500).collect();
+    let mut title_request = json!({
+        "model": TITLE_MODEL_ID,
+        "messages": [
+            {
+                "role": ROLE_SYSTEM,
+                "content": "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
+            },
+            {
+                "role": ROLE_USER,
+                "content": format!("Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{}\"", truncated_content)
+            }
+        ],
+        "stream": false
+    });
+    if let Some(sampling) = model_config(TITLE_MODEL_ID).responses.sampling {
+        sampling.apply_to_request(&mut title_request, false);
+    }
+    // DeepSeek treats `none` as chat mode; a title needs no reasoning.
+    title_request["include_reasoning"] = json!(false);
+    title_request["reasoning_effort"] = json!("none");
+    title_request
+}
+
 /// Spawns a background task to generate a conversation title using AI
 ///
 /// This function runs asynchronously and independently - it will not block the response stream.
@@ -5418,38 +5461,19 @@ fn spawn_title_generation_task(
             conversation_uuid
         );
 
-        // Truncate content to first 500 characters
-        let truncated_content: String = user_content.chars().take(500).collect();
-        // Build the title generation request
-        let mut title_request = json!({
-            "model": "llama3-3-70b",
-            "messages": [
-                {
-                    "role": ROLE_SYSTEM,
-                    "content": "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
-                },
-                {
-                    "role": ROLE_USER,
-                    "content": format!("Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{}\"", truncated_content)
-                }
-            ],
-            "stream": false
-        });
-        if let Some(sampling) = model_config("llama3-3-70b").responses.sampling {
-            sampling.apply_to_request(&mut title_request, false);
-        }
+        let title_request = build_title_request(&user_content);
 
         // Call the completions API with empty headers (no special headers needed)
         // Responses API always uses JWT auth (not API key)
         let headers = HeaderMap::new();
         let billing_context = crate::web::openai::BillingContext::new(
             crate::web::openai_auth::AuthMethod::Jwt,
-            "llama3-3-70b".to_string(),
+            TITLE_MODEL_ID.to_string(),
         );
         let title_intent = InferenceIntent::new(
             user.uuid,
-            "llama3-3-70b",
-            "llama3-3-70b",
+            TITLE_MODEL_ID,
+            TITLE_MODEL_ID,
             ModelPlan::Free,
             InferenceSurface::Internal,
             WorkloadClass::Background,
