@@ -68,6 +68,17 @@ normalize_linux_desktop_packages
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.rpm.exists())
 
+    def use_gnu_ar_format(self):
+        # Debian packages are GNU archives. llvm-ar writes BSD ones on Darwin,
+        # padding members with bytes that GNU tar rejects after gzip.
+        ar = shutil.which("ar")
+        version = subprocess.run([ar, "--version"], capture_output=True, text=True)
+        if "LLVM" not in version.stdout:
+            return
+        tool = self.bin / "ar"
+        tool.write_text(f'#!{shutil.which("bash")}\nexec "{ar}" --format=gnu "$@"\n')
+        tool.chmod(0o755)
+
     def test_failed_extraction_is_not_hidden_by_cleanup(self):
         result = self.run_shell('''
 ar() { return 19; }
@@ -95,6 +106,7 @@ extract_appimage_tool fixture.AppImage "$TAURI_DIR/extracted"
         self.assertTrue((self.tauri / "extracted/AppRun").exists())
 
     def test_deb_normalization_refreshes_checksums_and_verifier_rejects_tampering(self):
+        self.use_gnu_ar_format()
         self.deb.unlink()
         payload = self.root / "deb-input"
         (payload / "usr/bin").mkdir(parents=True)
