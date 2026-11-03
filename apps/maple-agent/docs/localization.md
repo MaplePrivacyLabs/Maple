@@ -36,8 +36,16 @@ against enabled catalogs, first exactly, then without variants, region, and
 script. English is the final default. Before the store is unlocked, the UI uses
 the OS default. The first loaded host settings snapshot selects the process
 locale. Language edits apply after **quitting and reopening Maple**; closing
-and reopening Settings is not enough. This avoids incomplete live updates of
-cached GPUI panels, precomputed sidebar sections, and native menus. No per-frame
+and reopening Settings is not enough.
+
+When a saved choice differs from the running language, Settings shows a localized
+restart notice with Restart now and Later. Restart now uses the normal quit
+coordinator, including saving preferences and stopping the host; cancelling Quit
+also cancels the restart. Later dismisses the notice for this Settings visit;
+reopening Settings reminds again until the language is applied or reverted.
+
+Restarting avoids incomplete live updates of cached GPUI panels, precomputed
+sidebar sections, and native menus. No per-frame
 or language-change window refresh is introduced. Unit/GPUI tests default to
 English regardless of the executing machine's locale.
 

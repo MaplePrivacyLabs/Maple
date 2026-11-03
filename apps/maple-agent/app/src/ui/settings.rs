@@ -35,6 +35,7 @@ mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
+mod language;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
@@ -52,6 +53,8 @@ pub struct SettingsClosed(pub AppSettings);
 
 /// Emitted when the user clicks Sign out in the settings header.
 pub struct SignOutRequested;
+
+pub(crate) struct LanguageRestartRequested;
 
 /// Emitted after the server confirmed the account is deleted and the
 /// local session is gone; the app returns to the login form.
@@ -150,6 +153,8 @@ pub struct SettingsScreen {
     remote_screen: Entity<super::remote::RemoteScreen>,
     user_id: String,
     settings: AppSettings,
+    language_restart_pending: bool,
+    language_restart_dismissed: bool,
     update: crate::update::Snapshot,
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
@@ -266,6 +271,7 @@ impl EventEmitter<super::remote::ComputerNamed> for SettingsScreen {}
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<crate::update::UpdateRequested> for SettingsScreen {}
 impl EventEmitter<SignOutRequested> for SettingsScreen {}
+impl EventEmitter<LanguageRestartRequested> for SettingsScreen {}
 impl EventEmitter<AccountDeleted> for SettingsScreen {}
 impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
@@ -420,6 +426,8 @@ impl SettingsScreen {
             remote_screen,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
+            language_restart_pending: super::i18n::requires_restart(settings.locale.as_deref()),
+            language_restart_dismissed: false,
             settings,
             update: crate::update::Snapshot::initial(),
             section,
@@ -1142,6 +1150,11 @@ impl SettingsScreen {
                     return;
                 };
                 let locale = locale.map(str::to_owned);
+                if self.settings.locale != locale {
+                    self.language_restart_pending =
+                        super::i18n::requires_restart(locale.as_deref());
+                    self.language_restart_dismissed = false;
+                }
                 self.edit_setting(move |settings| settings.locale = locale, cx);
             }
             SettingMenu::Appearance => {
@@ -1790,6 +1803,9 @@ impl SettingsScreen {
                                 SettingMenu::Language, window, cx,
                             ),
                         ))
+                    })
+                    .when(self.language_restart_visible(), |pane| {
+                        pane.child(self.language_restart_notice(cx))
                     })
                     .child(section_title("Chat appearance"))
                     .child(self.application_target(

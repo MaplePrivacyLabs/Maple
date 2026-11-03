@@ -2087,6 +2087,15 @@ impl MapleApp {
             },
         )
         .detach();
+        cx.subscribe(
+            &screen,
+            |app: &mut MapleApp, emitter, _: &ui::settings::LanguageRestartRequested, cx| {
+                if app.is_current_settings_screen(&emitter) {
+                    restart_for_language_change(cx);
+                }
+            },
+        )
+        .detach();
         cx.subscribe(&screen, |app: &mut MapleApp, emitter, event: &ui::store_gate::PasswordFormFinished, cx| {
             if matches!(&app.screen, Screen::Settings(active) if active.entity_id() == emitter.entity_id()) {
                 app.password_settings_finished(event, cx);
@@ -2560,6 +2569,25 @@ struct DesktopLifecycle {
 }
 impl gpui::Global for DesktopLifecycle {}
 
+struct LanguageRestartPending;
+impl gpui::Global for LanguageRestartPending {}
+
+fn restart_for_language_change(cx: &mut App) {
+    let Some(state) = cx.try_global::<DesktopLifecycle>() else {
+        return;
+    };
+    if state.closing.get()
+        || state.frontend_detached.get()
+        || state.quit_completed.get()
+        || state.updater.restart_path().is_some()
+        || !may_finish_quit(cx)
+    {
+        return;
+    }
+    cx.set_global(LanguageRestartPending);
+    quit_app(cx);
+}
+
 /// Recheck final effects: an earlier Quit cannot exit an installation.
 fn may_finish_quit(cx: &App) -> bool {
     !cx.try_global::<DesktopLifecycle>().is_some_and(|state| {
@@ -2612,18 +2640,33 @@ fn restart_installed_update(path: PathBuf, cx: &mut App) {
     {
         state.quit_completed.set(true);
         #[cfg(target_os = "macos")]
-        native_quit::allow_update_restart();
+        native_quit::allow_restart();
         cx.set_restart_path(path);
         cx.restart();
         #[cfg(target_os = "macos")]
-        native_quit::finish_update_restart();
+        native_quit::finish_restart();
     }
 }
 
 fn finish_quit(cx: &mut App) {
     if !may_finish_quit(cx) {
-        cancel_native_quit();
+        cancel_quit(cx);
         show_update_about(cx);
+        return;
+    }
+    if cx.has_global::<LanguageRestartPending>() {
+        if !cx
+            .try_global::<DesktopLifecycle>()
+            .is_some_and(|state| state.quit_completed.get())
+        {
+            return;
+        }
+        cx.remove_global::<LanguageRestartPending>();
+        #[cfg(target_os = "macos")]
+        native_quit::allow_restart();
+        cx.restart();
+        #[cfg(target_os = "macos")]
+        native_quit::finish_restart();
         return;
     }
     #[cfg(target_os = "macos")]
@@ -2710,16 +2753,12 @@ fn drain_and_quit(state: DesktopLifecycle, cx: &mut App) {
         match stop.await {
             Ok(Ok(())) => cx.update(|cx| {
                 if !may_finish_quit(cx) {
-                    state.closing.set(false);
-                    cancel_native_quit();
+                    cancel_quit(cx);
                     show_update_about(cx);
                     return;
                 }
                 state.quit_completed.set(true);
-                #[cfg(target_os = "macos")]
-                native_quit::complete(cx);
-                #[cfg(not(target_os = "macos"))]
-                cx.quit();
+                finish_quit(cx);
             }),
             result => {
                 state.closing.set(false);
@@ -2838,6 +2877,9 @@ fn cancel_native_quit() {
 }
 
 fn cancel_quit(cx: &mut App) {
+    if cx.has_global::<LanguageRestartPending>() {
+        cx.remove_global::<LanguageRestartPending>();
+    }
     if let Some(state) = cx.try_global::<DesktopLifecycle>() {
         state.closing.set(false);
         state.quit_requested.set(false);
@@ -2900,7 +2942,7 @@ struct QuitPrompt {
     kind: QuitPromptKind,
 }
 impl Render for QuitPrompt {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, message, retry) = match &self.kind {
             QuitPromptKind::Confirm(activity) => (
                 "Stop this computer's Maple host?",
@@ -2940,7 +2982,15 @@ impl Render for QuitPrompt {
                     .child(
                         ui::widgets::secondary_button("retry-maple-quit")
                             .debug_selector(|| "retry-maple-quit".to_string())
-                            .child(if retry { "Retry Quit" } else { "Quit Maple" })
+                            .child(if cx.has_global::<LanguageRestartPending>() {
+                                ui::i18n::tr("settings-language-restart-now")
+                            } else {
+                                gpui::SharedString::from(if retry {
+                                    "Retry Quit"
+                                } else {
+                                    "Quit Maple"
+                                })
+                            })
                             .on_click(move |_, window, cx| {
                                 window.remove_window();
                                 if retry {

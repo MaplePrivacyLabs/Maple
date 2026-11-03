@@ -111,15 +111,15 @@ pub(super) fn complete(cx: &mut gpui::App) {
     allow_termination(cx);
 }
 
-/// Called only after an update commit retained owner.lock for process exit.
-/// Allow GPUI's restart termination, without quitting before its helper starts.
-pub(super) fn allow_update_restart() {
+/// Allow GPUI's restart termination only after a verified host stop or an
+/// update commit retaining owner.lock. Do not quit before its helper starts.
+pub(super) fn allow_restart() {
     TERMINATION_ALLOWED.with(|allowed| allowed.set(true));
 }
 
 /// GPUI's helper has now been requested. Complete an already deferred native
 /// Quit, while leaving the retry UI alive if no Quit was pending and spawn fails.
-pub(super) fn finish_update_restart() {
+pub(super) fn finish_restart() {
     if PENDING.with(Cell::get) {
         defer_reply(true);
     }

@@ -152,6 +152,15 @@ pub(crate) fn initialize_saved_preference(preference: Option<&str>) {
     });
 }
 
+/// Compare effective languages, so System and an equivalent explicit choice
+/// do not ask for an unnecessary restart. Call when the preference changes.
+pub(super) fn requires_restart(preference: Option<&str>) -> bool {
+    enabled()
+        && ACTIVE.with_borrow(|state| {
+            state.locale != preference.map_or_else(|| SYSTEM.clone(), |value| resolve(Some(value)))
+        })
+}
+
 pub(super) fn preference_label(preference: Option<&str>) -> SharedString {
     if let Some(locale) = preference {
         // Only enabled values can be picked. Unknown saved preferences resolve

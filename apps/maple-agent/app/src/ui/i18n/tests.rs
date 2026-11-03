@@ -34,6 +34,8 @@ fn spanish_preference_formats_existing_surfaces_and_applies_only_on_restart() {
         state.messages.clear();
     });
     initialize_saved_preference(Some("es"));
+    assert!(!requires_restart(Some("es-MX")));
+    assert!(requires_restart(Some("en")));
     assert_eq!(tr("settings-language").as_ref(), "Idioma");
     assert_eq!(preference_label(Some("es")).as_ref(), "Español");
     assert_eq!(
@@ -60,6 +62,9 @@ fn spanish_preference_formats_existing_surfaces_and_applies_only_on_restart() {
         state.messages.clear();
         state.system_label = None;
     });
+    assert!(!requires_restart(None));
+    assert!(!requires_restart(Some("en-US")));
+    assert!(requires_restart(Some("es")));
 }
 
 #[test]
