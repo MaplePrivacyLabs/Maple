@@ -1811,6 +1811,7 @@ async fn system_one(
     let CompletionCaller {
         model_plan,
         cache_policy,
+        ..
     } = authorize_completion_caller(
         &state,
         &user,

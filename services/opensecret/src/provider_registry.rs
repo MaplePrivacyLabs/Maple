@@ -7,11 +7,11 @@
 use crate::model_config::{
     DECISION_LARGE_MODEL_ID, DECISION_MEDIUM_MODEL_ID, DECISION_SMALL_MODEL_ID,
     DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-    GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
+    GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, KIMI_K3_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v6";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v7";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
 /// routing; customer pricing and accounting continue to use the Maple family.
@@ -178,8 +178,8 @@ const PROVIDERS: &[ProviderSpec] = &[
 
 const GPT_OSS_120B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
-    provider_model_id: QUICK_MODEL_ID,
-    response_model_id: QUICK_MODEL_ID,
+    provider_model_id: GPT_OSS_120B_MODEL_ID,
+    response_model_id: GPT_OSS_120B_MODEL_ID,
     weight: 100,
     enabled: true,
 }];
@@ -228,23 +228,25 @@ const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-// Provider multipliers allocate 5% of fresh stock DeepSeek account buckets to
-// shared Tinfoil and 95% to dedicated i01: 70 * 20 : 100 * 266. i02 remains
-// reserved for its distinct model. Eligible sticky routes and health gates
-// retain their normal precedence over this initial allocation.
+// Provider multipliers allocate 1% of fresh stock DeepSeek account buckets to
+// shared Tinfoil and 99% to dedicated i01: 70 * 10 : 100 * 693. The Tinfoil
+// share keeps live traffic and probes on that route so its health and circuit
+// state stay current for fallback. i02 remains reserved for its distinct
+// model. Eligible sticky routes and health gates retain their normal
+// precedence over this initial allocation.
 const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Tinfoil,
         provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
         response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        weight: 20,
+        weight: 10,
         enabled: true,
     },
     ModelRouteSpec {
         provider: ProviderId::Maple(MapleInstanceId::I01),
         provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
         response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        weight: 266,
+        weight: 693,
         enabled: true,
     },
 ];
@@ -316,7 +318,7 @@ const GPT_OSS_SAFEGUARD_120B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
 }];
 
 const COMPLETION_MODELS: &[CompletionModelSpec] = &[
-    completion_model(QUICK_MODEL_ID, GPT_OSS_120B_ROUTES),
+    completion_model(GPT_OSS_120B_MODEL_ID, GPT_OSS_120B_ROUTES),
     completion_model("gemma4-31b", GEMMA4_31B_ROUTES),
     completion_model(KIMI_K3_MODEL_ID, KIMI_K3_ROUTES),
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
@@ -472,7 +474,7 @@ mod tests {
         assert_eq!(
             ordered_model_ids,
             vec![
-                QUICK_MODEL_ID,
+                GPT_OSS_120B_MODEL_ID,
                 "gemma4-31b",
                 KIMI_K3_MODEL_ID,
                 GLM_5_3_MODEL_ID,
@@ -518,10 +520,10 @@ mod tests {
             routes,
             vec![
                 (
-                    QUICK_MODEL_ID,
+                    GPT_OSS_120B_MODEL_ID,
                     ProviderId::Tinfoil,
-                    QUICK_MODEL_ID,
-                    QUICK_MODEL_ID
+                    GPT_OSS_120B_MODEL_ID,
+                    GPT_OSS_120B_MODEL_ID
                 ),
                 (
                     "gemma4-31b",
@@ -618,7 +620,7 @@ mod tests {
                 .iter()
                 .map(|route| route.weight)
                 .collect::<Vec<_>>(),
-            [20, 266]
+            [10, 693]
         );
         for route in model.routes {
             assert_eq!(route.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -636,11 +638,11 @@ mod tests {
         use crate::inference::ModelSelectionMode;
         use crate::model_config::{ModelAliasTargets, ModelPlan};
         let paid = ModelAliasTargets::for_plan(ModelPlan::Paid);
-        assert_eq!(paid.resolve("auto:quick"), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(paid.resolve("auto:quick"), DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(paid.resolve("auto:powerful"), GLM_5_3_MODEL_ID);
         assert_eq!(
             auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::Paid).unwrap(),
-            [GLM_5_3_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID]
+            [DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID]
         );
         assert_eq!(
             auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Paid).unwrap(),

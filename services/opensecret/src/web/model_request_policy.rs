@@ -238,12 +238,12 @@ fn rename_developer_role(body: &mut Map<String, Value>) {
 mod tests {
     use super::*;
     use crate::model_config::{
-        DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
-        QUICK_MODEL_ID,
+        DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
+        GPT_OSS_120B_MODEL_ID, KIMI_K3_MODEL_ID,
     };
 
     const REASONING_MODELS: [&str; 7] = [
-        QUICK_MODEL_ID,
+        GPT_OSS_120B_MODEL_ID,
         "gpt-oss-safeguard-120b",
         "gemma4-31b",
         KIMI_K3_MODEL_ID,
@@ -308,10 +308,10 @@ mod tests {
             (GLM_5_3_MODEL_ID, "none", "low"),
             (GLM_5_3_MODEL_ID, "xhigh", "max"),
             (GLM_5_3_FLASH_MODEL_ID, "none", "low"),
-            (QUICK_MODEL_ID, "none", "low"),
-            (QUICK_MODEL_ID, "minimal", "low"),
-            (QUICK_MODEL_ID, "xhigh", "high"),
-            (QUICK_MODEL_ID, "max", "high"),
+            (GPT_OSS_120B_MODEL_ID, "none", "low"),
+            (GPT_OSS_120B_MODEL_ID, "minimal", "low"),
+            (GPT_OSS_120B_MODEL_ID, "xhigh", "high"),
+            (GPT_OSS_120B_MODEL_ID, "max", "high"),
             (KIMI_K3_MODEL_ID, "medium", "high"),
             (KIMI_K3_MODEL_ID, "none", "none"),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, "minimal", "low"),
@@ -421,7 +421,11 @@ mod tests {
 
     #[test]
     fn mandatory_models_drop_thinking_off_switches_and_keep_the_rest() {
-        for model in [GLM_5_3_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, QUICK_MODEL_ID] {
+        for model in [
+            GLM_5_3_MODEL_ID,
+            GLM_5_3_FLASH_MODEL_ID,
+            GPT_OSS_120B_MODEL_ID,
+        ] {
             let mut request = body(json!({
                 "model": model,
                 "messages": [],
@@ -491,10 +495,10 @@ mod tests {
         assert_eq!(kimi["messages"][0]["content"], "Be terse.");
         assert_eq!(kimi["messages"][1]["role"], "user");
 
-        let mut gpt_oss = body(json!({"model": QUICK_MODEL_ID, "messages": messages}));
+        let mut gpt_oss = body(json!({"model": GPT_OSS_120B_MODEL_ID, "messages": messages}));
         apply_model_request_policy(
             &mut gpt_oss,
-            QUICK_MODEL_ID,
+            GPT_OSS_120B_MODEL_ID,
             EffectiveReasoningEffort::Unchanged,
         );
         assert_eq!(gpt_oss["messages"][0]["role"], "developer");

@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn stock_deepseek_allocates_five_shared_and_ninety_five_i01_account_buckets() {
+    fn stock_deepseek_allocates_one_shared_and_ninety_nine_i01_account_buckets() {
         let providers = [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)];
         let mut counts = [0; 2];
         for bucket in 0..100u8 {
@@ -701,14 +701,14 @@ mod tests {
                 plan,
                 plan_completion_route(&PROVIDER_REGISTRY, input).unwrap()
             );
-            let index = usize::from(bucket >= 5);
+            let index = usize::from(bucket >= 1);
             counts[index] += 1;
             assert_eq!(plan.selected.provider, providers[index]);
             assert_eq!(plan.selected.bucket, Some(bucket));
             assert_eq!(plan.decision, PlanDecision::StaticBucket);
             assert_eq!(plan.eligible_routes.len(), 2);
         }
-        assert_eq!(counts, [5, 95]);
+        assert_eq!(counts, [1, 99]);
     }
 
     #[test]
