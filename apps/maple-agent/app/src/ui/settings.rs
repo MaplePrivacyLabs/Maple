@@ -36,7 +36,6 @@ mod api_credits;
 mod api_keys;
 mod billing;
 mod general;
-mod language;
 use general::{font_label, theme_label, voice_label};
 #[cfg(feature = "proxy")]
 mod local_api;
@@ -55,8 +54,6 @@ pub struct SettingsClosed(pub AppSettings);
 
 /// Emitted when the user clicks Sign out in the settings header.
 pub struct SignOutRequested;
-
-pub(crate) struct LanguageRestartRequested;
 
 /// Emitted after the server confirmed the account is deleted and the
 /// local session is gone; the app returns to the login form.
@@ -173,8 +170,6 @@ pub struct SettingsScreen {
     remote_screen: Entity<super::remote::RemoteScreen>,
     user_id: String,
     settings: AppSettings,
-    language_restart_pending: bool,
-    language_restart_dismissed: bool,
     update: crate::update::Snapshot,
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
@@ -291,7 +286,6 @@ impl EventEmitter<super::remote::ComputerNamed> for SettingsScreen {}
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<crate::update::UpdateRequested> for SettingsScreen {}
 impl EventEmitter<SignOutRequested> for SettingsScreen {}
-impl EventEmitter<LanguageRestartRequested> for SettingsScreen {}
 impl EventEmitter<AccountDeleted> for SettingsScreen {}
 impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
@@ -446,8 +440,6 @@ impl SettingsScreen {
             remote_screen,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
-            language_restart_pending: super::i18n::requires_restart(settings.locale.as_deref()),
-            language_restart_dismissed: false,
             settings,
             update: crate::update::Snapshot::initial(),
             section,
@@ -960,9 +952,6 @@ impl SettingsScreen {
     /// open one. Like a native popup button, the menu opens on the saved
     /// value.
     pub(super) fn toggle_setting_menu(&mut self, menu: SettingMenu, cx: &mut Context<Self>) {
-        if menu == SettingMenu::Language && !super::i18n::enabled() {
-            return;
-        }
         if self.popup.is_open(&menu) {
             self.popup.close(cx);
         } else {
@@ -1083,18 +1072,12 @@ impl SettingsScreen {
     ) {
         match menu {
             SettingMenu::Language => {
-                if !super::i18n::enabled() {
-                    return;
-                }
                 let Some(locale) = super::i18n::LANGUAGES.get(index) else {
                     return;
                 };
                 let locale = locale.map(str::to_owned);
-                if self.settings.locale != locale {
-                    self.language_restart_pending =
-                        super::i18n::requires_restart(locale.as_deref());
-                    self.language_restart_dismissed = false;
-                }
+                super::i18n::apply_preference(locale.as_deref());
+                cx.refresh_windows();
                 self.edit_setting(move |settings| settings.locale = locale, cx);
             }
             SettingMenu::Appearance => {

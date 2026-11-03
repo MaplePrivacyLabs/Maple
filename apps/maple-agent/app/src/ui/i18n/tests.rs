@@ -26,7 +26,7 @@ fn locale_resolution_accepts_os_spellings_and_falls_back_safely() {
 }
 
 #[test]
-fn spanish_preference_formats_existing_surfaces_and_applies_only_on_restart() {
+fn spanish_preference_formats_existing_surfaces_and_initializes_once() {
     let _localization = TestLocalizationGuard::enable();
     ACTIVE.with_borrow_mut(|state| {
         state.locale = ENGLISH;
@@ -34,8 +34,6 @@ fn spanish_preference_formats_existing_surfaces_and_applies_only_on_restart() {
         state.messages.clear();
     });
     initialize_saved_preference(Some("es"));
-    assert!(!requires_restart(Some("es-MX")));
-    assert!(requires_restart(Some("en")));
     assert_eq!(tr("settings-language").as_ref(), "Idioma");
     assert_eq!(preference_label(Some("es")).as_ref(), "Español");
     assert_eq!(
@@ -62,9 +60,6 @@ fn spanish_preference_formats_existing_surfaces_and_applies_only_on_restart() {
         state.messages.clear();
         state.system_label = None;
     });
-    assert!(!requires_restart(None));
-    assert!(!requires_restart(Some("en-US")));
-    assert!(requires_restart(Some("es")));
 }
 
 #[test]
@@ -303,7 +298,6 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     let mut visitor = UiStrings::default();
     visitor.visit_file(&syn::parse_file(include_str!("../update_confirmation.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/general.rs")).unwrap());
-    visitor.visit_file(&syn::parse_file(include_str!("../settings/language.rs")).unwrap());
     assert!(
         visitor.literals.is_empty(),
         "inline UI text: {:?}",
@@ -335,19 +329,15 @@ fn partial_catalog_falls_back_per_message_including_format_errors() {
 }
 
 #[test]
-fn localization_gate_defaults_off_and_ignores_locale_sources() {
-    assert!(!enabled());
-    assert_eq!(
-        gated_locale(false, || panic!("disabled gate must not read locale")),
-        ENGLISH
-    );
-    assert_eq!(gated_locale(true, || langid!("fr")), langid!("fr"));
-    ACTIVE.with_borrow_mut(|state| {
-        state.locale = langid!("fr");
-        state.loaded = false;
-        state.messages.clear();
-    });
-    initialize_saved_preference(Some("fr"));
-    ACTIVE.with_borrow(|state| assert_eq!(state.locale, ENGLISH));
-    assert_eq!(tr("update-confirmation-later").as_ref(), "Later");
+fn live_switch_invalidates_plain_and_system_labels() {
+    let _locale = TestLocalizationGuard::enable();
+    for (locale, label, system) in [
+        ("en", "Language", "System"),
+        ("es", "Idioma", "Sistema"),
+        ("en", "Language", "System"),
+    ] {
+        apply_preference(Some(locale));
+        assert_eq!(tr("settings-language").as_ref(), label);
+        assert!(preference_label(None).starts_with(system));
+    }
 }

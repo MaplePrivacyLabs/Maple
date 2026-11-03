@@ -32,21 +32,16 @@ impl SettingsScreen {
                     cx,
                 ),
             ))
-            .when(crate::ui::i18n::enabled(), |pane| {
-                pane.child(self.application_target(
-                    || SettingsTarget::General(GeneralTarget::Language),
-                    self.setting_menu_row(
-                        &crate::ui::i18n::tr("settings-language"),
-                        &crate::ui::i18n::tr("settings-language-description"),
-                        SettingMenu::Language,
-                        window,
-                        cx,
-                    ),
-                ))
-            })
-            .when(self.language_restart_visible(), |pane| {
-                pane.child(self.language_restart_notice(cx))
-            })
+            .child(self.application_target(
+                || SettingsTarget::General(GeneralTarget::Language),
+                self.setting_menu_row(
+                    &crate::ui::i18n::tr("settings-language"),
+                    &crate::ui::i18n::tr("settings-language-description"),
+                    SettingMenu::Language,
+                    window,
+                    cx,
+                ),
+            ))
             .child(section_title(&tr("settings-chat-appearance")))
             .child(self.application_target(
                 || SettingsTarget::General(GeneralTarget::ChatFont),

@@ -29,8 +29,6 @@ pub(super) enum GeneralTarget {
     Web,
     Appearance,
     Language,
-    LanguageRestartLater,
-    LanguageRestartNow,
     ChatFont,
     ChatSize,
     ToolDetails,
@@ -138,8 +136,6 @@ impl SettingsScreen {
                 GeneralTarget::Web,
                 GeneralTarget::Appearance,
                 GeneralTarget::Language,
-                GeneralTarget::LanguageRestartLater,
-                GeneralTarget::LanguageRestartNow,
                 GeneralTarget::ChatFont,
                 GeneralTarget::ChatSize,
                 GeneralTarget::ToolDetails,
@@ -153,13 +149,6 @@ impl SettingsScreen {
                 GeneralTarget::SpeechSpeed,
             ]
             .into_iter()
-            .filter(|target| *target != GeneralTarget::Language || crate::ui::i18n::enabled())
-            .filter(|target| {
-                !matches!(
-                    target,
-                    GeneralTarget::LanguageRestartLater | GeneralTarget::LanguageRestartNow
-                ) || self.language_restart_visible()
-            })
             .map(SettingsTarget::General)
             .collect(),
             Section::Account => self.account_targets(),
@@ -402,8 +391,6 @@ impl SettingsScreen {
         match target {
             GeneralTarget::Web => self.toggle_web_default(cx),
             GeneralTarget::Language => self.toggle_setting_menu(SettingMenu::Language, cx),
-            GeneralTarget::LanguageRestartLater => self.defer_language_restart(cx),
-            GeneralTarget::LanguageRestartNow => self.restart_for_language(cx),
             GeneralTarget::Appearance => self.toggle_setting_menu(SettingMenu::Appearance, cx),
             GeneralTarget::ChatFont => self.toggle_setting_menu(SettingMenu::ChatFont, cx),
             GeneralTarget::ChatSize => self.toggle_setting_menu(SettingMenu::ChatSize, cx),
@@ -1223,31 +1210,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn language_gate_hides_selector_and_preserves_saved_preference(cx: &mut TestAppContext) {
-        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
-        assert!(!crate::ui::i18n::enabled());
-        crate::settings::install_test_settings(crate::settings::AppSettings {
-            locale: Some("es".into()),
-            ..Default::default()
-        });
-        let (settings, cx) = dropdown_window(cx, true);
-        assert!(cx.debug_bounds("setting-value-language").is_none());
-        settings.update(cx, |this, cx| {
-            this.settings.locale = crate::settings::load_settings().locale;
-            assert!(
-                !this
-                    .visible_application_targets()
-                    .contains(&SettingsTarget::General(GeneralTarget::Language))
-            );
-            this.toggle_setting_menu(SettingMenu::Language, cx);
-            assert_eq!(this.popup.open_key(), None);
-            this.pick_setting_option(SettingMenu::Language, 0, cx);
-            assert_eq!(this.settings.locale.as_deref(), Some("es"));
-        });
-        crate::settings::discard_decrypted_cache();
-    }
-
-    #[gpui::test]
     fn language_dropdown_supports_pointer_and_keyboard_selection(cx: &mut TestAppContext) {
         let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
@@ -1261,69 +1223,17 @@ mod tests {
             cx.simulate_keystrokes("down enter");
             settings.update(cx, |this, _| {
                 assert_eq!(this.settings.locale.as_deref(), expected);
+                assert_eq!(
+                    crate::ui::i18n::tr("settings-language").as_ref(),
+                    if expected == Some("es") {
+                        "Idioma"
+                    } else {
+                        "Language"
+                    }
+                );
                 assert_eq!(this.popup.open_key(), None);
             });
         }
-        crate::settings::discard_decrypted_cache();
-    }
-
-    #[gpui::test]
-    fn language_restart_notice_can_restart_defer_and_clear_on_revert(cx: &mut TestAppContext) {
-        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
-        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
-        crate::settings::install_test_settings(crate::settings::AppSettings::default());
-        let (settings, cx) = dropdown_window(cx, true);
-        let requests = std::rc::Rc::new(std::cell::Cell::new(0));
-        let received = requests.clone();
-        let _subscription = cx.update(|_, app| {
-            app.subscribe(
-                &settings,
-                move |_, _: &super::super::LanguageRestartRequested, _| {
-                    received.set(received.get() + 1);
-                },
-            )
-        });
-        assert!(cx.debug_bounds("language-restart-notice").is_none());
-        settings.update(cx, |this, cx| {
-            this.pick_setting_option(SettingMenu::Language, 1, cx);
-            assert!(
-                !this.language_restart_visible(),
-                "English and System resolve alike"
-            );
-            this.pick_setting_option(SettingMenu::Language, 2, cx);
-            assert!(this.language_restart_visible());
-            this.application_vim.region = SettingsRegion::Pane;
-            this.application_vim.target =
-                Some(SettingsTarget::General(GeneralTarget::LanguageRestartNow));
-            this.application_focus_pending = true;
-        });
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("language-restart-notice").is_some());
-        cx.simulate_keystrokes("enter");
-        assert_eq!(requests.get(), 1);
-        let later = cx.debug_bounds("language-restart-later").unwrap();
-        cx.simulate_click(later.center(), gpui::Modifiers::default());
-        settings.update(cx, |this, cx| {
-            assert!(!this.language_restart_visible());
-            assert_eq!(this.settings.locale.as_deref(), Some("es"));
-            assert!(
-                !this
-                    .visible_application_targets()
-                    .contains(&SettingsTarget::General(GeneralTarget::LanguageRestartNow))
-            );
-            this.pick_setting_option(SettingMenu::Language, 0, cx);
-            assert!(!this.language_restart_visible());
-            this.pick_setting_option(SettingMenu::Language, 2, cx);
-            assert!(
-                this.language_restart_visible(),
-                "a new change restores the notice"
-            );
-            this.pick_setting_option(SettingMenu::Language, 1, cx);
-            assert!(
-                !this.language_restart_visible(),
-                "reverting clears the notice"
-            );
-        });
         crate::settings::discard_decrypted_cache();
     }
 

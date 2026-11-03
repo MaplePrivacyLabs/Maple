@@ -171,5 +171,5 @@ Use the embedded Fluent catalog and `ui::i18n` for new UI labels, including
 accessibility text; see [localization](docs/localization.md) for extraction and
 locale enablement. Cache parameterized messages when their state changes. Keep
 element IDs, protocol values, model prompts, user content and persisted timeline
-text unchanged. Language changes apply on restart. Extend the converted-module
+text unchanged. Language changes apply live; invalidate cached translated text when the locale changes. Extend the converted-module
 guard as each module is extracted; host errors and native menus need owned work.

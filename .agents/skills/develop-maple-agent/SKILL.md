@@ -114,7 +114,7 @@ parse the feed strictly; keep the wire contract in that doc unchanged. See
 New Agent UI labels use `ui::i18n` and the embedded Fluent catalogs; follow
 [the localization contract](../../../apps/maple-agent/docs/localization.md).
 Plain labels are cached; parameterized messages are formatted on state changes.
-Language changes apply on restart. Preserve machine identifiers, model-facing
+Language changes apply live; invalidate cached translated text when the locale changes. Preserve machine identifiers, model-facing
 text, user content and persisted timeline text. Do not translate host/ACP errors
 in place. Expand the converted-module guard with each extraction, and require
 platform/font/packaging evidence before enabling another locale.

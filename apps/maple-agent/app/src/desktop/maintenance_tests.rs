@@ -775,7 +775,6 @@ fn pending_quit_cannot_finish_an_update_installation(cx: &mut gpui::TestAppConte
     let backend =
         Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
     let updater = crate::update::Controller::new(false);
-    let mut restarted = cx.expect_restart();
     cx.update(|cx| {
         cx.set_global(DesktopLifecycle {
             backend,
@@ -794,28 +793,10 @@ fn pending_quit_cannot_finish_an_update_installation(cx: &mut gpui::TestAppConte
         assert!(may_finish_quit(cx));
         updater.set_test_state(crate::update::State::Installing);
         assert!(!may_finish_quit(cx));
-        restart_for_language_change(cx);
-        assert!(!cx.has_global::<LanguageRestartPending>());
         assert!(!cx.global::<DesktopLifecycle>().quit_completed.get());
         updater.set_test_state(crate::update::State::Error);
         assert!(may_finish_quit(cx));
-        cx.set_global(LanguageRestartPending);
-        finish_quit(cx);
-        assert_eq!(
-            restarted.try_recv().unwrap(),
-            None,
-            "restart must await the host drain"
-        );
-        cancel_quit(cx);
-        assert!(!cx.has_global::<LanguageRestartPending>());
-        cx.set_global(LanguageRestartPending);
-        cx.global::<DesktopLifecycle>().quit_completed.set(true);
-        finish_quit(cx);
-        assert_eq!(restarted.try_recv().unwrap(), Some(None));
-        assert!(!cx.has_global::<LanguageRestartPending>());
     });
-    #[cfg(target_os = "macos")]
-    native_quit::reset_frontend_detach_for_test();
 }
 
 #[gpui::test]

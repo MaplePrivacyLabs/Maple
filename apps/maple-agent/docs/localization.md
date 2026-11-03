@@ -8,48 +8,24 @@ Spanish are enabled in the preview.
 Most of the app is still English; this is infrastructure for incremental
 extraction, not a claim of complete localization.
 
-## Preview gate
+## Locale and live switching
 
-Localization is off by default in unpackaged, Dev, and Prod builds. Set
-`MAPLE_ENABLE_LOCALIZATION=1` in the application's launch environment to enable
-it (`true` and `yes` also work, case-insensitively). The value is read once per
-process; quit and reopen to change it. For hosted Dev from this component:
+Localization is enabled by default. Settings → General → Language offers System,
+English and Español. Changes are saved through the host and apply immediately;
+no environment variable or restart is needed.
 
-```sh
-MAPLE_RELEASE_PROFILE=dev MAPLE_ENABLE_LOCALIZATION=1 \
-  nix develop --no-update-lock-file -c just run
-```
+The OS locale supplies the initial default. The first host settings snapshot
+loads the saved preference. A user selection clears the plain-label and System
+label caches and refreshes GPUI windows. General settings resolves labels during
+render; an open update confirmation reformats its versioned title only when its
+locale changes. Saved control values and element IDs remain stable.
 
-Without the opt-in, the Language row and its keyboard-navigation target are
-hidden, locale selection stays English, and existing saved language preferences
-are preserved but ignored. Fluent catalogs/helpers remain compiled in. This is
-a local preview gate, not a server-controlled rollout or an authorization check.
-Tests default to the gate off and explicitly opt in for selector coverage.
-
-## Locale and lifetime
-
-Settings → General → Language offers System, English and Español. The optional
-`locale` preference uses the existing host-synced UI settings row. Old or malformed
-preferences use System; unknown language tags resolve to English without
-preventing startup or overwriting the saved value.
-
-The OS locale is read once, normalized from platform/POSIX spelling, and matched
-against enabled catalogs, first exactly, then without variants, region, and
-script. English is the final default. Before the store is unlocked, the UI uses
-the OS default. The first loaded host settings snapshot selects the process
-locale. Language edits apply after **quitting and reopening Maple**; closing
-and reopening Settings is not enough.
-
-When a saved choice differs from the running language, Settings shows a localized
-restart notice with Restart now and Later. Restart now uses the normal quit
-coordinator, including saving preferences and stopping the host; cancelling Quit
-also cancels the restart. Later dismisses the notice for this Settings visit;
-reopening Settings reminds again until the language is applied or reverted.
-
-Restarting avoids incomplete live updates of cached GPUI panels, precomputed
-sidebar sections, and native menus. No per-frame
-or language-change window refresh is introduced. Unit/GPUI tests default to
-English regardless of the executing machine's locale.
+Locale state currently belongs to the GPUI thread. Call presentation helpers on
+that thread; background workers should return semantic data for the UI to format.
+Tests use isolated thread-local state and default to English. Other pages and
+native/tray menus remain English until extracted. Future translated cached views
+must invalidate formatted text on locale changes; refreshing windows alone does
+not rebuild their stored strings.
 
 ## Adding UI text
 

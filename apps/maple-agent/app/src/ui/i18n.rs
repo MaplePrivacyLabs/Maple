@@ -16,43 +16,25 @@ fluent_templates::static_loader! {
 
 const ENGLISH: LanguageIdentifier = langid!("en");
 
-/// Preview opt-in, fixed for this process in every build profile.
-pub(super) fn enabled() -> bool {
-    #[cfg(not(test))]
-    {
-        static ENABLED: LazyLock<bool> =
-            LazyLock::new(|| crate::env::env_flag("MAPLE_ENABLE_LOCALIZATION"));
-        *ENABLED
-    }
-    #[cfg(test)]
-    TEST_ENABLED.with(std::cell::Cell::get)
-}
-
+/// Isolate locale state between UI tests without changing process environment.
 #[cfg(test)]
-thread_local! {
-    static TEST_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Scoped UI-thread override: tests never mutate the process environment.
-#[cfg(test)]
-pub(super) struct TestLocalizationGuard(bool);
-
+pub(super) struct TestLocalizationGuard;
 #[cfg(test)]
 impl TestLocalizationGuard {
     pub(super) fn enable() -> Self {
-        Self(TEST_ENABLED.with(|enabled| enabled.replace(true)))
+        Self
     }
 }
-
 #[cfg(test)]
 impl Drop for TestLocalizationGuard {
     fn drop(&mut self) {
-        TEST_ENABLED.with(|enabled| enabled.set(self.0));
+        ACTIVE.with_borrow_mut(|state| {
+            state.locale = ENGLISH;
+            state.loaded = false;
+            state.messages.clear();
+            state.system_label = None;
+        });
     }
-}
-
-fn gated_locale(enabled: bool, locale: impl FnOnce() -> LanguageIdentifier) -> LanguageIdentifier {
-    if enabled { locale() } else { ENGLISH }
 }
 
 /// Enabled catalogs. None is the persisted system preference. Add a language
@@ -83,7 +65,7 @@ static SYSTEM: LazyLock<LanguageIdentifier> = LazyLock::new(|| {
     }
     #[cfg(not(test))]
     {
-        gated_locale(enabled(), || resolve(sys_locale::get_locale().as_deref()))
+        resolve(sys_locale::get_locale().as_deref())
     }
 });
 
@@ -136,29 +118,31 @@ fn resolve_enabled(requested: Option<&str>, enabled: &[Option<&str>]) -> Languag
 }
 
 /// Called once after the host hydrates saved settings. Before unlock the UI
-/// uses the OS default. Later edits deliberately take effect on next launch:
-/// cached panels, precomputed sections and native menus have separate lifecycles.
+/// uses the OS default. User edits subsequently apply through `apply_preference`.
 pub(crate) fn initialize_saved_preference(preference: Option<&str>) {
     ACTIVE.with_borrow_mut(|state| {
         if state.loaded {
             return;
         }
-        state.locale = gated_locale(enabled(), || {
-            preference.map_or_else(|| SYSTEM.clone(), |value| resolve(Some(value)))
-        });
+        state.locale = preference.map_or_else(|| SYSTEM.clone(), |value| resolve(Some(value)));
         state.messages.clear();
         state.system_label = None;
         state.loaded = true;
     });
 }
 
-/// Compare effective languages, so System and an equivalent explicit choice
-/// do not ask for an unnecessary restart. Call when the preference changes.
-pub(super) fn requires_restart(preference: Option<&str>) -> bool {
-    enabled()
-        && ACTIVE.with_borrow(|state| {
-            state.locale != preference.map_or_else(|| SYSTEM.clone(), |value| resolve(Some(value)))
-        })
+/// Apply a user selection and invalidate translated labels on the owning UI thread.
+pub(crate) fn apply_preference(preference: Option<&str>) {
+    ACTIVE.with_borrow_mut(|state| {
+        state.locale = preference.map_or_else(|| SYSTEM.clone(), |value| resolve(Some(value)));
+        state.loaded = true;
+        state.messages.clear();
+        state.system_label = None;
+    });
+}
+
+pub(crate) fn current_locale() -> LanguageIdentifier {
+    ACTIVE.with_borrow(|state| state.locale.clone())
 }
 
 pub(super) fn preference_label(preference: Option<&str>) -> SharedString {

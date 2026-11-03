@@ -1,13 +1,9 @@
 # Traducción de la interfaz. Los identificadores de mensajes y elementos no se traducen.
 settings-language = Idioma
-settings-language-description = Se aplica después de reiniciar Maple. El texto que aún no se haya traducido seguirá en inglés.
+settings-language-description = Los cambios se aplican de inmediato. El texto que aún no se haya traducido seguirá en inglés.
 # $language es el nombre del idioma del sistema en su propio idioma.
 settings-language-system = Sistema ({ $language })
 language-name = Español
-settings-language-restart-title = Reinicia Maple para aplicar el cambio de idioma
-settings-language-restart-detail = Tu elección se ha guardado. Reiniciar detendrá las tareas en ejecución y el acceso remoto en este equipo.
-settings-language-restart-later = Más tarde
-settings-language-restart-now = Reiniciar ahora
 update-confirmation-title = ¿Reiniciar Maple para actualizar?
 # $version es la versión de destino de la aplicación y no se traduce.
 update-confirmation-title-version = ¿Reiniciar Maple para instalar la versión { $version }?

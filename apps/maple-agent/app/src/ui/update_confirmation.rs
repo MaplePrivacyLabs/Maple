@@ -11,6 +11,8 @@ use super::{
 
 pub(crate) struct UpdateConfirmation {
     title: SharedString,
+    version: Option<String>,
+    locale: fluent_templates::LanguageIdentifier,
     answer: Option<oneshot::Sender<usize>>,
     previous_focus: Option<FocusHandle>,
     later_focus: FocusHandle,
@@ -34,6 +36,8 @@ pub(crate) fn open(
                 )
             },
         ),
+        version: version.map(str::to_owned),
+        locale: super::i18n::current_locale(),
         answer: Some(sender),
         previous_focus,
         later_focus: cx.focus_handle(),
@@ -60,6 +64,19 @@ impl Render for UpdateConfirmation {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.answer.is_none() {
             return div().into_any_element();
+        }
+        let locale = super::i18n::current_locale();
+        if self.locale != locale {
+            self.title = self.version.as_deref().map_or_else(
+                || tr("update-confirmation-title"),
+                |version| {
+                    tr_args(
+                        "update-confirmation-title-version",
+                        [("version", version.into())],
+                    )
+                },
+            );
+            self.locale = locale;
         }
         let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(480.));
         let height = (window.viewport_size().height - px(48.)).max(px(0.));
@@ -177,6 +194,29 @@ mod tests {
     impl Render for PromptHost {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().relative().size_full().children(self.prompt.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn open_dialog_refreshes_its_title_on_language_change(cx: &mut gpui::TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let (host, _answer, cx) = show(cx);
+        for (locale, prefix) in [("es", "¿Reiniciar Maple"), ("en", "Restart Maple")] {
+            cx.update(|_, app| {
+                crate::ui::i18n::apply_preference(Some(locale));
+                app.refresh_windows();
+            });
+            cx.run_until_parked();
+            host.update(cx, |host, cx| {
+                assert!(
+                    host.prompt
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .title
+                        .starts_with(prefix)
+                );
+            });
         }
     }
 
