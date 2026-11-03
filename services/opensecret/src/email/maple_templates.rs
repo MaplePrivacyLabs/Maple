@@ -1,5 +1,5 @@
 //! Maple account mail. The HTML files keep the shared layout separate from the
-//! six message bodies and are compiled into the binary.
+//! message bodies and are compiled into the binary.
 //!
 //! Rendering cannot panic. Every `{{NAME}}` in the templates is checked while
 //! the crate compiles, so a misspelled or unclosed placeholder fails the build,
@@ -16,6 +16,7 @@ const VERIFICATION: &str = include_str!("maple_templates/verification.html");
 const PASSWORD_RESET: &str = include_str!("maple_templates/password-reset.html");
 const PASSWORD_RESET_CONFIRMATION: &str =
     include_str!("maple_templates/password-reset-confirmation.html");
+const RECOVERY_CODE_CHANGE: &str = include_str!("maple_templates/recovery-code-change.html");
 const ACCOUNT_DELETION: &str = include_str!("maple_templates/account-deletion.html");
 const ACCOUNT_DELETION_CONFIRMATION: &str =
     include_str!("maple_templates/account-deletion-confirmation.html");
@@ -57,8 +58,18 @@ const _: () = {
         "password-reset.html has an unknown or unclosed placeholder"
     );
     assert!(
-        placeholders_are_known(PASSWORD_RESET_CONFIRMATION, &[BODY_FIELDS]),
+        placeholders_are_known(
+            PASSWORD_RESET_CONFIRMATION,
+            &[BODY_FIELDS, &["RECOVERY_DETAILS"]]
+        ),
         "password-reset-confirmation.html has an unknown or unclosed placeholder"
+    );
+    assert!(
+        placeholders_are_known(
+            RECOVERY_CODE_CHANGE,
+            &[BODY_FIELDS, &["RECOVERY_TITLE", "RECOVERY_DETAILS"]]
+        ),
+        "recovery-code-change.html has an unknown or unclosed placeholder"
     );
     assert!(
         placeholders_are_known(ACCOUNT_DELETION, &[BODY_FIELDS, &["DELETION_CODE"]]),
@@ -79,7 +90,7 @@ pub(super) enum TemplateError {
     Unknown(String),
 }
 
-fn escape_html(value: &str) -> String {
+pub(super) fn escape_html(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
         match c {
@@ -189,12 +200,19 @@ pub(super) fn render(
             PASSWORD_RESET,
             "password-reset",
         ),
-        AccountEmail::PasswordResetConfirmation => (
+        AccountEmail::PasswordResetConfirmation { .. } => (
             format!("Your {project} password was changed"),
             "Password updated".to_string(),
             "If this was you, you're all set. If not, contact us right away.",
             PASSWORD_RESET_CONFIRMATION,
             "password-changed",
+        ),
+        AccountEmail::RecoveryCodeChange { event } => (
+            format!("{} for your {project} account", event.title()),
+            event.title().to_string(),
+            "A recovery setting changed on your account. If this wasn't you, contact us right away.",
+            RECOVERY_CODE_CHANGE,
+            "recovery-code-changed",
         ),
         AccountEmail::AccountDeletion { .. } => (
             format!("Confirm your {project} account deletion"),
@@ -219,9 +237,14 @@ pub(super) fn render(
         ],
         AccountEmail::PasswordReset { code } => vec![("RESET_CODE", escape_html(code))],
         AccountEmail::AccountDeletion { code } => vec![("DELETION_CODE", escape_html(code))],
-        AccountEmail::Welcome
-        | AccountEmail::PasswordResetConfirmation
-        | AccountEmail::AccountDeletionConfirmation => Vec::new(),
+        AccountEmail::PasswordResetConfirmation { recovery } => {
+            vec![("RECOVERY_DETAILS", escape_html(recovery.details()))]
+        }
+        AccountEmail::RecoveryCodeChange { event } => vec![
+            ("RECOVERY_TITLE", escape_html(event.title())),
+            ("RECOVERY_DETAILS", escape_html(event.details())),
+        ],
+        AccountEmail::Welcome | AccountEmail::AccountDeletionConfirmation => Vec::new(),
     };
 
     let project = escape_html(project);

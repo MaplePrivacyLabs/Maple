@@ -1,3 +1,4 @@
+use crate::email::{notify_recovery_code_changed, RecoveryCodeEvent};
 use crate::encrypt;
 use crate::jwt::{validate_jwt, AuthContext, NewToken, TokenType};
 use crate::message_signing::SigningAlgorithm;
@@ -1537,6 +1538,7 @@ pub async fn enroll_recovery(
             }
         })?;
 
+    notify_recovery_code_changed(&data, &user, RecoveryCodeEvent::Enrolled);
     info!("Recovery code enrolled for user {}", user.uuid);
     let response = RecoveryCodeResponse {
         // Shown to the user exactly once in the encrypted response; never
@@ -1597,6 +1599,7 @@ pub async fn rotate_recovery(
             }
         })?;
 
+    notify_recovery_code_changed(&data, &user, RecoveryCodeEvent::Rotated);
     info!("Recovery code rotated for user {}", user.uuid);
     let response = RecoveryCodeResponse {
         recovery_code: code.display(),
@@ -1628,7 +1631,7 @@ pub async fn disable_recovery(
 
     // Idempotent at the API boundary: deleting an absent wrap is a no-op, so
     // a concurrent rotation or disabling race cannot make this fail.
-    data.db.delete_recovery_wrap_for_user(&user).map_err(|e| {
+    let deleted = data.db.delete_recovery_wrap_for_user(&user).map_err(|e| {
         error!("Failed to delete recovery wrap: {:?}", e);
         match e {
             DBError::StaleCredentialState => ApiError::Unauthorized,
@@ -1636,6 +1639,9 @@ pub async fn disable_recovery(
         }
     })?;
 
+    if deleted > 0 {
+        notify_recovery_code_changed(&data, &user, RecoveryCodeEvent::Disabled);
+    }
     info!("Recovery disabled for user {}", user.uuid);
     let response = json!({ "message": "Recovery disabled successfully" });
     encrypt_response(&data, &transport_session, &response).await

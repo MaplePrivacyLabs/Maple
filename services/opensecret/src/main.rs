@@ -2,6 +2,7 @@ use crate::email::{
     send_account_deletion_confirmation_email, send_account_deletion_email,
     send_password_reset_confirmation_email, send_password_reset_email,
     send_platform_password_reset_confirmation_email, send_platform_password_reset_email,
+    PasswordResetRecovery,
 };
 use crate::encrypt::encrypt_key_deterministic;
 use crate::encrypt::generate_random;
@@ -2482,6 +2483,7 @@ impl AppState {
                 &app_state,
                 project_id,
                 user_email.expect("We checked email had to exist above"),
+                PasswordResetRecovery::Removed,
             )
             .await
             {
@@ -2595,6 +2597,7 @@ impl AppState {
                 &app_state,
                 project_id,
                 user_email.expect("Preserving reset proof verified the email exists"),
+                PasswordResetRecovery::Used,
             )
             .await
             {
