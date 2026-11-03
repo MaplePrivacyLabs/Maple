@@ -2,9 +2,9 @@
 
 The localization foundation uses embedded Fluent catalogs.
 It currently covers the update confirmation dialog (including accessibility
-text) and the language setting. English is the only enabled catalog. Most of
-the app is still English; this is infrastructure for incremental extraction,
-not a claim of complete localization.
+text) and the language setting. English and Spanish are enabled in the preview.
+Most of the app is still English; this is infrastructure for incremental
+extraction, not a claim of complete localization.
 
 ## Preview gate
 
@@ -26,8 +26,8 @@ Tests default to the gate off and explicitly opt in for selector coverage.
 
 ## Locale and lifetime
 
-Settings → General → Language offers System and English. The optional `locale`
-preference uses the existing host-synced UI settings row. Old or malformed
+Settings → General → Language offers System, English and Español. The optional
+`locale` preference uses the existing host-synced UI settings row. Old or malformed
 preferences use System; unknown language tags resolve to English without
 preventing startup or overwriting the saved value.
 
@@ -82,8 +82,10 @@ A partial catalog can fall back safely at runtime, but it is not enabled or
 shipped until completeness checks pass. To add a language, add its complete
 catalog and native `language-name`, then register it in `i18n::LANGUAGES`.
 Validate layout, font fallback, bidi marks, and platform-native language
-metadata before enablement. The current macOS bundle declares English only;
-additional languages require owned packaging changes and evidence.
+metadata before production enablement. Spanish currently has Linux preview
+evidence only; macOS/Windows runtime and Spanish native language metadata remain
+follow-ups. The current macOS bundle declares English only, so native OS dialogs
+are outside this preview's Spanish coverage.
 
 ## Explicit follow-ups
 

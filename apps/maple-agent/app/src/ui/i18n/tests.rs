@@ -20,6 +20,46 @@ fn locale_resolution_accepts_os_spellings_and_falls_back_safely() {
     ] {
         assert_eq!(resolve(locale), ENGLISH);
     }
+    for locale in ["es", "es-ES", "es-MX", "es_ES.UTF-8"] {
+        assert_eq!(resolve(Some(locale)), langid!("es"));
+    }
+}
+
+#[test]
+fn spanish_preference_formats_existing_surfaces_and_applies_only_on_restart() {
+    let _localization = TestLocalizationGuard::enable();
+    ACTIVE.with_borrow_mut(|state| {
+        state.locale = ENGLISH;
+        state.loaded = false;
+        state.messages.clear();
+    });
+    initialize_saved_preference(Some("es"));
+    assert_eq!(tr("settings-language").as_ref(), "Idioma");
+    assert_eq!(preference_label(Some("es")).as_ref(), "Español");
+    assert_eq!(
+        tr("update-confirmation-title").as_ref(),
+        "¿Reiniciar Maple para actualizar?"
+    );
+    assert_eq!(
+        tr_args(
+            "update-confirmation-title-version",
+            [("version", "0.0.16".into())]
+        )
+        .as_ref(),
+        "¿Reiniciar Maple para instalar la versión \u{2068}0.0.16\u{2069}?"
+    );
+    assert_eq!(
+        tr_args("settings-language-system", [("language", "Español".into())]).as_ref(),
+        "Sistema (\u{2068}Español\u{2069})"
+    );
+    initialize_saved_preference(Some("en"));
+    assert_eq!(tr("settings-language").as_ref(), "Idioma");
+    ACTIVE.with_borrow_mut(|state| {
+        state.locale = ENGLISH;
+        state.loaded = false;
+        state.messages.clear();
+        state.system_label = None;
+    });
 }
 
 #[test]

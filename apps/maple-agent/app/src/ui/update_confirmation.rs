@@ -116,21 +116,21 @@ impl Render for UpdateConfirmation {
                     .text_color(gpui::rgb(theme::text_primary()))
                     .child(
                         div()
-                            .w_full()
-                            .flex_shrink_0()
-                            .text_lg()
-                            .child(self.title.clone()),
-                    )
-                    .child(
-                        div()
                             .id("update-confirmation-body")
                             .debug_selector(|| "update-confirmation-body".to_string())
                             .w_full()
                             .min_w_0()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .text_sm()
-                            .child(tr("update-confirmation-detail")),
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_4()
+                                    .child(div().text_lg().child(self.title.clone()))
+                                    .child(div().text_sm().child(tr("update-confirmation-detail"))),
+                            ),
                     )
                     .child(
                         div()
@@ -187,14 +187,22 @@ mod tests {
         oneshot::Receiver<usize>,
         &mut gpui::VisualTestContext,
     ) {
+        show_with_title(cx, "Restart Maple to install v\u{2068}0.0.14\u{2069}?")
+    }
+
+    fn show_with_title<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        expected_title: &str,
+    ) -> (
+        Entity<PromptHost>,
+        oneshot::Receiver<usize>,
+        &'a mut gpui::VisualTestContext,
+    ) {
         let answer = Rc::new(RefCell::new(None));
         let result = answer.clone();
         let (host, cx) = cx.add_window_view(move |window, cx| {
             let (prompt, receiver) = open(Some("0.0.14"), window, cx);
-            assert_eq!(
-                prompt.read(cx).title.as_ref(),
-                "Restart Maple to install v\u{2068}0.0.14\u{2069}?"
-            );
+            assert_eq!(prompt.read(cx).title.as_ref(), expected_title);
             *result.borrow_mut() = Some(receiver);
             PromptHost {
                 prompt: Some(prompt),
@@ -220,6 +228,25 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (_host, _answer, cx) = show(cx);
+        assert_layout(cx);
+    }
+
+    #[gpui::test]
+    fn spanish_confirmation_wraps_and_keeps_actions_inside_the_viewport(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::initialize_saved_preference(Some("es"));
+        let (_host, mut answer, cx) = show_with_title(
+            cx,
+            "¿Reiniciar Maple para instalar la versión \u{2068}0.0.14\u{2069}?",
+        );
+        assert_layout(cx);
+        cx.simulate_keystrokes("escape");
+        assert_eq!(answer.try_recv().unwrap(), 0);
+    }
+
+    fn assert_layout(cx: &mut gpui::VisualTestContext) {
         for (width, height) in [(1213., 800.), (640., 600.), (320., 480.), (640., 220.)] {
             cx.simulate_resize(gpui::size(px(width), px(height)));
             let card = cx.debug_bounds("update-confirmation").unwrap();

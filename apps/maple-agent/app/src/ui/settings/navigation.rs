@@ -1190,7 +1190,7 @@ mod tests {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         assert!(!crate::ui::i18n::enabled());
         crate::settings::install_test_settings(crate::settings::AppSettings {
-            locale: Some("en".into()),
+            locale: Some("es".into()),
             ..Default::default()
         });
         let (settings, cx) = dropdown_window(cx, true);
@@ -1205,7 +1205,7 @@ mod tests {
             this.toggle_setting_menu(SettingMenu::Language, cx);
             assert_eq!(this.popup.open_key(), None);
             this.pick_setting_option(SettingMenu::Language, 0, cx);
-            assert_eq!(this.settings.locale.as_deref(), Some("en"));
+            assert_eq!(this.settings.locale.as_deref(), Some("es"));
         });
         crate::settings::discard_decrypted_cache();
     }
@@ -1216,7 +1216,7 @@ mod tests {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         crate::settings::install_test_settings(crate::settings::AppSettings::default());
         let (settings, cx) = dropdown_window(cx, false);
-        for expected in [Some("en"), None] {
+        for expected in [Some("en"), Some("es"), None] {
             let button = cx
                 .debug_bounds("setting-value-language")
                 .expect("language selector");
@@ -1248,7 +1248,7 @@ mod tests {
             this.toggle_setting_menu(SettingMenu::Appearance, cx);
             this.pick_setting_option(SettingMenu::Appearance, 2, cx);
             this.toggle_setting_menu(SettingMenu::Language, cx);
-            this.pick_setting_option(SettingMenu::Language, 1, cx);
+            this.pick_setting_option(SettingMenu::Language, 2, cx);
         });
         crate::settings::update_settings_and_wait(|_| {});
         // Detach the writer's Arc and discard its cached value before closing
@@ -1270,7 +1270,7 @@ mod tests {
         );
         assert_eq!(
             saved.get("locale").and_then(serde_json::Value::as_str),
-            Some("en")
+            Some("es")
         );
         reopened.close().unwrap();
         cx.run_until_parked();

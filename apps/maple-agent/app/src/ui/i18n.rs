@@ -57,7 +57,7 @@ fn gated_locale(enabled: bool, locale: impl FnOnce() -> LanguageIdentifier) -> L
 
 /// Enabled catalogs. None is the persisted system preference. Add a language
 /// here only when its catalog has passed the completeness checks.
-pub(super) const LANGUAGES: &[Option<&str>] = &[None, Some("en")];
+pub(super) const LANGUAGES: &[Option<&str>] = &[None, Some("en"), Some("es")];
 static NATIVE_NAMES: LazyLock<HashMap<&'static str, SharedString>> = LazyLock::new(|| {
     LANGUAGES
         .iter()
