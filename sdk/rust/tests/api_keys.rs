@@ -31,10 +31,12 @@ fn get_test_config() -> (String, String, String, Uuid) {
     (api_url, email, password, client_id)
 }
 
+// Live Chat Completions requires a paid account; Free accounts receive
+// `model_not_available_on_plan`.
 fn chat_model() -> String {
     env::var("OPENSECRET_TEST_CHAT_MODEL")
         .or_else(|_| env::var("VITE_TEST_CHAT_MODEL"))
-        .unwrap_or_else(|_| "llama3-3-70b".to_string())
+        .unwrap_or_else(|_| "deepseek-v4-1-flash".to_string())
 }
 
 fn is_live_ai_usage_limit(error: &Error) -> bool {
@@ -112,11 +114,8 @@ async fn test_api_key_authentication() -> Result<()> {
     assert!(!models.data.is_empty());
 
     // Test that the models endpoint works
-    let model_exists = models
-        .data
-        .iter()
-        .any(|m| m.id.contains("llama") || m.id.contains("gpt"));
-    assert!(model_exists, "Should have at least one model available");
+    let model_exists = models.data.iter().any(|m| m.id == "deepseek-v4-1-flash");
+    assert!(model_exists, "Should list the Quick model");
 
     // Clean up: delete the API key
     client.delete_api_key(&api_key_name).await?;

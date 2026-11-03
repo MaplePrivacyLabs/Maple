@@ -28,10 +28,14 @@ use super::{
     SideQuestionTurn, emit_agent_event,
 };
 
+/// Titles and summaries ask the Quick tier, so the backend picks its model
+/// for the account's plan and moves to the tier's fallback when that model
+/// is unavailable.
+const QUICK_SIDE_MODEL: &str = "auto:quick";
 /// The model that generates task titles.
-pub(super) const TITLE_MODEL: &str = "llama3-3-70b";
-/// The normal DeepSeek model that summarizes tool calls and thinking.
-pub(super) const SUMMARY_MODEL: &str = "deepseek-v4-1-flash";
+pub(super) const TITLE_MODEL: &str = QUICK_SIDE_MODEL;
+/// The model that summarizes tool calls and thinking.
+pub(super) const SUMMARY_MODEL: &str = QUICK_SIDE_MODEL;
 /// The vision model that describes images for a model without vision.
 pub(super) const IMAGE_DESCRIPTION_MODEL: &str = "gemma4-31b";
 /// Every model asked beside a task.
@@ -113,15 +117,16 @@ async fn ask_side_model(
     cancel: CancellationToken,
 ) -> Result<String, String> {
     let has_image = request.image.is_some();
-    // DeepSeek thinks by default. Advertise its optional reasoning so Off
-    // reaches the provider as an explicit `reasoning_effort: "none"`.
-    let summary_reasoning = (request.model == SUMMARY_MODEL).then_some(ThinkingLevel::Off);
+    // The Quick tier's models think by default. Advertise optional reasoning
+    // so Off reaches the backend as an explicit `reasoning_effort: "none"`;
+    // the backend moves it to the nearest effort a fallback model accepts.
+    let quick_reasoning = (request.model == QUICK_SIDE_MODEL).then_some(ThinkingLevel::Off);
     let model = maple_model(
         request.model,
         Some(&CatalogEntry {
             context_window: None,
             vision: Some(has_image),
-            reasoning: summary_reasoning.map(|_| Default::default()),
+            reasoning: quick_reasoning.map(|_| Default::default()),
         }),
         None,
     );
@@ -138,7 +143,7 @@ async fn ask_side_model(
         })],
     );
     let options = StreamOptions {
-        reasoning: summary_reasoning,
+        reasoning: quick_reasoning,
         max_tokens: Some(request.max_tokens),
         temperature: Some(request.temperature),
         session_id: Some(session_id.to_string()),

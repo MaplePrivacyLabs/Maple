@@ -3104,14 +3104,24 @@ mod tests {
             resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::Paid).unwrap(),
             "glm-5-3-flash"
         );
-        assert!(matches!(
-            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
+        assert_eq!(
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free).unwrap(),
+            "deepseek-v4-1-flash"
+        );
         assert_eq!(
             resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Paid).unwrap(),
             "deepseek-v4-1-flash"
         );
+        for retired_free in ["gpt-oss-120b", "llama3-3-70b"] {
+            assert!(matches!(
+                resolve_responses_model(retired_free, "tinfoil", ModelPlan::Free),
+                Err(ApiError::ModelNotAvailableOnPlan)
+            ));
+            assert_eq!(
+                resolve_responses_model(retired_free, "tinfoil", ModelPlan::Paid).unwrap(),
+                retired_free
+            );
+        }
     }
 
     #[test]
@@ -3121,10 +3131,10 @@ mod tests {
             resolve_responses_model(model, "tinfoil", ModelPlan::Paid).unwrap(),
             model
         );
-        assert!(matches!(
-            resolve_responses_model(model, "tinfoil", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
+        assert_eq!(
+            resolve_responses_model(model, "tinfoil", ModelPlan::Free).unwrap(),
+            model
+        );
         assert!(matches!(
             resolve_responses_model("deepseek-v4-1-flash-1017", "tinfoil", ModelPlan::Paid),
             Err(ApiError::BadRequest)
@@ -3134,8 +3144,8 @@ mod tests {
     #[test]
     fn test_resolve_responses_model_allows_free_model() {
         assert_eq!(
-            resolve_responses_model("llama3-3-70b", "tinfoil", ModelPlan::Free).unwrap(),
-            "llama3-3-70b"
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free).unwrap(),
+            "deepseek-v4-1-flash"
         );
     }
 
@@ -3193,7 +3203,7 @@ mod tests {
                 name: "paid auto quick",
                 plan: ModelPlan::Paid,
                 selector: crate::model_config::AUTO_QUICK_MODEL_ID,
-                expected_model: crate::model_config::GLM_5_3_FLASH_MODEL_ID,
+                expected_model: crate::model_config::QUICK_MODEL_ID,
                 expected_access: true,
             },
             Case {
@@ -3276,12 +3286,13 @@ mod tests {
         );
         assert_eq!(
             paid_quick_request["model"],
-            crate::model_config::GLM_5_3_FLASH_MODEL_ID
+            crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID
         );
-        assert_eq!(
-            paid_quick_request["chat_template_kwargs"]["clear_thinking"],
-            true
-        );
+        // DeepSeek replays reasoning only around tool calls; a tool-free turn
+        // carries neither GLM's nor Kimi's history switch.
+        assert!(paid_quick_request["chat_template_kwargs"]
+            .get("clear_thinking")
+            .is_none());
         assert!(paid_quick_request["chat_template_kwargs"]
             .get("preserve_thinking")
             .is_none());

@@ -11,16 +11,18 @@ use uuid::Uuid;
 
 static TEST_USER_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+// Live Chat Completions requires a paid account; Free accounts receive
+// `model_not_available_on_plan`.
 fn chat_model() -> String {
     env::var("OPENSECRET_TEST_CHAT_MODEL")
         .or_else(|_| env::var("VITE_TEST_CHAT_MODEL"))
-        .unwrap_or_else(|_| "llama3-3-70b".to_string())
+        .unwrap_or_else(|_| "deepseek-v4-1-flash".to_string())
 }
 
 fn reasoning_model() -> String {
     env::var("OPENSECRET_TEST_REASONING_MODEL")
         .or_else(|_| env::var("VITE_TEST_REASONING_MODEL"))
-        .unwrap_or_else(|_| "kimi-k2-5".to_string())
+        .unwrap_or_else(|_| "kimi-k3".to_string())
 }
 
 fn embedding_model() -> String {

@@ -52,7 +52,7 @@ function isSelectableChatModel(model: OpenSecretModel): boolean {
 }
 
 const FALLBACK_ALIAS_TARGETS = {
-  [QUICK_MODEL_ALIAS]: "gpt-oss-120b",
+  [QUICK_MODEL_ALIAS]: "deepseek-v4-1-flash",
   [POWERFUL_MODEL_ALIAS]: "glm-5-3"
 } as const;
 

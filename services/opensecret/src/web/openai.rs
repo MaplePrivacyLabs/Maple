@@ -123,6 +123,8 @@ impl CompletionCachePolicy {
 pub(crate) struct CompletionCaller {
     pub(crate) model_plan: ModelPlan,
     pub(crate) cache_policy: CompletionCachePolicy,
+    /// `None` when billing is not configured or did not answer in time.
+    pub(crate) billing_access: Option<crate::billing::ChatBillingAccess>,
 }
 
 /// The entitlement rules every completion surface shares: paid guests are allowed, free
@@ -154,6 +156,29 @@ pub(crate) fn completion_entitlement(
 /// Derives the cache policy for the transport session, looks the caller up in billing,
 /// and applies `completion_entitlement`. Shared by chat and System One so the rules cannot
 /// drift between them.
+/// Chat Completions is a paid surface on every client and auth method. A caller whose plan
+/// billing cannot confirm gets a retryable 503 rather than an upgrade prompt, and never
+/// free access.
+fn ensure_chat_completions_access(
+    user_uuid: Uuid,
+    billing_access: Option<crate::billing::ChatBillingAccess>,
+) -> Result<(), ApiError> {
+    match billing_access {
+        Some(access) if access.is_paid() => Ok(()),
+        Some(_) => {
+            error!("Free plan attempted to use Chat Completions: {}", user_uuid);
+            Err(ApiError::ModelNotAvailableOnPlan)
+        }
+        None => {
+            error!(
+                "Chat Completions plan could not be confirmed by billing: {}",
+                user_uuid
+            );
+            Err(ApiError::ServiceUnavailable)
+        }
+    }
+}
+
 pub(crate) async fn authorize_completion_caller(
     state: &AppState,
     user: &User,
@@ -171,6 +196,7 @@ pub(crate) async fn authorize_completion_caller(
     Ok(CompletionCaller {
         model_plan,
         cache_policy,
+        billing_access,
     })
 }
 
@@ -1999,6 +2025,7 @@ async fn proxy_openai(
     let CompletionCaller {
         model_plan,
         cache_policy,
+        billing_access,
     } = authorize_completion_caller(
         &state,
         &user,
@@ -2018,6 +2045,7 @@ async fn proxy_openai(
             ApiError::BadRequest
         })?
         .to_string();
+    ensure_chat_completions_access(user.uuid, billing_access)?;
 
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
@@ -6964,17 +6992,41 @@ mod tests {
     }
 
     #[test]
+    fn chat_completions_is_closed_to_free_and_unconfirmed_plans() {
+        use crate::billing::ChatBillingAccess;
+        let user = Uuid::nil();
+        assert!(ensure_chat_completions_access(
+            user,
+            Some(ChatBillingAccess::for_tests(true, false))
+        )
+        .is_ok());
+        assert!(matches!(
+            ensure_chat_completions_access(user, Some(ChatBillingAccess::for_tests(true, true))),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        // Without a billing answer the plan is unknown: fail closed but retryable.
+        assert!(matches!(
+            ensure_chat_completions_access(user, None),
+            Err(ApiError::ServiceUnavailable)
+        ));
+    }
+
+    #[test]
     fn completion_model_access_enforces_plan_gates() {
         assert!(matches!(
             ensure_completion_model_access("kimi-k3", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert!(ensure_completion_model_access("kimi-k3", ModelPlan::Paid).is_ok());
-        assert!(matches!(
-            ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
+        assert!(ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::Free).is_ok());
         assert!(ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::Paid).is_ok());
+        for retired_free in ["gpt-oss-120b", "gpt-oss-safeguard-120b", "llama3-3-70b"] {
+            assert!(matches!(
+                ensure_completion_model_access(retired_free, ModelPlan::Free),
+                Err(ApiError::ModelNotAvailableOnPlan)
+            ));
+            assert!(ensure_completion_model_access(retired_free, ModelPlan::Paid).is_ok());
+        }
         assert!(matches!(
             ensure_completion_model_access("glm-5-3", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
@@ -6994,7 +7046,6 @@ mod tests {
         ));
         // Plan access does not replace normal model validation. Unknown IDs
         // continue to the existing provider-routing validation path.
-        assert!(ensure_completion_model_access("gpt-oss-120b", ModelPlan::Free).is_ok());
         assert!(ensure_completion_model_access("not-a-real-model", ModelPlan::Free).is_ok());
     }
 
@@ -8055,12 +8106,12 @@ mod tests {
                         .lock()
                         .expect("model log lock")
                         .push(model.clone());
-                    if matches!(model.as_str(), "glm-5-3-flash" | "glm-5.3-flash") {
+                    if model == "deepseek-v4-1-flash" {
                         return axum::http::Response::builder()
                             .status(StatusCode::SERVICE_UNAVAILABLE)
                             .header(header::RETRY_AFTER, "40")
                             .body(axum::body::Body::empty())
-                            .expect("mock GLM Flash 503");
+                            .expect("mock DeepSeek 503");
                     }
                     axum::http::Response::builder()
                         .status(StatusCode::OK)
@@ -8075,7 +8126,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_quick_uses_deepseek_after_continuum_flash_fails_without_replaying() {
+    async fn auto_quick_uses_continuum_flash_after_deepseek_fails_without_replaying() {
         use crate::inference::auto_model::{AutoCandidateRejection, AutoModelReason};
         use crate::inference::sticky_routes::StickyRoute;
         use crate::model_config::{
@@ -8093,7 +8144,7 @@ mod tests {
             ProviderClient::for_test(tinfoil_url.clone()).expect("test provider client");
         let proxy_router = ProxyRouter::new(continuum_url, None, tinfoil_url);
         let provider_router = ProviderRouter::default();
-        // A fresh account in bucket zero starts on Continuum under the unchanged weights.
+        // Without a Maple proxy, DeepSeek's only configured route is Tinfoil.
         let account = Uuid::from_u128(0);
         let surface = InferenceSurface::ChatCompletions;
         let plan = ModelPlan::Paid;
@@ -8101,8 +8152,8 @@ mod tests {
         // Each row is a distinct logical request. Its actual 503 is surfaced;
         // only the following request can use another provider or public model.
         for (index, (expected_model, expected_provider)) in [
-            (GLM_5_3_FLASH_MODEL_ID, ProviderId::Continuum),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, ProviderId::Tinfoil),
+            (GLM_5_3_FLASH_MODEL_ID, ProviderId::Continuum),
         ]
         .into_iter()
         .enumerate()
@@ -8118,7 +8169,7 @@ mod tests {
             .expect("Auto Quick resolution");
             assert_eq!(resolved.public_model_id(), expected_model);
             let decision = resolved.auto_decision().expect("Auto decision");
-            assert_eq!(decision.preferred_model_id, GLM_5_3_FLASH_MODEL_ID);
+            assert_eq!(decision.preferred_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
             let expected_reason = if index == 0 {
                 AutoModelReason::Primary
             } else {
@@ -8129,7 +8180,7 @@ mod tests {
                 assert!(matches!(
                     decision.rejected.as_slice(),
                     [(model, AutoCandidateRejection::Unavailable { retry_after })]
-                        if *model == GLM_5_3_FLASH_MODEL_ID && !retry_after.is_zero()
+                        if *model == DEEPSEEK_V4_1_FLASH_MODEL_ID && !retry_after.is_zero()
                 ));
             }
             let intent = resolved.intent(
@@ -8140,7 +8191,7 @@ mod tests {
                 WorkloadClass::Interactive,
             );
             assert_eq!(intent.requested_model_id, AUTO_QUICK_MODEL_ID);
-            assert_eq!(intent.preferred_model_id(), GLM_5_3_FLASH_MODEL_ID);
+            assert_eq!(intent.preferred_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
             assert_eq!(intent.public_model_id, expected_model);
             assert_eq!(intent.auto_model_reason(), Some(expected_reason));
             let baseline = provider_router.shadow_completion_plan(&proxy_router, &intent);
@@ -8179,7 +8230,7 @@ mod tests {
             if index == 0 {
                 let error = match trace.result {
                     Err(error) => error,
-                    Ok(_) => panic!("mock GLM Flash unexpectedly succeeded"),
+                    Ok(_) => panic!("mock DeepSeek unexpectedly succeeded"),
                 };
                 let failure = attempt_failure_from_provider_error(&error);
                 assert_eq!(failure.kind, AttemptFailureKind::CapacityRejected);
@@ -8199,7 +8250,7 @@ mod tests {
                     None
                 );
             } else {
-                let response = trace.result.expect("mock DeepSeek succeeds");
+                let response = trace.result.expect("mock GLM Flash succeeds");
                 remember_started_route(&provider_router, &pinned, &claim.route);
                 let canonical = read_non_streaming_completion_response(
                     response,
@@ -8209,49 +8260,49 @@ mod tests {
                 )
                 .await
                 .expect("canonical response");
-                assert_eq!(canonical["model"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
-                assert_eq!(attempt.route.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-                assert_eq!(attempt.route.provider, ProviderId::Tinfoil);
+                assert_eq!(canonical["model"], GLM_5_3_FLASH_MODEL_ID);
+                assert_eq!(attempt.route.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+                assert_eq!(attempt.route.provider, ProviderId::Continuum);
                 assert_eq!(
                     provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
                     Some(StickyRoute {
-                        public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
-                        provider: ProviderId::Tinfoil,
-                        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+                        public_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+                        provider: ProviderId::Continuum,
+                        provider_model_id: "glm-5.3-flash".to_string(),
                     })
                 );
             }
             drop(claim);
             assert_eq!(
-                continuum_sends.lock().expect("Continuum sends").as_slice(),
-                &["glm-5.3-flash"]
+                tinfoil_sends.lock().expect("Tinfoil sends").as_slice(),
+                &[DEEPSEEK_V4_1_FLASH_MODEL_ID]
             );
-            let expected_tinfoil: &[&str] = match index {
+            let expected_continuum: &[&str] = match index {
                 0 => &[],
-                _ => &[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+                _ => &["glm-5.3-flash"],
             };
             assert_eq!(
-                tinfoil_sends.lock().expect("Tinfoil sends").as_slice(),
-                expected_tinfoil
+                continuum_sends.lock().expect("Continuum sends").as_slice(),
+                expected_continuum
             );
         }
 
-        // The sole GLM Flash provider is open. Explicit Flash remains Flash and makes
+        // Every DeepSeek route is open. Explicit DeepSeek remains DeepSeek and makes
         // zero additional sends even though the Auto alternate is healthy.
         let explicit = resolve_for_test(
             &provider_router,
             &proxy_router,
             account,
             surface,
-            GLM_5_3_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
             plan,
         )
         .expect("explicit resolution");
         assert!(explicit.auto_decision().is_none());
-        assert_eq!(explicit.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(explicit.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let explicit_intent = explicit.intent(
             account,
-            GLM_5_3_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
             plan,
             surface,
             WorkloadClass::Interactive,
@@ -8263,7 +8314,7 @@ mod tests {
             &explicit_intent,
             baseline,
         )
-        .expect_err("explicit Flash stays unavailable");
+        .expect_err("explicit DeepSeek stays unavailable");
         assert!(matches!(
             error,
             ApiError::InferenceCapacity {
@@ -8284,7 +8335,7 @@ mod tests {
             plan,
         )
         .expect("retained resolution");
-        assert_eq!(retained.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(retained.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(
             retained.auto_decision().expect("decision").reason,
             AutoModelReason::RetainedHealthyChoice
@@ -8317,27 +8368,27 @@ mod tests {
             ),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
-        let free_quick = resolve_for_test(
-            &provider_router,
-            &proxy_router,
-            account,
-            surface,
-            AUTO_QUICK_MODEL_ID,
-            ModelPlan::Free,
-        )
-        .expect("free quick");
-        assert_eq!(free_quick.public_model_id(), QUICK_MODEL_ID);
-        assert_eq!(
-            free_quick.auto_decision().expect("decision").reason,
-            AutoModelReason::Primary
-        );
+        // Free Quick shares the preferred model but has no paid alternate, so
+        // it reports capacity while every DeepSeek route is open.
+        assert_eq!(QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert!(matches!(
+            resolve_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Free,
+            ),
+            Err(ApiError::InferenceCapacity { .. })
+        ));
 
         tinfoil_server.abort();
         continuum_server.abort();
     }
 
     #[test]
-    fn auto_quick_remembers_deepseek_until_idle_expiry_after_glm_recovers() {
+    fn auto_quick_remembers_glm_flash_until_idle_expiry_after_deepseek_recovers() {
         use crate::inference::auto_model::AutoModelReason;
         use crate::inference::sticky_routes::{StickyRoute, STICKY_ROUTE_IDLE_TTL};
         use crate::model_config::{
@@ -8351,16 +8402,16 @@ mod tests {
             InferenceSurface::ChatCompletions,
             InferenceSurface::Responses,
         ] {
-            let deepseek = StickyRoute {
-                public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
-                provider: ProviderId::Tinfoil,
-                provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+            let flash = StickyRoute {
+                public_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+                provider: ProviderId::Continuum,
+                provider_model_id: "glm-5.3-flash".to_string(),
             };
-            // Both GLM providers are healthy again, but the last accepted Auto
-            // request warmed DeepSeek. A recent entry must retain that model.
+            // DeepSeek is healthy again, but the last accepted Auto request
+            // warmed GLM Flash. A recent entry must retain that model.
             router
                 .sticky_routes()
-                .record(account, surface, AUTO_QUICK_MODEL_ID, deepseek.clone());
+                .record(account, surface, AUTO_QUICK_MODEL_ID, flash.clone());
             let retained = resolve_for_test(
                 &router,
                 &proxy_router,
@@ -8369,8 +8420,8 @@ mod tests {
                 AUTO_QUICK_MODEL_ID,
                 ModelPlan::Paid,
             )
-            .expect("retained DeepSeek");
-            assert_eq!(retained.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+            .expect("retained GLM Flash");
+            assert_eq!(retained.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
             assert_eq!(
                 retained.auto_decision().expect("decision").reason,
                 AutoModelReason::RetainedHealthyChoice
@@ -8382,7 +8433,7 @@ mod tests {
                 account,
                 surface,
                 AUTO_QUICK_MODEL_ID,
-                deepseek,
+                flash,
                 std::time::Instant::now() - STICKY_ROUTE_IDLE_TTL,
             );
             let primary = resolve_for_test(
@@ -8393,8 +8444,8 @@ mod tests {
                 AUTO_QUICK_MODEL_ID,
                 ModelPlan::Paid,
             )
-            .expect("GLM primary after idle");
-            assert_eq!(primary.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+            .expect("DeepSeek primary after idle");
+            assert_eq!(primary.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
             assert_eq!(
                 primary.auto_decision().expect("decision").reason,
                 AutoModelReason::Primary
@@ -8408,8 +8459,8 @@ mod tests {
             );
             let selected = router
                 .select_active_completion_route(&proxy_router, &intent)
-                .expect("weighted GLM route");
-            assert_eq!(selected.provider, ProviderId::Continuum);
+                .expect("DeepSeek route");
+            assert_eq!(selected.provider, ProviderId::Tinfoil);
         }
     }
 
@@ -8522,9 +8573,9 @@ mod tests {
             surface,
             AUTO_QUICK_MODEL_ID,
             StickyRoute {
-                public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
-                provider: ProviderId::Tinfoil,
-                provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+                public_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+                provider: ProviderId::Continuum,
+                provider_model_id: "glm-5.3-flash".to_string(),
             },
         );
 
@@ -8537,7 +8588,7 @@ mod tests {
             ModelPlan::Paid,
         )
         .expect("retained alternate");
-        assert_eq!(first.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(first.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(
             first.auto_decision().expect("decision").reason,
             AutoModelReason::RetainedHealthyChoice
@@ -8546,7 +8597,7 @@ mod tests {
         // The Responses context builder could not hold the conversation on the
         // alternate: the bounded second decision excludes it and the healthy
         // preferred model takes the request instead of a capacity error.
-        let overflowed = ExcludedAutoCandidate::context_overflow(DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let overflowed = ExcludedAutoCandidate::context_overflow(GLM_5_3_FLASH_MODEL_ID);
         let second = resolve_excluding_for_test(
             &provider_router,
             &proxy_router,
@@ -8557,13 +8608,13 @@ mod tests {
             Some(&overflowed),
         )
         .expect("preferred model after overflow");
-        assert_eq!(second.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(second.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let decision = second.auto_decision().expect("decision");
         assert_eq!(decision.reason, AutoModelReason::Primary);
         assert_eq!(
             decision.rejected,
             vec![(
-                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                GLM_5_3_FLASH_MODEL_ID,
                 AutoCandidateRejection::ContextOverflow
             )]
         );
@@ -8573,7 +8624,7 @@ mod tests {
             provider_router
                 .sticky_route(account, surface, AUTO_QUICK_MODEL_ID)
                 .map(|route| route.public_model_id),
-            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string())
+            Some(GLM_5_3_FLASH_MODEL_ID.to_string())
         );
     }
 
