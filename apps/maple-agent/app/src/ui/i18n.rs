@@ -18,10 +18,10 @@ const ENGLISH: LanguageIdentifier = langid!("en");
 
 /// Isolate locale state between UI tests without changing process environment.
 #[cfg(test)]
-pub(super) struct TestLocalizationGuard;
+pub(crate) struct TestLocalizationGuard;
 #[cfg(test)]
 impl TestLocalizationGuard {
-    pub(super) fn enable() -> Self {
+    pub(crate) fn enable() -> Self {
         Self
     }
 }

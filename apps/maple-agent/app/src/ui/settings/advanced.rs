@@ -67,16 +67,17 @@ impl SettingsScreen {
     /// Other Settings sections are not a recipient for encryption dialogs.
     pub(crate) fn show_local_store_notice(
         &mut self,
-        message: String,
+        message: impl Into<UiText>,
         cx: &mut Context<Self>,
     ) -> bool {
+        let message = message.into();
         if self.section != Section::Advanced {
             return false;
         }
         if let Some(form) = &self.advanced.form {
             form.update(cx, |form, cx| form.show_local_store_notice(message, cx));
         } else {
-            self.advanced.notice = Some(message.into());
+            self.advanced.notice = Some(message);
             cx.notify();
         }
         true
@@ -682,10 +683,10 @@ mod tests {
             )
         });
         settings.update(cx, |settings, cx| {
-            assert!(!settings.show_local_store_notice("Needs attention.".into(), cx));
+            assert!(!settings.show_local_store_notice("Needs attention.", cx));
             assert!(settings.advanced.notice.is_none());
             settings.section = Section::Advanced;
-            assert!(settings.show_local_store_notice("Needs attention.".into(), cx));
+            assert!(settings.show_local_store_notice("Needs attention.", cx));
             assert_eq!(
                 settings
                     .advanced

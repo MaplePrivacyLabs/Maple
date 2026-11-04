@@ -247,7 +247,8 @@ impl<'ast> Visit<'ast> for UiStrings {
             })) = node.args.first()
             && (key.value().starts_with("settings-")
                 || key.value().starts_with("update-")
-                || key.value().starts_with("flows-"))
+                || key.value().starts_with("flows-")
+                || key.value().starts_with("native-"))
         {
             self.keys.insert(key.value());
         }
@@ -260,7 +261,9 @@ impl<'ast> Visit<'ast> for UiStrings {
                 lit: syn::Lit::Str(key),
                 ..
             })) = node.args.first()
-            && (key.value().starts_with("settings-") || key.value().starts_with("flows-"))
+            && (key.value().starts_with("settings-")
+                || key.value().starts_with("flows-")
+                || key.value().starts_with("native-"))
         {
             self.keys.insert(key.value());
         }
@@ -327,6 +330,12 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../plan_gate.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../store_gate.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../store_repair.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../menus.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../titlebar.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../widgets.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../text_input.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../secret_input.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../../desktop.rs")).unwrap());
     assert!(
         visitor.literals.is_empty(),
         "inline UI text: {:?}",

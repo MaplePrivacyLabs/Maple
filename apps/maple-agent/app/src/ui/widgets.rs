@@ -158,12 +158,14 @@ pub fn icon_button(
 pub fn icon_button_for_action(
     id: impl Into<ElementId>,
     name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
     action: &dyn Action,
 ) -> Stateful<Div> {
-    icon_button_base(id, name, label, size, color).tooltip(tooltip_for_action(label, action))
+    let label = label.into();
+    icon_button_base(id, name, label.clone(), size, color)
+        .tooltip(tooltip_for_action(label, action))
 }
 
 fn icon_button_base(
@@ -477,16 +479,16 @@ fn format_keystroke(keystroke: &gpui::KeybindingKeystroke) -> String {
     } else {
         let mut parts = Vec::new();
         if modifiers.control {
-            parts.push("Ctrl".to_string());
+            parts.push(super::i18n::tr("native-key-control").to_string());
         }
         if modifiers.alt {
-            parts.push("Alt".to_string());
+            parts.push(super::i18n::tr("native-key-alt").to_string());
         }
         if modifiers.shift {
-            parts.push("Shift".to_string());
+            parts.push(super::i18n::tr("native-key-shift").to_string());
         }
         if modifiers.platform {
-            parts.push("Win".to_string());
+            parts.push(super::i18n::tr("native-key-platform").to_string());
         }
         parts.push(key_glyph(key));
         out = parts.join("+");
@@ -496,20 +498,20 @@ fn format_keystroke(keystroke: &gpui::KeybindingKeystroke) -> String {
 
 fn key_glyph(key: &str) -> String {
     match key {
-        "escape" => "Esc".to_string(),
+        "escape" => super::i18n::tr("native-key-escape").to_string(),
         "enter" => "↵".to_string(),
         "backspace" => "⌫".to_string(),
         "delete" => "⌦".to_string(),
         "tab" => "⇥".to_string(),
-        "space" => "Space".to_string(),
+        "space" => super::i18n::tr("native-key-space").to_string(),
         "up" => "↑".to_string(),
         "down" => "↓".to_string(),
         "left" => "←".to_string(),
         "right" => "→".to_string(),
-        "pageup" => "PgUp".to_string(),
-        "pagedown" => "PgDn".to_string(),
-        "home" => "Home".to_string(),
-        "end" => "End".to_string(),
+        "pageup" => super::i18n::tr("native-key-pageup").to_string(),
+        "pagedown" => super::i18n::tr("native-key-pagedown").to_string(),
+        "home" => super::i18n::tr("native-key-home").to_string(),
+        "end" => super::i18n::tr("native-key-end").to_string(),
         key if key.chars().count() == 1 => key.to_uppercase(),
         key => key.to_string(),
     }

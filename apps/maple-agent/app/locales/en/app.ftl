@@ -1049,3 +1049,96 @@ flows-oauth-not-saved = Your session could not be saved. You will need to sign i
 flows-oauth-failed = Sign-in could not finish
 flows-oauth-retry = Return to Maple Work and start again. You can close this tab.
 flows-login-task-cancelled = The task was cancelled
+
+## Native desktop, menus, and shared controls
+
+native-edit = Edit
+native-undo = Undo
+native-redo = Redo
+native-cut = Cut
+native-copy = Copy
+native-paste = Paste
+native-select-all = Select All
+native-task = Task
+native-new-task = New Task
+native-search-tasks = Search Tasks
+native-next-task = Next Task
+native-previous-task = Previous Task
+native-choose-project = Choose Project…
+native-view = View
+native-toggle-sidebar = Toggle Sidebar
+native-show-archived = Show Archived Tasks
+native-check-updates = Check for Updates…
+native-settings = Settings…
+native-services = Services
+native-hide-others = Hide Others
+native-show-all = Show All
+# $app is the application display name.
+native-about = About { $app }
+# $app is the application display name.
+native-hide = Hide { $app }
+# $app is the application display name.
+native-quit = Quit { $app }
+native-open-maple = Open Maple
+native-quit-maple = Quit Maple
+native-remote-on = Maple — remote access on
+native-remote-off = Maple — remote access off
+native-store-resident = Maple — local data unlocked or changing
+native-add-dictionary = Add to dictionary
+native-this-computer = This Computer
+native-minimize = Minimize
+native-maximize = Maximize or restore
+native-close = Close
+native-key-control = Ctrl
+native-key-alt = Alt
+native-key-shift = Shift
+native-key-platform = Win
+native-key-escape = Esc
+native-key-space = Space
+native-key-pageup = PgUp
+native-key-pagedown = PgDn
+native-key-home = Home
+native-key-end = End
+native-save-failed = Maple couldn't save local data
+native-store-attention = Local data needs attention
+native-retry-saving = Retry saving
+native-keep-viewing = Keep viewing
+native-ok = OK
+native-installed = Update installed
+native-restart = Restart Maple
+native-keep-open = Keep open
+native-retry-quit = Retry Quit
+native-stop-title = Stop this computer's Maple host?
+native-still-open = Maple is still open
+native-unknown-activity = The host could not report its activity. Quitting will attempt to stop any attached editors, tasks and remote connections, and wait for the host to release local data.
+native-keep-open-title = Keep Maple open?
+native-no-tray = This desktop has no available tray to reopen Maple. Keep this window open while Maple holds local data unlocked, or Quit Maple to stop its host.
+native-signing-in = Signing in…
+native-stop-existing-title = Stop the existing Maple host?
+native-stop-existing-detail = This stops running tasks and remote access for this profile. Maple will reopen with this build.
+native-cancel = Cancel
+native-stop-reopen = Stop and reopen
+native-startup-title = Maple could not start
+native-stopping = Stopping…
+native-stop-existing = Stop existing host and reopen
+native-wait-stop = Keep Maple open until its host has finished stopping. Local data may remain unlocked while it is still running.
+native-stopping-host = Stopping host…
+native-retry-stop = Retry stopping host
+native-quit-not-stopped = Maple has not finished stopping. Local data may remain unlocked and tasks may still be active. Keep Maple open or retry Quit.
+native-close-save-failed = Maple could not save settings before closing. Keep Maple open and retry.
+native-close-state-failed = Maple could not check its local data state. Keep this window open and retry.
+native-stop-complete = The Maple host has stopped. You can close Maple and try starting it again.
+native-stop-unavailable = Maple cannot retry stopping its host. Keep this process open until the host has been stopped.
+# $error is an external diagnostic, preserved verbatim.
+native-stop-failed = Maple could not finish stopping its host: { $error }. Keep this window open and retry stopping the host before relaunching Maple.
+# $error is an external diagnostic, preserved verbatim.
+native-restart-failed = Could not restart Maple: { $error }
+# Counts of tasks, attached editors, remote controllers, background jobs, and API requests.
+native-quit-activity = Quitting stops running tasks ({ $tasks }), attached editors ({ $editors }), remote controllers ({ $controllers }) and background jobs ({ $jobs }). It also stops this computer's local API and its active requests ({ $requests }). Maple waits for them to drain before closing.
+# $version is the app version; $status is the localized updater status.
+native-about-details = Version { $version }
+    { $status }
+native-disk-full-unopened = The disk is full and Maple could not open its local store. Free disk space, quit and reopen Maple, then unlock again if prompted.
+native-disk-full-open = The disk is full. Recent changes could not be saved. Keep Maple open, free disk space, then retry saving.
+native-save-failed-open = Recent changes could not be saved. Keep Maple open and retry saving before quitting.
+native-remote-update-required = Update required — select to retry after updating
