@@ -344,7 +344,7 @@ export function AboutNumbers({
     {
       icon: AppWindow,
       title: "Apps and API keys",
-      body: "Each request counts toward the app that sent it, even when it used an API key, including the Local Proxy in Chat and the Local API in Work. API keys on their own are requests that named no app, such as direct API calls. Earlier versions are requests from before apps reported their name."
+      body: "Each request counts toward the app that sent it, even when it used an API key, including the Local Proxy in Chat and the Local API in Work. API keys on their own are requests that named no app, such as direct API calls. Requests from before apps reported their name count as Chat unless they used an API key."
     },
     kind === "free"
       ? {

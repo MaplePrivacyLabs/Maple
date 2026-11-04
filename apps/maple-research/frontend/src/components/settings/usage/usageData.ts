@@ -282,19 +282,21 @@ export type RangeSummary = {
 export type OriginCredits = Record<UsageOrigin, number>;
 
 function emptyOrigins(): OriginCredits {
-  return { chat: 0, work: 0, proxy: 0, api: 0, app: 0 };
+  return { chat: 0, work: 0, proxy: 0, api: 0 };
 }
 
-/** Where a row came from. Older billing responses omit `client_app`. */
+/**
+ * Where a row came from. Older billing responses omit `client_app`. Account
+ * usage that named no app predates app reporting and was almost all Chat.
+ */
 export function usageOrigin(row: Pick<UsageDayRow, "source" | "client_app">): UsageOrigin {
-  return row.client_app ?? row.source;
+  return row.client_app ?? (row.source === "api" ? "api" : "chat");
 }
 
 /** The Recent requests label; an API key inside an app shows both. */
 export function requestOriginLabel(row: Pick<UsageDayRow, "source" | "client_app">): string {
   const origin = usageOrigin(row);
   if (origin === "api") return "API key";
-  if (origin === "app") return "Earlier version";
   return row.source === "api" ? `${ORIGIN_LABEL[origin]} · API key` : ORIGIN_LABEL[origin];
 }
 

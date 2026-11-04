@@ -1,4 +1,4 @@
-import type { UsageClientApp, UsagePool, UsageSource } from "@/billing/usageApi";
+import type { UsageClientApp, UsagePool } from "@/billing/usageApi";
 
 // Colors read the validated `.usage-viz` variables in index.css (adjacent CVD
 // ΔE >= 8, normal vision >= 15 against light and dark cards). Coral stays
@@ -42,28 +42,25 @@ export const TOKEN_LABEL: Readonly<Record<TokenKind, string>> = {
 };
 
 /**
- * Where usage came from: the reporting app, or for usage with no reported app,
- * how it authenticated. An API key can run inside any app, so `api` here means
- * only API-key usage that named no app.
+ * Where usage came from: the reporting app, or `api` for API-key usage that
+ * named no app. An API key can run inside any app, so `api` means only that.
  */
-export type UsageOrigin = UsageClientApp | UsageSource;
+export type UsageOrigin = UsageClientApp | "api";
 
-export const ORIGINS: readonly UsageOrigin[] = ["chat", "work", "proxy", "api", "app"];
+export const ORIGINS: readonly UsageOrigin[] = ["chat", "work", "proxy", "api"];
 
 export const ORIGIN_COLOR: Readonly<Record<UsageOrigin, string>> = {
   chat: "var(--src-chat)",
   work: "var(--src-work)",
   proxy: "var(--src-proxy)",
-  api: "var(--src-api)",
-  app: "var(--src-earlier)"
+  api: "var(--src-api)"
 };
 
 export const ORIGIN_LABEL: Readonly<Record<UsageOrigin, string>> = {
   chat: "Chat",
   work: "Work",
   proxy: "Proxy",
-  api: "API keys",
-  app: "Earlier versions"
+  api: "API keys"
 };
 
 export const POOLS: readonly UsagePool[] = ["plan", "extra"];
