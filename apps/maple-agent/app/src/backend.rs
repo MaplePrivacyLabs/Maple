@@ -634,6 +634,19 @@ impl AgentBackend {
             }
         });
     }
+    /// Local IPC enforces an exact build match. Remote hosts may predate the
+    /// optional locale API, so retain their original sign-in method and copy.
+    pub async fn oauth_start_localized(
+        &self,
+        provider: OAuthProvider,
+        locale: String,
+    ) -> Result<String, String> {
+        if self.remote_host.is_some() {
+            return self.oauth_start(provider).await;
+        }
+        self.call("oauth_start_localized", (provider, locale)).await
+    }
+
     pub fn cancel_oauth(self: &Arc<Self>) {
         let backend = self.clone();
         self.spawn(async move {
@@ -657,6 +670,13 @@ async fn dispatch_special(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    if request.method == "oauth_start_localized" {
+        let (provider, locale): (OAuthProvider, String) = serde_json::from_value(request.params)
+            .map_err(|_| "Invalid host request parameters".to_string())?;
+        let value = backend.oauth_start_localized(provider, locale).await?;
+        return serde_json::to_value(value)
+            .map_err(|_| "Could not encode host response".to_string());
+    }
     if attachments::handles(&request.method) {
         return attachments::dispatch(backend, request).await;
     }

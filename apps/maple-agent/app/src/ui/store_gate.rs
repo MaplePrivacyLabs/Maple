@@ -1,7 +1,7 @@
 //! Local-only store entry and password forms. These screens ask the host for
 //! lifecycle status before loading any account-owned application data.
 
-use super::i18n::tr;
+use super::i18n::{UiText, tr};
 use gpui::{
     Context, Entity, EventEmitter, Focusable, Render, Subscription, Window, div, prelude::*, px,
 };
@@ -116,7 +116,7 @@ pub struct StoreGate {
     bridges: RefCell<Vec<gpui::Task<()>>>,
     busy: bool,
     erase: bool,
-    message: Option<String>,
+    message: Option<UiText>,
     progress: OperationProgress,
     repair_progress: RepairProgress,
     progress_task: Option<gpui::Task<()>>,
@@ -126,11 +126,15 @@ pub struct StoreGate {
 impl EventEmitter<StoreGateChanged> for StoreGate {}
 
 impl StoreGate {
-    pub(crate) fn show_local_store_notice(&mut self, message: String, cx: &mut Context<Self>) {
+    pub(crate) fn show_local_store_notice(
+        &mut self,
+        message: impl Into<UiText>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(form) = &self.form {
             form.update(cx, |form, cx| form.show_local_store_notice(message, cx));
         } else {
-            self.message = Some(message);
+            self.message = Some(message.into());
             cx.notify();
         }
     }
@@ -154,8 +158,12 @@ impl StoreGate {
             backend,
             state,
             status: None,
-            password: cx.new(|cx| SecretInput::new("Unlock password", cx).with_tab_index(1)),
-            confirmation: cx.new(|cx| TextInput::new("Type START FRESH", cx).with_tab_index(1)),
+            password: cx.new(|cx| {
+                SecretInput::localized("flows-store-unlock-password", cx).with_tab_index(1)
+            }),
+            confirmation: cx.new(|cx| {
+                TextInput::localized("flows-store-type-start-fresh", cx).with_tab_index(1)
+            }),
             form: None,
             repair: None,
             subscriptions: Vec::new(),
@@ -257,9 +265,9 @@ impl StoreGate {
             cx,
             |this, result, cx| {
                 this.message = Some(match result {
-                    Ok(true) => "Cancelling before the store is replaced…".into(),
-                    Ok(false) => "The store is committing. Wait for it to finish.".into(),
-                    Err(message) => message,
+                    Ok(true) => UiText::key("flows-store-cancelling"),
+                    Ok(false) => UiText::key("flows-store-committing"),
+                    Err(message) => message.into(),
                 });
                 cx.notify();
             },
@@ -324,7 +332,7 @@ impl StoreGate {
                         }
                         this.status = Some(status);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -336,7 +344,7 @@ impl StoreGate {
             return;
         }
         if self.password.read(cx).is_empty() {
-            self.message = Some("Enter your unlock password to continue.".into());
+            self.message = Some(UiText::key("flows-store-enter-password"));
             cx.notify();
             return;
         }
@@ -363,7 +371,7 @@ impl StoreGate {
                 match result {
                     Ok(_) => cx.emit(StoreGateChanged),
                     Err(message) => {
-                        this.message = Some(message);
+                        this.message = Some(message.into());
                         this.refresh(cx);
                     }
                 }
@@ -380,7 +388,7 @@ impl StoreGate {
         self.form = None;
         self.confirmation.update(cx, |input, cx| {
             input.clear(cx);
-            input.set_placeholder("Type ERASE", cx);
+            input.set_placeholder_key("flows-store-type-erase", cx);
         });
         self.erase = true;
         self.focus_pending = true;
@@ -395,7 +403,7 @@ impl StoreGate {
         self.erase = false;
         self.confirmation.update(cx, |input, cx| {
             input.clear(cx);
-            input.set_placeholder("Type START FRESH", cx);
+            input.set_placeholder_key("flows-store-type-start-fresh", cx);
         });
         self.message = None;
         self.focus_pending = true;
@@ -455,7 +463,7 @@ impl StoreGate {
                 this.busy = false;
                 match result {
                     Ok(_) => cx.emit(StoreGateChanged),
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 this.refresh(cx);
                 cx.notify();
@@ -479,7 +487,10 @@ impl StoreGate {
         }
         let required = if start_fresh { "START FRESH" } else { "ERASE" };
         if confirmation != required {
-            self.message = Some(format!("Type {required} exactly to continue."));
+            self.message = Some(UiText::message(
+                "flows-store-confirm-required",
+                [("confirmation", required.into())],
+            ));
             cx.notify();
             return;
         }
@@ -511,7 +522,7 @@ impl StoreGate {
                         this.erase = false;
                         cx.emit(StoreGateChanged);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 this.refresh(cx);
                 cx.notify();
@@ -562,24 +573,19 @@ impl Render for StoreGate {
                 .child(form.clone());
         }
         let (title, description) = match &self.state {
-            StoreState::Locked => (
-                "Maple is locked.",
-                "Enter your unlock password to open your tasks.",
-            ),
-            StoreState::NeedsSetup => (
-                "Start fresh on this computer",
-                "Choose a password for this version's new store, or continue without a password.",
-            ),
-            StoreState::Damaged { .. } => (
-                "Maple's local store needs attention.",
-                "You can permanently delete this computer's current Maple local data and create a new store.",
-            ),
-            StoreState::Refused { reason } => (refusal_title(*reason), reason.message()),
+            StoreState::Locked => (tr("flows-store-locked"), tr("flows-store-locked-body")),
+            StoreState::NeedsSetup => (tr("flows-store-setup"), tr("flows-store-setup-body")),
+            StoreState::Damaged { .. } => {
+                (tr("flows-store-damaged"), tr("flows-store-damaged-body"))
+            }
+            StoreState::Refused { reason } => {
+                (refusal_title(*reason), refusal_description(*reason))
+            }
             StoreState::Maintenance => (
-                "Updating your local store…",
-                "Wait for the local store operation to finish.",
+                tr("flows-store-maintenance"),
+                tr("flows-store-maintenance-body"),
             ),
-            StoreState::Open => ("Opening Maple…", "Your local store is ready."),
+            StoreState::Open => (tr("flows-store-opening"), tr("flows-store-ready")),
         };
         body = body
             .child(div().text_xl().child(title))
@@ -606,7 +612,7 @@ impl Render for StoreGate {
                         }))
                         .when(self.busy, |button| button.opacity(0.5))
                         .on_click(cx.listener(|this, _event, _window, cx| this.reset(false, cx)))
-                        .child("Erase this version's local data"),
+                        .child(tr("flows-store-erase")),
                 )
                 .child(
                     widgets::ghost_button("store-gate-erase-cancel")
@@ -621,38 +627,49 @@ impl Render for StoreGate {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.close_erase(cx);
                         }))
-                        .child("Cancel"),
+                        .child(tr("flows-store-cancel")),
                 );
         } else {
             body = match self.state {
                 StoreState::Locked => body
-                    .child(password_field("settings-password-unlock-password", self.password.clone()))
+                    .child(password_field(
+                        "settings-password-unlock-password",
+                        self.password.clone(),
+                    ))
                     .child(
                         widgets::primary_button("store-unlock")
                             .debug_selector(|| "store-unlock".into())
                             .tab_index(2)
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                if password_action_key(event, window, cx) {
-                                    this.unlock(cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if password_action_key(event, window, cx) {
+                                        this.unlock(cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .when(self.busy, |button| button.opacity(0.5))
                             .on_click(cx.listener(|this, _event, _window, cx| this.unlock(cx)))
-                            .child(if self.busy { "Unlocking…" } else { "Unlock" }),
+                            .child(if self.busy {
+                                tr("flows-store-unlocking")
+                            } else {
+                                tr("flows-store-unlock")
+                            }),
                     )
                     .child(
                         widgets::ghost_button("store-forgot")
                             .debug_selector(|| "store-forgot".into())
                             .tab_index(3)
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                if password_action_key(event, window, cx) {
-                                    this.open_erase(cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if password_action_key(event, window, cx) {
+                                        this.open_erase(cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .on_click(cx.listener(|this, _event, _window, cx| this.open_erase(cx)))
-                            .child("Forgot password?"),
+                            .child(tr("flows-store-forgot")),
                     ),
                 StoreState::NeedsSetup => body
                     .when(
@@ -662,18 +679,20 @@ impl Render for StoreGate {
                         |body| {
                             body.child(
                                 widgets::primary_button("store-setup-password")
-                            .debug_selector(|| "store-setup-password".into())
-                            .tab_index(1)
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                if password_action_key(event, window, cx) {
-                                    this.setup_password(cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
+                                    .debug_selector(|| "store-setup-password".into())
+                                    .tab_index(1)
+                                    .on_key_down(cx.listener(
+                                        |this, event: &gpui::KeyDownEvent, window, cx| {
+                                            if password_action_key(event, window, cx) {
+                                                this.setup_password(cx);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    ))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.setup_password(cx)
                                     }))
-                                    .child("Set an unlock password"),
+                                    .child(tr("flows-store-set-password")),
                             )
                         },
                     )
@@ -681,81 +700,105 @@ impl Render for StoreGate {
                         widgets::secondary_button("store-setup-plain")
                             .debug_selector(|| "store-setup-plain".into())
                             .tab_index(2)
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                if password_action_key(event, window, cx) {
-                                    this.plain_setup(cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if password_action_key(event, window, cx) {
+                                        this.plain_setup(cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .on_click(cx.listener(|this, _event, _window, cx| this.plain_setup(cx)))
-                            .child("Continue without a password"),
+                            .child(tr("flows-store-no-password")),
                     ),
                 StoreState::Damaged { .. } => body
                     .when(accepts_unlock(&self.state), |body| {
-                        body.child(div().text_sm().child(
-                            "If this store uses a password, enter its current unlock password to verify and repair its generation metadata.",
-                        ))
-                        .child(password_field("settings-password-unlock-password", self.password.clone()))
-                        .child(
-                            widgets::primary_button("store-generation-unlock")
-                            .debug_selector(|| "store-generation-unlock".into())
-                            .tab_index(2)
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                if password_action_key(event, window, cx) {
-                                    this.unlock(cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
-                                .when(self.busy, |button| button.opacity(0.5))
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.unlock(cx)
-                                }))
-                                .child(if self.busy {
-                                    "Verifying…"
-                                } else {
-                                    "Verify and unlock"
-                                }),
-                        )
+                        body.child(div().text_sm().child(tr("flows-store-verify-body")))
+                            .child(password_field(
+                                "settings-password-unlock-password",
+                                self.password.clone(),
+                            ))
+                            .child(
+                                widgets::primary_button("store-generation-unlock")
+                                    .debug_selector(|| "store-generation-unlock".into())
+                                    .tab_index(2)
+                                    .on_key_down(cx.listener(
+                                        |this, event: &gpui::KeyDownEvent, window, cx| {
+                                            if password_action_key(event, window, cx) {
+                                                this.unlock(cx);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    ))
+                                    .when(self.busy, |button| button.opacity(0.5))
+                                    .on_click(
+                                        cx.listener(|this, _event, _window, cx| this.unlock(cx)),
+                                    )
+                                    .child(if self.busy {
+                                        tr("flows-store-verifying")
+                                    } else {
+                                        tr("flows-store-verify")
+                                    }),
+                            )
                     })
                     .when_some(self.repair.clone(), |body, repair| body.child(repair))
-                    .child(widgets::input_frame().id("store-gate-confirmation").debug_selector(|| "store-gate-confirmation".into()).min_h(px(40.)).child(self.confirmation.clone()))
-                    .child(div().text_sm().child(
-                        "Type START FRESH to permanently delete this computer's current Maple local data and create a new store.",
-                    ))
+                    .child(
+                        widgets::input_frame()
+                            .id("store-gate-confirmation")
+                            .debug_selector(|| "store-gate-confirmation".into())
+                            .min_h(px(40.))
+                            .child(self.confirmation.clone()),
+                    )
+                    .child(div().text_sm().child(tr("flows-store-start-fresh-body")))
                     .child(
                         widgets::primary_button("store-start-fresh")
                             .debug_selector(|| "store-start-fresh".into())
                             .tab_index(2)
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                if password_action_key(event, window, cx) {
-                                    this.reset(true, cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if password_action_key(event, window, cx) {
+                                        this.reset(true, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .on_click(cx.listener(|this, _event, _window, cx| this.reset(true, cx)))
-                            .child("Delete current data and start fresh"),
+                            .child(tr("flows-store-start-fresh")),
                     )
                     .child(
                         widgets::ghost_button("store-damaged-erase")
                             .debug_selector(|| "store-damaged-erase".into())
                             .tab_index(3)
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                if password_action_key(event, window, cx) {
-                                    this.open_erase(cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if password_action_key(event, window, cx) {
+                                        this.open_erase(cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .on_click(cx.listener(|this, _event, _window, cx| this.open_erase(cx)))
-                            .child("Erase local data…"),
+                            .child(tr("flows-store-erase-menu")),
                     ),
                 StoreState::Maintenance => body
                     .child(div().text_sm().child(if self.repair_progress.busy {
-                        format!(
-                            "Local repair: {}. Wait for its verified result.",
-                            self.repair_progress.phase
-                        )
+                        self.messages
+                            .get(
+                                "flows-store-repair-progress",
+                                [(
+                                    "phase",
+                                    super::store_repair::phase_label(&self.repair_progress.phase)
+                                        .to_string()
+                                        .into(),
+                                )],
+                            )
+                            .to_string()
                     } else {
-                        progress_copy(progress_action(self.progress.operation.as_deref()), &self.progress, &self.messages)
+                        progress_copy(
+                            progress_action(self.progress.operation.as_deref()),
+                            &self.progress,
+                            &self.messages,
+                        )
                     }))
                     .when(
                         if self.repair_progress.busy {
@@ -766,18 +809,20 @@ impl Render for StoreGate {
                         |body| {
                             body.child(
                                 widgets::secondary_button("store-gate-operation-cancel")
-                            .debug_selector(|| "store-gate-operation-cancel".into())
-                            .tab_index(1)
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                if password_action_key(event, window, cx) {
-                                    this.cancel_maintenance(cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
+                                    .debug_selector(|| "store-gate-operation-cancel".into())
+                                    .tab_index(1)
+                                    .on_key_down(cx.listener(
+                                        |this, event: &gpui::KeyDownEvent, window, cx| {
+                                            if password_action_key(event, window, cx) {
+                                                this.cancel_maintenance(cx);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    ))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.cancel_maintenance(cx)
                                     }))
-                                    .child("Cancel"),
+                                    .child(tr("flows-store-cancel")),
                             )
                         },
                     ),
@@ -814,19 +859,28 @@ impl Render for StoreGate {
     }
 }
 
-fn refusal_title(reason: RefusalReason) -> &'static str {
+fn refusal_title(reason: RefusalReason) -> gpui::SharedString {
     match reason {
         RefusalReason::NewerVersion | RefusalReason::IncompatibleSchema => {
-            "Use a compatible Maple version"
+            tr("flows-store-compatible")
         }
         RefusalReason::UnsupportedFilesystem | RefusalReason::UnsafePath => {
-            "Choose a private local data location"
+            tr("flows-store-private-path")
         }
-        RefusalReason::UnsupportedOperationFormat => {
-            "This local operation needs a compatible Maple version"
-        }
-        RefusalReason::Unavailable => "Maple could not open local data",
+        RefusalReason::UnsupportedOperationFormat => tr("flows-store-operation-version"),
+        RefusalReason::Unavailable => tr("flows-store-unavailable"),
     }
+}
+
+fn refusal_description(reason: RefusalReason) -> gpui::SharedString {
+    tr(match reason {
+        RefusalReason::NewerVersion => "flows-store-refusal-newer",
+        RefusalReason::IncompatibleSchema => "flows-store-refusal-schema",
+        RefusalReason::UnsupportedFilesystem => "flows-store-refusal-filesystem",
+        RefusalReason::UnsafePath => "flows-store-refusal-unsafe-path",
+        RefusalReason::UnsupportedOperationFormat => "flows-store-refusal-operation",
+        RefusalReason::Unavailable => "flows-store-refusal-unavailable",
+    })
 }
 
 fn accepts_unlock(state: &StoreState) -> bool {
@@ -894,7 +948,7 @@ pub(crate) struct PasswordForm {
     generating: bool,
     suggestion_retry_blocked: bool,
     ui_operation_id: Option<String>,
-    message: Option<String>,
+    message: Option<UiText>,
     progress: OperationProgress,
     bridges: RefCell<Vec<gpui::Task<()>>>,
     subscriptions: Vec<Subscription>,
@@ -904,8 +958,12 @@ pub(crate) struct PasswordForm {
 impl EventEmitter<PasswordFormFinished> for PasswordForm {}
 
 impl PasswordForm {
-    pub(crate) fn show_local_store_notice(&mut self, message: String, cx: &mut Context<Self>) {
-        self.message = Some(message);
+    pub(crate) fn show_local_store_notice(
+        &mut self,
+        message: impl Into<UiText>,
+        cx: &mut Context<Self>,
+    ) {
+        self.message = Some(message.into());
         cx.notify();
     }
 
@@ -1108,7 +1166,7 @@ impl PasswordForm {
                         this.assess(cx);
                         this.focus_pending = Some(PasswordField::Confirmation);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -1135,16 +1193,16 @@ impl PasswordForm {
             }
         });
     }
-    fn validation_message(&self, cx: &Context<Self>) -> Option<gpui::SharedString> {
+    fn validation_message(&self, cx: &Context<Self>) -> Option<UiText> {
         if self.busy {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-wait-for-the-current-change-to-finish",
             ));
         }
         if matches!(self.action, PasswordAction::Change | PasswordAction::Remove)
             && self.current.read(cx).is_empty()
         {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-enter-your-current-unlock-password-to-continue",
             ));
         }
@@ -1152,45 +1210,45 @@ impl PasswordForm {
             return None;
         }
         if self.suggested && self.suggestion_retry_blocked {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-keep-this-passphrase-maple-could-not-confirm-the-previous-attempt",
             ));
         }
         if self.suggested && self.generating {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-wait-for-your-passphrase-to-finish-generating",
             ));
         }
         if self.suggested && self.phrase.is_none() {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-generate-a-passphrase-or-enter-your-own-password",
             ));
         }
         if !self.suggested && self.password.read(cx).is_empty() {
-            return Some(tr("settings-password-enter-a-new-unlock-password"));
+            return Some(UiText::key("settings-password-enter-a-new-unlock-password"));
         }
         let Some(assessment) = self.assessment else {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-use-between-15-and-1-024-characters-for-your-new-password",
             ));
         };
         if assessment.reason == keys::StrengthReason::Length {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-use-between-15-and-1-024-characters-for-your-new-password",
             ));
         }
         if !assessment.allowed() {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-choose-a-less-predictable-password-try-a-longer-unique-phrase",
             ));
         }
         if self.confirmation.read(cx).is_empty() {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-re-enter-your-new-unlock-password-in-confirm-password",
             ));
         }
         if !self.confirmation_matches {
-            return Some(tr(
+            return Some(UiText::key(
                 "settings-password-the-passwords-don-t-match-re-enter-your-new-password-in-confirm-p",
             ));
         }
@@ -1202,7 +1260,7 @@ impl PasswordForm {
     fn submit(&mut self, cx: &mut Context<Self>) {
         if !self.can_submit(cx) {
             if !self.busy {
-                self.message = self.validation_message(cx).map(|text| text.to_string());
+                self.message = self.validation_message(cx);
                 cx.notify();
             }
             return;
@@ -1356,13 +1414,12 @@ impl PasswordForm {
                     self.suggested && self.phrase.is_some() && !generated_retry_valid;
                 self.assess(cx);
                 self.message = Some(if self.suggestion_retry_blocked {
-                    super::i18n::tr_args(
+                    UiText::message(
                         "settings-password-unconfirmed-attempt",
                         [("message", message.into())],
                     )
-                    .to_string()
                 } else {
-                    message
+                    message.into()
                 });
             }
         }
@@ -1425,12 +1482,12 @@ impl PasswordForm {
             |this, result, cx| {
                 this.message = Some(match result {
                     Ok(true) => {
-                        tr("settings-password-cancelling-before-the-store-is-replaced").into()
+                        UiText::key("settings-password-cancelling-before-the-store-is-replaced")
                     }
-                    Ok(false) => {
-                        tr("settings-password-the-store-is-committing-wait-for-it-to-finish").into()
-                    }
-                    Err(message) => message,
+                    Ok(false) => UiText::key(
+                        "settings-password-the-store-is-committing-wait-for-it-to-finish",
+                    ),
+                    Err(message) => message.into(),
                 });
                 cx.notify();
             },
@@ -2095,15 +2152,22 @@ mod tests {
             cx.new(|cx| PasswordForm::new(test_backend(), PasswordAction::Remove, Vec::new(), cx));
         gate.update(cx, |gate, cx| {
             gate.form = Some(form.clone());
-            gate.show_local_store_notice("Local storage needs attention.".into(), cx);
+            gate.show_local_store_notice("Local storage needs attention.", cx);
             assert!(gate.message.is_none());
             assert_eq!(
-                form.read(cx).message.as_deref(),
+                form.read(cx)
+                    .message
+                    .as_ref()
+                    .map(UiText::resolve)
+                    .as_deref(),
                 Some("Local storage needs attention.")
             );
             gate.form = None;
-            gate.show_local_store_notice("Retry unlocking.".into(), cx);
-            assert_eq!(gate.message.as_deref(), Some("Retry unlocking."));
+            gate.show_local_store_notice("Retry unlocking.", cx);
+            assert_eq!(
+                gate.message.as_ref().map(UiText::resolve).as_deref(),
+                Some("Retry unlocking.")
+            );
         });
     }
 
@@ -2311,7 +2375,8 @@ mod tests {
                 gate.message
                     .as_ref()
                     .unwrap()
-                    .contains("Type ERASE exactly")
+                    .resolve()
+                    .contains("Type \u{2068}ERASE\u{2069} exactly")
             );
             assert_eq!(gate.state, StoreState::Locked);
             gate.confirmation
@@ -2322,7 +2387,8 @@ mod tests {
                 gate.message
                     .as_ref()
                     .unwrap()
-                    .contains("Type START FRESH exactly")
+                    .resolve()
+                    .contains("Type \u{2068}START FRESH\u{2069} exactly")
             );
         });
     }

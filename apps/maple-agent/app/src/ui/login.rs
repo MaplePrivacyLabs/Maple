@@ -8,6 +8,7 @@ use gpui::{
 };
 use zeroize::Zeroizing;
 
+use super::i18n::{MessageCache, UiText, tr};
 use crate::backend::{AgentBackend, AuthSession, OAuthProvider};
 use crate::ui::icons::wordmark;
 use crate::ui::secret_input::{SecretInput, SecretInputSubmitted};
@@ -19,8 +20,8 @@ use crate::ui::widgets;
 /// crosses the event boundary; the token snapshot stays inside the backend.
 pub struct LoginSucceeded(pub String);
 
-const EMPTY_CREDENTIALS_ERROR: &str = "Enter your email and password";
-const EMPTY_GUEST_CREDENTIALS_ERROR: &str = "Enter your account ID and password";
+const EMPTY_CREDENTIALS_ERROR: &str = "flows-login-empty-credentials";
+const EMPTY_GUEST_CREDENTIALS_ERROR: &str = "flows-login-empty-guest-credentials";
 
 /// How the OAuth completion step is presented.
 enum OAuthFlow {
@@ -52,19 +53,21 @@ pub struct LoginScreen {
     /// start that has been scheduled but has not created its native attempt.
     backend_tasks: std::cell::RefCell<Vec<tokio::task::AbortHandle>>,
     subscriptions: Vec<Subscription>,
-    error: Option<String>,
+    error: Option<UiText>,
     deletion_notice: Option<String>,
     busy: bool,
+    messages: MessageCache,
 }
 
 impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
-        let email = cx.new(|cx| TextInput::new("Email", cx).with_tab_index(0));
-        let account_id = cx.new(|cx| TextInput::new("Account ID", cx).with_tab_index(0));
-        let password = cx.new(|cx| SecretInput::new("Password", cx).with_tab_index(1));
-        let callback = cx.new(|cx| {
-            TextInput::new("Paste the URL you were redirected to…", cx).with_tab_index(0)
-        });
+        let email = cx.new(|cx| TextInput::localized("flows-login-email", cx).with_tab_index(0));
+        let account_id =
+            cx.new(|cx| TextInput::localized("flows-login-account-id", cx).with_tab_index(0));
+        let password =
+            cx.new(|cx| SecretInput::localized("flows-login-password", cx).with_tab_index(1));
+        let callback =
+            cx.new(|cx| TextInput::localized("flows-login-callback", cx).with_tab_index(0));
         // The email handler receives its own text rather than reading the
         // leased input. SecretInput emits a content-free submission event.
         let weak = cx.entity().downgrade();
@@ -106,6 +109,7 @@ impl LoginScreen {
             error: None,
             deletion_notice: None,
             busy: false,
+            messages: Default::default(),
         };
         this.subscriptions.push(cx.subscribe(
             &this.password_input,
@@ -144,14 +148,11 @@ impl LoginScreen {
             return None;
         }
         if identity.trim().is_empty() || self.password_input.read(cx).is_empty() {
-            self.error = Some(
-                if self.guest {
-                    EMPTY_GUEST_CREDENTIALS_ERROR
-                } else {
-                    EMPTY_CREDENTIALS_ERROR
-                }
-                .to_string(),
-            );
+            self.error = Some(UiText::key(if self.guest {
+                EMPTY_GUEST_CREDENTIALS_ERROR
+            } else {
+                EMPTY_CREDENTIALS_ERROR
+            }));
             cx.notify();
             return None;
         }
@@ -238,7 +239,7 @@ impl LoginScreen {
         &self,
         future: F,
         cx: &mut Context<Self>,
-        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+        then: impl FnOnce(&mut Self, Result<T, UiText>, &mut Context<Self>) + 'static,
     ) where
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, String>> + Send + 'static,
@@ -254,10 +255,13 @@ impl LoginScreen {
         // abort handle owned by this login screen. cx.spawn receives only a
         // WeakEntity; waiting for the browser cannot keep the screen alive.
         let bridge = cx.spawn(async move |this, cx| {
-            let result = task.await.unwrap_or_else(|error| {
-                log::debug!("backend task failed: {error:?}");
-                Err("The task was cancelled".to_string())
-            });
+            let result = match task.await {
+                Ok(result) => result.map_err(UiText::from),
+                Err(error) => {
+                    log::debug!("backend task failed: {error:?}");
+                    Err(UiText::key("flows-login-task-cancelled"))
+                }
+            };
             this.update(cx, |this, cx| {
                 this.busy = false;
                 then(this, result, cx);
@@ -286,8 +290,9 @@ impl LoginScreen {
             return;
         }
         let backend = self.begin(cx);
+        let locale = super::i18n::current_locale().to_string();
         self.call(
-            async move { backend.oauth_start(provider).await },
+            async move { backend.oauth_start_localized(provider, locale).await },
             cx,
             move |this, result, cx| match result {
                 Ok(_) if this.backend.uses_hosted_oauth() => {
@@ -314,7 +319,7 @@ impl LoginScreen {
         }
         let redirected = self.callback_input.read(cx).text();
         if redirected.trim().is_empty() {
-            self.error = Some("Paste the URL you were redirected to".to_string());
+            self.error = Some(UiText::key("flows-login-paste-required"));
             cx.notify();
             return;
         }
@@ -326,7 +331,7 @@ impl LoginScreen {
         );
     }
 
-    fn oauth_completed(&mut self, result: Result<AuthSession, String>, cx: &mut Context<Self>) {
+    fn oauth_completed(&mut self, result: Result<AuthSession, UiText>, cx: &mut Context<Self>) {
         match result {
             // Success means native authentication is already installed. If
             // Back raced with its queued UI receipt, follow
@@ -393,7 +398,10 @@ impl Render for LoginScreen {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(format!("Sign in to {}", self.backend.api_url())),
+                    .child(self.messages.get(
+                        "flows-login-destination",
+                        [("url", self.backend.api_url().to_owned().into())],
+                    )),
             );
 
         match &self.oauth {
@@ -409,10 +417,16 @@ impl Render for LoginScreen {
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child("Sign in to an anonymous account"),
+                            .child(tr("flows-login-anonymous")),
                     )
-                    .child(field("Account ID", self.account_id_input.clone()))
-                    .child(field("Password", self.password_input.clone()))
+                    .child(field(
+                        &tr("flows-login-account-id"),
+                        self.account_id_input.clone(),
+                    ))
+                    .child(field(
+                        &tr("flows-login-password"),
+                        self.password_input.clone(),
+                    ))
                     .child(submit_button(busy, cx))
                     .child(
                         widgets::ghost_button("guest-cancel")
@@ -423,13 +437,16 @@ impl Render for LoginScreen {
                                     this.set_guest(false, cx);
                                 }))
                             })
-                            .child("Back to email sign in"),
+                            .child(tr("flows-login-back")),
                     );
             }
             OAuthFlow::Idle => {
                 card = card
-                    .child(field("Email", self.email_input.clone()))
-                    .child(field("Password", self.password_input.clone()))
+                    .child(field(&tr("flows-login-email"), self.email_input.clone()))
+                    .child(field(
+                        &tr("flows-login-password"),
+                        self.password_input.clone(),
+                    ))
                     .child(submit_button(busy, cx))
                     .child(
                         div()
@@ -446,7 +463,7 @@ impl Render for LoginScreen {
                                 div()
                                     .text_xs()
                                     .text_color(gpui::rgb(theme::text_muted()))
-                                    .child("or continue with"),
+                                    .child(tr("flows-login-or")),
                             )
                             .child(
                                 div()
@@ -472,7 +489,7 @@ impl Render for LoginScreen {
                                             this.set_guest(true, cx);
                                         }))
                                     })
-                                    .child("Anon"),
+                                    .child(tr("flows-login-anon")),
                             ),
                     );
             }
@@ -482,16 +499,16 @@ impl Render for LoginScreen {
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child(format!(
-                                "Finish signing in with {}",
-                                provider.label()
+                            .child(self.messages.get(
+                                "flows-login-provider",
+                                [("provider", provider.label().into())],
                             )),
                     )
                     .child(
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_secondary()))
-                            .child("Your browser opened the sign-in page. After you approve, the site redirects you; paste that final URL here."),
+                            .child(tr("flows-login-paste-instructions")),
                     )
                     .child(
                         div()
@@ -512,9 +529,9 @@ impl Render for LoginScreen {
                                 }))
                             })
                             .child(if busy {
-                                "Completing…".to_string()
+                                tr("flows-login-completing")
                             } else {
-                                "Complete sign in".to_string()
+                                tr("flows-login-complete")
                             }),
                     )
                     .child(
@@ -524,7 +541,7 @@ impl Render for LoginScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
                             }))
-                            .child("Back to email sign in"),
+                            .child(tr("flows-login-back")),
                     );
             }
             OAuthFlow::Hosted { provider } => {
@@ -533,20 +550,23 @@ impl Render for LoginScreen {
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child(format!("Finish signing in with {}", provider.label())),
+                            .child(self.messages.get(
+                                "flows-login-provider",
+                                [("provider", provider.label().into())],
+                            )),
                     )
                     .child(
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_secondary()))
-                            .child("Continue in your browser. Maple will sign in automatically when you finish."),
+                            .child(tr("flows-login-hosted-instructions")),
                     )
                     .when(busy, |card| {
                         card.child(
                             div()
                                 .text_sm()
                                 .text_color(gpui::rgb(theme::text_muted()))
-                                .child("Waiting for your browser…"),
+                                .child(tr("flows-login-waiting")),
                         )
                     })
                     .child(
@@ -556,7 +576,7 @@ impl Render for LoginScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
                             }))
-                            .child("Back to email sign in"),
+                            .child(tr("flows-login-back")),
                     );
             }
         }
@@ -587,9 +607,9 @@ fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> gpui::Stateful<Di
             el.on_click(cx.listener(LoginScreen::submit_clicked))
         })
         .child(if busy {
-            "Signing in…".to_string()
+            tr("flows-login-signing-in").to_string()
         } else {
-            "Sign in".to_string()
+            tr("flows-login-sign-in").to_string()
         })
 }
 
@@ -664,6 +684,41 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn language_switch_reformats_validation_without_consuming_credentials(cx: &mut TestAppContext) {
+        let _locale = super::super::i18n::TestLocalizationGuard::enable();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let screen = cx.new(|cx| LoginScreen::new(backend, cx));
+        screen.update(cx, |screen, cx| {
+            screen.password_input.update(cx, |input, cx| {
+                input.replace_secret(Zeroizing::new("synthetic password".into()), cx);
+            });
+            assert!(screen.take_credentials(String::new(), cx).is_none());
+            for (locale, expected) in [
+                ("en", "Enter your email and password"),
+                ("es", "Ingresa tu correo electrónico y contraseña"),
+                ("en", "Enter your email and password"),
+            ] {
+                super::super::i18n::apply_preference(Some(locale));
+                assert_eq!(screen.error.as_ref().unwrap().resolve().as_ref(), expected);
+                screen
+                    .password_input
+                    .read(cx)
+                    .with_secret(|secret| assert_eq!(secret, "synthetic password"));
+                assert!(!screen.busy);
+                assert!(matches!(screen.oauth, OAuthFlow::Idle));
+            }
+            screen.error = Some("external error 그대로".into());
+            super::super::i18n::apply_preference(Some("es"));
+            assert_eq!(
+                screen.error.as_ref().unwrap().resolve().as_ref(),
+                "external error 그대로"
+            );
+        });
+    }
+
     struct LoginHost {
         screen: Entity<LoginScreen>,
     }
@@ -695,7 +750,10 @@ mod tests {
                 })
             });
             assert!(screen.take_credentials("  ".into(), cx).is_none());
-            assert_eq!(screen.error.as_deref(), Some(EMPTY_CREDENTIALS_ERROR));
+            assert_eq!(
+                screen.error.as_ref().map(UiText::resolve).as_deref(),
+                Some(tr(EMPTY_CREDENTIALS_ERROR).as_ref())
+            );
             screen.error = None;
             screen.busy = true;
             assert!(
@@ -748,7 +806,10 @@ mod tests {
         cx.update(|_window, app| {
             let screen = screen.read(app);
             assert!(!screen.busy);
-            assert_eq!(screen.error.as_deref(), Some(EMPTY_CREDENTIALS_ERROR));
+            assert_eq!(
+                screen.error.as_ref().map(UiText::resolve).as_deref(),
+                Some(tr(EMPTY_CREDENTIALS_ERROR).as_ref())
+            );
         });
     }
 
@@ -798,8 +859,8 @@ mod tests {
             let screen = screen.read(app);
             assert!(!screen.busy);
             assert_eq!(
-                screen.error.as_deref(),
-                Some(EMPTY_CREDENTIALS_ERROR),
+                screen.error.as_ref().map(UiText::resolve).as_deref(),
+                Some(tr(EMPTY_CREDENTIALS_ERROR).as_ref()),
                 "enter in the empty password field must submit"
             );
         });
@@ -815,7 +876,10 @@ mod tests {
                 screen.password_input.read(app).is_empty(),
                 "an admitted submission transfers the control's secret"
             );
-            assert_ne!(screen.error.as_deref(), Some(EMPTY_CREDENTIALS_ERROR));
+            assert_ne!(
+                screen.error.as_ref().map(UiText::resolve).as_deref(),
+                Some(tr(EMPTY_CREDENTIALS_ERROR).as_ref())
+            );
             assert!(
                 screen.busy || screen.error.is_some(),
                 "enter in the filled password field must start the sign-in"
@@ -856,8 +920,13 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.update(|_window, app| {
             assert_eq!(
-                screen.read(app).error.as_deref(),
-                Some(EMPTY_GUEST_CREDENTIALS_ERROR)
+                screen
+                    .read(app)
+                    .error
+                    .as_ref()
+                    .map(UiText::resolve)
+                    .as_deref(),
+                Some(tr(EMPTY_GUEST_CREDENTIALS_ERROR).as_ref())
             );
         });
         cx.simulate_keystrokes("tab");
@@ -869,7 +938,10 @@ mod tests {
         cx.update(|_window, app| {
             let screen = screen.read(app);
             assert!(screen.password_input.read(app).is_empty());
-            assert_ne!(screen.error.as_deref(), Some(EMPTY_GUEST_CREDENTIALS_ERROR));
+            assert_ne!(
+                screen.error.as_ref().map(UiText::resolve).as_deref(),
+                Some(tr(EMPTY_GUEST_CREDENTIALS_ERROR).as_ref())
+            );
             assert!(screen.busy || screen.error.is_some());
         });
         cx.update(|_window, app| {
@@ -939,7 +1011,7 @@ mod tests {
         assert_eq!(&*signed_in.borrow(), &["oauth-account-fixture"]);
 
         screen.update(cx, |this, cx| {
-            this.oauth_completed(Err("Sign in was cancelled. Start again.".to_string()), cx);
+            this.oauth_completed(Err("Sign in was cancelled. Start again.".into()), cx);
             assert!(
                 this.error.is_none(),
                 "an actual cancellation stays on the clean login form"
@@ -980,7 +1052,7 @@ mod tests {
             assert!(matches!(this.oauth, OAuthFlow::Idle));
             assert!(this.busy);
             this.busy = false;
-            this.oauth_completed(Err("Sign in was cancelled. Start again.".to_string()), cx);
+            this.oauth_completed(Err("Sign in was cancelled. Start again.".into()), cx);
             assert!(this.error.is_none());
         });
     }
