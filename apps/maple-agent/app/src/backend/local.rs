@@ -1818,6 +1818,15 @@ impl LocalBackend {
     /// Begin an OAuth flow: returns the authorization URL to open in a
     /// browser (also opens it via the system browser).
     pub async fn oauth_start(&self, provider: OAuthProvider) -> Result<String, String> {
+        self.oauth_start_localized(provider, "en".into()).await
+    }
+
+    /// The caller snapshots its selected UI locale before starting this attempt.
+    pub async fn oauth_start_localized(
+        &self,
+        provider: OAuthProvider,
+        locale: String,
+    ) -> Result<String, String> {
         let attempt = self.pending_oauth.begin(provider, self.oauth_client()?);
         let mut guard = OAuthAttemptGuard {
             store: &self.pending_oauth,
@@ -1832,7 +1841,7 @@ impl LocalBackend {
                         .prepare_native_oauth_handoff()
                         .await
                         .map_err(|_| "Could not prepare browser sign-in. Try again.".to_string())?;
-                    let listener = HandoffListener::bind()?;
+                    let listener = HandoffListener::bind_localized(&locale)?;
                     let provider_name = match provider {
                         OAuthProvider::Github => "github",
                         OAuthProvider::Google => "google",

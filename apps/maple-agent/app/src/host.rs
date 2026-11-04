@@ -47,7 +47,11 @@ type Pending = HashMap<u64, oneshot::Sender<Result<SensitiveValue, String>>>;
 fn decode_response<R: DeserializeOwned>(method: &str, value: SensitiveValue) -> Result<R, String> {
     let result = if matches!(
         method,
-        "generate_store_passphrase" | "request_account_deletion" | "create_api_key" | "oauth_start"
+        "generate_store_passphrase"
+            | "request_account_deletion"
+            | "create_api_key"
+            | "oauth_start"
+            | "oauth_start_localized"
     ) {
         // These small responses contain secrets. Borrowing creates the typed
         // value while the original JSON remains guarded through success or a
@@ -3498,13 +3502,18 @@ mod tests {
         assert_eq!(decoded.passphrase.expose(), "maple-wipe-test-secret-typed");
         assert!(decoded.required);
 
-        for method in ["request_account_deletion", "create_api_key", "oauth_start"] {
+        for method in [
+            "request_account_deletion",
+            "create_api_key",
+            "oauth_start",
+            "oauth_start_localized",
+        ] {
             let value = SensitiveValue::new(serde_json::Value::String(
                 "maple-wipe-test-secret-small-response".into(),
             ));
             assert!(decode_response::<bool>(method, value).is_err());
         }
-        assert_eq!(protocol::test_secret_wipes(), 5);
+        assert_eq!(protocol::test_secret_wipes(), 6);
     }
 
     #[test]

@@ -166,6 +166,12 @@ pub(super) fn preference_label(preference: Option<&str>) -> SharedString {
     label
 }
 
+/// Explicit catalog lookup for the host's OAuth response worker. It does not
+/// consult or mutate the worker's thread-local UI preference.
+pub(crate) fn oauth_completion_text(locale: &str, key: &'static str) -> String {
+    lookup(&resolve(Some(locale)), key, &HashMap::new())
+}
+
 pub(crate) fn tr(key: &'static str) -> SharedString {
     ACTIVE.with_borrow_mut(|state| {
         state

@@ -460,6 +460,12 @@ impl TextInput {
         &self.content
     }
 
+    /// Change a translated placeholder without replacing the draft or selection.
+    pub fn set_placeholder_key(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        self.placeholder_key = Some(key);
+        cx.notify();
+    }
+
     pub fn set_placeholder(&mut self, text: &str, cx: &mut Context<Self>) {
         self.placeholder_key = None;
         self.placeholder = SharedString::from(text.to_string());
@@ -3465,6 +3471,23 @@ mod tests {
             px(14.),
             &[run(2, None), run(3, Some(wavy))]
         ));
+    }
+
+    #[gpui::test]
+    fn localized_placeholder_setter_keeps_draft_and_selection(cx: &mut gpui::TestAppContext) {
+        let _locale = super::super::i18n::TestLocalizationGuard::enable();
+        let input = cx.new(|cx| TextInput::localized("flows-store-type-start-fresh", cx));
+        input.update(cx, |input, cx| {
+            input.set_text("ERASE draft", cx);
+            let selection = input.selected_range.clone();
+            input.set_placeholder_key("flows-store-type-erase", cx);
+            for (locale, expected) in [("en", "Type ERASE"), ("es", "Escribe ERASE")] {
+                super::super::i18n::apply_preference(Some(locale));
+                assert_eq!(input.placeholder().as_ref(), expected);
+                assert_eq!(input.text(), "ERASE draft");
+                assert_eq!(input.selected_range, selection);
+            }
+        });
     }
 
     #[gpui::test]
