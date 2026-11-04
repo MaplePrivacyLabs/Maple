@@ -4744,6 +4744,8 @@ mod tests {
                 store_id: "fixture".into(),
                 notice_id: "change".into(),
                 message: "Encryption is on.".into(),
+                kind: None,
+                at_ms: None,
             });
             app.persistence_status.failure = Some(maple_agent::store::PersistenceFailure {
                 store_id: Some("fixture".into()),
@@ -4929,6 +4931,8 @@ mod tests {
                 store_id: "original".into(),
                 notice_id: "old".into(),
                 message: "Old change".into(),
+                kind: None,
+                at_ms: None,
             };
             let newer = ModeChangeNotice {
                 notice_id: "newer".into(),

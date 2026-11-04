@@ -1049,3 +1049,10 @@ flows-oauth-not-saved = Your session could not be saved. You will need to sign i
 flows-oauth-failed = Sign-in could not finish
 flows-oauth-retry = Return to Maple Work and start again. You can close this tab.
 flows-login-task-cancelled = The task was cancelled
+
+## Flows: retained store-mode notices
+# $date preserves the recorded UTC date and time (YYYY-MM-DD HH:MM UTC).
+flows-mode-notice-set = An unlock password was set on this computer at { $date }.
+flows-mode-notice-changed = Your unlock password was changed on this computer at { $date }.
+flows-mode-notice-rotated = Your unlock password was changed and your local data was re-encrypted on this computer at { $date }.
+flows-mode-notice-removed = Your unlock password was removed on this computer at { $date }.

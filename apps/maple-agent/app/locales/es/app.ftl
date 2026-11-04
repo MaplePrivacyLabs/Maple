@@ -1020,7 +1020,7 @@ flows-repair-save-body = Guardar los datos legibles elimina permanentemente el a
 flows-repair-save = Guardar datos legibles y reemplazar el original
 flows-repair-cancel = Cancelar
 # Counts from the recovery preview; $rebuild counts retained tasks whose timelines need rebuilding.
-flows-repair-preview-counts = Se pueden conservar { $tasks } tareas y { $rows } filas de origen legibles. Se descartarán { $droppedTasks } tareas y { $droppedRows } filas. Es necesario reconstruir el historial de { $rebuild } tareas conservadas.
+flows-repair-preview-counts = Se pueden conservar tareas ({ $tasks }) y filas de origen legibles ({ $rows }). Se descartarán tareas ({ $droppedTasks }) y filas ({ $droppedRows }). Tareas conservadas cuyo historial se debe reconstruir: { $rebuild }.
 flows-repair-progress = Recuperación local: { $phase }.
 # $phase is the recovery phase; $completed and $total count bytes.
 flows-repair-progress-bytes = Recuperación local: { $phase }. { $completed } de { $total } bytes.
@@ -1050,3 +1050,10 @@ flows-oauth-not-saved = No se pudo guardar tu sesión. Tendrás que volver a ini
 flows-oauth-failed = No se pudo completar el inicio de sesión
 flows-oauth-retry = Vuelve a Maple Work e inténtalo de nuevo. Puedes cerrar esta pestaña.
 flows-login-task-cancelled = Se canceló la tarea
+
+## Flows: retained store-mode notices
+# $date preserves the recorded UTC date and time (YYYY-MM-DD HH:MM UTC).
+flows-mode-notice-set = Se estableció una contraseña de desbloqueo en esta computadora el { $date }.
+flows-mode-notice-changed = Tu contraseña de desbloqueo se cambió en esta computadora el { $date }.
+flows-mode-notice-rotated = Tu contraseña de desbloqueo se cambió y tus datos locales se volvieron a cifrar en esta computadora el { $date }.
+flows-mode-notice-removed = Tu contraseña de desbloqueo se eliminó en esta computadora el { $date }.

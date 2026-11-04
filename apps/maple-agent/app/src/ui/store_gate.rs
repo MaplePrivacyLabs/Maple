@@ -906,7 +906,7 @@ pub(crate) enum PasswordAction {
 
 #[derive(Clone)]
 pub(crate) struct PasswordFormFinished {
-    pub notice: Option<String>,
+    pub notice: Option<UiText>,
     pub cancelled: bool,
     pub mode_notice: Option<StoreModeNotice>,
     pub completion_operation_id: Option<String>,
@@ -1950,18 +1950,28 @@ fn suggested_phrase_display(phrase: SecretString) -> impl IntoElement {
     .h(px(72.))
 }
 
-pub(crate) fn operation_notice(result: &Value) -> Option<String> {
+pub(crate) fn operation_notice(result: &Value) -> Option<UiText> {
     let flag = |name| result.get(name).and_then(Value::as_bool).unwrap_or(false);
     if flag("synchronization_pending") || flag("sync_pending") {
-        Some(tr("settings-password-the-new-unlock-password-took-effect-but-maple-couldn-t-confirm-it").into())
+        Some(UiText::key(
+            "settings-password-the-new-unlock-password-took-effect-but-maple-couldn-t-confirm-it",
+        ))
     } else if flag("backup_pending") {
-        Some(tr("settings-password-the-new-unlock-password-took-effect-maple-still-needs-to-synchron").into())
+        Some(UiText::key(
+            "settings-password-the-new-unlock-password-took-effect-maple-still-needs-to-synchron",
+        ))
     } else if flag("used_previous_password") {
-        Some(tr("settings-password-maple-opened-with-your-previous-unlock-password-keep-your-current").into())
+        Some(UiText::key(
+            "settings-password-maple-opened-with-your-previous-unlock-password-keep-your-current",
+        ))
     } else if flag("reconciliation_pending") {
-        Some(tr("settings-password-maple-is-open-key-file-synchronization-or-its-security-upgrade-st").into())
+        Some(UiText::key(
+            "settings-password-maple-is-open-key-file-synchronization-or-its-security-upgrade-st",
+        ))
     } else if flag("notice_pending") {
-        Some(tr("settings-password-encryption-changed-maple-still-needs-to-save-the-local-mode-chang").into())
+        Some(UiText::key(
+            "settings-password-encryption-changed-maple-still-needs-to-save-the-local-mode-chang",
+        ))
     } else {
         None
     }
@@ -2206,14 +2216,41 @@ mod tests {
         assert!(!normalized_equal("", ""));
     }
     #[test]
+    fn completed_password_notices_retain_semantics_across_language_changes() {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        for flag in [
+            "synchronization_pending",
+            "sync_pending",
+            "backup_pending",
+            "used_previous_password",
+            "reconciliation_pending",
+            "notice_pending",
+        ] {
+            let event = PasswordFormFinished {
+                notice: operation_notice(&serde_json::json!({flag:true})),
+                cancelled: false,
+                mode_notice: None,
+                completion_operation_id: None,
+            };
+            let notice = event.notice.unwrap();
+            crate::ui::i18n::apply_preference(Some("en"));
+            let english = notice.resolve();
+            crate::ui::i18n::apply_preference(Some("es"));
+            assert_ne!(notice.resolve(), english);
+            crate::ui::i18n::apply_preference(Some("en"));
+            assert_eq!(notice.resolve(), english);
+        }
+    }
+
+    #[test]
     fn committed_notice_does_not_claim_rollback() {
         let notice = operation_notice(
             &serde_json::json!({"synchronization_pending":true,"backup_pending":true}),
         )
         .unwrap();
-        assert!(notice.contains("took effect"));
-        assert!(notice.contains("both passwords"));
-        assert!(!notice.contains("rolled back"));
+        assert!(notice.resolve().contains("took effect"));
+        assert!(notice.resolve().contains("both passwords"));
+        assert!(!notice.resolve().contains("rolled back"));
     }
     #[test]
     fn progress_uses_readable_copy_units_and_singular_estimates_only_while_exporting() {
@@ -2345,8 +2382,12 @@ mod tests {
             &serde_json::json!({"reconciliation_pending":true,"used_previous_password":false}),
         )
         .unwrap();
-        assert!(notice.contains("existing unlock password remains valid"));
-        assert!(!notice.contains("previous unlock password"));
+        assert!(
+            notice
+                .resolve()
+                .contains("existing unlock password remains valid")
+        );
+        assert!(!notice.resolve().contains("previous unlock password"));
     }
     #[gpui::test]
     fn forgot_password_opens_erase_and_clears_hidden_input(cx: &mut gpui::TestAppContext) {
