@@ -32,10 +32,10 @@ use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
 use super::surface::{AgentSurfaceAccess, SurfaceTask, with_surface_servers};
 use super::switch_compaction::{OfferedModel, switch_compaction_extension};
-use super::timeline::{MAPLE_NOTICE_ENTRY, notice_entry_data, notice_item};
+use super::timeline::{MAPLE_NOTICE_ENTRY, notice_item};
 use super::{
-    AgentRuntimeStatus, AgentServiceEvent, AgentTimelineItem, MapleAgentHostResources,
-    emit_agent_event, login_path, tools,
+    AgentRuntimeStatus, AgentServiceEvent, AgentTimelineItem, AgentTimelineLabel,
+    MapleAgentHostResources, emit_agent_event, login_path, tools,
 };
 use crate::maple_api::MapleApiSession;
 
@@ -828,11 +828,18 @@ impl AgentRuntime {
         if row.message_count == 0 {
             return None;
         }
-        let text = format!("Switched to {}", self.model_label(&model_id).await);
+        let model_name = self.model_label(&model_id).await;
+        let text = format!("Switched to {model_name}");
+        let label = AgentTimelineLabel {
+            kind: "model-switched".into(),
+            name: Some(model_name),
+            detail: None,
+        };
         let id = format!("model-switch-{}", pi_ai::now_ms());
-        session
-            .extension_context()
-            .append_entry(MAPLE_NOTICE_ENTRY, Some(notice_entry_data(&id, &text)));
+        session.extension_context().append_entry(
+            MAPLE_NOTICE_ENTRY,
+            Some(serde_json::json!({"id": id, "text": text, "label": label})),
+        );
         let entry_id = session.with_session(|manager| {
             manager
                 .branch()
@@ -851,10 +858,9 @@ impl AgentRuntime {
                     _ => None,
                 })
         })?;
-        Some((
-            entry_id,
-            notice_item(id, "Agent notice", &text, pi_ai::now_ms()),
-        ))
+        let mut item = notice_item(id, "Agent notice", &text, pi_ai::now_ms());
+        item.label = Some(label);
+        Some((entry_id, item))
     }
 
     /// A model as the account's catalog offers it to tasks: `None` when the

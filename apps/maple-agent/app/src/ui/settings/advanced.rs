@@ -345,7 +345,7 @@ impl SettingsScreen {
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .child(tr("settings-advanced-local-storage-needs-attention")),
                     )
-                    .child(div().text_sm().child(notice.message.clone())),
+                    .child(div().text_sm().child(notice.presentation().resolve())),
             );
         }
         if let Some(notice) = mode_notice {

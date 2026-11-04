@@ -202,6 +202,7 @@ async fn client_queries_the_original_typed_receipt_after_completion_failure_with
         protocol::write(
             &mut original,
             &Message::Response {
+                failure: None,
                 id: request.id,
                 result: completion,
             },
@@ -234,6 +235,7 @@ async fn client_queries_the_original_typed_receipt_after_completion_failure_with
             protocol::write(
                 &mut recovery,
                 &Message::Response {
+                    failure: None,
                     id: lookup.id,
                     result: Ok(serde_json::to_value(outcome).unwrap()),
                 },
@@ -249,6 +251,7 @@ async fn client_queries_the_original_typed_receipt_after_completion_failure_with
         protocol::write(
             &mut original,
             &Message::Response {
+                failure: None,
                 id: detach.id,
                 result: Ok(Value::Null),
             },

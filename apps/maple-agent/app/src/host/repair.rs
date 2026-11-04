@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::HostFailure;
 use maple_agent::store::integrity::{
     IntegrityCancellation, IntegrityKind, IntegrityReport, SALVAGE_CONFIRMATION, SalvagePreview,
     SalvageReport,
@@ -70,8 +71,8 @@ struct Generation {
     setup_operation_id: Option<String>,
 }
 
-fn generation(store: &Store) -> Result<Generation, String> {
-    let status = store.lock_status().map_err(|error| error.to_string())?;
+fn generation(store: &Store) -> Result<Generation, HostFailure> {
+    let status = store.lock_status().map_err(HostFailure::from)?;
     Ok(Generation {
         store_id: status.store_id,
         setup_operation_id: status.setup_operation_id,
@@ -162,24 +163,36 @@ struct SavePreview<'a> {
     confirmation: &'a str,
 }
 
-fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, String> {
-    T::deserialize(value).map_err(|_| "Invalid local recovery request".to_owned())
+fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, HostFailure> {
+    T::deserialize(value)
+        .map_err(|_| HostFailure::new("repair-request", "Invalid local recovery request"))
 }
 
-fn encode(value: impl Serialize) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|_| "Could not encode local recovery response".to_owned())
+fn encode(value: impl Serialize) -> Result<Value, HostFailure> {
+    serde_json::to_value(value).map_err(|_| {
+        HostFailure::new(
+            "repair-response",
+            "Could not encode local recovery response",
+        )
+    })
 }
 
-fn validate_token(value: &str) -> Result<(), String> {
+fn validate_token(value: &str) -> Result<(), HostFailure> {
     if value.len() != 36 || uuid::Uuid::parse_str(value).is_err() {
-        return Err("Review a new recovery preview.".into());
+        return Err(HostFailure::new(
+            "repair-preview",
+            "Review a new recovery preview.",
+        ));
     }
     Ok(())
 }
 
-fn require_damaged(store: &Store) -> Result<(), String> {
+fn require_damaged(store: &Store) -> Result<(), HostFailure> {
     if !matches!(store.state(), StoreState::Damaged { .. }) {
-        return Err("Recovery requires a damaged local store.".into());
+        return Err(HostFailure::new(
+            "repair-damaged",
+            "Recovery requires a damaged local store.",
+        ));
     }
     Ok(())
 }
@@ -205,14 +218,17 @@ impl RepairHost {
         &self,
         store: Arc<Store>,
         work: Work,
-    ) -> Result<(Registration, IntegrityCancellation), String> {
+    ) -> Result<(Registration, IntegrityCancellation), HostFailure> {
         let current = generation(&store)?;
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "Local recovery is unavailable")?;
+            .map_err(|_| HostFailure::new("repair-unavailable", "Local recovery is unavailable"))?;
         if state.active.is_some() {
-            return Err("A local recovery operation is already running.".into());
+            return Err(HostFailure::new(
+                "repair-busy",
+                "A local recovery operation is already running.",
+            ));
         }
         synchronize_generation(&mut state, current);
         let id = uuid::Uuid::new_v4().to_string();
@@ -279,21 +295,20 @@ impl RepairHost {
         }))
     }
 
-    fn status(&self, store: &Store) -> Result<Value, String> {
+    fn status(&self, store: &Store) -> Result<Value, HostFailure> {
         let active = self
             .state
             .lock()
-            .map_err(|_| "Local recovery is unavailable")?
+            .map_err(|_| HostFailure::new("repair-unavailable", "Local recovery is unavailable"))?
             .active
             .is_some();
         // A replacement may be between generation-qualified renames while its
         // worker is active. Do not clear authority from an intermediate view.
         if !active {
             let current = generation(store)?;
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| "Local recovery is unavailable")?;
+            let mut state = self.state.lock().map_err(|_| {
+                HostFailure::new("repair-unavailable", "Local recovery is unavailable")
+            })?;
             if state.active.is_none() {
                 synchronize_generation(&mut state, current);
             }
@@ -301,7 +316,7 @@ impl RepairHost {
         let state = self
             .state
             .lock()
-            .map_err(|_| "Local recovery is unavailable")?;
+            .map_err(|_| HostFailure::new("repair-unavailable", "Local recovery is unavailable"))?;
         let mut value = serde_json::json!({
             "busy":state.active.is_some(),
             "authenticated":state.authenticated,
@@ -313,51 +328,65 @@ impl RepairHost {
         Ok(value)
     }
 
-    fn preview_page(&self, store: &Store, token: &str, offset: usize) -> Result<Value, String> {
+    fn preview_page(
+        &self,
+        store: &Store,
+        token: &str,
+        offset: usize,
+    ) -> Result<Value, HostFailure> {
         validate_token(token)?;
         require_damaged(store)?;
         let current = generation(store)?;
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "Local recovery is unavailable")?;
+            .map_err(|_| HostFailure::new("repair-unavailable", "Local recovery is unavailable"))?;
         if state.active.is_some() {
-            return Err("A local recovery operation is already running.".into());
+            return Err(HostFailure::new(
+                "repair-busy",
+                "A local recovery operation is already running.",
+            ));
         }
         synchronize_generation(&mut state, current.clone());
         let preview = state
             .preview
             .as_mut()
             .filter(|preview| preview.id == token && preview.generation == current)
-            .ok_or("Review a new recovery preview.")?;
+            .ok_or_else(|| HostFailure::new("repair-preview", "Review a new recovery preview."))?;
         page(preview, offset)
     }
 
-    fn take_preview(&self, store: &Store, token: &str) -> Result<SalvagePreview, String> {
+    fn take_preview(&self, store: &Store, token: &str) -> Result<SalvagePreview, HostFailure> {
         validate_token(token)?;
         require_damaged(store)?;
         let current = generation(store)?;
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "Local recovery is unavailable")?;
+            .map_err(|_| HostFailure::new("repair-unavailable", "Local recovery is unavailable"))?;
         synchronize_generation(&mut state, current.clone());
         let preview = state
             .preview
             .as_ref()
             .filter(|preview| preview.id == token && preview.generation == current)
-            .ok_or("Review a new recovery preview.")?;
+            .ok_or_else(|| HostFailure::new("repair-preview", "Review a new recovery preview."))?;
         if !review_is_complete(
             preview.authority.report().dropped_rows.len(),
             &preview.reviewed_pages,
         ) {
-            return Err("Review the recovery summary before saving.".into());
+            return Err(HostFailure::new(
+                "repair-review",
+                "Review the recovery summary before saving.",
+            ));
         }
         state
             .preview
             .take()
             .map(|preview| preview.authority)
-            .ok_or("Review a new recovery preview.".into())
+            .ok_or(HostFailure::new(
+                "repair-preview",
+                "Review a new recovery preview.",
+            ))
     }
 
     pub(super) async fn dispatch(
@@ -365,12 +394,12 @@ impl RepairHost {
         store: Arc<Store>,
         method: &str,
         input: &Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, HostFailure> {
         if requires_native_validation(method) && !cfg!(debug_assertions) {
-            return Err(
-                "Local recovery changes are unavailable until native validation is complete."
-                    .into(),
-            );
+            return Err(HostFailure::new(
+                "repair-native",
+                "Local recovery changes are unavailable until native validation is complete.",
+            ));
         }
         match method {
             "repair_status" => self.status(&store),
@@ -379,25 +408,25 @@ impl RepairHost {
             "authenticate_repair_password" => {
                 require_damaged(&store)?;
                 let request: Authentication<'_> = decode(input)?;
-                let password =
-                    Password::normalize(request.password).map_err(|error| error.to_string())?;
+                let password = Password::normalize(request.password).map_err(HostFailure::from)?;
                 let (_active, _) = self.start(Arc::clone(&store), Work::Authenticate)?;
                 self.state
                     .lock()
-                    .map_err(|_| "Local recovery is unavailable")?
+                    .map_err(|_| {
+                        HostFailure::new("repair-unavailable", "Local recovery is unavailable")
+                    })?
                     .preview = None;
                 let worker = Arc::clone(&store);
                 blocking(move || {
                     worker
                         .authenticate_repair_password(&password)
-                        .map_err(|error| error.to_string())
+                        .map_err(HostFailure::from)
                 })
                 .await?;
                 let current = generation(&store)?;
-                let mut state = self
-                    .state
-                    .lock()
-                    .map_err(|_| "Local recovery is unavailable")?;
+                let mut state = self.state.lock().map_err(|_| {
+                    HostFailure::new("repair-unavailable", "Local recovery is unavailable")
+                })?;
                 synchronize_generation(&mut state, current);
                 state.authenticated = true;
                 Ok(serde_json::json!({"authenticated":true}))
@@ -415,20 +444,19 @@ impl RepairHost {
                     };
                     let mut report = worker
                         .check_integrity(kind, budget, &cancellation)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(HostFailure::from)?;
                     if let Some(receipt) = &report.receipt {
                         report.recorded_last_integrity = worker
                             .record_integrity_clean(receipt, &cancellation)
-                            .map_err(|error| error.to_string())?;
+                            .map_err(HostFailure::from)?;
                     }
                     Ok(report)
                 })
                 .await?;
                 let current = generation(&store)?;
-                let mut state = self
-                    .state
-                    .lock()
-                    .map_err(|_| "Local recovery is unavailable")?;
+                let mut state = self.state.lock().map_err(|_| {
+                    HostFailure::new("repair-unavailable", "Local recovery is unavailable")
+                })?;
                 synchronize_generation(&mut state, current);
                 state.diagnostic = Some(report.clone());
                 encode(report)
@@ -438,23 +466,31 @@ impl RepairHost {
                 let (_active, cancellation) = self.start(Arc::clone(&store), Work::Preview)?;
                 self.state
                     .lock()
-                    .map_err(|_| "Local recovery is unavailable")?
+                    .map_err(|_| {
+                        HostFailure::new("repair-unavailable", "Local recovery is unavailable")
+                    })?
                     .preview = None;
                 let worker = Arc::clone(&store);
                 let authority = blocking(move || {
                     worker
                         .preview_salvage(REPAIR_BUDGET, &cancellation)
-                        .map_err(|error| error.to_string())
+                        .map_err(HostFailure::from)
                 })
                 .await?;
                 let current = generation(&store)?;
                 if current.store_id.as_deref()
                     != Some(authority.report().source_generation.as_str())
                 {
-                    return Err("Review a new recovery preview.".into());
+                    return Err(HostFailure::new(
+                        "repair-preview",
+                        "Review a new recovery preview.",
+                    ));
                 }
                 if authority.report().dropped_rows.len() > MAX_LOSS_ROWS {
-                    return Err("The recovery loss report is too large to review safely.".into());
+                    return Err(HostFailure::new(
+                        "repair-large",
+                        "The recovery loss report is too large to review safely.",
+                    ));
                 }
                 let mut preview = StoredPreview {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -464,10 +500,9 @@ impl RepairHost {
                     reviewed_pages: BTreeSet::new(),
                 };
                 let response = page(&mut preview, 0)?;
-                let mut state = self
-                    .state
-                    .lock()
-                    .map_err(|_| "Local recovery is unavailable")?;
+                let mut state = self.state.lock().map_err(|_| {
+                    HostFailure::new("repair-unavailable", "Local recovery is unavailable")
+                })?;
                 synchronize_generation(&mut state, current);
                 state.preview = Some(preview);
                 Ok(response)
@@ -479,8 +514,9 @@ impl RepairHost {
             "salvage_store" => {
                 let request: SavePreview<'_> = decode(input)?;
                 if request.confirmation != SALVAGE_CONFIRMATION {
-                    return Err(format!(
-                        "Type {SALVAGE_CONFIRMATION} exactly to save readable data."
+                    return Err(HostFailure::new(
+                        "repair-confirmation",
+                        format!("Type {SALVAGE_CONFIRMATION} exactly to save readable data."),
                     ));
                 }
                 let (_active, _) = self.start(Arc::clone(&store), Work::Salvage)?;
@@ -489,30 +525,32 @@ impl RepairHost {
                 let report = blocking(move || {
                     worker
                         .save_readable_data(&preview, SALVAGE_CONFIRMATION)
-                        .map_err(|error| error.to_string())
+                        .map_err(HostFailure::from)
                 })
                 .await?;
                 let current = generation(&store)?;
-                let mut state = self
-                    .state
-                    .lock()
-                    .map_err(|_| "Local recovery is unavailable")?;
+                let mut state = self.state.lock().map_err(|_| {
+                    HostFailure::new("repair-unavailable", "Local recovery is unavailable")
+                })?;
                 synchronize_generation(&mut state, current);
                 state.authenticated = false;
                 state.preview = None;
                 Ok(report_summary(&report))
             }
-            _ => Err("Unknown local recovery operation".into()),
+            _ => Err(HostFailure::new(
+                "repair-operation",
+                "Unknown local recovery operation",
+            )),
         }
     }
 }
 
 async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|_| "The local recovery worker did not finish".to_owned())?
+    work: impl FnOnce() -> Result<T, HostFailure> + Send + 'static,
+) -> Result<T, HostFailure> {
+    tokio::task::spawn_blocking(work).await.map_err(|_| {
+        HostFailure::new("repair-worker", "The local recovery worker did not finish")
+    })?
 }
 
 fn active_salvage_progress(
@@ -545,7 +583,7 @@ fn report_summary(report: &SalvageReport) -> Value {
     })
 }
 
-fn page(preview: &mut StoredPreview, offset: usize) -> Result<Value, String> {
+fn page(preview: &mut StoredPreview, offset: usize) -> Result<Value, HostFailure> {
     let report = preview.authority.report();
     let len = report.dropped_rows.len();
     let range = page_bounds(len, offset)?;
@@ -562,13 +600,16 @@ fn page(preview: &mut StoredPreview, offset: usize) -> Result<Value, String> {
     Ok(value)
 }
 
-fn page_bounds(total: usize, offset: usize) -> Result<std::ops::Range<usize>, String> {
+fn page_bounds(total: usize, offset: usize) -> Result<std::ops::Range<usize>, HostFailure> {
     if total > MAX_LOSS_ROWS
         || offset > total
         || !offset.is_multiple_of(PAGE_SIZE)
         || (offset == total && offset != 0)
     {
-        return Err("Invalid recovery loss report page.".into());
+        return Err(HostFailure::new(
+            "repair-page",
+            "Invalid recovery loss report page.",
+        ));
     }
     Ok(offset..offset.saturating_add(PAGE_SIZE).min(total))
 }
@@ -583,6 +624,13 @@ fn review_is_complete(total: usize, reviewed: &BTreeSet<usize>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_recovery_preview_has_semantics_at_validation_source() {
+        let failure = validate_token("not-a-preview").unwrap_err();
+        assert_eq!(failure.code, "repair-preview");
+        assert_eq!(failure.message, "Review a new recovery preview.");
+    }
 
     #[test]
     fn recovery_method_classification_keeps_diagnostics_and_experimental_salvage_separate() {

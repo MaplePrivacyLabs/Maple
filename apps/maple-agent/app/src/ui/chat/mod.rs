@@ -3037,6 +3037,7 @@ impl ChatScreen {
             .collect();
         self.markdown_cache.clear();
         self.derived.clear();
+        self.messages = Default::default();
         self.list_state
             .reset_with_uniform_height(self.timeline.len(), TRANSCRIPT_ROW_ESTIMATE);
         if let Some(old_navigation_order) = old_navigation_order {
@@ -5139,6 +5140,7 @@ impl ChatScreen {
 
     fn push_local_error(&mut self, title: &str, message: &str, cx: &mut Context<Self>) {
         let item = AgentTimelineItem {
+            label: None,
             persisted: None,
             live: None,
             truncated: None,
@@ -5670,6 +5672,7 @@ impl ChatScreen {
         let index = match position {
             Some(index) => {
                 let AgentTimelineItem {
+                    label: incoming_label,
                     persisted: incoming_persisted,
                     live: incoming_live,
                     truncated: incoming_truncated,
@@ -5687,6 +5690,12 @@ impl ChatScreen {
                 } = item;
                 let existing = &mut self.timeline[index];
                 existing.revision = incoming_revision;
+                if let Some(label) = incoming_label {
+                    match &mut existing.label {
+                        Some(previous) => previous.merge_from(label),
+                        None => existing.label = Some(label),
+                    }
+                }
                 existing.persisted = incoming_persisted.or_else(|| existing.persisted.take());
                 existing.live = incoming_live.or_else(|| existing.live.take());
                 existing.truncated = incoming_truncated;

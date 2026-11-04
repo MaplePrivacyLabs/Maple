@@ -1079,6 +1079,7 @@ mod state_tests {
 
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            label: None,
             persisted: None,
             live: None,
             truncated: None,

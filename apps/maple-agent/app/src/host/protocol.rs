@@ -255,6 +255,8 @@ pub enum Message {
     Response {
         id: u64,
         result: Result<serde_json::Value, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<super::HostFailure>,
     },
     Event(Box<maple_agent::agent::AgentServiceEvent>),
 }
@@ -312,6 +314,8 @@ pub(super) enum IncomingMessage {
     Response {
         id: u64,
         result: Result<SensitiveValue, String>,
+        #[serde(default)]
+        failure: Option<super::failure::HostFailure>,
     },
     Event(Box<maple_agent::agent::AgentServiceEvent>),
 }

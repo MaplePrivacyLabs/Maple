@@ -29,6 +29,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use super::HostFailure;
 use crate::hosted_oauth::{ATTEMPT_TIMEOUT, HandoffListener};
 
 #[path = "deletion.rs"]
@@ -279,17 +280,27 @@ struct OAuthAttempt {
 }
 
 impl OAuthAttempt {
+    #[cfg(test)]
     async fn while_active<T>(
         &self,
         operation: impl Future<Output = Result<T, String>>,
     ) -> Result<T, String> {
+        self.while_active_presented(async { operation.await.map_err(HostFailure::from) })
+            .await
+            .map_err(|failure| failure.message)
+    }
+
+    async fn while_active_presented<T>(
+        &self,
+        operation: impl Future<Output = Result<T, HostFailure>>,
+    ) -> Result<T, HostFailure> {
         let mut cancelled = self.cancelled.subscribe();
         if *cancelled.borrow() {
-            return Err(OAUTH_CANCELLED_MESSAGE.to_string());
+            return Err(HostFailure::new("oauth-cancelled", OAUTH_CANCELLED_MESSAGE));
         }
         tokio::select! {
             biased;
-            _ = cancelled.changed() => Err(OAUTH_CANCELLED_MESSAGE.to_string()),
+            _ = cancelled.changed() => Err(HostFailure::new("oauth-cancelled", OAUTH_CANCELLED_MESSAGE)),
             result = operation => result,
         }
     }
@@ -329,17 +340,21 @@ impl PendingOAuthStore {
         attempt
     }
 
-    fn set_state(&self, attempt: &Arc<OAuthAttempt>, state: String) -> Result<(), String> {
+    fn set_state(&self, attempt: &Arc<OAuthAttempt>, state: String) -> Result<(), HostFailure> {
         let mut pending = self.0.lock().expect("pending OAuth lock");
         let flow = pending
             .as_mut()
             .filter(|flow| Arc::ptr_eq(&flow.attempt, attempt))
-            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
+            .ok_or_else(|| HostFailure::new("oauth-cancelled", OAUTH_CANCELLED_MESSAGE))?;
         flow.state = Some(state);
         Ok(())
     }
 
-    fn complete(&self, provider: OAuthProvider, state: &str) -> Result<Arc<OAuthAttempt>, String> {
+    fn complete(
+        &self,
+        provider: OAuthProvider,
+        state: &str,
+    ) -> Result<Arc<OAuthAttempt>, HostFailure> {
         let mut pending = self.0.lock().expect("pending OAuth lock");
         let flow = pending
             .as_mut()
@@ -350,7 +365,10 @@ impl PendingOAuthStore {
                     && flow.handoff.is_none()
             })
             .ok_or_else(|| {
-                "This callback does not match the pending sign in. Start again.".to_string()
+                HostFailure::new(
+                    "oauth-callback",
+                    "This callback does not match the pending sign in. Start again.",
+                )
             })?;
         flow.completing = true;
         Ok(Arc::clone(&flow.attempt))
@@ -360,12 +378,12 @@ impl PendingOAuthStore {
         self: &Arc<Self>,
         attempt: &Arc<OAuthAttempt>,
         handoff: HostedHandoff,
-    ) -> Result<(), String> {
+    ) -> Result<(), HostFailure> {
         let mut pending = self.0.lock().expect("pending OAuth lock");
         let flow = pending
             .as_mut()
             .filter(|flow| Arc::ptr_eq(&flow.attempt, attempt))
-            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
+            .ok_or_else(|| HostFailure::new("oauth-cancelled", OAUTH_CANCELLED_MESSAGE))?;
         flow.handoff = Some(handoff);
         drop(pending);
         self.expire_handoff_after(attempt, ATTEMPT_TIMEOUT);
@@ -397,16 +415,16 @@ impl PendingOAuthStore {
     fn take_handoff(
         &self,
         provider: OAuthProvider,
-    ) -> Result<(Arc<OAuthAttempt>, HostedHandoff), String> {
+    ) -> Result<(Arc<OAuthAttempt>, HostedHandoff), HostFailure> {
         let mut pending = self.0.lock().expect("pending OAuth lock");
         let flow = pending
             .as_mut()
             .filter(|flow| flow.attempt.provider == provider && !flow.completing)
-            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
+            .ok_or_else(|| HostFailure::new("oauth-cancelled", OAUTH_CANCELLED_MESSAGE))?;
         let handoff = flow
             .handoff
             .take()
-            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
+            .ok_or_else(|| HostFailure::new("oauth-cancelled", OAUTH_CANCELLED_MESSAGE))?;
         flow.completing = true;
         Ok((Arc::clone(&flow.attempt), handoff))
     }
@@ -1458,7 +1476,7 @@ impl LocalBackend {
         self.service.question_responder()
     }
 
-    pub(crate) fn authorize_account(&self, user_id: &str) -> Result<(), String> {
+    pub(crate) fn authorize_account_presented(&self, user_id: &str) -> Result<(), HostFailure> {
         #[cfg(test)]
         if self.ui_fixture {
             return Ok(());
@@ -1466,16 +1484,25 @@ impl LocalBackend {
         if self.saved_user_id().as_deref() == Some(user_id) {
             Ok(())
         } else {
-            Err("The host account changed. Reopen this screen before continuing.".into())
+            Err(HostFailure::new(
+                "deletion-account-changed",
+                "The host account changed. Reopen this screen before continuing.",
+            ))
         }
     }
 
-    fn require_signed_out(&self) -> Result<(), String> {
-        if self.pending_deletion_status()?.is_some() {
-            return Err(deletion::PENDING_DELETION_MESSAGE.to_string());
+    fn require_signed_out_presented(&self) -> Result<(), HostFailure> {
+        if self.pending_deletion_status_presented()?.is_some() {
+            return Err(HostFailure::new(
+                "deletion-pending",
+                deletion::PENDING_DELETION_MESSAGE,
+            ));
         }
         if self.saved_user_id().is_some() {
-            Err("Maple is already signed in. Sign out before changing accounts.".into())
+            Err(HostFailure::new(
+                "account-already-signed-in",
+                "Maple is already signed in. Sign out before changing accounts.",
+            ))
         } else {
             if let Some(store) = &self.store {
                 // A pending deletion reserves the one physical slot even if
@@ -1483,14 +1510,27 @@ impl LocalBackend {
                 // a new live session whose credential write must be rejected.
                 store.credential_owner_for_sign_in().map_err(|error| {
                     if error == maple_agent::store::StoreError::Conflict {
-                        deletion::PENDING_DELETION_MESSAGE.to_owned()
+                        HostFailure::new("deletion-pending", deletion::PENDING_DELETION_MESSAGE)
                     } else {
-                        "Could not read saved sign-in ownership. Try again.".to_owned()
+                        HostFailure::new(
+                            "account-owner-read",
+                            "Could not read saved sign-in ownership. Try again.",
+                        )
                     }
                 })?;
             }
             Ok(())
         }
+    }
+
+    pub(crate) fn authorize_account(&self, user_id: &str) -> Result<(), String> {
+        self.authorize_account_presented(user_id)
+            .map_err(|failure| failure.message)
+    }
+    #[cfg(test)]
+    fn require_signed_out(&self) -> Result<(), String> {
+        self.require_signed_out_presented()
+            .map_err(|failure| failure.message)
     }
 
     /// Take the backend event stream. Only the first caller receives it.
@@ -1509,21 +1549,42 @@ impl LocalBackend {
     /// Sign in with email and password through the OpenSecret SDK, then hand
     /// the validated credentials to the agent runtime.
     pub async fn login(&self, email: String, password: String) -> Result<AuthSession, String> {
+        self.login_presented(email, password)
+            .await
+            .map_err(|failure| failure.message)
+    }
+
+    pub async fn login_presented(
+        &self,
+        email: String,
+        password: String,
+    ) -> Result<AuthSession, super::HostFailure> {
         let _account = self.restore_lock.lock().await;
-        self.require_signed_out()?;
-        let email = Self::normalize_email(&email)?;
+        self.require_signed_out_presented()?;
+        let email = Self::normalize_email(&email)
+            .map_err(|message| super::HostFailure::new("email-required", message))?;
         if password.is_empty() {
-            return Err("Enter a password".to_string());
+            return Err(super::HostFailure::new(
+                "password-required",
+                "Enter a password",
+            ));
         }
         self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?
+            .map_err(|_| {
+                super::HostFailure::new("api-authentication", "Maple API authentication failed")
+            })?
             .with_client_app(maple_sdk::ClientApp::Work);
         let response = client
             .login(email, password, self.client_id)
             .await
-            .map_err(|_| "Sign in failed. Check your email and password.".to_string())?;
+            .map_err(|_| {
+                super::HostFailure::new(
+                    "login-failed",
+                    "Sign in failed. Check your email and password.",
+                )
+            })?;
         self.install_login(response).await
     }
 
@@ -1535,37 +1596,67 @@ impl LocalBackend {
         account_id: String,
         password: String,
     ) -> Result<AuthSession, String> {
+        self.login_guest_presented(account_id, password)
+            .await
+            .map_err(|failure| failure.message)
+    }
+
+    pub async fn login_guest_presented(
+        &self,
+        account_id: String,
+        password: String,
+    ) -> Result<AuthSession, super::HostFailure> {
         let _account = self.restore_lock.lock().await;
-        self.require_signed_out()?;
-        let account_id = Self::parse_account_id(&account_id)?;
+        self.require_signed_out_presented()?;
+        let account_id = Self::parse_account_id_presented(&account_id)?;
         if password.is_empty() {
-            return Err("Enter a password".to_string());
+            return Err(super::HostFailure::new(
+                "password-required",
+                "Enter a password",
+            ));
         }
         self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?
+            .map_err(|_| {
+                super::HostFailure::new("api-authentication", "Maple API authentication failed")
+            })?
             .with_client_app(maple_sdk::ClientApp::Work);
         let response = client
             .login_with_id(account_id, password, self.client_id)
             .await
-            .map_err(|_| "Sign in failed. Check your account ID and password.".to_string())?;
+            .map_err(|_| {
+                super::HostFailure::new(
+                    "guest-login-failed",
+                    "Sign in failed. Check your account ID and password.",
+                )
+            })?;
         self.install_login(response).await
     }
 
+    #[cfg(test)]
     fn parse_account_id(account_id: &str) -> Result<Uuid, String> {
+        Self::parse_account_id_presented(account_id).map_err(|failure| failure.message)
+    }
+
+    fn parse_account_id_presented(account_id: &str) -> Result<Uuid, super::HostFailure> {
         let account_id = account_id.trim();
         if account_id.is_empty() {
-            return Err("Enter your account ID".to_string());
+            return Err(super::HostFailure::new(
+                "account-id-required",
+                "Enter your account ID",
+            ));
         }
-        Uuid::parse_str(account_id).map_err(|_| "That is not a valid account ID".to_string())
+        Uuid::parse_str(account_id).map_err(|_| {
+            super::HostFailure::new("account-id-invalid", "That is not a valid account ID")
+        })
     }
 
     /// Hand a validated login to the agent runtime and persist it.
     async fn install_login(
         &self,
         response: maple_sdk::LoginResponse,
-    ) -> Result<AuthSession, String> {
+    ) -> Result<AuthSession, HostFailure> {
         let user_id = response.id.to_string();
         let snapshot = self
             .auth
@@ -1583,7 +1674,7 @@ impl LocalBackend {
                 // Keep validation detail out of the UI; it can echo the
                 // configured URL back to the user.
                 log::debug!("set_auth failed during sign in: {message}");
-                "Sign in failed. Try again.".to_string()
+                HostFailure::new("sign-in-publication", "Sign in failed. Try again.")
             })?;
         self.persist_auth(&snapshot);
         Ok(AuthSession { user_id })
@@ -1761,11 +1852,11 @@ impl LocalBackend {
         result
     }
 
-    fn oauth_client(&self) -> Result<OpenSecretClient, String> {
+    fn oauth_client(&self) -> Result<OpenSecretClient, HostFailure> {
         let environment = configured_pcr0_environment()?;
         OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
             .map(|client| client.with_client_app(maple_sdk::ClientApp::Work))
-            .map_err(|_| "Maple API authentication failed".to_string())
+            .map_err(|_| HostFailure::new("api-authentication", "Maple API authentication failed"))
     }
 
     async fn publish_session(
@@ -1773,7 +1864,7 @@ impl LocalBackend {
         user_id: String,
         access_token: String,
         refresh_token: Option<String>,
-    ) -> Result<AuthSession, String> {
+    ) -> Result<AuthSession, HostFailure> {
         self.publish_session_with_persistence(user_id, access_token, refresh_token)
             .await
             .map(|(session, _)| session)
@@ -1784,9 +1875,9 @@ impl LocalBackend {
         user_id: String,
         access_token: String,
         refresh_token: Option<String>,
-    ) -> Result<(AuthSession, bool), String> {
+    ) -> Result<(AuthSession, bool), HostFailure> {
         let _account = self.restore_lock.lock().await;
-        self.require_signed_out()?;
+        self.require_signed_out_presented()?;
         self.auth
             .set_auth(
                 self.auth_sink(),
@@ -1802,7 +1893,7 @@ impl LocalBackend {
                 // Keep validation detail out of the UI; it can echo the
                 // configured URL back to the user.
                 log::debug!("set_auth failed during sign in: {message}");
-                "Sign in failed. Try again.".to_string()
+                HostFailure::new("sign-in-publication", "Sign in failed. Try again.")
             })
             .map(|snapshot| {
                 let persisted = self.persist_auth(&snapshot);
@@ -1817,16 +1908,20 @@ impl LocalBackend {
 
     /// Begin an OAuth flow: returns the authorization URL to open in a
     /// browser (also opens it via the system browser).
-    pub async fn oauth_start(&self, provider: OAuthProvider) -> Result<String, String> {
-        self.oauth_start_localized(provider, "en".into()).await
+    pub async fn oauth_start_presented(
+        &self,
+        provider: OAuthProvider,
+    ) -> Result<String, HostFailure> {
+        self.oauth_start_localized_presented(provider, "en".into())
+            .await
     }
 
     /// The caller snapshots its selected UI locale before starting this attempt.
-    pub async fn oauth_start_localized(
+    pub async fn oauth_start_localized_presented(
         &self,
         provider: OAuthProvider,
         locale: String,
-    ) -> Result<String, String> {
+    ) -> Result<String, HostFailure> {
         let attempt = self.pending_oauth.begin(provider, self.oauth_client()?);
         let mut guard = OAuthAttemptGuard {
             store: &self.pending_oauth,
@@ -1836,11 +1931,13 @@ impl LocalBackend {
         let client = &attempt.client;
         if let Some(origin) = crate::profile::AUTH_ORIGIN {
             let auth_url = attempt
-                .while_active(async {
-                    let prepared = client
-                        .prepare_native_oauth_handoff()
-                        .await
-                        .map_err(|_| "Could not prepare browser sign-in. Try again.".to_string())?;
+                .while_active_presented(async {
+                    let prepared = client.prepare_native_oauth_handoff().await.map_err(|_| {
+                        HostFailure::new(
+                            "oauth-prepare",
+                            "Could not prepare browser sign-in. Try again.",
+                        )
+                    })?;
                     let listener = HandoffListener::bind_localized(&locale)?;
                     let provider_name = match provider {
                         OAuthProvider::Github => "github",
@@ -1859,42 +1956,58 @@ impl LocalBackend {
                 })
                 .await?;
             if webbrowser::open(&auth_url).is_err() {
-                return Err(
-                    "Could not open your browser. Check your default browser and try again."
-                        .to_string(),
-                );
+                return Err(HostFailure::new(
+                    "oauth-browser",
+                    "Could not open your browser. Check your default browser and try again.",
+                ));
             }
             guard.retain = true;
             return Ok(auth_url);
         }
         let client_id = self.client_id;
-        let (auth_url, state) = attempt
-            .while_active(async {
-                Ok(match provider {
-                    OAuthProvider::Github => {
-                        let response = client
-                            .initiate_github_auth(client_id, None)
-                            .await
-                            .map_err(|_| "Could not start GitHub sign in".to_string())?;
-                        (response.auth_url, response.state)
-                    }
-                    OAuthProvider::Google => {
-                        let response = client
-                            .initiate_google_auth(client_id, None)
-                            .await
-                            .map_err(|_| "Could not start Google sign in".to_string())?;
-                        (response.auth_url, response.state)
-                    }
-                    OAuthProvider::Apple => {
-                        let response = client
-                            .initiate_apple_auth(client_id, None)
-                            .await
-                            .map_err(|_| "Could not start Apple sign in".to_string())?;
-                        (response.auth_url, response.state)
-                    }
+        let (auth_url, state) =
+            attempt
+                .while_active_presented(async {
+                    Ok(match provider {
+                        OAuthProvider::Github => {
+                            let response = client
+                                .initiate_github_auth(client_id, None)
+                                .await
+                                .map_err(|_| {
+                                    HostFailure::new(
+                                        "oauth-start-github",
+                                        "Could not start GitHub sign in",
+                                    )
+                                })?;
+                            (response.auth_url, response.state)
+                        }
+                        OAuthProvider::Google => {
+                            let response = client
+                                .initiate_google_auth(client_id, None)
+                                .await
+                                .map_err(|_| {
+                                    HostFailure::new(
+                                        "oauth-start-google",
+                                        "Could not start Google sign in",
+                                    )
+                                })?;
+                            (response.auth_url, response.state)
+                        }
+                        OAuthProvider::Apple => {
+                            let response = client
+                                .initiate_apple_auth(client_id, None)
+                                .await
+                                .map_err(|_| {
+                                    HostFailure::new(
+                                        "oauth-start-apple",
+                                        "Could not start Apple sign in",
+                                    )
+                                })?;
+                            (response.auth_url, response.state)
+                        }
+                    })
                 })
-            })
-            .await?;
+                .await?;
         self.pending_oauth.set_state(&attempt, state)?;
         if webbrowser::open(&auth_url).is_err() {
             // No system browser available: the UI still shows the URL.
@@ -1941,10 +2054,10 @@ impl LocalBackend {
     /// Wait on the existing listener and consume exactly the SDK handle that
     /// created the advertised target. Cancellation closes the listener/socket;
     /// malformed callbacks leave it available until the attempt deadline.
-    pub async fn oauth_wait_for_handoff(
+    pub async fn oauth_wait_for_handoff_presented(
         &self,
         provider: OAuthProvider,
-    ) -> Result<AuthSession, String> {
+    ) -> Result<AuthSession, HostFailure> {
         let (attempt, handoff) = self.pending_oauth.take_handoff(provider)?;
         let _guard = OAuthAttemptGuard {
             store: &self.pending_oauth,
@@ -1952,7 +2065,7 @@ impl LocalBackend {
             retain: false,
         };
         attempt
-            .while_active(async {
+            .while_active_presented(async {
                 let HostedHandoff { listener, prepared } = handoff;
                 let (grant, browser) = listener.receive(&prepared).await?;
                 let outcome = async {
@@ -1961,7 +2074,10 @@ impl LocalBackend {
                         .redeem_native_oauth_handoff(prepared, grant)
                         .await
                         .map_err(|_| {
-                            "Browser sign-in failed or expired. Start again.".to_string()
+                            HostFailure::new(
+                                "oauth-handoff",
+                                "Browser sign-in failed or expired. Start again.",
+                            )
                         })?;
                     self.publish_session_with_persistence(
                         response.id.to_string(),
@@ -1987,16 +2103,16 @@ impl LocalBackend {
 
     /// Complete an OAuth flow from the redirected URL (pasted by the user or
     /// captured from a loopback redirect).
-    pub async fn oauth_complete(
+    pub async fn oauth_complete_presented(
         &self,
         provider: OAuthProvider,
         redirected_url: String,
-    ) -> Result<AuthSession, String> {
+    ) -> Result<AuthSession, HostFailure> {
         let Some((code, state)) = parse_oauth_callback(&redirected_url) else {
-            return Err(
-                "Paste the full URL you were redirected to (it contains code and state)"
-                    .to_string(),
-            );
+            return Err(HostFailure::new(
+                "oauth-url",
+                "Paste the full URL you were redirected to (it contains code and state)",
+            ));
         };
         let attempt = self.pending_oauth.complete(provider, &state)?;
         let _guard = OAuthAttemptGuard {
@@ -2005,21 +2121,27 @@ impl LocalBackend {
             retain: false,
         };
         attempt
-            .while_active(async {
+            .while_active_presented(async {
                 let client = &attempt.client;
                 let response = match provider {
                     OAuthProvider::Github => client
                         .handle_github_callback(code, state, String::new())
                         .await
-                        .map_err(|_| "GitHub sign in failed".to_string())?,
+                        .map_err(|_| {
+                            HostFailure::new("oauth-complete-github", "GitHub sign in failed")
+                        })?,
                     OAuthProvider::Google => client
                         .handle_google_callback(code, state, String::new())
                         .await
-                        .map_err(|_| "Google sign in failed".to_string())?,
+                        .map_err(|_| {
+                            HostFailure::new("oauth-complete-google", "Google sign in failed")
+                        })?,
                     OAuthProvider::Apple => client
                         .handle_apple_callback(code, state, String::new())
                         .await
-                        .map_err(|_| "Apple sign in failed".to_string())?,
+                        .map_err(|_| {
+                            HostFailure::new("oauth-complete-apple", "Apple sign in failed")
+                        })?,
                 };
                 self.publish_session(
                     response.id.to_string(),
@@ -2031,36 +2153,67 @@ impl LocalBackend {
             .await
     }
 
-    /// The signed-in account's profile from the backend.
-    pub async fn account(&self, user_id: &str) -> Result<MapleAccount, String> {
-        let session = self.session_for(user_id).await?;
-        session
-            .account()
+    pub async fn oauth_start(&self, provider: OAuthProvider) -> Result<String, String> {
+        self.oauth_start_presented(provider)
             .await
-            .map_err(|error| account_error_message(error, "Could not load the account"))
+            .map_err(|failure| failure.message)
+    }
+    pub async fn oauth_wait_for_handoff(
+        &self,
+        provider: OAuthProvider,
+    ) -> Result<AuthSession, String> {
+        self.oauth_wait_for_handoff_presented(provider)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn oauth_complete(
+        &self,
+        provider: OAuthProvider,
+        redirected_url: String,
+    ) -> Result<AuthSession, String> {
+        self.oauth_complete_presented(provider, redirected_url)
+            .await
+            .map_err(|failure| failure.message)
+    }
+
+    /// The signed-in account's profile from the backend.
+    pub async fn account_presented(&self, user_id: &str) -> Result<MapleAccount, HostFailure> {
+        let session = self.session_for(user_id).await?;
+        session.account().await.map_err(|error| {
+            account_error_message(error, "Could not load the account", "account-load")
+        })
     }
 
     /// Email a fresh verification code to the account's address.
-    pub async fn request_verification_email(&self, user_id: &str) -> Result<(), String> {
+    pub async fn request_verification_email_presented(
+        &self,
+        user_id: &str,
+    ) -> Result<(), HostFailure> {
         let session = self.session_for(user_id).await?;
-        session
-            .request_verification_email()
-            .await
-            .map_err(|error| account_error_message(error, "Could not send the verification email"))
+        session.request_verification_email().await.map_err(|error| {
+            account_error_message(
+                error,
+                "Could not send the verification email",
+                "verification",
+            )
+        })
     }
 
     /// Change the account password. The rotated token pair is persisted
     /// through the auth sink before this returns.
-    pub async fn change_password(
+    pub async fn change_password_presented(
         &self,
         user_id: &str,
         current_password: String,
         new_password: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), HostFailure> {
         if current_password.is_empty() {
-            return Err("Enter your current password".to_string());
+            return Err(HostFailure::new(
+                "account-current-required",
+                "Enter your current password",
+            ));
         }
-        validate_new_password(&new_password)?;
+        validate_new_password_presented(&new_password)?;
         let session = self.session_for(user_id).await?;
         session
             .change_password(current_password, new_password)
@@ -2068,109 +2221,134 @@ impl LocalBackend {
             .map_err(|error| match error {
                 // The route answers 401 for a wrong current password; a
                 // dead session would have failed the session lookup first.
-                MapleAccountError::Unauthorized => "The current password is incorrect".to_string(),
-                other => account_error_message(other, "Could not change the password"),
+                MapleAccountError::Unauthorized => {
+                    HostFailure::new("account-current-wrong", "The current password is incorrect")
+                }
+                other => {
+                    account_error_message(other, "Could not change the password", "password-change")
+                }
             })
     }
 
     /// Start deleting the account: the server emails a confirmation code.
     /// Returns the client-held secret the confirmation step must present.
-    pub async fn request_account_deletion(&self, user_id: &str) -> Result<String, String> {
+    pub async fn request_account_deletion_presented(
+        &self,
+        user_id: &str,
+    ) -> Result<String, HostFailure> {
         let session = self.session_for(user_id).await?;
         let (plaintext, hashed) = maple_agent::maple_api::new_confirmation_secret();
         session
             .request_account_deletion(hashed)
             .await
-            .map_err(|error| account_error_message(error, "Could not start account deletion"))?;
+            .map_err(|error| {
+                account_error_message(error, "Could not start account deletion", "deletion-start")
+            })?;
         Ok(plaintext)
     }
 
     /// The account's API keys, newest first.
-    pub async fn list_api_keys(&self, user_id: &str) -> Result<Vec<MapleApiKey>, String> {
+    pub async fn list_api_keys_presented(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<MapleApiKey>, HostFailure> {
         let session = self.session_for(user_id).await?;
-        let mut keys = session
-            .list_api_keys()
-            .await
-            .map_err(|error| api_key_error_message(error, "Could not load the API keys"))?;
+        let mut keys = session.list_api_keys().await.map_err(|error| {
+            api_key_error_message(error, "Could not load the API keys", "keys-load")
+        })?;
         keys.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(keys)
     }
 
     /// Create an API key named `name`. The key value in the result is the
     /// only copy; the server never returns it again.
-    pub async fn create_api_key(
+    pub async fn create_api_key_presented(
         &self,
         user_id: &str,
         name: String,
-    ) -> Result<MapleApiKeyCreated, String> {
-        let name = validate_api_key_name(&name)?;
+    ) -> Result<MapleApiKeyCreated, HostFailure> {
+        let name = validate_api_key_name_presented(&name)?;
         let session = self.session_for(user_id).await?;
-        session
-            .create_api_key(name)
-            .await
-            .map_err(|error| api_key_error_message(error, "Could not create the API key"))
+        session.create_api_key(name).await.map_err(|error| {
+            api_key_error_message(error, "Could not create the API key", "key-create")
+        })
     }
 
-    pub async fn delete_api_key(&self, user_id: &str, name: &str) -> Result<(), String> {
+    pub async fn delete_api_key_presented(
+        &self,
+        user_id: &str,
+        name: &str,
+    ) -> Result<(), HostFailure> {
         let session = self.session_for(user_id).await?;
-        session
-            .delete_api_key(name)
-            .await
-            .map_err(|error| api_key_error_message(error, "Could not delete the API key"))
+        session.delete_api_key(name).await.map_err(|error| {
+            api_key_error_message(error, "Could not delete the API key", "key-delete")
+        })
     }
 
     /// Plan usage for the sidebar card from the Maple billing API. Returns
     /// `None` when the subscription has no token meter.
-    pub async fn plan_usage(
+    pub async fn plan_usage_presented(
         &self,
         user_id: &str,
-    ) -> Result<Option<crate::billing::PlanUsage>, String> {
-        let status = self.billing_status(user_id).await?;
+    ) -> Result<Option<crate::billing::PlanUsage>, HostFailure> {
+        let status = self.billing_status_presented(user_id).await?;
         let plan = crate::billing::PlanUsage::from_status(&status, chrono::Local::now());
         log::debug!("plan usage: {plan:?}");
         Ok(plan)
     }
 
     /// The full subscription status for the Billing section.
-    pub async fn billing_status(
+    pub async fn billing_status_presented(
         &self,
         user_id: &str,
-    ) -> Result<crate::billing::BillingStatus, String> {
-        self.billing_call(user_id, |billing, token| async move {
+    ) -> Result<crate::billing::BillingStatus, HostFailure> {
+        self.billing_call_presented(user_id, |billing, token| async move {
             billing.subscription_status(&token).await
         })
         .await
     }
 
     /// The plans on sale. Public on the billing API, no token needed.
-    pub async fn billing_products(&self) -> Result<Vec<crate::billing::Product>, String> {
+    pub async fn billing_products_presented(
+        &self,
+    ) -> Result<Vec<crate::billing::Product>, HostFailure> {
         tokio::time::timeout(std::time::Duration::from_secs(20), self.billing.products())
             .await
-            .unwrap_or_else(|_| {
-                Err(crate::billing::BillingError::Other(
-                    "billing request timed out".to_string(),
-                ))
-            })
-            .map_err(|error| error.to_string())
+            .map_err(|_| HostFailure::new("billing-timeout", "billing request timed out"))?
+            .map_err(|error| HostFailure::from(error.to_string()))
     }
 
     /// Open the Stripe customer portal in the system browser.
-    pub async fn open_billing_portal(&self, user_id: &str) -> Result<(), String> {
+    pub async fn open_billing_portal_presented(&self, user_id: &str) -> Result<(), HostFailure> {
         let url = self
-            .billing_call(user_id, |billing, token| async move {
+            .billing_call_presented(user_id, |billing, token| async move {
                 billing
                     .portal_url(&token, crate::billing::PORTAL_RETURN_URL)
                     .await
             })
             .await
-            .map_err(|error| billing_failure(error, "Could not open the subscription portal"))?;
-        open_in_browser(&url, "the subscription portal")
+            .map_err(|error| {
+                billing_failure(
+                    error,
+                    "Could not open the subscription portal",
+                    "billing-portal",
+                )
+            })?;
+        open_in_browser_presented(&url, "the subscription portal", "browser-portal")
     }
 
     /// Start a Stripe checkout for `product_id` in the system browser. The
     /// account email is sent when there is one; guests check out without.
-    pub async fn start_checkout(&self, user_id: &str, product_id: String) -> Result<(), String> {
-        let email = self.account(user_id).await?.email.unwrap_or_default();
+    pub async fn start_checkout_presented(
+        &self,
+        user_id: &str,
+        product_id: String,
+    ) -> Result<(), HostFailure> {
+        let email = self
+            .account_presented(user_id)
+            .await?
+            .email
+            .unwrap_or_default();
         let request = Arc::new(crate::billing::CheckoutRequest {
             email,
             product_id,
@@ -2179,25 +2357,30 @@ impl LocalBackend {
             quantity: None,
         });
         let url = self
-            .billing_call(user_id, |billing, token| {
+            .billing_call_presented(user_id, |billing, token| {
                 let request = Arc::clone(&request);
                 async move { billing.checkout_url(&token, &request).await }
             })
             .await
-            .map_err(|error| billing_failure(error, "Could not start checkout"))?;
-        open_in_browser(&url, "checkout")
+            .map_err(|error| {
+                billing_failure(error, "Could not start checkout", "billing-checkout")
+            })?;
+        open_in_browser_presented(&url, "checkout", "browser-checkout")
     }
 
     /// Prepaid API credits left on the account. The billing error is
     /// logged, not shown: it can carry the server's whole response body.
-    pub async fn api_credit_balance(&self, user_id: &str) -> Result<i64, String> {
-        self.billing_call(user_id, |billing, token| async move {
+    pub async fn api_credit_balance_presented(&self, user_id: &str) -> Result<i64, HostFailure> {
+        self.billing_call_presented(user_id, |billing, token| async move {
             billing.api_credit_balance(&token).await
         })
         .await
         .map_err(|error| {
             log::warn!("Could not load the credit balance: {error}");
-            "Could not load the latest balance. Refresh to try again.".to_string()
+            HostFailure::new(
+                "billing-balance",
+                "Could not load the latest balance. Refresh to try again.",
+            )
         })
     }
 
@@ -2206,21 +2389,27 @@ impl LocalBackend {
     /// provider's webhook; the browser then lands on the web app, so no
     /// desktop callback is involved. Guests have no email and pay with
     /// Bitcoin only, as on the web.
-    pub async fn purchase_api_credits(
+    pub async fn purchase_api_credits_presented(
         &self,
         user_id: &str,
         method: crate::billing::PaymentMethod,
         credits: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), HostFailure> {
         use crate::billing::PaymentMethod;
         if !credits.is_multiple_of(crate::billing::CREDITS_PER_DOLLAR) {
-            return Err("Buy credits in whole dollars".to_string());
+            return Err(HostFailure::new(
+                "billing-whole",
+                "Buy credits in whole dollars",
+            ));
         }
         crate::billing::credits_for_dollars(credits / crate::billing::CREDITS_PER_DOLLAR)
-            .map_err(|error| error.to_string())?;
-        let account = self.account(user_id).await?;
+            .map_err(credit_amount_failure)?;
+        let account = self.account_presented(user_id).await?;
         if method == PaymentMethod::Stripe && account.login_method == MapleLoginMethod::Guest {
-            return Err("Anonymous accounts pay with Bitcoin".to_string());
+            return Err(HostFailure::new(
+                "billing-guest",
+                "Anonymous accounts pay with Bitcoin",
+            ));
         }
         let request = Arc::new(crate::billing::CreditPurchaseRequest {
             credits,
@@ -2230,18 +2419,118 @@ impl LocalBackend {
                 .then(|| crate::billing::CREDITS_CANCEL_URL.to_string()),
         });
         let url = self
-            .billing_call(user_id, |billing, token| {
+            .billing_call_presented(user_id, |billing, token| {
                 let request = Arc::clone(&request);
                 async move { billing.credit_checkout_url(&token, method, &request).await }
             })
             .await
-            .map_err(|error| billing_failure(error, "Could not start the credit checkout"))?;
-        open_in_browser(&url, "checkout")
+            .map_err(|error| {
+                billing_failure(
+                    error,
+                    "Could not start the credit checkout",
+                    "billing-credit-checkout",
+                )
+            })?;
+        open_in_browser_presented(&url, "checkout", "browser-checkout")
     }
 
+    pub async fn account(&self, user_id: &str) -> Result<MapleAccount, String> {
+        self.account_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn request_verification_email(&self, user_id: &str) -> Result<(), String> {
+        self.request_verification_email_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn change_password(
+        &self,
+        user_id: &str,
+        current_password: String,
+        new_password: String,
+    ) -> Result<(), String> {
+        self.change_password_presented(user_id, current_password, new_password)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn request_account_deletion(&self, user_id: &str) -> Result<String, String> {
+        self.request_account_deletion_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn list_api_keys(&self, user_id: &str) -> Result<Vec<MapleApiKey>, String> {
+        self.list_api_keys_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn create_api_key(
+        &self,
+        user_id: &str,
+        name: String,
+    ) -> Result<MapleApiKeyCreated, String> {
+        self.create_api_key_presented(user_id, name)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn delete_api_key(&self, user_id: &str, name: &str) -> Result<(), String> {
+        self.delete_api_key_presented(user_id, name)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn plan_usage(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<crate::billing::PlanUsage>, String> {
+        self.plan_usage_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn billing_status(
+        &self,
+        user_id: &str,
+    ) -> Result<crate::billing::BillingStatus, String> {
+        self.billing_status_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn billing_products(&self) -> Result<Vec<crate::billing::Product>, String> {
+        self.billing_products_presented()
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn open_billing_portal(&self, user_id: &str) -> Result<(), String> {
+        self.open_billing_portal_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn start_checkout(&self, user_id: &str, product_id: String) -> Result<(), String> {
+        self.start_checkout_presented(user_id, product_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn api_credit_balance(&self, user_id: &str) -> Result<i64, String> {
+        self.api_credit_balance_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn purchase_api_credits(
+        &self,
+        user_id: &str,
+        method: crate::billing::PaymentMethod,
+        credits: u64,
+    ) -> Result<(), String> {
+        self.purchase_api_credits_presented(user_id, method, credits)
+            .await
+            .map_err(|failure| failure.message)
+    }
     /// Run one billing request with the cached token, minting a token
     /// first when there is none and once more after a 401.
-    async fn billing_call<T, F, Fut>(&self, user_id: &str, request: F) -> Result<T, String>
+    async fn billing_call_presented<T, F, Fut>(
+        &self,
+        user_id: &str,
+        request: F,
+    ) -> Result<T, HostFailure>
     where
         F: Fn(crate::billing::BillingClient, String) -> Fut,
         Fut: Future<Output = Result<T, crate::billing::BillingError>>,
@@ -2255,35 +2544,34 @@ impl LocalBackend {
         };
         let mut result = self
             .timed_billing(request(self.billing.clone(), token))
-            .await;
+            .await?;
         if matches!(result, Err(BillingError::Unauthorized)) {
             // The cached token expired or was revoked: mint one and retry once.
             token = self.mint_billing_token(&session, user_id).await?;
             result = self
                 .timed_billing(request(self.billing.clone(), token))
-                .await;
+                .await?;
         }
         match result {
             Ok(value) => Ok(value),
             Err(BillingError::Unauthorized) => {
                 self.billing_tokens.lock().await.remove(user_id);
-                Err(BillingError::Unauthorized.to_string())
+                Err(HostFailure::new(
+                    "billing-token-rejected",
+                    BillingError::Unauthorized.to_string(),
+                ))
             }
-            Err(BillingError::Other(error)) => Err(error),
+            Err(BillingError::Other(error)) => Err(error.into()),
         }
     }
 
     async fn timed_billing<T>(
         &self,
         request: impl Future<Output = Result<T, crate::billing::BillingError>>,
-    ) -> Result<T, crate::billing::BillingError> {
+    ) -> Result<Result<T, crate::billing::BillingError>, HostFailure> {
         tokio::time::timeout(std::time::Duration::from_secs(20), request)
             .await
-            .unwrap_or_else(|_| {
-                Err(crate::billing::BillingError::Other(
-                    "billing request timed out".to_string(),
-                ))
-            })
+            .map_err(|_| HostFailure::new("billing-timeout", "billing request timed out"))
     }
 
     async fn mint_billing_token(
@@ -3195,50 +3483,74 @@ fn decode_query_value(value: &str) -> String {
 
 /// A user-facing message for a failed billing action; the server detail
 /// goes to the log, not the screen.
-fn billing_failure(error: String, fallback: &str) -> String {
+fn billing_failure(error: HostFailure, fallback: &str, code: &str) -> HostFailure {
     log::warn!("{fallback}: {error}");
-    format!("{fallback}. Try again, or use the pricing page on the web.")
+    HostFailure::new(
+        code,
+        format!("{fallback}. Try again, or use the pricing page on the web."),
+    )
 }
 
 /// Hand a billing URL to the system browser. Only `https` URLs are opened:
 /// the billing API is trusted, but a bad deploy must not launch anything
 /// else through the browser handler.
-pub fn open_in_browser(url: &str, what: &str) -> Result<(), String> {
+fn open_in_browser_presented(url: &str, what: &str, code: &str) -> Result<(), HostFailure> {
     if !url.starts_with("https://") {
         log::warn!("refusing to open a non-https {what} URL");
-        return Err(format!("Could not open {what}: unexpected link"));
+        return Err(HostFailure::new(
+            &format!("{code}-link"),
+            format!("Could not open {what}: unexpected link"),
+        ));
     }
     webbrowser::open(url).map_err(|error| {
         log::warn!("failed to open {what} in the browser: {error}");
-        format!("Could not open {what} in your browser")
+        HostFailure::new(
+            &format!("{code}-open"),
+            format!("Could not open {what} in your browser"),
+        )
     })
 }
 
 /// The server's API key name rule: 1 to 50 characters after trimming.
 pub const MAX_API_KEY_NAME_LENGTH: usize = 50;
 
-pub fn validate_api_key_name(name: &str) -> Result<String, String> {
+pub fn validate_api_key_name_presented(name: &str) -> Result<String, HostFailure> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("Give the key a name".to_string());
+        return Err(HostFailure::new("key-name-required", "Give the key a name"));
     }
     if name.chars().count() > MAX_API_KEY_NAME_LENGTH {
-        return Err(format!(
-            "Use at most {MAX_API_KEY_NAME_LENGTH} characters for the key name"
-        ));
+        let mut failure = HostFailure::new(
+            "key-name-length",
+            format!("Use at most {MAX_API_KEY_NAME_LENGTH} characters for the key name"),
+        );
+        failure
+            .args
+            .insert("count".into(), MAX_API_KEY_NAME_LENGTH.to_string());
+        return Err(failure);
     }
     Ok(name.to_string())
 }
 
 /// API key errors by status, matching the web app's wording.
-fn api_key_error_message(error: MapleAccountError, fallback: &str) -> String {
+fn api_key_error_message(error: MapleAccountError, fallback: &str, code: &str) -> HostFailure {
     match error {
-        MapleAccountError::Unauthorized => "API keys need a Pro, Max, or Team plan".to_string(),
-        MapleAccountError::Status(409) => "A key with that name already exists".to_string(),
-        MapleAccountError::Status(400) => "That key name is not allowed".to_string(),
-        MapleAccountError::Status(404) => "That key no longer exists".to_string(),
-        MapleAccountError::Status(429) => "You have reached the API key limit".to_string(),
-        other => account_error_message(other, fallback),
+        MapleAccountError::Unauthorized => {
+            HostFailure::new("key-plan", "API keys need a Pro, Max, or Team plan")
+        }
+        MapleAccountError::Status(409) => {
+            HostFailure::new("key-exists", "A key with that name already exists")
+        }
+        MapleAccountError::Status(400) => {
+            HostFailure::new("key-name-invalid", "That key name is not allowed")
+        }
+        MapleAccountError::Status(404) => {
+            HostFailure::new("key-missing", "That key no longer exists")
+        }
+        MapleAccountError::Status(429) => {
+            HostFailure::new("key-limit", "You have reached the API key limit")
+        }
+        other => account_error_message(other, fallback, code),
     }
 }
 
@@ -3246,31 +3558,69 @@ fn api_key_error_message(error: MapleAccountError, fallback: &str) -> String {
 pub const MIN_PASSWORD_LENGTH: usize = 8;
 
 /// The web app's password rule: at least eight characters.
-pub fn validate_new_password(password: &str) -> Result<(), String> {
+pub fn validate_new_password_presented(password: &str) -> Result<(), HostFailure> {
     if password.chars().count() < MIN_PASSWORD_LENGTH {
-        return Err(format!(
-            "Use at least {MIN_PASSWORD_LENGTH} characters for the new password"
-        ));
+        let mut failure = HostFailure::new(
+            "account-password-length",
+            format!("Use at least {MIN_PASSWORD_LENGTH} characters for the new password"),
+        );
+        failure
+            .args
+            .insert("count".into(), MIN_PASSWORD_LENGTH.to_string());
+        return Err(failure);
     }
     Ok(())
 }
 
 /// A user-facing message for an account call that failed. Backend detail
 /// stays in the log; the status alone picks the wording.
-fn account_error_message(error: MapleAccountError, fallback: &str) -> String {
+fn account_error_message(error: MapleAccountError, fallback: &str, code: &str) -> HostFailure {
     match error {
-        MapleAccountError::Unauthorized => {
-            maple_agent::maple_api::AUTH_REJECTED_MESSAGE.to_string()
-        }
+        MapleAccountError::Unauthorized => HostFailure::new(
+            "account-auth-rejected",
+            maple_agent::maple_api::AUTH_REJECTED_MESSAGE,
+        ),
         MapleAccountError::Status(status) => {
             log::debug!("account request failed with status {status}");
-            format!("{fallback}. Try again.")
+            HostFailure::new(&format!("{code}-status"), format!("{fallback}. Try again."))
         }
         MapleAccountError::Other(message) => {
             log::debug!("account request failed: {message}");
-            format!("{fallback}. Check your connection and try again.")
+            HostFailure::new(
+                &format!("{code}-connection"),
+                format!("{fallback}. Check your connection and try again."),
+            )
         }
     }
+}
+
+pub fn open_in_browser(url: &str, what: &str) -> Result<(), String> {
+    open_in_browser_presented(url, what, "unknown").map_err(|failure| failure.message)
+}
+pub fn validate_api_key_name(name: &str) -> Result<String, String> {
+    validate_api_key_name_presented(name).map_err(|failure| failure.message)
+}
+pub fn validate_new_password(password: &str) -> Result<(), String> {
+    validate_new_password_presented(password).map_err(|failure| failure.message)
+}
+fn credit_amount_failure(error: crate::billing::CreditAmountError) -> HostFailure {
+    use crate::billing::CreditAmountError;
+    let (code, amount) = match error {
+        CreditAmountError::BelowMinimum => (
+            "credit-minimum",
+            Some(crate::billing::MIN_CREDIT_PURCHASE_DOLLARS),
+        ),
+        CreditAmountError::AboveMaximum => (
+            "credit-maximum",
+            Some(crate::billing::MAX_CREDIT_PURCHASE_DOLLARS),
+        ),
+        CreditAmountError::WholeDollarsRequired => ("credit-whole", None),
+    };
+    let mut failure = HostFailure::new(code, error.to_string());
+    if let Some(amount) = amount {
+        failure.args.insert("amount".into(), amount.to_string());
+    }
+    failure
 }
 
 #[cfg(test)]
@@ -4451,5 +4801,34 @@ mod app_dir_tests {
             std::fs::read(previous.join("auth.json")).unwrap(),
             b"previous sentinel"
         );
+    }
+}
+
+#[cfg(test)]
+mod oauth_presentation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_inflight_cancel_keeps_its_code_and_original_message() {
+        let pending = PendingOAuthStore::default();
+        let attempt = pending.begin(
+            OAuthProvider::Google,
+            OpenSecretClient::new("http://127.0.0.1:1").unwrap(),
+        );
+        let exercise = async {
+            let wait =
+                attempt.while_active_presented(std::future::pending::<Result<(), HostFailure>>());
+            let cancel = async {
+                tokio::task::yield_now().await;
+                pending.cancel();
+            };
+            let (result, ()) = tokio::join!(wait, cancel);
+            let failure = result.unwrap_err();
+            assert_eq!(failure.code, "oauth-cancelled");
+            assert_eq!(failure.message, OAUTH_CANCELLED_MESSAGE);
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), exercise)
+            .await
+            .unwrap();
     }
 }

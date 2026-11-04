@@ -357,9 +357,19 @@ pub(super) fn render_timeline_item(
             (Some(gpui::Role::Article), Some(tr("chat-you")))
         }
         "message" => (Some(gpui::Role::Article), Some("Maple".into())),
-        "error" => (Some(gpui::Role::Alert), None),
+        "error" => (
+            Some(gpui::Role::Alert),
+            super::super::timeline_labels::title(item, transcript.messages)
+                .or_else(|| item.title.clone().map(Into::into)),
+        ),
         _ => (None, None),
     };
+    let description = (item.item_type == "error").then(|| {
+        super::super::timeline_labels::body(item, transcript.messages)
+            .map(|text| text.to_string())
+            .or_else(|| item.text.clone())
+            .unwrap_or_default()
+    });
     let item = match item.item_type.as_str() {
         "message" => render_message(item, revision, transcript),
         "thinking" | "reasoning" => render_thinking(item, revision, expanded, transcript),
@@ -383,7 +393,7 @@ pub(super) fn render_timeline_item(
         }
         "error" => render_error(item, transcript),
         "permission" => render_permission_row(item),
-        _ => render_system(item),
+        _ => render_system(item, transcript),
     };
     // Per-item spacing (instead of a container gap) keeps non-renderable
     // items from producing phantom gaps. Rows a screen reader should
@@ -398,6 +408,7 @@ pub(super) fn render_timeline_item(
                 .debug_selector(move || row_id.to_string())
                 .role(role)
                 .when_some(label, |row, label| row.aria_label(label))
+                .when_some(description, |row, text| row.aria_description(text))
                 .accessibility_id(item_id)
                 .aria_position_in_set(position)
                 .aria_size_of_set(count)
@@ -715,7 +726,10 @@ fn render_thinking(
         .tool_summaries
         .get(&item.id)
         .cloned()
-        .unwrap_or_else(|| tr("chat-thinking-title"));
+        .unwrap_or_else(|| {
+            crate::ui::timeline_labels::title(item, transcript.messages)
+                .unwrap_or_else(|| tr("chat-thinking-title"))
+        });
     // Only the header toggles, so clicks in the body still select text.
     let header = div()
         .id(gpui::SharedString::from(format!(
@@ -1264,6 +1278,11 @@ fn render_tool(
     // The model summary stands in for the title; until it lands, show just
     // the tool label ("Terminal"), not the raw `tool: args` title.
     let title = summary.clone().unwrap_or_else(|| {
+        if let Some(label) = crate::ui::timeline_labels::tool_label(item, transcript.messages)
+            .or_else(|| crate::ui::timeline_labels::title(item, transcript.messages))
+        {
+            return label;
+        }
         let raw = item.title.as_deref().unwrap_or(&item.item_type);
         SharedString::from(tool_label_title(raw).to_string())
     });
@@ -1612,25 +1631,34 @@ fn extract_output_text(value: &serde_json::Value) -> Option<String> {
 }
 
 fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
-    let text = item
-        .text
-        .clone()
+    let text = super::super::timeline_labels::body(item, transcript.messages)
+        .map(|text| text.to_string())
+        .or_else(|| item.text.clone())
         .or_else(|| item.title.clone())
         .unwrap_or_default();
     if text.trim().is_empty() {
         return div();
     }
-    if !text.contains(USAGE_LIMIT_MESSAGE) {
-        return widgets::banner(theme::status_error()).child(text);
+    let banner = widgets::banner(theme::status_error());
+    if item
+        .label
+        .as_ref()
+        .is_none_or(|label| label.kind != "error-usage")
+        && !item
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains(USAGE_LIMIT_MESSAGE))
+    {
+        return banner.child(text);
     }
     let chat = transcript.chat.clone();
     let button_id = format!("open-billing-{}", item.id);
-    widgets::banner(theme::status_error())
+    banner
         .flex()
         .flex_col()
         .items_start()
         .gap_2()
-        .child(USAGE_LIMIT_MESSAGE)
+        .child(text)
         .child(
             widgets::secondary_button(button_id.clone())
                 .debug_selector({
@@ -1686,11 +1714,11 @@ fn render_permission_row(item: &AgentTimelineItem) -> Div {
         )
 }
 
-fn render_system(item: &AgentTimelineItem) -> Div {
-    let text = item
-        .text
-        .clone()
-        .or_else(|| item.title.clone())
+fn render_system(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
+    let text = crate::ui::timeline_labels::body(item, transcript.messages)
+        .or_else(|| item.text.clone().map(SharedString::from))
+        .or_else(|| crate::ui::timeline_labels::title(item, transcript.messages))
+        .or_else(|| item.title.clone().map(SharedString::from))
         .unwrap_or_default();
     if text.trim().is_empty() {
         return div();
