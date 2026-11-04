@@ -155,9 +155,7 @@ impl SettingsScreen {
             .collect(),
             Section::Account => self.account_targets(),
             Section::Billing => self.billing_targets(),
-            Section::ApiKeys => self.api_keys_targets(),
-            #[cfg(feature = "proxy")]
-            Section::LocalApi => self.local_api_targets(),
+            Section::Api => self.api_targets(),
             #[cfg(feature = "acp")]
             Section::Editors => self.editors_targets(),
             Section::Shortcuts => self
@@ -448,8 +446,9 @@ impl SettingsScreen {
     fn application_text_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         let focused = window.focused(cx);
         let mut inputs = vec![&self.prompt_editor, &self.shortcut_search];
-        #[cfg(feature = "proxy")]
-        if self.section == Section::LocalApi {
+        if self.section == Section::Api {
+            inputs.push(&self.api_keys.name);
+            #[cfg(feature = "proxy")]
             inputs.push(&self.local_api.port);
         }
         if let Some(editor) = &self.mcp_editor {
