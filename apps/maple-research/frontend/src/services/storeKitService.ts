@@ -111,6 +111,7 @@ interface ObservedRevision<Acknowledgement> {
 }
 
 interface TransactionRecovery<Acknowledgement> {
+  originalTransactionId: string;
   revisions: Map<string, ObservedRevision<Acknowledgement>>;
   running: boolean;
 }
@@ -125,6 +126,7 @@ export class StoreKitRecovery<
 > {
   private active = true;
   private readonly transactions = new Map<string, TransactionRecovery<Acknowledgement>>();
+  private readonly chainSubmissions = new Map<string, Promise<void>>();
 
   constructor(
     private readonly bridge: Pick<
@@ -140,6 +142,7 @@ export class StoreKitRecovery<
   dispose(): void {
     this.active = false;
     this.transactions.clear();
+    this.chainSubmissions.clear();
   }
 
   private assertActive(): void {
@@ -147,14 +150,18 @@ export class StoreKitRecovery<
   }
 
   acknowledge(transaction: SignedStoreKitTransaction): Promise<Acknowledgement> {
-    return this.acknowledgeRevision(transaction.transactionId, transaction.jws);
+    return this.acknowledgeRevision(transaction);
   }
 
-  private acknowledgeRevision(transactionId: string, jws: string): Promise<Acknowledgement> {
+  private acknowledgeRevision({
+    transactionId,
+    originalTransactionId,
+    jws
+  }: Omit<SignedStoreKitTransaction, "productId">): Promise<Acknowledgement> {
     this.assertActive();
     let recovery = this.transactions.get(transactionId);
     if (!recovery) {
-      recovery = { revisions: new Map(), running: false };
+      recovery = { originalTransactionId, revisions: new Map(), running: false };
       this.transactions.set(transactionId, recovery);
     }
     let revision = recovery.revisions.get(jws);
@@ -177,6 +184,33 @@ export class StoreKitRecovery<
     return promise;
   }
 
+  /**
+   * Billing commits only the latest concurrent confirmation of a subscription,
+   * so renewals sharing an original transaction must not race each other.
+   */
+  private submitInChainOrder(
+    originalTransactionId: string,
+    jws: string,
+    transactionId: string
+  ): Promise<Acknowledgement> {
+    const previous = this.chainSubmissions.get(originalTransactionId) ?? Promise.resolve();
+    const submission = previous.then(() => {
+      this.assertActive();
+      return this.submit(jws, transactionId);
+    });
+    const settled = submission.then(
+      () => undefined,
+      () => undefined
+    );
+    this.chainSubmissions.set(originalTransactionId, settled);
+    void settled.then(() => {
+      if (this.chainSubmissions.get(originalTransactionId) === settled) {
+        this.chainSubmissions.delete(originalTransactionId);
+      }
+    });
+    return submission;
+  }
+
   private async submitAndFinish(
     transactionId: string,
     recovery: TransactionRecovery<Acknowledgement>
@@ -191,7 +225,11 @@ export class StoreKitRecovery<
           this.assertActive();
           if (revision.acknowledgement) continue;
           try {
-            const acknowledgement = await this.submit(revision.jws, transactionId);
+            const acknowledgement = await this.submitInChainOrder(
+              recovery.originalTransactionId,
+              revision.jws,
+              transactionId
+            );
             this.assertActive();
             if (acknowledgement.acknowledged_transaction_id !== transactionId) {
               throw new Error("storekit_acknowledgement_mismatch");
@@ -235,20 +273,30 @@ export class StoreKitRecovery<
     this.assertActive();
     const { transactions } = await this.bridge.getSignedTransactions();
     this.assertActive();
-    const candidates = transactions.map(({ transactionId, jws }) => ({ transactionId, jws }));
+    const candidates = transactions.map(({ transactionId, originalTransactionId, jws }) => ({
+      transactionId,
+      originalTransactionId,
+      jws
+    }));
     const listedIds = new Set(candidates.map(({ transactionId }) => transactionId));
     // Retry retained failures even when StoreKit omits the ID from this query.
     for (const [transactionId, recovery] of this.transactions) {
       if (!listedIds.has(transactionId)) {
         const revisions = [...recovery.revisions.keys()];
         const jws = revisions.at(-1);
-        if (jws !== undefined) candidates.push({ transactionId, jws });
+        if (jws !== undefined) {
+          candidates.push({
+            transactionId,
+            originalTransactionId: recovery.originalTransactionId,
+            jws
+          });
+        }
       }
     }
     // Register every observed revision before waiting. A slow or conflicting
-    // transaction must not prevent another ID from submitting and finishing.
+    // transaction must not prevent another subscription from submitting and finishing.
     const results = await Promise.allSettled(
-      candidates.map(async ({ transactionId, jws }) => this.acknowledgeRevision(transactionId, jws))
+      candidates.map(async (candidate) => this.acknowledgeRevision(candidate))
     );
     this.assertActive();
     const acknowledgements = results.flatMap((result) =>
