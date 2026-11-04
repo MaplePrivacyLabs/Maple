@@ -102,6 +102,7 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
+    placeholder_key: Option<&'static str>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     /// A soft wrap has two visual caret positions at the same byte offset.
@@ -253,10 +254,23 @@ impl TextInput {
         self
     }
 
+    /// A catalog-backed placeholder and accessibility label that follow live language changes.
+    pub fn localized(key: &'static str, cx: &mut Context<Self>) -> Self {
+        let mut input = Self::new("", cx);
+        input.placeholder_key = Some(key);
+        input
+    }
+
+    fn placeholder(&self) -> SharedString {
+        self.placeholder_key
+            .map_or_else(|| self.placeholder.clone(), super::i18n::tr)
+    }
+
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             content: "".into(),
+            placeholder_key: None,
             placeholder: SharedString::from(placeholder.to_string()),
             selected_range: 0..0,
             selection_reversed: false,
@@ -447,6 +461,7 @@ impl TextInput {
     }
 
     pub fn set_placeholder(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.placeholder_key = None;
         self.placeholder = SharedString::from(text.to_string());
         cx.notify();
     }
@@ -2723,7 +2738,7 @@ impl Element for TextElement {
         let layout = window.request_measured_layout(style, move |known, available, window, cx| {
             let input = entity.read(cx);
             let text = if input.content.is_empty() {
-                input.placeholder.clone()
+                input.placeholder()
             } else {
                 input.display_text()
             };
@@ -2810,7 +2825,7 @@ impl Element for TextElement {
         // surrounding element happens to set: an input inside a caption
         // row or an unstyled container still reads in both themes.
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), theme::placeholder())
+            (input.placeholder(), theme::placeholder())
         } else {
             (input.display_text(), rgb(theme::text_primary()).into())
         };
@@ -3208,8 +3223,8 @@ impl Render for TextInput {
             } else {
                 gpui::Role::TextInput
             })
-            .aria_label(self.placeholder.clone())
-            .aria_placeholder(self.placeholder.clone())
+            .aria_label(self.placeholder())
+            .aria_placeholder(self.placeholder())
             .flex()
             .key_context(key_context)
             .track_focus(&self.focus_handle(cx))
@@ -4569,5 +4584,24 @@ mod tests {
             cases.len(),
             failures.join("\n")
         );
+    }
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn localized_placeholder_follows_language_without_replacing_text(cx: &mut gpui::TestAppContext) {
+    let _locale = super::i18n::TestLocalizationGuard::enable();
+    let input = cx.new(|cx| TextInput::localized("settings-account-current-password", cx));
+    input.update(cx, |input, cx| input.set_text("typed value", cx));
+    for (locale, expected) in [
+        ("en", "Current password"),
+        ("es", "Contraseña actual"),
+        ("en", "Current password"),
+    ] {
+        super::i18n::apply_preference(Some(locale));
+        input.update(cx, |input, _| {
+            assert_eq!(input.placeholder().as_ref(), expected);
+            assert_eq!(input.text(), "typed value");
+        });
     }
 }

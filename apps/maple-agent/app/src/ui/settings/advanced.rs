@@ -1,6 +1,7 @@
 //! Local advanced preferences and capability-gated encryption controls. A
 //! remote task selection never redirects these settings to another computer.
 
+use crate::ui::i18n::{UiText, tr, tr_args};
 use gpui::{App, Context, Div, Entity, EventEmitter, div, prelude::*};
 #[cfg(feature = "acp")]
 use maple_agent::acp::AgentAcpConfig;
@@ -22,7 +23,7 @@ pub(super) struct AdvancedState {
     pub confirmation: Entity<TextInput>,
     pub erase: bool,
     pub busy: bool,
-    pub notice: Option<String>,
+    pub notice: Option<UiText>,
     success: Option<&'static str>,
     mode_notice_acknowledging: Option<StoreModeNotice>,
     mode_notice_acknowledged: Option<StoreModeNotice>,
@@ -37,7 +38,7 @@ struct AcpSettings {
     roots: Entity<TextInput>,
     connection_limit: Entity<TextInput>,
     saving: bool,
-    notice: Option<String>,
+    notice: Option<UiText>,
 }
 
 impl AdvancedState {
@@ -45,7 +46,7 @@ impl AdvancedState {
         Self {
             status: None,
             form: None,
-            confirmation: cx.new(|cx| TextInput::new("Type ERASE", cx)),
+            confirmation: cx.new(|cx| TextInput::localized("settings-advanced-type-erase", cx)),
             erase: false,
             busy: false,
             notice: None,
@@ -57,13 +58,21 @@ impl AdvancedState {
             acp: AcpSettings {
                 config: None,
                 roots: cx.new(|cx| {
-                    TextInput::new("One absolute folder path per line", cx)
+                    TextInput::localized("settings-advanced-one-absolute-folder-path-per-line", cx)
                         .multiline(6)
                         .with_tab_index(30)
                 }),
                 connection_limit: cx.new(|cx| {
                     TextInput::new(
-                        &format!("Default ({})", AgentAcpConfig::default().max_connections),
+                        &tr_args(
+                            "settings-acp-default",
+                            [(
+                                "arg1",
+                                (AgentAcpConfig::default().max_connections)
+                                    .to_string()
+                                    .into(),
+                            )],
+                        ),
                         cx,
                     )
                     .with_tab_index(31)
@@ -81,6 +90,21 @@ impl AdvancedState {
 }
 
 impl SettingsScreen {
+    #[cfg(feature = "acp")]
+    pub(super) fn refresh_acp_placeholder(&self, cx: &mut Context<Self>) {
+        let label = tr_args(
+            "settings-acp-default",
+            [(
+                "arg1",
+                AgentAcpConfig::default().max_connections.to_string().into(),
+            )],
+        );
+        self.advanced
+            .acp
+            .connection_limit
+            .update(cx, |input, cx| input.set_placeholder(&label, cx));
+    }
+
     pub(crate) fn record_mode_notice_ack(
         &mut self,
         notice: &StoreModeNotice,
@@ -106,7 +130,7 @@ impl SettingsScreen {
         if let Some(form) = &self.advanced.form {
             form.update(cx, |form, cx| form.show_local_store_notice(message, cx));
         } else {
-            self.advanced.notice = Some(message);
+            self.advanced.notice = Some(message.into());
             cx.notify();
         }
         true
@@ -157,7 +181,7 @@ impl SettingsScreen {
                         );
                         this.advanced.status = Some(status);
                     }
-                    Err(message) => this.advanced.notice = Some(message),
+                    Err(message) => this.advanced.notice = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -198,7 +222,7 @@ impl SettingsScreen {
                         this.advanced.acp.config = Some(config);
                         this.advanced.acp.notice = None;
                     }
-                    Err(message) => this.advanced.acp.notice = Some(message),
+                    Err(message) => this.advanced.acp.notice = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -232,7 +256,7 @@ impl SettingsScreen {
         ) {
             Ok(config) => config,
             Err(message) => {
-                self.advanced.acp.notice = Some(message);
+                self.advanced.acp.notice = Some(message.into());
                 cx.notify();
                 return;
             }
@@ -251,10 +275,11 @@ impl SettingsScreen {
                         // The host validates again and returns the stored values.
                         this.install_acp_fields(&config, cx);
                         this.advanced.acp.config = Some(config);
-                        this.advanced.acp.notice =
-                            Some("ACP preferences saved. They apply to new connections.".into());
+                        this.advanced.acp.notice = Some(UiText::key(
+                            "settings-advanced-acp-preferences-saved-they-apply-to-new-connections",
+                        ));
                     }
-                    Err(message) => this.advanced.acp.notice = Some(message),
+                    Err(message) => this.advanced.acp.notice = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -268,7 +293,9 @@ impl SettingsScreen {
             return;
         }
         self.install_acp_fields(&AgentAcpConfig::default(), cx);
-        self.advanced.acp.notice = Some("Default values are ready. Save to apply them.".into());
+        self.advanced.acp.notice = Some(UiText::key(
+            "settings-advanced-default-values-are-ready-save-to-apply-them",
+        ));
         cx.notify();
     }
 
@@ -276,35 +303,43 @@ impl SettingsScreen {
     fn render_acp_settings(&self, cx: &mut Context<Self>) -> Div {
         let state = &self.advanced.acp;
         let mut pane = div().flex().flex_col().gap_3()
-            .child(section_title("Agent Client Protocol (ACP)"))
+            .child(section_title(&tr("settings-advanced-agent-client-protocol-acp")))
             .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                .child("Choose which folders local ACP clients can open and how many connections can run at once. These preferences apply to this account on this computer."));
+                .child(tr("settings-advanced-choose-which-folders-local-acp-clients-can-open-and-how-many-conn")));
         if state.saving {
-            return pane.child(div().text_sm().child("Saving ACP preferences…"));
+            return pane.child(
+                div()
+                    .text_sm()
+                    .child(tr("settings-advanced-saving-acp-preferences")),
+            );
         }
         if state.config.is_some() {
             pane = pane
-                .child(div().text_sm().child("Allowed project folders"))
+                .child(div().text_sm().child(tr("settings-advanced-allowed-project-folders")))
                 .child(widgets::input_frame().child(state.roots.clone()))
                 .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                    .child("Enter one absolute folder path per line. Leave the list empty to allow any folder."))
-                .child(div().text_sm().child("Maximum connections"))
+                    .child(tr("settings-advanced-enter-one-absolute-folder-path-per-line-leave-the-list-empty-to-a")))
+                .child(div().text_sm().child(tr("settings-advanced-maximum-connections")))
                 .child(widgets::input_frame().child(state.connection_limit.clone()))
                 .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                    .child(format!("Choose 1–{} simultaneous connections. Leave blank for the default ({}).", AgentAcpConfig::default().max_connections, AgentAcpConfig::default().max_connections)))
+                    .child(self.messages.get("settings-acp-limit-help", [("arg1", (AgentAcpConfig::default().max_connections).to_string().into()), ("arg2", (AgentAcpConfig::default().max_connections).to_string().into())])))
                 .child(div().flex().gap_2()
                     .child(widgets::primary_button("advanced-acp-save")
-                        .on_click(cx.listener(|this, _, _, cx| this.save_acp_settings(cx))).child("Save ACP preferences"))
+                        .on_click(cx.listener(|this, _, _, cx| this.save_acp_settings(cx))).child(tr("settings-advanced-save-acp-preferences")))
                     .child(widgets::secondary_button("advanced-acp-defaults")
-                        .on_click(cx.listener(|this, _, _, cx| this.reset_acp_fields(cx))).child("Use defaults")));
+                        .on_click(cx.listener(|this, _, _, cx| this.reset_acp_fields(cx))).child(tr("settings-advanced-use-defaults"))));
         } else if state.notice.is_some() {
             pane = pane.child(
                 widgets::secondary_button("advanced-acp-retry")
                     .on_click(cx.listener(|this, _, _, cx| this.load_acp_settings(cx)))
-                    .child("Retry"),
+                    .child(tr("settings-advanced-retry")),
             );
         } else {
-            pane = pane.child(div().text_sm().child("Loading ACP preferences…"));
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .child(tr("settings-advanced-loading-acp-preferences")),
+            );
         }
         if let Some(notice) = &state.notice {
             pane = pane.child(
@@ -349,7 +384,7 @@ impl SettingsScreen {
                     return;
                 }
                 this.advanced.success = Some(password_success_message(action));
-                this.advanced.notice = event.notice.clone();
+                this.advanced.notice = event.notice.clone().map(Into::into);
                 this.load_advanced_status(cx);
                 // Desktop may acknowledge this exact receipt only after this
                 // live Settings recipient has installed its inline result.
@@ -369,7 +404,9 @@ impl SettingsScreen {
         }
         let confirmation = self.advanced.confirmation.read(cx).text();
         if confirmation != "ERASE" {
-            self.advanced.notice = Some("Type ERASE exactly to continue.".into());
+            self.advanced.notice = Some(UiText::key(
+                "settings-advanced-type-erase-exactly-to-continue",
+            ));
             cx.notify();
             return;
         }
@@ -400,7 +437,7 @@ impl SettingsScreen {
                         this.advanced.erase = false;
                         this.advanced.form = None;
                     }
-                    Err(message) => this.advanced.notice = Some(message),
+                    Err(message) => this.advanced.notice = Some(message.into()),
                 }
                 this.load_advanced_status(cx);
                 cx.notify();
@@ -449,8 +486,9 @@ impl SettingsScreen {
                     && apply_mode_notice_ack(status, &notice, acknowledged)
                     && !acknowledged
                 {
-                    this.advanced.notice =
-                        Some("This notice could not be dismissed. Try again.".into());
+                    this.advanced.notice = Some(UiText::key(
+                        "settings-advanced-this-notice-could-not-be-dismissed-try-again",
+                    ));
                 }
                 cx.notify();
             },
@@ -474,18 +512,24 @@ impl SettingsScreen {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child("Changes need saving"),
+                            .child(tr("settings-advanced-changes-need-saving")),
                     )
                     .child(div().text_sm().child(failure.message()))
                     .child(
                         widgets::secondary_button("advanced-retry-store-persistence")
                             .on_click(cx.listener(|_this, _, _, cx| cx.emit(RetryStorePersistence)))
-                            .child("Retry saving"),
+                            .child(tr("settings-advanced-retry-saving")),
                     ),
             );
         }
         if let Some(notice) = attention
-            && self.advanced.notice.as_deref() != Some(notice.message.as_str())
+            && self
+                .advanced
+                .notice
+                .as_ref()
+                .map(UiText::resolve)
+                .as_deref()
+                != Some(notice.message.as_str())
             && persistence.is_none_or(|failure| failure.message() != notice.message.as_str())
         {
             pane = pane.child(
@@ -493,7 +537,7 @@ impl SettingsScreen {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child("Local storage needs attention"),
+                            .child(tr("settings-advanced-local-storage-needs-attention")),
                     )
                     .child(div().text_sm().child(notice.message.clone())),
             );
@@ -510,17 +554,17 @@ impl SettingsScreen {
                                 cx.listener(|this, _, _, cx| this.dismiss_local_mode_notice(cx)),
                             )
                             .child(if acknowledging {
-                                "Dismissing…"
+                                tr("settings-advanced-dismissing")
                             } else {
-                                "Dismiss"
+                                tr("settings-advanced-dismiss")
                             }),
                     ),
             );
         }
         if !form_open
             && let Some(notice) = &self.advanced.notice
-            && mode_notice.is_none_or(|mode| mode.message.as_str() != notice.as_str())
-            && persistence.is_none_or(|failure| failure.message() != notice.as_str())
+            && mode_notice.is_none_or(|mode| mode.message.as_str() != notice.resolve().as_ref())
+            && persistence.is_none_or(|failure| failure.message() != notice.resolve().as_ref())
         {
             pane = pane.child(
                 div()
@@ -535,14 +579,19 @@ impl SettingsScreen {
     pub(super) fn render_advanced(&self, cx: &mut Context<Self>) -> Div {
         let mut pane = div().flex().flex_col().gap_4();
         if !self.advanced.available() {
-            pane = self.render_local_store_notices(pane.child(section_title("Local data")), cx);
+            pane = self.render_local_store_notices(
+                pane.child(section_title(&tr("settings-advanced-local-data"))),
+                cx,
+            );
             #[cfg(feature = "acp")]
             {
                 pane = pane.child(self.render_acp_settings(cx));
             }
             return pane;
         }
-        pane = pane.child(section_title("Encryption on this computer"));
+        pane = pane.child(section_title(&tr(
+            "settings-advanced-encryption-on-this-computer",
+        )));
         if let Some(form) = &self.advanced.form {
             let pane = self.encryption_context(pane.child(form.clone()), true);
             return self.render_local_store_notices(pane, cx);
@@ -554,7 +603,7 @@ impl SettingsScreen {
                     .p_3()
                     .bg(gpui::rgb(theme::bg_elevated()))
                     .text_color(gpui::rgb(theme::status_success()))
-                    .child(success),
+                    .child(tr(success)),
             );
         }
         let password = self
@@ -571,17 +620,17 @@ impl SettingsScreen {
                     theme::text_primary()
                 }))
                 .child(if password {
-                    "Encryption is on"
+                    tr("settings-advanced-encryption-is-on")
                 } else {
-                    "Encryption is off"
+                    tr("settings-advanced-encryption-is-off")
                 }),
         );
         pane=pane.child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child(if password {
-            "Maple's copy of your conversation text, settings and sign-in on this computer is encrypted with your unlock password. Maple asks for it each time it starts. Attached files and images remain unencrypted."
-        } else {"Your conversation text, settings and sign-in are stored on this computer, readable only by your user account. Set an unlock password to encrypt them. Attached files and images remain unencrypted."}));
+            tr("settings-advanced-maple-s-copy-of-your-conversation-text-settings-and-sign-in-on-th")
+        } else {tr("settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co")}));
         if self.advanced.erase {
             pane = pane
-                .child(div().text_sm().child(ERASE_COPY))
+                .child(div().text_sm().child(tr(ERASE_COPY)))
                 .child(self.advanced.confirmation.clone())
                 .child(
                     widgets::primary_button("advanced-erase-confirm")
@@ -589,7 +638,7 @@ impl SettingsScreen {
                         .on_click(
                             cx.listener(|this, _event, _window, cx| this.erase_local_store(cx)),
                         )
-                        .child("Erase this version's local data"),
+                        .child(tr("settings-advanced-erase-this-version-s-local-data")),
                 )
                 .child(
                     widgets::ghost_button("advanced-erase-cancel")
@@ -597,7 +646,7 @@ impl SettingsScreen {
                             this.advanced.erase = false;
                             cx.notify();
                         }))
-                        .child("Cancel"),
+                        .child(tr("settings-advanced-cancel")),
                 );
         } else {
             pane = pane
@@ -618,9 +667,9 @@ impl SettingsScreen {
                                     )
                                 }))
                                 .child(if password {
-                                    "Change password…"
+                                    tr("settings-advanced-change-password")
                                 } else {
-                                    "Set unlock password…"
+                                    tr("settings-advanced-set-unlock-password")
                                 }),
                         )
                         .when(password, |row| {
@@ -629,7 +678,7 @@ impl SettingsScreen {
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.open_password_form(PasswordAction::Remove, cx)
                                     }))
-                                    .child("Remove password…"),
+                                    .child(tr("settings-advanced-remove-password")),
                             )
                         }),
                 )
@@ -641,7 +690,7 @@ impl SettingsScreen {
                             this.advanced.success = None;
                             cx.notify();
                         }))
-                        .child("Erase local data…"),
+                        .child(tr("settings-advanced-erase-local-data")),
                 );
         }
         pane = self.encryption_context(pane, password);
@@ -655,7 +704,7 @@ impl SettingsScreen {
 
     fn encryption_context(&self, mut pane: Div, password: bool) -> Div {
         if self.advanced.remote_enabled {
-            pane=pane.child(div().text_sm().child("While Maple is locked, your other computers can't reach this one. After a restart, open Maple and unlock it to turn remote access back on."));
+            pane=pane.child(div().text_sm().child(tr("settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a")));
         }
         if password {
             for integration in self
@@ -666,12 +715,12 @@ impl SettingsScreen {
                 .filter(|integration| integration.enabled_for_new_tasks)
             {
                 let copy = match integration.id.as_str() {
-                    "claude" => Some(
-                        "Claude Code keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.",
-                    ),
-                    "codex" => Some(
-                        "Codex keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.",
-                    ),
+                    "claude" => Some(tr(
+                        "settings-advanced-claude-code-keeps-its-own-copy-of-the-work-maple-hands-it-in-its",
+                    )),
+                    "codex" => Some(tr(
+                        "settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own-fo",
+                    )),
                     _ => None,
                 };
                 if let Some(copy) = copy {
@@ -726,9 +775,11 @@ fn filter_acknowledged_mode_notice(
 
 fn password_success_message(action: PasswordAction) -> &'static str {
     match action {
-        PasswordAction::Set | PasswordAction::Setup => "Encryption enabled on this computer.",
-        PasswordAction::Change => "Your unlock password was changed.",
-        PasswordAction::Remove => "Your unlock password was removed.",
+        PasswordAction::Set | PasswordAction::Setup => {
+            "settings-advanced-encryption-enabled-on-this-computer"
+        }
+        PasswordAction::Change => "settings-advanced-your-unlock-password-was-changed",
+        PasswordAction::Remove => "settings-advanced-your-unlock-password-was-removed",
     }
 }
 
@@ -744,16 +795,17 @@ fn acp_form_config(roots: &str, connection_limit: &str) -> Result<AgentAcpConfig
             .ok()
             .filter(|limit| (1..=defaults.max_connections).contains(limit))
             .ok_or_else(|| {
-                format!(
-                    "Choose a connection limit from 1 to {}.",
-                    defaults.max_connections
+                tr_args(
+                    "settings-acp-limit-invalid",
+                    [("arg1", (defaults.max_connections).to_string().into())],
                 )
+                .to_string()
             })?
     };
     let mut allowed_project_roots = Vec::new();
     for root in roots.lines().map(str::trim).filter(|root| !root.is_empty()) {
         if !std::path::Path::new(root).is_absolute() {
-            return Err("Allowed ACP folders must use absolute paths.".into());
+            return Err(tr("settings-advanced-allowed-acp-folders-must-use-absolute-paths").into());
         }
         if !allowed_project_roots.iter().any(|saved| saved == root) {
             allowed_project_roots.push(root.to_owned());
@@ -865,16 +917,21 @@ mod tests {
             settings.section = Section::Advanced;
             assert!(settings.show_local_store_notice("Needs attention.".into(), cx));
             assert_eq!(
-                settings.advanced.notice.as_deref(),
+                settings
+                    .advanced
+                    .notice
+                    .as_ref()
+                    .map(UiText::resolve)
+                    .as_deref(),
                 Some("Needs attention.")
             );
         });
     }
     #[test]
     fn erase_copy_names_only_this_version_and_preserves_previous_data() {
-        assert!(ERASE_COPY.contains("this version's store"));
-        assert!(ERASE_COPY.contains("previous app data remain untouched"));
-        assert!(ERASE_COPY.contains("remote pairings"));
+        assert!(tr(ERASE_COPY).contains("this version's store"));
+        assert!(tr(ERASE_COPY).contains("previous app data remain untouched"));
+        assert!(tr(ERASE_COPY).contains("remote pairings"));
     }
     #[cfg(feature = "acp")]
     #[test]

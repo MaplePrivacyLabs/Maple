@@ -234,15 +234,18 @@ impl<'ast> Visit<'ast> for UiStrings {
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = &*node.func
-            && path
-                .path
-                .segments
-                .last()
-                .is_some_and(|segment| segment.ident == "tr" || segment.ident == "tr_args")
+            && path.path.segments.last().is_some_and(|segment| {
+                segment.ident == "tr"
+                    || segment.ident == "tr_args"
+                    || segment.ident == "localized"
+                    || segment.ident == "key"
+                    || segment.ident == "message"
+            })
             && let Some(syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Str(key),
                 ..
             })) = node.args.first()
+            && (key.value().starts_with("settings-") || key.value().starts_with("update-"))
         {
             self.keys.insert(key.value());
         }
@@ -250,6 +253,15 @@ impl<'ast> Visit<'ast> for UiStrings {
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if node.method == "get"
+            && let Some(syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(key),
+                ..
+            })) = node.args.first()
+            && key.value().starts_with("settings-")
+        {
+            self.keys.insert(key.value());
+        }
         if ["child", "aria_label", "tooltip", "placeholder"]
             .iter()
             .any(|name| node.method == name)
@@ -257,6 +269,7 @@ impl<'ast> Visit<'ast> for UiStrings {
                 lit: syn::Lit::Str(text),
                 ..
             })) = node.args.first()
+            && text.value().chars().any(char::is_alphabetic)
         {
             self.literals.push(text.value());
         }
@@ -298,6 +311,15 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     let mut visitor = UiStrings::default();
     visitor.visit_file(&syn::parse_file(include_str!("../update_confirmation.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/general.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/account.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/advanced.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/api_credits.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/api_keys.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/billing.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/local_api.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/mcp.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../remote.rs")).unwrap());
     assert!(
         visitor.literals.is_empty(),
         "inline UI text: {:?}",
@@ -339,5 +361,98 @@ fn live_switch_invalidates_plain_and_system_labels() {
         apply_preference(Some(locale));
         assert_eq!(tr("settings-language").as_ref(), label);
         assert!(preference_label(None).starts_with(system));
+    }
+}
+
+#[test]
+fn cached_messages_and_notices_follow_locale_without_translating_raw_text() {
+    let _locale = TestLocalizationGuard::enable();
+    let cache = MessageCache::default();
+    let notice = UiText::key("settings-account-password-changed");
+    let raw = UiText::from("A server-owned error".to_string());
+    for (locale, singular, plural, success) in [
+        (
+            "en",
+            "active request",
+            "active requests",
+            "Password changed.",
+        ),
+        (
+            "es",
+            "solicitud activa",
+            "solicitudes activas",
+            "Contraseña cambiada.",
+        ),
+        (
+            "en",
+            "active request",
+            "active requests",
+            "Password changed.",
+        ),
+    ] {
+        apply_preference(Some(locale));
+        assert!(
+            cache
+                .get("settings-local-api-requests", [("count", 1.into())])
+                .ends_with(singular)
+        );
+        assert!(
+            cache
+                .get("settings-local-api-requests", [("count", 2.into())])
+                .ends_with(plural)
+        );
+        assert_eq!(notice.resolve().as_ref(), success);
+        assert_eq!(raw.resolve().as_ref(), "A server-owned error");
+    }
+}
+
+#[test]
+fn parameterized_catalogs_format_all_messages_without_missing_arguments() {
+    // The union of argument names allows every translated pattern to be
+    // exercised, including plural branches, without copying a message list.
+    let english = include_str!("../../../locales/en/app.ftl");
+    let spanish = include_str!("../../../locales/es/app.ftl");
+    let names: BTreeSet<_> = [english, spanish]
+        .into_iter()
+        .flat_map(|source| {
+            source
+                .split('$')
+                .skip(1)
+                .map(|tail| {
+                    tail.chars()
+                        .take_while(|ch| ch.is_alphanumeric() || *ch == '-')
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (locale, source) in [(langid!("en"), english), (langid!("es"), spanish)] {
+        let mut bundle = FluentBundle::new(vec![locale]);
+        bundle
+            .add_resource(FluentResource::try_new(source.to_string()).unwrap())
+            .unwrap();
+        for count in [0, 1, 2] {
+            let mut args = FluentArgs::new();
+            for name in &names {
+                args.set(
+                    name.as_str(),
+                    if name == "count" {
+                        FluentValue::from(count)
+                    } else {
+                        FluentValue::from("sample")
+                    },
+                );
+            }
+            for key in catalog_keys(source)
+                .into_iter()
+                .filter(|key| !key.contains('.') && !key.starts_with('-'))
+            {
+                let pattern = bundle.get_message(&key).unwrap().value().unwrap();
+                let mut errors = Vec::new();
+                let text = bundle.format_pattern(pattern, Some(&args), &mut errors);
+                assert!(errors.is_empty(), "unformattable message: {key}");
+                assert!(!text.trim().is_empty(), "empty message: {key}");
+            }
+        }
     }
 }

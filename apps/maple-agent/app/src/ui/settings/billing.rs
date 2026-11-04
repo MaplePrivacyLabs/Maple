@@ -1,10 +1,11 @@
 //! The Billing section: current plan, subscription management through the
 //! Stripe customer portal, prepaid credits, and the plans on sale.
 
+use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, div, prelude::*};
 
 use super::{SettingsScreen, SettingsTarget, plan_card, section_title};
-use crate::billing::{BillingStatus, BillingStatusExt, PlanTier, Product, price_label};
+use crate::billing::{BillingStatus, BillingStatusExt, PlanTier, Product};
 use crate::ui::theme;
 use crate::ui::widgets;
 
@@ -24,7 +25,7 @@ pub(super) struct BillingState {
     pub(super) products: Option<Vec<Product>>,
     /// True while a portal or checkout link is being minted.
     pub(super) busy: bool,
-    pub(super) notice: Option<String>,
+    pub(super) notice: Option<UiText>,
     pub(super) credits: super::api_credits::CreditsState,
 }
 
@@ -193,10 +194,8 @@ impl SettingsScreen {
             |this, result, cx| {
                 this.billing.busy = false;
                 this.billing.notice = Some(match result {
-                    Ok(()) => "Opened the subscription portal in your browser. Refresh \
-                               after making changes."
-                        .to_string(),
-                    Err(message) => message,
+                    Ok(()) => UiText::key("settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki"),
+                    Err(message) => message.into(),
                 });
                 cx.notify();
             },
@@ -226,8 +225,10 @@ impl SettingsScreen {
             ProductAction::Web => {
                 self.billing.notice = Some(
                     match crate::backend::open_in_browser(crate::billing::PRICING_URL, "pricing") {
-                        Ok(()) => "Opened the pricing page in your browser.".to_string(),
-                        Err(message) => message,
+                        Ok(()) => {
+                            UiText::key("settings-billing-opened-the-pricing-page-in-your-browser")
+                        }
+                        Err(message) => message.into(),
                     },
                 );
                 cx.notify();
@@ -245,10 +246,8 @@ impl SettingsScreen {
                     |this, result, cx| {
                         this.billing.busy = false;
                         this.billing.notice = Some(match result {
-                            Ok(()) => "Opened checkout in your browser. Refresh after \
-                                       paying to see the new plan."
-                                .to_string(),
-                            Err(message) => message,
+                            Ok(()) => UiText::key("settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
+                            Err(message) => message.into(),
                         });
                         cx.notify();
                     },
@@ -264,7 +263,7 @@ impl SettingsScreen {
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(section_title("Plan"))
+                .child(section_title(&tr("settings-billing-plan")))
                 .child(
                     self.application_target(
                         || SettingsTarget::Billing(BillingTarget::Refresh),
@@ -273,7 +272,7 @@ impl SettingsScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.refresh_billing(cx);
                             }))
-                            .child("Refresh"),
+                            .child(tr("settings-billing-refresh")),
                     ),
                 ),
         );
@@ -284,7 +283,7 @@ impl SettingsScreen {
                     .text_color(gpui::rgb(theme::text_faint()))
                     .child(match &self.billing.status_error {
                         Some(message) => message.clone(),
-                        None => "Loading plan…".to_string(),
+                        None => tr("settings-billing-loading-plan").to_string(),
                     }),
             );
         };
@@ -292,7 +291,7 @@ impl SettingsScreen {
         let plan_name = status
             .product_name
             .clone()
-            .unwrap_or_else(|| "Free".to_string());
+            .unwrap_or_else(|| tr("settings-billing-free").to_string());
         let mut plan = widgets::card_row().flex().flex_col().gap_2().child(
             div()
                 .flex()
@@ -327,12 +326,12 @@ impl SettingsScreen {
                                         this.open_billing_portal(cx);
                                     }))
                                 })
-                                .child("Manage subscription"),
+                                .child(tr("settings-billing-manage-subscription")),
                         ),
                     )
                 }),
         );
-        if let Some(label) = status.period_end_label() {
+        if let Some(label) = super::presentation::period_end(status, &self.messages) {
             plan = plan.child(
                 div()
                     .text_sm()
@@ -350,7 +349,7 @@ impl SettingsScreen {
         }
         pane = pane.child(plan);
         if let Some(usage) = self.plan.as_ref() {
-            pane = pane.child(plan_card(usage));
+            pane = pane.child(plan_card(usage, &self.messages));
         }
         if let Some(notice) = &self.billing.notice {
             pane = pane.child(
@@ -361,7 +360,7 @@ impl SettingsScreen {
             );
         }
 
-        pane = pane.child(section_title("Plans"));
+        pane = pane.child(section_title(&tr("settings-billing-plans")));
         match self.billing.products.as_deref() {
             Some(products) if !products.is_empty() => {
                 for product in products {
@@ -373,7 +372,7 @@ impl SettingsScreen {
                     div()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_faint()))
-                        .child("No plans are on sale right now."),
+                        .child(tr("settings-billing-no-plans-are-on-sale-right-now")),
                 );
             }
             None => {
@@ -381,7 +380,7 @@ impl SettingsScreen {
                     div()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_faint()))
-                        .child("Loading plans…"),
+                        .child(tr("settings-billing-loading-plans")),
                 );
             }
         }
@@ -390,8 +389,7 @@ impl SettingsScreen {
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child(
-                    "Payments open in your browser. Bitcoin payments and team seats are \
-                     set up on the web pricing page.",
+                    tr("settings-billing-payments-open-in-your-browser-bitcoin-payments-and-team-seats-are"),
                 ),
         );
         if self.api_access() == Some(false) {
@@ -409,10 +407,10 @@ impl SettingsScreen {
         let action = product_action(status, product);
         let busy = self.billing.busy;
         let label = match action {
-            ProductAction::Current => "Current plan",
-            ProductAction::Checkout => "Choose",
-            ProductAction::Portal => "Change plan",
-            ProductAction::Web => "See on the web",
+            ProductAction::Current => tr("settings-billing-current-plan"),
+            ProductAction::Checkout => tr("settings-billing-choose"),
+            ProductAction::Portal => tr("settings-billing-change-plan"),
+            ProductAction::Web => tr("settings-billing-see-on-the-web"),
         };
         let id = product.id.clone();
         let button = match action {
@@ -458,14 +456,17 @@ impl SettingsScreen {
                                     .text_color(gpui::rgb(theme::text_primary()))
                                     .child(product.name.clone()),
                             )
-                            .when_some(price_label(product), |row, price| {
-                                row.child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(gpui::rgb(theme::text_secondary()))
-                                        .child(price),
-                                )
-                            }),
+                            .when_some(
+                                super::presentation::price(product, &self.messages),
+                                |row, price| {
+                                    row.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(gpui::rgb(theme::text_secondary()))
+                                            .child(price),
+                                    )
+                                },
+                            ),
                     )
                     .when_some(product.description.clone(), |column, description| {
                         column.child(
@@ -491,11 +492,11 @@ impl SettingsScreen {
 
 fn subscription_badge(state: &str) -> Div {
     let (label, color) = match state {
-        "active" => ("Active", theme::status_success()),
-        "trialing" => ("Trial", theme::status_success()),
-        "past_due" | "unpaid" => ("Payment due", theme::status_error()),
-        "canceled" => ("Canceled", theme::text_muted()),
-        other => (other, theme::text_muted()),
+        "active" => (tr("settings-billing-active"), theme::status_success()),
+        "trialing" => (tr("settings-billing-trial"), theme::status_success()),
+        "past_due" | "unpaid" => (tr("settings-billing-payment-due"), theme::status_error()),
+        "canceled" => (tr("settings-billing-canceled"), theme::text_muted()),
+        other => (other.to_string().into(), theme::text_muted()),
     };
     div()
         .px_1p5()
@@ -510,11 +511,10 @@ fn subscription_badge(state: &str) -> Div {
 fn payment_provider_note(status: &BillingStatus) -> Option<String> {
     match status.payment_provider.as_deref()? {
         "zaprite" => {
-            Some("Paid with Bitcoin. To change plans, contact support@trymaple.ai.".to_string())
+            Some(tr("settings-billing-paid-with-bitcoin-to-change-plans-contact-support-trymaple-ai").to_string())
         }
         "subscription_pass" => Some(
-            "Activated with a subscription pass. It ends on the date above without \
-             renewing."
+            tr("settings-billing-activated-with-a-subscription-pass-it-ends-on-the-date-above-with")
                 .to_string(),
         ),
         _ => None,

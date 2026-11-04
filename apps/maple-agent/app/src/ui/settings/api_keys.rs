@@ -1,6 +1,7 @@
 //! The API keys section: keys for the OpenAI-compatible API and the local
 //! proxy. Needs a Pro, Max, or Team plan, like the web app's API settings.
 
+use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, Entity, Focusable, div, prelude::*};
 
 use super::{Section, SettingsScreen, SettingsTarget, section_title};
@@ -33,7 +34,7 @@ pub(super) struct ApiKeysState {
     /// The key name awaiting delete confirmation.
     pub(super) confirm_delete: Option<String>,
     pub(super) deleting: Option<String>,
-    pub(super) notice: Option<String>,
+    pub(super) notice: Option<UiText>,
 }
 
 impl ApiKeysState {
@@ -43,7 +44,7 @@ impl ApiKeysState {
         cx: &mut Context<SettingsScreen>,
     ) -> Self {
         let name = cx.new(move |cx| {
-            TextInput::new("Key name, for example “Cursor”", cx)
+            TextInput::localized("settings-api-keys-key-name-for-example-cursor", cx)
                 .with_tab_index(15)
                 .application_vim(application_vim_enabled)
                 .on_application_escape(move |window, cx| window.focus(&application_focus, cx))
@@ -151,7 +152,7 @@ impl SettingsScreen {
         }
         let name = self.api_keys.name.read(cx).text();
         if let Err(message) = crate::backend::validate_api_key_name(&name) {
-            self.api_keys.notice = Some(message);
+            self.api_keys.notice = Some(message.into());
             cx.notify();
             return;
         }
@@ -179,7 +180,7 @@ impl SettingsScreen {
                             .insert(0, listed);
                         this.api_keys.created = Some(created);
                     }
-                    Err(message) => this.api_keys.notice = Some(message),
+                    Err(message) => this.api_keys.notice = Some(message.into()),
                 }
                 this.reconcile_application_vim_target();
                 cx.notify();
@@ -224,7 +225,7 @@ impl SettingsScreen {
                             this.api_keys.created = None;
                         }
                     }
-                    Err(message) => this.api_keys.notice = Some(message),
+                    Err(message) => this.api_keys.notice = Some(message.into()),
                 }
                 this.reconcile_application_vim_target();
                 cx.notify();
@@ -237,7 +238,7 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title("API keys"));
+            .child(section_title(&tr("settings-api-keys-api-keys")));
         if self.api_access() == Some(false) {
             return pane.child(
                 widgets::card_row()
@@ -246,8 +247,8 @@ impl SettingsScreen {
                     .justify_between()
                     .gap_4()
                     .child(super::setting_copy(
-                        "Unlock API access",
-                        "API keys and credits come with the Pro, Max, and Team plans.",
+                        tr("settings-api-keys-unlock-api-access"),
+                        tr("settings-api-keys-api-keys-and-credits-come-with-the-pro-max-and-team-plans"),
                     ))
                     .child(
                         self.application_target(
@@ -257,7 +258,7 @@ impl SettingsScreen {
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.select_section(Section::Billing, cx);
                                 }))
-                                .child("See plans"),
+                                .child(tr("settings-api-keys-see-plans")),
                         ),
                     ),
             );
@@ -269,11 +270,14 @@ impl SettingsScreen {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_secondary()))
-                .child(format!(
-                    "Keys work with any OpenAI-compatible client at {}/v1 and with \
-                     `maple-agent proxy --api-key`. A key is shown once, when created.",
-                    self.backend.api_url()
-                )),
+                .child(
+                    self.messages
+                        .get(
+                            "settings-api-key-help",
+                            [("arg1", (self.backend.api_url()).to_string().into())],
+                        )
+                        .to_string(),
+                ),
         );
 
         let creating = self.api_keys.creating;
@@ -299,9 +303,9 @@ impl SettingsScreen {
                                 }))
                             })
                             .child(if creating {
-                                "Creating…"
+                                tr("settings-api-keys-creating")
                             } else {
-                                "Create key"
+                                tr("settings-api-keys-create-key")
                             }),
                     ),
                 ),
@@ -324,7 +328,7 @@ impl SettingsScreen {
                     div()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_faint()))
-                        .child("No API keys yet."),
+                        .child(tr("settings-api-keys-no-api-keys-yet")),
                 );
             }
             Some(keys) => {
@@ -339,7 +343,7 @@ impl SettingsScreen {
                         .text_color(gpui::rgb(theme::text_faint()))
                         .child(match &self.api_keys.error {
                             Some(message) => message.clone(),
-                            None => "Loading keys…".to_string(),
+                            None => tr("settings-api-keys-loading-keys").to_string(),
                         }),
                 );
             }
@@ -354,8 +358,8 @@ impl SettingsScreen {
             .justify_between()
             .gap_4()
             .child(super::setting_copy(
-                "API credits",
-                &self.billing.credits.balance_label(),
+                tr("settings-api-keys-api-credits"),
+                self.billing.credits.balance_label(),
             ))
             .child(
                 self.application_target(
@@ -365,7 +369,7 @@ impl SettingsScreen {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.select_section(Section::Billing, cx);
                         }))
-                        .child("Buy more"),
+                        .child(tr("settings-api-keys-buy-more")),
                 ),
             )
     }
@@ -377,9 +381,8 @@ impl SettingsScreen {
             .gap_2()
             .border_color(gpui::rgb(theme::accent()))
             .child(super::setting_copy(
-                &format!("“{}” is ready", created.name),
-                "Copy the key now. For your privacy it is not stored anywhere you can \
-                 read it back.",
+                self.messages.get("settings-api-key-ready", [("arg1", (created.name).to_string().into())]),
+                tr("settings-api-keys-copy-the-key-now-for-your-privacy-it-is-not-stored-anywhere-you-c"),
             ))
             .child(
                 div()
@@ -414,7 +417,7 @@ impl SettingsScreen {
                                     this.reconcile_application_vim_target();
                                     cx.notify();
                                 }))
-                                .child("Done"),
+                                .child(tr("settings-api-keys-done")),
                         ),
                     ),
             )
@@ -444,9 +447,9 @@ impl SettingsScreen {
                 }))
             })
             .child(match (confirming, deleting) {
-                (_, true) => "Deleting…",
-                (true, _) => "Confirm delete",
-                _ => "Delete",
+                (_, true) => tr("settings-api-keys-deleting"),
+                (true, _) => tr("settings-api-keys-confirm-delete"),
+                _ => tr("settings-api-keys-delete"),
             }),
         );
         let mut actions = div().flex().items_center().gap_2();
@@ -461,7 +464,7 @@ impl SettingsScreen {
                             this.reconcile_application_vim_target();
                             cx.notify();
                         }))
-                        .child("Cancel"),
+                        .child(tr("settings-api-keys-cancel")),
                 ),
             );
         }
@@ -473,7 +476,15 @@ impl SettingsScreen {
             .gap_4()
             .child(super::setting_copy(
                 &key.name,
-                &format!("Created {}", super::account::member_since(&key.created_at)),
+                self.messages.get(
+                    "settings-api-key-created",
+                    [(
+                        "arg1",
+                        (super::account::member_since(&key.created_at, &self.messages))
+                            .to_string()
+                            .into(),
+                    )],
+                ),
             ))
             .child(actions)
             .into_any_element()

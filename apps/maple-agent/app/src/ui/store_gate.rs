@@ -1,6 +1,7 @@
 //! Local-only store entry and password forms. These screens ask the host for
 //! lifecycle status before loading any account-owned application data.
 
+use super::i18n::tr;
 use gpui::{
     Context, Entity, EventEmitter, Focusable, Render, Subscription, Window, div, prelude::*, px,
 };
@@ -102,6 +103,7 @@ pub(crate) struct OperationProgress {
 pub struct StoreGateChanged;
 
 pub struct StoreGate {
+    messages: super::i18n::MessageCache,
     focus: gpui::FocusHandle,
     backend: Arc<AgentBackend>,
     state: StoreState,
@@ -147,6 +149,7 @@ impl StoreGate {
     /// of unrelated Tokio completions, as with `ChatScreen::new_mounted`.
     fn new_mounted(backend: Arc<AgentBackend>, state: StoreState, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            messages: Default::default(),
             focus: cx.focus_handle(),
             backend,
             state,
@@ -583,7 +586,7 @@ impl Render for StoreGate {
             .child(div().text_sm().child(description));
         if self.erase {
             body = body
-                .child(div().text_sm().child(ERASE_COPY))
+                .child(div().text_sm().child(tr(ERASE_COPY)))
                 .child(
                     widgets::input_frame()
                         .id("store-gate-confirmation")
@@ -623,7 +626,7 @@ impl Render for StoreGate {
         } else {
             body = match self.state {
                 StoreState::Locked => body
-                    .child(password_field("Unlock password", self.password.clone()))
+                    .child(password_field("settings-password-unlock-password", self.password.clone()))
                     .child(
                         widgets::primary_button("store-unlock")
                             .debug_selector(|| "store-unlock".into())
@@ -692,7 +695,7 @@ impl Render for StoreGate {
                         body.child(div().text_sm().child(
                             "If this store uses a password, enter its current unlock password to verify and repair its generation metadata.",
                         ))
-                        .child(password_field("Unlock password", self.password.clone()))
+                        .child(password_field("settings-password-unlock-password", self.password.clone()))
                         .child(
                             widgets::primary_button("store-generation-unlock")
                             .debug_selector(|| "store-generation-unlock".into())
@@ -752,7 +755,7 @@ impl Render for StoreGate {
                             self.repair_progress.phase
                         )
                     } else {
-                        progress_copy(progress_action(self.progress.operation.as_deref()), &self.progress)
+                        progress_copy(progress_action(self.progress.operation.as_deref()), &self.progress, &self.messages)
                     }))
                     .when(
                         if self.repair_progress.busy {
@@ -836,7 +839,8 @@ fn accepts_unlock(state: &StoreState) -> bool {
     )
 }
 
-pub(crate) const ERASE_COPY: &str = "Maple can't reset your unlock password. Erasing removes the data saved in this version's store: tasks and history, attachments, settings, sign-in, MCP secrets and this store's remote pairings. On your other computers, remove this computer from Remote computers. Backups, snapshots and previous app data remain untouched.";
+pub(crate) const ERASE_COPY: &str =
+    "settings-password-maple-can-t-reset-your-unlock-password-erasing-removes-the-data-s";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PasswordAction {
@@ -874,6 +878,7 @@ enum PasswordField {
 }
 
 pub(crate) struct PasswordForm {
+    messages: super::i18n::MessageCache,
     backend: Arc<AgentBackend>,
     action: PasswordAction,
     current: Entity<SecretInput>,
@@ -917,13 +922,20 @@ impl PasswordForm {
                 .to_string_lossy()
                 .into_owned(),
         );
-        let current =
-            cx.new(|cx| SecretInput::new("Current unlock password", cx).with_tab_index(1));
-        let password =
-            cx.new(|cx| SecretInput::new("Enter a new unlock password", cx).with_tab_index(2));
-        let confirmation = cx
-            .new(|cx| SecretInput::new("Re-enter your new unlock password", cx).with_tab_index(3));
+        let current = cx.new(|cx| {
+            SecretInput::localized("settings-password-current-unlock-password", cx)
+                .with_tab_index(1)
+        });
+        let password = cx.new(|cx| {
+            SecretInput::localized("settings-password-enter-a-new-unlock-password", cx)
+                .with_tab_index(2)
+        });
+        let confirmation = cx.new(|cx| {
+            SecretInput::localized("settings-password-re-enter-your-new-unlock-password", cx)
+                .with_tab_index(3)
+        });
         let mut this = Self {
+            messages: Default::default(),
             backend,
             action,
             current,
@@ -1123,48 +1135,64 @@ impl PasswordForm {
             }
         });
     }
-    fn validation_message(&self, cx: &Context<Self>) -> Option<&'static str> {
+    fn validation_message(&self, cx: &Context<Self>) -> Option<gpui::SharedString> {
         if self.busy {
-            return Some("Wait for the current change to finish.");
+            return Some(tr(
+                "settings-password-wait-for-the-current-change-to-finish",
+            ));
         }
         if matches!(self.action, PasswordAction::Change | PasswordAction::Remove)
             && self.current.read(cx).is_empty()
         {
-            return Some("Enter your current unlock password to continue.");
+            return Some(tr(
+                "settings-password-enter-your-current-unlock-password-to-continue",
+            ));
         }
         if self.action == PasswordAction::Remove {
             return None;
         }
         if self.suggested && self.suggestion_retry_blocked {
-            return Some(
-                "Keep this passphrase. Maple could not confirm the previous attempt. Reopen Maple to check the store before trying again.",
-            );
+            return Some(tr(
+                "settings-password-keep-this-passphrase-maple-could-not-confirm-the-previous-attempt",
+            ));
         }
         if self.suggested && self.generating {
-            return Some("Wait for your passphrase to finish generating.");
+            return Some(tr(
+                "settings-password-wait-for-your-passphrase-to-finish-generating",
+            ));
         }
         if self.suggested && self.phrase.is_none() {
-            return Some("Generate a passphrase or enter your own password.");
+            return Some(tr(
+                "settings-password-generate-a-passphrase-or-enter-your-own-password",
+            ));
         }
         if !self.suggested && self.password.read(cx).is_empty() {
-            return Some("Enter a new unlock password.");
+            return Some(tr("settings-password-enter-a-new-unlock-password"));
         }
         let Some(assessment) = self.assessment else {
-            return Some("Use between 15 and 1,024 characters for your new password.");
+            return Some(tr(
+                "settings-password-use-between-15-and-1-024-characters-for-your-new-password",
+            ));
         };
         if assessment.reason == keys::StrengthReason::Length {
-            return Some("Use between 15 and 1,024 characters for your new password.");
+            return Some(tr(
+                "settings-password-use-between-15-and-1-024-characters-for-your-new-password",
+            ));
         }
         if !assessment.allowed() {
-            return Some("Choose a less predictable password. Try a longer, unique phrase.");
+            return Some(tr(
+                "settings-password-choose-a-less-predictable-password-try-a-longer-unique-phrase",
+            ));
         }
         if self.confirmation.read(cx).is_empty() {
-            return Some("Re-enter your new unlock password in Confirm password.");
+            return Some(tr(
+                "settings-password-re-enter-your-new-unlock-password-in-confirm-password",
+            ));
         }
         if !self.confirmation_matches {
-            return Some(
-                "The passwords don't match. Re-enter your new password in Confirm password.",
-            );
+            return Some(tr(
+                "settings-password-the-passwords-don-t-match-re-enter-your-new-password-in-confirm-p",
+            ));
         }
         None
     }
@@ -1174,7 +1202,7 @@ impl PasswordForm {
     fn submit(&mut self, cx: &mut Context<Self>) {
         if !self.can_submit(cx) {
             if !self.busy {
-                self.message = self.validation_message(cx).map(str::to_owned);
+                self.message = self.validation_message(cx).map(|text| text.to_string());
                 cx.notify();
             }
             return;
@@ -1328,9 +1356,11 @@ impl PasswordForm {
                     self.suggested && self.phrase.is_some() && !generated_retry_valid;
                 self.assess(cx);
                 self.message = Some(if self.suggestion_retry_blocked {
-                    format!(
-                        "{message} Keep this passphrase. Maple could not confirm the previous attempt. Reopen Maple to check the store before trying again."
+                    super::i18n::tr_args(
+                        "settings-password-unconfirmed-attempt",
+                        [("message", message.into())],
                     )
+                    .to_string()
                 } else {
                     message
                 });
@@ -1394,8 +1424,12 @@ impl PasswordForm {
             cx,
             |this, result, cx| {
                 this.message = Some(match result {
-                    Ok(true) => "Cancelling before the store is replaced…".into(),
-                    Ok(false) => "The store is committing. Wait for it to finish.".into(),
+                    Ok(true) => {
+                        tr("settings-password-cancelling-before-the-store-is-replaced").into()
+                    }
+                    Ok(false) => {
+                        tr("settings-password-the-store-is-committing-wait-for-it-to-finish").into()
+                    }
                     Err(message) => message,
                 });
                 cx.notify();
@@ -1418,24 +1452,29 @@ impl Render for PasswordForm {
         }
         let (title, description, submit_label) = match self.action {
             PasswordAction::Set | PasswordAction::Setup => (
-                "Enable encryption",
-                "Protect saved conversation text, settings and sign-in. Attached files and images remain unencrypted on this computer.",
-                "Enable encryption",
+                tr("settings-password-enable-encryption"),
+                tr(
+                    "settings-password-protect-saved-conversation-text-settings-and-sign-in-attached-fil",
+                ),
+                tr("settings-password-enable-encryption"),
             ),
             PasswordAction::Change => (
-                "Change unlock password",
-                "Enter your current unlock password, then choose a new one.",
-                "Save password",
+                tr("settings-password-change-unlock-password"),
+                tr("settings-password-enter-your-current-unlock-password-then-choose-a-new-one"),
+                tr("settings-password-save-password"),
             ),
             PasswordAction::Remove => (
-                "Remove encryption",
-                "Your local Maple data will no longer be encrypted. Enter your current password to continue.",
-                "Remove encryption",
+                tr("settings-password-remove-encryption"),
+                tr(
+                    "settings-password-your-local-maple-data-will-no-longer-be-encrypted-enter-your-curr",
+                ),
+                tr("settings-password-remove-encryption"),
             ),
         };
         let mut pane = widgets::card_row()
-            .w_full()
-            .max_w(px(560.))
+            .w(px(560.))
+            .max_w_full()
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .gap_5()
@@ -1459,23 +1498,23 @@ impl Render for PasswordForm {
                     ),
             );
         if self.busy {
-            pane = pane.child(
-                div()
-                    .text_sm()
-                    .child(progress_copy(Some(self.action), &self.progress)),
-            );
+            pane = pane.child(div().text_sm().child(progress_copy(
+                Some(self.action),
+                &self.progress,
+                &self.messages,
+            )));
             if self.progress.cancellable {
                 pane = pane.child(
                     widgets::secondary_button("store-operation-cancel")
                         .tab_index(1)
                         .on_click(cx.listener(|this, _event, _window, cx| this.cancel(cx)))
-                        .child("Cancel"),
+                        .child(tr("settings-password-cancel")),
                 );
             }
         } else {
             if matches!(self.action, PasswordAction::Change | PasswordAction::Remove) {
                 pane = pane.child(password_field(
-                    "Current unlock password",
+                    "settings-password-current-unlock-password",
                     self.current.clone(),
                 ));
             }
@@ -1490,7 +1529,7 @@ impl Render for PasswordForm {
                             div()
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .child("New unlock password"),
+                                .child(tr("settings-password-new-unlock-password")),
                         )
                         .when(!self.suggested, |row| {
                             row.child(
@@ -1507,7 +1546,7 @@ impl Render for PasswordForm {
                                             }
                                         },
                                     ))
-                                    .child("Generate passphrase"),
+                                    .child(tr("settings-password-generate-passphrase")),
                             )
                         }),
                 );
@@ -1526,14 +1565,14 @@ impl Render for PasswordForm {
                             suggestion.child(suggested_phrase_display(phrase.passphrase.clone()));
                     } else {
                         suggestion = suggestion.child(div().text_sm().child(if self.generating {
-                            "Generating a random passphrase…"
+                            tr("settings-password-generating-a-random-passphrase")
                         } else {
-                            "Couldn't generate a passphrase. Try again or enter your own password."
+                            tr("settings-password-couldn-t-generate-a-passphrase-try-again-or-enter-your-own-passwo")
                         }));
                     }
                     suggestion = suggestion
                         .child(div().text_xs().text_color(gpui::rgb(theme::text_secondary()))
-                            .child("Six random words. Save them in your password manager before continuing."))
+                            .child(tr("settings-password-six-random-words-save-them-in-your-password-manager-before-contin")))
                         .child(div().flex().flex_wrap().gap_2()
                             .child(widgets::secondary_button("store-copy-phrase")
                                 .tab_index(7)
@@ -1541,21 +1580,21 @@ impl Render for PasswordForm {
                                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                                     if password_action_key(event, window, cx) { this.copy_phrase(cx); cx.stop_propagation(); }
                                 }))
-                                .child("Copy passphrase"))
+                                .child(tr("settings-password-copy-passphrase")))
                             .child(widgets::ghost_button("store-another-phrase")
                                 .tab_index(8)
                                 .on_click(cx.listener(|this, _event, _window, cx| this.generate(cx)))
                                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                                     if password_action_key(event, window, cx) { this.generate(cx); cx.stop_propagation(); }
                                 }))
-                                .child("Generate another"))
+                                .child(tr("settings-password-generate-another")))
                             .child(widgets::ghost_button("store-use-typed")
                                 .tab_index(9)
                                 .on_click(cx.listener(|this, _event, _window, cx| this.use_typed(cx)))
                                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                                     if password_action_key(event, window, cx) { this.use_typed(cx); cx.stop_propagation(); }
                                 }))
-                                .child("Use my own password")));
+                                .child(tr("settings-password-use-my-own-password"))));
                     new_password = new_password.child(suggestion);
                 } else {
                     new_password = new_password
@@ -1568,7 +1607,7 @@ impl Render for PasswordForm {
                                 .text_xs()
                                 .text_color(gpui::rgb(theme::text_secondary()))
                                 .child(
-                                    "Use at least 15 characters. A long, unique phrase works well.",
+                                    tr("settings-password-use-at-least-15-characters-a-long-unique-phrase-works-well"),
                                 ),
                         );
                 }
@@ -1577,14 +1616,20 @@ impl Render for PasswordForm {
                     new_password =
                         new_password.child(div().text_sm().text_color(gpui::rgb(color)).child(
                             if assessment.reason == keys::StrengthReason::Length {
-                                "Use between 15 and 1,024 characters.".to_owned()
+                                tr("settings-password-use-between-15-and-1-024-characters")
+                                    .to_string()
                             } else {
-                                format!("Password strength: {label}")
+                                self.messages
+                                    .get(
+                                        "settings-password-strength",
+                                        [("strength", label.to_string().into())],
+                                    )
+                                    .to_string()
                             },
                         ));
                 }
                 pane = pane.child(new_password).child(password_field(
-                    "Confirm password",
+                    "settings-password-confirm-password",
                     self.confirmation.clone(),
                 ));
                 if !self.confirmation.read(cx).is_empty() {
@@ -1597,15 +1642,15 @@ impl Render for PasswordForm {
                                 theme::status_error()
                             }))
                             .child(if self.confirmation_matches {
-                                "Passwords match"
+                                tr("settings-password-passwords-match")
                             } else {
-                                "Passwords don't match"
+                                tr("settings-password-passwords-don-t-match")
                             }),
                     );
                 }
                 if self.action == PasswordAction::Change {
                     pane = pane.child(div().flex().flex_col().gap_1()
-                        .child(widgets::checkbox("store-reencrypt", self.reencrypt, "Also create a new encryption key")
+                        .child(widgets::checkbox("store-reencrypt", self.reencrypt, tr("settings-password-also-create-a-new-encryption-key"))
                             .debug_selector(|| "store-reencrypt".into())
                             .tab_index(4)
                             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -1620,14 +1665,14 @@ impl Render for PasswordForm {
                                 }
                             })))
                         .child(div().pl_7().text_xs().text_color(gpui::rgb(theme::text_secondary()))
-                            .child("Use a new encryption key if your old password and a copy of this store may have been exposed. This protects this store and future writes; it cannot revoke existing copies.")));
+                            .child(tr("settings-password-use-a-new-encryption-key-if-your-old-password-and-a-copy-of-this"))));
                 }
                 pane = pane.child(div().flex().flex_col().gap_1().text_xs()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .child("This is separate from your Maple account password. Maple can't reset it.")
-                    .child("If you forget it, you'll need to erase this version's local data and pair your other computers again.")
+                    .child(tr("settings-password-this-is-separate-from-your-maple-account-password-maple-can-t-res"))
+                    .child(tr("settings-password-if-you-forget-it-you-ll-need-to-erase-this-version-s-local-data-a"))
                     .when(matches!(self.action, PasswordAction::Set | PasswordAction::Setup), |note| note.child(
-                        "Existing backups, snapshots and previous app data aren't re-encrypted.",
+                        tr("settings-password-existing-backups-snapshots-and-previous-app-data-aren-t-re-encryp"),
                     )));
             }
         }
@@ -1661,7 +1706,7 @@ impl Render for PasswordForm {
                                     }
                                 },
                             ))
-                            .child("Cancel"),
+                            .child(tr("settings-password-cancel")),
                     )
                     .child(
                         widgets::primary_button("store-password-submit")
@@ -1686,8 +1731,8 @@ impl Render for PasswordForm {
 
 fn password_field(label: &'static str, input: Entity<SecretInput>) -> gpui::Div {
     let selector = match label {
-        "Current unlock password" => "password-current-frame",
-        "Confirm password" => "password-confirmation-frame",
+        "settings-password-current-unlock-password" => "password-current-frame",
+        "settings-password-confirm-password" => "password-confirmation-frame",
         _ => "password-unlock-frame",
     };
     div()
@@ -1699,7 +1744,7 @@ fn password_field(label: &'static str, input: Entity<SecretInput>) -> gpui::Div 
             div()
                 .text_sm()
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .child(label),
+                .child(tr(label)),
         )
         .child(password_input_frame(selector, input))
 }
@@ -1851,26 +1896,35 @@ fn suggested_phrase_display(phrase: SecretString) -> impl IntoElement {
 pub(crate) fn operation_notice(result: &Value) -> Option<String> {
     let flag = |name| result.get(name).and_then(Value::as_bool).unwrap_or(false);
     if flag("synchronization_pending") || flag("sync_pending") {
-        Some("The new unlock password took effect, but Maple couldn't confirm its key file was synchronized. Keep both passwords until synchronization finishes.".into())
+        Some(tr("settings-password-the-new-unlock-password-took-effect-but-maple-couldn-t-confirm-it").into())
     } else if flag("backup_pending") {
-        Some("The new unlock password took effect. Maple still needs to synchronize its backup key file.".into())
+        Some(tr("settings-password-the-new-unlock-password-took-effect-maple-still-needs-to-synchron").into())
     } else if flag("used_previous_password") {
-        Some("Maple opened with your previous unlock password. Keep your current and previous unlock passwords until the key files are synchronized.".into())
+        Some(tr("settings-password-maple-opened-with-your-previous-unlock-password-keep-your-current").into())
     } else if flag("reconciliation_pending") {
-        Some("Maple is open. Key-file synchronization or its security upgrade still needs attention. Your existing unlock password remains valid.".into())
+        Some(tr("settings-password-maple-is-open-key-file-synchronization-or-its-security-upgrade-st").into())
     } else if flag("notice_pending") {
-        Some("Encryption changed. Maple still needs to save the local mode-change notice.".into())
+        Some(tr("settings-password-encryption-changed-maple-still-needs-to-save-the-local-mode-chang").into())
     } else {
         None
     }
 }
 
-fn meter_presentation(level: Option<StrengthLevel>) -> (&'static str, u32) {
+fn meter_presentation(level: Option<StrengthLevel>) -> (gpui::SharedString, u32) {
     match level {
-        Some(StrengthLevel::TooEasy) => ("Too easy to guess", theme::status_error()),
-        Some(StrengthLevel::CouldBeStronger) => ("Could be stronger", theme::status_warning()),
-        Some(StrengthLevel::Strong) => ("Strong", theme::status_success()),
-        None => ("Enter a password", theme::text_muted()),
+        Some(StrengthLevel::TooEasy) => (
+            tr("settings-password-too-easy-to-guess"),
+            theme::status_error(),
+        ),
+        Some(StrengthLevel::CouldBeStronger) => (
+            tr("settings-password-could-be-stronger"),
+            theme::status_warning(),
+        ),
+        Some(StrengthLevel::Strong) => (tr("settings-password-strong"), theme::status_success()),
+        None => (
+            tr("settings-password-enter-a-password"),
+            theme::text_muted(),
+        ),
     }
 }
 impl OperationProgress {
@@ -1901,40 +1955,49 @@ fn readable_bytes(bytes: u64) -> String {
     format!("{bytes} B")
 }
 
-fn progress_copy(action: Option<PasswordAction>, progress: &OperationProgress) -> String {
-    let verb = match action {
-        Some(PasswordAction::Remove) => "Removing encryption",
-        Some(PasswordAction::Change) => "Updating your unlock password",
-        Some(PasswordAction::Set | PasswordAction::Setup) => "Encrypting your local data",
-        None => "Updating your local store",
-    };
+fn progress_copy(
+    action: Option<PasswordAction>,
+    progress: &OperationProgress,
+    messages: &super::i18n::MessageCache,
+) -> String {
+    let verb = tr(match action {
+        Some(PasswordAction::Remove) => "settings-password-removing-encryption",
+        Some(PasswordAction::Change) => "settings-password-updating-your-unlock-password",
+        Some(PasswordAction::Set | PasswordAction::Setup) => {
+            "settings-password-encrypting-your-local-data"
+        }
+        None => "settings-password-updating-your-local-store",
+    });
     let exporting = progress.busy && progress.phase == "exporting";
-    let estimate = progress
-        .remaining_ms
-        .filter(|ms| exporting && *ms > 0)
-        .map(|ms| {
-            let minutes = (ms.saturating_add(59_999) / 60_000).max(1);
-            format!(
-                " About {minutes} {} left.",
-                if minutes == 1 { "minute" } else { "minutes" }
-            )
-        })
-        .unwrap_or_default();
-    let bytes = if exporting && progress.total_bytes > 0 {
-        format!(
-            " Copied about {} of {}.",
-            readable_bytes(progress.completed_bytes),
-            readable_bytes(progress.total_bytes)
-        )
-    } else {
-        String::new()
-    };
-    let phase = if progress.busy && progress.phase == "committing" {
-        " Finishing the change. Keep Maple open."
-    } else {
-        ""
-    };
-    format!("{verb}.{estimate}{bytes}{phase}")
+    let mut parts = vec![verb.to_string() + "."];
+    if let Some(ms) = progress.remaining_ms.filter(|ms| exporting && *ms > 0) {
+        let minutes = (ms.saturating_add(59_999) / 60_000).max(1);
+        parts.push(
+            messages
+                .get(
+                    "settings-password-progress-estimate",
+                    [("count", minutes.into())],
+                )
+                .to_string(),
+        );
+    }
+    if exporting && progress.total_bytes > 0 {
+        parts.push(
+            messages
+                .get(
+                    "settings-password-progress-bytes",
+                    [
+                        ("done", readable_bytes(progress.completed_bytes).into()),
+                        ("total", readable_bytes(progress.total_bytes).into()),
+                    ],
+                )
+                .to_string(),
+        );
+    }
+    if progress.busy && progress.phase == "committing" {
+        parts.push(tr("settings-password-progress-committing").to_string());
+    }
+    parts.join(" ")
 }
 
 #[cfg(test)]
@@ -2098,23 +2161,37 @@ mod tests {
             remaining_ms: Some(60_000),
             ..Default::default()
         };
-        let text = progress_copy(Some(PasswordAction::Remove), &progress);
+        let text = progress_copy(Some(PasswordAction::Remove), &progress, &Default::default())
+            .replace(['\u{2068}', '\u{2069}'], "");
         assert!(text.starts_with("Removing encryption."));
         assert!(text.contains("1.0 MiB of 2.0 MiB"));
         assert!(text.contains("1 minute left"));
         assert!(!text.contains("1 minutes"));
         progress.remaining_ms = Some(60_001);
-        assert!(progress_copy(None, &progress).contains("2 minutes left"));
+        assert!(
+            progress_copy(None, &progress, &Default::default())
+                .replace(['\u{2068}', '\u{2069}'], "")
+                .contains("2 minutes left")
+        );
         progress.remaining_ms = Some(0);
-        assert!(!progress_copy(None, &progress).contains("left"));
+        assert!(
+            !progress_copy(None, &progress, &Default::default())
+                .replace(['\u{2068}', '\u{2069}'], "")
+                .contains("left")
+        );
         for phase in ["verifying", "committing", "complete"] {
             progress.phase = phase.into();
-            let text = progress_copy(None, &progress);
+            let text = progress_copy(None, &progress, &Default::default())
+                .replace(['\u{2068}', '\u{2069}'], "");
             assert!(!text.contains("left"));
             assert!(!text.contains("Copied"));
             assert!(!text.contains("committed"));
         }
-        assert!(progress_copy(None, &progress).starts_with("Updating your local store."));
+        assert!(
+            progress_copy(None, &progress, &Default::default())
+                .replace(['\u{2068}', '\u{2069}'], "")
+                .starts_with("Updating your local store.")
+        );
         assert_eq!(readable_bytes(512), "512 B");
         assert_eq!(readable_bytes(1024), "1.0 KiB");
         assert_eq!(readable_bytes(1 << 30), "1.0 GiB");

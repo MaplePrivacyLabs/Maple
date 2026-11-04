@@ -144,11 +144,12 @@ pub fn danger_button(id: impl Into<ElementId>) -> Stateful<Div> {
 pub fn icon_button(
     id: impl Into<ElementId>,
     name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
 ) -> Stateful<Div> {
-    icon_button_base(id, name, label, size, color).tooltip(tooltip(label, None))
+    let label = label.into();
+    icon_button_base(id, name, label.clone(), size, color).tooltip(tooltip(label, None))
 }
 
 /// [`icon_button`] for a control that fires `action`: its tooltip also
@@ -168,7 +169,7 @@ pub fn icon_button_for_action(
 fn icon_button_base(
     id: impl Into<ElementId>,
     name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
 ) -> Stateful<Div> {
@@ -212,11 +213,16 @@ pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
 
 /// A labeled checkbox row. The caller supplies its tab index and click/key
 /// handlers, so mouse and keyboard activation share the same state change.
-pub fn checkbox(id: impl Into<ElementId>, checked: bool, label: &'static str) -> Stateful<Div> {
+pub fn checkbox(
+    id: impl Into<ElementId>,
+    checked: bool,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let label = label.into();
     div()
         .id(id)
         .role(Role::CheckBox)
-        .aria_label(label)
+        .aria_label(label.clone())
         .aria_toggled(if checked {
             gpui::Toggled::True
         } else {
@@ -286,7 +292,8 @@ pub fn switch_track(on: bool) -> Div {
 
 /// Small status pill beside a card's title (an integration's availability,
 /// a paired computer's update state). `color` tints only the label.
-pub fn status_badge(label: &'static str, color: u32) -> Div {
+pub fn status_badge(label: impl Into<SharedString>, color: u32) -> Div {
+    let label = label.into();
     div()
         .flex_none()
         .px_2()
@@ -587,7 +594,7 @@ pub fn copy_button(
     div()
         .id(id)
         .role(Role::Button)
-        .aria_label("Copy")
+        .aria_label(super::i18n::tr("common-copy"))
         .flex()
         .items_center()
         .gap_1()
@@ -637,7 +644,11 @@ pub fn copy_button(
                 theme::text_secondary()
             },
         ))
-        .child(if copied { "Copied" } else { "Copy" })
+        .child(super::i18n::tr(if copied {
+            "common-copied"
+        } else {
+            "common-copy"
+        }))
 }
 
 #[cfg(test)]

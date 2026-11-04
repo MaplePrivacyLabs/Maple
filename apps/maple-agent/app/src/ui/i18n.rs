@@ -141,7 +141,6 @@ pub(crate) fn apply_preference(preference: Option<&str>) {
     });
 }
 
-#[cfg(any(target_os = "linux", test))]
 pub(crate) fn current_locale() -> LanguageIdentifier {
     ACTIVE.with_borrow(|state| state.locale.clone())
 }
@@ -185,6 +184,169 @@ pub(crate) fn tr_args<'a>(
 ) -> SharedString {
     let args = args.into_iter().collect();
     ACTIVE.with_borrow(|state| lookup(&state.locale, key, &args).into())
+}
+
+type MessageArgs = Vec<(&'static str, FluentValue<'static>)>;
+type CachedMessage = (MessageArgs, SharedString);
+type ResolvedMessage = Option<(LanguageIdentifier, SharedString)>;
+
+/// View-owned cache for parameterized labels. Values are bounded per message,
+/// discarded with the view, and invalidated together on a language change.
+#[derive(Default)]
+pub(crate) struct MessageCache(RefCell<MessageCacheState>);
+
+#[derive(Default)]
+struct MessageCacheState {
+    locale: Option<LanguageIdentifier>,
+    messages: HashMap<&'static str, Vec<CachedMessage>>,
+    computed: HashMap<&'static str, Vec<(String, SharedString)>>,
+}
+
+impl MessageCache {
+    /// Cache derived presentation before parsing dates or other raw host fields.
+    pub(crate) fn computed(
+        &self,
+        key: &'static str,
+        input: &str,
+        compute: impl FnOnce() -> SharedString,
+    ) -> SharedString {
+        let locale = current_locale();
+        {
+            let mut cache = self.0.borrow_mut();
+            if cache.locale.as_ref() != Some(&locale) {
+                cache.messages.clear();
+                cache.computed.clear();
+                cache.locale = Some(locale);
+            }
+            if let Some((_, text)) = cache
+                .computed
+                .get(key)
+                .and_then(|entries| entries.iter().find(|(previous, _)| previous == input))
+            {
+                return text.clone();
+            }
+        }
+        // The callback may resolve parameterized messages in this same cache.
+        let text = compute();
+        let mut cache = self.0.borrow_mut();
+        let entries = cache.computed.entry(key).or_default();
+        if entries.len() == 512 {
+            entries.remove(0);
+        }
+        entries.push((input.to_owned(), text.clone()));
+        text
+    }
+
+    pub(crate) fn get(
+        &self,
+        key: &'static str,
+        args: impl IntoIterator<Item = (&'static str, FluentValue<'static>)>,
+    ) -> SharedString {
+        let args: Vec<_> = args.into_iter().collect();
+        let locale = current_locale();
+        let mut cache = self.0.borrow_mut();
+        if cache.locale.as_ref() != Some(&locale) {
+            cache.messages.clear();
+            cache.computed.clear();
+            cache.locale = Some(locale);
+        }
+        let entries = cache.messages.entry(key).or_default();
+        if let Some((_, text)) = entries.iter().find(|(previous, _)| previous == &args) {
+            return text.clone();
+        }
+        let text = tr_args(key, args.clone());
+        // A page may show several rows using the same message. Bound retention
+        // even when a long-lived view displays many different names or counts.
+        if entries.len() == 512 {
+            entries.remove(0);
+        }
+        entries.push((args, text.clone()));
+        text
+    }
+}
+
+/// A notice retains its semantic message so switching languages does not
+/// leave old success or validation copy on a settings page. Host errors stay raw.
+#[derive(Clone, Debug)]
+pub(crate) enum UiText {
+    Raw(String),
+    Message {
+        key: &'static str,
+        args: MessageArgs,
+        cached: std::rc::Rc<RefCell<ResolvedMessage>>,
+    },
+}
+impl PartialEq for UiText {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Raw(a), Self::Raw(b)) => a == b,
+            (
+                Self::Message {
+                    key: a, args: aa, ..
+                },
+                Self::Message {
+                    key: b, args: ba, ..
+                },
+            ) => a == b && aa == ba,
+            _ => false,
+        }
+    }
+}
+impl UiText {
+    pub(crate) fn key(key: &'static str) -> Self {
+        Self::message(key, [])
+    }
+    pub(crate) fn message(
+        key: &'static str,
+        args: impl IntoIterator<Item = (&'static str, FluentValue<'static>)>,
+    ) -> Self {
+        Self::Message {
+            key,
+            args: args.into_iter().collect(),
+            cached: Default::default(),
+        }
+    }
+    pub(crate) fn resolve(&self) -> SharedString {
+        match self {
+            Self::Raw(value) => value.clone().into(),
+            Self::Message { key, args, cached } => {
+                let locale = current_locale();
+                if let Some((previous, text)) = &*cached.borrow()
+                    && previous == &locale
+                {
+                    return text.clone();
+                }
+                let text = if args.is_empty() {
+                    tr(key)
+                } else {
+                    tr_args(key, args.clone())
+                };
+                *cached.borrow_mut() = Some((locale, text.clone()));
+                text
+            }
+        }
+    }
+}
+impl From<String> for UiText {
+    fn from(value: String) -> Self {
+        Self::Raw(value)
+    }
+}
+impl From<&str> for UiText {
+    fn from(value: &str) -> Self {
+        Self::Raw(value.to_owned())
+    }
+}
+impl std::fmt::Display for UiText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.resolve().fmt(f)
+    }
+}
+impl gpui::IntoElement for UiText {
+    type Element = <SharedString as gpui::IntoElement>::Element;
+    fn into_element(self) -> Self::Element {
+        self.resolve().into_element()
+    }
 }
 
 fn lookup(locale: &LanguageIdentifier, key: &str, args: &HashMap<&str, FluentValue<'_>>) -> String {

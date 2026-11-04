@@ -1,10 +1,10 @@
 # Agent localization
 
 The localization foundation uses embedded Fluent catalogs.
-It currently covers the update confirmation dialog (including accessibility
-text), the full General settings pane (including dropdown choices, the chat
-preview and test notification), and shared Settings navigation. English and
-Spanish are enabled in the preview.
+It covers all Settings pages, their local password/encryption forms, shortcut names
+and search, remote-computer controls, and the update confirmation dialog. General
+includes dropdown choices, the chat preview and test notification. English and
+Spanish are enabled.
 Most of the app is still English; this is infrastructure for incremental
 extraction, not a claim of complete localization.
 
@@ -18,11 +18,14 @@ The OS locale supplies the initial default. The first host settings snapshot
 loads the saved preference. A user selection clears the plain-label and System
 label caches and refreshes GPUI windows. General settings resolves labels during
 render; an open update confirmation reformats its versioned title only when its
-locale changes. Saved control values and element IDs remain stable.
+locale changes. Settings also rebuilds its filtered shortcut list and remote
+status projection. Catalog-backed input placeholders and accessibility labels
+follow the current locale without replacing typed text. Saved control values,
+confirmation words (`DELETE` and `ERASE`), commands and element IDs remain stable.
 
 Locale state currently belongs to the GPUI thread. Call presentation helpers on
 that thread; background workers should return semantic data for the UI to format.
-Tests use isolated thread-local state and default to English. Other pages and
+Tests use isolated thread-local state and default to English. Pages outside Settings and
 native/tray menus remain English until extracted. Future translated cached views
 must invalidate formatted text on locale changes; refreshing windows alone does
 not rebuild their stored strings.
@@ -41,6 +44,11 @@ including additions/removals. `fluent-bundle` supplies typed argument values.
   Format these when the input state changes and retain the result in the view;
   do not format dynamic messages on every render. Pass numbers as numbers so
   Fluent can select CLDR plural branches. The System language label is cached.
+- Settings uses view-owned `MessageCache` instances for parameterized render
+  labels. Each message retains at most 512 argument sets; a locale change clears
+  the cache, and dropping the view releases it. `UiText` retains semantic keys
+  and arguments for notices, resolving them again after a language change. Raw
+  host errors are explicitly separate from these localized notices.
 - Translate accessibility labels too. Keep element IDs, keymap slots, commands,
   protocol values and other machine-readable identifiers stable.
 - Keep complete sentences together. Add translator comments explaining args.
@@ -75,11 +83,14 @@ are outside this preview's Spanish coverage.
 
 ## Explicit follow-ups
 
-Extraction is substantially larger than just `child(...)` calls: shortcut names
-and categories, desktop code, backend/host/remote errors, and other non-UI files
-also contain display text. Work module by module, starting with Settings/login.
+Extraction is substantially larger than just `child(...)` calls. Settings now
+includes an adapter for the built-in shortcut catalog, with coverage tests for
+new catalog entries. Desktop code, login, backend/host errors and other non-UI
+files still contain display text.
 
-- Host/ACP/backend errors remain English strings. Localizing them needs typed
+- Host/ACP/backend errors and host-owned integration detection details remain
+  English strings. Typed remote update outcomes and credit validation errors
+  are formatted in the UI. Localizing the remaining host strings needs typed
   semantic errors plus arguments across the process boundary, formatted by the
   consuming UI; it is not a reason to translate shared host strings in place.
 - Persisted timeline labels remain unchanged. Their future migration requires
@@ -88,8 +99,11 @@ also contain display text. Work module by module, starting with Settings/login.
   content and generated content are never translated by UI extraction.
 - Native/tray menus, OS dialogs and the standalone OAuth completion HTML are
   outside this first milestone. Each has its own lifecycle/packaging contract.
-- Dates, localized numeric separators and money need a separate formatting
-  decision; Fluent plural selection does not provide complete locale formatting.
+- Settings dates use translated month names and date patterns. The plan-usage
+  DTO includes optional raw product/reset inputs so the UI can format them;
+  older hosts remain readable. Numeric separators and money still use the
+  existing application formats; Fluent plural selection does not provide
+  complete locale formatting.
 - Spell checking remains `en_US`; UI language and content language are separate.
 - RTL layout/mirroring is not supported by this implementation. Do not enable
   RTL locales until the GPUI/platform limitation is addressed. CJK and other

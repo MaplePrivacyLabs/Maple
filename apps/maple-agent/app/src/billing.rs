@@ -109,15 +109,33 @@ fn names_free_plan(status: &BillingStatus) -> bool {
 /// Preset credit purchases in whole dollars, as on the web.
 pub const CREDIT_PACKAGES_DOLLARS: [u64; 4] = [20, 50, 100, 500];
 
+/// Validation remains shared with the host; the UI formats these semantic errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreditAmountError {
+    BelowMinimum,
+    AboveMaximum,
+    WholeDollarsRequired,
+}
+impl std::fmt::Display for CreditAmountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BelowMinimum => write!(f, "The minimum is ${MIN_CREDIT_PURCHASE_DOLLARS}"),
+            Self::AboveMaximum => write!(
+                f,
+                "The maximum is ${}",
+                format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64)
+            ),
+            Self::WholeDollarsRequired => f.write_str("Enter a whole-dollar amount"),
+        }
+    }
+}
+
 /// Credits bought by a whole-dollar amount, or why the amount is refused.
-pub fn credits_for_dollars(dollars: u64) -> Result<u64, String> {
+pub fn credits_for_dollars(dollars: u64) -> Result<u64, CreditAmountError> {
     if dollars < MIN_CREDIT_PURCHASE_DOLLARS {
-        Err(format!("The minimum is ${MIN_CREDIT_PURCHASE_DOLLARS}"))
+        Err(CreditAmountError::BelowMinimum)
     } else if dollars > MAX_CREDIT_PURCHASE_DOLLARS {
-        Err(format!(
-            "The maximum is ${}",
-            format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64)
-        ))
+        Err(CreditAmountError::AboveMaximum)
     } else {
         Ok(dollars * CREDITS_PER_DOLLAR)
     }
@@ -125,7 +143,7 @@ pub fn credits_for_dollars(dollars: u64) -> Result<u64, String> {
 
 /// Whole dollars typed for a custom credit purchase, with an optional `$`.
 /// None while the field is empty.
-pub fn parse_custom_dollars(text: &str) -> Option<Result<u64, String>> {
+pub fn parse_custom_dollars(text: &str) -> Option<Result<u64, CreditAmountError>> {
     let text = text.trim();
     let digits = text.strip_prefix('$').unwrap_or(text).trim();
     if digits.is_empty() {
@@ -135,7 +153,7 @@ pub fn parse_custom_dollars(text: &str) -> Option<Result<u64, String>> {
         // Too many digits to parse is over the maximum either way.
         credits_for_dollars(digits.parse().unwrap_or(u64::MAX))
     } else {
-        Err("Enter a whole-dollar amount".to_string())
+        Err(CreditAmountError::WholeDollarsRequired)
     })
 }
 
@@ -144,7 +162,6 @@ pub fn parse_custom_dollars(text: &str) -> Option<Result<u64, String>> {
 pub trait BillingStatusExt {
     fn tier(&self) -> PlanTier;
     fn has_portal(&self) -> bool;
-    fn period_end_label(&self) -> Option<String>;
 }
 
 impl BillingStatusExt for BillingStatus {
@@ -162,19 +179,6 @@ impl BillingStatusExt for BillingStatus {
                 self.payment_provider.as_deref(),
                 Some("zaprite") | Some("subscription_pass")
             )
-    }
-
-    /// "Renews September 30, 2026" or "Expires …" for passes and Bitcoin
-    /// subscriptions, which do not auto-renew; None without a period end.
-    fn period_end_label(&self) -> Option<String> {
-        let end = chrono::DateTime::from_timestamp(self.current_period_end?, 0)?
-            .with_timezone(&chrono::Local)
-            .format("%B %-d, %Y");
-        let verb = match self.payment_provider.as_deref() {
-            Some("zaprite") | Some("subscription_pass") => "Expires",
-            _ => "Renews",
-        };
-        Some(format!("{verb} {end}"))
     }
 }
 
@@ -235,6 +239,11 @@ pub fn configured_billing_api_url() -> String {
 /// quota used in the current period, and the date the period resets.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlanUsage {
+    /// Semantic presentation inputs; optional for older hosts.
+    #[serde(default)]
+    pub product_name: Option<String>,
+    #[serde(default)]
+    pub reset_at: Option<String>,
     pub plan_label: String,
     pub percent_used: u8,
     pub resets_label: String,
@@ -251,6 +260,8 @@ impl PlanUsage {
         let used = status.used_tokens?.max(0);
         let percent = ((used as f64 / total as f64) * 100.0).clamp(0.0, 100.0);
         Some(Self {
+            product_name: status.product_name.clone(),
+            reset_at: status.usage_reset_date.clone(),
             plan_label: plan_name_label(status.product_name.as_deref()),
             percent_used: percent.round() as u8,
             resets_label: reset_label(status.usage_reset_date.as_deref(), now),
@@ -438,19 +449,6 @@ mod tests {
     }
 
     #[test]
-    fn period_end_label_names_renewal_or_expiry() {
-        let mut status = BillingStatus {
-            current_period_end: Some(1_790_000_000),
-            ..BillingStatus::default()
-        };
-        assert!(status.period_end_label().unwrap().starts_with("Renews "));
-        status.payment_provider = Some("subscription_pass".into());
-        assert!(status.period_end_label().unwrap().starts_with("Expires "));
-        status.current_period_end = None;
-        assert_eq!(status.period_end_label(), None);
-    }
-
-    #[test]
     fn counts_get_thousands_separators() {
         assert_eq!(format_count(0), "0");
         assert_eq!(format_count(999), "999");
@@ -544,5 +542,25 @@ mod tests {
         s.total_tokens = Some(10);
         s.used_tokens = None;
         assert!(PlanUsage::from_status(&s, now()).is_none());
+    }
+    #[test]
+    fn plan_usage_accepts_older_hosts_without_semantic_display_fields() {
+        let plan: PlanUsage = serde_json::from_value(serde_json::json!({
+            "plan_label": "Pro Plan", "percent_used": 25, "resets_label": "Tomorrow"
+        }))
+        .unwrap();
+        assert_eq!(plan.percent_used, 25);
+        assert!(plan.product_name.is_none());
+        assert!(plan.reset_at.is_none());
+        let status = BillingStatus {
+            product_name: Some("Max".into()),
+            total_tokens: Some(100),
+            used_tokens: Some(25),
+            usage_reset_date: Some("2027-01-02T00:00:00Z".into()),
+            ..Default::default()
+        };
+        let plan = PlanUsage::from_status(&status, chrono::Local::now()).unwrap();
+        assert_eq!(plan.product_name, status.product_name);
+        assert_eq!(plan.reset_at, status.usage_reset_date);
     }
 }

@@ -2204,7 +2204,8 @@ impl LocalBackend {
         if !credits.is_multiple_of(crate::billing::CREDITS_PER_DOLLAR) {
             return Err("Buy credits in whole dollars".to_string());
         }
-        crate::billing::credits_for_dollars(credits / crate::billing::CREDITS_PER_DOLLAR)?;
+        crate::billing::credits_for_dollars(credits / crate::billing::CREDITS_PER_DOLLAR)
+            .map_err(|error| error.to_string())?;
         let account = self.account(user_id).await?;
         if method == PaymentMethod::Stripe && account.login_method == MapleLoginMethod::Guest {
             return Err("Anonymous accounts pay with Bitcoin".to_string());

@@ -7799,6 +7799,8 @@ mod state_tests {
         for plan in [
             None,
             Some(crate::billing::PlanUsage {
+                product_name: None,
+                reset_at: None,
                 plan_label: "Pro".into(),
                 percent_used: 42,
                 resets_label: "tomorrow".into(),

@@ -46,7 +46,7 @@ fn strong_matching_change_explains_missing_current_and_preserves_secrets(
         assert!(reason.to_lowercase().contains("current"));
 
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
         assert!(form.current.read(cx).is_empty());
         form.password
             .read(cx)
@@ -69,7 +69,7 @@ fn mismatch_has_specific_feedback_and_does_not_consume_any_field(cx: &mut gpui::
         assert!(!form.can_submit(cx));
 
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
         form.current
             .read(cx)
             .with_secret(|value| assert_eq!(value, CURRENT));
@@ -95,7 +95,7 @@ fn strong_password_requires_confirmation_with_an_explicit_reason(cx: &mut gpui::
             .expect("confirmation-required feedback");
         assert!(reason.to_lowercase().contains("confirm"));
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
         assert_no_submission(form);
     });
 }
@@ -117,7 +117,7 @@ fn weak_password_reports_strength_instead_of_silently_ignoring_save(cx: &mut gpu
                 || lower.contains("guess")
         );
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
         assert_no_submission(form);
     });
 }
@@ -136,7 +136,7 @@ fn an_overlength_password_reports_its_bound_before_confirmation(cx: &mut gpui::T
         let lower = reason.to_lowercase();
         assert!(lower.contains("long") || lower.contains("1024") || lower.contains("1,024"));
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
         assert_eq!(form.password.read(cx).len_chars(), 1025);
         assert_no_submission(form);
     });

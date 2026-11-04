@@ -5,6 +5,7 @@
 //! Selecting a row is side-effect free; Enter delegates to the same existing
 //! method as its pointer control.
 
+use crate::ui::i18n::UiText;
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
 use super::account::AccountTarget;
@@ -338,8 +339,7 @@ impl SettingsScreen {
                 self.application_vim.section = self.section;
             }
             _ => {
-                self.shortcut_notice =
-                    Some("There is no Settings region in that direction".to_string());
+                self.shortcut_notice = Some(UiText::key("settings-navigation-no-region"));
                 cx.notify();
                 return false;
             }
@@ -513,10 +513,7 @@ impl SettingsScreen {
             }
             SettingsApplicationCommand::Unavailable => {
                 self.application_vim.count.clear();
-                self.shortcut_notice = Some(
-                    "That application Vim command is not available on this Settings target"
-                        .to_string(),
-                );
+                self.shortcut_notice = Some(UiText::key("settings-navigation-unavailable"));
                 cx.notify();
             }
         }
@@ -532,7 +529,7 @@ impl SettingsScreen {
             self.application_vim.count.push(action.digit),
             CountOutcome::Capped(_)
         ) {
-            self.shortcut_notice = Some("Application Vim count capped at 999999".to_string());
+            self.shortcut_notice = Some(UiText::key("settings-navigation-count-limit"));
         }
         cx.notify();
     }
@@ -1090,6 +1087,62 @@ mod tests {
             assert_eq!(Section::General.id(), "General");
             assert_eq!(Section::Advanced.label().as_ref(), "Privacidad y seguridad");
         });
+    }
+
+    #[gpui::test]
+    fn live_language_switch_preserves_forms_and_rebuilds_spanish_shortcut_search(
+        cx: &mut TestAppContext,
+    ) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::apply_preference(Some("en"));
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            this.prompt_editor
+                .update(cx, |input, cx| input.set_text("Keep my instructions", cx));
+            this.api_keys
+                .name
+                .update(cx, |input, cx| input.set_text("My editor", cx));
+            this.prompt_notice = Some(UiText::key(
+                "settings-settings-saved-new-tasks-use-these-instructions",
+            ));
+            this.shortcut_snapshot.rows = vec![crate::shortcuts::ShortcutRow {
+                slot_id: "chat.new_task".into(),
+                label: "New task".into(),
+                category: "Chat".into(),
+                context: Some("Chat".into()),
+                default_sequence: "secondary-n".into(),
+                current_sequence: Some("secondary-n".into()),
+                modified: false,
+                conflicts: vec![],
+            }];
+            this.shortcut_search
+                .update(cx, |input, cx| input.set_text("nueva", cx));
+        });
+        cx.run_until_parked();
+        for (locale, visible) in [("es", 1), ("en", 0), ("es", 1)] {
+            cx.update(|_, cx| {
+                crate::ui::i18n::apply_preference(Some(locale));
+                cx.refresh_windows();
+            });
+            cx.run_until_parked();
+            settings.update(cx, |this, cx| {
+                assert_eq!(this.prompt_editor.read(cx).text(), "Keep my instructions");
+                assert_eq!(this.api_keys.name.read(cx).text(), "My editor");
+                assert_eq!(this.shortcut_list_cache.visible_indices.len(), visible);
+                assert_eq!(this.shortcut_snapshot.rows[0].slot_id, "chat.new_task");
+                assert_eq!(
+                    this.shortcut_snapshot.rows[0].current_sequence.as_deref(),
+                    Some("secondary-n")
+                );
+                assert!(
+                    this.prompt_notice
+                        .as_ref()
+                        .unwrap()
+                        .resolve()
+                        .starts_with(if locale == "es" { "Guardado" } else { "Saved" })
+                );
+            });
+        }
     }
 
     #[gpui::test]
