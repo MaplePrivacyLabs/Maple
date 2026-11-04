@@ -396,6 +396,12 @@ impl TextInput {
         self
     }
 
+    /// The text assistive technology may read. A masked field never exposes
+    /// its content, matching what it draws.
+    fn accessible_value(&self) -> Option<SharedString> {
+        (!self.mask).then(|| self.content.clone())
+    }
+
     /// Wrap text and grow with the content, up to `max_lines` rows.
     pub fn multiline(mut self, max_lines: usize) -> Self {
         self.multiline = true;
@@ -3210,6 +3216,9 @@ impl Render for TextInput {
             })
             .aria_label(self.placeholder.clone())
             .aria_placeholder(self.placeholder.clone())
+            .when_some(self.accessible_value(), |input, value| {
+                input.aria_value(value)
+            })
             .flex()
             .key_context(key_context)
             .track_focus(&self.focus_handle(cx))
@@ -3381,6 +3390,21 @@ mod tests {
         cell::{Cell, RefCell},
         rc::Rc,
     };
+
+    #[gpui::test]
+    fn assistive_technology_reads_plain_fields_but_never_masked_ones(cx: &mut TestAppContext) {
+        let plain = cx.new(|cx| TextInput::new("Message", cx));
+        let masked = cx.new(|cx| TextInput::new("Password", cx).masked());
+        for input in [&plain, &masked] {
+            input.update(cx, |input, cx| input.set_text("draft", cx));
+        }
+        plain.read_with(cx, |input, _| {
+            assert_eq!(input.accessible_value().as_deref(), Some("draft"));
+        });
+        masked.read_with(cx, |input, _| {
+            assert_eq!(input.accessible_value(), None);
+        });
+    }
 
     struct InputHost {
         input: Entity<TextInput>,

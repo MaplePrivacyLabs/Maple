@@ -603,7 +603,7 @@ impl Render for StoreGate {
                         }))
                         .when(self.busy, |button| button.opacity(0.5))
                         .on_click(cx.listener(|this, _event, _window, cx| this.reset(false, cx)))
-                        .child("Erase this version's local data"),
+                        .child(gpui::text!("Erase this version's local data")),
                 )
                 .child(
                     widgets::ghost_button("store-gate-erase-cancel")
@@ -618,7 +618,7 @@ impl Render for StoreGate {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.close_erase(cx);
                         }))
-                        .child("Cancel"),
+                        .child(gpui::text!("Cancel")),
                 );
         } else {
             body = match self.state {
@@ -636,7 +636,7 @@ impl Render for StoreGate {
                             }))
                             .when(self.busy, |button| button.opacity(0.5))
                             .on_click(cx.listener(|this, _event, _window, cx| this.unlock(cx)))
-                            .child(if self.busy { "Unlocking…" } else { "Unlock" }),
+                            .child(gpui::text!(if self.busy { "Unlocking…" } else { "Unlock" })),
                     )
                     .child(
                         widgets::ghost_button("store-forgot")
@@ -649,7 +649,7 @@ impl Render for StoreGate {
                                 }
                             }))
                             .on_click(cx.listener(|this, _event, _window, cx| this.open_erase(cx)))
-                            .child("Forgot password?"),
+                            .child(gpui::text!("Forgot password?")),
                     ),
                 StoreState::NeedsSetup => body
                     .when(
@@ -670,7 +670,7 @@ impl Render for StoreGate {
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.setup_password(cx)
                                     }))
-                                    .child("Set an unlock password"),
+                                    .child(gpui::text!("Set an unlock password")),
                             )
                         },
                     )
@@ -685,7 +685,7 @@ impl Render for StoreGate {
                                 }
                             }))
                             .on_click(cx.listener(|this, _event, _window, cx| this.plain_setup(cx)))
-                            .child("Continue without a password"),
+                            .child(gpui::text!("Continue without a password")),
                     ),
                 StoreState::Damaged { .. } => body
                     .when(accepts_unlock(&self.state), |body| {
@@ -707,11 +707,11 @@ impl Render for StoreGate {
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.unlock(cx)
                                 }))
-                                .child(if self.busy {
+                                .child(gpui::text!(if self.busy {
                                     "Verifying…"
                                 } else {
                                     "Verify and unlock"
-                                }),
+                                })),
                         )
                     })
                     .when_some(self.repair.clone(), |body, repair| body.child(repair))
@@ -730,7 +730,7 @@ impl Render for StoreGate {
                                 }
                             }))
                             .on_click(cx.listener(|this, _event, _window, cx| this.reset(true, cx)))
-                            .child("Delete current data and start fresh"),
+                            .child(gpui::text!("Delete current data and start fresh")),
                     )
                     .child(
                         widgets::ghost_button("store-damaged-erase")
@@ -743,7 +743,7 @@ impl Render for StoreGate {
                                 }
                             }))
                             .on_click(cx.listener(|this, _event, _window, cx| this.open_erase(cx)))
-                            .child("Erase local data…"),
+                            .child(gpui::text!("Erase local data…")),
                     ),
                 StoreState::Maintenance => body
                     .child(div().text_sm().child(if self.repair_progress.busy {
@@ -774,7 +774,7 @@ impl Render for StoreGate {
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.cancel_maintenance(cx)
                                     }))
-                                    .child("Cancel"),
+                                    .child(gpui::text!("Cancel")),
                             )
                         },
                     ),
@@ -1469,7 +1469,7 @@ impl Render for PasswordForm {
                     widgets::secondary_button("store-operation-cancel")
                         .tab_index(1)
                         .on_click(cx.listener(|this, _event, _window, cx| this.cancel(cx)))
-                        .child("Cancel"),
+                        .child(gpui::text!("Cancel")),
                 );
             }
         } else {
@@ -1507,7 +1507,7 @@ impl Render for PasswordForm {
                                             }
                                         },
                                     ))
-                                    .child("Generate passphrase"),
+                                    .child(gpui::text!("Generate passphrase")),
                             )
                         }),
                 );
@@ -1541,21 +1541,21 @@ impl Render for PasswordForm {
                                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                                     if password_action_key(event, window, cx) { this.copy_phrase(cx); cx.stop_propagation(); }
                                 }))
-                                .child("Copy passphrase"))
+                                .child(gpui::text!("Copy passphrase")))
                             .child(widgets::ghost_button("store-another-phrase")
                                 .tab_index(8)
                                 .on_click(cx.listener(|this, _event, _window, cx| this.generate(cx)))
                                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                                     if password_action_key(event, window, cx) { this.generate(cx); cx.stop_propagation(); }
                                 }))
-                                .child("Generate another"))
+                                .child(gpui::text!("Generate another")))
                             .child(widgets::ghost_button("store-use-typed")
                                 .tab_index(9)
                                 .on_click(cx.listener(|this, _event, _window, cx| this.use_typed(cx)))
                                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                                     if password_action_key(event, window, cx) { this.use_typed(cx); cx.stop_propagation(); }
                                 }))
-                                .child("Use my own password")));
+                                .child(gpui::text!("Use my own password"))));
                     new_password = new_password.child(suggestion);
                 } else {
                     new_password = new_password
@@ -1661,7 +1661,7 @@ impl Render for PasswordForm {
                                     }
                                 },
                             ))
-                            .child("Cancel"),
+                            .child(gpui::text!("Cancel")),
                     )
                     .child(
                         widgets::primary_button("store-password-submit")
@@ -1676,7 +1676,7 @@ impl Render for PasswordForm {
                                     }
                                 },
                             ))
-                            .child(submit_label),
+                            .child(gpui::text!(submit_label)),
                     ),
             );
         }

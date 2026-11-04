@@ -6897,13 +6897,36 @@ impl Render for ChatScreen {
             .children(feedback)
             .children(trust_prompt)
             .children(self.project_folder_dialog.clone().map(|dialog| {
-                dialog.cached(
+                embed_cached_view(
+                    dialog,
                     gpui::StyleRefinement::default()
                         .absolute()
                         .inset_0()
                         .size_full(),
+                    window.is_a11y_active(),
                 )
             }))
+    }
+}
+
+/// Embed `view` as a cached view, or render it every frame while an
+/// accessibility client is connected.
+///
+/// GPUI builds its accessibility tree during prepaint and paint, and a cached
+/// view that reuses its last frame runs neither. Each tree update replaces the
+/// whole tree, so any repaint elsewhere in the window would remove the view's
+/// nodes, focus, and action handlers until the view next re-rendered.
+fn embed_cached_view<V: Render>(
+    view: Entity<V>,
+    style: gpui::StyleRefinement,
+    a11y_active: bool,
+) -> gpui::AnyElement {
+    if a11y_active {
+        let mut wrapper = div();
+        *wrapper.style() = style;
+        wrapper.child(view).into_any_element()
+    } else {
+        view.cached(style).into_any_element()
     }
 }
 
@@ -6940,14 +6963,14 @@ impl ChatScreen {
                         .opacity(expansion)
                         // Fixed bounds keep labels from wrapping as the
                         // outer column narrows; settled frames stay cached.
-                        .child(
-                            self.sidebar.clone().cached(
-                                gpui::StyleRefinement::default()
-                                    .w(SIDEBAR_WIDTH)
-                                    .h_full()
-                                    .flex_none(),
-                            ),
-                        ),
+                        .child(embed_cached_view(
+                            self.sidebar.clone(),
+                            gpui::StyleRefinement::default()
+                                .w(SIDEBAR_WIDTH)
+                                .h_full()
+                                .flex_none(),
+                            window.is_a11y_active(),
+                        )),
                 )
             })
             .child(self.render_sidebar_settings(expansion, window, cx))
@@ -7196,7 +7219,7 @@ impl ChatScreen {
                             panel.child(
                                 widgets::secondary_button("retry-local-store-persistence")
                                     .debug_selector(|| "retry-local-store-persistence".to_string())
-                                    .child("Retry saving")
+                                    .child(gpui::text!("Retry saving"))
                                     .on_click(cx.listener(|_this, _event, _window, cx| {
                                         cx.emit(crate::ui::store_gate::RetryStorePersistence);
                                     })),

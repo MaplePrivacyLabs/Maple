@@ -423,7 +423,7 @@ impl Render for LoginScreen {
                                     this.set_guest(false, cx);
                                 }))
                             })
-                            .child("Back to email sign in"),
+                            .child(gpui::text!("Back to email sign in")),
                     );
             }
             OAuthFlow::Idle => {
@@ -472,7 +472,7 @@ impl Render for LoginScreen {
                                             this.set_guest(true, cx);
                                         }))
                                     })
-                                    .child("Anon"),
+                                    .child(gpui::text!("Anon")),
                             ),
                     );
             }
@@ -511,11 +511,11 @@ impl Render for LoginScreen {
                                     this.confirm_oauth(cx);
                                 }))
                             })
-                            .child(if busy {
+                            .child(gpui::text!(if busy {
                                 "Completing…".to_string()
                             } else {
                                 "Complete sign in".to_string()
-                            }),
+                            })),
                     )
                     .child(
                         widgets::ghost_button("oauth-cancel")
@@ -524,7 +524,7 @@ impl Render for LoginScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
                             }))
-                            .child("Back to email sign in"),
+                            .child(gpui::text!("Back to email sign in")),
                     );
             }
             OAuthFlow::Hosted { provider } => {
@@ -556,7 +556,7 @@ impl Render for LoginScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
                             }))
-                            .child("Back to email sign in"),
+                            .child(gpui::text!("Back to email sign in")),
                     );
             }
         }
@@ -586,11 +586,11 @@ fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> gpui::Stateful<Di
         .when(!busy, |el| {
             el.on_click(cx.listener(LoginScreen::submit_clicked))
         })
-        .child(if busy {
+        .child(gpui::text!(if busy {
             "Signing in…".to_string()
         } else {
             "Sign in".to_string()
-        })
+        }))
 }
 
 fn oauth_button(
@@ -611,7 +611,7 @@ fn oauth_button(
             })
         })
     })
-    .child(provider.label().to_string())
+    .child(gpui::text!(provider.label().to_string()))
 }
 
 fn field(label: &str, input: impl IntoElement) -> Div {

@@ -8316,6 +8316,54 @@ mod state_tests {
         });
     }
 
+    /// A frame that reuses a cached view leaves its nodes out of the tree
+    /// update, so an accessibility client must see the view render every
+    /// frame. `Window::is_a11y_active` stays false on the test platform, so
+    /// both branches are chosen here directly.
+    #[gpui::test]
+    fn cached_views_render_every_frame_for_accessibility(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+
+        struct Counted(Rc<Cell<usize>>);
+        impl Render for Counted {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.0.set(self.0.get() + 1);
+                div().size_full()
+            }
+        }
+        struct Host {
+            view: Entity<Counted>,
+            a11y_active: bool,
+        }
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(crate::ui::chat::embed_cached_view(
+                    self.view.clone(),
+                    gpui::StyleRefinement::default().size_full(),
+                    self.a11y_active,
+                ))
+            }
+        }
+
+        for (a11y_active, extra_renders) in [(false, 0), (true, 2)] {
+            let renders = Rc::new(Cell::new(0));
+            let view = cx.new(|_| Counted(renders.clone()));
+            let (host, window) = cx.add_window_view(|_, _| Host { view, a11y_active });
+            window.run_until_parked();
+            let first_frame = renders.get();
+            assert!(first_frame > 0);
+            for _ in 0..2 {
+                host.update(window, |_, cx| cx.notify());
+                window.run_until_parked();
+            }
+            assert_eq!(
+                renders.get(),
+                first_frame + extra_renders,
+                "a11y_active = {a11y_active}"
+            );
+        }
+    }
+
     /// The native accessibility builder rejects two focused nodes in one
     /// frame. A cached modal must acquire focus before the background starts
     /// prepainting, not later when its cached subtree first renders.

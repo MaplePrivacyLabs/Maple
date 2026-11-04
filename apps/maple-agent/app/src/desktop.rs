@@ -2342,7 +2342,7 @@ impl Render for MapleApp {
                             .child(self.updater.snapshot().label)
                             .child(
                                 ui::widgets::primary_button("restart-installed-update")
-                                    .child("Restart Maple")
+                                    .child(gpui::text!("Restart Maple"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.update_action(
                                             crate::update::UpdateAction::Relaunch,
@@ -2353,7 +2353,7 @@ impl Render for MapleApp {
                             )
                             .child(
                                 ui::widgets::secondary_button("quit-installed-update")
-                                    .child("Quit Maple")
+                                    .child(gpui::text!("Quit Maple"))
                                     .on_click(|_, _, cx| quit_app(cx)),
                             )
                             .into_any_element()
@@ -2868,11 +2868,16 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
             ..Default::default()
         },
         |window, cx| {
-            window.on_window_should_close(cx, |_, cx| {
-                cancel_quit(cx);
-                true
+            let prompt = cx.new(|_| QuitPrompt {
+                kind,
+                closing: false,
             });
-            cx.new(|_| QuitPrompt { kind })
+            let closing = prompt.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                cancel_quit(cx);
+                closing.update(cx, |prompt, cx| prompt.close(cx)).is_err()
+            });
+            prompt
         },
     ) {
         cancel_quit(cx);
@@ -2892,9 +2897,31 @@ enum QuitPromptKind {
 }
 struct QuitPrompt {
     kind: QuitPromptKind,
+    closing: bool,
+}
+impl QuitPrompt {
+    /// Draw one empty frame, then remove the window.
+    ///
+    /// This window closes while Maple keeps running, and the pinned gpui keeps
+    /// the AccessKit adapter alive past that. AppKit can then ask a node for
+    /// its frame, and `accesskit_macos` panics across the FFI boundary once
+    /// the view has no window, aborting Maple. Emptying the tree first leaves
+    /// only the root, which answers safely. zed-industries/zed#64143 fixes
+    /// the adapter's lifetime; this can go when the pin includes it.
+    fn close(&mut self, cx: &mut Context<Self>) {
+        self.closing = true;
+        cx.notify();
+    }
 }
 impl Render for QuitPrompt {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.closing {
+            window.on_next_frame(|window, _| window.remove_window());
+            return div()
+                .size_full()
+                .bg(gpui::rgb(ui::theme::bg_app()))
+                .into_any_element();
+        }
         let (title, message, retry) = match &self.kind {
             QuitPromptKind::Confirm(activity) => (
                 "Stop this computer's Maple host?",
@@ -2909,6 +2936,9 @@ impl Render for QuitPrompt {
             ),
         };
         div()
+            .id("quit-prompt")
+            .role(gpui::Role::Dialog)
+            .aria_label(title)
             .size_full()
             .flex()
             .flex_col()
@@ -2916,8 +2946,8 @@ impl Render for QuitPrompt {
             .p_6()
             .bg(gpui::rgb(ui::theme::bg_app()))
             .text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child(title))
-            .child(message)
+            .child(div().text_lg().child(gpui::text!(title)))
+            .child(gpui::text!(message))
             .child(
                 div()
                     .flex()
@@ -2925,18 +2955,18 @@ impl Render for QuitPrompt {
                     .child(
                         ui::widgets::secondary_button("keep-maple-open")
                             .debug_selector(|| "keep-maple-open".to_string())
-                            .child("Keep open")
-                            .on_click(|_, window, cx| {
+                            .child(gpui::text!("Keep open"))
+                            .on_click(cx.listener(|prompt, _, _, cx| {
                                 cancel_quit(cx);
-                                window.remove_window();
-                            }),
+                                prompt.close(cx);
+                            })),
                     )
                     .child(
                         ui::widgets::secondary_button("retry-maple-quit")
                             .debug_selector(|| "retry-maple-quit".to_string())
-                            .child(if retry { "Retry Quit" } else { "Quit Maple" })
-                            .on_click(move |_, window, cx| {
-                                window.remove_window();
+                            .child(gpui::text!(if retry { "Retry Quit" } else { "Quit Maple" }))
+                            .on_click(cx.listener(move |prompt, _, _, cx| {
+                                prompt.close(cx);
                                 if retry {
                                     quit_app(cx);
                                 } else if let Some(state) =
@@ -2944,9 +2974,10 @@ impl Render for QuitPrompt {
                                 {
                                     drain_and_quit(state, cx);
                                 }
-                            }),
+                            })),
                     ),
             )
+            .into_any_element()
     }
 }
 
@@ -3361,11 +3392,11 @@ impl Render for StartupError {
                 |view| {
                     view.child(
                         ui::widgets::secondary_button("stop-incompatible-host")
-                            .child(if self.stopping {
+                            .child(gpui::text!(if self.stopping {
                                 "Stopping…"
                             } else {
                                 "Stop existing host and reopen"
-                            })
+                            }))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.stop_old_host(window, cx)),
                             ),
@@ -3375,7 +3406,7 @@ impl Render for StartupError {
             .when(self.requires_completed_stop, |view| {
                 view.child(div().text_sm().child("Keep Maple open until its host has finished stopping. Local data may remain unlocked while it is still running."))
                     .child(ui::widgets::secondary_button("retry-startup-host-stop")
-                        .child(if self.stopping { "Stopping host…" } else { "Retry stopping host" })
+                        .child(gpui::text!(if self.stopping { "Stopping host…" } else { "Retry stopping host" }))
                         .when(self.stopping, |button| button.opacity(0.5))
                         .on_click(cx.listener(|this, _, _, cx| this.retry_required_stop(false, cx))))
             })
@@ -5222,6 +5253,13 @@ mod tests {
         assert!(view.debug_bounds("quit-maple-anyway").is_none());
         let keep = view.debug_bounds("keep-maple-open").unwrap();
         view.simulate_click(keep.center(), gpui::Modifiers::default());
+        view.run_until_parked();
+        assert!(
+            view.debug_bounds("keep-maple-open").is_none(),
+            "the tree empties a frame before the window goes"
+        );
+        assert_eq!(cx.windows().len(), 1);
+        view.update(|window, cx| window.simulate_next_frame(cx));
         view.run_until_parked();
         assert!(
             cx.windows().is_empty(),
