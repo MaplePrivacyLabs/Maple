@@ -3,6 +3,7 @@
 
 use super::ChatScreen;
 use crate::backend::{HistoryAnchorRequest, RowRangeRequest};
+use crate::ui::i18n::UiText;
 use base64::Engine;
 use gpui::{Context, ListOffset};
 use maple_agent::agent::AgentTimelineItem;
@@ -241,7 +242,7 @@ impl ChatScreen {
             return;
         };
         let Some(identity) = item.persisted.clone() else {
-            self.notice = Some("Full output is available after this message is saved.".into());
+            self.notice = Some(UiText::key("chat-output-unsaved"));
             cx.notify();
             return;
         };
@@ -301,7 +302,7 @@ impl ChatScreen {
                             return;
                         };
                         if this.timeline[index].persisted != item.persisted {
-                            this.notice = Some("The output changed; reopen it.".into());
+                            this.notice = Some(UiText::key("chat-output-changed"));
                         } else if this
                             .timeline
                             .iter()
@@ -312,8 +313,7 @@ impl ChatScreen {
                             .saturating_add(item_bytes(&item))
                             > MAX_BYTES
                         {
-                            this.notice =
-                                Some("Full output exceeds the current 32 MiB view budget.".into());
+                            this.notice = Some(UiText::key("chat-output-budget"));
                         } else {
                             this.pages.weights.remove(&key);
                             this.timeline[index] = item;

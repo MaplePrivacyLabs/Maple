@@ -1772,7 +1772,7 @@ impl MapleApp {
             && self.has_chat(source.entity_id())
         {
             source.update(cx, |chat, cx| {
-                chat.finish_project_rename(pending.target, result, cx)
+                chat.finish_project_rename(pending.target, result.map_err(Into::into), cx)
             });
         }
     }
@@ -1883,7 +1883,7 @@ impl MapleApp {
         {
             source.update(cx, |chat, cx| match result {
                 Ok(()) => chat.refresh_sidebar_task_actions(cx),
-                Err(message) => chat.sidebar_task_action_notice(message, cx),
+                Err(message) => chat.sidebar_task_action_notice(message.into(), cx),
             });
         }
     }
@@ -2043,7 +2043,7 @@ impl MapleApp {
                             pending.request.computer.as_deref() == Some(&peer)
                         }) && let Screen::Chat(chat) = &app.screen
                         {
-                            chat.update(cx, |chat, cx| chat.navigation_notice(error, cx));
+                            chat.update(cx, |chat, cx| chat.navigation_notice(error.into(), cx));
                             app.requested_navigation = None;
                         }
                     }

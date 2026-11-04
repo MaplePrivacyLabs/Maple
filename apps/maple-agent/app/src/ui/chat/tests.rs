@@ -1107,6 +1107,75 @@ mod state_tests {
     /// another fixture installs its own host-backed settings cache.
     use crate::settings::SETTINGS_IO_LOCK as SETTINGS_LOCK;
 
+    #[gpui::test]
+    fn locale_switch_preserves_draft_task_filter_and_semantic_notice(cx: &mut TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::apply_preference(Some("en"));
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.sessions = vec![summary("chosen", "User title: Configuración")];
+            chat.selected_session = Some("chosen".into());
+            chat.sync_sidebar(cx);
+            chat.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_project_filter(Some("/user/project".into()), cx);
+            });
+            let composer = cx.new(|cx| TextInput::new("", cx));
+            composer.update(cx, |input, cx| input.set_text("/comp", cx));
+            chat.composer = Some(composer);
+            chat.notice = Some(UiText::key("chat-compacted"));
+            let generation = chat.selection_generation;
+            for (locale, title, notice, description) in [
+                (
+                    "es",
+                    "Nueva tarea",
+                    "Conversación compactada",
+                    "Resume la conversación",
+                ),
+                (
+                    "en",
+                    "New Task",
+                    "Conversation compacted",
+                    "Summarize the conversation",
+                ),
+            ] {
+                crate::ui::i18n::apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                assert_eq!(chat.selected_title.as_ref(), title);
+                assert_eq!(chat.notice.as_ref().unwrap().resolve().as_ref(), notice);
+                assert_eq!(chat.composer.as_ref().unwrap().read(cx).text_ref(), "/comp");
+                assert_eq!(chat.selected_session.as_deref(), Some("chosen"));
+                assert_eq!(chat.selection_generation, generation);
+                assert_eq!(chat.sessions[0].title, "User title: Configuración");
+                assert_eq!(
+                    chat.sidebar.read(cx).project_filter(),
+                    Some("/user/project")
+                );
+                assert_eq!(chat.slash_entries[0].name, "compact");
+                assert!(chat.slash_entries[0].description.starts_with(description));
+            }
+            chat.replace_timeline(
+                (0..20)
+                    .map(|index| item(&format!("row-{index}"), "message", Some("User content")))
+                    .collect(),
+            );
+            chat.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 7,
+                offset_in_item: px(13.),
+            });
+            let anchor = chat.list_state.logical_scroll_top();
+            for locale in ["es", "en"] {
+                crate::ui::i18n::apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                let after = chat.list_state.logical_scroll_top();
+                assert_eq!(after.item_ix, anchor.item_ix);
+                assert_eq!(after.offset_in_item, anchor.offset_in_item);
+                assert_eq!(chat.selected_title.as_ref(), "User title: Configuración");
+                assert_eq!(chat.timeline[7].text.as_deref(), Some("User content"));
+                assert_eq!(chat.composer.as_ref().unwrap().read(cx).text_ref(), "/comp");
+            }
+        });
+    }
+
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         let _guard = SETTINGS_LOCK.lock();
         let backend = std::sync::Arc::new(
@@ -2541,7 +2610,7 @@ mod state_tests {
             }];
             this.send_text("a stray reply".to_string(), cx);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
             assert!(this.question_focus_pending);
@@ -2671,7 +2740,7 @@ mod state_tests {
             }];
             assert!(this.try_command(Some("s1"), "/deploy staging", cx));
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Loading skill…")
             );
         });
@@ -2991,7 +3060,7 @@ mod state_tests {
             this.booting = false;
             this.send_text("next".to_string(), cx);
             assert_ne!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
         });
@@ -3023,7 +3092,7 @@ mod state_tests {
             this.booting = false;
             this.send_text("still typing here".to_string(), cx);
             assert_ne!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
             // Escape must not cancel the other session's run.
@@ -3073,7 +3142,7 @@ mod state_tests {
             this.select_project_root("relative".to_string(), cx);
             assert!(!this.root_selecting);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Enter an absolute directory path")
             );
         });
@@ -3613,7 +3682,7 @@ mod state_tests {
             assert!(!this.draft);
             assert!(!this.awaiting_first_token, "nothing was sent");
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Could not change web access: boom")
             );
             assert_eq!(this.composer.clone().unwrap().read(cx).text(), "hello");
@@ -3730,7 +3799,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.contains("back in the composer")),
+                    .is_some_and(|notice| notice.resolve().contains("back in the composer")),
                 "{:?}",
                 this.notice
             );
@@ -3749,7 +3818,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.contains("Press Up")),
+                    .is_some_and(|notice| notice.resolve().contains("Press Up")),
                 "{:?}",
                 this.notice
             );
@@ -3878,7 +3947,7 @@ mod state_tests {
             let generation = this.selection_generation;
             this.finish_new_session(summary_at("created", "New Task", &root), generation, cx);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Loading skill…")
             );
             assert!(!this.awaiting_first_token, "no plain message went out");
@@ -3919,7 +3988,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.starts_with("Message not sent")),
+                    .is_some_and(|notice| notice.resolve().starts_with("Message not sent")),
                 "{:?}",
                 this.notice
             );
@@ -3959,7 +4028,7 @@ mod state_tests {
             assert!(!this.root_selecting, "the switch did not start");
             assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Wait for the new task to be created, then switch projects")
             );
 
@@ -3988,7 +4057,7 @@ mod state_tests {
             assert!(this.pending_first_send.is_none());
             assert_eq!(this.selected_session, None);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("no runtime")
             );
         });
@@ -6139,7 +6208,10 @@ mod state_tests {
                 .update(cx, |sidebar, cx| sidebar.set_archived_expanded(true, cx));
             let sidebar = this.sidebar.read(cx);
 
-            assert_eq!(sidebar.row_step_label_for_test("s1"), Some("Settle"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s1").as_deref(),
+                Some("Settle")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s1"),
                 vec![
@@ -6151,13 +6223,19 @@ mod state_tests {
                 ]
             );
 
-            assert_eq!(sidebar.row_step_label_for_test("s2"), Some("Archive"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s2").as_deref(),
+                Some("Archive")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s2"),
                 vec!["Rename task", "Reopen task", "Archive task", "Delete task"]
             );
 
-            assert_eq!(sidebar.row_step_label_for_test("s3"), Some("Delete"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s3").as_deref(),
+                Some("Delete")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s3"),
                 vec!["Rename task", "Reopen task", "Delete task"]
@@ -6347,7 +6425,10 @@ mod state_tests {
                 .update(cx, |sidebar, cx| sidebar.toggle_task_pin("s1", cx));
             assert_eq!(this.sidebar_pinned(cx), vec![0]);
             assert_eq!(
-                this.sidebar.read(cx).row_step_label_for_test("s1"),
+                this.sidebar
+                    .read(cx)
+                    .row_step_label_for_test("s1")
+                    .as_deref(),
                 Some("Settle")
             );
 
@@ -6362,7 +6443,10 @@ mod state_tests {
             assert_eq!(this.sidebar_settled(cx), vec![0]);
             assert_eq!(this.sidebar_active(cx), vec![1]);
             assert_eq!(
-                this.sidebar.read(cx).row_step_label_for_test("s1"),
+                this.sidebar
+                    .read(cx)
+                    .row_step_label_for_test("s1")
+                    .as_deref(),
                 Some("Archive")
             );
 
@@ -8706,21 +8790,20 @@ mod state_tests {
                     path: "/shared".into(),
                 };
                 let labels = sidebar.project_menu_labels_for_test(&target);
-                assert_eq!(labels.first(), Some(&"Rename project"));
-                assert!(
-                    labels
-                        .iter()
-                        .all(|label| matches!(*label, "Rename project" | "Move up" | "Move down"))
-                );
+                assert_eq!(labels.first().map(String::as_str), Some("Rename project"));
+                assert!(labels.iter().all(|label| matches!(
+                    label.as_str(),
+                    "Rename project" | "Move up" | "Move down"
+                )));
             }
             let local = ProjectTarget {
                 computer: None,
                 path: "/shared".into(),
             };
             let own_menu = sidebar.project_menu_labels_for_test(&local);
-            assert!(own_menu.contains(&"Rename project"));
-            assert!(own_menu.contains(&"Open folder"));
-            assert!(own_menu.contains(&"Remove project"));
+            assert!(own_menu.contains(&"Rename project".to_string()));
+            assert!(own_menu.contains(&"Open folder".to_string()));
+            assert!(own_menu.contains(&"Remove project".to_string()));
         });
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
@@ -8919,7 +9002,7 @@ mod state_tests {
                 .iter()
                 .any(|event| matches!(event, SidebarEvent::Navigate(_) | SidebarEvent::Select(_)))
         );
-        assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.as_ref() == "East is unavailable")));
+        assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.resolve().as_ref() == "East is unavailable")));
     }
 
     /// A task's rename ends when its field loses focus or the pointer
@@ -9353,8 +9436,8 @@ mod state_tests {
         });
         wait_until(&chat, cx, "invalid rename rejected", |this| {
             this.notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("128"))
+                .as_ref()
+                .is_some_and(|notice| notice.resolve().contains("128"))
         });
         chat.update(cx, |this, cx| {
             assert!(!this.sidebar.read(cx).project_rename_pending(&root));
@@ -10164,8 +10247,8 @@ mod state_tests {
             assert!(this.draft_attachments.is_empty());
             assert!(
                 this.notice
-                    .as_deref()
-                    .is_some_and(|notice| notice.contains("not a PNG, JPEG, or WebP"))
+                    .as_ref()
+                    .is_some_and(|notice| notice.resolve().contains("not a PNG, JPEG, or WebP"))
             );
         });
     }
@@ -10182,8 +10265,8 @@ mod state_tests {
             assert_eq!(this.draft_attachments.len(), MAX_DRAFT_ATTACHMENTS);
             assert!(
                 this.notice
-                    .as_deref()
-                    .is_some_and(|notice| notice.contains("at most"))
+                    .as_ref()
+                    .is_some_and(|notice| notice.resolve().contains("at most"))
             );
         });
     }
@@ -11565,8 +11648,9 @@ mod state_tests {
             "shell status remains visible on a collapsed card"
         );
         chat.read_with(cx, |chat, _| {
-            let status =
-                super::super::transcript::shell_execution_status(&chat.timeline[0]).unwrap();
+            let status = super::super::transcript::shell_execution_status(&chat.timeline[0])
+                .unwrap()
+                .replace(['\u{2068}', '\u{2069}'], "");
             assert!(status.contains("/fixture/worktree"));
             assert!(status.contains("Running 65s"));
             assert!(status.contains("no output for 60s"));
@@ -11890,6 +11974,7 @@ mod state_tests {
                         chat.notice
                             .as_ref()
                             .unwrap()
+                            .resolve()
                             .contains("may have taken effect")
                     );
                 }
@@ -12359,8 +12444,9 @@ mod state_tests {
                     assert_eq!(this.timeline.len(), 1, "no invented history");
                     assert!(
                         this.notice
-                            .as_deref()
+                            .as_ref()
                             .unwrap()
+                            .resolve()
                             .starts_with("Skill not sent")
                     );
                 }
@@ -12583,7 +12669,8 @@ mod state_tests {
             // The isolated backend deliberately has no running agent. Wait
             // for that exact outcome rather than racing its fast callback.
             wait_until(&chat, cx, "first create rejection", |this| {
-                this.notice.as_deref() == Some("Agent runtime is not running")
+                this.notice.as_ref().map(UiText::resolve).as_deref()
+                    == Some("Agent runtime is not running")
             });
             chat.update(cx, |this, cx| {
                 assert!(this.pending_first_send.is_none());

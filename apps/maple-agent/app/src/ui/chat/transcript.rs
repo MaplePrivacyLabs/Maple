@@ -15,6 +15,7 @@ use super::cache::{MAX_DIFF_LINES, MarkdownKind};
 use super::speech::speak_message_button;
 use super::{CONTENT_WIDTH, ChatScreen, QuestionSelection, TranscriptCtx};
 
+use crate::ui::i18n::{MessageCache, tr, tr_args};
 use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
 use crate::ui::motion;
@@ -67,6 +68,7 @@ impl ChatScreen {
                         view: Some(window.current_view()),
                     };
                     let transcript = TranscriptCtx {
+                        messages: &chat.messages,
                         markdown_cache: &chat.markdown_cache,
                         derived: &chat.derived,
                         attachment_images: &chat.attachment_images,
@@ -95,7 +97,7 @@ impl ChatScreen {
                             )))
                             .text_xs()
                             .mt_2()
-                            .child("Show full output")
+                            .child(tr("chat-full-output"))
                             .on_click(move |_, _, cx| {
                                 if let Some(chat) = target.upgrade() {
                                     chat.update(cx, |chat, cx| chat.expand_paged_row(&id, cx));
@@ -157,7 +159,7 @@ impl ChatScreen {
         div()
             .id("transcript")
             .role(gpui::Role::Log)
-            .aria_label("Conversation")
+            .aria_label(tr("chat-conversation"))
             .key_context("Transcript")
             .when_some(self.transcript_focus.clone(), |div, focus| {
                 div.track_focus(&focus)
@@ -192,9 +194,9 @@ impl ChatScreen {
                         .my_1()
                         .text_xs()
                         .child(if self.pages.loading {
-                            "Loading history…"
+                            tr("chat-history-loading")
                         } else {
-                            "Load older messages"
+                            tr("chat-history-older")
                         })
                         .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(true, cx))),
                 )
@@ -232,7 +234,7 @@ impl ChatScreen {
                         .mx_6()
                         .my_1()
                         .text_xs()
-                        .child("Load newer messages")
+                        .child(tr("chat-history-newer"))
                         .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(false, cx))),
                 )
             })
@@ -249,11 +251,11 @@ impl ChatScreen {
                         .gap_2()
                         .text_xs()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child("Additional live activity is outside this view")
+                        .child(tr("chat-activity-outside"))
                         .child(
                             widgets::secondary_button("live-reload-latest")
                                 .text_xs()
-                                .child("Reload latest")
+                                .child(tr("chat-reload-latest"))
                                 .on_click(
                                     cx.listener(|chat, _, _, cx| chat.reload_paged_latest(cx)),
                                 ),
@@ -337,7 +339,7 @@ impl ChatScreen {
                         cx.notify();
                     }))
                     .child(icon("chevron-down", px(12.), theme::text_secondary()))
-                    .child("Jump to latest"),
+                    .child(tr("chat-jump-latest")),
                 "jump-to-latest-reveal",
             ))
     }
@@ -350,11 +352,11 @@ pub(super) fn render_timeline_item(
     transcript: &TranscriptCtx,
 ) -> gpui::AnyElement {
     let item_id = item.id.clone();
-    let (role, label): (Option<gpui::Role>, Option<&'static str>) = match item.item_type.as_str() {
+    let (role, label): (Option<gpui::Role>, Option<SharedString>) = match item.item_type.as_str() {
         "message" if item.role.as_deref() == Some("user") => {
-            (Some(gpui::Role::Article), Some("You"))
+            (Some(gpui::Role::Article), Some(tr("chat-you")))
         }
-        "message" => (Some(gpui::Role::Article), Some("Maple")),
+        "message" => (Some(gpui::Role::Article), Some("Maple".into())),
         "error" => (Some(gpui::Role::Alert), None),
         _ => (None, None),
     };
@@ -475,15 +477,43 @@ fn copy_message_button(
 
 /// When a message was sent, revealed beside its actions on hover: the
 /// clock for today, otherwise the date too.
-fn timestamp_label(item: &AgentTimelineItem, group: &SharedString) -> Div {
+fn timestamp_label(item: &AgentTimelineItem, group: &SharedString, messages: &MessageCache) -> Div {
     let sent = chrono::DateTime::<chrono::Local>::from(
         std::time::UNIX_EPOCH + std::time::Duration::from_millis(item.created_ms as u64),
     );
-    let text = if sent.date_naive() == chrono::Local::now().date_naive() {
-        sent.format("%H:%M").to_string()
-    } else {
-        sent.format("%b %-d, %H:%M").to_string()
-    };
+    let today = chrono::Local::now().date_naive();
+    let text = messages.computed(
+        "chat-timestamp",
+        &format!("{}:{today}", item.created_ms),
+        || {
+            if sent.date_naive() == today {
+                return sent.format("%H:%M").to_string().into();
+            }
+            let month = tr(match chrono::Datelike::month(&sent) {
+                1 => "chat-month-1",
+                2 => "chat-month-2",
+                3 => "chat-month-3",
+                4 => "chat-month-4",
+                5 => "chat-month-5",
+                6 => "chat-month-6",
+                7 => "chat-month-7",
+                8 => "chat-month-8",
+                9 => "chat-month-9",
+                10 => "chat-month-10",
+                11 => "chat-month-11",
+                12 => "chat-month-12",
+                _ => unreachable!("chrono month"),
+            });
+            messages.get(
+                "chat-message-date",
+                [
+                    ("month", month.to_string().into()),
+                    ("day", chrono::Datelike::day(&sent).into()),
+                    ("time", sent.format("%H:%M").to_string().into()),
+                ],
+            )
+        },
+    );
     div()
         .text_xs()
         .text_color(gpui::rgb(theme::text_faint()))
@@ -601,7 +631,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                                                     div()
                                                         .text_color(gpui::rgb(theme::text_muted()))
                                                         .child(if unavailable {
-                                                            SharedString::from("Image unavailable")
+                                                            tr("chat-image-unavailable")
                                                         } else {
                                                             attachment.detail.clone()
                                                         }),
@@ -624,7 +654,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(timestamp_label(item, &group))
+                    .child(timestamp_label(item, &group, transcript.messages))
                     .children(copy),
             )
     } else {
@@ -658,7 +688,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                             chat.clone(),
                         ))
                     })
-                    .child(timestamp_label(item, &group))
+                    .child(timestamp_label(item, &group, transcript.messages))
             }))
     }
 }
@@ -675,7 +705,7 @@ fn render_thinking(
             div()
                 .text_color(gpui::rgb(theme::status_running()))
                 .text_sm()
-                .child("Thinking…"),
+                .child(tr("chat-thinking")),
         );
     }
     let item_id = item.id.clone();
@@ -685,7 +715,7 @@ fn render_thinking(
         .tool_summaries
         .get(&item.id)
         .cloned()
-        .unwrap_or_else(|| SharedString::from("Thinking"));
+        .unwrap_or_else(|| tr("chat-thinking-title"));
     // Only the header toggles, so clicks in the body still select text.
     let header = div()
         .id(gpui::SharedString::from(format!(
@@ -753,12 +783,12 @@ fn render_thinking(
     )
 }
 
-fn tool_status_style(status: Option<&str>) -> (&'static str, u32) {
+fn tool_status_style(status: Option<&str>) -> (SharedString, u32) {
     match status {
-        Some("completed") => ("completed", theme::status_success()),
-        Some("failed") | Some("error") => ("failed", theme::status_error()),
-        Some("cancelled") => ("stopped", theme::text_muted()),
-        _ => ("running", theme::status_running()),
+        Some("completed") => (tr("chat-status-completed"), theme::status_success()),
+        Some("failed") | Some("error") => (tr("chat-status-failed"), theme::status_error()),
+        Some("cancelled") => (tr("chat-status-stopped"), theme::text_muted()),
+        _ => (tr("chat-status-running"), theme::status_running()),
     }
 }
 
@@ -882,7 +912,11 @@ fn render_finished_plan(
         .id(SharedString::from(format!("plan-toggle-{item_id}")))
         .debug_selector(|| "plan-row".to_string())
         .role(gpui::Role::DisclosureTriangle)
-        .aria_label(SharedString::from(format!("Plan, {count} done")))
+        .aria_label(
+            transcript
+                .messages
+                .get("chat-plan-done", [("count", count.clone().into())]),
+        )
         .aria_expanded(details)
         .flex()
         .flex_col()
@@ -913,7 +947,7 @@ fn render_finished_plan(
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(gpui::rgb(theme::text_primary()))
-                        .child("Plan"),
+                        .child(tr("chat-plan")),
                 )
                 .child(
                     div()
@@ -981,7 +1015,7 @@ pub(super) fn render_subagent_row(
                 .flex_none()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child("background"),
+                .child(tr("chat-background")),
         );
     }
     let row = row
@@ -996,7 +1030,7 @@ pub(super) fn render_subagent_row(
                     subagent
                         .activity
                         .clone()
-                        .unwrap_or_else(|| SharedString::new_static("Starting")),
+                        .unwrap_or_else(|| tr("chat-starting-agent")),
                 ),
         )
         .child(
@@ -1023,7 +1057,7 @@ pub(super) fn render_subagent_row(
             .cursor_pointer()
             .hover(|style| style.border_color(gpui::rgb(theme::border())))
             .on_click(on_stop)
-            .child("Stop"),
+            .child(tr("chat-stop")),
     )
 }
 
@@ -1410,8 +1444,11 @@ fn render_external_agent_activity(
         meta.push_str(error);
     }
     if let Some(pending) = &activity.pending_permission {
-        meta.push_str(" · waiting for you to ");
-        meta.push_str(pending);
+        meta.push_str(" · ");
+        meta.push_str(&transcript.messages.get(
+            "chat-external-permission",
+            [("action", pending.clone().into())],
+        ));
     }
     body = body.child(div().text_xs().text_color(muted).child(meta));
     if !activity.text.trim().is_empty() {
@@ -1432,13 +1469,18 @@ fn render_external_agent_activity(
         let mut list = div().flex().flex_col().gap_0p5();
         for command in &activity.commands {
             let (label, color) = match command.status.as_str() {
-                "running" => ("running", theme::status_running()),
-                "failed" => ("failed", theme::status_error()),
-                _ => ("done", theme::status_success()),
+                "running" => (tr("chat-status-running"), theme::status_running()),
+                "failed" => (tr("chat-status-failed"), theme::status_error()),
+                _ => (tr("chat-status-done"), theme::status_success()),
             };
             let exit = command
                 .exit_code
-                .map(|code| format!(" (exit {code})"))
+                .map(|code| {
+                    transcript
+                        .messages
+                        .get("chat-command-exit", [("code", code.into())])
+                        .to_string()
+                })
                 .unwrap_or_default();
             list = list.child(
                 div()
@@ -1459,7 +1501,7 @@ fn render_external_agent_activity(
             );
         }
         body = body
-            .child(div().text_xs().text_color(muted).child("Commands"))
+            .child(div().text_xs().text_color(muted).child(tr("chat-commands")))
             .child(list);
     }
     if !activity.file_changes.is_empty() {
@@ -1475,7 +1517,7 @@ fn render_external_agent_activity(
             );
         }
         body = body
-            .child(div().text_xs().text_color(muted).child("Files"))
+            .child(div().text_xs().text_color(muted).child(tr("chat-files")))
             .child(list);
     }
     if !activity.todos.is_empty() {
@@ -1491,7 +1533,7 @@ fn render_external_agent_activity(
             }));
         }
         body = body
-            .child(div().text_xs().text_color(muted).child("Plan"))
+            .child(div().text_xs().text_color(muted).child(tr("chat-plan")))
             .child(list);
     }
     body
@@ -1521,12 +1563,21 @@ pub(super) fn shell_execution_status(item: &AgentTimelineItem) -> Option<String>
         .get("timeoutSeconds")
         .and_then(serde_json::Value::as_f64)
         .map_or_else(
-            || "no deadline".to_string(),
-            |seconds| format!("deadline {seconds}s"),
+            || tr("chat-shell-no-deadline").to_string(),
+            |seconds| tr_args("chat-shell-deadline", [("seconds", seconds.into())]).to_string(),
         );
-    Some(format!(
-        "Started in {cwd}\nRunning {elapsed}s · no output for {idle}s · {deadline} · Stop cancels command"
-    ))
+    Some(
+        tr_args(
+            "chat-shell-status",
+            [
+                ("cwd", cwd.into()),
+                ("elapsed", elapsed.into()),
+                ("idle", idle.into()),
+                ("deadline", deadline.into()),
+            ],
+        )
+        .to_string(),
+    )
 }
 
 fn extract_output_text(value: &serde_json::Value) -> Option<String> {
@@ -1586,7 +1637,7 @@ fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
                     let button_id = button_id.clone();
                     move || button_id.clone()
                 })
-                .child("Open Billing")
+                .child(tr("chat-billing-open"))
                 .on_click(move |_event, _window, cx| {
                     cx.stop_propagation();
                     let Some(chat) = chat.upgrade() else {
@@ -1605,11 +1656,11 @@ fn render_permission_row(item: &AgentTimelineItem) -> Div {
     let title = item
         .title
         .clone()
-        .unwrap_or_else(|| "Input requested".to_string());
+        .unwrap_or_else(|| tr("chat-input-requested").to_string());
     let status = match item.status.as_deref() {
-        Some("completed") => ("allowed", theme::status_success()),
-        Some("denied") | Some("cancelled") => ("denied", theme::text_muted()),
-        _ => ("waiting", theme::status_warning()),
+        Some("completed") => (tr("chat-status-allowed"), theme::status_success()),
+        Some("denied") | Some("cancelled") => (tr("chat-status-denied"), theme::text_muted()),
+        _ => (tr("chat-status-waiting"), theme::status_warning()),
     };
     div()
         .flex()
@@ -1656,6 +1707,7 @@ pub(super) fn render_question_card(
     collapsed: bool,
     input: Option<Entity<TextInput>>,
     selected: &HashMap<usize, QuestionSelection>,
+    messages: &MessageCache,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
     let mut card = div()
@@ -1683,7 +1735,7 @@ pub(super) fn render_question_card(
         .id("question-card-header")
         .debug_selector(|| "question-card-header".to_string())
         .role(gpui::Role::DisclosureTriangle)
-        .aria_label("Question from Maple")
+        .aria_label(tr("chat-question-label"))
         .aria_expanded(!collapsed)
         .flex()
         .items_center()
@@ -1707,7 +1759,7 @@ pub(super) fn render_question_card(
                 .flex_none()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::rgb(theme::text_primary()))
-                .child("Question from Maple"),
+                .child(tr("chat-question-label")),
         )
         .when_some(
             collapsed
@@ -1749,10 +1801,12 @@ pub(super) fn render_question_card(
                 div()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(format!(
-                        "Question {} of {}",
-                        step + 1,
-                        question.questions.len()
+                    .child(messages.get(
+                        "chat-question-position",
+                        [
+                            ("position", (step + 1).into()),
+                            ("count", question.questions.len().into()),
+                        ],
                     )),
             );
         }
@@ -1775,9 +1829,9 @@ pub(super) fn render_question_card(
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(if has_more {
-                        "Select all that apply, then choose Next."
+                        tr("chat-question-next-hint")
                     } else {
-                        "Select all that apply, then choose Answer."
+                        tr("chat-question-answer-hint")
                     }),
             );
         }
@@ -1871,7 +1925,11 @@ pub(super) fn render_question_card(
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.submit_question(cx);
                         }))
-                        .child(if has_more { "Next" } else { "Answer" }),
+                        .child(if has_more {
+                            tr("chat-next")
+                        } else {
+                            tr("chat-answer")
+                        }),
                 ),
         );
     }
@@ -1894,7 +1952,7 @@ pub(super) fn render_question_card(
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.skip_question(cx);
             }))
-            .child("Skip (Esc)"),
+            .child(tr("chat-skip")),
     )
 }
 
@@ -1906,7 +1964,7 @@ pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
     div()
         .id("waiting-indicator")
         .role(gpui::Role::Status)
-        .aria_label("Maple is thinking")
+        .aria_label(tr("chat-thinking-label"))
         .flex()
         .items_center()
         .gap_2()
@@ -1930,6 +1988,6 @@ pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child("Maple is thinking"),
+                .child(tr("chat-thinking-label")),
         )
 }

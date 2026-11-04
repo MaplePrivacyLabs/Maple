@@ -51,3 +51,104 @@ where
         this.update(cx, |this, cx| then(this, result, cx)).ok();
     })
 }
+
+/// Local task completion retains cancellation separately from backend diagnostics.
+/// Only the UI thread turns this data into locale-dependent presentation.
+#[derive(Debug)]
+pub(crate) enum Failure {
+    Cancelled(&'static str),
+    Backend(String),
+}
+
+impl Failure {
+    pub(crate) fn context(self, key: &'static str) -> super::i18n::UiText {
+        match self {
+            Self::Cancelled(cancelled) => super::i18n::UiText::key(cancelled),
+            Self::Backend(error) => super::i18n::UiText::message(key, [("error", error.into())]),
+        }
+    }
+}
+
+impl From<Failure> for super::i18n::UiText {
+    fn from(failure: Failure) -> Self {
+        match failure {
+            Failure::Cancelled(key) => Self::key(key),
+            Failure::Backend(error) => error.into(),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(error: String) -> Self {
+        Self::Backend(error)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(error: &str) -> Self {
+        Self::Backend(error.to_owned())
+    }
+}
+
+pub(crate) fn completion<T>(
+    result: Result<Result<T, String>, tokio::task::JoinError>,
+    cancelled: &'static str,
+) -> Result<T, Failure> {
+    match result {
+        Ok(result) => result.map_err(Failure::Backend),
+        Err(error) => {
+            log::debug!("backend task failed: {error:?}");
+            Err(Failure::Cancelled(cancelled))
+        }
+    }
+}
+
+/// Semantic counterpart to `call` for UI consumers. Legacy callers that use
+/// raw errors for recovery retain their existing String contract.
+pub(crate) fn call_semantic<V, T, F>(
+    backend: &AgentBackend,
+    future: F,
+    cancelled: &'static str,
+    cx: &mut Context<V>,
+    then: impl FnOnce(&mut V, Result<T, Failure>, &mut Context<V>) + 'static,
+) -> Task<()>
+where
+    V: 'static,
+    T: Send + 'static,
+    F: Future<Output = Result<T, String>> + Send + 'static,
+{
+    let task = backend.spawn(future);
+    cx.spawn(async move |this, cx| {
+        let result = completion(task.await, cancelled);
+        this.update(cx, |this, cx| then(this, result, cx)).ok();
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::i18n::{TestLocalizationGuard, UiText, apply_preference};
+
+    #[tokio::test]
+    async fn cancellation_reformats_but_backend_diagnostic_stays_raw() {
+        let _locale = TestLocalizationGuard::enable();
+        let task = tokio::spawn(std::future::pending::<Result<(), String>>());
+        task.abort();
+        let cancelled: UiText = completion(task.await, "chat-task-cancelled")
+            .unwrap_err()
+            .into();
+        let backend: UiText =
+            completion::<()>(Ok(Err("Provider diagnostic".into())), "chat-task-cancelled")
+                .unwrap_err()
+                .into();
+        for (locale, expected) in [
+            ("en", "The task was cancelled"),
+            ("es", "La tarea se canceló"),
+            ("en", "The task was cancelled"),
+        ] {
+            apply_preference(Some(locale));
+            assert_eq!(cancelled.resolve().as_ref(), expected);
+            assert_eq!(backend.resolve().as_ref(), "Provider diagnostic");
+        }
+    }
+}

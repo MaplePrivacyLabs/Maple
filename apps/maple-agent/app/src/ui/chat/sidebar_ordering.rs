@@ -320,9 +320,9 @@ impl Sidebar {
             if !order_fits(&self.order) {
                 self.order = previous;
                 self.rebuild_order_ranks();
-                cx.emit(SidebarEvent::Notice(
-                    "This sidebar order is too large to save".into(),
-                ));
+                cx.emit(SidebarEvent::Notice(UiText::key(
+                    "chat-sidebar-order-too-large",
+                )));
                 return;
             }
             self.save_order(cx);
@@ -815,9 +815,9 @@ impl Sidebar {
             self.order = previous_order;
             self.view = previous_view;
             self.rebuild_order_ranks();
-            cx.emit(SidebarEvent::Notice(
-                "This sidebar order is too large to save".into(),
-            ));
+            cx.emit(SidebarEvent::Notice(UiText::key(
+                "chat-sidebar-order-too-large",
+            )));
             return;
         }
         // Every accepted move refreshes the display indexes, including project

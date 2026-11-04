@@ -1133,13 +1133,28 @@ impl Sidebar {
             .my_1()
             .text_xs()
             .on_click(cx.listener(move |this, _event, _window, cx| this.load_page(kind, cx)))
-            .child(if loading {
-                format!("Loading {}…", kind.label())
-            } else if self.pages.failed.contains(&kind) {
-                format!("Retry {}", kind.label())
-            } else {
-                format!("Load more {}", kind.label())
-            })
+            .child(tr(
+                match (kind, loading, self.pages.failed.contains(&kind)) {
+                    (PageKind::Pinned, true, _) => "chat-page-pinned-loading",
+                    (PageKind::Pinned, false, true) => "chat-page-pinned-retry",
+                    (PageKind::Pinned, false, false) => "chat-page-pinned-more",
+                    (PageKind::Active, true, _) => "chat-page-active-loading",
+                    (PageKind::Active, false, true) => "chat-page-active-retry",
+                    (PageKind::Active, false, false) => "chat-page-active-more",
+                    (PageKind::Settled, true, _) => "chat-page-settled-loading",
+                    (PageKind::Settled, false, true) => "chat-page-settled-retry",
+                    (PageKind::Settled, false, false) => "chat-page-settled-more",
+                    (PageKind::Archived, true, _) => "chat-page-archived-loading",
+                    (PageKind::Archived, false, true) => "chat-page-archived-retry",
+                    (PageKind::Archived, false, false) => "chat-page-archived-more",
+                    (PageKind::Search, true, _) => "chat-page-search-loading",
+                    (PageKind::Search, false, true) => "chat-page-search-retry",
+                    (PageKind::Search, false, false) => "chat-page-search-more",
+                    (PageKind::Projects, true, _) => "chat-page-projects-loading",
+                    (PageKind::Projects, false, true) => "chat-page-projects-retry",
+                    (PageKind::Projects, false, false) => "chat-page-projects-more",
+                },
+            ))
             .into_any_element()
     }
 

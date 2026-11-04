@@ -1,6 +1,7 @@
 //! Explicitly submitted feedback. Drafts never enter chat history.
 use super::ChatScreen;
 use crate::feedback::{self, Submission};
+use crate::ui::i18n::{MessageCache, UiText, tr};
 use crate::ui::{text_input::TextInput, theme, widgets};
 use gpui::{Context, Div, Entity, Focusable, Window, div, prelude::*, px};
 
@@ -8,8 +9,9 @@ pub(super) struct FeedbackForm {
     pub(super) input: Entity<TextInput>,
     category: &'static str,
     request: Option<Submission>,
+    messages: MessageCache,
     busy: bool,
-    error: Option<String>,
+    error: Option<UiText>,
     focus_pending: bool,
     controls: Vec<gpui::FocusHandle>,
 }
@@ -24,7 +26,7 @@ impl ChatScreen {
         let owner = cx.entity().downgrade();
         let escape = owner.clone();
         let input = cx.new(|cx| {
-            TextInput::new("What would you like us to know?", cx)
+            TextInput::localized("chat-feedback-placeholder", cx)
                 .application_vim(self.application_vim_enabled)
                 .on_application_escape(move |window, cx| {
                     let escape = escape.clone();
@@ -62,6 +64,7 @@ impl ChatScreen {
             input,
             category: "other",
             request: None,
+            messages: MessageCache::default(),
             busy: false,
             error: None,
             focus_pending: true,
@@ -123,10 +126,18 @@ impl ChatScreen {
         if form.busy {
             return;
         }
-        let candidate = match Submission::new(form.category, &form.input.read(cx).text()) {
+        let text = form.input.read(cx).text();
+        let length = text.trim().encode_utf16().count();
+        if length == 0 || length > feedback::MAX_MESSAGE {
+            form.error = Some(UiText::key("chat-feedback-invalid-length"));
+            form.focus_pending = true;
+            cx.notify();
+            return;
+        }
+        let candidate = match Submission::new(form.category, &text) {
             Ok(candidate) => candidate,
             Err(error) => {
-                form.error = Some(error);
+                form.error = Some(error.into());
                 form.focus_pending = true;
                 cx.notify();
                 return;
@@ -144,7 +155,7 @@ impl ChatScreen {
         self.dialog_focus.get_or_insert_with(|| cx.focus_handle());
         self.dialog_focus_pending = true;
         cx.notify();
-        self.call(
+        self.call_semantic(
             async move { feedback::submit(&request).await },
             cx,
             |this, result, cx| {
@@ -153,11 +164,11 @@ impl ChatScreen {
                     match result {
                         Ok(()) => {
                             this.feedback = None;
-                            this.notice = Some("Thanks for your feedback!".into());
+                            this.notice = Some(UiText::key("chat-feedback-thanks"));
                             this.screen_focus_pending = true;
                         }
                         Err(error) => {
-                            form.error = Some(error);
+                            form.error = Some(error.into());
                             form.focus_pending = true;
                         }
                     }
@@ -170,13 +181,18 @@ impl ChatScreen {
         let form = self.feedback.as_ref()?;
         let busy = form.busy;
         let mut categories = div().flex().gap_2();
-        for (index, (value, label)) in [("bug", "Bug"), ("idea", "Idea"), ("other", "Other")]
-            .into_iter()
-            .enumerate()
+        for (index, (value, label)) in [
+            ("bug", "chat-feedback-bug"),
+            ("idea", "chat-feedback-idea"),
+            ("other", "chat-feedback-other"),
+        ]
+        .into_iter()
+        .enumerate()
         {
+            let label = tr(label);
             categories = categories.child(
                 widgets::secondary_button(value)
-                    .aria_label(label)
+                    .aria_label(label.clone())
                     .track_focus(&form.controls[index + 1])
                     .text_sm()
                     .py_1()
@@ -202,41 +218,135 @@ impl ChatScreen {
             );
         }
         let length = form.input.read(cx).text_ref().encode_utf16().count();
-        Some(div().id("feedback-backdrop").absolute().inset_0().occlude()
-            .bg(theme::scrim()).flex().items_center().justify_center()
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().id("feedback-form").role(gpui::Role::Dialog).aria_label("Send feedback")
-                .key_context("Dialog")
-                .when_some(self.dialog_focus.clone(), |card, focus| card.track_focus(&focus))
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                    match event.keystroke.key.as_str() {
-                        "escape" => { this.close_feedback(cx); cx.stop_propagation(); }
-                        "tab" => { this.feedback_tab(event.keystroke.modifiers.shift, window, cx); cx.stop_propagation(); }
-                        _ => {}
-                    }
-                }))
-                .w(px(460.)).max_w(gpui::relative(0.95)).max_h(gpui::relative(0.9))
-                .overflow_y_scroll().p_5().rounded(theme::RADIUS_XL).shadow_lg()
-                .bg(gpui::rgb(theme::bg_elevated())).border_1().border_color(gpui::rgb(theme::border()))
-                .flex().flex_col().gap_3().text_color(gpui::rgb(theme::text_primary()))
-                .child(div().text_lg().child("Send feedback"))
-                .child(categories)
-                .child(widgets::input_frame().min_h(px(120.)).child(
-                    if busy { div().text_sm().child("Sending your feedback…").into_any_element() }
-                    else { form.input.clone().into_any_element() }
-                ))
-                .child(div().text_xs().text_color(gpui::rgb(theme::text_secondary())).child(format!("{length} / 5,000 · Shift+Enter for a new line")))
-                .child(div().text_xs().text_color(gpui::rgb(theme::text_secondary())).child("Sent anonymously with app version, platform and build profile. No account or chat history is attached. Please avoid sharing sensitive information."))
-                .when_some(form.error.clone(), |card, error| card.child(widgets::banner(theme::status_error()).child(error)))
-                .child(div().flex().justify_end().gap_2()
-                    .child(widgets::secondary_button("feedback-cancel").aria_label("Cancel feedback").track_focus(&form.controls[4]).child("Cancel")
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { this.close_feedback(cx); cx.stop_propagation(); } }))
-                        .when(busy, |b| b.opacity(0.5))
-                        .on_click(cx.listener(|this, _, _, cx| this.close_feedback(cx))))
-                    .child(widgets::primary_button("feedback-submit").aria_label("Send feedback").debug_selector(|| "feedback-submit".into()).track_focus(&form.controls[5])
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { this.submit_feedback(cx); cx.stop_propagation(); } }))
-                        .when(busy, |b| b.opacity(0.5)).child(if busy { "Sending…" } else { "Send feedback" })
-                        .on_click(cx.listener(|this, _, _, cx| this.submit_feedback(cx)))))
-            ))
+        Some(
+            div()
+                .id("feedback-backdrop")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .id("feedback-form")
+                        .role(gpui::Role::Dialog)
+                        .aria_label(tr("chat-feedback-send"))
+                        .key_context("Dialog")
+                        .when_some(self.dialog_focus.clone(), |card, focus| {
+                            card.track_focus(&focus)
+                        })
+                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                            match event.keystroke.key.as_str() {
+                                "escape" => {
+                                    this.close_feedback(cx);
+                                    cx.stop_propagation();
+                                }
+                                "tab" => {
+                                    this.feedback_tab(event.keystroke.modifiers.shift, window, cx);
+                                    cx.stop_propagation();
+                                }
+                                _ => {}
+                            }
+                        }))
+                        .w(px(460.))
+                        .max_w(gpui::relative(0.95))
+                        .max_h(gpui::relative(0.9))
+                        .overflow_y_scroll()
+                        .p_5()
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(div().text_lg().child(tr("chat-feedback-send")))
+                        .child(categories)
+                        .child(widgets::input_frame().min_h(px(120.)).child(if busy {
+                            div()
+                                .text_sm()
+                                .child(tr("chat-feedback-sending"))
+                                .into_any_element()
+                        } else {
+                            form.input.clone().into_any_element()
+                        }))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(
+                                    form.messages
+                                        .get("chat-feedback-length", [("length", length.into())]),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(tr("chat-feedback-privacy")),
+                        )
+                        .when_some(form.error.clone(), |card, error| {
+                            card.child(widgets::banner(theme::status_error()).child(error))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    widgets::secondary_button("feedback-cancel")
+                                        .aria_label(tr("chat-feedback-cancel-label"))
+                                        .track_focus(&form.controls[4])
+                                        .child(tr("chat-feedback-cancel"))
+                                        .on_key_down(cx.listener(
+                                            |this, event: &gpui::KeyDownEvent, _, cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                ) {
+                                                    this.close_feedback(cx);
+                                                    cx.stop_propagation();
+                                                }
+                                            },
+                                        ))
+                                        .when(busy, |b| b.opacity(0.5))
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.close_feedback(cx)),
+                                        ),
+                                )
+                                .child(
+                                    widgets::primary_button("feedback-submit")
+                                        .aria_label(tr("chat-feedback-send"))
+                                        .debug_selector(|| "feedback-submit".into())
+                                        .track_focus(&form.controls[5])
+                                        .on_key_down(cx.listener(
+                                            |this, event: &gpui::KeyDownEvent, _, cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                ) {
+                                                    this.submit_feedback(cx);
+                                                    cx.stop_propagation();
+                                                }
+                                            },
+                                        ))
+                                        .when(busy, |b| b.opacity(0.5))
+                                        .child(if busy {
+                                            tr("chat-feedback-busy")
+                                        } else {
+                                            tr("chat-feedback-send")
+                                        })
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.submit_feedback(cx)),
+                                        ),
+                                ),
+                        ),
+                ),
+        )
     }
 }
