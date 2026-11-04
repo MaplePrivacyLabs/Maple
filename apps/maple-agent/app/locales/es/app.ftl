@@ -925,3 +925,96 @@ settings-editors-zed-help = Abre Agent Settings, ve a External Agents, haz clic 
 settings-editors-jetbrains-help = En la ventana AI Chat, abre el menú … y elige Add Custom Agent. Agrega esta configuración en agent_servers en el archivo que se abre y selecciona { $name } en AI Chat.
 settings-local-api-checking = Comprobando…
 settings-local-api-unavailable = No disponible
+
+## Native desktop, menus, and shared controls
+
+native-edit = Editar
+native-undo = Deshacer
+native-redo = Rehacer
+native-cut = Cortar
+native-copy = Copiar
+native-paste = Pegar
+native-select-all = Seleccionar todo
+native-task = Tarea
+native-new-task = Nueva tarea
+native-search-tasks = Buscar tareas
+native-next-task = Siguiente tarea
+native-previous-task = Tarea anterior
+native-choose-project = Elegir proyecto…
+native-view = Ver
+native-toggle-sidebar = Mostrar u ocultar barra lateral
+native-show-archived = Mostrar tareas archivadas
+native-check-updates = Buscar actualizaciones…
+native-settings = Configuración…
+native-services = Servicios
+native-hide-others = Ocultar otras aplicaciones
+native-show-all = Mostrar todo
+# $app is the application display name.
+native-about = Acerca de { $app }
+# $app is the application display name.
+native-hide = Ocultar { $app }
+# $app is the application display name.
+native-quit = Salir de { $app }
+native-open-maple = Abrir Maple
+native-quit-maple = Salir de Maple
+native-remote-on = Maple — acceso remoto activado
+native-remote-off = Maple — acceso remoto desactivado
+native-store-resident = Maple — datos locales desbloqueados o en proceso de cambio
+native-add-dictionary = Agregar al diccionario
+native-this-computer = Esta computadora
+native-minimize = Minimizar
+native-maximize = Maximizar o restaurar
+native-close = Cerrar
+native-key-control = Ctrl
+native-key-alt = Alt
+native-key-shift = Mayús
+native-key-platform = Win
+native-key-escape = Esc
+native-key-space = Espacio
+native-key-pageup = Re Pág
+native-key-pagedown = Av Pág
+native-key-home = Inicio
+native-key-end = Fin
+native-save-failed = Maple no pudo guardar los datos locales
+native-store-attention = Los datos locales necesitan atención
+native-retry-saving = Reintentar guardado
+native-keep-viewing = Seguir viendo
+native-ok = Aceptar
+native-installed = Actualización instalada
+native-restart = Reiniciar Maple
+native-keep-open = Mantener abierto
+native-retry-quit = Reintentar salir
+native-stop-title = ¿Detener el host de Maple de esta computadora?
+native-still-open = Maple sigue abierto
+native-unknown-activity = El host no pudo informar su actividad. Al salir, Maple intentará detener los editores conectados, las tareas y las conexiones remotas, y esperará a que el host libere los datos locales.
+native-keep-open-title = ¿Mantener Maple abierto?
+native-no-tray = Este escritorio no tiene una bandeja disponible para volver a abrir Maple. Mantén esta ventana abierta mientras Maple tenga los datos locales desbloqueados, o sal de Maple para detener su host.
+native-signing-in = Iniciando sesión…
+native-stop-existing-title = ¿Detener el host de Maple que está en ejecución?
+native-stop-existing-detail = Esto detiene las tareas en ejecución y el acceso remoto de este perfil. Maple volverá a abrirse con esta compilación.
+native-cancel = Cancelar
+native-stop-reopen = Detener y volver a abrir
+native-startup-title = Maple no pudo iniciar
+native-stopping = Deteniendo…
+native-stop-existing = Detener el host actual y volver a abrir
+native-wait-stop = Mantén Maple abierto hasta que su host termine de detenerse. Los datos locales pueden permanecer desbloqueados mientras siga en ejecución.
+native-stopping-host = Deteniendo el host…
+native-retry-stop = Reintentar detener el host
+native-quit-not-stopped = Maple no ha terminado de detenerse. Los datos locales pueden seguir desbloqueados y las tareas pueden seguir activas. Mantén Maple abierto o vuelve a intentar salir.
+native-close-save-failed = Maple no pudo guardar la configuración antes de cerrar. Mantén Maple abierto y vuelve a intentarlo.
+native-close-state-failed = Maple no pudo verificar el estado de sus datos locales. Mantén esta ventana abierta y vuelve a intentarlo.
+native-stop-complete = El host de Maple se detuvo. Puedes cerrar Maple e intentar iniciarlo de nuevo.
+native-stop-unavailable = Maple no puede volver a intentar detener su host. Mantén este proceso abierto hasta que el host se haya detenido.
+# $error is an external diagnostic, preserved verbatim.
+native-stop-failed = Maple no pudo terminar de detener su host: { $error }. Mantén esta ventana abierta e intenta detener el host de nuevo antes de volver a iniciar Maple.
+# $error is an external diagnostic, preserved verbatim.
+native-restart-failed = No se pudo reiniciar Maple: { $error }
+# Counts of tasks, attached editors, remote controllers, background jobs, and API requests.
+native-quit-activity = Al salir, Maple detiene las tareas en ejecución ({ $tasks }), los editores conectados ({ $editors }), los controladores remotos ({ $controllers }) y los trabajos en segundo plano ({ $jobs }). También detiene la API local de esta computadora y sus solicitudes activas ({ $requests }). Maple espera a que terminen antes de cerrar.
+# $version is the app version; $status is the localized updater status.
+native-about-details = Versión { $version }
+    { $status }
+native-disk-full-unopened = El disco está lleno y Maple no pudo abrir sus datos locales. Libera espacio en el disco, sal de Maple y vuelve a abrirlo. Después, desbloquea los datos si se te solicita.
+native-disk-full-open = El disco está lleno. No se pudieron guardar los cambios recientes. Mantén Maple abierto, libera espacio en el disco y vuelve a intentar guardar.
+native-save-failed-open = No se pudieron guardar los cambios recientes. Mantén Maple abierto y vuelve a intentar guardar antes de salir.
+native-remote-update-required = Se requiere una actualización — selecciona para reintentar después de actualizar

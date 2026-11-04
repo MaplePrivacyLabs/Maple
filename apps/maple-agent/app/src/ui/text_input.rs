@@ -1898,7 +1898,7 @@ impl TextInput {
         let position = *self.popup.open_key()?;
         let has_selection = !self.selected_range.is_empty();
         let mut menu = Menu::new("text-input-menu", px(160.))
-            .label("Edit")
+            .label(super::i18n::tr("native-edit"))
             .application_vim(self.application_vim);
         if let Some((range, suggestions)) = &self.spell_menu {
             for (i, suggestion) in suggestions.iter().enumerate() {
@@ -1917,7 +1917,7 @@ impl TextInput {
             menu = menu
                 .item(MenuItem::new(
                     "text-input-add-word",
-                    "Add to dictionary",
+                    super::i18n::tr("native-add-dictionary"),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.spell_menu = None;
                         if let Some(word) = this.content.get(range.clone()) {
@@ -1930,7 +1930,7 @@ impl TextInput {
                 .separator();
         }
         let edit = |id: &'static str,
-                    label: &'static str,
+                    label: SharedString,
                     enabled: bool,
                     action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
             MenuItem::new(
@@ -1947,25 +1947,25 @@ impl TextInput {
         let menu = menu
             .item(edit(
                 "text-input-cut",
-                "Cut",
+                super::i18n::tr("native-cut"),
                 has_selection,
                 |this, window, cx| this.cut(&Cut, window, cx),
             ))
             .item(edit(
                 "text-input-copy",
-                "Copy",
+                super::i18n::tr("native-copy"),
                 has_selection,
                 |this, window, cx| this.copy(&Copy, window, cx),
             ))
             .item(edit(
                 "text-input-paste",
-                "Paste",
+                super::i18n::tr("native-paste"),
                 true,
                 |this, window, cx| this.paste(&Paste, window, cx),
             ))
             .item(edit(
                 "text-input-select-all",
-                "Select all",
+                super::i18n::tr("native-select-all"),
                 !self.content.is_empty(),
                 |this, window, cx| this.select_all(&SelectAll, window, cx),
             ));
@@ -4602,6 +4602,35 @@ fn localized_placeholder_follows_language_without_replacing_text(cx: &mut gpui::
         input.update(cx, |input, _| {
             assert_eq!(input.placeholder().as_ref(), expected);
             assert_eq!(input.text(), "typed value");
+        });
+    }
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn native_edit_menu_locale_switch_keeps_selection_and_clipboard_actions(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _locale = super::i18n::TestLocalizationGuard::enable();
+    let (input, cx) = cx.add_window_view(|_, cx| TextInput::new("", cx));
+    input.update(cx, |input, cx| {
+        input.set_text("user-owned text", cx);
+        input.selected_range = 0..10;
+    });
+    for locale in ["es", "en", "es"] {
+        super::i18n::apply_preference(Some(locale));
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.popup.open(gpui::point(px(20.), px(20.)), cx);
+                assert!(input.render_context_menu(window, cx).is_some());
+                assert_eq!(input.text_ref(), "user-owned text");
+                assert_eq!(input.selected_range, 0..10);
+                input.copy(&Copy, window, cx);
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("user-owned")
+                );
+            })
         });
     }
 }

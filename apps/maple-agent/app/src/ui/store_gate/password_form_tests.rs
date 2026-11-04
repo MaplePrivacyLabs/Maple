@@ -46,7 +46,10 @@ fn strong_matching_change_explains_missing_current_and_preserves_secrets(
         assert!(reason.to_lowercase().contains("current"));
 
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.as_ref())
+        );
         assert!(form.current.read(cx).is_empty());
         form.password
             .read(cx)
@@ -69,7 +72,10 @@ fn mismatch_has_specific_feedback_and_does_not_consume_any_field(cx: &mut gpui::
         assert!(!form.can_submit(cx));
 
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.as_ref())
+        );
         form.current
             .read(cx)
             .with_secret(|value| assert_eq!(value, CURRENT));
@@ -95,7 +101,10 @@ fn strong_password_requires_confirmation_with_an_explicit_reason(cx: &mut gpui::
             .expect("confirmation-required feedback");
         assert!(reason.to_lowercase().contains("confirm"));
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.as_ref())
+        );
         assert_no_submission(form);
     });
 }
@@ -117,7 +126,10 @@ fn weak_password_reports_strength_instead_of_silently_ignoring_save(cx: &mut gpu
                 || lower.contains("guess")
         );
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.as_ref())
+        );
         assert_no_submission(form);
     });
 }
@@ -136,7 +148,10 @@ fn an_overlength_password_reports_its_bound_before_confirmation(cx: &mut gpui::T
         let lower = reason.to_lowercase();
         assert!(lower.contains("long") || lower.contains("1024") || lower.contains("1,024"));
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason.as_ref()));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.as_ref())
+        );
         assert_eq!(form.password.read(cx).len_chars(), 1025);
         assert_no_submission(form);
     });
@@ -295,6 +310,8 @@ fn change_keyboard_navigation_and_save_explain_missing_current_without_consuming
         assert!(form.confirmation_matches);
         assert!(
             form.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .is_some_and(|message| message.contains("current"))
         );
@@ -327,6 +344,8 @@ fn change_keyboard_navigation_and_save_explain_missing_current_without_consuming
         let form = entity.read(app);
         assert!(
             form.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .is_some_and(|message| message.contains("current"))
         );
@@ -417,6 +436,8 @@ fn an_uncertain_generated_attempt_retains_the_phrase_but_blocks_resubmission(
         assert!(form.suggestion_retry_blocked);
         assert!(
             form.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .unwrap()
                 .contains("Keep this passphrase")
@@ -469,7 +490,12 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(gate.bridges.borrow().is_empty());
         assert!(
-            gate.message.as_deref().unwrap().contains("unlock password"),
+            gate.message
+                .as_ref()
+                .map(UiText::resolve)
+                .as_deref()
+                .unwrap()
+                .contains("unlock password"),
             "unexpected unlock feedback: {:?}",
             gate.message
         );
@@ -497,6 +523,8 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(
             gate.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .unwrap()
                 .contains("Type ERASE exactly")
@@ -510,6 +538,8 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(
             gate.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .unwrap()
                 .contains("Type ERASE exactly")

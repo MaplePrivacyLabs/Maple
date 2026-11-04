@@ -44,9 +44,13 @@ if __name__ == "__main__":
     with path.open("wb") as output:
         plistlib.dump(configured, output)
     # Localize presentation while retaining the debug bundle's installed name.
-    localized = path.parent / "Resources/en.lproj/InfoPlist.strings"
-    localized.parent.mkdir(parents=True, exist_ok=True)
-    localized.write_bytes(plistlib.dumps({
-        "CFBundleDisplayName": configured["CFBundleName"],
-        "CFBundleName": configured["CFBundleName"],
-    }))
+    for locale in configured["CFBundleLocalizations"]:
+        source = Path(__file__).resolve().parent.parent / "app/macos" / f"{locale}.lproj/InfoPlist.strings"
+        strings = plistlib.loads(source.read_bytes()) if source.exists() else {}
+        strings.update({
+            "CFBundleDisplayName": configured["CFBundleName"],
+            "CFBundleName": configured["CFBundleName"],
+        })
+        localized = path.parent / "Resources" / f"{locale}.lproj/InfoPlist.strings"
+        localized.parent.mkdir(parents=True, exist_ok=True)
+        localized.write_bytes(plistlib.dumps(strings))

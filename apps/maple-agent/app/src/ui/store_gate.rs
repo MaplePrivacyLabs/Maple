@@ -1,7 +1,7 @@
 //! Local-only store entry and password forms. These screens ask the host for
 //! lifecycle status before loading any account-owned application data.
 
-use super::i18n::tr;
+use super::i18n::{UiText, tr};
 use gpui::{
     Context, Entity, EventEmitter, Focusable, Render, Subscription, Window, div, prelude::*, px,
 };
@@ -116,7 +116,7 @@ pub struct StoreGate {
     bridges: RefCell<Vec<gpui::Task<()>>>,
     busy: bool,
     erase: bool,
-    message: Option<String>,
+    message: Option<UiText>,
     progress: OperationProgress,
     repair_progress: RepairProgress,
     progress_task: Option<gpui::Task<()>>,
@@ -126,7 +126,12 @@ pub struct StoreGate {
 impl EventEmitter<StoreGateChanged> for StoreGate {}
 
 impl StoreGate {
-    pub(crate) fn show_local_store_notice(&mut self, message: String, cx: &mut Context<Self>) {
+    pub(crate) fn show_local_store_notice(
+        &mut self,
+        message: impl Into<UiText>,
+        cx: &mut Context<Self>,
+    ) {
+        let message = message.into();
         if let Some(form) = &self.form {
             form.update(cx, |form, cx| form.show_local_store_notice(message, cx));
         } else {
@@ -259,7 +264,7 @@ impl StoreGate {
                 this.message = Some(match result {
                     Ok(true) => "Cancelling before the store is replaced…".into(),
                     Ok(false) => "The store is committing. Wait for it to finish.".into(),
-                    Err(message) => message,
+                    Err(message) => message.into(),
                 });
                 cx.notify();
             },
@@ -324,7 +329,7 @@ impl StoreGate {
                         }
                         this.status = Some(status);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -363,7 +368,7 @@ impl StoreGate {
                 match result {
                     Ok(_) => cx.emit(StoreGateChanged),
                     Err(message) => {
-                        this.message = Some(message);
+                        this.message = Some(message.into());
                         this.refresh(cx);
                     }
                 }
@@ -455,7 +460,7 @@ impl StoreGate {
                 this.busy = false;
                 match result {
                     Ok(_) => cx.emit(StoreGateChanged),
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 this.refresh(cx);
                 cx.notify();
@@ -479,7 +484,7 @@ impl StoreGate {
         }
         let required = if start_fresh { "START FRESH" } else { "ERASE" };
         if confirmation != required {
-            self.message = Some(format!("Type {required} exactly to continue."));
+            self.message = Some(format!("Type {required} exactly to continue.").into());
             cx.notify();
             return;
         }
@@ -511,7 +516,7 @@ impl StoreGate {
                         this.erase = false;
                         cx.emit(StoreGateChanged);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 this.refresh(cx);
                 cx.notify();
@@ -789,7 +794,7 @@ impl Render for StoreGate {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::status_warning()))
-                    .child(message.clone()),
+                    .child(message.resolve()),
             );
         }
         div()
@@ -894,7 +899,7 @@ pub(crate) struct PasswordForm {
     generating: bool,
     suggestion_retry_blocked: bool,
     ui_operation_id: Option<String>,
-    message: Option<String>,
+    message: Option<UiText>,
     progress: OperationProgress,
     bridges: RefCell<Vec<gpui::Task<()>>>,
     subscriptions: Vec<Subscription>,
@@ -904,7 +909,12 @@ pub(crate) struct PasswordForm {
 impl EventEmitter<PasswordFormFinished> for PasswordForm {}
 
 impl PasswordForm {
-    pub(crate) fn show_local_store_notice(&mut self, message: String, cx: &mut Context<Self>) {
+    pub(crate) fn show_local_store_notice(
+        &mut self,
+        message: impl Into<UiText>,
+        cx: &mut Context<Self>,
+    ) {
+        let message = message.into();
         self.message = Some(message);
         cx.notify();
     }
@@ -1108,7 +1118,7 @@ impl PasswordForm {
                         this.assess(cx);
                         this.focus_pending = Some(PasswordField::Confirmation);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -1202,7 +1212,9 @@ impl PasswordForm {
     fn submit(&mut self, cx: &mut Context<Self>) {
         if !self.can_submit(cx) {
             if !self.busy {
-                self.message = self.validation_message(cx).map(|text| text.to_string());
+                self.message = self
+                    .validation_message(cx)
+                    .map(|text| text.to_string().into());
                 cx.notify();
             }
             return;
@@ -1356,13 +1368,12 @@ impl PasswordForm {
                     self.suggested && self.phrase.is_some() && !generated_retry_valid;
                 self.assess(cx);
                 self.message = Some(if self.suggestion_retry_blocked {
-                    super::i18n::tr_args(
+                    UiText::message(
                         "settings-password-unconfirmed-attempt",
                         [("message", message.into())],
                     )
-                    .to_string()
                 } else {
-                    message
+                    message.into()
                 });
             }
         }
@@ -1425,12 +1436,12 @@ impl PasswordForm {
             |this, result, cx| {
                 this.message = Some(match result {
                     Ok(true) => {
-                        tr("settings-password-cancelling-before-the-store-is-replaced").into()
+                        UiText::key("settings-password-cancelling-before-the-store-is-replaced")
                     }
-                    Ok(false) => {
-                        tr("settings-password-the-store-is-committing-wait-for-it-to-finish").into()
-                    }
-                    Err(message) => message,
+                    Ok(false) => UiText::key(
+                        "settings-password-the-store-is-committing-wait-for-it-to-finish",
+                    ),
+                    Err(message) => message.into(),
                 });
                 cx.notify();
             },
@@ -1684,7 +1695,7 @@ impl Render for PasswordForm {
                     .debug_selector(|| "store-password-feedback".into())
                     .text_sm()
                     .text_color(gpui::rgb(theme::status_error()))
-                    .child(message.clone()),
+                    .child(message.resolve()),
             );
         }
         if !self.busy {
@@ -2095,15 +2106,22 @@ mod tests {
             cx.new(|cx| PasswordForm::new(test_backend(), PasswordAction::Remove, Vec::new(), cx));
         gate.update(cx, |gate, cx| {
             gate.form = Some(form.clone());
-            gate.show_local_store_notice("Local storage needs attention.".into(), cx);
+            gate.show_local_store_notice("Local storage needs attention.", cx);
             assert!(gate.message.is_none());
             assert_eq!(
-                form.read(cx).message.as_deref(),
+                form.read(cx)
+                    .message
+                    .as_ref()
+                    .map(UiText::resolve)
+                    .as_deref(),
                 Some("Local storage needs attention.")
             );
             gate.form = None;
-            gate.show_local_store_notice("Retry unlocking.".into(), cx);
-            assert_eq!(gate.message.as_deref(), Some("Retry unlocking."));
+            gate.show_local_store_notice("Retry unlocking.", cx);
+            assert_eq!(
+                gate.message.as_ref().map(UiText::resolve).as_deref(),
+                Some("Retry unlocking.")
+            );
         });
     }
 
@@ -2311,6 +2329,7 @@ mod tests {
                 gate.message
                     .as_ref()
                     .unwrap()
+                    .resolve()
                     .contains("Type ERASE exactly")
             );
             assert_eq!(gate.state, StoreState::Locked);
@@ -2322,6 +2341,7 @@ mod tests {
                 gate.message
                     .as_ref()
                     .unwrap()
+                    .resolve()
                     .contains("Type START FRESH exactly")
             );
         });

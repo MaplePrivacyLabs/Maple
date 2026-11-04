@@ -18,6 +18,7 @@ use crate::ui::chat::computers::{
     TaskAction, TaskActionRequest,
 };
 use crate::ui::chat::{ChatScreen, LoggedOut, SignOutFailed};
+use crate::ui::i18n::{UiText, tr, tr_args};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
     AccountDeleted, Section, SettingsClosed, SettingsScreen, ShortcutSettingsChange,
@@ -124,7 +125,7 @@ impl RemoteComputer {
         match &self.attempt {
             ConnectionAttempt::Failed { message, .. } => Some(
                 if crate::remote::wire::is_protocol_incompatibility_refusal(message) {
-                    "Update required — select to retry after updating".into()
+                    tr("native-remote-update-required").to_string()
                 } else {
                     message.clone()
                 },
@@ -142,7 +143,7 @@ enum StoreAttentionKind {
 
 struct StoreAttention {
     kind: StoreAttentionKind,
-    message: String,
+    message: UiText,
     retry: bool,
     store_id: Option<String>,
     epoch: u64,
@@ -204,6 +205,8 @@ struct MapleApp {
     /// Created once; re-creating it per render leaked an entity per frame.
     titlebar: Entity<TitleBar>,
     plan_check: PlanCheck,
+    native_locale: Option<fluent_templates::LanguageIdentifier>,
+    native_messages: ui::i18n::MessageCache,
 }
 
 impl MapleApp {
@@ -266,7 +269,12 @@ impl MapleApp {
             self.inline_password_completion.as_deref(),
         ) {
             if let Some(message) = self.store_notice.clone() {
-                self.present_store_attention(message, StoreAttentionKind::Operation, false, cx);
+                self.present_store_attention(
+                    message.into(),
+                    StoreAttentionKind::Operation,
+                    false,
+                    cx,
+                );
             }
             cx.notify();
         }
@@ -277,7 +285,7 @@ impl MapleApp {
     /// operation messages into the application's page chrome.
     fn present_store_attention(
         &mut self,
-        message: String,
+        message: UiText,
         kind: StoreAttentionKind,
         retry: bool,
         cx: &mut Context<Self>,
@@ -331,19 +339,24 @@ impl MapleApp {
                 break attention;
             }
         };
+        let title = tr(if attention.retry {
+            "native-save-failed"
+        } else {
+            "native-store-attention"
+        });
+        let buttons = if attention.retry {
+            vec![
+                gpui::PromptButton::Other(tr("native-retry-saving")),
+                gpui::PromptButton::Other(tr("native-keep-viewing")),
+            ]
+        } else {
+            vec![gpui::PromptButton::Ok(tr("native-ok"))]
+        };
         let prompt = window.prompt(
             gpui::PromptLevel::Warning,
-            if attention.retry {
-                "Maple couldn't save local data"
-            } else {
-                "Local data needs attention"
-            },
-            Some(&attention.message),
-            if attention.retry {
-                &["Retry saving", "Keep viewing"]
-            } else {
-                &["OK"]
-            },
+            &title,
+            Some(&attention.message.resolve()),
+            &buttons,
             cx,
         );
         self.store_attention_open = true;
@@ -618,7 +631,7 @@ impl MapleApp {
             if let Some(failure) = new_failure {
                 let open = self.backend.store_state() == maple_agent::store::StoreState::Open;
                 self.present_store_attention(
-                    persistence_feedback_message(&failure, open).into(),
+                    persistence_feedback_message(&failure, open),
                     StoreAttentionKind::Persistence,
                     open,
                     cx,
@@ -1073,16 +1086,25 @@ impl MapleApp {
             }
             Screen::Chat(_) => self.show_settings(Section::About, cx),
             _ => {
-                let details = format!(
-                    "Version {}\n{}",
-                    crate::ui::titlebar::TitleBar::version(),
-                    self.updater.snapshot().label
+                let details = tr_args(
+                    "native-about-details",
+                    [
+                        ("version", TitleBar::version().into()),
+                        (
+                            "status",
+                            ui::settings::presentation::update_label(
+                                &self.updater.snapshot(),
+                                &self.native_messages,
+                            )
+                            .into(),
+                        ),
+                    ],
                 );
                 drop(window.prompt(
                     gpui::PromptLevel::Info,
                     crate::profile::DISPLAY_NAME,
                     Some(&details),
-                    &["OK"],
+                    &[gpui::PromptButton::Ok(tr("native-ok"))],
                     cx,
                 ));
             }
@@ -1122,7 +1144,15 @@ impl MapleApp {
             }
             self.restart_prompt_pending = true;
             #[cfg(not(target_os = "linux"))]
-            let title = crate::update::restart_title(self.updater.snapshot().version.as_deref());
+            let title = self.updater.snapshot().version.as_deref().map_or_else(
+                || tr("update-confirmation-title"),
+                |version| {
+                    tr_args(
+                        "update-confirmation-title-version",
+                        [("version", version.into())],
+                    )
+                },
+            );
             #[cfg(target_os = "linux")]
             let answer = {
                 let (prompt, answer) = ui::update_confirmation::open(
@@ -1138,8 +1168,11 @@ impl MapleApp {
             let answer = window.prompt(
                 gpui::PromptLevel::Warning,
                 &title,
-                Some(crate::update::RESTART_DETAIL),
-                &["Later", "Restart to Update"],
+                Some(&tr("update-confirmation-detail")),
+                &[
+                    tr("update-confirmation-later").as_ref(),
+                    tr("update-confirmation-restart").as_ref(),
+                ],
                 cx,
             );
             let controller = self.updater.clone();
@@ -1585,7 +1618,11 @@ impl MapleApp {
         let Some(local) = &self.local_chat else {
             return;
         };
-        let mut computers = vec![local.read(cx).computer_snapshot("This Computer".into(), cx)];
+        let mut computers = vec![
+            local
+                .read(cx)
+                .computer_snapshot(tr("native-this-computer"), cx),
+        ];
         for (key, computer) in &self.remote_computers {
             computers.push(match &computer.chat {
                 Some(chat) => chat
@@ -2197,7 +2234,7 @@ impl MapleApp {
                         gate.update(cx, |gate, cx| gate.sign_out_failed(cx));
                     }
                     app.present_store_attention(
-                        event.message.clone(),
+                        event.message.clone().into(),
                         StoreAttentionKind::Persistence,
                         true,
                         cx,
@@ -2302,6 +2339,13 @@ impl Render for MapleApp {
         FIRST_RENDER.call_once(|| {
             log::debug!("startup: first render at {} ms", crate::startup_elapsed());
         });
+        let locale = ui::i18n::current_locale();
+        if self.native_locale.as_ref() != Some(&locale) {
+            self.native_locale = Some(locale);
+            ui::menus::install(cx);
+            self.update_tray();
+            self.sync_computers(cx);
+        }
         self.present_pending_store_attention(window, cx);
         // Activation changes force a redraw, so a return shows up here.
         let was_active = std::mem::replace(
@@ -2344,11 +2388,14 @@ impl Render for MapleApp {
                             .flex_col()
                             .gap_4()
                             .p_6()
-                            .child(div().text_xl().child("Update installed"))
-                            .child(self.updater.snapshot().label)
+                            .child(div().text_xl().child(tr("native-installed")))
+                            .child(ui::settings::presentation::update_label(
+                                &self.updater.snapshot(),
+                                &self.native_messages,
+                            ))
                             .child(
                                 ui::widgets::primary_button("restart-installed-update")
-                                    .child("Restart Maple")
+                                    .child(tr("native-restart"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.update_action(
                                             crate::update::UpdateAction::Relaunch,
@@ -2359,7 +2406,7 @@ impl Render for MapleApp {
                             )
                             .child(
                                 ui::widgets::secondary_button("quit-installed-update")
-                                    .child("Quit Maple")
+                                    .child(tr("native-quit-maple"))
                                     .on_click(|_, _, cx| quit_app(cx)),
                             )
                             .into_any_element()
@@ -2390,12 +2437,13 @@ mod native_window;
 fn persistence_feedback_message(
     failure: &maple_agent::store::PersistenceFailure,
     open: bool,
-) -> &'static str {
-    if !open && failure.reason == maple_agent::store::PersistenceFailureReason::DiskFull {
-        "The disk is full and Maple could not open its local store. Free disk space, quit and reopen Maple, then unlock again if prompted."
-    } else {
-        failure.message()
-    }
+) -> UiText {
+    use maple_agent::store::PersistenceFailureReason;
+    UiText::key(match (failure.reason, open) {
+        (PersistenceFailureReason::DiskFull, false) => "native-disk-full-unopened",
+        (PersistenceFailureReason::DiskFull, true) => "native-disk-full-open",
+        (PersistenceFailureReason::SaveFailed, _) => "native-save-failed-open",
+    })
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -2706,29 +2754,28 @@ fn drain_and_quit(state: DesktopLifecycle, cx: &mut App) {
         )
         .await
     });
-    cx.spawn(async move |cx| {
-        match stop.await {
-            Ok(Ok(())) => cx.update(|cx| {
-                if !may_finish_quit(cx) {
-                    state.closing.set(false);
-                    cancel_native_quit();
-                    show_update_about(cx);
-                    return;
-                }
-                state.quit_completed.set(true);
-                #[cfg(target_os = "macos")]
-                native_quit::complete(cx);
-                #[cfg(not(target_os = "macos"))]
-                cx.quit();
-            }),
-            result => {
+    cx.spawn(async move |cx| match stop.await {
+        Ok(Ok(())) => cx.update(|cx| {
+            if !may_finish_quit(cx) {
                 state.closing.set(false);
                 cancel_native_quit();
-                log::warn!("Could not complete Maple host shutdown: {result:?}");
-                cx.update(|cx| show_quit_warning("Maple has not finished stopping. Local data may remain unlocked and tasks may still be active. Keep Maple open or retry Quit.".into(), cx));
+                show_update_about(cx);
+                return;
             }
+            state.quit_completed.set(true);
+            #[cfg(target_os = "macos")]
+            native_quit::complete(cx);
+            #[cfg(not(target_os = "macos"))]
+            cx.quit();
+        }),
+        result => {
+            state.closing.set(false);
+            cancel_native_quit();
+            log::warn!("Could not complete Maple host shutdown: {result:?}");
+            cx.update(|cx| show_quit_warning(UiText::key("native-quit-not-stopped"), cx));
         }
-    }).detach();
+    })
+    .detach();
 }
 
 /// Flush presentation edits before either an explicit host stop or an
@@ -2796,13 +2843,7 @@ fn detach_and_close(state: DesktopLifecycle, cx: &mut App) {
                 state.closing.set(false);
                 cancel_native_quit();
                 log::warn!("Could not save Maple settings before closing its window: {result:?}");
-                cx.update(|cx| {
-                    show_quit_warning(
-                        "Maple could not save settings before closing. Keep Maple open and retry."
-                            .into(),
-                        cx,
-                    )
-                });
+                cx.update(|cx| show_quit_warning(UiText::key("native-close-save-failed"), cx));
             }
         }
     })
@@ -2878,7 +2919,10 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
                 cancel_quit(cx);
                 true
             });
-            cx.new(|_| QuitPrompt { kind })
+            cx.new(|_| QuitPrompt {
+                kind,
+                messages: Default::default(),
+            })
         },
     ) {
         cancel_quit(cx);
@@ -2887,33 +2931,48 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
     cx.activate(true);
 }
 
-fn show_quit_warning(message: String, cx: &mut App) {
+fn show_quit_warning(message: UiText, cx: &mut App) {
     show_quit_prompt(QuitPromptKind::Failed(message), cx);
 }
 
 enum QuitPromptKind {
     Confirm(HostActivity),
     UnknownActivity,
-    Failed(String),
+    Failed(UiText),
 }
 struct QuitPrompt {
     kind: QuitPromptKind,
+    messages: ui::i18n::MessageCache,
+}
+impl QuitPrompt {
+    fn presentation(&self) -> (gpui::SharedString, gpui::SharedString, bool) {
+        match &self.kind {
+            QuitPromptKind::Confirm(activity) => (
+                tr("native-stop-title"),
+                self.messages.get(
+                    "native-quit-activity",
+                    [
+                        ("tasks", activity.running_tasks.into()),
+                        ("editors", activity.acp_clients.into()),
+                        ("controllers", activity.remote_controllers.into()),
+                        ("jobs", activity.background_tasks.into()),
+                        ("requests", activity.local_api_requests.into()),
+                    ],
+                ),
+                false,
+            ),
+            QuitPromptKind::Failed(message) => (tr("native-still-open"), message.resolve(), true),
+            QuitPromptKind::UnknownActivity => (
+                tr("native-stop-title"),
+                tr("native-unknown-activity"),
+                false,
+            ),
+        }
+    }
 }
 impl Render for QuitPrompt {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let (title, message, retry) = match &self.kind {
-            QuitPromptKind::Confirm(activity) => (
-                "Stop this computer's Maple host?",
-                format!("Quitting stops {} running tasks, {} attached editors, {} remote controllers and {} background jobs. It also stops this computer's local API and its {} active requests. Maple waits for them to drain before closing.", activity.running_tasks, activity.acp_clients, activity.remote_controllers, activity.background_tasks, activity.local_api_requests),
-                false,
-            ),
-            QuitPromptKind::Failed(message) => ("Maple is still open", message.clone(), true),
-            QuitPromptKind::UnknownActivity => (
-                "Stop this computer's Maple host?",
-                "The host could not report its activity. Quitting will attempt to stop any attached editors, tasks and remote connections, and wait for the host to release local data.".into(),
-                false,
-            ),
-        };
+        let (title, message, retry) = self.presentation();
         div()
             .size_full()
             .flex()
@@ -2931,7 +2990,7 @@ impl Render for QuitPrompt {
                     .child(
                         ui::widgets::secondary_button("keep-maple-open")
                             .debug_selector(|| "keep-maple-open".to_string())
-                            .child("Keep open")
+                            .child(tr("native-keep-open"))
                             .on_click(|_, window, cx| {
                                 cancel_quit(cx);
                                 window.remove_window();
@@ -2940,7 +2999,11 @@ impl Render for QuitPrompt {
                     .child(
                         ui::widgets::secondary_button("retry-maple-quit")
                             .debug_selector(|| "retry-maple-quit".to_string())
-                            .child(if retry { "Retry Quit" } else { "Quit Maple" })
+                            .child(tr(if retry {
+                                "native-retry-quit"
+                            } else {
+                                "native-quit-maple"
+                            }))
                             .on_click(move |_, window, cx| {
                                 window.remove_window();
                                 if retry {
@@ -2987,63 +3050,93 @@ pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
         .await
         .map_err(|_| "The host did not answer its store status check".to_string())?
     });
-    window.spawn(cx, async move |cx| {
-        let result = query.await;
-        let resident = match result {
-            Ok(Ok(status)) => {
-                state.store_resident.store(status.keeps_resident(), std::sync::atomic::Ordering::Release);
-                // Make the tray visible before removing the last window,
-                // including a close immediately after password setup.
-                let _ = cx.update(|window, cx| {
-                    if let Some(Some(root)) = window.root::<MapleApp>() {
-                        root.update(cx, |app, cx| {
-                            app.apply_store_completion_notice(&status, cx);
-                            app.update_tray();
-                        });
-                    }
-                });
-                state.store_resident.load(std::sync::atomic::Ordering::Acquire)
-                    || state.remote_enabled.load(std::sync::atomic::Ordering::Acquire)
-            }
-            result => {
-                state.closing.set(false);
-                log::warn!("Could not check Maple host before closing window: {result:?}");
-                let _ = cx.update(|_, cx| show_quit_warning("Maple could not check its local data state. Keep this window open and retry.".into(), cx));
+    window
+        .spawn(cx, async move |cx| {
+            let result = query.await;
+            let resident = match result {
+                Ok(Ok(status)) => {
+                    state.store_resident.store(
+                        status.keeps_resident(),
+                        std::sync::atomic::Ordering::Release,
+                    );
+                    // Make the tray visible before removing the last window,
+                    // including a close immediately after password setup.
+                    let _ = cx.update(|window, cx| {
+                        if let Some(Some(root)) = window.root::<MapleApp>() {
+                            root.update(cx, |app, cx| {
+                                app.apply_store_completion_notice(&status, cx);
+                                app.update_tray();
+                            });
+                        }
+                    });
+                    state
+                        .store_resident
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        || state
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Acquire)
+                }
+                result => {
+                    state.closing.set(false);
+                    log::warn!("Could not check Maple host before closing window: {result:?}");
+                    let _ = cx.update(|_, cx| {
+                        show_quit_warning(UiText::key("native-close-state-failed"), cx)
+                    });
+                    return;
+                }
+            };
+            if !resident {
+                let _ = cx.update(|_, cx| detach_and_close(state, cx));
                 return;
             }
-        };
-        if !resident {
-            let _ = cx.update(|_, cx| detach_and_close(state, cx));
-            return;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            state.closing.set(false);
-            let _ = cx.update(|_, cx| cx.hide());
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let can_background = state.can_background;
-            let check = state.backend.spawn(async move {
-                #[cfg(target_os = "linux")]
-                { can_background && crate::tray::usable().await }
-                #[cfg(target_os = "windows")]
-                { can_background }
-            });
-            let usable = check.await.unwrap_or(false);
-            state.closing.set(false);
-            let prompt = cx.update(|window, cx| {
-                if usable { window.remove_window(); None } else {
-                    Some(window.prompt(gpui::PromptLevel::Warning, "Keep Maple open?",
-                        Some("This desktop has no available tray to reopen Maple. Keep this window open while Maple holds local data unlocked, or Quit Maple to stop its host."),
-                        &["Keep open", "Quit Maple"], cx))
-                }
-            }).ok().flatten();
-            if let Some(prompt) = prompt && prompt.await == Ok(1) {
-                let _ = cx.update(|_, cx| quit_app(cx));
+            #[cfg(target_os = "macos")]
+            {
+                state.closing.set(false);
+                let _ = cx.update(|_, cx| cx.hide());
             }
-        }
-    }).detach();
+            #[cfg(not(target_os = "macos"))]
+            {
+                let can_background = state.can_background;
+                let check = state.backend.spawn(async move {
+                    #[cfg(target_os = "linux")]
+                    {
+                        can_background && crate::tray::usable().await
+                    }
+                    #[cfg(target_os = "windows")]
+                    {
+                        can_background
+                    }
+                });
+                let usable = check.await.unwrap_or(false);
+                state.closing.set(false);
+                let prompt = cx
+                    .update(|window, cx| {
+                        if usable {
+                            window.remove_window();
+                            None
+                        } else {
+                            Some(window.prompt(
+                                gpui::PromptLevel::Warning,
+                                &tr("native-keep-open-title"),
+                                Some(&tr("native-no-tray")),
+                                &[
+                                    tr("native-keep-open").as_ref(),
+                                    tr("native-quit-maple").as_ref(),
+                                ],
+                                cx,
+                            ))
+                        }
+                    })
+                    .ok()
+                    .flatten();
+                if let Some(prompt) = prompt
+                    && prompt.await == Ok(1)
+                {
+                    let _ = cx.update(|_, cx| quit_app(cx));
+                }
+            }
+        })
+        .detach();
 }
 
 fn install_close_behavior(
@@ -3079,7 +3172,7 @@ fn restoring_view() -> gpui::Div {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(ui::theme::text_secondary()))
-                .child("Signing in…"),
+                .child(tr("native-signing-in")),
         )
 }
 
@@ -3212,6 +3305,7 @@ fn main_window_options(
 
 struct StartupError {
     message: String,
+    localized_message: Option<UiText>,
     stopping: bool,
     retry_backend: Option<Arc<AgentBackend>>,
     requires_completed_stop: bool,
@@ -3229,6 +3323,7 @@ impl StartupError {
     fn new(message: String) -> Self {
         Self {
             message,
+            localized_message: None,
             stopping: false,
             retry_backend: None,
             requires_completed_stop: false,
@@ -3239,6 +3334,7 @@ impl StartupError {
     fn requiring_host_stop(message: String, backend: Arc<AgentBackend>) -> Self {
         Self {
             message,
+            localized_message: None,
             stopping: false,
             retry_backend: Some(backend),
             requires_completed_stop: true,
@@ -3263,15 +3359,14 @@ impl StartupError {
             Ok(()) => {
                 self.requires_completed_stop = false;
                 self.retry_backend = None;
-                self.message =
-                    "The Maple host has stopped. You can close Maple and try starting it again."
-                        .into();
+                self.localized_message = Some(UiText::key("native-stop-complete"));
                 true
             }
             Err(error) => {
-                self.message = format!(
-                    "Maple could not finish stopping its host: {error}. Keep this window open and retry stopping the host before relaunching Maple."
-                );
+                self.localized_message = Some(UiText::message(
+                    "native-stop-failed",
+                    [("error", error.into())],
+                ));
                 false
             }
         }
@@ -3284,7 +3379,7 @@ impl StartupError {
         let Some(backend) = self.retry_backend.clone() else {
             // Losing the retry handle is not evidence that the owner lock was
             // released. Keep the window and its completed-stop guard intact.
-            self.message = "Maple cannot retry stopping its host. Keep this process open until the host has been stopped.".into();
+            self.localized_message = Some(UiText::key("native-stop-unavailable"));
             cx.notify();
             return;
         };
@@ -3315,9 +3410,16 @@ impl StartupError {
         if self.stopping {
             return;
         }
-        let answer = window.prompt(gpui::PromptLevel::Warning, "Stop the existing Maple host?",
-            Some("This stops running tasks and remote access for this profile. Maple will reopen with this build."),
-            &["Cancel", "Stop and reopen"], cx);
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            &tr("native-stop-existing-title"),
+            Some(&tr("native-stop-existing-detail")),
+            &[
+                gpui::PromptButton::Cancel(tr("native-cancel")),
+                gpui::PromptButton::Other(tr("native-stop-reopen")),
+            ],
+            cx,
+        );
         self.stopping = true;
         cx.spawn(async move |this, cx| {
             let result = if answer.await == Ok(1) {
@@ -3339,7 +3441,12 @@ impl StartupError {
                 this.stopping = false;
                 match result {
                     Some(Ok(())) => finish_quit(cx),
-                    Some(Err(error)) => this.message = format!("Could not restart Maple: {error}"),
+                    Some(Err(error)) => {
+                        this.localized_message = Some(UiText::message(
+                            "native-restart-failed",
+                            [("error", error.into())],
+                        ))
+                    }
                     None => {}
                 }
                 cx.notify();
@@ -3360,17 +3467,23 @@ impl Render for StartupError {
             .p_6()
             .bg(gpui::rgb(ui::theme::bg_app()))
             .text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child("Maple could not start"))
-            .child(self.message.clone())
+            .child(div().text_lg().child(tr("native-startup-title")))
+            .child(
+                self.localized_message
+                    .as_ref()
+                    .map(UiText::resolve)
+                    .unwrap_or_else(|| self.message.clone().into()),
+            )
             .when(
-                !self.requires_completed_stop && self.message.contains("Incompatible Maple host or profile"),
+                !self.requires_completed_stop
+                    && self.message.contains("Incompatible Maple host or profile"),
                 |view| {
                     view.child(
                         ui::widgets::secondary_button("stop-incompatible-host")
                             .child(if self.stopping {
-                                "Stopping…"
+                                tr("native-stopping")
                             } else {
-                                "Stop existing host and reopen"
+                                tr("native-stop-existing")
                             })
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.stop_old_host(window, cx)),
@@ -3379,23 +3492,33 @@ impl Render for StartupError {
                 },
             )
             .when(self.requires_completed_stop, |view| {
-                view.child(div().text_sm().child("Keep Maple open until its host has finished stopping. Local data may remain unlocked while it is still running."))
-                    .child(ui::widgets::secondary_button("retry-startup-host-stop")
-                        .child(if self.stopping { "Stopping host…" } else { "Retry stopping host" })
-                        .when(self.stopping, |button| button.opacity(0.5))
-                        .on_click(cx.listener(|this, _, _, cx| this.retry_required_stop(false, cx))))
+                view.child(div().text_sm().child(tr("native-wait-stop")))
+                    .child(
+                        ui::widgets::secondary_button("retry-startup-host-stop")
+                            .child(if self.stopping {
+                                tr("native-stopping-host")
+                            } else {
+                                tr("native-retry-stop")
+                            })
+                            .when(self.stopping, |button| button.opacity(0.5))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.retry_required_stop(false, cx)),
+                            ),
+                    )
             })
-            .when(self.close_is_allowed(), |view| view.child(
-                div()
-                    .id("close-startup-error")
-                    .cursor_pointer()
-                    .px_4()
-                    .py_2()
-                    .rounded_md()
-                    .bg(gpui::rgb(ui::theme::bg_elevated()))
-                    .child("Close")
-                    .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
-            ))
+            .when(self.close_is_allowed(), |view| {
+                view.child(
+                    div()
+                        .id("close-startup-error")
+                        .cursor_pointer()
+                        .px_4()
+                        .py_2()
+                        .rounded_md()
+                        .bg(gpui::rgb(ui::theme::bg_elevated()))
+                        .child(tr("native-close"))
+                        .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
+                )
+            })
     }
 }
 
@@ -3715,6 +3838,8 @@ pub fn run() {
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                         plan_check: PlanCheck::default(),
+                        native_locale: None,
+                        native_messages: Default::default(),
                     })
                 })
                 .unwrap_or_else(|error| panic!("{}", main_window_failure(&error)));
@@ -3963,17 +4088,109 @@ mod tests {
     }
 
     #[test]
+    fn quit_warning_preserves_all_counts_when_switching_locale() {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        for count in [0, 1, 2] {
+            let prompt = QuitPrompt {
+                kind: QuitPromptKind::Confirm(HostActivity {
+                    running_tasks: count,
+                    acp_clients: count,
+                    remote_controllers: count,
+                    background_tasks: count,
+                    local_api_running: true,
+                    local_api_requests: count,
+                }),
+                messages: Default::default(),
+            };
+            for (locale, labels, drain) in [
+                (
+                    "en",
+                    [
+                        "running tasks",
+                        "attached editors",
+                        "remote controllers",
+                        "background jobs",
+                        "active requests",
+                    ],
+                    "waits for them to drain",
+                ),
+                (
+                    "es",
+                    [
+                        "tareas en ejecución",
+                        "editores conectados",
+                        "controladores remotos",
+                        "trabajos en segundo plano",
+                        "solicitudes activas",
+                    ],
+                    "espera a que terminen",
+                ),
+                (
+                    "en",
+                    [
+                        "running tasks",
+                        "attached editors",
+                        "remote controllers",
+                        "background jobs",
+                        "active requests",
+                    ],
+                    "waits for them to drain",
+                ),
+            ] {
+                ui::i18n::apply_preference(Some(locale));
+                let (_, detail, retry) = prompt.presentation();
+                assert!(!retry);
+                for label in labels {
+                    assert!(
+                        detail.contains(&format!("{label} (\u{2068}{count}\u{2069})")),
+                        "{detail}"
+                    );
+                }
+                assert!(detail.contains(drain));
+                assert!(
+                    matches!(&prompt.kind, QuitPromptKind::Confirm(activity) if activity.needs_confirmation())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_cached_failure_and_shutdown_guidance_follow_locale() {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        let failure = maple_agent::store::PersistenceFailure {
+            store_id: Some("stable-store".into()),
+            revision: 1,
+            reason: maple_agent::store::PersistenceFailureReason::DiskFull,
+        };
+        let notice = persistence_feedback_message(&failure, true);
+        let mut startup = StartupError::new("external detail".into());
+        startup.requires_completed_stop = true;
+        assert!(!startup.finish_required_stop(Err("external error detail".into())));
+        for (locale, phrase) in [("es", "Mantén"), ("en", "Keep"), ("es", "Mantén")] {
+            ui::i18n::apply_preference(Some(locale));
+            assert!(notice.resolve().contains(phrase));
+            let rendered = startup.localized_message.as_ref().unwrap().resolve();
+            assert!(rendered.contains(phrase));
+            assert!(rendered.contains("external error detail"));
+            assert!(!startup.close_is_allowed());
+            assert_eq!(failure.store_id.as_deref(), Some("stable-store"));
+        }
+        assert!(startup.finish_required_stop(Ok(())));
+        assert!(startup.close_is_allowed());
+    }
+
+    #[test]
     fn disk_full_guidance_keeps_unsaved_open_sessions_alive_and_allows_restart_after_failed_open() {
         let failure = maple_agent::store::PersistenceFailure {
             store_id: Some("fixture-generation".into()),
             revision: 1,
             reason: maple_agent::store::PersistenceFailureReason::DiskFull,
         };
-        let open = super::persistence_feedback_message(&failure, true);
+        let open = super::persistence_feedback_message(&failure, true).resolve();
         assert!(open.contains("Keep Maple open"));
         assert!(open.contains("retry saving"));
         assert!(!open.contains("quit and reopen"));
-        let unopened = super::persistence_feedback_message(&failure, false);
+        let unopened = super::persistence_feedback_message(&failure, false).resolve();
         assert!(unopened.contains("quit and reopen Maple"));
         assert!(unopened.contains("unlock again if prompted"));
     }
@@ -4326,7 +4543,14 @@ mod tests {
         assert!(!startup.stopping);
         assert!(!startup.close_is_allowed());
         assert!(startup.requires_completed_stop);
-        assert!(startup.message.contains("Keep this window open"));
+        assert!(
+            startup
+                .localized_message
+                .as_ref()
+                .unwrap()
+                .resolve()
+                .contains("Keep this window open")
+        );
         startup.stopping = true;
         assert!(!startup.close_is_allowed());
         assert!(startup.finish_required_stop(Ok(())));
@@ -4459,6 +4683,8 @@ mod tests {
                 shortcuts,
                 titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                 plan_check: PlanCheck::default(),
+                native_locale: None,
+                native_messages: Default::default(),
             }
         })
     }

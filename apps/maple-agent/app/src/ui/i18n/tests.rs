@@ -245,7 +245,9 @@ impl<'ast> Visit<'ast> for UiStrings {
                 lit: syn::Lit::Str(key),
                 ..
             })) = node.args.first()
-            && (key.value().starts_with("settings-") || key.value().starts_with("update-"))
+            && (key.value().starts_with("settings-")
+                || key.value().starts_with("update-")
+                || key.value().starts_with("native-"))
         {
             self.keys.insert(key.value());
         }
@@ -258,7 +260,7 @@ impl<'ast> Visit<'ast> for UiStrings {
                 lit: syn::Lit::Str(key),
                 ..
             })) = node.args.first()
-            && key.value().starts_with("settings-")
+            && (key.value().starts_with("settings-") || key.value().starts_with("native-"))
         {
             self.keys.insert(key.value());
         }
@@ -297,6 +299,8 @@ fn ui_lookup_keys_exist_in_source_catalog() {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui"),
         &mut visitor,
     );
+    visitor.visit_file(&syn::parse_file(include_str!("../../desktop.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../../tray.rs")).unwrap());
     let keys = catalog_keys(include_str!("../../../locales/en/app.ftl"));
     assert!(!visitor.keys.is_empty());
     for key in visitor.keys {
@@ -321,6 +325,12 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../settings/mcp.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/editors.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../remote.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../menus.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../titlebar.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../widgets.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../text_input.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../secret_input.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../../desktop.rs")).unwrap());
     assert!(
         visitor.literals.is_empty(),
         "inline UI text: {:?}",

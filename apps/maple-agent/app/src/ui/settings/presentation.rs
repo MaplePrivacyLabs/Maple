@@ -3,7 +3,7 @@
 use crate::ui::i18n::{MessageCache, tr};
 use gpui::SharedString;
 
-pub(super) fn update_label(update: &crate::update::Snapshot, messages: &MessageCache) -> String {
+pub(crate) fn update_label(update: &crate::update::Snapshot, messages: &MessageCache) -> String {
     use crate::update::State;
     let key = match update.state {
         State::Disabled => "settings-update-disabled",
