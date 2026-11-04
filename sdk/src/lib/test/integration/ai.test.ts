@@ -20,8 +20,10 @@ const TEST_EMAIL = process.env.VITE_TEST_EMAIL;
 const TEST_PASSWORD = process.env.VITE_TEST_PASSWORD;
 const TEST_CLIENT_ID = process.env.VITE_TEST_CLIENT_ID;
 const API_URL = process.env.VITE_OPEN_SECRET_API_URL;
-const CHAT_MODEL = process.env.VITE_TEST_CHAT_MODEL ?? "llama3-3-70b";
-const TTS_MODEL = process.env.VITE_TEST_TTS_MODEL ?? "qwen3-tts";
+// Live Chat Completions requires a paid account; Free accounts receive
+// `model_not_available_on_plan`.
+const CHAT_MODEL = process.env.VITE_TEST_CHAT_MODEL ?? "deepseek-v4-1-flash";
+const TTS_MODEL = process.env.VITE_TEST_TTS_MODEL ?? "voxtral-tts";
 
 if (!TEST_EMAIL || !TEST_PASSWORD || !TEST_CLIENT_ID || !API_URL) {
   throw new Error("Test credentials must be set in .env.local");

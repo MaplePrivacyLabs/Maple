@@ -519,6 +519,9 @@ Unlock through desktop or `maple-agent unlock`, then sign in through desktop or
 `maple-agent login` if needed. ACP never places an unlock prompt on its protocol
 stream.
 
+**Settings → Editors** shows the command for the running installation and
+entries to paste into Zed and JetBrains IDEs. Nothing needs enabling first.
+
 `session/new` creates a draft in the client's working directory. Account MCP
 servers use the Settings defaults with that project's saved choices applied.
 Its first accepted prompt makes it visible in desktop and ACP lists. `session/load`
@@ -544,10 +547,11 @@ compatibility](docs/local-host.md) before configuring an ACP launcher.
 
 ### `maple-agent proxy`
 
-The desktop also offers **Settings → Local API**. It starts this computer's
-loopback endpoint in the shared local host, including while a remote computer
-is selected. Create a key under API keys, enable Local API, then configure your
-client with the displayed `/v1` base URL and that key. See
+The desktop also offers this under **Settings → API**. Its Local API switch
+starts this computer's loopback endpoint in the shared local host, including
+while a remote computer is selected. Create a key on the same page, enable Local
+API, then configure your client with the displayed `/v1` base URL and that key.
+See
 [Local API ownership and lifecycle](docs/local-api.md).
 
 The command below remains an independent foreground server. It cannot share a

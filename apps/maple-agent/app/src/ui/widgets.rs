@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Action, Anchor, AnyView, App, BoxShadow, Div, ElementId, Hsla, Pixels, Point, Role,
+    Action, Anchor, AnyElement, AnyView, App, BoxShadow, Div, ElementId, Hsla, Pixels, Point, Role,
     SharedString, Stateful, StyleRefinement, Window, anchored, div, prelude::*, px,
 };
 
@@ -315,6 +315,31 @@ pub fn card_row() -> Div {
         .bg(gpui::rgb(theme::bg_elevated()))
         .border_1()
         .border_color(gpui::rgb(theme::border_subtle()))
+}
+
+/// One card holding rows that belong together, split by hairlines: a
+/// setting and its details, or a list. Each row brings its own layout; the
+/// card supplies the padding and the lines.
+pub fn card_stack(rows: impl IntoIterator<Item = AnyElement>) -> Div {
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .rounded(theme::RADIUS_LG)
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border_subtle()));
+    for (index, row) in rows.into_iter().enumerate() {
+        card = card.child(
+            div()
+                .px_4()
+                .py_3()
+                .when(index > 0, |row| {
+                    row.border_t_1().border_color(gpui::rgb(theme::border()))
+                })
+                .child(row),
+        );
+    }
+    card
 }
 
 /// Frame around a [`super::text_input::TextInput`]. The explicit text

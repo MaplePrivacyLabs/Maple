@@ -1,14 +1,16 @@
-//! This computer's optional HTTP inference listener. Account keys are created
-//! in the existing API keys pane and supplied by each calling application.
+//! This computer's optional HTTP inference listener, as a card on the API
+//! pane. Each calling application supplies one of the account keys listed
+//! below it.
 
-use crate::ui::i18n::tr;
+use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, Entity, Focusable, SharedString, Window, div, prelude::*};
 
-use super::{Section, SettingsScreen, SettingsTarget, section_title, setting_copy};
+use super::api_keys::tab_order;
+use super::{SettingsScreen, SettingsTarget, setting_copy};
 use crate::local_api::{LocalApiConfig, LocalApiState, LocalApiStatus};
 use crate::ui::{text_input::TextInput, theme, widgets};
 
-const PROXY_DOCS_URL: &str = "https://maple.ai/docs/proxy";
+const INVALID_PORT: &str = "settings-local-api-enter-a-port-between-1-and-65535";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum LocalApiTarget {
@@ -17,15 +19,17 @@ pub(super) enum LocalApiTarget {
     Port,
     SavePort,
     CopyUrl,
-    ApiKeys,
-    LearnMore,
     Refresh,
 }
 
 pub(super) struct LocalApiUiState {
     status: Option<LocalApiStatus>,
     pub(super) port: Entity<TextInput>,
+    /// The port field, parsed when it changes.
+    typed_port: Result<u16, &'static str>,
     base_url: SharedString,
+    /// The line under the card's title for the latest status.
+    detail: UiText,
     saving: bool,
     refreshing: bool,
     host_epoch: u64,
@@ -39,15 +43,27 @@ impl LocalApiUiState {
         application_focus: gpui::FocusHandle,
         cx: &mut Context<SettingsScreen>,
     ) -> Self {
+        let port = cx.new(move |cx| {
+            TextInput::localized("settings-local-api-port-1-65535", cx)
+                .with_tab_index(tab_order::LOCAL_PORT)
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, cx| window.focus(&application_focus, cx))
+        });
+        cx.observe(&port, |this, input, cx| {
+            let typed = parse_port(input.read(cx).text_ref());
+            if this.local_api.typed_port != typed {
+                this.local_api.typed_port = typed;
+                this.reconcile_application_vim_target();
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             status: None,
-            port: cx.new(move |cx| {
-                TextInput::localized("settings-local-api-port-1-65535", cx)
-                    .with_tab_index(19)
-                    .application_vim(application_vim_enabled)
-                    .on_application_escape(move |window, cx| window.focus(&application_focus, cx))
-            }),
+            port,
+            typed_port: Err(INVALID_PORT),
             base_url: SharedString::default(),
+            detail: UiText::key(OFF_DETAIL),
             saving: false,
             refreshing: false,
             host_epoch: 0,
@@ -67,12 +83,28 @@ impl LocalApiUiState {
             })
     }
 
+    /// Save appears once the field holds a different valid port.
+    fn can_save_port(&self) -> bool {
+        self.can_edit_port()
+            && self.typed_port.is_ok_and(|port| {
+                self.status
+                    .as_ref()
+                    .is_some_and(|status| status.config.port != port)
+            })
+    }
+
     fn can_retry(&self) -> bool {
         self.can_configure()
             && self.status.as_ref().is_some_and(|status| {
                 status.config.enabled
                     && matches!(status.state, LocalApiState::Stopped | LocalApiState::Failed)
             })
+    }
+
+    /// Status is pushed, so refreshing by hand is only for recovering from a
+    /// read or update that failed.
+    fn can_refresh(&self) -> bool {
+        !self.refreshing && !self.saving && (self.status.is_none() || self.notice.is_some())
     }
 }
 
@@ -99,6 +131,7 @@ impl SettingsScreen {
             .as_ref()
             .is_none_or(|current| current.config.port != status.config.port);
         self.local_api.base_url = format!("http://127.0.0.1:{}/v1", status.config.port).into();
+        self.local_api.detail = state_detail(&status);
         self.local_api.status = Some(status);
         if port_changed {
             let port = self
@@ -109,6 +142,7 @@ impl SettingsScreen {
                 .config
                 .port
                 .to_string();
+            self.local_api.typed_port = parse_port(&port);
             self.local_api
                 .port
                 .update(cx, |input, cx| input.set_text(&port, cx));
@@ -174,7 +208,7 @@ impl SettingsScreen {
             match parse_port(self.local_api.port.read(cx).text_ref()) {
                 Ok(port) => port,
                 Err(message) => {
-                    self.local_api.notice = Some(message);
+                    self.local_api.typed_port = Err(message);
                     cx.notify();
                     return;
                 }
@@ -192,7 +226,7 @@ impl SettingsScreen {
         let port = match parse_port(self.local_api.port.read(cx).text_ref()) {
             Ok(port) => port,
             Err(message) => {
-                self.local_api.notice = Some(message);
+                self.local_api.typed_port = Err(message);
                 cx.notify();
                 return;
             }
@@ -239,27 +273,27 @@ impl SettingsScreen {
         cx.notify();
     }
 
+    /// The card's controls, in the order they are drawn.
     pub(super) fn local_api_targets(&self) -> Vec<SettingsTarget> {
         let target = SettingsTarget::LocalApi;
-        let mut targets = vec![target(LocalApiTarget::LearnMore)];
-        if self.local_api.can_configure() {
-            targets.push(target(LocalApiTarget::Enabled));
-        }
+        let mut targets = Vec::new();
         if self.local_api.can_retry() {
             targets.push(target(LocalApiTarget::Retry));
         }
-        if self.local_api.can_edit_port() {
-            targets.extend([
-                target(LocalApiTarget::Port),
-                target(LocalApiTarget::SavePort),
-            ]);
+        if self.local_api.can_configure() {
+            targets.push(target(LocalApiTarget::Enabled));
+        }
+        if self.local_api.can_refresh() {
+            targets.push(target(LocalApiTarget::Refresh));
         }
         if self.local_api.status.is_some() {
             targets.push(target(LocalApiTarget::CopyUrl));
         }
-        targets.push(target(LocalApiTarget::ApiKeys));
-        if !self.local_api.refreshing && !self.local_api.saving {
-            targets.push(target(LocalApiTarget::Refresh));
+        if self.local_api.can_save_port() {
+            targets.push(target(LocalApiTarget::SavePort));
+        }
+        if self.local_api.can_edit_port() {
+            targets.push(target(LocalApiTarget::Port));
         }
         targets
     }
@@ -280,13 +314,11 @@ impl SettingsScreen {
             LocalApiTarget::Port => {}
             LocalApiTarget::SavePort => self.save_local_api_port(cx),
             LocalApiTarget::CopyUrl => self.copy_local_api_url(cx),
-            LocalApiTarget::ApiKeys => self.select_section(Section::ApiKeys, cx),
-            LocalApiTarget::LearnMore => crate::ui::rich_text::open_link(PROXY_DOCS_URL),
             LocalApiTarget::Refresh => self.refresh_local_api_status(cx),
         }
     }
 
-    fn copy_local_api_url(&self, cx: &mut Context<Self>) {
+    fn copy_local_api_url(&mut self, cx: &mut Context<Self>) {
         if self.local_api.status.is_some() {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                 self.local_api.base_url.to_string(),
@@ -294,234 +326,258 @@ impl SettingsScreen {
         }
     }
 
-    pub(super) fn render_local_api_pane(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_local_api_card(&self, cx: &mut Context<Self>) -> Div {
+        let mut rows = vec![self.render_local_api_header(cx).into_any_element()];
+        if let Some(status) = &self.local_api.status {
+            rows.push(self.render_local_api_url(cx).into_any_element());
+            rows.push(self.render_local_api_port(status, cx).into_any_element());
+        }
+        rows.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(tr("settings-local-api-connect-help"))
+                .child(tr("settings-local-api-routes-help"))
+                .child(tr("settings-local-api-lifecycle-help"))
+                .into_any_element(),
+        );
+        widgets::card_stack(rows)
+    }
+
+    /// The switch, what the listener is doing, and whatever went wrong.
+    fn render_local_api_header(&self, cx: &mut Context<Self>) -> Div {
         let state = &self.local_api;
         let status = state.status.as_ref();
         let enabled = status.is_some_and(|status| status.config.enabled);
-        let label = if state.refreshing && status.is_none() {
-            tr("settings-local-api-checking-status")
-        } else {
-            status.map_or(tr("settings-local-api-status-unavailable"), state_label)
+        let (label, color) = match status {
+            Some(status) => (state_label(status), state_color(status)),
+            None if state.refreshing => (tr("settings-local-api-checking"), theme::text_muted()),
+            None => (tr("settings-local-api-unavailable"), theme::status_error()),
         };
-        let mut pane = div()
+        let detail = if state.saving {
+            tr("settings-local-api-updating-local-api-settings")
+        } else if status.is_some() {
+            state.detail.resolve()
+        } else {
+            tr(OFF_DETAIL)
+        };
+        let copy = div()
+            .id("local-api-status")
+            .role(gpui::Role::Status)
             .flex()
             .flex_col()
-            .gap_4()
-            .child(section_title(&tr("settings-local-api-local-api")))
+            .gap_1()
+            .min_w_0()
             .child(
-                div().flex().flex_col().gap_2()
-                    .child(setting_copy(
-                        tr("settings-local-api-connect-ai-applications-on-this-computer"),
-                        tr("settings-local-api-expose-maple-s-inference-apis-at-a-local-address-requests-use-map"),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::LocalApi(LocalApiTarget::LearnMore),
-                        div()
-                            .id("local-api-learn-more")
-                            .role(gpui::Role::Link)
-                            .aria_label(tr("settings-local-api-learn-more-about-the-local-api"))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::link()))
-                            .focus_visible(widgets::focus_ring)
-                            .hover(|style| style.underline().cursor_pointer())
-                            .tab_index(17)
-                            .on_click(|_, _, _| crate::ui::rich_text::open_link(PROXY_DOCS_URL))
-                            .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, _, cx| {
-                                if activates(event) {
-                                    cx.stop_propagation();
-                                    crate::ui::rich_text::open_link(PROXY_DOCS_URL);
-                                }
-                            }))
-                            .child(tr("settings-local-api-learn-more")),
-                    )),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(row_title(tr("settings-local-api-local-api")))
+                    .child(widgets::status_badge(label, color)),
             )
             .child(
-                widgets::card_row()
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(detail),
+            );
+        let controls = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_3()
+            .when(state.can_refresh(), |row| {
+                row.child(
+                    self.application_target(
+                        || SettingsTarget::LocalApi(LocalApiTarget::Refresh),
+                        widgets::ghost_button("local-api-refresh")
+                            .py_1p5()
+                            .tab_index(tab_order::LOCAL_REFRESH)
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.refresh_local_api_status(cx)),
+                            )
+                            .on_key_down(Self::on_press_key(Self::refresh_local_api_status, cx))
+                            .child(tr("settings-local-api-refresh-status")),
+                    ),
+                )
+            })
+            .when_some(status.filter(|_| state.can_retry()), |row, status| {
+                row.child(
+                    self.application_target(
+                        || SettingsTarget::LocalApi(LocalApiTarget::Retry),
+                        widgets::secondary_button("local-api-retry")
+                            .py_1p5()
+                            .tab_index(tab_order::LOCAL_RETRY)
+                            .on_click(cx.listener(|this, _, _, cx| this.retry_local_api(cx)))
+                            .on_key_down(Self::on_press_key(Self::retry_local_api, cx))
+                            .child(retry_label(status)),
+                    ),
+                )
+            })
+            .child(
+                self.application_target(
+                    || SettingsTarget::LocalApi(LocalApiTarget::Enabled),
+                    widgets::switch("local-api-enabled", enabled)
+                        .debug_selector(|| "local-api-enabled".to_string())
+                        .aria_label(tr("settings-local-api-enable-local-api-on-this-computer"))
+                        .when(!state.can_configure(), |switch| {
+                            switch.opacity(0.5).aria_description(
+                            tr("settings-local-api-unavailable-while-local-api-settings-are-loading-or-being-updated"),
+                        )
+                        })
+                        .when(state.can_configure(), |switch| {
+                            switch
+                                .tab_index(tab_order::LOCAL_ENABLED)
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_local_api(cx)))
+                                .on_key_down(Self::on_press_key(Self::toggle_local_api, cx))
+                        }),
+                ),
+            );
+        let banner = |message: SharedString| widgets::banner(theme::status_error()).child(message);
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap_4()
-                    .child(setting_copy(
-                        tr("settings-local-api-enable-local-api"),
-                        tr("settings-local-api-applies-to-this-computer-including-while-you-work-with-a-remote-a"),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::LocalApi(LocalApiTarget::Enabled),
-                        widgets::switch("local-api-enabled", enabled)
-                            .debug_selector(|| "local-api-enabled".to_string())
-                            .aria_label(tr("settings-local-api-enable-local-api-on-this-computer"))
-                            .when(!state.can_configure(), |switch| {
-                                switch.opacity(0.5).aria_description(
-                                    tr("settings-local-api-unavailable-while-local-api-settings-are-loading-or-being-updated"),
-                                )
-                            })
-                            .when(state.can_configure(), |switch| {
-                                switch
-                                    .tab_index(18)
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_local_api(cx)))
-                                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if activates(event) {
-                                            cx.stop_propagation();
-                                            this.toggle_local_api(cx);
-                                        }
-                                    }))
-                            }),
-                    )),
+                    .child(copy)
+                    .child(controls),
             )
+            .when_some(state.notice, |column, message| {
+                column.child(banner(tr(message)))
+            })
+            .when_some(
+                status.and_then(|status| status.error.clone()),
+                |column, error| column.child(banner(error.into())),
+            )
+    }
+
+    fn render_local_api_url(&self, cx: &mut Context<Self>) -> Div {
+        let url = self.local_api.base_url.clone();
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
             .child(
                 div()
-                    .id("local-api-status")
-                    .role(gpui::Role::Status)
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(label)
-                    .when(state.saving, |row| row.child(tr("settings-local-api-updating-local-api-settings")))
-                    .when(status.is_some_and(|status| status.state == LocalApiState::Running), |row| {
-                        row.child(self.messages.get("settings-local-api-requests", [("count", status.map_or(0, |status| status.active_requests).into())]))
-                    })
-                    .when(status.is_some_and(|status| status.state == LocalApiState::Stopped && status.config.enabled), |row| {
-                        row.child(tr("settings-local-api-the-local-api-is-enabled-but-paused-select-resume-to-accept-reque"))
-                    }),
-            );
-        if let Some(message) = state.notice {
-            pane = pane.child(widgets::banner(theme::status_error()).child(tr(message)));
-        }
-        if let Some(error) = status.and_then(|status| status.error.as_ref()) {
-            pane = pane.child(widgets::banner(theme::status_error()).child(error.clone()));
-        }
-        if state.can_retry() {
-            pane = pane.child(
+                    .min_w_0()
+                    .child(row_title(tr("settings-local-api-base-url")))
+                    .child(
+                        div()
+                            .font_family(crate::assets::FONT_MONO)
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .child(url.clone()),
+                    ),
+            )
+            .child(
                 self.application_target(
-                    || SettingsTarget::LocalApi(LocalApiTarget::Retry),
-                    widgets::secondary_button("local-api-retry")
-                        .tab_index(19)
-                        .on_click(cx.listener(|this, _, _, cx| this.retry_local_api(cx)))
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                            if activates(event) {
-                                cx.stop_propagation();
-                                this.retry_local_api(cx);
-                            }
-                        }))
-                        .child(retry_label(status.expect("retry requires a status"))),
+                    || SettingsTarget::LocalApi(LocalApiTarget::CopyUrl),
+                    widgets::copy_button("local-api-copy-url", url, None, Some(cx.entity_id()))
+                        .aria_label(tr("settings-local-api-copy-local-api-base-url"))
+                        .tab_index(tab_order::LOCAL_COPY_URL)
+                        .on_key_down(Self::on_press_key(Self::copy_local_api_url, cx)),
                 ),
-            );
-        }
-        if let Some(status) = status {
-            let port_control = if state.can_edit_port() {
-                self.application_target(
-                    || SettingsTarget::LocalApi(LocalApiTarget::Port),
-                    widgets::input_frame()
-                        .w(gpui::px(120.))
-                        .child(state.port.clone()),
-                )
-            } else {
+            )
+    }
+
+    fn render_local_api_port(&self, status: &LocalApiStatus, cx: &mut Context<Self>) -> Div {
+        let state = &self.local_api;
+        let enabled = status.config.enabled;
+        let control = if state.can_edit_port() {
+            self.application_target(
+                || SettingsTarget::LocalApi(LocalApiTarget::Port),
+                widgets::input_frame()
+                    .w(gpui::px(96.))
+                    .child(state.port.clone()),
+            )
+        } else {
+            div()
+                .font_family(crate::assets::FONT_MONO)
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .child(status.config.port.to_string())
+                .into_any_element()
+        };
+        let invalid = state.typed_port.err().filter(|_| state.can_edit_port());
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(match invalid {
+                Some(message) => div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .min_w_0()
+                    .child(row_title(tr("settings-local-api-port")))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::status_error()))
+                            .child(tr(message)),
+                    ),
+                None => setting_copy(
+                    tr("settings-local-api-port"),
+                    if matches!(status.state, LocalApiState::Stopped | LocalApiState::Failed) {
+                        tr("settings-local-api-port-address")
+                    } else {
+                        tr("settings-local-api-stop-to-edit")
+                    },
+                ),
+            })
+            .child(
                 div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(status.config.port.to_string())
-                    .into_any_element()
-            };
-            pane = pane
-                .child(
-                    widgets::card_row()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_4()
-                        .child(setting_copy(tr("settings-local-api-port"), tr("settings-local-api-the-local-address-always-uses-127-0-0-1-stop-the-api-to-change-it")))
-                        .child(div().flex().items_center().gap_2().child(port_control).when(state.can_edit_port(), |row| {
-                            row.child(self.application_target(
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_2()
+                    // Save appears beside the field, so the field stays put.
+                    .when(state.can_save_port(), |row| {
+                        row.child(
+                            self.application_target(
                                 || SettingsTarget::LocalApi(LocalApiTarget::SavePort),
                                 widgets::secondary_button("local-api-save-port")
-                                    .tab_index(20)
-                                    .on_click(cx.listener(|this, _, _, cx| this.save_local_api_port(cx)))
-                                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if activates(event) {
-                                            cx.stop_propagation();
-                                            this.save_local_api_port(cx);
-                                        }
+                                    .py_1p5()
+                                    .tab_index(tab_order::LOCAL_SAVE_PORT)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_local_api_port(cx);
                                     }))
+                                    .on_key_down(Self::on_press_key(Self::save_local_api_port, cx))
                                     .child(if !enabled {
-                                        tr("settings-local-api-save-port")
+                                        tr("settings-remote-save")
                                     } else if status.state == LocalApiState::Stopped {
-                                        tr("settings-local-api-save-and-resume")
+                                        tr("settings-local-api-save-resume")
                                     } else {
-                                        tr("settings-local-api-save-and-retry")
+                                        tr("settings-local-api-save-retry")
                                     }),
-                            ))
-                        })),
-                )
-                .child(
-                    widgets::card_row()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_4()
-                        .child(
-                            div().flex().flex_col().gap_1()
-                                .child(setting_copy(tr("settings-local-api-openai-compatible-base-url"), tr("settings-local-api-paste-this-address-into-your-ai-application-s-provider-settings")))
-                                .child(div().font_family(crate::assets::FONT_MONO).text_sm().child(state.base_url.clone())),
+                            ),
                         )
-                        .child(self.application_target(
-                            || SettingsTarget::LocalApi(LocalApiTarget::CopyUrl),
-                            widgets::copy_button("local-api-copy-url", state.base_url.clone(), None, Some(cx.entity_id()))
-                                .aria_label(tr("settings-local-api-copy-local-api-base-url"))
-                                .tab_index(21)
-                                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                                    if activates(event) {
-                                        cx.stop_propagation();
-                                        this.copy_local_api_url(cx);
-                                    }
-                                })),
-                        )),
-                );
-        }
-        pane.child(
-            div().flex().flex_col().gap_2().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                .child(tr("settings-local-api-when-enabled-the-api-resumes-when-this-computer-s-maple-host-star"))
-                .child(tr("settings-local-api-create-a-dedicated-maple-api-key-copy-it-once-and-enter-it-in-you"))
-                .child(self.application_target(
-                    || SettingsTarget::LocalApi(LocalApiTarget::ApiKeys),
-                    widgets::secondary_button("local-api-open-keys")
-                        .tab_index(22)
-                        .on_click(cx.listener(|this, _, _, cx| this.select_section(Section::ApiKeys, cx)))
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                            if activates(event) {
-                                cx.stop_propagation();
-                                this.select_section(Section::ApiKeys, cx);
-                            }
-                        }))
-                        .child(tr("settings-local-api-manage-api-keys")),
-                )),
-        ).child(
-            widgets::card_row().flex().flex_col().gap_2()
-                .child(section_title(&tr("settings-local-api-available-endpoints")))
-                .children([
-                    "GET /v1/models",
-                    "POST /v1/chat/completions",
-                    "POST /v1/embeddings",
-                    "POST /v1/systemone",
-                ].into_iter().map(|route| div().font_family(crate::assets::FONT_MONO).text_xs().child(route)))
-                .child(div().text_xs().text_color(gpui::rgb(theme::text_muted())).child(tr("settings-local-api-browser-origin-requests-are-blocked-use-a-desktop-application-cli"))),
-        ).when(!state.refreshing && !state.saving, |pane| {
-            pane.child(self.application_target(
-                || SettingsTarget::LocalApi(LocalApiTarget::Refresh),
-                widgets::ghost_button("local-api-refresh")
-                    .tab_index(24)
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh_local_api_status(cx)))
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                        if activates(event) {
-                            cx.stop_propagation();
-                            this.refresh_local_api_status(cx);
-                        }
-                    }))
-                    .child(tr("settings-local-api-refresh-status")),
-            ))
-        })
+                    })
+                    .child(control),
+            )
     }
+}
+
+fn row_title(label: impl Into<SharedString>) -> Div {
+    div()
+        .text_sm()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(gpui::rgb(theme::text_primary()))
+        .child(label.into())
 }
 
 fn parse_port(value: &str) -> Result<u16, &'static str> {
@@ -530,17 +586,42 @@ fn parse_port(value: &str) -> Result<u16, &'static str> {
         .parse::<u16>()
         .ok()
         .filter(|port| *port > 0)
-        .ok_or("settings-local-api-enter-a-port-between-1-and-65535")
+        .ok_or(INVALID_PORT)
 }
+
+const OFF_DETAIL: &str = "settings-local-api-off-help";
 
 fn state_label(status: &LocalApiStatus) -> SharedString {
     match status.state {
         LocalApiState::Stopped if status.config.enabled => tr("settings-local-api-paused"),
-        LocalApiState::Stopped => tr("settings-local-api-stopped"),
+        LocalApiState::Stopped => tr("settings-local-api-off"),
         LocalApiState::Starting => tr("settings-local-api-starting"),
-        LocalApiState::Running => tr("settings-local-api-running-on-this-computer"),
+        LocalApiState::Running => tr("settings-local-api-running"),
         LocalApiState::Stopping => tr("settings-local-api-stopping"),
         LocalApiState::Failed => tr("settings-local-api-could-not-start"),
+    }
+}
+
+fn state_color(status: &LocalApiStatus) -> u32 {
+    match status.state {
+        LocalApiState::Stopped if status.config.enabled => theme::status_warning(),
+        LocalApiState::Running => theme::status_success(),
+        LocalApiState::Failed => theme::status_error(),
+        _ => theme::text_muted(),
+    }
+}
+
+fn state_detail(status: &LocalApiStatus) -> UiText {
+    match (status.state, status.active_requests) {
+        (LocalApiState::Running, 0) => UiText::key("settings-local-api-ready-help"),
+        (LocalApiState::Running, active) => {
+            UiText::message("settings-local-api-requests", [("count", active.into())])
+        }
+        (LocalApiState::Stopped, _) if status.config.enabled => {
+            UiText::key("settings-local-api-resume-help")
+        }
+        (LocalApiState::Failed, _) => UiText::key("settings-local-api-failed-help"),
+        _ => UiText::key(OFF_DETAIL),
     }
 }
 
@@ -552,13 +633,9 @@ fn retry_label(status: &LocalApiStatus) -> SharedString {
     }
 }
 
-fn activates(event: &gpui::KeyDownEvent) -> bool {
-    !event.keystroke.modifiers.modified()
-        && matches!(event.keystroke.key.as_str(), "enter" | "space" | " ")
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::Section;
     use super::*;
     use gpui::{AppContext, TestAppContext};
 
@@ -583,7 +660,7 @@ mod tests {
                     last_error: None,
                     compatibility_warning: None,
                 },
-                Section::LocalApi,
+                Section::Api,
                 cx,
             )
         })
@@ -682,11 +759,7 @@ mod tests {
             this.local_api.saving = true;
             assert_eq!(
                 this.local_api_targets(),
-                vec![
-                    target(LocalApiTarget::LearnMore),
-                    target(LocalApiTarget::CopyUrl),
-                    target(LocalApiTarget::ApiKeys),
-                ]
+                vec![target(LocalApiTarget::CopyUrl)]
             );
         });
     }
@@ -703,10 +776,123 @@ mod tests {
             this.toggle_local_api(cx);
             assert!(!this.local_api.saving);
             assert!(!this.local_api.status.as_ref().unwrap().config.enabled);
-            assert_eq!(
-                this.local_api.notice.map(tr).as_deref(),
-                Some("Enter a port between 1 and 65535.")
+            assert_eq!(this.local_api.typed_port, Err(INVALID_PORT));
+            assert_eq!(this.local_api.notice, None);
+        });
+    }
+
+    #[gpui::test]
+    fn save_appears_only_for_a_different_valid_port(cx: &mut TestAppContext) {
+        let settings = screen(cx);
+        settings.update(cx, |this, cx| {
+            this.local_api.refreshing = false;
+            this.set_local_api_status(status(100, LocalApiState::Stopped, false, 8123), cx);
+            assert!(!this.local_api.can_save_port());
+            this.local_api
+                .port
+                .update(cx, |input, cx| input.set_text("9123", cx));
+        });
+        cx.run_until_parked();
+        settings.update(cx, |this, cx| {
+            assert!(this.local_api.can_save_port());
+            assert!(
+                this.local_api_targets()
+                    .contains(&SettingsTarget::LocalApi(LocalApiTarget::SavePort))
             );
+            this.local_api
+                .port
+                .update(cx, |input, cx| input.set_text("8123", cx));
+        });
+        cx.run_until_parked();
+        settings.update(cx, |this, cx| {
+            assert!(!this.local_api.can_save_port());
+            this.local_api
+                .port
+                .update(cx, |input, cx| input.set_text("0", cx));
+        });
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.local_api.typed_port, Err(INVALID_PORT));
+            assert!(!this.local_api.can_save_port());
+        });
+    }
+
+    #[test]
+    fn detail_counts_requests_and_explains_stopped_states() {
+        let mut running = status(1, LocalApiState::Running, true, 8123);
+        assert_eq!(
+            state_detail(&running)
+                .resolve()
+                .replace(['\u{2068}', '\u{2069}'], ""),
+            "Ready for requests from apps on this computer."
+        );
+        running.active_requests = 1;
+        assert_eq!(
+            state_detail(&running)
+                .resolve()
+                .replace(['\u{2068}', '\u{2069}'], ""),
+            "1 active request"
+        );
+        running.active_requests = 3;
+        assert_eq!(
+            state_detail(&running)
+                .resolve()
+                .replace(['\u{2068}', '\u{2069}'], ""),
+            "3 active requests"
+        );
+        assert_eq!(
+            state_detail(&status(2, LocalApiState::Stopped, false, 8123)).resolve(),
+            tr(OFF_DETAIL)
+        );
+        assert_eq!(
+            state_detail(&status(3, LocalApiState::Stopped, true, 8123)).resolve(),
+            "Select Resume to accept requests on this computer."
+        );
+    }
+
+    #[test]
+    fn cached_status_detail_follows_language_without_another_host_snapshot() {
+        let _guard = crate::ui::i18n::TestLocalizationGuard::enable();
+        let detail = state_detail(&status(1, LocalApiState::Running, true, 8123));
+        for (locale, expected) in [
+            ("en", "Ready for requests from apps on this computer."),
+            (
+                "es",
+                "Lista para recibir solicitudes de las aplicaciones de este equipo.",
+            ),
+            ("en", "Ready for requests from apps on this computer."),
+        ] {
+            crate::ui::i18n::apply_preference(Some(locale));
+            assert_eq!(detail.resolve().as_ref(), expected);
+        }
+    }
+
+    #[gpui::test]
+    fn refresh_is_offered_only_to_recover(cx: &mut TestAppContext) {
+        let settings = screen(cx);
+        settings.update(cx, |this, cx| {
+            this.local_api.refreshing = false;
+            assert!(this.local_api.can_refresh());
+            this.set_local_api_status(status(100, LocalApiState::Running, true, 8123), cx);
+            assert!(!this.local_api.can_refresh());
+            this.local_api.notice = Some("failed");
+            assert!(this.local_api.can_refresh());
+        });
+    }
+
+    #[gpui::test]
+    fn a_free_plan_keeps_the_local_api_controls(cx: &mut TestAppContext) {
+        let settings = screen(cx);
+        settings.update(cx, |this, cx| {
+            this.local_api.refreshing = false;
+            this.set_local_api_status(status(100, LocalApiState::Running, true, 8123), cx);
+            this.billing.status = Some(Default::default());
+            assert_eq!(this.api_access(), Some(false));
+            let targets = this.api_targets();
+            assert!(targets.contains(&SettingsTarget::LocalApi(LocalApiTarget::Enabled)));
+            assert!(!targets.contains(&SettingsTarget::ApiKeys(
+                super::super::api_keys::ApiKeysTarget::Name
+            )));
         });
     }
 
@@ -731,10 +917,7 @@ mod tests {
             );
 
             this.set_local_api_status(status(102, LocalApiState::Stopped, false, 8123), cx);
-            assert_eq!(
-                state_label(this.local_api.status.as_ref().unwrap()),
-                "Stopped"
-            );
+            assert_eq!(state_label(this.local_api.status.as_ref().unwrap()), "Off");
             assert!(!this.local_api.can_retry());
         });
     }

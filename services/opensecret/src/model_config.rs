@@ -377,6 +377,9 @@ struct ModelConfigEntry {
     capabilities: ModelCapabilities,
     badges: &'static [&'static str],
     listed: bool,
+    /// Listed for paid plans only. Other listed models stay discoverable on
+    /// every plan with their access metadata.
+    paid_catalog_only: bool,
     api_listed: bool,
     /// Maple Work offers the model for new tasks. The catalog still lists it
     /// for Research and the API either way.
@@ -434,12 +437,14 @@ pub(crate) struct ModelAliasTargets {
 pub const DEFAULT_CONTEXT_WINDOW: usize = 64_000;
 pub const AUTO_QUICK_MODEL_ID: &str = "auto:quick";
 pub const AUTO_POWERFUL_MODEL_ID: &str = "auto:powerful";
-pub const QUICK_MODEL_ID: &str = "gpt-oss-120b";
+pub const GPT_OSS_120B_MODEL_ID: &str = "gpt-oss-120b";
 pub const GLM_5_3_MODEL_ID: &str = "glm-5-3";
 pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
 pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
+/// The Quick tier's preferred model on every plan.
+pub const QUICK_MODEL_ID: &str = DEEPSEEK_V4_1_FLASH_MODEL_ID;
 pub const DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID: &str = "deepseek-v4-1-flash-1017-uncensored";
 pub const DECISION_SMALL_MODEL_ID: &str = "decision-small";
 pub const DECISION_MEDIUM_MODEL_ID: &str = "decision-medium";
@@ -493,7 +498,7 @@ const FREE_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
 };
 
 const PAID_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
-    quick: GLM_5_3_FLASH_MODEL_ID,
+    quick: QUICK_MODEL_ID,
     powerful: POWERFUL_MODEL_ID,
 };
 
@@ -559,6 +564,7 @@ impl ModelConfigEntry {
             capabilities,
             badges,
             listed,
+            paid_catalog_only: false,
             api_listed: listed,
             available_in_agent: listed,
             enabled,
@@ -600,6 +606,7 @@ impl ModelConfigEntry {
             capabilities,
             badges,
             listed: false,
+            paid_catalog_only: false,
             api_listed: true,
             available_in_agent: false,
             enabled,
@@ -643,6 +650,12 @@ impl ModelConfigEntry {
     /// Keep a listed model out of Maple Work's model list.
     const fn unavailable_in_agent(mut self) -> Self {
         self.available_in_agent = false;
+        self
+    }
+
+    /// Keep a Pro model out of the Free plan's chat catalog.
+    const fn paid_catalog_only(mut self) -> Self {
+        self.paid_catalog_only = true;
         self
     }
 
@@ -979,12 +992,14 @@ const LLAMA3_3_70B_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModel
 );
 
 const MODEL_CONFIGS: &[ModelConfigEntry] = &[
+    // GPT-OSS and Llama 3.3 have left the Free plan. Paid chat, API callers and
+    // released clients' helper requests still use them.
     ModelConfigEntry::new(
-        "gpt-oss-120b",
+        GPT_OSS_120B_MODEL_ID,
         "OpenAI GPT-OSS 120B",
         "GPT-OSS",
         "Fast, everyday reasoning model.",
-        ModelAccessTier::Free,
+        ModelAccessTier::Pro,
         ModelCapabilities::chat(true, false),
         &[],
         true,
@@ -995,7 +1010,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         GPT_OSS_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(GPT_OSS_REASONING)
-    .unavailable_in_agent(),
+    .unavailable_in_agent()
+    .paid_catalog_only(),
     ModelConfigEntry::new(
         "gemma4-31b",
         "Gemma 4 31B",
@@ -1083,7 +1099,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "DeepSeek V4.1 Flash",
         "DeepSeek V4.1 Flash",
         "Long-context multimodal reasoning and tool-use model.",
-        ModelAccessTier::Pro,
+        ModelAccessTier::Free,
         ModelCapabilities::chat(true, true),
         &["New"],
         true,
@@ -1131,7 +1147,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "Llama 3.3 70B",
         "Llama 3.3",
         "General-purpose model.",
-        ModelAccessTier::Free,
+        ModelAccessTier::Pro,
         ModelCapabilities::chat(false, false),
         &[],
         true,
@@ -1141,13 +1157,14 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         131_072,
         LLAMA3_3_70B_RESPONSES_MODEL_CONFIG,
     )
-    .unavailable_in_agent(),
+    .unavailable_in_agent()
+    .paid_catalog_only(),
     ModelConfigEntry::api_only(
         "gpt-oss-safeguard-120b",
         "OpenAI GPT-OSS Safeguard 120B",
         "GPT-OSS Safeguard",
         "Safety model available through the API.",
-        ModelAccessTier::Free,
+        ModelAccessTier::Pro,
         ModelCapabilities::chat_with_tool_use(true, false, false),
         &["Safety"],
         true,
@@ -1254,12 +1271,13 @@ pub(crate) fn alias_reasoning(alias: &str, plan: ModelPlan) -> Option<ModelReaso
     Some(reasoning)
 }
 
-/// Listed models remain discoverable on every plan. Their access metadata and
-/// completion authorization enforce the existing Free/Pro boundary.
+/// Listed models remain discoverable on every plan unless marked paid-only.
+/// Their access metadata and completion authorization enforce the existing
+/// Free/Pro boundary.
 pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
     let data = MODEL_CONFIGS
         .iter()
-        .filter(|entry| entry.listed)
+        .filter(|entry| entry.listed && (plan.is_paid() || !entry.paid_catalog_only))
         .map(|entry| entry.catalog_json())
         .collect::<Vec<_>>();
     let aliases = MODEL_ALIAS_ENTRIES
@@ -1416,7 +1434,7 @@ mod tests {
         assert_eq!(model_context_window("glm-5-3-flash"), 1_048_576);
         assert_eq!(model_context_window("kimi-k3"), 262_144);
         assert_eq!(model_context_window("deepseek-v4-1-flash"), 1_048_576);
-        assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 131_072);
+        assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 1_048_576);
         assert_eq!(model_context_window(AUTO_POWERFUL_MODEL_ID), 262_144);
     }
 
@@ -1621,7 +1639,7 @@ mod tests {
         assert_eq!(free.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
 
         let paid = ModelAliasTargets::for_plan(ModelPlan::Paid);
-        assert_eq!(paid.resolve(AUTO_QUICK_MODEL_ID), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(paid.resolve(AUTO_QUICK_MODEL_ID), QUICK_MODEL_ID);
         assert_eq!(paid.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
         assert_eq!(paid.resolve(KIMI_K3_MODEL_ID), KIMI_K3_MODEL_ID);
     }
@@ -1630,7 +1648,7 @@ mod tests {
     fn test_auto_targets_use_glm_5_3_and_preserve_plan_specific_quick() {
         for (plan, expected_quick) in [
             (ModelPlan::Free, QUICK_MODEL_ID),
-            (ModelPlan::Paid, GLM_5_3_FLASH_MODEL_ID),
+            (ModelPlan::Paid, QUICK_MODEL_ID),
         ] {
             let targets = ModelAliasTargets::for_plan(plan);
             assert_eq!(targets.resolve(AUTO_QUICK_MODEL_ID), expected_quick);
@@ -1714,9 +1732,9 @@ mod tests {
                     "{id}"
                 );
             }
-            // Research and the API keep both models.
+            // Paid Research keeps both; Free no longer offers them.
             for id in not_in_agent {
-                assert!(has_model(&catalog, id), "{id}");
+                assert_eq!(has_model(&catalog, id), plan.is_paid(), "{id}");
             }
         }
         let models = openai_models_response();
@@ -1744,7 +1762,7 @@ mod tests {
     fn test_golden_auto_alias_resolution_matrix_by_plan() {
         for (plan, selector, expected_target) in [
             (ModelPlan::Free, AUTO_QUICK_MODEL_ID, QUICK_MODEL_ID),
-            (ModelPlan::Paid, AUTO_QUICK_MODEL_ID, GLM_5_3_FLASH_MODEL_ID),
+            (ModelPlan::Paid, AUTO_QUICK_MODEL_ID, QUICK_MODEL_ID),
             (ModelPlan::Free, AUTO_POWERFUL_MODEL_ID, GLM_5_3_MODEL_ID),
             (ModelPlan::Paid, AUTO_POWERFUL_MODEL_ID, GLM_5_3_MODEL_ID),
         ] {
@@ -1786,8 +1804,8 @@ mod tests {
             .find(|alias| alias["id"] == AUTO_POWERFUL_MODEL_ID)
             .expect("powerful alias");
 
-        assert_eq!(quick["target_model"], GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(quick["access"], "pro");
+        assert_eq!(quick["target_model"], QUICK_MODEL_ID);
+        assert_eq!(quick["access"], "free");
         assert_eq!(quick["capabilities"]["vision"], true);
         assert_eq!(powerful["target_model"], GLM_5_3_MODEL_ID);
         assert_eq!(powerful["access"], "pro");
@@ -1796,23 +1814,19 @@ mod tests {
 
     #[test]
     fn test_model_plan_enforces_catalog_access_tiers_and_alias_targets() {
-        for model in [
-            "gpt-oss-120b",
-            "gpt-oss-safeguard-120b",
-            "llama3-3-70b",
-            AUTO_QUICK_MODEL_ID,
-            "unknown-model",
-        ] {
+        for model in ["deepseek-v4-1-flash", AUTO_QUICK_MODEL_ID, "unknown-model"] {
             assert!(ModelPlan::Free.allows_model(model), "free model: {model}");
             assert!(ModelPlan::Paid.allows_model(model), "paid model: {model}");
         }
 
         for model in [
+            "gpt-oss-120b",
+            "gpt-oss-safeguard-120b",
+            "llama3-3-70b",
             "gemma4-31b",
             "kimi-k3",
             "glm-5-3",
             "glm-5-3-flash",
-            "deepseek-v4-1-flash",
             AUTO_POWERFUL_MODEL_ID,
         ] {
             assert!(
@@ -1872,7 +1886,7 @@ mod tests {
 
         for (plan, expected_quick, expected_quick_access) in [
             (ModelPlan::Free, QUICK_MODEL_ID, "free"),
-            (ModelPlan::Paid, GLM_5_3_FLASH_MODEL_ID, "pro"),
+            (ModelPlan::Paid, QUICK_MODEL_ID, "free"),
         ] {
             let catalog = model_catalog_response(plan);
             let aliases = catalog["aliases"].as_array().expect("aliases");
@@ -1975,7 +1989,7 @@ mod tests {
         assert_eq!(deepseek["provider"], "tinfoil");
         assert_eq!(deepseek["provider_id"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(deepseek["display_name"], "DeepSeek V4.1 Flash");
-        assert_eq!(deepseek["access"], "pro");
+        assert_eq!(deepseek["access"], "free");
         assert_eq!(deepseek["context_window"], 1_048_576);
         assert_eq!(deepseek["input_modalities"], json!(["text", "image"]));
         assert_eq!(deepseek["output_modalities"], json!(["text"]));
@@ -2039,7 +2053,7 @@ mod tests {
         assert!(!has_model(&catalog, "deepseek-v4-flash"));
 
         let deepseek_v41 = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        assert_eq!(deepseek_v41["access"], "pro");
+        assert_eq!(deepseek_v41["access"], "free");
         assert_eq!(deepseek_v41["provider_id"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(deepseek_v41["display_name"], "DeepSeek V4.1 Flash");
         assert_eq!(deepseek_v41["context_window"], 1_048_576);
@@ -2216,7 +2230,7 @@ mod tests {
         assert_eq!(glm.clamp(ReasoningEffort::XHigh), ReasoningEffort::Max);
         assert_eq!(glm.clamp(ReasoningEffort::High), ReasoningEffort::High);
 
-        let gpt_oss = model_reasoning(QUICK_MODEL_ID).unwrap();
+        let gpt_oss = model_reasoning(GPT_OSS_120B_MODEL_ID).unwrap();
         assert_eq!(gpt_oss.clamp(ReasoningEffort::Max), ReasoningEffort::High);
         assert_eq!(gpt_oss.clamp(ReasoningEffort::XHigh), ReasoningEffort::High);
         assert_eq!(gpt_oss.clamp(ReasoningEffort::None), ReasoningEffort::Low);
@@ -2244,8 +2258,9 @@ mod tests {
 
     #[test]
     fn test_alias_reasoning_is_what_every_candidate_accepts() {
-        // Paid Quick may run on GLM-5.3-Flash or DeepSeek: xhigh and none are
-        // not shared, so neither is promised; Flash's mandatory reasoning wins.
+        // Paid Quick may run on DeepSeek or GLM-5.3-Flash: xhigh and none are
+        // not shared, so neither is promised; Flash's mandatory reasoning wins
+        // and the preferred DeepSeek keeps its default effort.
         let paid_quick = alias_reasoning(AUTO_QUICK_MODEL_ID, ModelPlan::Paid).unwrap();
         assert_eq!(
             paid_quick.json(),
@@ -2253,12 +2268,20 @@ mod tests {
                 "mandatory": true,
                 "default_enabled": true,
                 "supported_efforts": ["max", "high", "low"],
-                "default_effort": "max"
+                "default_effort": "high"
             })
         );
         // Paid Powerful may run on GLM-5.3 or Kimi K3.
         let paid_powerful = alias_reasoning(AUTO_POWERFUL_MODEL_ID, ModelPlan::Paid).unwrap();
-        assert_eq!(paid_powerful, paid_quick);
+        assert_eq!(
+            paid_powerful.json(),
+            json!({
+                "mandatory": true,
+                "default_enabled": true,
+                "supported_efforts": ["max", "high", "low"],
+                "default_effort": "max"
+            })
+        );
         // Free aliases have no alternates and publish their target's controls.
         assert_eq!(
             alias_reasoning(AUTO_QUICK_MODEL_ID, ModelPlan::Free),
@@ -2330,7 +2353,7 @@ mod tests {
         assert!(
             enabled_api_completion_model_ids().any(|model| model == DEEPSEEK_V4_1_FLASH_MODEL_ID)
         );
-        assert!(!ModelPlan::Free.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
+        assert!(ModelPlan::Free.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
         assert!(ModelPlan::Paid.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
         let catalog = model_catalog_response(ModelPlan::Paid);
         let deepseek = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -2350,7 +2373,7 @@ mod tests {
             (
                 ModelPlan::Paid,
                 AUTO_QUICK_MODEL_ID,
-                vec![GLM_5_3_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID],
+                vec![DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID],
             ),
             (
                 ModelPlan::Paid,

@@ -1,10 +1,8 @@
 //! Local advanced preferences and capability-gated encryption controls. A
 //! remote task selection never redirects these settings to another computer.
 
-use crate::ui::i18n::{UiText, tr, tr_args};
+use crate::ui::i18n::{UiText, tr};
 use gpui::{App, Context, Div, Entity, EventEmitter, div, prelude::*};
-#[cfg(feature = "acp")]
-use maple_agent::acp::AgentAcpConfig;
 use maple_agent::store::{
     StoreState,
     lifecycle::{StoreMode, StoreModeNotice},
@@ -28,17 +26,6 @@ pub(super) struct AdvancedState {
     mode_notice_acknowledging: Option<StoreModeNotice>,
     mode_notice_acknowledged: Option<StoreModeNotice>,
     pub remote_enabled: bool,
-    #[cfg(feature = "acp")]
-    acp: AcpSettings,
-}
-
-#[cfg(feature = "acp")]
-struct AcpSettings {
-    config: Option<AgentAcpConfig>,
-    roots: Entity<TextInput>,
-    connection_limit: Entity<TextInput>,
-    saving: bool,
-    notice: Option<UiText>,
 }
 
 impl AdvancedState {
@@ -54,32 +41,6 @@ impl AdvancedState {
             mode_notice_acknowledging: None,
             mode_notice_acknowledged: None,
             remote_enabled: false,
-            #[cfg(feature = "acp")]
-            acp: AcpSettings {
-                config: None,
-                roots: cx.new(|cx| {
-                    TextInput::localized("settings-advanced-one-absolute-folder-path-per-line", cx)
-                        .multiline(6)
-                        .with_tab_index(30)
-                }),
-                connection_limit: cx.new(|cx| {
-                    TextInput::new(
-                        &tr_args(
-                            "settings-acp-default",
-                            [(
-                                "arg1",
-                                (AgentAcpConfig::default().max_connections)
-                                    .to_string()
-                                    .into(),
-                            )],
-                        ),
-                        cx,
-                    )
-                    .with_tab_index(31)
-                }),
-                saving: false,
-                notice: None,
-            },
         }
     }
     pub fn available(&self) -> bool {
@@ -90,21 +51,6 @@ impl AdvancedState {
 }
 
 impl SettingsScreen {
-    #[cfg(feature = "acp")]
-    pub(super) fn refresh_acp_placeholder(&self, cx: &mut Context<Self>) {
-        let label = tr_args(
-            "settings-acp-default",
-            [(
-                "arg1",
-                AgentAcpConfig::default().max_connections.to_string().into(),
-            )],
-        );
-        self.advanced
-            .acp
-            .connection_limit
-            .update(cx, |input, cx| input.set_placeholder(&label, cx));
-    }
-
     pub(crate) fn record_mode_notice_ack(
         &mut self,
         notice: &StoreModeNotice,
@@ -155,15 +101,23 @@ impl SettingsScreen {
         self.advanced.form = form;
     }
 
+    /// Release builds have no password controls, so this section has nothing
+    /// to show unless the local store reports a notice.
+    pub(super) fn advanced_has_content(&self) -> bool {
+        self.advanced.available()
+            || self.advanced.notice.is_some()
+            || self.advanced.status.as_ref().is_some_and(|status| {
+                status.attention_notice().is_some()
+                    || status.current_mode_notice().is_some()
+                    || status.current_persistence_failure().is_some()
+            })
+    }
+
     pub(crate) fn refresh_encryption_status(&self, cx: &mut Context<Self>) {
         self.load_advanced_status(cx);
     }
 
     pub(super) fn load_advanced_status(&self, cx: &mut Context<Self>) {
-        #[cfg(feature = "acp")]
-        if self.advanced.acp.config.is_none() {
-            self.load_acp_settings(cx);
-        }
         let backend = self.backend.clone();
         self.call(
             async move {
@@ -201,155 +155,6 @@ impl SettingsScreen {
                 cx.notify();
             },
         );
-    }
-
-    #[cfg(feature = "acp")]
-    fn load_acp_settings(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.get_acp_config(&user_id).await },
-            cx,
-            |this, result, cx| {
-                // Repeated status/retry reads may overlap. Once the editor is
-                // available, a late read must not overwrite an in-progress draft.
-                if this.advanced.acp.config.is_some() {
-                    return;
-                }
-                match result {
-                    Ok(config) => {
-                        this.install_acp_fields(&config, cx);
-                        this.advanced.acp.config = Some(config);
-                        this.advanced.acp.notice = None;
-                    }
-                    Err(message) => this.advanced.acp.notice = Some(message.into()),
-                }
-                cx.notify();
-            },
-        );
-    }
-
-    #[cfg(feature = "acp")]
-    fn install_acp_fields(&mut self, config: &AgentAcpConfig, cx: &mut Context<Self>) {
-        self.advanced.acp.roots.update(cx, |input, cx| {
-            input.set_text(&config.allowed_project_roots.join("\n"), cx);
-        });
-        let limit = if config.max_connections == AgentAcpConfig::default().max_connections {
-            String::new()
-        } else {
-            config.max_connections.to_string()
-        };
-        self.advanced
-            .acp
-            .connection_limit
-            .update(cx, |input, cx| input.set_text(&limit, cx));
-    }
-
-    #[cfg(feature = "acp")]
-    fn save_acp_settings(&mut self, cx: &mut Context<Self>) {
-        if self.advanced.acp.saving || self.advanced.acp.config.is_none() {
-            return;
-        }
-        let config = match acp_form_config(
-            &self.advanced.acp.roots.read(cx).text(),
-            &self.advanced.acp.connection_limit.read(cx).text(),
-        ) {
-            Ok(config) => config,
-            Err(message) => {
-                self.advanced.acp.notice = Some(message.into());
-                cx.notify();
-                return;
-            }
-        };
-        self.advanced.acp.saving = true;
-        self.advanced.acp.notice = None;
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.set_acp_config(&user_id, config).await },
-            cx,
-            |this, result, cx| {
-                this.advanced.acp.saving = false;
-                match result {
-                    Ok(config) => {
-                        // The host validates again and returns the stored values.
-                        this.install_acp_fields(&config, cx);
-                        this.advanced.acp.config = Some(config);
-                        this.advanced.acp.notice = Some(UiText::key(
-                            "settings-advanced-acp-preferences-saved-they-apply-to-new-connections",
-                        ));
-                    }
-                    Err(message) => this.advanced.acp.notice = Some(message.into()),
-                }
-                cx.notify();
-            },
-        );
-        cx.notify();
-    }
-
-    #[cfg(feature = "acp")]
-    fn reset_acp_fields(&mut self, cx: &mut Context<Self>) {
-        if self.advanced.acp.saving || self.advanced.acp.config.is_none() {
-            return;
-        }
-        self.install_acp_fields(&AgentAcpConfig::default(), cx);
-        self.advanced.acp.notice = Some(UiText::key(
-            "settings-advanced-default-values-are-ready-save-to-apply-them",
-        ));
-        cx.notify();
-    }
-
-    #[cfg(feature = "acp")]
-    fn render_acp_settings(&self, cx: &mut Context<Self>) -> Div {
-        let state = &self.advanced.acp;
-        let mut pane = div().flex().flex_col().gap_3()
-            .child(section_title(&tr("settings-advanced-agent-client-protocol-acp")))
-            .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                .child(tr("settings-advanced-choose-which-folders-local-acp-clients-can-open-and-how-many-conn")));
-        if state.saving {
-            return pane.child(
-                div()
-                    .text_sm()
-                    .child(tr("settings-advanced-saving-acp-preferences")),
-            );
-        }
-        if state.config.is_some() {
-            pane = pane
-                .child(div().text_sm().child(tr("settings-advanced-allowed-project-folders")))
-                .child(widgets::input_frame().child(state.roots.clone()))
-                .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                    .child(tr("settings-advanced-enter-one-absolute-folder-path-per-line-leave-the-list-empty-to-a")))
-                .child(div().text_sm().child(tr("settings-advanced-maximum-connections")))
-                .child(widgets::input_frame().child(state.connection_limit.clone()))
-                .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
-                    .child(self.messages.get("settings-acp-limit-help", [("arg1", (AgentAcpConfig::default().max_connections).to_string().into()), ("arg2", (AgentAcpConfig::default().max_connections).to_string().into())])))
-                .child(div().flex().gap_2()
-                    .child(widgets::primary_button("advanced-acp-save")
-                        .on_click(cx.listener(|this, _, _, cx| this.save_acp_settings(cx))).child(tr("settings-advanced-save-acp-preferences")))
-                    .child(widgets::secondary_button("advanced-acp-defaults")
-                        .on_click(cx.listener(|this, _, _, cx| this.reset_acp_fields(cx))).child(tr("settings-advanced-use-defaults"))));
-        } else if state.notice.is_some() {
-            pane = pane.child(
-                widgets::secondary_button("advanced-acp-retry")
-                    .on_click(cx.listener(|this, _, _, cx| this.load_acp_settings(cx)))
-                    .child(tr("settings-advanced-retry")),
-            );
-        } else {
-            pane = pane.child(
-                div()
-                    .text_sm()
-                    .child(tr("settings-advanced-loading-acp-preferences")),
-            );
-        }
-        if let Some(notice) = &state.notice {
-            pane = pane.child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::status_warning()))
-                    .child(notice.clone()),
-            );
-        }
-        pane
     }
 
     fn open_password_form(&mut self, action: PasswordAction, cx: &mut Context<Self>) {
@@ -583,9 +388,13 @@ impl SettingsScreen {
                 pane.child(section_title(&tr("settings-advanced-local-data"))),
                 cx,
             );
-            #[cfg(feature = "acp")]
-            {
-                pane = pane.child(self.render_acp_settings(cx));
+            if !self.advanced_has_content() {
+                pane = pane.child(
+                    div()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .child(tr("settings-advanced-no-attention")),
+                );
             }
             return pane;
         }
@@ -694,12 +503,7 @@ impl SettingsScreen {
                 );
         }
         pane = self.encryption_context(pane, password);
-        pane = self.render_local_store_notices(pane, cx);
-        #[cfg(feature = "acp")]
-        {
-            pane = pane.child(self.render_acp_settings(cx));
-        }
-        pane
+        self.render_local_store_notices(pane, cx)
     }
 
     fn encryption_context(&self, mut pane: Div, password: bool) -> Div {
@@ -781,40 +585,6 @@ fn password_success_message(action: PasswordAction) -> &'static str {
         PasswordAction::Change => "settings-advanced-your-unlock-password-was-changed",
         PasswordAction::Remove => "settings-advanced-your-unlock-password-was-removed",
     }
-}
-
-#[cfg(feature = "acp")]
-fn acp_form_config(roots: &str, connection_limit: &str) -> Result<AgentAcpConfig, String> {
-    let defaults = AgentAcpConfig::default();
-    let limit = connection_limit.trim();
-    let max_connections = if limit.is_empty() {
-        defaults.max_connections
-    } else {
-        limit
-            .parse::<usize>()
-            .ok()
-            .filter(|limit| (1..=defaults.max_connections).contains(limit))
-            .ok_or_else(|| {
-                tr_args(
-                    "settings-acp-limit-invalid",
-                    [("arg1", (defaults.max_connections).to_string().into())],
-                )
-                .to_string()
-            })?
-    };
-    let mut allowed_project_roots = Vec::new();
-    for root in roots.lines().map(str::trim).filter(|root| !root.is_empty()) {
-        if !std::path::Path::new(root).is_absolute() {
-            return Err(tr("settings-advanced-allowed-acp-folders-must-use-absolute-paths").into());
-        }
-        if !allowed_project_roots.iter().any(|saved| saved == root) {
-            allowed_project_roots.push(root.to_owned());
-        }
-    }
-    Ok(AgentAcpConfig {
-        allowed_project_roots,
-        max_connections,
-    })
 }
 
 #[cfg(test)]
@@ -927,37 +697,52 @@ mod tests {
             );
         });
     }
+    #[gpui::test]
+    fn privacy_and_security_is_listed_only_with_something_to_show(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:1".into(), String::new())
+                .unwrap(),
+        );
+        let settings = cx.new(|cx| {
+            SettingsScreen::new(
+                backend.clone(),
+                backend,
+                "user".into(),
+                crate::settings::AppSettings::default(),
+                crate::shortcuts::ShortcutSnapshot {
+                    generation: 1,
+                    rows: Vec::new(),
+                    last_error: None,
+                    compatibility_warning: None,
+                },
+                Section::General,
+                cx,
+            )
+        });
+        settings.update(cx, |settings, _| {
+            assert!(!settings.visible_sections().contains(&Section::Advanced));
+            settings.advanced.notice = Some("Needs attention.".into());
+            assert!(settings.visible_sections().contains(&Section::Advanced));
+            settings.advanced.notice = None;
+            settings.section = Section::Advanced;
+            assert!(settings.visible_sections().contains(&Section::Advanced));
+            settings.section = Section::General;
+            settings.advanced.status = Some(
+                serde_json::from_value(serde_json::json!({
+                    "state": {"state": "open"},
+                    "mode": "plain",
+                    "password_settings_available": true,
+                }))
+                .unwrap(),
+            );
+            assert!(settings.visible_sections().contains(&Section::Advanced));
+        });
+    }
     #[test]
     fn erase_copy_names_only_this_version_and_preserves_previous_data() {
         assert!(tr(ERASE_COPY).contains("this version's store"));
         assert!(tr(ERASE_COPY).contains("previous app data remain untouched"));
         assert!(tr(ERASE_COPY).contains("remote pairings"));
-    }
-    #[cfg(feature = "acp")]
-    #[test]
-    fn empty_acp_fields_preserve_default_semantics() {
-        assert_eq!(
-            acp_form_config("\n  \n", " ").unwrap(),
-            AgentAcpConfig::default()
-        );
-    }
-    #[cfg(feature = "acp")]
-    #[test]
-    fn acp_fields_validate_roots_and_limits_before_submitting() {
-        let first = std::env::temp_dir()
-            .join("maple-acp-ui-fixture-one")
-            .to_string_lossy()
-            .into_owned();
-        let second = std::env::temp_dir()
-            .join("maple-acp-ui-fixture-two")
-            .to_string_lossy()
-            .into_owned();
-        let config = acp_form_config(&format!(" {first} \n{second}\n{first}\n"), "1").unwrap();
-        assert_eq!(config.allowed_project_roots, vec![first, second]);
-        assert_eq!(config.max_connections, 1);
-        assert!(acp_form_config("relative/folder", "8").is_err());
-        for limit in ["0", "9", "-1", "one"] {
-            assert!(acp_form_config("", limit).is_err());
-        }
     }
 }

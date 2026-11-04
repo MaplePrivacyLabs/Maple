@@ -1,5 +1,6 @@
 import { assertExpectedAccountPrincipal, guardAccountResponse } from "./credentialIdentity";
 import * as api from "./api";
+import { snapshotClientApp, withClientAppHeader, type ClientApp } from "./clientApp";
 import { snapshotPcrConfig, type PcrConfig } from "./pcr";
 import {
   getOrCreateTransportV2CacheRoot,
@@ -59,6 +60,8 @@ function markRequestNotDispatched(error: unknown): unknown & RequestNotDispatche
 }
 
 export interface CustomFetchOptions {
+  /** Self-reported host application for reporting; independent of the credential type. */
+  clientApp?: ClientApp;
   /** Optional API key to use instead of the signed-in user's V2 bearer. */
   apiKey?: string;
   /** Account that owns this client; refreshed credentials must retain this principal. */
@@ -158,6 +161,7 @@ export interface CustomFetchDependencies {
   runtime: Pick<TransportV2Runtime, "request">;
   getApiPcrConfig: typeof api.getApiPcrConfig;
   getApiUrl: typeof api.getApiUrl;
+  getApiClientApp?: typeof api.getApiClientApp;
   getCacheRoot(apiUrl: string): Uint8Array;
   readUserCredentials(apiUrl: string): StoredTransportV2Credentials | null;
 }
@@ -167,6 +171,7 @@ const defaultDependencies: CustomFetchDependencies = {
   runtime: transportV2Runtime,
   getApiPcrConfig: () => api.getApiPcrConfig(),
   getApiUrl: () => api.getApiUrl(),
+  getApiClientApp: () => api.getApiClientApp(),
   getCacheRoot: (apiUrl) => getOrCreateTransportV2CacheRoot(apiUrl),
   readUserCredentials: (apiUrl) => readTransportV2Credentials(apiUrl, "user")
 };
@@ -202,7 +207,7 @@ const OMITTED_LOGICAL_HEADERS = new Set([
   "x-anthropic-api-key"
 ]);
 
-function logicalHeaders(input: Headers): TransportV2Header[] {
+function logicalHeaders(input: Headers, clientApp: ClientApp | undefined): TransportV2Header[] {
   const output: TransportV2Header[] = [];
   input.forEach((value, name) => {
     const normalizedName = name.toLowerCase();
@@ -213,7 +218,7 @@ function logicalHeaders(input: Headers): TransportV2Header[] {
       output.push({ name: normalizedName, value });
     }
   });
-  return output;
+  return withClientAppHeader(output, clientApp) ?? [];
 }
 
 function rejectAutomaticOpenAiRetry(headers: Headers): void {
@@ -303,6 +308,8 @@ export function createCustomFetchWithDependencies(
   options: CustomFetchOptions | undefined,
   dependencies: CustomFetchDependencies
 ): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
+  const explicitClientApp = snapshotClientApp(options?.clientApp);
+  const clientApp = snapshotClientApp(explicitClientApp ?? dependencies.getApiClientApp?.());
   return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     let requestAcceptanceAmbiguous = false;
     let body: Uint8Array | undefined;
@@ -369,7 +376,7 @@ export function createCustomFetchWithDependencies(
           cacheNamespaceRoot,
           method: normalized.method,
           target,
-          headers: logicalHeaders(normalized.headers),
+          headers: logicalHeaders(normalized.headers, clientApp),
           body
         }
       });

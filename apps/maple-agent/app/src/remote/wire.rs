@@ -471,8 +471,6 @@ mod tests {
             "salvage_preview_page",
             "salvage_store",
             "check_store_integrity",
-            "get_acp_config",
-            "set_acp_config",
             "list_sessions",
             "load_session",
             "local_bootstrap",

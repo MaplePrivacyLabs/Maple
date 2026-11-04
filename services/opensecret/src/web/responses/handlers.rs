@@ -1,6 +1,7 @@
 //! Responses API implementation with SSE streaming and dual-stream storage.
 //! Phases 4 & 5: Always streams to client while concurrently storing to database.
 
+use crate::client_app::ClientApp;
 use crate::{
     billing::{BillingError, ChatBillingAccess},
     db::DBError,
@@ -9,26 +10,29 @@ use crate::{
         auto_model::{
             AutoModelDecision, AutoModelRequirements, ExcludedAutoCandidate, PromptTokenEstimate,
         },
-        AttemptFailure, AttemptFailureKind, AttemptTerminal, InferenceIntent, InferenceSurface,
-        ReplaySafety, WorkloadClass,
+        AttemptFailure, AttemptFailureKind, AttemptTerminal, InferenceSurface, ReplaySafety,
+        WorkloadClass,
     },
     jwt::AuthContext,
     model_config::{
         model_config, model_reasoning_history_strategy, model_reasoning_replay,
         resolve_public_model_id, ModelAliasTargets, ModelPlan, ReasoningEffort,
-        ResponsesModelConfig, SamplingConfig,
+        ResponsesModelConfig, SamplingConfig, AUTO_QUICK_MODEL_ID,
     },
     models::responses::{
         NewToolCall, NewToolOutput, NewUserMessage, ResponseStatus, ResponsesError,
     },
     models::users::User,
     provider_cache::CacheNamespaceRoot,
+    provider_routing::ProviderRouter,
+    proxy_config::ProxyRouter,
     tokens::count_tokens,
     web::{
         encryption_middleware::{decrypt_request, encrypt_response, Decrypted, TransportSession},
         model_request_policy::{
             apply_model_request_policy, clamp_reasoning_effort, resolve_reasoning_effort,
-            EffectiveReasoningEffort, ModelSelection, RESPONSES_REASONING_EFFORT_PARAM,
+            EffectiveReasoningEffort, ModelSelection, CHAT_REASONING_EFFORT_PARAM,
+            RESPONSES_REASONING_EFFORT_PARAM,
         },
         openai::{
             ensure_completion_model_access, finish_started_completion,
@@ -701,16 +705,17 @@ mod tests {
         append_streamed_tool_calls, apply_responses_model_defaults,
         assistant_turn_finished_with_tool_call, await_initial_response_step,
         build_internal_system_prompt_for_now, build_model_turn_request, build_provider_tools,
-        consume_assistant_turn, ensure_prompt_fits_model, final_assistant_finish_reason,
-        finalize_first_model_tool_call, forward_authoritative_response_terminal,
-        has_streamed_tool_call_entries, image_attachments, image_description_access,
-        image_description_api_error, image_description_attempt_failure_class,
-        maple_kagi_web_search_prompt, model_turn_request_without_user_payload,
-        normalize_responses_input, reserve_response_message_uuid_with_check,
-        resolve_responses_model, resolve_responses_sampling, response_cancellation_ack_decision,
+        build_title_request, consume_assistant_turn, ensure_prompt_fits_model,
+        final_assistant_finish_reason, finalize_first_model_tool_call,
+        forward_authoritative_response_terminal, has_streamed_tool_call_entries, image_attachments,
+        image_description_access, image_description_api_error,
+        image_description_attempt_failure_class, maple_kagi_web_search_prompt,
+        model_turn_request_without_user_payload, normalize_responses_input,
+        reserve_response_message_uuid_with_check, resolve_responses_model,
+        resolve_responses_sampling, resolve_title_model, response_cancellation_ack_decision,
         response_execution_for_status, responses_pre_persistence_api_error, run_response_worker,
-        send_storage_message, wait_for_local_response_execution_quiescence, web_search_is_selected,
-        web_search_tool_turn_limit, web_search_tool_turn_limit_error,
+        send_storage_message, title_user_prompt, wait_for_local_response_execution_quiescence,
+        web_search_is_selected, web_search_tool_turn_limit, web_search_tool_turn_limit_error,
         web_search_tool_turn_limit_reached, AssistantTurnOutcome, ClientResponseState,
         ConversationParam, ImageAttachment, ImageDescriptionFailureClass, ImageDescriptionInput,
         ImageDescriptionToolPair, InputMessage, MessageContent, MessageContentPart, MessageInput,
@@ -3104,14 +3109,24 @@ mod tests {
             resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::Paid).unwrap(),
             "glm-5-3-flash"
         );
-        assert!(matches!(
-            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
+        assert_eq!(
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free).unwrap(),
+            "deepseek-v4-1-flash"
+        );
         assert_eq!(
             resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Paid).unwrap(),
             "deepseek-v4-1-flash"
         );
+        for retired_free in ["gpt-oss-120b", "llama3-3-70b"] {
+            assert!(matches!(
+                resolve_responses_model(retired_free, "tinfoil", ModelPlan::Free),
+                Err(ApiError::ModelNotAvailableOnPlan)
+            ));
+            assert_eq!(
+                resolve_responses_model(retired_free, "tinfoil", ModelPlan::Paid).unwrap(),
+                retired_free
+            );
+        }
     }
 
     #[test]
@@ -3121,10 +3136,10 @@ mod tests {
             resolve_responses_model(model, "tinfoil", ModelPlan::Paid).unwrap(),
             model
         );
-        assert!(matches!(
-            resolve_responses_model(model, "tinfoil", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
+        assert_eq!(
+            resolve_responses_model(model, "tinfoil", ModelPlan::Free).unwrap(),
+            model
+        );
         assert!(matches!(
             resolve_responses_model("deepseek-v4-1-flash-1017", "tinfoil", ModelPlan::Paid),
             Err(ApiError::BadRequest)
@@ -3134,8 +3149,8 @@ mod tests {
     #[test]
     fn test_resolve_responses_model_allows_free_model() {
         assert_eq!(
-            resolve_responses_model("llama3-3-70b", "tinfoil", ModelPlan::Free).unwrap(),
-            "llama3-3-70b"
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free).unwrap(),
+            "deepseek-v4-1-flash"
         );
     }
 
@@ -3193,7 +3208,7 @@ mod tests {
                 name: "paid auto quick",
                 plan: ModelPlan::Paid,
                 selector: crate::model_config::AUTO_QUICK_MODEL_ID,
-                expected_model: crate::model_config::GLM_5_3_FLASH_MODEL_ID,
+                expected_model: crate::model_config::QUICK_MODEL_ID,
                 expected_access: true,
             },
             Case {
@@ -3215,6 +3230,152 @@ mod tests {
             if case.expected_access {
                 assert_eq!(result.unwrap(), case.expected_model, "{}", case.name);
             }
+        }
+    }
+
+    #[test]
+    fn titles_follow_the_quick_tier_and_its_paid_fallback() {
+        use crate::inference::auto_model::AutoModelReason;
+        use crate::inference::health::ShadowObservationMode;
+        use crate::inference::{AttemptFailure, AttemptFailureKind, AttemptStage, ReplaySafety};
+        use crate::model_config::{
+            AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+        };
+        use crate::provider_registry::{ProviderId, RouteSelectionSource};
+        use crate::provider_routing::ProviderRouter;
+        use crate::proxy_config::ProxyRouter;
+
+        let provider_router = ProviderRouter::default();
+        // Without a Maple proxy, DeepSeek's only configured route is Tinfoil.
+        let proxy_router = ProxyRouter::new(
+            "http://continuum.example.com".to_string(),
+            None,
+            "http://tinfoil.example.com".to_string(),
+        );
+        let account = Uuid::from_u128(7);
+        let prompt = title_user_prompt("hello");
+        let resolve = |plan| {
+            resolve_title_model(
+                &provider_router,
+                &proxy_router,
+                account,
+                plan,
+                &prompt,
+                None,
+            )
+        };
+
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            let healthy = resolve(plan).expect("healthy Quick model");
+            assert_eq!(healthy.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        }
+
+        let mut failure = AttemptFailure::new(
+            AttemptFailureKind::CapacityRejected,
+            AttemptStage::AwaitingResponse,
+            ReplaySafety::ProvenPreAcceptance,
+        );
+        failure.status = Some(503);
+        failure.retry_after = Some(Duration::from_secs(60));
+        let route = RouteIdentity::new(
+            ProviderId::Tinfoil,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            RouteSelectionSource::StaticSplit,
+            None,
+        );
+        let intent = InferenceIntent::new(
+            account,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            ModelPlan::Paid,
+            InferenceSurface::Responses,
+            WorkloadClass::Interactive,
+        );
+        provider_router.observe_attempt_terminal(
+            &AttemptTerminal::Failed {
+                attempt: intent.begin_execution().begin_attempt(route),
+                failure,
+            },
+            ShadowObservationMode::Update,
+        );
+
+        let fallback = resolve(ModelPlan::Paid).expect("GLM Flash alternate");
+        assert_eq!(fallback.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(
+            fallback.auto_decision().expect("decision").reason,
+            AutoModelReason::HealthFallback
+        );
+        let intent = fallback.intent(
+            account,
+            AUTO_QUICK_MODEL_ID,
+            ModelPlan::Paid,
+            InferenceSurface::Internal,
+            WorkloadClass::Background,
+        );
+        assert_eq!(intent.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert!(matches!(
+            resolve(ModelPlan::Free),
+            Err(ApiError::InferenceCapacity { .. })
+        ));
+    }
+
+    #[test]
+    fn a_title_that_lost_its_model_decides_once_more_without_it() {
+        use crate::inference::auto_model::ExcludedAutoCandidate;
+        use crate::model_config::{DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID};
+        use crate::provider_routing::ProviderRouter;
+        use crate::proxy_config::ProxyRouter;
+
+        let provider_router = ProviderRouter::default();
+        let proxy_router = ProxyRouter::new(
+            "http://continuum.example.com".to_string(),
+            None,
+            "http://tinfoil.example.com".to_string(),
+        );
+        let prompt = title_user_prompt("hello");
+        let lost = ExcludedAutoCandidate::unavailable(
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            Some(Duration::from_secs(25)),
+        );
+        let resolve = |plan| {
+            resolve_title_model(
+                &provider_router,
+                &proxy_router,
+                Uuid::from_u128(8),
+                plan,
+                &prompt,
+                Some(&lost),
+            )
+        };
+
+        let second = resolve(ModelPlan::Paid).expect("paid alternate");
+        assert_eq!(second.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        // Free Quick has no alternate, so the title is skipped with a capacity result.
+        assert!(matches!(
+            resolve(ModelPlan::Free),
+            Err(ApiError::InferenceCapacity {
+                retry_after: Some(retry_after),
+                ..
+            }) if retry_after == Duration::from_secs(25)
+        ));
+    }
+
+    #[test]
+    fn title_requests_ask_each_model_for_the_least_reasoning_it_accepts() {
+        let prompt = title_user_prompt(&"x".repeat(800));
+        assert!(prompt.contains(&"x".repeat(500)) && !prompt.contains(&"x".repeat(501)));
+        for (model, effort) in [
+            (crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID, "none"),
+            (crate::model_config::GLM_5_3_FLASH_MODEL_ID, "low"),
+        ] {
+            let request = build_title_request(&prompt, model);
+            assert_eq!(request["model"], model);
+            assert_eq!(request["reasoning_effort"], effort, "{model}");
+            assert_eq!(request["include_reasoning"], false);
+            assert_eq!(request["stream"], false);
+            assert_eq!(request["messages"][1]["content"], prompt);
         }
     }
 
@@ -3276,12 +3437,13 @@ mod tests {
         );
         assert_eq!(
             paid_quick_request["model"],
-            crate::model_config::GLM_5_3_FLASH_MODEL_ID
+            crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID
         );
-        assert_eq!(
-            paid_quick_request["chat_template_kwargs"]["clear_thinking"],
-            true
-        );
+        // DeepSeek replays reasoning only around tool calls; a tool-free turn
+        // carries neither GLM's nor Kimi's history switch.
+        assert!(paid_quick_request["chat_template_kwargs"]
+            .get("clear_thinking")
+            .is_none());
         assert!(paid_quick_request["chat_template_kwargs"]
             .get("preserve_thinking")
             .is_none());
@@ -5105,6 +5267,7 @@ struct ResponsesImageDescriptionExecutor<'a> {
     user: &'a User,
     cache_policy: &'a CompletionCachePolicy,
     routing: InferenceRoutingContext,
+    client_app: Option<ClientApp>,
     _access: PaidImageDescriptionAccess,
 }
 
@@ -5190,8 +5353,11 @@ impl ImageDescriptionAttemptExecutor for ResponsesImageDescriptionExecutor<'_> {
         }
 
         let headers = HeaderMap::new();
-        let billing_context =
-            BillingContext::new(AuthMethod::Jwt, candidate.public_model_id.to_string());
+        let billing_context = BillingContext::new(
+            AuthMethod::Jwt,
+            candidate.public_model_id.to_string(),
+            self.client_app,
+        );
         let mut completion = get_bounded_chat_completion_response(
             self.state,
             self.user,
@@ -5249,12 +5415,14 @@ async fn describe_images(
     routing: InferenceRoutingContext,
     access: PaidImageDescriptionAccess,
     images: &[ImageAttachment],
+    client_app: Option<ClientApp>,
 ) -> Result<Vec<ImageDescriptionToolPair>, ApiError> {
     let executor = ResponsesImageDescriptionExecutor {
         state,
         user,
         cache_policy,
         routing,
+        client_app,
         _access: access,
     };
     let fallback_policy = RetryNonTerminalImageDescriptionFallbackPolicy;
@@ -5369,6 +5537,7 @@ struct BuiltContext {
     context_observation: ResponseContextObservation,
     current_user_uuid: Uuid,
     allowed_urls: HashSet<String>,
+    client_app: Option<ClientApp>,
 }
 
 /// Persisted database records
@@ -5376,6 +5545,148 @@ struct PersistedData {
     response: crate::models::responses::Response,
     decrypted_metadata: Option<Value>,
     last_item_created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The user message of a title request, from at most 500 characters of the
+/// conversation's first message.
+fn title_user_prompt(user_content: &str) -> String {
+    let truncated_content: String = user_content.chars().take(500).collect();
+    format!("Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{}\"", truncated_content)
+}
+
+/// Titles ask the Quick tier for the account's plan, so they follow its Auto
+/// fallback like any other Quick request. `excluded` is the model an earlier
+/// attempt of this title lost before sending.
+fn resolve_title_model(
+    provider_router: &ProviderRouter,
+    proxy_router: &ProxyRouter,
+    account_uuid: Uuid,
+    plan: ModelPlan,
+    title_prompt: &str,
+    excluded: Option<&ExcludedAutoCandidate>,
+) -> Result<ResolvedInferenceModel, ApiError> {
+    resolve_inference_model(
+        provider_router,
+        proxy_router,
+        ModelResolutionRequest {
+            account_uuid,
+            surface: InferenceSurface::Internal,
+            requested_model_id: AUTO_QUICK_MODEL_ID,
+            alias_target: ModelAliasTargets::for_plan(plan).resolve(AUTO_QUICK_MODEL_ID),
+            model_plan: plan,
+            excluded,
+        },
+        || AutoModelRequirements {
+            vision: false,
+            kimi_tool_history_compatible: true,
+            prompt_tokens: PromptTokenEstimate::Known(count_tokens(title_prompt)),
+        },
+    )
+}
+
+/// The title request for the model Auto chose, with the least reasoning that
+/// model accepts: a title needs none, and GLM's cannot be switched off.
+fn build_title_request(title_prompt: &str, model: &str) -> Value {
+    let mut title_request = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": ROLE_SYSTEM,
+                "content": "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
+            },
+            {
+                "role": ROLE_USER,
+                "content": title_prompt
+            }
+        ],
+        "stream": false,
+        "include_reasoning": false
+    });
+    if let Some(sampling) = model_config(model).responses.sampling {
+        sampling.apply_to_request(&mut title_request, false);
+    }
+    let effort = clamp_reasoning_effort(
+        model,
+        Some(&json!(ReasoningEffort::None.as_str())),
+        CHAT_REASONING_EFFORT_PARAM,
+    );
+    if let Some(request) = title_request.as_object_mut() {
+        apply_model_request_policy(request, model, effort);
+    }
+    title_request
+}
+
+/// Starts the title completion. A chosen model that loses its routes or its
+/// first-send claim earns one further decision without it, as on the Chat
+/// Completions path; neither case has reached a provider, so nothing replays.
+async fn start_title_completion(
+    state: &Arc<AppState>,
+    user: &User,
+    title_prompt: &str,
+    routing: InferenceRoutingContext,
+    client_app: Option<ClientApp>,
+    cache_policy: &CompletionCachePolicy,
+) -> Result<crate::web::openai::CompletionStream, CompletionExecutionError> {
+    let plan = routing.model_plan();
+    // Call the completions API with empty headers (no special headers needed)
+    let headers = HeaderMap::new();
+    let mut excluded = None;
+    loop {
+        let resolved = resolve_title_model(
+            &state.provider_router,
+            &state.proxy_router,
+            user.uuid,
+            plan,
+            title_prompt,
+            excluded.as_ref(),
+        )
+        .map_err(CompletionExecutionError::Request)?;
+        let can_reselect = excluded.is_none();
+        let model = resolved.public_model_id().to_string();
+        let intent = resolved.intent(
+            user.uuid,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            InferenceSurface::Internal,
+            WorkloadClass::Background,
+        );
+        let retry_after = match prepare_completion_request(state, user, intent, routing).await {
+            Ok(pinned) => {
+                // Responses API always uses JWT auth (not API key)
+                let billing_context = crate::web::openai::BillingContext::new(
+                    crate::web::openai_auth::AuthMethod::Jwt,
+                    model.clone(),
+                    client_app,
+                );
+                debug!("Title generation: about to call get_chat_completion_response");
+                match get_chat_completion_response(
+                    state,
+                    user,
+                    build_title_request(title_prompt, &model),
+                    &headers,
+                    CompletionExecutionContext::new(billing_context, routing, cache_policy),
+                    &pinned,
+                )
+                .await
+                {
+                    // A `Request` failure precedes any provider attempt by construction.
+                    Err(CompletionExecutionError::Request(ApiError::InferenceCapacity {
+                        retry_after,
+                        ..
+                    })) if can_reselect => retry_after,
+                    result => return result,
+                }
+            }
+            Err(ApiError::InferenceCapacity { retry_after, .. }) if can_reselect => retry_after,
+            Err(error) => return Err(CompletionExecutionError::Request(error)),
+        };
+        info!(
+            "Title model lost its route before send; deciding again without it: model={}, retry_after_seconds={:?}",
+            model,
+            retry_after.map(|hint| hint.as_secs())
+        );
+        excluded = Some(ExcludedAutoCandidate::unavailable(model, retry_after));
+    }
 }
 
 /// Spawns a background task to generate a conversation title using AI
@@ -5400,6 +5711,7 @@ fn spawn_title_generation_task(
     user_content: String,
     cache_policy: CompletionCachePolicy,
     routing: InferenceRoutingContext,
+    client_app: Option<ClientApp>,
 ) {
     tokio::spawn(async move {
         debug!(
@@ -5407,62 +5719,14 @@ fn spawn_title_generation_task(
             conversation_uuid
         );
 
-        // Truncate content to first 500 characters
-        let truncated_content: String = user_content.chars().take(500).collect();
-        // Build the title generation request
-        let mut title_request = json!({
-            "model": "llama3-3-70b",
-            "messages": [
-                {
-                    "role": ROLE_SYSTEM,
-                    "content": "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations."
-                },
-                {
-                    "role": ROLE_USER,
-                    "content": format!("Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{}\"", truncated_content)
-                }
-            ],
-            "stream": false
-        });
-        if let Some(sampling) = model_config("llama3-3-70b").responses.sampling {
-            sampling.apply_to_request(&mut title_request, false);
-        }
-
-        // Call the completions API with empty headers (no special headers needed)
-        // Responses API always uses JWT auth (not API key)
-        let headers = HeaderMap::new();
-        let billing_context = crate::web::openai::BillingContext::new(
-            crate::web::openai_auth::AuthMethod::Jwt,
-            "llama3-3-70b".to_string(),
-        );
-        let title_intent = InferenceIntent::new(
-            user.uuid,
-            "llama3-3-70b",
-            "llama3-3-70b",
-            ModelPlan::Free,
-            InferenceSurface::Internal,
-            WorkloadClass::Background,
-        );
-        let pinned_completion =
-            match prepare_completion_request(&state, &user, title_intent, routing).await {
-                Ok(pinned) => pinned,
-                Err(error) => {
-                    error!(
-                        "Title generation: failed to prepare inference route: {:?}",
-                        error
-                    );
-                    return;
-                }
-            };
-
-        debug!("Title generation: about to call get_chat_completion_response");
-        match get_chat_completion_response(
+        let title_prompt = title_user_prompt(&user_content);
+        match start_title_completion(
             &state,
             &user,
-            title_request,
-            &headers,
-            CompletionExecutionContext::new(billing_context, routing, &cache_policy),
-            &pinned_completion,
+            &title_prompt,
+            routing,
+            client_app,
+            &cache_policy,
         )
         .await
         {
@@ -5801,6 +6065,7 @@ async fn prepare_context_and_check_billing(
     deadline: TokioInstant,
     routing: InferenceRoutingContext,
     cache_policy: &CompletionCachePolicy,
+    client_app: Option<ClientApp>,
     context_policy: ContextPolicy,
     context_observation: &ResponseContextObservation,
     force_compaction: bool,
@@ -5861,6 +6126,7 @@ async fn prepare_context_and_check_billing(
                 body,
                 routing,
                 cache_policy,
+                client_app,
                 execution: response_execution,
                 budget: compaction_budget,
                 deadline,
@@ -5924,6 +6190,7 @@ async fn prepare_context_and_check_billing(
         context_observation: context_observation.clone(),
         current_user_uuid: prepared.user_message_id,
         allowed_urls: prompt.allowed_urls,
+        client_app,
     })
 }
 
@@ -6406,6 +6673,7 @@ async fn start_responses_assistant_turn(
     prompt_token_estimate: usize,
     response_execution: ResponseExecution,
     cache_policy: &CompletionCachePolicy,
+    client_app: Option<ClientApp>,
 ) -> Result<StartedCompletion, CompletionExecutionError> {
     let mut chat_request = build_model_turn_request(body, prompt_messages, tools_enabled);
 
@@ -6429,6 +6697,7 @@ async fn start_responses_assistant_turn(
     let billing_context = crate::web::openai::BillingContext::new(
         crate::web::openai_auth::AuthMethod::Jwt,
         pinned_completion.intent().requested_model_id.clone(),
+        client_app,
     );
 
     start_chat_completion_response_for_execution(
@@ -6807,6 +7076,7 @@ async fn setup_completion_processor(
                         prompt_token_estimate,
                         response_execution.clone(),
                         cache_policy,
+                        context.client_app,
                     )
                     .await
                     {
@@ -6995,6 +7265,7 @@ async fn prepare_persisted_context(
                 body,
                 routing,
                 cache_policy,
+                client_app: context.client_app,
                 execution: &execution,
                 budget: &context.compaction_budget,
                 deadline,
@@ -7234,6 +7505,7 @@ struct StreamingResponsePreparation {
     context_policy: ContextPolicy,
     compaction_budget: Arc<CompactionBudget>,
     context_observation: ResponseContextObservation,
+    client_app: Option<ClientApp>,
 }
 
 /// The compaction path accepts a durable, retrievable/cancellable Response
@@ -7352,6 +7624,7 @@ async fn create_streaming_preparation_response(
                         execution_policy.deadline,
                         work.routing,
                         &work.cache_policy,
+                        work.client_app,
                         work.context_policy,
                         &work.context_observation,
                         false,
@@ -7367,6 +7640,7 @@ async fn create_streaming_preparation_response(
                             work.routing.with_model_plan(ModelPlan::Paid),
                             access,
                             &work.prepared.image_attachments,
+                            work.client_app,
                         )
                         .await?;
                         // The storage task owns the monotonic transcript order.
@@ -7399,6 +7673,7 @@ async fn create_streaming_preparation_response(
                                 execution_policy.deadline,
                                 work.routing,
                                 &work.cache_policy,
+                                work.client_app,
                                 work.context_policy,
                                 &work.context_observation,
                                 false,
@@ -7423,6 +7698,7 @@ async fn create_streaming_preparation_response(
                         context.total_prompt_tokens,
                         response_execution.clone(),
                         &work.cache_policy,
+                        work.client_app,
                     )
                     .await
                     {
@@ -7447,6 +7723,7 @@ async fn create_streaming_preparation_response(
                                 execution_policy.deadline,
                                 work.routing,
                                 &work.cache_policy,
+                                work.client_app,
                                 work.context_policy,
                                 &work.context_observation,
                                 true,
@@ -7467,6 +7744,7 @@ async fn create_streaming_preparation_response(
                                 context.total_prompt_tokens,
                                 response_execution.clone(),
                                 &work.cache_policy,
+                                work.client_app,
                             )
                             .await
                             .map_err(CompletionExecutionError::into_api_error)?
@@ -7510,7 +7788,8 @@ async fn create_streaming_preparation_response(
                             &work.prepared.message_content,
                         ),
                         work.cache_policy.clone(),
-                        work.routing.with_model_plan(ModelPlan::Free),
+                        work.routing,
+                        work.client_app,
                     );
                 }
                 setup_completion_processor(
@@ -7597,6 +7876,7 @@ async fn create_response_stream_inner(
     Decrypted(mut body): Decrypted<ResponsesCreateRequest>,
     admission_observation: &mut Option<ResponseContextObservation>,
 ) -> Result<Response, ApiError> {
+    let client_app = ClientApp::from_headers(&headers);
     let cache_policy = CompletionCachePolicy::for_request(
         &session_id,
         cache_namespace_root.map(|Extension(root)| root),
@@ -7810,6 +8090,7 @@ async fn create_response_stream_inner(
                 context_policy,
                 compaction_budget,
                 context_observation,
+                client_app,
             },
             response_execution,
             execution_policy,
@@ -7852,6 +8133,7 @@ async fn create_response_stream_inner(
                 execution_policy.deadline,
                 routing,
                 &cache_policy,
+                client_app,
                 context_policy,
                 &context_observation,
                 false,
@@ -7894,6 +8176,7 @@ async fn create_response_stream_inner(
             routing.with_model_plan(ModelPlan::Paid),
             access,
             &prepared.image_attachments,
+            client_app,
         )
         .await
         .map_err(|error| {
@@ -7944,6 +8227,7 @@ async fn create_response_stream_inner(
                     execution_policy.deadline,
                     routing,
                     &cache_policy,
+                    client_app,
                     context_policy,
                     &context_observation,
                     false,
@@ -8070,6 +8354,7 @@ async fn create_response_stream_inner(
             context.total_prompt_tokens,
             response_execution.clone(),
             &cache_policy,
+            client_app,
         ),
     )
     .await
@@ -8099,6 +8384,7 @@ async fn create_response_stream_inner(
                         execution_policy.deadline,
                         routing,
                         &cache_policy,
+                        client_app,
                         context_policy,
                         &context_observation,
                         true,
@@ -8132,6 +8418,7 @@ async fn create_response_stream_inner(
                     context.total_prompt_tokens,
                     response_execution.clone(),
                     &cache_policy,
+                    client_app,
                 ),
             )
             .await
@@ -8190,7 +8477,7 @@ async fn create_response_stream_inner(
             context.conversation.uuid,
             prepared.user_key,
             MessageContentConverter::extract_text_for_token_counting(&prepared.message_content),
-            routing.with_model_plan(ModelPlan::Free),
+            routing,
         )
     });
     let assistant_message_id = prepared.assistant_message_id;
@@ -8294,6 +8581,7 @@ async fn create_response_stream_inner(
             user_content,
             cache_policy.clone(),
             title_routing,
+            client_app,
         );
     }
 

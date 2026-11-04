@@ -2,6 +2,7 @@ import { clearUserCredentialsForSignOut } from "./credentialIdentity";
 import React, { createContext, useState, useEffect, useRef } from "react";
 import * as api from "./api";
 import { createCustomFetch } from "./ai";
+import type { ClientApp } from "./clientApp";
 import type { Model } from "openai/resources/models.js";
 import { authenticate } from "./attestation";
 import {
@@ -41,6 +42,9 @@ export type OpenSecretContextType = {
    * A UUID that identifies which project/tenant this instance belongs to.
    */
   clientId: string;
+
+  /** Self-reported host application for reporting; never an authorization claim. */
+  clientApp?: ClientApp;
 
   /**
    * Optional API key for OpenAI endpoints.
@@ -962,6 +966,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
  * @param props.children - React child components to be wrapped by the provider
  * @param props.apiUrl - URL of OpenSecret enclave backend
  * @param props.clientId - UUID identifying which project/tenant this instance belongs to
+ * @param props.clientApp - Optional host application used only for usage reporting
  * @param props.pcrConfig - Optional PCR0 trust policy enforced before session establishment; its environment defaults to production
  *
  * @remarks
@@ -984,11 +989,13 @@ export function OpenSecretProvider({
   children,
   apiUrl,
   clientId,
+  clientApp,
   pcrConfig = DEFAULT_PCR_CONFIG
 }: {
   children: React.ReactNode;
   apiUrl: string;
   clientId: string;
+  clientApp?: ClientApp;
   pcrConfig?: PcrConfig;
 }) {
   const [auth, setAuth] = useState<OpenSecretAuthState>({
@@ -1032,7 +1039,7 @@ export function OpenSecretProvider({
         "OpenSecretProvider requires a non-empty clientId. Please provide a valid project UUID."
       );
     }
-    api.setApiUrl(apiUrl, pcrConfig);
+    api.setApiUrl(apiUrl, pcrConfig, clientApp);
 
     // Configure the apiConfig service with the app URL
     // Using dynamic import to avoid circular dependencies
@@ -1040,19 +1047,25 @@ export function OpenSecretProvider({
       const platformUrl = apiConfig.platformApiUrl || "";
       apiConfig.configure(apiUrl, platformUrl);
     });
-  }, [apiUrl, clientId, pcrConfig]);
+  }, [apiUrl, clientId, pcrConfig, clientApp]);
 
   // Create aiCustomFetch when API is configured (supports JWT or API key internally)
   useEffect(() => {
     if (apiUrl) {
       // Pass API key if available, otherwise falls back to JWT
       setAiCustomFetch(() =>
-        createCustomFetch({ apiKey, apiUrl, pcrConfig, expectedUserId: authenticatedUserId })
+        createCustomFetch({
+          apiKey,
+          apiUrl,
+          pcrConfig,
+          clientApp,
+          expectedUserId: authenticatedUserId
+        })
       );
     } else {
       setAiCustomFetch(undefined);
     }
-  }, [apiUrl, apiKey, authenticatedUserId, pcrConfig]);
+  }, [apiUrl, apiKey, authenticatedUserId, pcrConfig, clientApp]);
 
   async function fetchUser() {
     const generation = authLoadGeneration.current + 1;
@@ -1286,6 +1299,7 @@ export function OpenSecretProvider({
   const value: OpenSecretContextType = {
     auth,
     clientId,
+    clientApp,
     apiKey,
     setApiKey,
     signIn,

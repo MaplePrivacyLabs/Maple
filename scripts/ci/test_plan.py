@@ -148,12 +148,14 @@ class AgentSelectionTests(unittest.TestCase):
 
 
 class LaneTableTests(unittest.TestCase):
-    def test_typescript_sdk_never_selects_a_client_lane(self):
+    def test_typescript_sdk_selects_research_because_it_links_the_sdk(self):
         for path in ("sdk/src/index.ts", "sdk/package.json", "sdk/bun.lock"):
-            for event in (PR, PUSH):
-                with self.subTest(path=path, event=event):
-                    # The SDK-to-backend suite is the only other consumer.
-                    self.assertEqual(selected([path], event), {"sdk-ts", "os-sdk-e2e"})
+            with self.subTest(path=path):
+                self.assertEqual(selected([path], PR), {"sdk-ts", "os-sdk-e2e", "research-web"})
+                # frontend-tests.yml and web-build.yml verify Research on master.
+                self.assertEqual(selected([path], PUSH), {"sdk-ts", "os-sdk-e2e"})
+        # SDK tests are not Research build inputs.
+        self.assertNotIn("research-web", selected(["sdk/src/lib/test/ai.test.ts"], PR))
 
     def test_release_metadata_and_publisher_inputs_select_the_repo_lane(self):
         for path in ("apps/maple-research/frontend/package.json", "apps/maple-research/frontend/src-tauri/Cargo.toml",
@@ -294,8 +296,10 @@ class HookTests(unittest.TestCase):
             (["apps/maple-agent/scripts/release-info.py"], ("agent",)),
             (["apps/maple-agent/release-profiles.json"], ("agent",)),
             (["sdk/rust/src/client.rs"], ("sdk_rust",)), (["sdk/rust/tests/crypto.rs"], ("sdk_rust",)),
-            (["sdk/src/lib/main.tsx"], ("sdk_ts",)), (["sdk/src/lib/test/models.test.ts"], ("sdk_ts",)),
-            (["sdk/package.json"], ("sdk_ts",)), (["sdk/flake.lock"], ("sdk_ts", "sdk_rust")),
+            (["sdk/src/lib/main.tsx"], ("sdk_ts", "research_frontend")),
+            (["sdk/src/lib/test/models.test.ts"], ("sdk_ts",)),
+            (["sdk/package.json"], ("sdk_ts", "research_frontend")),
+            (["sdk/flake.lock"], ("sdk_ts", "sdk_rust")),
             (["proxy/src/main.rs"], ("proxy",)),
             (["services/opensecret/src/main.rs"], ("opensecret",)),
             (["services/opensecret/migrations/0001/up.sql"], ("opensecret",)),

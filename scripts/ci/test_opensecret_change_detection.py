@@ -100,8 +100,8 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
                      "sdk/flake.nix", "sdk/bun.lock", "sdk/package.json"):
             with self.subTest(path=path):
                 self.assert_routes([path], "integration")
-        # Frontends pin the TypeScript SDK; the proxy and both desktops build sdk/rust from the tree.
-        self.assertEqual(research_routes("sdk/src/lib/client.ts"), frozenset())
+        # Research links the TypeScript SDK; the proxy and both desktops build sdk/rust from the tree.
+        self.assertEqual(research_routes("sdk/src/lib/client.ts"), frozenset({"frontend"}))
         self.assertFalse(affects_agent("sdk/src/lib/client.ts"))
         self.assertTrue(affects_agent("sdk/rust/src/client.rs"))
         self.assertFalse(affects_agent("sdk/rust/Cargo.lock"))

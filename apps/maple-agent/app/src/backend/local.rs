@@ -1518,7 +1518,8 @@ impl LocalBackend {
         self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?;
+            .map_err(|_| "Maple API authentication failed".to_string())?
+            .with_client_app(maple_sdk::ClientApp::Work);
         let response = client
             .login(email, password, self.client_id)
             .await
@@ -1543,7 +1544,8 @@ impl LocalBackend {
         self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?;
+            .map_err(|_| "Maple API authentication failed".to_string())?
+            .with_client_app(maple_sdk::ClientApp::Work);
         let response = client
             .login_with_id(account_id, password, self.client_id)
             .await
@@ -1762,6 +1764,7 @@ impl LocalBackend {
     fn oauth_client(&self) -> Result<OpenSecretClient, String> {
         let environment = configured_pcr0_environment()?;
         OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
+            .map(|client| client.with_client_app(maple_sdk::ClientApp::Work))
             .map_err(|_| "Maple API authentication failed".to_string())
     }
 
@@ -2350,30 +2353,6 @@ impl LocalBackend {
     }
 
     #[cfg(feature = "acp")]
-    pub async fn get_acp_config(
-        &self,
-        user_id: &str,
-    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
-        self.authorize_account(user_id)?;
-        maple_agent::acp::load_acp_config(self.open_store()?.as_ref(), user_id)
-    }
-
-    #[cfg(feature = "acp")]
-    pub async fn set_acp_config(
-        &self,
-        user_id: &str,
-        config: maple_agent::acp::AgentAcpConfig,
-    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
-        self.authorize_account(user_id)?;
-        maple_agent::acp::save_acp_config(
-            self.open_store()?.as_ref(),
-            user_id,
-            config,
-            chrono::Utc::now().timestamp_millis(),
-        )
-    }
-
-    #[cfg(feature = "acp")]
     pub(crate) async fn serve_acp<R, W>(&self, read: R, write: W) -> Result<(), String>
     where
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -2396,9 +2375,8 @@ impl LocalBackend {
         let start = maple_agent::acp::shared_runtime_start(async move {
             starting.start(session, None).await.map(|_| ())
         });
-        let config = maple_agent::acp::load_acp_config(self.open_store()?.as_ref(), &user_id)?;
         drop(account);
-        maple_agent::acp::serve_connection(handle, config, start, read, write).await
+        maple_agent::acp::serve_connection(handle, start, read, write).await
     }
 
     /// Rename one project on the execution computer. The owner publishes a

@@ -51,9 +51,9 @@ The directory name does not change shipped application identity.
   removes only that attempt's state. Preserve account/run ownership for late
   completions. Read [implementation contracts](docs/development-contracts.md)
   only for the relevant runtime, security, and concurrency sections.
-- Consumers independently select SDK versions. Follow the
-  [version policy](../../docs/sdk-publishing.md#consumer-version-policy) and
-  inspect manifests/locks; TypeScript/Rust transports and coverage differ.
+- Research builds the in-tree SDKs; do not pin them to a published version. Follow
+  the [version policy](../../docs/sdk-publishing.md#consumer-version-policy);
+  TypeScript/Rust transports and coverage differ.
   Use generators for routes/platform projects and inspect generated deltas.
 
 ## Validation is proportional evidence

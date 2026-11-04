@@ -38,6 +38,8 @@ mod api_keys;
 mod billing;
 mod general;
 use general::{font_label, theme_label, voice_label};
+#[cfg(feature = "acp")]
+mod editors;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
@@ -47,6 +49,8 @@ mod shortcut_labels;
 use self::account::AccountState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
+#[cfg(feature = "acp")]
+use self::editors::EditorsUiState;
 #[cfg(feature = "proxy")]
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
@@ -67,9 +71,9 @@ pub enum Section {
     General,
     Account,
     Billing,
-    ApiKeys,
-    #[cfg(feature = "proxy")]
-    LocalApi,
+    Api,
+    #[cfg(feature = "acp")]
+    Editors,
     Shortcuts,
     Prompt,
     Integrations,
@@ -85,9 +89,9 @@ impl Section {
             Self::General => "General",
             Self::Account => "Account",
             Self::Billing => "Billing",
-            Self::ApiKeys => "API keys",
-            #[cfg(feature = "proxy")]
-            Self::LocalApi => "Local API",
+            Self::Api => "API",
+            #[cfg(feature = "acp")]
+            Self::Editors => "Editors",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "Additional instructions",
             Self::Integrations => "Integrations",
@@ -103,9 +107,9 @@ impl Section {
             Self::General => "settings-section-general",
             Self::Account => "settings-section-account",
             Self::Billing => "settings-section-billing",
-            Self::ApiKeys => "settings-section-api-keys",
-            #[cfg(feature = "proxy")]
-            Self::LocalApi => "settings-section-local-api",
+            Self::Api => "settings-section-api",
+            #[cfg(feature = "acp")]
+            Self::Editors => "settings-section-editors",
             Self::Shortcuts => "settings-section-shortcuts",
             Self::Prompt => "settings-section-prompt",
             Self::Integrations => "settings-section-integrations",
@@ -120,9 +124,9 @@ impl Section {
         Self::General,
         Self::Account,
         Self::Billing,
-        Self::ApiKeys,
-        #[cfg(feature = "proxy")]
-        Self::LocalApi,
+        Self::Api,
+        #[cfg(feature = "acp")]
+        Self::Editors,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -186,6 +190,8 @@ pub struct SettingsScreen {
     api_keys: ApiKeysState,
     #[cfg(feature = "proxy")]
     local_api: LocalApiUiState,
+    #[cfg(feature = "acp")]
+    editors: EditorsUiState,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
     /// Account MCP servers; None until loaded.
@@ -342,7 +348,15 @@ impl SettingsScreen {
     }
 
     fn visible_sections(&self) -> Vec<Section> {
-        Section::ALL.to_vec()
+        Section::ALL
+            .iter()
+            .copied()
+            .filter(|&section| {
+                section != Section::Advanced
+                    || self.section == Section::Advanced
+                    || self.advanced_has_content()
+            })
+            .collect()
     }
 
     pub fn update_remote_status(
@@ -455,9 +469,16 @@ impl SettingsScreen {
             popup: Popup::new(|this| &mut this.popup, cx),
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(application_vim_enabled, application_focus.clone(), cx),
-            api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
+            api_keys: ApiKeysState::new(
+                application_vim_enabled,
+                application_focus.clone(),
+                pane_scroll.clone(),
+                cx,
+            ),
             #[cfg(feature = "proxy")]
             local_api: LocalApiUiState::new(application_vim_enabled, application_focus.clone(), cx),
+            #[cfg(feature = "acp")]
+            editors: EditorsUiState::new(),
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
@@ -1526,7 +1547,7 @@ impl SettingsScreen {
         self.close_setting_menu(cx);
         self.section = section;
         #[cfg(feature = "proxy")]
-        if section == Section::LocalApi {
+        if section == Section::Api {
             self.refresh_local_api_status(cx);
         }
         self.remote_screen.update(cx, |screen, cx| {
@@ -1559,8 +1580,6 @@ impl Render for SettingsScreen {
             self.locale = locale;
             self.rebuild_shortcut_list_cache();
             self.refresh_credit_placeholder(cx);
-            #[cfg(feature = "acp")]
-            self.refresh_acp_placeholder(cx);
         }
         // First, so focus requested below wins over a dropdown handing it
         // back.
@@ -1578,6 +1597,9 @@ impl Render for SettingsScreen {
                 // ScrollAnchor defers until the fresh layout origin is available.
                 self.application_anchor.scroll_to(window, cx);
             }
+        }
+        if std::mem::take(&mut self.api_keys.reveal_card) {
+            self.api_keys.card_anchor.scroll_to(window, cx);
         }
         div()
             .key_context(self.application_vim_context())
@@ -1760,12 +1782,12 @@ impl SettingsScreen {
             Section::Billing => {
                 pane = pane.child(self.render_billing_pane(cx));
             }
-            Section::ApiKeys => {
-                pane = pane.child(self.render_api_keys_pane(cx));
+            Section::Api => {
+                pane = pane.child(self.render_api_pane(cx));
             }
-            #[cfg(feature = "proxy")]
-            Section::LocalApi => {
-                pane = pane.child(self.render_local_api_pane(cx));
+            #[cfg(feature = "acp")]
+            Section::Editors => {
+                pane = pane.child(self.render_editors_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));
@@ -1811,7 +1833,7 @@ impl SettingsScreen {
                         &tr("settings-settings-version"),
                         format!("v{}", crate::ui::titlebar::TitleBar::version()),
                     ))
-                    .child(info_row(&tr("settings-settings-update"), presentation::update_label(&self.update, &self.messages)))
+                    .child(self.render_update_row(cx))
                     .child(toggle_row(
                         tr("settings-settings-automatically-download-updates"),
                         tr("settings-settings-download-verified-updates-in-the-background-installation-always-w"),
@@ -1821,37 +1843,120 @@ impl SettingsScreen {
                             this.edit_setting(move |settings| settings.automatic_update_downloads = enabled, cx);
                             cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::AutomaticDownloads(enabled)));
                         }),
-                    ))
-                    .child(div().flex().flex_wrap().gap_3()
-                        .child(widgets::ghost_button("updates-check")
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Check))))
-                            .child(if self.update.busy() { tr("settings-settings-checking-updating") } else if self.update.state == crate::update::State::Error { tr("settings-settings-retry") } else { tr("settings-settings-check-for-updates") }))
-                        .when_some(self.update.primary.filter(|action| *action != crate::update::UpdateAction::Check), |row, action| row.child(
-                            widgets::ghost_button("updates-primary")
-                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(crate::update::UpdateRequested(action))))
-                                .child(presentation::update_action(action))
-                        ))
-                        .when(self.update.state == crate::update::State::Error && self.update.manual_download_url.is_some(), |row| row.child(
-                            widgets::ghost_button("updates-manual")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::ManualDownload))))
-                                .child(tr("settings-settings-download-manually"))
-                        ))
-                        .when(self.update.state == crate::update::State::Ready, |row| row.child(
-                            widgets::ghost_button("updates-later")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Later))))
-                                .child(tr("settings-settings-later"))
-                        ))
-                    )
-                    .child(info_row(&tr("settings-settings-backend"), self.backend.api_url().to_string()))
-                    .child(info_row(
-                        &tr("settings-settings-instruction-directory"),
-                        crate::backend::instruction_config_root()
-                            .to_string_lossy()
-                            .to_string(),
                     ));
             }
         }
         pane
+    }
+}
+
+impl SettingsScreen {
+    /// One status and the one thing to do next: a release action when
+    /// there is one, otherwise a quiet check. Remote computer cards follow
+    /// the same rule.
+    fn render_update_row(&self, cx: &mut Context<Self>) -> Div {
+        use crate::update::{State, UpdateAction, UpdateRequested};
+
+        let request = |action| cx.listener(move |_, _, _, cx| cx.emit(UpdateRequested(action)));
+        let actions = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .my(px(-8.))
+            .when(
+                self.update.state == State::Ready && self.update.show_banner,
+                |row| {
+                    row.child(
+                        widgets::ghost_button("updates-later")
+                            .on_click(request(UpdateAction::Later))
+                            .child(tr("settings-settings-later")),
+                    )
+                },
+            )
+            .when(
+                self.update.state == State::Error && self.update.manual_download_url.is_some(),
+                |row| {
+                    row.child(
+                        widgets::ghost_button("updates-manual")
+                            .on_click(request(UpdateAction::ManualDownload))
+                            .child(tr("settings-settings-download-manually")),
+                    )
+                },
+            )
+            .when_some(next_update_action(&self.update), |row, action| {
+                row.child(
+                    widgets::primary_button("updates-primary")
+                        .on_click(request(action))
+                        .child(presentation::update_action(action)),
+                )
+            })
+            .map(|row| match update_check(&self.update) {
+                UpdateCheck::Hidden => row,
+                UpdateCheck::Running => row.child(
+                    div()
+                        .flex_none()
+                        .size_7()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::ui::icons::spinning_icon(
+                            "updates-check",
+                            "rotate-cw",
+                            widgets::ROW_ICON,
+                            theme::text_secondary(),
+                        )),
+                ),
+                UpdateCheck::Ready(label) => row.child(
+                    widgets::icon_button(
+                        "updates-check",
+                        "rotate-cw",
+                        tr(label),
+                        widgets::ROW_ICON,
+                        theme::text_secondary(),
+                    )
+                    .on_click(request(UpdateAction::Check)),
+                ),
+            });
+        let has_actions = update_check(&self.update) != UpdateCheck::Hidden
+            || next_update_action(&self.update).is_some();
+        info_row(
+            &tr("settings-settings-update"),
+            presentation::update_label(&self.update, &self.messages),
+        )
+        .when(has_actions, |row| row.child(actions))
+    }
+}
+
+/// The small check control in the Update row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateCheck {
+    Hidden,
+    Running,
+    Ready(&'static str),
+}
+
+/// The release action the Update row offers, if any. A plain check is not
+/// one: it has its own control.
+fn next_update_action(update: &crate::update::Snapshot) -> Option<crate::update::UpdateAction> {
+    update
+        .primary
+        .filter(|action| *action != crate::update::UpdateAction::Check)
+}
+
+fn update_check(update: &crate::update::Snapshot) -> UpdateCheck {
+    use crate::update::State;
+
+    if update.busy() {
+        UpdateCheck::Running
+    } else if matches!(update.state, State::Disabled | State::RestartRequired)
+        || next_update_action(update).is_some()
+    {
+        UpdateCheck::Hidden
+    } else if update.state == State::Error {
+        UpdateCheck::Ready("settings-settings-retry")
+    } else {
+        UpdateCheck::Ready("settings-settings-check-for-updates")
     }
 }
 
@@ -3105,6 +3210,12 @@ fn pill_button(
         .child(label)
 }
 
+/// Whether a key press presses the focused control, as a click does.
+fn activates(event: &gpui::KeyDownEvent) -> bool {
+    !event.keystroke.modifiers.modified()
+        && matches!(event.keystroke.key.as_str(), "enter" | "space" | " ")
+}
+
 /// Pane heading in the brand display face, like the section titles of
 /// the brand kit.
 fn section_title(label: &str) -> Div {
@@ -3316,6 +3427,51 @@ fn info_row(label: &str, value: String) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_row_offers_a_check_only_when_nothing_else_is_next() {
+        use crate::update::{Snapshot, State, UpdateAction};
+
+        let snapshot = |state, primary| {
+            let mut update = Snapshot::initial();
+            update.state = state;
+            update.primary = primary;
+            update
+        };
+        let check = UpdateCheck::Ready("settings-settings-check-for-updates");
+
+        assert_eq!(update_check(&snapshot(State::Idle, None)), check);
+        assert_eq!(
+            update_check(&snapshot(State::Current, Some(UpdateAction::Check))),
+            check
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Error, Some(UpdateAction::Check))),
+            UpdateCheck::Ready("settings-settings-retry")
+        );
+        for state in [State::Checking, State::Downloading, State::Installing] {
+            assert_eq!(update_check(&snapshot(state, None)), UpdateCheck::Running);
+        }
+        assert_eq!(
+            update_check(&snapshot(State::Available, Some(UpdateAction::Download))),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Ready, Some(UpdateAction::Restart))),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(
+                State::RestartRequired,
+                Some(UpdateAction::Relaunch)
+            )),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Disabled, None)),
+            UpdateCheck::Hidden
+        );
+    }
 
     fn shortcut_row(
         slot_id: &str,

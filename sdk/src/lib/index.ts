@@ -148,6 +148,8 @@ export {
 } from "./api";
 
 // Export AI customization options
+export type { ClientApp } from "./clientApp";
+
 export {
   createCustomFetch,
   findOpenSecretInferenceCapacityError,

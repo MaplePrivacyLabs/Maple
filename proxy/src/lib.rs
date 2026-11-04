@@ -2,7 +2,7 @@ mod config;
 mod proxy;
 
 pub use config::Config;
-pub use maple_sdk::Pcr0Environment;
+pub use maple_sdk::{ClientApp, Pcr0Environment};
 use proxy::{health_check, proxy_openai_request, ProxyState};
 
 use axum::{

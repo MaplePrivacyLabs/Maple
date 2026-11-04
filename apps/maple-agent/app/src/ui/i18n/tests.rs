@@ -319,6 +319,7 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../settings/billing.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/local_api.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/mcp.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/editors.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../remote.rs")).unwrap());
     assert!(
         visitor.literals.is_empty(),

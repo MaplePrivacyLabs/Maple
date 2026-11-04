@@ -2,7 +2,8 @@
 
 The localization foundation uses embedded Fluent catalogs.
 It covers all Settings pages, their local password/encryption forms, shortcut names
-and search, remote-computer controls, and the update confirmation dialog. General
+and search, the unified API page, editor setup, remote-computer controls, and the
+update confirmation dialog. General
 includes dropdown choices, the chat preview and test notification. English and
 Spanish are enabled.
 Most of the app is still English; this is infrastructure for incremental
@@ -22,6 +23,9 @@ locale changes. Settings also rebuilds its filtered shortcut list and remote
 status projection. Catalog-backed input placeholders and accessibility labels
 follow the current locale without replacing typed text. Saved control values,
 confirmation words (`DELETE` and `ERASE`), commands and element IDs remain stable.
+Editor setup translates the instructions while preserving generated configuration
+snippets and the names of controls in external editors. The Local API card retains
+semantic status text so cached host snapshots also follow language changes.
 
 Locale state currently belongs to the GPUI thread. Call presentation helpers on
 that thread; background workers should return semantic data for the UI to format.

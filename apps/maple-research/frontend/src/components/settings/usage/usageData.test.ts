@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { BillingStatus } from "@/billing/billingApi";
-import type { UsageDayRow, UsageMonthRow } from "@/billing/usageApi";
+import type { UsageClientApp, UsageDayRow, UsageMonthRow, UsageSource } from "@/billing/usageApi";
 import { niceScale } from "./chartScale";
-import { MORE_MODELS_KEY } from "./palette";
+import { MORE_MODELS_KEY, type UsageOrigin } from "./palette";
 import {
   addDays,
   buildDailyChart,
@@ -20,10 +20,13 @@ import {
   periodTicks,
   rangeDates,
   rangeLabel,
+  originMix,
   rangeOptions,
+  requestOriginLabel,
   shiftMonth,
   statusWindow,
   summarizeDays,
+  usageOrigin,
   usagePlanKind
 } from "./usageData";
 
@@ -137,6 +140,98 @@ describe("ranges", () => {
   });
 });
 
+describe("usage origins", () => {
+  const tagged = (
+    client_app: UsageClientApp | null | undefined,
+    source: UsageSource,
+    credits: number
+  ) => row({ date: "2026-10-01", model: "glm-5-3", source, client_app, credits });
+
+  test("the reported app wins over how the request authenticated", () => {
+    expect(usageOrigin({ source: "app", client_app: "chat" })).toBe("chat");
+    expect(usageOrigin({ source: "api", client_app: "work" })).toBe("work");
+    expect(usageOrigin({ source: "api", client_app: "proxy" })).toBe("proxy");
+  });
+
+  test("usage with no reported app is Chat unless it used an API key", () => {
+    expect(usageOrigin({ source: "app", client_app: null })).toBe("chat");
+    expect(usageOrigin({ source: "api", client_app: null })).toBe("api");
+    expect(usageOrigin({ source: "app" })).toBe("chat");
+    expect(usageOrigin({ source: "api" })).toBe("api");
+  });
+
+  test("recent requests name the app and any API key behind it", () => {
+    expect(requestOriginLabel({ source: "app", client_app: "chat" })).toBe("Chat");
+    expect(requestOriginLabel({ source: "api", client_app: "chat" })).toBe("Chat · API key");
+    expect(requestOriginLabel({ source: "api", client_app: "proxy" })).toBe("Proxy · API key");
+    expect(requestOriginLabel({ source: "api", client_app: null })).toBe("API key");
+    expect(requestOriginLabel({ source: "app", client_app: null })).toBe("Chat");
+  });
+
+  test("API-key credits overlap the app totals rather than splitting them", () => {
+    const summary = summarizeDays(
+      [
+        tagged("chat", "app", 1),
+        tagged("chat", "api", 2),
+        tagged("work", "api", 4),
+        tagged("proxy", "api", 8),
+        tagged(null, "api", 16),
+        tagged(null, "app", 32)
+      ],
+      {}
+    );
+    expect(summary.origins).toEqual({ chat: 35, work: 4, proxy: 8, api: 16 });
+    expect(summary.api).toBe(30);
+    expect(summary.credits).toBe(63);
+    expect(summary.byModel[0].origins).toEqual(summary.origins);
+    expect(summary.byModel[0].api).toBe(30);
+  });
+
+  test("a model's app line stays short however many apps ran", () => {
+    const credits = (partial: Partial<Record<UsageOrigin, number>>) => ({
+      chat: 0,
+      work: 0,
+      proxy: 0,
+      api: 0,
+      ...partial
+    });
+    expect(originMix(credits({ work: 40 }), 40)).toBe("Work");
+    expect(originMix(credits({}), 0)).toBe("");
+    expect(originMix(credits({ chat: 30, work: 10 }), 40)).toBe("75% Chat · 25% Work");
+    expect(originMix(credits({ chat: 5, work: 80, proxy: 10, api: 5 }), 100)).toBe(
+      "80% Work · 10% Proxy · 2 more"
+    );
+  });
+
+  test("the app split keeps a fixed order and color whichever apps ran", () => {
+    const dates = ["2026-10-01"];
+    const split = (rows: UsageDayRow[]) =>
+      buildDailyChart({ dates, rows, metric: "credits", split: "origin", labels: {} }).series;
+    const all = split([
+      tagged(null, "app", 1),
+      tagged(null, "api", 1),
+      tagged("proxy", "api", 1),
+      tagged("work", "app", 1),
+      tagged("chat", "app", 1)
+    ]);
+    expect(all.map((s) => s.key)).toEqual(["chat", "work", "proxy", "api"]);
+    expect(all.map((s) => s.label)).toEqual(["Chat", "Work", "Proxy", "API keys"]);
+    expect(split([tagged("work", "api", 1)])).toEqual([all[1]]);
+  });
+
+  test("a coarser view sums the finer rows billing now returns", () => {
+    const rows = [tagged("chat", "app", 5), tagged(null, "app", 7), tagged("work", "app", 11)];
+    const chart = buildDailyChart({
+      dates: ["2026-10-01"],
+      rows,
+      metric: "credits",
+      split: "model",
+      labels: {}
+    });
+    expect(chart.days[0].values).toEqual({ "glm-5-3": 23 });
+  });
+});
+
 describe("summarizeDays", () => {
   test("totals split by source and pool and keep tokens apart", () => {
     const summary = summarizeDays(
@@ -177,14 +272,16 @@ describe("summarizeDays", () => {
     expect(summary).toMatchObject({
       credits: 61,
       requests: 16,
-      app: 55,
+      origins: { chat: 55, work: 0, proxy: 0, api: 6 },
       api: 6,
       plan: 55,
       extra: 6,
       tokens: { input: 1410, cached: 3000, output: 214 },
       cachedReported: 13
     });
-    expect(summary.byModel.map((m) => [m.model, m.label, m.credits, m.app, m.api])).toEqual([
+    expect(
+      summary.byModel.map((m) => [m.model, m.label, m.credits, m.origins.chat, m.api])
+    ).toEqual([
       ["glm-5-3", "GLM-5.3", 60, 54, 6],
       ["llama3-3-70b", "Llama 3.3 70B", 1, 1, 0]
     ]);
@@ -255,10 +352,10 @@ describe("buildDailyChart", () => {
     expect(chart.days[0].folded).toEqual([]);
   });
 
-  test("source, pool and token splits pivot the same rows", () => {
-    const source = buildDailyChart({ dates, rows, metric: "credits", split: "source", labels });
-    expect(source.series.map((s) => s.key)).toEqual(["app", "api"]);
-    expect(source.days[1].values).toEqual({ api: 27 });
+  test("origin, pool and token splits pivot the same rows", () => {
+    const origin = buildDailyChart({ dates, rows, metric: "credits", split: "origin", labels });
+    expect(origin.series.map((s) => s.key)).toEqual(["chat", "api"]);
+    expect(origin.days[1].values).toEqual({ api: 27 });
 
     const pool = buildDailyChart({ dates, rows, metric: "credits", split: "pool", labels });
     expect(pool.series.map((s) => s.label)).toEqual(["Plan credits", "Extra credits"]);
@@ -309,11 +406,14 @@ describe("buildMonths", () => {
       "2026-10"
     );
     expect(months).toHaveLength(12);
-    expect(months[0]).toMatchObject({ month: "2025-11", app: 5, api: 0, partial: false });
+    expect(months[0]).toMatchObject({
+      month: "2025-11",
+      origins: { chat: 5, api: 0 },
+      partial: false
+    });
     expect(months[11]).toEqual({
       month: "2026-10",
-      app: 100,
-      api: 40,
+      origins: { chat: 100, work: 0, proxy: 0, api: 40 },
       requests: 4,
       extraCredits: 40,
       partial: true

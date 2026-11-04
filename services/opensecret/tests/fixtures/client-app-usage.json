@@ -1,0 +1,13 @@
+{
+  "event_id": "8c6c975a-1f33-439d-98f1-7dd26d4d3e89",
+  "user_id": "6142db59-fc0c-413d-8792-579fc1457fe2",
+  "input_tokens": 100,
+  "output_tokens": 20,
+  "estimated_cost": "0.001",
+  "chat_time": "2026-01-01T00:00:00Z",
+  "is_api_request": false,
+  "provider_name": "maple",
+  "model_name": "deepseek-v4-1-flash",
+  "cached_input_tokens": 42,
+  "client_app": "work"
+}
