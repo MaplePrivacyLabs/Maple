@@ -158,12 +158,14 @@ pub fn icon_button(
 pub fn icon_button_for_action(
     id: impl Into<ElementId>,
     name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
     action: &dyn Action,
 ) -> Stateful<Div> {
-    icon_button_base(id, name, label, size, color).tooltip(tooltip_for_action(label, action))
+    let label = label.into();
+    icon_button_base(id, name, label.clone(), size, color)
+        .tooltip(tooltip_for_action(label, action))
 }
 
 fn icon_button_base(

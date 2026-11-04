@@ -897,7 +897,7 @@ impl Sidebar {
                         generation: self.group_pages.generation,
                         kind: ComputerPageKind::ArchiveCount,
                         cursor: None,
-                        label: "Loading archived task count…".into(),
+                        label: tr("chat-loading-archive-count"),
                         loading: false,
                     },
                     cx,
@@ -914,7 +914,7 @@ impl Sidebar {
                         generation: self.group_pages.generation,
                         kind: ComputerPageKind::Projects,
                         cursor: None,
-                        label: "Loading projects…".into(),
+                        label: tr("chat-loading-projects"),
                         loading: false,
                     },
                     cx,
@@ -946,7 +946,7 @@ impl Sidebar {
                             generation: self.group_pages.generation,
                             kind,
                             cursor: None,
-                            label: "Loading tasks…".into(),
+                            label: tr("chat-loading-tasks"),
                             loading: false,
                         },
                         cx,
@@ -965,7 +965,7 @@ impl Sidebar {
                             generation: self.group_pages.generation,
                             kind: ComputerPageKind::Archived,
                             cursor: None,
-                            label: "Loading archived tasks…".into(),
+                            label: tr("chat-loading-archived"),
                             loading: false,
                         },
                         cx,
@@ -1320,9 +1320,12 @@ impl Sidebar {
             cursor,
             loading,
             label: if failed {
-                format!("Could not load tasks — retry {label}").into()
+                self.messages.get(
+                    "chat-load-tasks-retry",
+                    [("label", label.to_string().into())],
+                )
             } else if loading {
-                "Loading tasks…".into()
+                tr("chat-loading-tasks")
             } else {
                 label.to_string().into()
             },
@@ -1653,7 +1656,7 @@ impl Sidebar {
                             generation: self.group_pages.generation,
                             kind,
                             cursor: cursor.clone(),
-                            label: "Loading tasks…".into(),
+                            label: tr("chat-loading-tasks"),
                             loading: false,
                         });
                     }
@@ -1710,7 +1713,7 @@ impl Sidebar {
                         settled,
                     },
                     cursor,
-                    "more tasks",
+                    &tr("chat-more-tasks"),
                 );
             }
         }
@@ -1745,7 +1748,10 @@ impl Sidebar {
             &computer.key,
             kind,
             cursor,
-            &format!("more from {}", computer.label),
+            &self.messages.get(
+                "chat-more-from",
+                [("name", computer.label.to_string().into())],
+            ),
         );
     }
 
@@ -2004,7 +2010,10 @@ impl Sidebar {
                     &computer.key,
                     ComputerPageKind::ArchiveCount,
                     None,
-                    &format!("archived task count from {}", computer.label),
+                    &self.messages.get(
+                        "chat-archive-count-from",
+                        [("name", computer.label.to_string().into())],
+                    ),
                 );
             }
         }
@@ -2025,7 +2034,10 @@ impl Sidebar {
                         &computer.key,
                         ComputerPageKind::Archived,
                         next,
-                        &format!("more archived tasks from {}", computer.label),
+                        &self.messages.get(
+                            "chat-more-archived-from",
+                            [("name", computer.label.to_string().into())],
+                        ),
                     );
                 }
             }
@@ -2412,10 +2424,10 @@ impl Sidebar {
                                 task.row.pin_id.clone(),
                                 &task.row.group,
                                 "pin",
-                                "Unpin task",
+                                tr("chat-unpin-task"),
                             )
                             .opacity(1.)
-                            .tooltip(widgets::tooltip("Unpin", None))
+                            .tooltip(widgets::tooltip(tr("chat-unpin"), None))
                             .on_click(cx.listener(
                                 move |this, _event, _window, cx| {
                                     cx.stop_propagation();
@@ -2444,9 +2456,9 @@ impl Sidebar {
                     if computer.loading {
                         None
                     } else if computer.backend.is_none() {
-                        Some("Offline".into())
+                        Some(tr("chat-offline"))
                     } else if computer.projects.is_empty() {
-                        Some("No projects yet".into())
+                        Some(tr("chat-no-projects"))
                     } else {
                         None
                     }
@@ -2461,8 +2473,10 @@ impl Sidebar {
                     computer: computer.key.clone(),
                     destination: Destination::NewProject,
                 };
-                let new_project_label: SharedString =
-                    format!("New project on {}", computer.label).into();
+                let new_project_label: SharedString = self.messages.get(
+                    "chat-new-project-on-computer",
+                    [("name", computer.label.to_string().into())],
+                );
                 div()
                     .id(SharedString::from(format!("computer-{:?}", computer.key)))
                     .group(action_group.clone())
@@ -2540,7 +2554,7 @@ impl Sidebar {
                                                 header_button(
                                                     "connection-new-project",
                                                     "folder-plus",
-                                                    "New project",
+                                                    tr("chat-new-project-button"),
                                                     false,
                                                 )
                                                 .aria_label(new_project_label)

@@ -460,6 +460,12 @@ impl TextInput {
         &self.content
     }
 
+    /// Keep placeholder presentation live without replacing input or selection.
+    pub fn set_placeholder_key(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        self.placeholder_key = Some(key);
+        cx.notify();
+    }
+
     pub fn set_placeholder(&mut self, text: &str, cx: &mut Context<Self>) {
         self.placeholder_key = None;
         self.placeholder = SharedString::from(text.to_string());

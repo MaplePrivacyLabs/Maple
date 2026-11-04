@@ -6,13 +6,20 @@ use super::*;
 pub(super) struct SendPreview {
     pub session: Option<String>,
     text: SharedString,
-    attachments: Vec<(SharedString, SharedString, Option<Arc<gpui::Image>>)>,
+    attachments: Vec<PreviewAttachment>,
     show_body: bool,
     acknowledged_run: Option<String>,
     projected_runs: HashSet<String>,
     baseline_user_rows: HashSet<String>,
     snapshot_projected: bool,
     phase: SendPhase,
+}
+
+struct PreviewAttachment {
+    name: SharedString,
+    mime: String,
+    size: u64,
+    image: Option<Arc<gpui::Image>>,
 }
 
 enum SendPhase {
@@ -32,12 +39,11 @@ impl SendPreview {
             text: text.to_string().into(),
             attachments: attachments
                 .iter()
-                .map(|attachment| {
-                    (
-                        attachment.name.clone().into(),
-                        attachment.detail.clone(),
-                        attachment.thumbnail.clone(),
-                    )
+                .map(|attachment| PreviewAttachment {
+                    name: attachment.name.clone().into(),
+                    mime: attachment.mime_type.clone(),
+                    size: attachment.size,
+                    image: attachment.thumbnail.clone(),
                 })
                 .collect(),
             show_body: true,
@@ -236,7 +242,7 @@ impl ChatScreen {
                     self.awaiting_first_token = false;
                 }
                 if uncertain {
-                    self.notice = Some("Delivery is uncertain. Your message and files are retained while Maple checks the host; nothing will be resent.".into());
+                    self.notice = Some(UiText::key("chat-send-uncertain"));
                     self.check_unresolved_sends(cx);
                 } else {
                     if self.is_selected(&session) {
@@ -286,9 +292,9 @@ impl ChatScreen {
                 .debug_selector(|| "pending-send".to_string())
                 .role(gpui::Role::Status)
                 .aria_label(if self.send_pending() {
-                    "Sending message"
+                    tr("chat-sending-message")
                 } else {
-                    "Waiting for response"
+                    tr("chat-waiting-response")
                 })
                 .flex_none()
                 .w_full()
@@ -320,8 +326,8 @@ impl ChatScreen {
                             .text_color(gpui::rgb(theme::text_primary()))
                             .when(!preview.attachments.is_empty(), |body| {
                                 body.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                                    preview.attachments.iter().map(|(name, detail, image)| {
-                                        match image {
+                                    preview.attachments.iter().map(|attachment| {
+                                        match &attachment.image {
                                             Some(image) => div().child(
                                                 gpui::img(gpui::ImageSource::Image(image.clone()))
                                                     .size_16()
@@ -332,11 +338,17 @@ impl ChatScreen {
                                                 .flex_col()
                                                 .text_xs()
                                                 .gap_1()
-                                                .child(name.clone())
+                                                .child(attachment.name.clone())
                                                 .child(
                                                     div()
                                                         .text_color(gpui::rgb(theme::text_muted()))
-                                                        .child(detail.clone()),
+                                                        .child(
+                                                            attachments::cached_attachment_detail(
+                                                                &attachment.mime,
+                                                                attachment.size,
+                                                                &self.messages,
+                                                            ),
+                                                        ),
                                                 ),
                                         }
                                     }),
@@ -362,13 +374,44 @@ impl ChatScreen {
                                 .map(|(_, upload)| upload.label.clone())
                                 .unwrap_or_else(|| {
                                     if self.send_pending() {
-                                        "Sending…".into()
+                                        UiText::key("chat-sending")
                                     } else {
-                                        "Waiting for response…".into()
+                                        UiText::key("chat-waiting-response-progress")
                                     }
                                 }),
                         ),
                 ),
         )
+    }
+}
+
+#[cfg(test)]
+mod localization_tests {
+    use super::*;
+
+    #[test]
+    fn attachment_preview_reformats_without_changing_payload() {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let messages = MessageCache::default();
+        let mut draft = DraftAttachment::preparing(7, "User file.txt".into());
+        draft.mime_type = "text/plain".into();
+        draft.size = 42;
+        let preview = SendPreview::new(Some("task-id".into()), "User message", &[draft]);
+        for (locale, label) in [
+            ("en", "Text · 42 B"),
+            ("es", "Texto · 42 B"),
+            ("en", "Text · 42 B"),
+        ] {
+            crate::ui::i18n::apply_preference(Some(locale));
+            let attachment = &preview.attachments[0];
+            assert_eq!(
+                attachments::cached_attachment_detail(&attachment.mime, attachment.size, &messages)
+                    .as_ref(),
+                label
+            );
+            assert_eq!(attachment.name.as_ref(), "User file.txt");
+            assert_eq!(preview.text.as_ref(), "User message");
+            assert_eq!(preview.session.as_deref(), Some("task-id"));
+        }
     }
 }

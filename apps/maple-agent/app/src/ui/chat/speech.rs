@@ -8,6 +8,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, div, px,
 };
 
+use crate::ui::i18n::{UiText, tr};
+
 use super::{ChatScreen, SpeechState};
 use crate::ui::icons::{icon, spinner};
 use crate::ui::theme;
@@ -58,18 +60,22 @@ impl ChatScreen {
             let result = match audio.stop_recording().await {
                 Ok(wav) => {
                     let task_backend = backend.clone();
-                    backend
-                        .spawn(async move { task_backend.transcribe_audio(&user_id, wav).await })
-                        .await
+                    crate::ui::task::completion(
+                        backend
+                            .spawn(
+                                async move { task_backend.transcribe_audio(&user_id, wav).await },
+                            )
+                            .await,
+                        "chat-transcription-cancelled",
+                    )
                 }
-                .unwrap_or_else(|_| Err("Transcription was cancelled".to_string())),
-                Err(message) => Err(message),
+                Err(message) => Err(crate::ui::task::Failure::Backend(message)),
             };
             this.update(cx, |this, cx| {
                 this.transcribing = false;
                 match result {
                     Ok(text) if text.is_empty() => {
-                        this.notice = Some("No speech was recognized".into());
+                        this.notice = Some(UiText::key("chat-no-speech"));
                     }
                     Ok(text) => this.insert_transcript(&text, cx),
                     Err(message) => this.notice = Some(message.into()),
@@ -128,7 +134,7 @@ impl ChatScreen {
         self.stop_speech(cx);
         let chunks = speech_chunks(&text);
         if chunks.is_empty() {
-            self.notice = Some("There is nothing to read aloud".into());
+            self.notice = Some(UiText::key("chat-nothing-to-read"));
             cx.notify();
             return;
         }
@@ -154,23 +160,28 @@ impl ChatScreen {
                 let task_backend = backend.clone();
                 let user_id = user_id.clone();
                 let voice = voice.clone();
-                let synthesized = backend
-                    .spawn(async move {
-                        task_backend
-                            .synthesize_speech(&user_id, chunk, voice, speed)
-                            .await
-                    })
-                    .await
-                    .unwrap_or_else(|_| Err("Text-to-speech was cancelled".to_string()));
+                let synthesized = crate::ui::task::completion(
+                    backend
+                        .spawn(async move {
+                            task_backend
+                                .synthesize_speech(&user_id, chunk, voice, speed)
+                                .await
+                        })
+                        .await,
+                    "chat-speech-cancelled",
+                );
                 if !is_current(&this, cx) {
                     return;
                 }
                 let played = match synthesized {
-                    Ok(wav) => audio.play(generation, wav).await,
+                    Ok(wav) => audio
+                        .play(generation, wav)
+                        .await
+                        .map_err(crate::ui::task::Failure::Backend),
                     Err(message) => Err(message),
                 };
                 if let Err(message) = played {
-                    log::warn!("speech chunk {} failed: {message}", ix + 1);
+                    log::warn!("speech chunk {} failed: {message:?}", ix + 1);
                     this.update(cx, |this, cx| {
                         if this.speech_generation == generation {
                             this.speech = None;
@@ -218,7 +229,7 @@ pub(super) fn speak_message_button(
     let (glyph, label) = match speech {
         None => (
             icon("volume-2", px(12.), theme::text_secondary()).into_any_element(),
-            "Speak",
+            tr("chat-speak"),
         ),
         Some(SpeechState { playing: false, .. }) => (
             spinner(
@@ -226,11 +237,11 @@ pub(super) fn speak_message_button(
                 px(12.),
                 theme::text_secondary(),
             ),
-            "Preparing…",
+            tr("chat-preparing"),
         ),
         Some(SpeechState { playing: true, .. }) => (
             icon("square", px(12.), theme::text_secondary()).into_any_element(),
-            "Stop",
+            tr("chat-stop"),
         ),
     };
     let active = speech.is_some();

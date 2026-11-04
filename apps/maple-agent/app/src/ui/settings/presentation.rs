@@ -141,7 +141,7 @@ pub(super) fn price(
     ))
 }
 
-pub(super) fn plan_name(plan: &crate::billing::PlanUsage, messages: &MessageCache) -> SharedString {
+pub(crate) fn plan_name(plan: &crate::billing::PlanUsage, messages: &MessageCache) -> SharedString {
     let Some(name) = &plan.product_name else {
         return plan.plan_label.clone().into();
     };
@@ -154,7 +154,7 @@ pub(super) fn plan_name(plan: &crate::billing::PlanUsage, messages: &MessageCach
     messages.get("settings-plan-name", [("name", name.clone().into())])
 }
 
-pub(super) fn reset_date(
+pub(crate) fn reset_date(
     plan: &crate::billing::PlanUsage,
     messages: &MessageCache,
 ) -> SharedString {

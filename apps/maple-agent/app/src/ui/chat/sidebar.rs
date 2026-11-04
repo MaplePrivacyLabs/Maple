@@ -91,6 +91,7 @@ use super::navigation::SidebarTarget;
 use super::{ChatScreen, section_label};
 use crate::backend::AgentBackend;
 use crate::settings::{SidebarGroup, SidebarItemKey, SidebarOrder, SidebarSort, SidebarView};
+use crate::ui::i18n::{MessageCache, UiText, tr, tr_args};
 use crate::ui::icons::{icon, wordmark};
 use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
@@ -188,7 +189,7 @@ pub(super) enum SidebarEvent {
     /// Open the folder picker for a new project.
     ChooseProject,
     /// Something to tell the user.
-    Notice(SharedString),
+    Notice(UiText),
 }
 
 /// Activity a task row indicates beside its title.
@@ -465,15 +466,15 @@ impl TaskRung {
         match self {
             Self::Active => TaskStep {
                 icon: "check",
-                row_label: "Settle",
+                row_label: "chat-settle",
             },
             Self::Settled => TaskStep {
                 icon: "archive",
-                row_label: "Archive",
+                row_label: "chat-archive",
             },
             Self::Archived => TaskStep {
                 icon: "trash-2",
-                row_label: "Delete",
+                row_label: "chat-delete",
             },
         }
     }
@@ -509,14 +510,13 @@ enum SidebarHoverSection {
 }
 
 impl SidebarSection {
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Pinned => "Pinned",
-            Self::Active => "Active",
-            Self::Settled => "Settled",
-            Self::List => "Tasks",
-            Self::Project(_) => "Tasks",
-        }
+    pub(super) fn label(self) -> SharedString {
+        tr(match self {
+            Self::Pinned => "chat-pinned",
+            Self::Active => "chat-active",
+            Self::Settled => "chat-settled",
+            Self::List | Self::Project(_) => "chat-tasks",
+        })
     }
 
     pub(super) fn element_id(self) -> &'static str {
@@ -630,6 +630,8 @@ impl Render for SidebarDrag {
 }
 
 pub(super) struct Sidebar {
+    locale: fluent_templates::LanguageIdentifier,
+    messages: MessageCache,
     pages: SidebarPages,
     group_pages: ComputerPages,
     computers: Arc<Vec<Computer>>,
@@ -748,7 +750,7 @@ impl ProjectRow {
             menu_id: target.element_id("menu-project"),
             folder_id: target.element_id("folder"),
             new_task_id: target.element_id("new-task-in"),
-            new_task_label: format!("New task in {name}").into(),
+            new_task_label: tr_args("chat-new-task-in", [("name", name.to_string().into())]),
             empty_id: target.element_id("folder-empty"),
             target,
             name,
@@ -826,12 +828,12 @@ impl Sidebar {
     pub(super) fn finish_project_rename(
         &mut self,
         target: ProjectTarget,
-        result: Result<(), String>,
+        result: Result<(), UiText>,
         cx: &mut Context<Self>,
     ) {
         self.pending_project_names.remove(&target);
         if let Err(message) = result {
-            cx.emit(SidebarEvent::Notice(message.into()));
+            cx.emit(SidebarEvent::Notice(message));
         }
         self.rebuild_sections();
         cx.emit(SidebarEvent::PreferencesChanged);
@@ -931,7 +933,7 @@ impl Sidebar {
         let application_vim_enabled = settings.application_vim_enabled;
         let search_chat = chat.clone();
         let search_input = cx.new(move |cx| {
-            TextInput::new("Search tasks", cx)
+            TextInput::localized("chat-search-tasks", cx)
                 .with_tab_index(2)
                 .application_vim(application_vim_enabled)
                 .on_application_escape(move |window, cx| {
@@ -964,6 +966,8 @@ impl Sidebar {
             });
         });
         let mut sidebar = Self {
+            locale: crate::ui::i18n::current_locale(),
+            messages: MessageCache::default(),
             pages: SidebarPages::default(),
             group_pages: ComputerPages::default(),
             computers: Arc::new(Vec::new()),
@@ -1441,14 +1445,14 @@ impl Sidebar {
     }
 
     #[cfg(test)]
-    pub(super) fn project_menu_labels_for_test(&self, target: &ProjectTarget) -> Vec<&'static str> {
+    pub(super) fn project_menu_labels_for_test(&self, target: &ProjectTarget) -> Vec<String> {
         let items = self.project_menu_items(target);
         items
             .actions
             .into_iter()
             .chain(items.ordering)
             .chain(items.remove)
-            .map(|item| item.label)
+            .map(|item| tr(item.label).to_string())
             .collect()
     }
 
@@ -2142,6 +2146,20 @@ impl Sidebar {
     }
 
     /// Run a backend future and hand its result back on this thread.
+    fn call_semantic<T, F>(
+        &self,
+        future: F,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Result<T, crate::ui::task::Failure>, &mut Context<Self>) + 'static,
+    ) where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let bridge =
+            crate::ui::task::call_semantic(&self.backend, future, "chat-task-cancelled", cx, then);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
+    }
+
     fn call<T, F>(
         &self,
         future: F,
@@ -2189,7 +2207,7 @@ impl Sidebar {
         let backend = self.backend.clone();
         let user = self.user_id.clone();
         let computer = backend.remote_host().map(str::to_owned);
-        self.call(
+        self.call_semantic(
             async move {
                 if let Some(computer) = computer {
                     let patch = if pinned {
@@ -2354,7 +2372,7 @@ impl Sidebar {
         let escape = sidebar.clone();
         let application_vim_enabled = self.application_vim_enabled;
         let input = cx.new(move |cx| {
-            let mut input = TextInput::new("Name", cx)
+            let mut input = TextInput::localized("chat-name", cx)
                 .with_tab_index(0)
                 .application_vim(application_vim_enabled);
             input.set_text(&current, cx);
@@ -2442,7 +2460,7 @@ impl Sidebar {
                 self.renames_sent.push((session_id.clone(), name.clone()));
                 let backend = self.backend.clone();
                 let user_id = self.user_id.clone();
-                self.call(
+                self.call_semantic(
                     async move { backend.rename_session(&user_id, &session_id, name).await },
                     cx,
                     |_this, result, cx| match result {
@@ -2476,7 +2494,7 @@ impl Sidebar {
                     return;
                 }
                 let path = root.path.clone();
-                self.call(
+                self.call_semantic(
                     async move { backend.rename_project_root(&user_id, path, name).await },
                     cx,
                     move |this, result, cx| {
@@ -2502,7 +2520,7 @@ impl Sidebar {
     /// Show the project's folder in the file manager.
     fn open_folder(&mut self, root: &str, cx: &mut Context<Self>) {
         let path = root.to_string();
-        self.call(
+        self.call_semantic(
             async move {
                 tokio::task::spawn_blocking(move || {
                     // The listed Maple workspace exists only once it is used.
@@ -2512,12 +2530,14 @@ impl Sidebar {
                     crate::platform::reveal_folder(&path)
                 })
                 .await
-                .map_err(|error| format!("Could not open the folder: {error}"))?
+                .map_err(|error| error.to_string())?
             },
             cx,
             |_this, result, cx| {
                 if let Err(message) = result {
-                    cx.emit(SidebarEvent::Notice(message.into()));
+                    cx.emit(SidebarEvent::Notice(
+                        message.context("chat-open-folder-failed"),
+                    ));
                 }
             },
         );
@@ -2598,7 +2618,11 @@ impl Sidebar {
             actions.push(SidebarMenuItem {
                 id: row.menu_pin_id.clone(),
                 icon: "pin",
-                label: if pinned { "Unpin task" } else { "Pin task" },
+                label: if pinned {
+                    "chat-unpin-task"
+                } else {
+                    "chat-pin-task"
+                },
                 on_click: Box::new(move |this, cx| {
                     this.toggle_task_target_pin(&pin_target, pinned, cx)
                 }),
@@ -2608,7 +2632,7 @@ impl Sidebar {
         actions.push(SidebarMenuItem {
             id: row.menu_rename_id.clone(),
             icon: "pencil",
-            label: "Rename task",
+            label: "chat-rename-task",
             on_click: Box::new(move |this, cx| {
                 this.begin_rename(rename_target.rename_target(), cx)
             }),
@@ -2619,13 +2643,13 @@ impl Sidebar {
                     TaskMove::Settled,
                     &row.menu_settle_id,
                     "check",
-                    "Settle task",
+                    "chat-settle-task",
                 ),
                 (
                     TaskMove::Archived,
                     &row.menu_archive_id,
                     "archive",
-                    "Archive task",
+                    "chat-archive-task",
                 ),
             ],
             TaskRung::Settled => &[
@@ -2633,20 +2657,20 @@ impl Sidebar {
                     TaskMove::Active,
                     &row.menu_reopen_id,
                     "undo-2",
-                    "Reopen task",
+                    "chat-reopen-task",
                 ),
                 (
                     TaskMove::Archived,
                     &row.menu_archive_id,
                     "archive",
-                    "Archive task",
+                    "chat-archive-task",
                 ),
             ],
             TaskRung::Archived => &[(
                 TaskMove::Active,
                 &row.menu_reopen_id,
                 "undo-2",
-                "Reopen task",
+                "chat-reopen-task",
             )],
         };
         let workflow = moves
@@ -2665,7 +2689,7 @@ impl Sidebar {
         let delete = SidebarMenuItem {
             id: row.menu_delete_id.clone(),
             icon: "trash-2",
-            label: "Delete task",
+            label: "chat-delete-task",
             on_click: Box::new(move |this, cx| {
                 this.move_task_target(&delete_target, TaskMove::Deleted, cx)
             }),
@@ -2754,7 +2778,7 @@ impl Sidebar {
     }
 
     #[cfg(test)]
-    pub(super) fn task_menu_labels_for_test(&self, session_id: &str) -> Vec<&'static str> {
+    pub(super) fn task_menu_labels_for_test(&self, session_id: &str) -> Vec<String> {
         self.task_menu_entry(session_id)
             .and_then(|task| self.task_menu_items(task))
             .map(|items| {
@@ -2763,16 +2787,16 @@ impl Sidebar {
                     .into_iter()
                     .chain(items.workflow)
                     .chain(std::iter::once(items.delete))
-                    .map(|item| item.label)
+                    .map(|item| tr(item.label).to_string())
                     .collect()
             })
             .unwrap_or_default()
     }
 
     #[cfg(test)]
-    pub(super) fn row_step_label_for_test(&self, session_id: &str) -> Option<&'static str> {
+    pub(super) fn row_step_label_for_test(&self, session_id: &str) -> Option<String> {
         self.task_menu_entry(session_id)
-            .map(|task| TaskRung::of(task).step().row_label)
+            .map(|task| tr(TaskRung::of(task).step().row_label).to_string())
     }
 
     /// The actions of one project header, scoped to its execution computer.
@@ -2783,7 +2807,7 @@ impl Sidebar {
         let mut actions = vec![SidebarMenuItem {
             id: target.element_id("rename-project"),
             icon: "pencil",
-            label: "Rename project",
+            label: "chat-rename-project",
             on_click: Box::new(move |this, cx| {
                 this.begin_rename(RenameTarget::Project(rename_target.clone()), cx)
             }),
@@ -2794,7 +2818,7 @@ impl Sidebar {
             actions.push(SidebarMenuItem {
                 id: target.element_id("open-project"),
                 icon: "folder-open",
-                label: "Open folder",
+                label: "chat-open-folder",
                 on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
             });
             if let Some(status) = self
@@ -2808,9 +2832,9 @@ impl Sidebar {
                     id: SharedString::from(format!("trust-project-{root}")),
                     icon: if trusted { "shield-check" } else { "lock" },
                     label: if trusted {
-                        "Untrust project"
+                        "chat-untrust-project"
                     } else {
-                        "Trust project"
+                        "chat-trust-allow"
                     },
                     on_click: Box::new(move |_, cx| {
                         cx.emit(SidebarEvent::SetTrust {
@@ -2824,8 +2848,8 @@ impl Sidebar {
         let mut ordering = Vec::new();
         if self.can_reorder() {
             for (forward, id, icon, label) in [
-                (false, "move-project-up", "arrow-up", "Move up"),
-                (true, "move-project-down", "arrow-down", "Move down"),
+                (false, "move-project-up", "arrow-up", "chat-move-up"),
+                (true, "move-project-down", "arrow-down", "chat-move-down"),
             ] {
                 if self.project_move_available(target, forward) {
                     let target = target.clone();
@@ -2843,7 +2867,7 @@ impl Sidebar {
             SidebarMenuItem {
                 id: target.element_id("remove-project"),
                 icon: "trash-2",
-                label: "Remove project",
+                label: "chat-remove-project",
                 on_click: Box::new(move |_, cx| cx.emit(SidebarEvent::RemoveRoot(root.clone()))),
             }
         });
@@ -3087,7 +3111,7 @@ impl Sidebar {
                                 .cursor_pointer()
                         })
                         .tooltip(widgets::tooltip_for_action(
-                            "Clear search",
+                            tr("chat-clear-search"),
                             &super::ChatEscape,
                         ))
                         .on_click(cx.listener(|this, _event, window, cx| {
@@ -3129,7 +3153,7 @@ impl Sidebar {
                         (
                             "sidebar-search-row",
                             "search",
-                            "Search",
+                            tr("chat-search"),
                             ChatCommand::FocusSearch,
                             &super::FocusSearch,
                             theme::text_secondary(),
@@ -3138,7 +3162,7 @@ impl Sidebar {
                         (
                             "new-task",
                             "square-pen",
-                            "New Task",
+                            tr("chat-new-task-title"),
                             ChatCommand::NewTask,
                             &super::NewTask,
                             theme::text_primary(),
@@ -3148,7 +3172,7 @@ impl Sidebar {
                     .id(id)
                     .debug_selector(move || id.to_string())
                     .role(gpui::Role::Button)
-                    .aria_label(label)
+                    .aria_label(label.clone())
                     .w_full()
                     .my(px(1.))
                     .when(search, |row| {
@@ -3181,7 +3205,7 @@ impl Sidebar {
                             .cursor_pointer()
                     })
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-                    .tooltip(widgets::tooltip_for_action(label, action))
+                    .tooltip(widgets::tooltip_for_action(label.clone(), action))
                     .on_click(move |_event, window, cx| {
                         if let Some(chat) = chat.upgrade() {
                             chat.update(cx, |chat, cx| {
@@ -3207,7 +3231,7 @@ impl Sidebar {
                     .py_1()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(div().child("No tasks"))
+                    .child(div().child(tr("chat-no-tasks")))
                     .into_any_element()
             }
             Some(SidebarEntry::Task(task)) => {
@@ -3261,12 +3285,12 @@ impl Sidebar {
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_secondary()))
                 .child(icon("search", px(18.), theme::text_faint()))
-                .child(div().mt_1().child("Nothing matches"))
+                .child(div().mt_1().child(tr("chat-nothing-matches")))
                 .child(
                     div()
                         .text_xs()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child("Try another search"),
+                        .child(tr("chat-search-again")),
                 )
                 .child(
                     widgets::ghost_button("clear-search-empty")
@@ -3276,7 +3300,7 @@ impl Sidebar {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.clear_search(cx);
                         }))
-                        .child("Clear search"),
+                        .child(tr("chat-clear-search")),
                 )
                 .into_any_element(),
             Some(SidebarEntry::ArchivedHeader) => {
@@ -3303,7 +3327,10 @@ impl Sidebar {
                     .id("archived-toggle")
                     .debug_selector(|| "archived-toggle".into())
                     .role(gpui::Role::Button)
-                    .aria_label(format!("Archived tasks {count_label}"))
+                    .aria_label(self.messages.get(
+                        "chat-archived-count",
+                        [("count", count_label.clone().into())],
+                    ))
                     .aria_expanded(expanded)
                     .w_auto()
                     .mx_2()
@@ -3330,7 +3357,7 @@ impl Sidebar {
                             .flex_1()
                             .text_size(px(13.))
                             .text_color(gpui::rgb(theme::text_muted()))
-                            .child("Archived"),
+                            .child(tr("chat-archived")),
                     )
                     .child(
                         div()
@@ -3584,9 +3611,9 @@ impl Sidebar {
         };
         let expanded = self.projects_expanded;
         let label = match self.view.group {
-            SidebarGroup::Project => "Projects",
-            SidebarGroup::Connection => "Connections",
-            SidebarGroup::Status | SidebarGroup::List => "Tasks",
+            SidebarGroup::Project => tr("chat-projects"),
+            SidebarGroup::Connection => tr("chat-connections"),
+            SidebarGroup::Status | SidebarGroup::List => tr("chat-tasks"),
         };
         div()
             .group("projects-header-actions")
@@ -3600,7 +3627,7 @@ impl Sidebar {
                 div()
                     .id("projects-header")
                     .role(gpui::Role::Button)
-                    .aria_label(label)
+                    .aria_label(label.clone())
                     .aria_expanded(expanded)
                     .debug_selector(|| "projects-header".to_string())
                     .flex_1()
@@ -3643,7 +3670,7 @@ impl Sidebar {
     }
 
     fn view_button(&self, open: bool) -> gpui::Stateful<Div> {
-        header_button("view-options", "list-filter", "View options", open)
+        header_button("view-options", "list-filter", tr("chat-view-options"), open)
             .debug_selector(|| "view-options".into())
             .tab_index(5)
             .focus_visible(|style| widgets::focus_ring(style.opacity(1.)))
@@ -3659,13 +3686,25 @@ impl Sidebar {
     fn view_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Menu<Self> {
         let view = self.view;
         let mut groups = Menu::new("sidebar-group-menu", px(220.))
-            .label("Group tasks by")
+            .label(tr("chat-group-by"))
             .application_vim(self.application_vim_enabled);
         for (id, label, group) in [
-            ("group-project", "Project", SidebarGroup::Project),
-            ("group-connection", "Connection", SidebarGroup::Connection),
-            ("group-status", "Status", SidebarGroup::Status),
-            ("group-list", "In one list", SidebarGroup::List),
+            (
+                "group-project",
+                tr("chat-group-project"),
+                SidebarGroup::Project,
+            ),
+            (
+                "group-connection",
+                tr("chat-group-connection"),
+                SidebarGroup::Connection,
+            ),
+            (
+                "group-status",
+                tr("chat-group-status"),
+                SidebarGroup::Status,
+            ),
+            ("group-list", tr("chat-group-list"), SidebarGroup::List),
         ] {
             if group == SidebarGroup::Connection && !self.connection_grouping_available() {
                 continue;
@@ -3678,11 +3717,15 @@ impl Sidebar {
             );
         }
         let mut sorts = Menu::new("sidebar-sort-menu", px(220.))
-            .label("Sort tasks by")
+            .label(tr("chat-sort-by"))
             .application_vim(self.application_vim_enabled);
         for (id, label, sort) in [
-            ("sort-updated", "Last updated", SidebarSort::Updated),
-            ("sort-manual", "Manual order", SidebarSort::Manual),
+            (
+                "sort-updated",
+                tr("chat-sort-updated"),
+                SidebarSort::Updated,
+            ),
+            ("sort-manual", tr("chat-sort-manual"), SidebarSort::Manual),
         ] {
             sorts = sorts.item(
                 MenuItem::new(id, label, move |this: &mut Self, _, cx| {
@@ -3693,23 +3736,23 @@ impl Sidebar {
             );
         }
         Menu::new("sidebar-view-menu", px(240.))
-            .label("Sidebar")
+            .label(tr("chat-sidebar"))
             .application_vim(self.application_vim_enabled)
             .item(
                 self.view_popup
                     .submenu(
                         ViewSubmenu::Group,
                         "sidebar-group",
-                        "Group tasks by",
+                        tr("chat-group-by"),
                         groups,
                         window,
                         cx,
                     )
                     .value(match view.group {
-                        SidebarGroup::Project => "Project",
-                        SidebarGroup::Connection => "Connection",
-                        SidebarGroup::Status => "Status",
-                        SidebarGroup::List => "In one list",
+                        SidebarGroup::Project => tr("chat-group-project"),
+                        SidebarGroup::Connection => tr("chat-group-connection"),
+                        SidebarGroup::Status => tr("chat-group-status"),
+                        SidebarGroup::List => tr("chat-group-list"),
                     }),
             )
             .item(
@@ -3717,42 +3760,51 @@ impl Sidebar {
                     .submenu(
                         ViewSubmenu::Sort,
                         "sidebar-sort",
-                        "Sort tasks by",
+                        tr("chat-sort-by"),
                         sorts,
                         window,
                         cx,
                     )
                     .value(match view.sort {
-                        SidebarSort::Updated => "Last updated",
-                        SidebarSort::Manual => "Manual order",
+                        SidebarSort::Updated => tr("chat-sort-updated"),
+                        SidebarSort::Manual => tr("chat-sort-manual"),
                     }),
             )
     }
 
     /// Add project stays visible until there is a project to browse.
     fn new_project_button(&self, open: bool) -> gpui::Stateful<Div> {
-        header_button("new-project", "folder-plus", "New project", open)
-            .debug_selector(|| "new-project".to_owned())
-            .when(!open && !self.project_roots.is_empty(), |button| {
-                button
-                    .opacity(0.)
-                    .group_hover("projects-header-actions", |style| style.opacity(1.))
-            })
+        header_button(
+            "new-project",
+            "folder-plus",
+            tr("chat-new-project-button"),
+            open,
+        )
+        .debug_selector(|| "new-project".to_owned())
+        .when(!open && !self.project_roots.is_empty(), |button| {
+            button
+                .opacity(0.)
+                .group_hover("projects-header-actions", |style| style.opacity(1.))
+        })
     }
 
     fn new_project_computer_menu(&self) -> Menu<Self> {
         let mut menu = Menu::new("new-project-computer-menu", px(260.))
-            .label("New project on")
+            .label(tr("chat-new-project-on"))
             .max_height(px(360.))
             .application_vim(self.application_vim_enabled)
-            .header("New project on")
+            .header(tr("chat-new-project-on"))
             .item(
-                MenuItem::new("new-project-local", "This Computer", |_, _, cx| {
-                    cx.emit(SidebarEvent::Navigate(Navigate {
-                        computer: None,
-                        destination: Destination::NewProject,
-                    }));
-                })
+                MenuItem::new(
+                    "new-project-local",
+                    tr("native-this-computer"),
+                    |_, _, cx| {
+                        cx.emit(SidebarEvent::Navigate(Navigate {
+                            computer: None,
+                            destination: Destination::NewProject,
+                        }));
+                    },
+                )
                 .icon("monitor"),
             );
         for computer in self
@@ -3774,9 +3826,9 @@ impl Sidebar {
             )
             .icon("monitor");
             if computer.loading {
-                item = item.note("Connecting…");
+                item = item.note(tr("chat-connecting"));
             } else if computer.error.is_some() {
-                item = item.note("Offline");
+                item = item.note(tr("chat-offline"));
             }
             menu = menu.item(item);
         }
@@ -3916,7 +3968,7 @@ impl Sidebar {
                                 root.new_task_id.clone(),
                                 &root.row_group,
                                 "square-pen",
-                                "New task",
+                                tr("chat-new-task"),
                             )
                             .aria_label(root.new_task_label.clone())
                             .tooltip(widgets::tooltip(root.new_task_label.clone(), None))
@@ -3948,7 +4000,7 @@ impl Sidebar {
         let menu = open.then(|| {
             let items = self.project_menu_items(&root.target);
             let mut menu = Menu::new(root.target.element_id("project-menu"), px(180.))
-                .label("Project options")
+                .label(tr("chat-project-options"))
                 .application_vim(self.application_vim_enabled)
                 .items(items.actions.into_iter().map(menu_item));
             if !items.ordering.is_empty() {
@@ -3973,11 +4025,11 @@ impl Sidebar {
                     row_menu_button(
                         root.menu_id.clone(),
                         &root.row_group,
-                        "Project options",
+                        tr("chat-project-options"),
                         open,
                     )
                     .when(!open, |button| {
-                        button.tooltip(widgets::tooltip("Project options", None))
+                        button.tooltip(widgets::tooltip(tr("chat-project-options"), None))
                     }),
                     cx,
                     move |this, _, cx| this.toggle_project_menu(&toggle, cx),
@@ -4000,7 +4052,7 @@ impl Sidebar {
         let open = self.popup.is_open(&key);
         let menu = open.then(|| {
             let mut menu = Menu::new(row.menu_panel_id.clone(), px(180.))
-                .label("Task options")
+                .label(tr("chat-task-options"))
                 .application_vim(self.application_vim_enabled);
             let items = self.task_menu_items_for(row, target.clone(), pinned, rung);
             menu = menu
@@ -4016,9 +4068,9 @@ impl Sidebar {
             .child(
                 self.popup.trigger(
                     key,
-                    row_menu_button(row.menu_id.clone(), &row.group, "More", open)
+                    row_menu_button(row.menu_id.clone(), &row.group, tr("chat-more"), open)
                         .when(!open, |button| {
-                            button.tooltip(widgets::tooltip("More", None))
+                            button.tooltip(widgets::tooltip(tr("chat-more"), None))
                         }),
                     cx,
                     move |this, _, cx| match &target {
@@ -4105,7 +4157,7 @@ impl Sidebar {
                 row.rename_id.clone(),
                 &row.group,
                 "pencil",
-                "Rename",
+                tr("chat-rename"),
                 cx.listener(move |this, _event, _window, cx| {
                     cx.stop_propagation();
                     this.begin_rename(rename.rename_target(), cx);
@@ -4115,7 +4167,7 @@ impl Sidebar {
                 row.step_id.clone(),
                 &row.group,
                 step.icon,
-                step.row_label,
+                tr(step.row_label),
                 cx.listener(move |this, _event, _window, cx| {
                     cx.stop_propagation();
                     this.move_task_target(&advance, rung.next(), cx);
@@ -4251,7 +4303,7 @@ impl Sidebar {
                     div()
                         .id(row.pin_id.clone())
                         .role(gpui::Role::Button)
-                        .aria_label("Unpin task")
+                        .aria_label(tr("chat-unpin-task"))
                         .size_5()
                         .flex()
                         .items_center()
@@ -4262,7 +4314,7 @@ impl Sidebar {
                                 .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                                 .cursor_pointer()
                         })
-                        .tooltip(widgets::tooltip("Unpin", None))
+                        .tooltip(widgets::tooltip(tr("chat-unpin"), None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
                             this.toggle_task_pin(&pin_task_id, cx);
@@ -4291,8 +4343,23 @@ impl Sidebar {
     }
 }
 
+impl Sidebar {
+    pub(super) fn refresh_locale(&mut self, cx: &mut Context<Self>) {
+        let locale = crate::ui::i18n::current_locale();
+        if self.locale == locale {
+            return;
+        }
+        self.locale = locale;
+        self.rebuild_computer_project_roots();
+        self.rebuild_sections();
+        self.list.remeasure_items(0..self.entries.len());
+        cx.notify();
+    }
+}
+
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_locale(cx);
         // First, so the rename field's focus request below wins over a menu
         // handing focus back.
         self.sync_popup_focus(window, cx);
@@ -4372,7 +4439,7 @@ impl Render for Sidebar {
                         }
                     }))
                     .role(gpui::Role::ListBox)
-                    .aria_label("Tasks")
+                    .aria_label(tr("chat-tasks"))
                     .aria_orientation(gpui::Orientation::Vertical)
                     .relative()
                     .flex_1()
@@ -4512,10 +4579,11 @@ pub(super) fn row_action(
     id: SharedString,
     group: &SharedString,
     icon_name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
-    row_button(id, group, icon_name, label)
+    let label = label.into();
+    row_button(id, group, icon_name, label.clone())
         .tooltip(widgets::tooltip(label, None))
         .on_click(on_click)
 }
@@ -4525,9 +4593,10 @@ pub(super) fn row_action(
 fn row_menu_button(
     id: SharedString,
     group: &SharedString,
-    label: &'static str,
+    label: impl Into<SharedString>,
     open: bool,
 ) -> gpui::Stateful<Div> {
+    let label = label.into();
     row_button(id, group, "ellipsis", label).when(open, |button| {
         button
             .opacity(1.)
@@ -4540,13 +4609,14 @@ fn row_menu_button(
 fn header_button(
     id: &'static str,
     icon_name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     open: bool,
 ) -> gpui::Stateful<Div> {
+    let label = label.into();
     div()
         .id(id)
         .role(gpui::Role::Button)
-        .aria_label(label)
+        .aria_label(label.clone())
         .flex_none()
         .size_6()
         .flex()
@@ -4572,13 +4642,14 @@ fn row_button(
     id: SharedString,
     group: &SharedString,
     icon_name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
 ) -> gpui::Stateful<Div> {
+    let label = label.into();
     div()
         .debug_selector(|| id.to_string())
         .id(id)
         .role(gpui::Role::Button)
-        .aria_label(label)
+        .aria_label(label.clone())
         .flex_none()
         .size_5()
         .flex()
@@ -4606,7 +4677,7 @@ fn menu_item(item: SidebarMenuItem) -> MenuItem<Sidebar> {
     } = item;
     MenuItem::new(
         id,
-        label,
+        tr(label),
         move |this: &mut Sidebar, _: &mut Window, cx: &mut Context<Sidebar>| on_click(this, cx),
     )
     .icon(icon)

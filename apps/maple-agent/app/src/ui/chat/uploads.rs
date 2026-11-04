@@ -67,7 +67,7 @@ impl UploadFence {
 pub(super) struct PendingUpload {
     pub session: String,
     pub count: usize,
-    pub label: SharedString,
+    pub label: UiText,
     pub fence: UploadFence,
     pub cancel_on_drop: bool,
     backend: Arc<AgentBackend>,
@@ -176,11 +176,10 @@ impl ChatScreen {
             {
                 if let Some(upload) = self.attachment_uploads.get_mut(&id) {
                     upload.label = if recovering {
-                        "Files ready · waiting for the host to recover"
+                        UiText::key("chat-upload-wait-recovery")
                     } else {
-                        "Files ready · waiting for the previous send"
-                    }
-                    .into();
+                        UiText::key("chat-upload-wait-send")
+                    };
                 }
                 continue;
             }
@@ -280,14 +279,17 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) -> (UploadFence, tokio::sync::mpsc::UnboundedSender<usize>) {
         let fence = UploadFence::default();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<usize>();
         if !drafts.is_empty() {
             self.attachment_uploads.insert(
                 send_id.to_string(),
                 PendingUpload {
                     session: session.to_string(),
                     count: drafts.len(),
-                    label: format!("Uploading files · 0 of {}", drafts.len()).into(),
+                    label: UiText::message(
+                        "chat-upload-progress",
+                        [("completed", 0.into()), ("count", drafts.len().into())],
+                    ),
                     fence: fence.clone(),
                     cancel_on_drop: true,
                     backend: self.backend.clone(),
@@ -307,9 +309,13 @@ impl ChatScreen {
                                 if upload.fence.cancelled() {
                                     return;
                                 }
-                                upload.label =
-                                    format!("Uploading files · {completed} of {}", upload.count)
-                                        .into();
+                                upload.label = UiText::message(
+                                    "chat-upload-progress",
+                                    [
+                                        ("completed", completed.into()),
+                                        ("count", upload.count.into()),
+                                    ],
+                                );
                                 cx.notify();
                             }
                         })
@@ -331,7 +337,7 @@ impl ChatScreen {
         if !upload.fence.cancel() {
             return;
         }
-        upload.label = "Cancelling upload…".into();
+        upload.label = UiText::key("chat-upload-cancelling");
         let backend = upload.backend.clone();
         let user = upload.user.clone();
         let session = upload.session.clone();
@@ -600,7 +606,7 @@ mod tests {
         let mut drafts = vec![first, second];
         let (backend, host, task) = upload_host(root.path());
         host.lock().unwrap().fail_second = true;
-        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel::<usize>();
         let failure = commit_attachments(
             &backend,
             "user",
@@ -625,7 +631,7 @@ mod tests {
             host.fail_status = true;
             host.fail_second = false;
         }
-        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel::<usize>();
         assert!(
             commit_attachments(
                 &backend,
@@ -647,7 +653,7 @@ mod tests {
         );
 
         host.lock().unwrap().fail_status = false;
-        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel::<usize>();
         let ids = commit_attachments(
             &backend,
             "user",

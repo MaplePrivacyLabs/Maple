@@ -44,7 +44,7 @@ mod editors;
 mod local_api;
 mod mcp;
 mod navigation;
-mod presentation;
+pub(crate) mod presentation;
 mod shortcut_labels;
 use self::account::AccountState;
 use self::api_keys::ApiKeysState;

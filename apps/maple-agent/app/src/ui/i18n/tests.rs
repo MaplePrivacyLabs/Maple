@@ -245,7 +245,9 @@ impl<'ast> Visit<'ast> for UiStrings {
                 lit: syn::Lit::Str(key),
                 ..
             })) = node.args.first()
-            && (key.value().starts_with("settings-") || key.value().starts_with("update-"))
+            && (key.value().starts_with("settings-")
+                || key.value().starts_with("update-")
+                || key.value().starts_with("chat-"))
         {
             self.keys.insert(key.value());
         }
@@ -258,7 +260,7 @@ impl<'ast> Visit<'ast> for UiStrings {
                 lit: syn::Lit::Str(key),
                 ..
             })) = node.args.first()
-            && key.value().starts_with("settings-")
+            && (key.value().starts_with("settings-") || key.value().starts_with("chat-"))
         {
             self.keys.insert(key.value());
         }
@@ -321,6 +323,24 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../settings/mcp.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/editors.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../remote.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/dialogs.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/feedback.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/thinking.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/project_folder.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/composer.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/sidebar.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/sidebar_computers.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/sidebar_paging.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/transcript.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/queue.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/sending.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/uploads.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/navigation.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/paging.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/attachments.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/speech.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/computers.rs")).unwrap());
+
     assert!(
         visitor.literals.is_empty(),
         "inline UI text: {:?}",

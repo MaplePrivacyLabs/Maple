@@ -15,6 +15,7 @@ use super::commands::ChatCommand;
 use super::composer::ComposerControl;
 use super::transcript::{PlanStatus, attachment_refs, has_tool_input, plan_entries, plan_finished};
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
+use crate::ui::i18n::UiText;
 use crate::ui::text_input::vim::VimMode;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -231,7 +232,7 @@ impl ChatScreen {
             self.application_vim.count.push(digit),
             CountOutcome::Capped(_)
         ) {
-            self.notice = Some("Application Vim count capped at 999999".into());
+            self.notice = Some(UiText::key("chat-vim-count-cap"));
         }
         cx.notify();
     }
@@ -276,7 +277,7 @@ impl ChatScreen {
             }
             ApplicationVimCommand::NextAnnotation | ApplicationVimCommand::PreviousAnnotation => {
                 self.application_vim.count.clear();
-                self.notice = Some("No annotations are available in this preview".into());
+                self.notice = Some(UiText::key("chat-no-annotations"));
                 cx.notify();
             }
             ApplicationVimCommand::MoveRegion(direction) => {
@@ -470,7 +471,7 @@ impl ChatScreen {
             return;
         };
         if matches!(composer.read(cx).vim_mode(), None | Some(VimMode::Disabled)) {
-            self.notice = Some("Enable composer Vim to use gi".into());
+            self.notice = Some(UiText::key("chat-enable-composer-vim"));
             cx.notify();
             return;
         }
@@ -479,7 +480,7 @@ impl ChatScreen {
         }
         let entered = composer.update(cx, |input, cx| input.focus_last_insertion(cx));
         if !entered {
-            self.notice = Some("Composer Vim is unavailable".into());
+            self.notice = Some(UiText::key("chat-composer-vim-unavailable"));
             cx.notify();
             return;
         }
@@ -729,7 +730,7 @@ impl ChatScreen {
         };
         let text = self.canonical_timeline_item_text(item, revision);
         if text.trim().is_empty() {
-            self.notice = Some("The selected item has no visible text to copy".into());
+            self.notice = Some(UiText::key("chat-no-copy-text"));
             cx.notify();
             return;
         }
@@ -871,7 +872,7 @@ impl ChatScreen {
             return;
         };
         if assistant.is_empty() {
-            self.notice = Some("No assistant item is available".into());
+            self.notice = Some(UiText::key("chat-no-assistant-item"));
             cx.notify();
             return;
         }
