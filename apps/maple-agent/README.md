@@ -519,8 +519,8 @@ Unlock through desktop or `maple-agent unlock`, then sign in through desktop or
 `maple-agent login` if needed. ACP never places an unlock prompt on its protocol
 stream.
 
-**Settings → Editors** shows the command for the running installation and
-entries to paste into Zed and JetBrains IDEs. Nothing needs enabling first.
+**Settings → ACP** shows the command for the running installation and examples
+for Zed, JetBrains IDEs, Paseo and T3 Code. Nothing needs enabling first.
 
 `session/new` creates a draft in the client's working directory. Account MCP
 servers use the Settings defaults with that project's saved choices applied.

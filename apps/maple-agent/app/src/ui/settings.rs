@@ -31,21 +31,21 @@ use crate::ui::theme;
 use crate::ui::widgets;
 
 mod account;
+#[cfg(feature = "acp")]
+mod acp;
 mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
-#[cfg(feature = "acp")]
-mod editors;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
 mod navigation;
 use self::account::AccountState;
+#[cfg(feature = "acp")]
+use self::acp::AcpUiState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
-#[cfg(feature = "acp")]
-use self::editors::EditorsUiState;
 #[cfg(feature = "proxy")]
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
@@ -68,7 +68,7 @@ pub enum Section {
     Billing,
     Api,
     #[cfg(feature = "acp")]
-    Editors,
+    Acp,
     Shortcuts,
     Prompt,
     Integrations,
@@ -86,7 +86,7 @@ impl Section {
             Self::Billing => "Billing",
             Self::Api => "API",
             #[cfg(feature = "acp")]
-            Self::Editors => "Editors",
+            Self::Acp => "ACP",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "Additional instructions",
             Self::Integrations => "Integrations",
@@ -103,7 +103,7 @@ impl Section {
         Self::Billing,
         Self::Api,
         #[cfg(feature = "acp")]
-        Self::Editors,
+        Self::Acp,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -164,7 +164,7 @@ pub struct SettingsScreen {
     #[cfg(feature = "proxy")]
     local_api: LocalApiUiState,
     #[cfg(feature = "acp")]
-    editors: EditorsUiState,
+    acp: AcpUiState,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
     /// Account MCP servers; None until loaded.
@@ -447,7 +447,7 @@ impl SettingsScreen {
             #[cfg(feature = "proxy")]
             local_api: LocalApiUiState::new(application_vim_enabled, application_focus.clone(), cx),
             #[cfg(feature = "acp")]
-            editors: EditorsUiState::new(),
+            acp: AcpUiState::new(),
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
@@ -1911,8 +1911,8 @@ impl SettingsScreen {
                 pane = pane.child(self.render_api_pane(cx));
             }
             #[cfg(feature = "acp")]
-            Section::Editors => {
-                pane = pane.child(self.render_editors_pane(cx));
+            Section::Acp => {
+                pane = pane.child(self.render_acp_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));
