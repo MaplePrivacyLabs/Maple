@@ -1142,3 +1142,10 @@ native-disk-full-unopened = The disk is full and Maple could not open its local 
 native-disk-full-open = The disk is full. Recent changes could not be saved. Keep Maple open, free disk space, then retry saving.
 native-save-failed-open = Recent changes could not be saved. Keep Maple open and retry saving before quitting.
 native-remote-update-required = Update required — select to retry after updating
+
+## Flows: retained store-mode notices
+# $date preserves the recorded UTC date and time (YYYY-MM-DD HH:MM UTC).
+flows-mode-notice-set = An unlock password was set on this computer at { $date }.
+flows-mode-notice-changed = Your unlock password was changed on this computer at { $date }.
+flows-mode-notice-rotated = Your unlock password was changed and your local data was re-encrypted on this computer at { $date }.
+flows-mode-notice-removed = Your unlock password was removed on this computer at { $date }.

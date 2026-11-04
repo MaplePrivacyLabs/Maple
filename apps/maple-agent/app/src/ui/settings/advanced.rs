@@ -1,7 +1,7 @@
 //! Local advanced preferences and capability-gated encryption controls. A
 //! remote task selection never redirects these settings to another computer.
 
-use crate::ui::i18n::{UiText, tr};
+use crate::ui::i18n::{MessageCache, UiText, tr, tr_args};
 use gpui::{App, Context, Div, Entity, EventEmitter, div, prelude::*};
 use maple_agent::store::{
     StoreState,
@@ -190,7 +190,7 @@ impl SettingsScreen {
                     return;
                 }
                 this.advanced.success = Some(password_success_message(action));
-                this.advanced.notice = event.notice.clone().map(Into::into);
+                this.advanced.notice = event.notice.clone();
                 this.load_advanced_status(cx);
                 // Desktop may acknowledge this exact receipt only after this
                 // live Settings recipient has installed its inline result.
@@ -352,7 +352,11 @@ impl SettingsScreen {
             let acknowledging = self.advanced.mode_notice_acknowledging.as_ref() == Some(notice);
             pane = pane.child(
                 local_store_notice_card()
-                    .child(div().text_sm().child(notice.message.clone()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(mode_notice_text(notice, &self.messages)),
+                    )
                     .child(
                         widgets::ghost_button("advanced-dismiss-mode-notice")
                             .when(acknowledging, |button| button.opacity(0.5))
@@ -369,7 +373,8 @@ impl SettingsScreen {
         }
         if !form_open
             && let Some(notice) = &self.advanced.notice
-            && mode_notice.is_none_or(|mode| mode.message.as_str() != notice.resolve().as_ref())
+            && mode_notice
+                .is_none_or(|mode| mode_notice_text(mode, &self.messages) != notice.resolve())
             && persistence.is_none_or(|failure| failure.message() != notice.resolve().as_ref())
         {
             pane = pane.child(
@@ -551,6 +556,31 @@ fn local_store_notice_card() -> Div {
         .text_color(gpui::rgb(theme::status_warning()))
 }
 
+/// Only presentation uses the additive metadata; acknowledgement retains the
+/// original store and notice identities, including for legacy hosts.
+fn mode_notice_text(notice: &StoreModeNotice, messages: &MessageCache) -> gpui::SharedString {
+    let key = match notice.kind.as_deref() {
+        Some("password_set") => "flows-mode-notice-set",
+        Some("password_changed") => "flows-mode-notice-changed",
+        Some("password_rotated") => "flows-mode-notice-rotated",
+        Some("password_removed") => "flows-mode-notice-removed",
+        _ => return notice.message.clone().into(),
+    };
+    let Some(at_ms) = notice.at_ms else {
+        return notice.message.clone().into();
+    };
+    let Some(date) = chrono::DateTime::from_timestamp_millis(at_ms) else {
+        return notice.message.clone().into();
+    };
+    messages.computed(key, &at_ms.to_string(), || {
+        // Preserve the source record's UTC time and minute precision.
+        tr_args(
+            key,
+            [("date", date.format("%Y-%m-%d %H:%M UTC").to_string().into())],
+        )
+    })
+}
+
 /// Return whether this reply still belongs to the visible authenticated notice.
 /// Failed acknowledgements leave it intact so the user can retry.
 fn apply_mode_notice_ack(
@@ -591,6 +621,63 @@ fn password_success_message(action: PasswordAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_mode_notice_switches_language_without_changing_acknowledgement() {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let messages = MessageCache::default();
+        for kind in [
+            "password_set",
+            "password_changed",
+            "password_rotated",
+            "password_removed",
+        ] {
+            let notice: StoreModeNotice = serde_json::from_value(serde_json::json!({
+                "store_id": "current", "notice_id": "exact", "message": "Legacy fallback",
+                "kind": kind, "at_ms": 0
+            }))
+            .unwrap();
+            let original = notice.clone();
+            crate::ui::i18n::apply_preference(Some("en"));
+            let english = mode_notice_text(&notice, &messages);
+            assert!(english.contains("1970-01-01 00:00 UTC"));
+            assert!(english.contains("on this computer"));
+            crate::ui::i18n::apply_preference(Some("es"));
+            let spanish = mode_notice_text(&notice, &messages);
+            assert!(spanish.contains("1970-01-01 00:00 UTC"));
+            assert!(spanish.contains("en esta computadora"));
+            assert_ne!(english, spanish);
+            crate::ui::i18n::apply_preference(Some("en"));
+            assert_eq!(mode_notice_text(&notice, &messages), english);
+            assert_eq!(notice, original);
+        }
+    }
+
+    #[test]
+    fn retained_mode_notice_preserves_legacy_unknown_and_invalid_metadata() {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let messages = MessageCache::default();
+        for metadata in [
+            serde_json::json!({}),
+            serde_json::json!({"kind":"future_kind", "at_ms":0}),
+            serde_json::json!({"kind":"password_set"}),
+            serde_json::json!({"kind":"password_set", "at_ms":i64::MAX}),
+        ] {
+            let mut value = serde_json::json!({"store_id":"current", "notice_id":"exact", "message":"Original host message"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(metadata.as_object().unwrap().clone());
+            let notice: StoreModeNotice = serde_json::from_value(value).unwrap();
+            for locale in ["en", "es", "en"] {
+                crate::ui::i18n::apply_preference(Some(locale));
+                assert_eq!(
+                    mode_notice_text(&notice, &messages).as_ref(),
+                    "Original host message"
+                );
+            }
+        }
+    }
+
     #[test]
     fn password_ui_requires_explicit_host_capability() {
         let status: StoreStatus =
