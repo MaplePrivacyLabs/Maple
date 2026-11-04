@@ -66,8 +66,23 @@ const SPINNER_TURN: Duration = Duration::from_secs(1);
 /// format strings per frame. Runs on the shared low-rate clock in
 /// `motion`, so any number of spinners cost one repaint per interval.
 pub fn spinner_with_id(id: SharedString, size: Pixels, color: u32) -> AnyElement {
+    spin(id, "loader-circle", size, color)
+}
+
+/// Any icon turning like [`spinner`], for a control whose own icon shows
+/// the work it started.
+pub fn spinning_icon(id: &str, name: &'static str, size: Pixels, color: u32) -> AnyElement {
+    spin(
+        SharedString::from(format!("spinner-{id}")),
+        name,
+        size,
+        color,
+    )
+}
+
+fn spin(id: SharedString, name: &'static str, size: Pixels, color: u32) -> AnyElement {
     motion::ticker(ElementId::Name(id), SPINNER_TURN, move |phase| {
-        icon("loader-circle", size, color)
+        icon(name, size, color)
             .with_transformation(gpui::Transformation::rotate(gpui::radians(
                 phase * std::f32::consts::TAU,
             )))
