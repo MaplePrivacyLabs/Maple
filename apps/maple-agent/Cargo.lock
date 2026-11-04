@@ -5850,7 +5850,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -5902,7 +5902,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent-app"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "ashpd",
  "axum",
@@ -5969,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent-updater"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5999,7 +5999,7 @@ dependencies = [
 
 [[package]]
 name = "maple-billing"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "reqwest 0.13.4",
  "serde",
@@ -7777,7 +7777,7 @@ dependencies = [
 
 [[package]]
 name = "pi-agent-core"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -7790,7 +7790,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7807,7 +7807,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -10206,7 +10206,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "store-bench"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "anyhow",
  "maple-agent",
