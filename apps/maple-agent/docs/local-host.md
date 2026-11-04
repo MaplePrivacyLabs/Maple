@@ -180,9 +180,9 @@ not used. Host-configured MCP servers stay host-owned. ACP-supplied bindings are
 transient, disabled on detach and require explicit reattachment. Conflicting
 server names are rejected rather than silently replacing another client's tools.
 
-### Editor setup
+### ACP client setup
 
-Settings → Editors shows the path to give an editor. It is the running
+Settings → ACP shows the path to give a client. It is the running
 executable on macOS (`Maple Agent.app`; the bundle name predates the display
 branding), `~/.local/bin/<command>` or the bundle's `AppRun` on Linux, and the
 stable launcher rather than a `versions/` generation on Windows. These paths
@@ -207,6 +207,13 @@ another client, so transcript delivery does not establish full desktop status pa
 ACP cannot retract already rendered history on compaction;
 reload is the authoritative view after history replacement. No Paseo-specific
 wire shims or separate task database are added.
+
+### T3 Code
+
+Add a Local ACP command with the same executable and the single argument `acp`.
+T3 Code runs it directly, without a shell, so give it the unquoted path. Its
+ACP v2 preview is negotiated down to the v1 Maple serves. Settings → ACP follows
+T3 Code's documented flow; live validation against Maple is still pending.
 
 ## Maintenance boundary
 

@@ -1,17 +1,17 @@
 //! Stable-ID application Vim navigation for Settings.
 //!
 //! The settings screen owns this projection because its visible controls are
-//! dynamic (shortcut filtering, integrations, MCP servers, and editors).
+//! dynamic (shortcut filtering, integrations, MCP servers, and ACP examples).
 //! Selecting a row is side-effect free; Enter delegates to the same existing
 //! method as its pointer control.
 
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
 use super::account::AccountTarget;
+#[cfg(feature = "acp")]
+use super::acp::AcpTarget;
 use super::api_keys::ApiKeysTarget;
 use super::billing::BillingTarget;
-#[cfg(feature = "acp")]
-use super::editors::EditorsTarget;
 #[cfg(feature = "proxy")]
 use super::local_api::LocalApiTarget;
 use super::{
@@ -52,7 +52,7 @@ pub(super) enum SettingsTarget {
     #[cfg(feature = "proxy")]
     LocalApi(LocalApiTarget),
     #[cfg(feature = "acp")]
-    Editors(EditorsTarget),
+    Acp(AcpTarget),
     Shortcut(String),
     PromptEditor,
     PromptSave,
@@ -157,7 +157,7 @@ impl SettingsScreen {
             Section::Billing => self.billing_targets(),
             Section::Api => self.api_targets(),
             #[cfg(feature = "acp")]
-            Section::Editors => self.editors_targets(),
+            Section::Acp => self.acp_targets(),
             Section::Shortcuts => self
                 .shortcut_list_cache
                 .visible_indices
@@ -375,7 +375,7 @@ impl SettingsScreen {
                 self.activate_local_api_target(target, window, cx)
             }
             #[cfg(feature = "acp")]
-            Some(SettingsTarget::Editors(target)) => self.copy_editors_text(target, cx),
+            Some(SettingsTarget::Acp(target)) => self.activate_acp_target(target, cx),
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);
