@@ -204,7 +204,7 @@ mod tests {
         };
         for (locale, renews, expires) in [
             ("en", "Renews ", "Expires "),
-            ("es", "Se renueva el ", "Caduca el "),
+            ("es", "Se renueva el ", "Vence el "),
             ("en", "Renews ", "Expires "),
         ] {
             crate::ui::i18n::apply_preference(Some(locale));
