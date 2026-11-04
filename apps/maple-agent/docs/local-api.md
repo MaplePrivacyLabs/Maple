@@ -1,17 +1,20 @@
 # Local API
 
-Settings → Local API controls an optional HTTP/1 endpoint on this computer.
-The default is Off, bound only to `127.0.0.1`, on port 8080 (or the managed
+The Local API card on Settings → API controls an optional HTTP/1 endpoint on
+this computer. The default is Off, bound only to `127.0.0.1`, on port 8080 (or the managed
 workspace's `MAPLE_PORT` reservation). Change the port while stopped. The base
 URL is `http://127.0.0.1:<port>/v1`.
 
-Create a named Maple API key in Settings → API keys and put it in your AI
-application's API-key field. Every inference request must supply
+Create a named Maple API key on the same page and put it in your AI
+application's API-key field. Ordinary clients cannot call the backend directly:
+its `/v1` routes require Maple's attested encrypted transport, which this
+endpoint or `maple-agent proxy` supplies. Every inference request must supply
 `Authorization: Bearer <key>`. The service saves no fallback key. The key's
 account determines authorization and usage; it need not be the desktop's
 signed-in account. OpenSecret remains authoritative for key validity, plans,
 models and quotas. Local refers to the endpoint: inference uses Maple's
-attested encrypted SDK transport to the configured backend.
+attested encrypted SDK transport to the configured backend. The card stays on
+every plan, so a listener left on after a downgrade can still be turned off.
 
 The existing routes are GET `/v1/models`, POST `/v1/chat/completions`,
 POST `/v1/embeddings`, POST `/v1/systemone`, and GET `/health` (also `/`).

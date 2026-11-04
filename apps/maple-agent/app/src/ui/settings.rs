@@ -66,9 +66,7 @@ pub enum Section {
     General,
     Account,
     Billing,
-    ApiKeys,
-    #[cfg(feature = "proxy")]
-    LocalApi,
+    Api,
     #[cfg(feature = "acp")]
     Editors,
     Shortcuts,
@@ -86,9 +84,7 @@ impl Section {
             Self::General => "General",
             Self::Account => "Account",
             Self::Billing => "Billing",
-            Self::ApiKeys => "API keys",
-            #[cfg(feature = "proxy")]
-            Self::LocalApi => "Local API",
+            Self::Api => "API",
             #[cfg(feature = "acp")]
             Self::Editors => "Editors",
             Self::Shortcuts => "Keyboard Shortcuts",
@@ -105,9 +101,7 @@ impl Section {
         Self::General,
         Self::Account,
         Self::Billing,
-        Self::ApiKeys,
-        #[cfg(feature = "proxy")]
-        Self::LocalApi,
+        Self::Api,
         #[cfg(feature = "acp")]
         Self::Editors,
         Self::Shortcuts,
@@ -444,7 +438,12 @@ impl SettingsScreen {
             popup: Popup::new(|this| &mut this.popup, cx),
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(application_vim_enabled, application_focus.clone(), cx),
-            api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
+            api_keys: ApiKeysState::new(
+                application_vim_enabled,
+                application_focus.clone(),
+                pane_scroll.clone(),
+                cx,
+            ),
             #[cfg(feature = "proxy")]
             local_api: LocalApiUiState::new(application_vim_enabled, application_focus.clone(), cx),
             #[cfg(feature = "acp")]
@@ -1528,7 +1527,7 @@ impl SettingsScreen {
         self.close_setting_menu(cx);
         self.section = section;
         #[cfg(feature = "proxy")]
-        if section == Section::LocalApi {
+        if section == Section::Api {
             self.refresh_local_api_status(cx);
         }
         self.remote_screen.update(cx, |screen, cx| {
@@ -1572,6 +1571,9 @@ impl Render for SettingsScreen {
                 // ScrollAnchor defers until the fresh layout origin is available.
                 self.application_anchor.scroll_to(window, cx);
             }
+        }
+        if std::mem::take(&mut self.api_keys.reveal_card) {
+            self.api_keys.card_anchor.scroll_to(window, cx);
         }
         div()
             .key_context(self.application_vim_context())
@@ -1905,12 +1907,8 @@ impl SettingsScreen {
             Section::Billing => {
                 pane = pane.child(self.render_billing_pane(cx));
             }
-            Section::ApiKeys => {
-                pane = pane.child(self.render_api_keys_pane(cx));
-            }
-            #[cfg(feature = "proxy")]
-            Section::LocalApi => {
-                pane = pane.child(self.render_local_api_pane(cx));
+            Section::Api => {
+                pane = pane.child(self.render_api_pane(cx));
             }
             #[cfg(feature = "acp")]
             Section::Editors => {
@@ -3257,14 +3255,14 @@ fn pill_button(
         .child(label)
 }
 
-/// Pane heading in the brand display face, like the section titles of
-/// the brand kit.
-#[cfg(any(feature = "acp", feature = "proxy"))]
+/// Whether a key press presses the focused control, as a click does.
 fn activates(event: &gpui::KeyDownEvent) -> bool {
     !event.keystroke.modifiers.modified()
         && matches!(event.keystroke.key.as_str(), "enter" | "space" | " ")
 }
 
+/// Pane heading in the brand display face, like the section titles of
+/// the brand kit.
 fn section_title(label: &str) -> Div {
     div()
         .font_family(crate::assets::FONT_DISPLAY)

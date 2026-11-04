@@ -547,10 +547,11 @@ compatibility](docs/local-host.md) before configuring an ACP launcher.
 
 ### `maple-agent proxy`
 
-The desktop also offers **Settings → Local API**. It starts this computer's
-loopback endpoint in the shared local host, including while a remote computer
-is selected. Create a key under API keys, enable Local API, then configure your
-client with the displayed `/v1` base URL and that key. See
+The desktop also offers this under **Settings → API**. Its Local API switch
+starts this computer's loopback endpoint in the shared local host, including
+while a remote computer is selected. Create a key on the same page, enable Local
+API, then configure your client with the displayed `/v1` base URL and that key.
+See
 [Local API ownership and lifecycle](docs/local-api.md).
 
 The command below remains an independent foreground server. It cannot share a

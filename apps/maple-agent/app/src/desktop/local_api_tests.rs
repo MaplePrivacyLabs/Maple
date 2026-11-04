@@ -225,7 +225,7 @@ fn select_and_show_settings(app: &Entity<MapleApp>, host: &str, cx: &mut gpui::V
         let chat = app.remote_computers[host].chat.clone().unwrap();
         app.selected_host = Some(host.into());
         app.screen = Screen::Chat(chat);
-        app.show_settings(Section::LocalApi, cx);
+        app.show_settings(Section::Api, cx);
     });
     wait(cx, "current controller API status", |cx| {
         app.read_with(cx, |app, cx| match &app.screen {
