@@ -42,6 +42,9 @@ pub struct UsageEvent {
     pub model_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_input_tokens: Option<i32>,
+    /// Self-reported application attribution; independent of auth and funding pool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_app: Option<crate::client_app::ClientApp>,
 }
 
 #[cfg(test)]
@@ -152,11 +155,13 @@ mod tests {
             provider_name: "continuum".to_string(),
             model_name: "kimi-k2-6".to_string(),
             cached_input_tokens: None,
+            client_app: None,
         };
 
         let serialized = serde_json::to_value(event).unwrap();
 
         assert!(serialized.get("cached_input_tokens").is_none());
+        assert!(serialized.get("client_app").is_none());
     }
 
     #[test]
@@ -172,11 +177,13 @@ mod tests {
             provider_name: "continuum".to_string(),
             model_name: "kimi-k2-6".to_string(),
             cached_input_tokens: Some(42),
+            client_app: Some(crate::client_app::ClientApp::Chat),
         };
 
         let serialized = serde_json::to_value(event).unwrap();
 
         assert_eq!(serialized.get("cached_input_tokens"), Some(&json!(42)));
+        assert_eq!(serialized.get("client_app"), Some(&json!("chat")));
     }
 
     #[test]
@@ -195,6 +202,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(event.cached_input_tokens, None);
+        assert_eq!(event.client_app, None);
     }
 }
 

@@ -92,6 +92,32 @@ the shared JWT/API-key cooldown, independent-account and read access, and waits
 for actual cooldown recovery. Keep fixture credentials in private environment
 inputs, never in command arguments or logs.
 
+## Client application attribution
+
+Clients may send one `x-maple-client-app` logical header with the canonical value
+`chat`, `proxy`, or `work`. Transport V2 carries this header inside its existing
+encrypted request envelope; it adds no envelope field or protocol version.
+Research, including its local proxy, identifies as `chat`; the Work application
+and its local proxy identify as `work`; the standalone proxy identifies as
+`proxy`. SDKs omit the header unless their host explicitly configures it.
+
+This is self-reported usage telemetry. It never supplies authentication,
+authorization, routing, entitlement, pricing or credit-pool authority. API-key
+authentication remains independent of this label. Missing, unrecognized or
+repeated values mean unknown and do not reject the request. Plaintext outer
+Transport V2 headers cannot supply or replace the encrypted label.
+
+The backend carries the parsed value through completion usage and through
+Responses model/tool turns, image descriptions, compaction and background title
+generation. Known values serialize as optional `client_app` in the usage event;
+unknown values are omitted. The existing event ID remains the idempotency key.
+Older clients and historical usage therefore remain unattributed. The header is
+removed at the shared provider boundary and is never sent to inference providers.
+
+Roll out the backend's provider-header filtering before enabling client emission.
+Older servers accept the logical header, but may forward an unrecognized header
+upstream. Request compatibility alone does not establish that privacy boundary.
+
 ## Durable provider rules
 
 - Keep canonical public model IDs separate from provider IDs, routing policy,

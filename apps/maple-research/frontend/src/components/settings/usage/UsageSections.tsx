@@ -1,5 +1,16 @@
 import { useMemo, type ComponentType, type ReactNode } from "react";
-import { Clock, Coins, Layers, ListTree, Loader2, Mic, Shuffle, Tag, Workflow } from "lucide-react";
+import {
+  AppWindow,
+  Clock,
+  Coins,
+  Layers,
+  ListTree,
+  Loader2,
+  Mic,
+  Shuffle,
+  Tag,
+  Workflow
+} from "lucide-react";
 import type { UsageModelLabels, UsageMonthRow } from "@/billing/usageApi";
 import { useUsagePrices, useUsageRequests } from "@/billing/useUsage";
 import { SettingsSection } from "@/components/settings/SettingsPage";
@@ -7,9 +18,9 @@ import { Button } from "@/components/ui/button";
 import { Legend, StackedBars, Swatch, type StackDatum } from "./charts";
 import {
   modelColor,
-  SOURCE_COLOR,
-  SOURCE_LABEL,
-  SOURCES,
+  ORIGIN_COLOR,
+  ORIGIN_LABEL,
+  ORIGINS,
   TOKEN_KINDS,
   TOKEN_LABEL
 } from "./palette";
@@ -23,6 +34,8 @@ import {
   fmtRequestTime,
   FREE_DAILY_MESSAGES,
   modelLabel,
+  requestOriginLabel,
+  usageOrigin,
   type UsagePlanKind
 } from "./usageData";
 
@@ -93,8 +106,11 @@ export function RecentRequests({
                     {!free && (
                       <td className="whitespace-nowrap px-3 py-2">
                         <span className="inline-flex items-center gap-1.5">
-                          <Swatch color={SOURCE_COLOR[r.source]} className="h-2 w-2 rounded-full" />
-                          {r.source === "api" ? "API key" : "Maple app"}
+                          <Swatch
+                            color={ORIGIN_COLOR[usageOrigin(r)]}
+                            className="h-2 w-2 rounded-full"
+                          />
+                          {requestOriginLabel(r)}
                         </span>
                       </td>
                     )}
@@ -252,13 +268,19 @@ export function LastTwelveMonths({
   currentMonth: string;
 }) {
   const buckets = buildMonths(months, currentMonth);
-  const series = SOURCES.map((s) => ({ key: s, label: SOURCE_LABEL[s], color: SOURCE_COLOR[s] }));
+  const series = ORIGINS.filter((origin) => buckets.some((m) => m.origins[origin] > 0)).map(
+    (origin) => ({
+      key: origin,
+      label: ORIGIN_LABEL[origin],
+      color: ORIGIN_COLOR[origin]
+    })
+  );
   const data: StackDatum[] = buckets.map((m) => ({
     key: m.month,
     tick: fmtMonth(m.month, "short"),
     title: m.partial ? `${fmtMonth(m.month)} (so far)` : fmtMonth(m.month),
     partial: m.partial,
-    values: { app: m.app, api: m.api },
+    values: m.origins,
     footer: (
       <span>
         {fmt(m.requests)} requests
@@ -279,7 +301,7 @@ export function LastTwelveMonths({
         format={fmtCompact}
         formatValue={fmt}
         unit="credits"
-        ariaLabel="Credits per calendar month, Maple apps and API keys"
+        ariaLabel="Credits per calendar month by app"
         maxBarWidth={34}
       />
       <div className="mt-4">
@@ -317,7 +339,12 @@ export function AboutNumbers({
     {
       icon: Layers,
       title: "Your whole account",
-      body: "Maple Research and Maple Work on every device, plus your API keys. API keys include the Local Proxy in Maple Research and the Local API in Maple Work."
+      body: "Maple Chat, Maple Work and Maple Proxy on every device, plus your API keys."
+    },
+    {
+      icon: AppWindow,
+      title: "Apps and API keys",
+      body: "Each request counts toward the app that sent it, even when it used an API key, including the Local Proxy in Chat and the Local API in Work. API keys on their own are requests that named no app, such as direct API calls. Earlier versions are requests from before apps reported their name."
     },
     kind === "free"
       ? {

@@ -12,16 +12,17 @@ import {
   MODEL_SLOTS,
   MORE_MODELS_COLOR,
   MORE_MODELS_KEY,
+  ORIGIN_COLOR,
+  ORIGIN_LABEL,
+  ORIGINS,
   POOL_COLOR,
   POOL_LABEL,
   POOLS,
-  SOURCE_COLOR,
-  SOURCE_LABEL,
-  SOURCES,
   TOKEN_COLOR,
   TOKEN_KINDS,
   TOKEN_LABEL,
-  type TokenKind
+  type TokenKind,
+  type UsageOrigin
 } from "./palette";
 
 // Pure transforms from billing usage responses to what the Usage page draws.
@@ -33,7 +34,7 @@ const DAY_MS = 86_400_000;
 const MAX_DAYS = 400;
 
 export type Metric = "credits" | "requests" | "tokens";
-export type Split = "model" | "source" | "pool" | "token";
+export type Split = "model" | "origin" | "pool" | "token";
 
 /** Billing's Free plan limit: requests per UTC day (not exposed by status). */
 export const FREE_DAILY_MESSAGES = 100;
@@ -254,7 +255,9 @@ export type ModelSummary = {
   label: string;
   credits: number;
   requests: number;
-  app: number;
+  /** Credits by origin. */
+  origins: OriginCredits;
+  /** Credits through an API key, in any app. Overlaps `origins`. */
   api: number;
   tokens: TokenTotals;
   /** Requests that reported a cached count; 0 means show "—", not 0. */
@@ -264,8 +267,9 @@ export type ModelSummary = {
 export type RangeSummary = {
   credits: number;
   requests: number;
-  /** Credits by source. */
-  app: number;
+  /** Credits by origin. */
+  origins: OriginCredits;
+  /** Credits through an API key, in any app. Overlaps `origins`. */
   api: number;
   /** Credits by pool. */
   plan: number;
@@ -274,6 +278,39 @@ export type RangeSummary = {
   cachedReported: number;
   byModel: ModelSummary[];
 };
+
+export type OriginCredits = Record<UsageOrigin, number>;
+
+function emptyOrigins(): OriginCredits {
+  return { chat: 0, work: 0, proxy: 0, api: 0, app: 0 };
+}
+
+/** Where a row came from. Older billing responses omit `client_app`. */
+export function usageOrigin(row: Pick<UsageDayRow, "source" | "client_app">): UsageOrigin {
+  return row.client_app ?? row.source;
+}
+
+/** The Recent requests label; an API key inside an app shows both. */
+export function requestOriginLabel(row: Pick<UsageDayRow, "source" | "client_app">): string {
+  const origin = usageOrigin(row);
+  if (origin === "api") return "API key";
+  if (origin === "app") return "Earlier version";
+  return row.source === "api" ? `${ORIGIN_LABEL[origin]} · API key` : ORIGIN_LABEL[origin];
+}
+
+/**
+ * One line naming a model's apps: the app alone when it accounts for everything,
+ * otherwise the two largest and how many more, so the table keeps its width.
+ */
+export function originMix(credits: OriginCredits, total: number): string {
+  const used = ORIGINS.filter((origin) => credits[origin] > 0).sort(
+    (a, b) => credits[b] - credits[a]
+  );
+  if (used.length <= 1) return used.length === 1 ? ORIGIN_LABEL[used[0]] : "";
+  const shown = used.slice(0, 2).map((o) => `${fmtPct(credits[o], total)} ${ORIGIN_LABEL[o]}`);
+  const more = used.length - shown.length;
+  return [...shown, ...(more > 0 ? [`${more} more`] : [])].join(" · ");
+}
 
 export function modelLabel(model: string, labels: UsageModelLabels | undefined): string {
   return labels?.[model]?.display_name || model;
@@ -312,7 +349,7 @@ export function summarizeDays(rows: UsageDayRow[], labels: UsageModelLabels): Ra
   const summary: RangeSummary = {
     credits: 0,
     requests: 0,
-    app: 0,
+    origins: emptyOrigins(),
     api: 0,
     plan: 0,
     extra: 0,
@@ -324,7 +361,8 @@ export function summarizeDays(rows: UsageDayRow[], labels: UsageModelLabels): Ra
   for (const row of rows) {
     summary.credits += row.credits;
     summary.requests += row.requests;
-    summary[row.source === "api" ? "api" : "app"] += row.credits;
+    summary.origins[usageOrigin(row)] += row.credits;
+    if (row.source === "api") summary.api += row.credits;
     summary[row.pool === "extra" ? "extra" : "plan"] += row.credits;
     summary.cachedReported += row.cached_reported_requests;
     addTokens(summary.tokens, row);
@@ -336,8 +374,8 @@ export function summarizeDays(rows: UsageDayRow[], labels: UsageModelLabels): Ra
         label: modelLabel(row.model, labels),
         credits: 0,
         requests: 0,
-        app: 0,
         api: 0,
+        origins: emptyOrigins(),
         tokens: emptyTokens(),
         cachedReported: 0
       };
@@ -345,7 +383,8 @@ export function summarizeDays(rows: UsageDayRow[], labels: UsageModelLabels): Ra
     }
     model.credits += row.credits;
     model.requests += row.requests;
-    model[row.source === "api" ? "api" : "app"] += row.credits;
+    model.origins[usageOrigin(row)] += row.credits;
+    if (row.source === "api") model.api += row.credits;
     model.cachedReported += row.cached_reported_requests;
     addTokens(model.tokens, row);
   }
@@ -379,13 +418,13 @@ export type DailyChart = { series: SeriesDef[]; days: DayBucket[] };
 const SLOT_ORDER = Object.keys(MODEL_SLOTS);
 
 function seriesKey(row: UsageDayRow, split: Split): string {
-  if (split === "source") return row.source;
+  if (split === "origin") return usageOrigin(row);
   if (split === "pool") return row.pool;
   return row.model in MODEL_SLOTS ? row.model : MORE_MODELS_KEY;
 }
 
 /**
- * Pivot billing's day × model × source × pool rows into stacked series for a
+ * Pivot billing's day × model × source × app × pool rows into stacked series for a
  * metric and split. Only series with usage in the range are returned, in a
  * fixed identity order, so colors and stacking never depend on rank.
  */
@@ -444,11 +483,11 @@ export function buildDailyChart({
       label: TOKEN_LABEL[k],
       color: TOKEN_COLOR[k]
     }));
-  } else if (split === "source") {
-    series = SOURCES.filter(used).map((s) => ({
-      key: s,
-      label: SOURCE_LABEL[s],
-      color: SOURCE_COLOR[s]
+  } else if (split === "origin") {
+    series = ORIGINS.filter(used).map((origin) => ({
+      key: origin,
+      label: ORIGIN_LABEL[origin],
+      color: ORIGIN_COLOR[origin]
     }));
   } else if (split === "pool") {
     series = POOLS.filter(used).map((p) => ({
@@ -495,8 +534,7 @@ export function extraCreditSpan(days: DayBucket[]): { from: string; to: string }
 
 export type MonthBucket = {
   month: string;
-  app: number;
-  api: number;
+  origins: OriginCredits;
   requests: number;
   extraCredits: number;
   partial: boolean;
@@ -513,8 +551,7 @@ export function buildMonths(
     const month = shiftMonth(currentMonth, -i);
     buckets.set(month, {
       month,
-      app: 0,
-      api: 0,
+      origins: emptyOrigins(),
       requests: 0,
       extraCredits: 0,
       partial: month === currentMonth
@@ -523,7 +560,7 @@ export function buildMonths(
   for (const row of rows) {
     const bucket = buckets.get(row.month);
     if (!bucket) continue;
-    bucket[row.source === "api" ? "api" : "app"] += row.credits;
+    bucket.origins[usageOrigin(row)] += row.credits;
     bucket.requests += row.requests;
     if (row.pool === "extra") bucket.extraCredits += row.credits;
   }

@@ -4,7 +4,10 @@ import { parseBillingApiError } from "./zapriteUpgrade";
 // the time; token counts are split so input + cached input + output add up.
 
 export type UsageRange = "last_30_days" | `month:${string}`;
+/** How a request authenticated: a session (`app`) or an API key (`api`). */
 export type UsageSource = "app" | "api";
+/** The app that sent a request, independent of how it authenticated. */
+export type UsageClientApp = "chat" | "work" | "proxy";
 export type UsagePool = "plan" | "extra";
 
 export type UsageModelLabels = Record<string, { display_name?: string | null }>;
@@ -24,6 +27,8 @@ export type UsageDayRow = UsageCounts & {
   date: string;
   model: string;
   source: UsageSource;
+  /** null or absent: the client reported no app (older versions, direct API calls). */
+  client_app?: UsageClientApp | null;
   pool: UsagePool;
 };
 
@@ -31,6 +36,7 @@ export type UsageMonthRow = UsageCounts & {
   /** Local calendar month (YYYY-MM). */
   month: string;
   source: UsageSource;
+  client_app?: UsageClientApp | null;
   pool: UsagePool;
 };
 
@@ -52,6 +58,7 @@ export type UsageRequest = {
   time: string;
   model: string;
   source: UsageSource;
+  client_app?: UsageClientApp | null;
   pool: UsagePool;
   uncached_input_tokens: number;
   /** null when the provider did not report a cached count. */

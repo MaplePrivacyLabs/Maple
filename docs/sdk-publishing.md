@@ -21,68 +21,41 @@ separate choices; publishing does not update application dependencies.
 
 ## Consumer version policy
 
-Maple's own Rust consumers build the in-tree SDK: `proxy`, `apps/maple-agent`
-and the Research native shell take `maple-sdk` from `sdk/rust` through a
-`path` dependency plus a root `[patch.crates-io]` entry (so the embedded
-proxy's registry requirement resolves to the same source) and commit the
-resulting lockfiles. SDK changes are usable in this repository as soon as they
-merge; publication serves external SDK users and does not gate in-repo
-consumers (decided 2026-10-07). The reusable proxy library keeps a compatible
-SDK requirement so an external embedding application can choose a published
-version. Consumers that still pin a published version (the Research and Auth
-frontends' `@mapleai/sdk`) choose when to switch or upgrade; read each
-consumer's current manifest and lockfile for its selected source, since the
-registry versions and command examples in this guide are not current
-dependency declarations. An SDK publication does not automatically upgrade
-any consumer, and an older published pin is not a reason to block an
-unrelated client release.
+Maple's client apps build the in-tree SDK and stay there; do not pin them to a
+published version (decided 2026-11-03). The Research frontend takes
+`@mapleai/sdk` from `file:../../../sdk`, and frontend preparation builds it.
+`proxy`, `apps/maple-agent` and the Research native shell take `maple-sdk` from
+`sdk/rust` through a `path` dependency plus a root `[patch.crates-io]` entry (so
+the embedded proxy's registry requirement resolves to the same source) and commit
+the resulting lockfiles. SDK changes are usable in this repository as soon as they
+merge, and an SDK change selects Research's checks in CI. Publication serves
+external SDK users and does not gate in-repo consumers. A local package version
+does not freeze its source, so read the monorepo commit, not the SDK version, to
+identify what a client shipped.
+
+The reusable proxy library keeps a compatible SDK requirement so an external
+embedding application can choose a published version. Auth is the one exception:
+it is deployed separately and
+[pins an exact published version](pages-deployments.md), upgraded only through
+its own manifest and lockfile. An SDK publication does not automatically upgrade
+it, and an older published pin is not a reason to block an unrelated client
+release.
 
 Research and Auth resolve transitive `zod` dependencies to `4.6.7` for
 [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
-This removes Zod 3 from their installed dependency graphs, but the older
-published `@mapleai/sdk` and Research's legacy `@opensecret/react-v1` package
+This removes Zod 3 from their installed dependency graphs, but older published
+`@mapleai/sdk` versions and Research's legacy `@opensecret/react-v1` package
 also embed Zod 3 in their JavaScript bundles. A consumer resolution cannot
 replace that embedded code. A clean Bun audit therefore proves only the
 resolved graph; complete remediation requires rebuilding and publishing the
-SDKs with the patched dependency, then updating the consumer pins. Preserve
-legacy authentication compatibility when preparing that separate upgrade.
-
-Local SDK dependencies are supported during active development, including on
-`master`. Edit the existing manifest and regenerate its lockfile with the
-owning component's pinned tools; no special development mode is required:
-
-- TypeScript can use `file:../../../sdk` from the Research frontend and return
-  to an exact registry version when ready. A local package version does not
-  freeze its source; frontend preparation builds the selected local SDK.
-- Rust can use a Cargo `path` dependency or a root `[patch.crates-io]` override
-  for `maple-sdk`. Keep the host app and embedded proxy on the same SDK source
-  and version because they exchange SDK types. A patch belongs in the
-  consuming Cargo workspace root, not only the SDK or proxy manifest. Update
-  the selected dependency requirements and affected lockfiles together; a
-  `version` alongside `path` checks compatibility, but still builds local
-  source. Remove local overrides when returning to a published pin.
-
-Research's `bunfig.toml` defaults to `install.frozenLockfile = true`. To switch
-its SDK dependency, temporarily set only that setting to `false`, enter the
-root's pinned Nix shell, and run **one** command from
-`apps/maple-research/frontend/`:
-
-```sh
-# Published version:
-bun --no-env-file add --exact @mapleai/sdk@3.5.2 --ignore-scripts
-# Or local source:
-bun --no-env-file add --exact @mapleai/sdk@file:../../../sdk --ignore-scripts
-```
-
-Restore `frozenLockfile = true` immediately, including if the command fails;
-leave dependency-age and script-execution protections unchanged. Review the
-manifest/lockfile delta, then run `just install` from the monorepo root to
-validate the selected dependency through the normal frozen install path.
+SDK with the patched dependency, then updating Auth's pin. Preserve legacy
+authentication compatibility when preparing that separate upgrade.
 
 Before releasing a client, proxy, or CLI, inspect what that consumer will
-actually ship. For Research's frontend, check the `@mapleai/sdk` entry in both
-`apps/maple-research/frontend/package.json` and its adjacent `bun.lock`. For a Rust consumer,
-run this in its pinned environment, substituting its manifest path:
+actually ship. For Research's frontend, confirm the `@mapleai/sdk` entry in both
+`apps/maple-research/frontend/package.json` and its adjacent `bun.lock` is the
+local link. For a Rust consumer, run this in its pinned environment, substituting
+its manifest path:
 
 ```sh
 cargo metadata --locked --format-version 1 --manifest-path PATH/TO/Cargo.toml \
@@ -96,16 +69,13 @@ when its version matches the registry. Compare the relevant published source
 commit/provenance or package contents when deciding whether SDK runtime changes
 will ship.
 
-If a release includes unpublished SDK changes, recommend publishing that SDK
-and pinning the affected consumer before releasing the client. This is a
-release-preparation preference, not a mandatory gate or a new approval step.
-An intentional release with local SDK source is allowed; record that source
-and the exact monorepo commit in the release handoff. Registry publishing keeps
-its existing protected workflow and authorization requirements below. Ordinary
-client work does not authorize an SDK publication.
+A client release with unpublished SDK source is normal; record the exact monorepo
+commit in the release handoff. Registry publishing keeps its existing protected
+workflow and authorization requirements below. Ordinary client work does not
+authorize an SDK publication.
 
 Validate the selected dependency mode and lockfile. SDK source and backend
-integration checks continue to exercise the in-tree SDK; passing a client build
+integration checks continue to exercise the in-tree SDK; passing an Auth build
 that consumes a registry version does not validate unpublished SDK source.
 
 ## Rolling an SDK fix out to clients
@@ -123,20 +93,16 @@ next.
    updates, separate from approving an EIF. Preserve the signed histories and
    [legacy mirror](../services/opensecret/docs/pcr-compatibility.md).
 2. **Publish the affected SDKs** when the fix must reach external users or
-   consumers on published pins. From `sdk/` on merged `master`, use
+   Auth. From `sdk/` on merged `master`, use
    `just publish-npm VERSION trusted false` for TypeScript or
    `just publish-cargo VERSION trusted false` for Rust, with each SDK's own
    version. Publish both only when both need the update. Each run validates,
    then waits for its protected environment approval. A client building the
    in-tree SDK can ship the fix without registry publication.
-3. **Consumer PR, for consumers on published pins only.** The in-repo Rust
-   consumers (`proxy`, `apps/maple-agent`, the Research native shell) already
-   build the in-tree SDK and need nothing here. A consumer still on a
-   published pin, such as the Research frontend's `@mapleai/sdk`, is updated
-   with the `bun --no-env-file add --exact` command above (or, for a Rust
-   consumer on a registry pin, `cargo update -p maple-sdk --precise X.Y.Z`),
-   and the host app and its embedded proxy must resolve the same SDK source
-   and version. When the SDK adds a
+3. **Consumer PR, for Auth only.** Research and the in-repo Rust consumers
+   (`proxy`, `apps/maple-agent`) already build the in-tree SDK and need nothing
+   here. Auth updates its exact `@mapleai/sdk` version in its own manifest and
+   lockfile. When the SDK adds a
    user-facing condition, surface it through each client's own safe message
    (native clients keep SDK error details private). For enclave trust changes,
    review both apps' embedded PCR0 fallback lists against the approved

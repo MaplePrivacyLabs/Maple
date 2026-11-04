@@ -165,8 +165,8 @@ scripts only `ci.yml`'s unsigned lanes run select none. Only `mobile-build` and
 `ios-dev-testflight` can also be dispatched, which always builds; desktop and
 Android release evidence comes only from master pushes. The selector routes
 proxy runtime and Rust SDK build inputs to the native builds, because the
-Research shell builds both from the tree. TypeScript SDK changes never select
-app builds: each frontend builds the SDK its own manifest selects. Agent Prod
+Research shell builds both from the tree. Research builds the in-tree TypeScript
+SDK, so its source selects the same builds as a frontend change; Auth's pin does not. Agent Prod
 desktop packages build on master pushes that change Agent inputs (`plan.py only
 agent-desktop`), Agent Dev packages nightly, and both on every manual dispatch;
 a dispatch with `release=true` builds Prod and publishes it as the next update.
@@ -309,8 +309,8 @@ icon, and runtime paths. See the
 ## SDK consumption
 
 Follow the [consumer version policy](sdk-publishing.md#consumer-version-policy).
-Consumers select published SDK pins independently; local links are for
-development. SDK publication and upgrading a consumer are separate decisions.
+Client apps build the in-tree SDK; Auth pins a published version and upgrades
+alone. SDK publication serves external users and Auth, not in-repo clients.
 
 ## Maintaining guidance
 

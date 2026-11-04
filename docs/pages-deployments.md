@@ -241,7 +241,7 @@ Scripts never rename or move managed dotenv files. Fresh production checkouts
 contain no managed workspace dotenv files. The pinned CI shell provides Node
 (required by TypeScript/Vite CLI shebangs), Bun, and Python.
 
-Auth pins published `@mapleai/sdk` 4.1.1; Research retains its own 4.0.1 pin.
+Auth pins published `@mapleai/sdk` 4.1.1; Research builds the in-tree SDK.
 All fixed Auth profiles reject local SDK links and source overrides, require
 an exact stable SDK version of at least 4.1.0, and check the installed package
 name/version and resolution inside Auth's own `node_modules`. Future Auth

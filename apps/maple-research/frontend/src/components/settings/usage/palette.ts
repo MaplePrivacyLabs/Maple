@@ -1,8 +1,8 @@
-import type { UsagePool, UsageSource } from "@/billing/usageApi";
+import type { UsageClientApp, UsagePool, UsageSource } from "@/billing/usageApi";
 
 // Colors read the validated `.usage-viz` variables in index.css (adjacent CVD
 // ΔE >= 8, normal vision >= 15 against light and dark cards). Coral stays
-// reserved for the plan meter and "Maple apps"; models never use it.
+// reserved for the plan meter and Chat; models never use it.
 
 /**
  * Fixed slots for current flagship models. Colors follow model identity, never
@@ -41,16 +41,29 @@ export const TOKEN_LABEL: Readonly<Record<TokenKind, string>> = {
   output: "Output"
 };
 
-export const SOURCES: readonly UsageSource[] = ["app", "api"];
+/**
+ * Where usage came from: the reporting app, or for usage with no reported app,
+ * how it authenticated. An API key can run inside any app, so `api` here means
+ * only API-key usage that named no app.
+ */
+export type UsageOrigin = UsageClientApp | UsageSource;
 
-export const SOURCE_COLOR: Readonly<Record<UsageSource, string>> = {
-  app: "var(--src-app)",
-  api: "var(--src-api)"
+export const ORIGINS: readonly UsageOrigin[] = ["chat", "work", "proxy", "api", "app"];
+
+export const ORIGIN_COLOR: Readonly<Record<UsageOrigin, string>> = {
+  chat: "var(--src-chat)",
+  work: "var(--src-work)",
+  proxy: "var(--src-proxy)",
+  api: "var(--src-api)",
+  app: "var(--src-earlier)"
 };
 
-export const SOURCE_LABEL: Readonly<Record<UsageSource, string>> = {
-  app: "Maple apps",
-  api: "API keys"
+export const ORIGIN_LABEL: Readonly<Record<UsageOrigin, string>> = {
+  chat: "Chat",
+  work: "Work",
+  proxy: "Proxy",
+  api: "API keys",
+  app: "Earlier versions"
 };
 
 export const POOLS: readonly UsagePool[] = ["plan", "extra"];

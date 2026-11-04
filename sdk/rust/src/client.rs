@@ -267,6 +267,7 @@ pub struct OpenSecretClient {
     transport_session: TransportSessionSlot,
     transport_v2: TransportV2Client,
     cache_namespace_root: TransportV2CacheNamespaceRoot,
+    client_app: Option<crate::ClientApp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -812,6 +813,7 @@ impl OpenSecretClient {
             transport_session: Arc::new(RwLock::new(None)),
             transport_v2,
             cache_namespace_root: TransportV2CacheNamespaceRoot::generate()?,
+            client_app: None,
         })
     }
 
@@ -848,6 +850,7 @@ impl OpenSecretClient {
             transport_session: Arc::new(RwLock::new(None)),
             transport_v2,
             cache_namespace_root: TransportV2CacheNamespaceRoot::generate()?,
+            client_app: None,
         })
     }
 
@@ -859,6 +862,22 @@ impl OpenSecretClient {
     pub fn with_cache_namespace_root(mut self, root: TransportV2CacheNamespaceRoot) -> Self {
         self.cache_namespace_root = root;
         self
+    }
+
+    /// Identify the application that owns this client, independently of its credentials.
+    ///
+    /// The value is client-reported metadata inside encrypted logical requests,
+    /// never an outer HTTP header. It overrides any caller-supplied
+    /// `x-maple-client-app` headers and does not affect authentication or pricing.
+    #[must_use]
+    pub fn with_client_app(mut self, client_app: crate::ClientApp) -> Self {
+        self.client_app = Some(client_app);
+        self
+    }
+
+    /// Return the configured application, or `None` for an unconfigured client.
+    pub fn client_app(&self) -> Option<crate::ClientApp> {
+        self.client_app
     }
 
     pub fn set_api_key(&self, api_key: String) -> Result<()> {
@@ -1217,11 +1236,21 @@ impl OpenSecretClient {
         &self,
         method: http::Method,
         target: String,
-        headers: Vec<LogicalHeader>,
+        mut headers: Vec<LogicalHeader>,
         body: Option<Bytes>,
         auth: ResolvedAuth,
         options: LogicalRequestOptions<'_>,
     ) -> Result<InferenceResponse> {
+        if let Some(client_app) = self.client_app {
+            headers.retain(|header| !header.name().eq_ignore_ascii_case("x-maple-client-app"));
+            headers.push(
+                LogicalHeader::new(
+                    "x-maple-client-app".to_string(),
+                    client_app.as_str().to_string(),
+                )
+                .map_err(transport_error)?,
+            );
+        }
         let permits_recovery = permits_session_recovery(&target);
         let anonymous_generation = matches!(auth.source, CredentialSource::Anonymous)
             .then(|| self.session_manager.credential_generation())
@@ -3978,3 +4007,6 @@ mod tests {
 
 #[cfg(test)]
 mod recovery_tests;
+
+#[cfg(test)]
+mod client_app_tests;
