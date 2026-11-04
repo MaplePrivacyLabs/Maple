@@ -1320,7 +1320,7 @@ fn linux_installation(executable: &Path, resolved: Result<PathBuf, String>) -> I
     }
 }
 #[cfg(any(target_os = "macos", test))]
-fn manual_macos_path(path: &Path) -> bool {
+pub(crate) fn manual_macos_path(path: &Path) -> bool {
     path.starts_with("/Volumes")
         || path
             .components()

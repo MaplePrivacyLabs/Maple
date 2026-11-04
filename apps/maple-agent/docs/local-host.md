@@ -180,6 +180,15 @@ not used. Host-configured MCP servers stay host-owned. ACP-supplied bindings are
 transient, disabled on detach and require explicit reattachment. Conflicting
 server names are rejected rather than silently replacing another client's tools.
 
+### Editor setup
+
+Settings → Editors shows the path to give an editor. It is the running
+executable on macOS (`Maple Agent.app`; the bundle name predates the display
+branding), `~/.local/bin/<command>` or the bundle's `AppRun` on Linux, and the
+stable launcher rather than a `versions/` generation on Windows. These paths
+survive updates. ACP has no per-account settings: a session may start in any
+folder, and project trust remains the explicit choice.
+
 ### Paseo
 
 Configure a provider extending `acp` with command `["/path/to/maple-agent", "acp"]`.

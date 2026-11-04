@@ -1,7 +1,6 @@
 //! The ACP server: over its framed stdio transport on the scripted runtime,
 //! and its conversions and checks one by one.
 
-use super::config::MAX_ACP_CONNECTIONS;
 use super::convert::{
     acp_config_options, acp_tool_update, client_supports_form_elicitation, timeline_tool_text,
 };
@@ -567,12 +566,8 @@ fn connect_with_context(
     tokio::task::JoinHandle<Result<(), String>>,
     Arc<AcpConnectionContext>,
 ) {
-    let config = Arc::new(RwLock::new(
-        normalize_config(AgentAcpConfig::default()).expect("the default ACP config is valid"),
-    ));
     let context = AcpConnectionContext::new(
         handle.clone(),
-        config,
         Arc::new(AgentAcpStats::default()),
         completed_runtime_start(),
     );
@@ -1154,30 +1149,6 @@ async fn project_trust_is_asked_once_and_kept() {
     assert_eq!(client.requests.len(), 1, "asked once");
     client.shutdown().await;
     finish(serving).await;
-}
-
-#[test]
-fn default_config_allows_eight_connections() {
-    let config = AgentAcpConfig::default();
-    assert_eq!(config.max_connections, 8);
-    assert!(config.allowed_project_roots.is_empty());
-}
-
-#[test]
-fn explicit_connection_limits_remain_configurable_below_the_default() {
-    let one = normalize_config(AgentAcpConfig {
-        max_connections: 1,
-        ..AgentAcpConfig::default()
-    })
-    .unwrap();
-    assert_eq!(one.max_connections, 1);
-
-    let capped = normalize_config(AgentAcpConfig {
-        max_connections: usize::MAX,
-        ..AgentAcpConfig::default()
-    })
-    .unwrap();
-    assert_eq!(capped.max_connections, MAX_ACP_CONNECTIONS);
 }
 
 #[test]
@@ -1831,69 +1802,23 @@ fn outbound_credit_acknowledges_only_session_updates() {
 }
 
 #[test]
-fn allowed_project_root_returns_the_canonical_admitted_path() {
+fn project_root_resolves_to_the_canonical_path() {
     let root = tempfile::tempdir().unwrap();
     let project = root.path().join("project");
     std::fs::create_dir(&project).unwrap();
 
-    let admitted =
-        ensure_allowed_project_root(&project, &[root.path().to_string_lossy().into_owned()])
-            .unwrap();
-
-    assert_eq!(admitted, project.canonicalize().unwrap());
+    assert_eq!(
+        resolve_project_root(&project).unwrap(),
+        project.canonicalize().unwrap()
+    );
 }
 
 #[test]
-fn allowed_project_root_rejects_relative_paths() {
-    assert!(ensure_allowed_project_root(Path::new("relative/project"), &[]).is_err());
-}
-
-#[test]
-fn acp_config_uses_only_account_sql_and_never_prior_json() {
+fn project_root_rejects_relative_and_missing_paths() {
     let root = tempfile::tempdir().unwrap();
-    let user_id = "acp-config-user";
-    let store =
-        crate::store::Store::open(crate::store::StorePaths::new(root.path().join("profile")))
-            .unwrap();
-    store.upsert_account(user_id, 1).unwrap();
-    let prior = root.path().join("profile/acp/accounts/old/config.json");
-    std::fs::create_dir_all(prior.parent().unwrap()).unwrap();
-    std::fs::write(&prior, b"previous malformed ACP configuration").unwrap();
-    assert_eq!(
-        load_acp_config(&store, user_id).unwrap(),
-        AgentAcpConfig::default()
-    );
-    let project_root = root.path().join("project").to_string_lossy().into_owned();
-    save_acp_config(
-        &store,
-        user_id,
-        AgentAcpConfig {
-            allowed_project_roots: vec![project_root.clone(), project_root.clone()],
-            max_connections: 400,
-        },
-        2,
-    )
-    .unwrap();
-    let config = load_acp_config(&store, user_id).unwrap();
-    assert_eq!(config.allowed_project_roots, vec![project_root]);
-    assert_eq!(config.max_connections, MAX_ACP_CONNECTIONS);
-    assert!(
-        save_acp_config(
-            &store,
-            user_id,
-            AgentAcpConfig {
-                allowed_project_roots: vec!["relative".into()],
-                max_connections: 1,
-            },
-            3
-        )
-        .is_err()
-    );
-    assert_eq!(load_acp_config(&store, user_id).unwrap(), config);
-    assert_eq!(
-        std::fs::read(prior).unwrap(),
-        b"previous malformed ACP configuration"
-    );
+
+    assert!(resolve_project_root(Path::new("relative/project")).is_err());
+    assert!(resolve_project_root(&root.path().join("missing")).is_err());
 }
 
 #[test]

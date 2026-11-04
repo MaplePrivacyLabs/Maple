@@ -3,7 +3,7 @@
 
 use gpui::{Context, Div, Entity, Focusable, SharedString, Window, div, prelude::*};
 
-use super::{Section, SettingsScreen, SettingsTarget, section_title, setting_copy};
+use super::{Section, SettingsScreen, SettingsTarget, activates, section_title, setting_copy};
 use crate::local_api::{LocalApiConfig, LocalApiState, LocalApiStatus};
 use crate::ui::{text_input::TextInput, theme, widgets};
 
@@ -552,11 +552,6 @@ fn retry_label(status: &LocalApiStatus) -> &'static str {
     } else {
         "Retry start"
     }
-}
-
-fn activates(event: &gpui::KeyDownEvent) -> bool {
-    !event.keystroke.modifiers.modified()
-        && matches!(event.keystroke.key.as_str(), "enter" | "space" | " ")
 }
 
 #[cfg(test)]
