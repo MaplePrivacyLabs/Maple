@@ -73,6 +73,7 @@ stdio MCP server configured in Settings > Integrations.
 | M2 | A server that cannot connect | Give a task a server whose command does not exist, then run it twice | The first run's notice names it, the second's does not; switching it on again fails with the reason (**automated**: `a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on`) |
 | A1 | ACP agent mode | A stdio ACP client: `session/new`, a tool prompt, `session/list`, `session/load`, cancel, `/compact` | No modes advertised, zero `session/request_permission` for tools, the trust chooser on an untrusted project, no task left by a session closed before its first prompt, and every turn on the model's catalog vision and context window, which `usage_update` reports (**automated**: `acp::tests`) |
 | A2 | Proxy, `login`, `--version` | Run each mode | Each works as the README says |
+| A4 | Editor setup | Paste the Settings → Editors entries into Zed and a JetBrains IDE on a packaged build | Each lists the agent, starts a task in the open folder, and keeps working after an update (launcher paths **automated**: `editors::tests`) |
 
 ## Shared local host
 

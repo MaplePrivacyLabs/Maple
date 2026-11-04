@@ -35,6 +35,8 @@ mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
+#[cfg(feature = "acp")]
+mod editors;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
@@ -42,6 +44,8 @@ mod navigation;
 use self::account::AccountState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
+#[cfg(feature = "acp")]
+use self::editors::EditorsUiState;
 #[cfg(feature = "proxy")]
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
@@ -65,6 +69,8 @@ pub enum Section {
     ApiKeys,
     #[cfg(feature = "proxy")]
     LocalApi,
+    #[cfg(feature = "acp")]
+    Editors,
     Shortcuts,
     Prompt,
     Integrations,
@@ -83,6 +89,8 @@ impl Section {
             Self::ApiKeys => "API keys",
             #[cfg(feature = "proxy")]
             Self::LocalApi => "Local API",
+            #[cfg(feature = "acp")]
+            Self::Editors => "Editors",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "Additional instructions",
             Self::Integrations => "Integrations",
@@ -100,6 +108,8 @@ impl Section {
         Self::ApiKeys,
         #[cfg(feature = "proxy")]
         Self::LocalApi,
+        #[cfg(feature = "acp")]
+        Self::Editors,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -159,6 +169,8 @@ pub struct SettingsScreen {
     api_keys: ApiKeysState,
     #[cfg(feature = "proxy")]
     local_api: LocalApiUiState,
+    #[cfg(feature = "acp")]
+    editors: EditorsUiState,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
     /// Account MCP servers; None until loaded.
@@ -315,7 +327,15 @@ impl SettingsScreen {
     }
 
     fn visible_sections(&self) -> Vec<Section> {
-        Section::ALL.to_vec()
+        Section::ALL
+            .iter()
+            .copied()
+            .filter(|&section| {
+                section != Section::Advanced
+                    || self.section == Section::Advanced
+                    || self.advanced_has_content()
+            })
+            .collect()
     }
 
     pub fn update_remote_status(
@@ -427,6 +447,8 @@ impl SettingsScreen {
             api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
             #[cfg(feature = "proxy")]
             local_api: LocalApiUiState::new(application_vim_enabled, application_focus.clone(), cx),
+            #[cfg(feature = "acp")]
+            editors: EditorsUiState::new(),
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
@@ -1890,6 +1912,10 @@ impl SettingsScreen {
             Section::LocalApi => {
                 pane = pane.child(self.render_local_api_pane(cx));
             }
+            #[cfg(feature = "acp")]
+            Section::Editors => {
+                pane = pane.child(self.render_editors_pane(cx));
+            }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));
             }
@@ -3233,6 +3259,12 @@ fn pill_button(
 
 /// Pane heading in the brand display face, like the section titles of
 /// the brand kit.
+#[cfg(any(feature = "acp", feature = "proxy"))]
+fn activates(event: &gpui::KeyDownEvent) -> bool {
+    !event.keystroke.modifiers.modified()
+        && matches!(event.keystroke.key.as_str(), "enter" | "space" | " ")
+}
+
 fn section_title(label: &str) -> Div {
     div()
         .font_family(crate::assets::FONT_DISPLAY)

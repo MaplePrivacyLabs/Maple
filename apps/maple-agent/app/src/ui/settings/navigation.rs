@@ -10,6 +10,8 @@ use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, 
 use super::account::AccountTarget;
 use super::api_keys::ApiKeysTarget;
 use super::billing::BillingTarget;
+#[cfg(feature = "acp")]
+use super::editors::EditorsTarget;
 #[cfg(feature = "proxy")]
 use super::local_api::LocalApiTarget;
 use super::{
@@ -49,6 +51,8 @@ pub(super) enum SettingsTarget {
     ApiKeys(ApiKeysTarget),
     #[cfg(feature = "proxy")]
     LocalApi(LocalApiTarget),
+    #[cfg(feature = "acp")]
+    Editors(EditorsTarget),
     Shortcut(String),
     PromptEditor,
     PromptSave,
@@ -154,6 +158,8 @@ impl SettingsScreen {
             Section::ApiKeys => self.api_keys_targets(),
             #[cfg(feature = "proxy")]
             Section::LocalApi => self.local_api_targets(),
+            #[cfg(feature = "acp")]
+            Section::Editors => self.editors_targets(),
             Section::Shortcuts => self
                 .shortcut_list_cache
                 .visible_indices
@@ -370,6 +376,8 @@ impl SettingsScreen {
             Some(SettingsTarget::LocalApi(target)) => {
                 self.activate_local_api_target(target, window, cx)
             }
+            #[cfg(feature = "acp")]
+            Some(SettingsTarget::Editors(target)) => self.copy_editors_text(target, cx),
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);
