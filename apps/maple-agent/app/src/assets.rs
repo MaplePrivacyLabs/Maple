@@ -53,6 +53,7 @@ assets!(
     "icons/pin.svg",
     "icons/plus.svg",
     "icons/puzzle.svg",
+    "icons/rotate-cw.svg",
     "icons/search.svg",
     "icons/panel-left.svg",
     "icons/pencil.svg",

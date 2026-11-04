@@ -1934,7 +1934,7 @@ impl SettingsScreen {
                         "Version",
                         format!("v{}", crate::ui::titlebar::TitleBar::version()),
                     ))
-                    .child(info_row("Update", self.update.label.clone()))
+                    .child(self.render_update_row(cx))
                     .child(toggle_row(
                         "Automatically download updates",
                         "Download verified updates in the background. Installation always waits for Restart to Update.",
@@ -1944,37 +1944,116 @@ impl SettingsScreen {
                             this.edit_setting(move |settings| settings.automatic_update_downloads = enabled, cx);
                             cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::AutomaticDownloads(enabled)));
                         }),
-                    ))
-                    .child(div().flex().flex_wrap().gap_3()
-                        .child(widgets::ghost_button("updates-check")
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Check))))
-                            .child(if self.update.busy() { "Checking / updating…" } else if self.update.state == crate::update::State::Error { "Retry" } else { "Check for Updates" }))
-                        .when_some(self.update.primary.filter(|action| *action != crate::update::UpdateAction::Check), |row, action| row.child(
-                            widgets::ghost_button("updates-primary")
-                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(crate::update::UpdateRequested(action))))
-                                .child(self.update.primary_label)
-                        ))
-                        .when(self.update.state == crate::update::State::Error && self.update.manual_download_url.is_some(), |row| row.child(
-                            widgets::ghost_button("updates-manual")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::ManualDownload))))
-                                .child("Download manually")
-                        ))
-                        .when(self.update.state == crate::update::State::Ready, |row| row.child(
-                            widgets::ghost_button("updates-later")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Later))))
-                                .child("Later")
-                        ))
-                    )
-                    .child(info_row("Backend", self.backend.api_url().to_string()))
-                    .child(info_row(
-                        "Instruction directory",
-                        crate::backend::instruction_config_root()
-                            .to_string_lossy()
-                            .to_string(),
                     ));
             }
         }
         pane
+    }
+}
+
+impl SettingsScreen {
+    /// One status and the one thing to do next: a release action when
+    /// there is one, otherwise a quiet check. Remote computer cards follow
+    /// the same rule.
+    fn render_update_row(&self, cx: &mut Context<Self>) -> Div {
+        use crate::update::{State, UpdateAction, UpdateRequested};
+
+        let request = |action| cx.listener(move |_, _, _, cx| cx.emit(UpdateRequested(action)));
+        let actions = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .my(px(-8.))
+            .when(
+                self.update.state == State::Ready && self.update.show_banner,
+                |row| {
+                    row.child(
+                        widgets::ghost_button("updates-later")
+                            .on_click(request(UpdateAction::Later))
+                            .child("Later"),
+                    )
+                },
+            )
+            .when(
+                self.update.state == State::Error && self.update.manual_download_url.is_some(),
+                |row| {
+                    row.child(
+                        widgets::ghost_button("updates-manual")
+                            .on_click(request(UpdateAction::ManualDownload))
+                            .child("Download manually"),
+                    )
+                },
+            )
+            .when_some(next_update_action(&self.update), |row, action| {
+                row.child(
+                    widgets::primary_button("updates-primary")
+                        .on_click(request(action))
+                        .child(self.update.primary_label),
+                )
+            })
+            .map(|row| match update_check(&self.update) {
+                UpdateCheck::Hidden => row,
+                UpdateCheck::Running => row.child(
+                    div()
+                        .flex_none()
+                        .size_7()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::ui::icons::spinning_icon(
+                            "updates-check",
+                            "rotate-cw",
+                            widgets::ROW_ICON,
+                            theme::text_secondary(),
+                        )),
+                ),
+                UpdateCheck::Ready(label) => row.child(
+                    widgets::icon_button(
+                        "updates-check",
+                        "rotate-cw",
+                        label,
+                        widgets::ROW_ICON,
+                        theme::text_secondary(),
+                    )
+                    .on_click(request(UpdateAction::Check)),
+                ),
+            });
+        let has_actions = update_check(&self.update) != UpdateCheck::Hidden
+            || next_update_action(&self.update).is_some();
+        info_row("Update", self.update.label.clone()).when(has_actions, |row| row.child(actions))
+    }
+}
+
+/// The small check control in the Update row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateCheck {
+    Hidden,
+    Running,
+    Ready(&'static str),
+}
+
+/// The release action the Update row offers, if any. A plain check is not
+/// one: it has its own control.
+fn next_update_action(update: &crate::update::Snapshot) -> Option<crate::update::UpdateAction> {
+    update
+        .primary
+        .filter(|action| *action != crate::update::UpdateAction::Check)
+}
+
+fn update_check(update: &crate::update::Snapshot) -> UpdateCheck {
+    use crate::update::State;
+
+    if update.busy() {
+        UpdateCheck::Running
+    } else if matches!(update.state, State::Disabled | State::RestartRequired)
+        || next_update_action(update).is_some()
+    {
+        UpdateCheck::Hidden
+    } else if update.state == State::Error {
+        UpdateCheck::Ready("Retry")
+    } else {
+        UpdateCheck::Ready("Check for updates")
     }
 }
 
@@ -3355,6 +3434,51 @@ fn info_row(label: &str, value: String) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_row_offers_a_check_only_when_nothing_else_is_next() {
+        use crate::update::{Snapshot, State, UpdateAction};
+
+        let snapshot = |state, primary| {
+            let mut update = Snapshot::initial();
+            update.state = state;
+            update.primary = primary;
+            update
+        };
+        let check = UpdateCheck::Ready("Check for updates");
+
+        assert_eq!(update_check(&snapshot(State::Idle, None)), check);
+        assert_eq!(
+            update_check(&snapshot(State::Current, Some(UpdateAction::Check))),
+            check
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Error, Some(UpdateAction::Check))),
+            UpdateCheck::Ready("Retry")
+        );
+        for state in [State::Checking, State::Downloading, State::Installing] {
+            assert_eq!(update_check(&snapshot(state, None)), UpdateCheck::Running);
+        }
+        assert_eq!(
+            update_check(&snapshot(State::Available, Some(UpdateAction::Download))),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Ready, Some(UpdateAction::Restart))),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(
+                State::RestartRequired,
+                Some(UpdateAction::Relaunch)
+            )),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Disabled, None)),
+            UpdateCheck::Hidden
+        );
+    }
 
     fn shortcut_row(
         slot_id: &str,
