@@ -141,6 +141,7 @@ pub(crate) fn apply_preference(preference: Option<&str>) {
     });
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn current_locale() -> LanguageIdentifier {
     ACTIVE.with_borrow(|state| state.locale.clone())
 }
