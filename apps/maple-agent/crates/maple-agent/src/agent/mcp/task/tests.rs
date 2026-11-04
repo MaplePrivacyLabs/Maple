@@ -173,7 +173,7 @@ async fn a_server_switched_on_connects_at_once() {
     let fake = FakeServer::start(None).await;
     let mcp = TaskMcp::new(&std::env::temp_dir(), None);
     mcp.enable(http("Docs", &fake.url)).await.unwrap();
-    assert_eq!(fake.methods()[0], "initialize");
+    assert!(fake.methods().iter().any(|method| method == "initialize"));
     let error = mcp
         .enable(stdio("Broken", MISSING_COMMAND, true))
         .await

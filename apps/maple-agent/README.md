@@ -238,8 +238,22 @@ A stdio server runs in the task's folder with the login shell's PATH, in its
 own process group; it is stopped by closing its input, then SIGTERM, then
 SIGKILL. For an HTTP server, `$NAME` and `${NAME}` in the URL and in header
 values are filled in from the server's environment variables, and redirects
-are not followed. Sign-in to servers (OAuth), and MCP resources and prompts,
-are not supported yet.
+are not followed. Errors leave out the endpoint's query and these saved values.
+MCP resources and prompts are not supported yet.
+
+Settings > Integrations also lists well-known apps from the bundled
+`crates/maple-agent/src/agent/mcp/catalog.json`, a subset of the MCP registry's
+`server.json`, so adding an app needs no code. Connecting one, or choosing
+**Sign in with browser** for a custom HTTP server, signs in on this computer: the
+browser returns to a loopback listener, Maple registers itself with the server
+(Dynamic Client Registration), and tokens stay in this computer's store. A server
+that only accepts registered apps cannot be signed in to yet, and neither can a
+paired computer from its controller.
+
+HTTP servers use the stateless `2026-07-28` revision of MCP when they offer it,
+and the `initialize` handshake otherwise. Stdio servers keep the handshake, since
+an older server may only answer the revision's probe by timing out. Only stdio
+servers are offered the task's folder as a root.
 
 #### Claude Code
 

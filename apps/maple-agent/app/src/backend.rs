@@ -668,6 +668,18 @@ async fn dispatch_special(
         serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
     }
     match request.method.as_str() {
+        "sign_in_mcp_server" => {
+            let (user, sign_in): (String, maple_agent::agent::McpSignIn) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.sign_in_mcp_server(&user, sign_in).await?)
+        }
+        "cancel_mcp_sign_in" => {
+            let (user, name): (String, String) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.cancel_mcp_sign_in(&user, &name).await?)
+        }
         "save_mcp_servers" => {
             let (user, servers): (String, Vec<AgentMcpServer>) =
                 serde_json::from_value(request.params).map_err(invalid)?;
@@ -830,6 +842,14 @@ pub(crate) async fn dispatch_remote_inner(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    // An authenticated remote request must not open a browser on this
+    // computer, even with malformed params.
+    if matches!(
+        request.method.as_str(),
+        "sign_in_mcp_server" | "cancel_mcp_sign_in"
+    ) {
+        return Err("Signing in to an MCP server requires the local desktop.".into());
+    }
     if paging::is_paging(&request.method) {
         return paging::dispatch(backend, request, maple_agent::store::PageTransport::Remote).await;
     }

@@ -27,6 +27,23 @@ impl super::AgentBackend {
         self.call("save_mcp_definition_edits", (user_id, EditsInput(&edits)))
             .await
     }
+
+    /// Sign in to an HTTP server through this computer's browser. A paired
+    /// computer's own browser and callback are not reachable from here yet.
+    pub async fn sign_in_mcp_server(
+        &self,
+        user_id: &str,
+        request: maple_agent::agent::McpSignIn,
+    ) -> Result<Vec<McpDefinition>, String> {
+        if self.remote_host.is_some() {
+            return Err("Sign in from This Computer. Paired computers cannot do this yet.".into());
+        }
+        self.call("sign_in_mcp_server", (user_id, request)).await
+    }
+
+    pub async fn cancel_mcp_sign_in(&self, user_id: &str, name: &str) -> Result<(), String> {
+        self.call("cancel_mcp_sign_in", (user_id, name)).await
+    }
 }
 
 struct EditsInput<'a>(&'a [McpServerEdit]);
