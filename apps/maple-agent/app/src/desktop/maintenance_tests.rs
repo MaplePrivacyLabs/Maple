@@ -139,13 +139,13 @@ impl FixtureHost {
                                     state = next;
                                     store_id = generation;
                                     let id = pending.take().expect("an admitted password operation");
-                                    if protocol::write(&mut output, &protocol::Message::Response { id, result }).await.is_err() { break; }
+                                    if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result }).await.is_err() { break; }
                                 }
                                 HostCommand::State(next) => state = next,
                                 HostCommand::AutomaticDownloads(enabled) => automatic_downloads = enabled,
                                 HostCommand::ReleaseFlush => {
                                     let id = pending_flush.take().expect("a deferred settings flush");
-                                    if protocol::write(&mut output, &protocol::Message::Response { id, result: Ok(Value::Null) }).await.is_err() { break; }
+                                    if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result: Ok(Value::Null) }).await.is_err() { break; }
                                     continue;
                                 }
                             }
@@ -209,7 +209,7 @@ impl FixtureHost {
                                 // readiness regression and must never contact a real service.
                                 _ => Err("Optional fixture operation unavailable".into()),
                             };
-                            if protocol::write(&mut output, &protocol::Message::Response { id:request.id, result }).await.is_err() { break; }
+                            if protocol::write(&mut output, &protocol::Message::Response { failure: None, id:request.id, result }).await.is_err() { break; }
                         }
                     }
                 }

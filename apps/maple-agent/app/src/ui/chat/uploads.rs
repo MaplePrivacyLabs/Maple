@@ -558,6 +558,7 @@ mod tests {
                 if protocol::write(
                     &mut server,
                     &protocol::Message::Response {
+                        failure: None,
                         id: request.id,
                         result,
                     },

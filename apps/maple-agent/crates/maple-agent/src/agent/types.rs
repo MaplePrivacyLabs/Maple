@@ -883,6 +883,9 @@ pub struct AgentSessionDetail {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTimelineItem {
+    /// Presentation semantics; legacy and unknown labels retain raw text fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<AgentTimelineLabel>,
     /// Durable occurrence identity; legacy `id` remains projector presentation data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persisted: Option<AgentPersistedRowIdentity>,
@@ -911,6 +914,33 @@ pub struct AgentTimelineItem {
     pub output: Option<Value>,
     pub created_ms: u128,
     pub merge: String,
+}
+
+/// Semantic presentation metadata, never model or tool protocol content.
+/// An open kind preserves forward compatibility with newer hosts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTimelineLabel {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl AgentTimelineLabel {
+    /// Partial streaming updates may omit detail already supplied by this tool.
+    /// A different semantic kind or tool identity must not inherit stale data.
+    pub fn merge_from(&mut self, incoming: Self) {
+        let detail =
+            if self.kind == "tool" && incoming.kind == self.kind && incoming.name == self.name {
+                incoming.detail.clone().or_else(|| self.detail.clone())
+            } else {
+                incoming.detail.clone()
+            };
+        *self = incoming;
+        self.detail = detail;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

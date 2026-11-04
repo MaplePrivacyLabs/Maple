@@ -31,6 +31,7 @@ async fn response(tx: &mut SendStream, id: u64, value: serde_json::Value) {
     reply(
         tx,
         &Message::Response {
+            failure: None,
             id,
             result: Ok(value),
         },

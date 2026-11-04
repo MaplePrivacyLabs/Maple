@@ -76,6 +76,7 @@ async fn unsupported_optional_probe_does_not_lose_ordinary_requests() {
         reply(
             &mut tx,
             &Message::Response {
+                failure: None,
                 id: header.id,
                 result: Ok(json!("ordinary task request still works")),
             },
@@ -145,6 +146,7 @@ async fn refresh_reply_has_a_bounded_check_budget_without_relaxing_urgent_contro
                 reply_with_limit(
                     &mut tx,
                     &Message::Response {
+                        failure: None,
                         id: 1,
                         result: Ok(json!("fresh check completed")),
                     },
@@ -193,7 +195,7 @@ async fn refresh_reply_has_a_bounded_check_budget_without_relaxing_urgent_contro
             .await;
             if success {
                 assert!(
-                    matches!(response.unwrap().unwrap(), Message::Response { id:1, result:Ok(value) } if value == json!("fresh check completed"))
+                    matches!(response.unwrap().unwrap(), Message::Response { id:1, result:Ok(value), .. } if value == json!("fresh check completed"))
                 );
                 finish_reply(&mut rx, IO_TIMEOUT).await.unwrap();
                 delayed_reply.unwrap().await.unwrap();
@@ -256,6 +258,7 @@ async fn failed_reply_delivery_never_reaches_the_install_acknowledgement() {
             reply_with_limit(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id: 1,
                     result: Ok(json!("x".repeat(2 * 1024 * 1024))),
                 },
@@ -308,6 +311,7 @@ async fn actual_install_call_consumes_fin_before_exactly_one_acknowledgement() {
             reply_with_limit(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id: request.id,
                     result: Ok(serde_json::to_value(InstallAccepted {
                         operation_id: command.request.operation_id,
@@ -428,6 +432,7 @@ async fn stop_and_answers_pass_stalled_upload_and_download() {
             reply(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id: request.id,
                     result: Ok(json!("admitted")),
                 },
@@ -462,6 +467,7 @@ async fn stop_and_answers_pass_stalled_upload_and_download() {
             reply(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id: request.id,
                     result: Ok(json!("y".repeat(2 * 1024 * 1024))),
                 },
@@ -487,6 +493,7 @@ async fn stop_and_answers_pass_stalled_upload_and_download() {
                 reply(
                     &mut tx,
                     &Message::Response {
+                        failure: None,
                         id: request.id,
                         result: Ok(json!("done")),
                     },
@@ -499,7 +506,7 @@ async fn stop_and_answers_pass_stalled_upload_and_download() {
                     .await
                     .expect("urgent command blocked behind a transfer");
             assert!(
-                matches!(response.unwrap(), Message::Response { id: received, result: Ok(value) } if received == id && value == json!("done"))
+                matches!(response.unwrap(), Message::Response { id: received, result: Ok(value), .. } if received == id && value == json!("done"))
             );
         }
         assert_eq!(upload_received.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -514,6 +521,7 @@ async fn stop_and_answers_pass_stalled_upload_and_download() {
                     .await
                     .unwrap(),
                 Message::Response {
+                    failure: None,
                     id: 1,
                     result: Ok(_)
                 }
@@ -525,6 +533,7 @@ async fn stop_and_answers_pass_stalled_upload_and_download() {
             assert!(matches!(
                 serde_json::from_slice::<Message>(&body).unwrap(),
                 Message::Response {
+                    failure: None,
                     id: 2,
                     result: Ok(_)
                 }
@@ -578,6 +587,7 @@ async fn urgent_body_is_bounded_and_reply_identity_is_checked() {
         assert!(matches!(
             call(&client, oversized).await.unwrap(),
             Message::Response {
+                failure: None,
                 id: 7,
                 result: Err(_)
             }
@@ -593,6 +603,7 @@ async fn urgent_body_is_bounded_and_reply_identity_is_checked() {
             reply(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id: 9,
                     result: Ok(json!(null)),
                 },
@@ -632,6 +643,7 @@ async fn ten_mib_image_ranges_and_oversized_page_do_not_break_other_requests() {
                 reply_with_limit(
                     &mut tx,
                     &Message::Response {
+                        failure: None,
                         id,
                         result: Ok(value),
                     },
@@ -662,6 +674,7 @@ async fn ten_mib_image_ranges_and_oversized_page_do_not_break_other_requests() {
                 reply_with_limit(
                     &mut tx,
                     &Message::Response {
+                        failure: None,
                         id,
                         result: Ok(value),
                     },
@@ -735,6 +748,7 @@ async fn header_admission_queues_a_full_legitimate_burst_without_rejecting_urgen
             reply(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id,
                     result: Ok(serde_json::Value::Null),
                 },
@@ -800,6 +814,7 @@ async fn incomplete_headers_expire_and_queued_urgent_header_recovers_without_res
         reply(
             &mut tx,
             &Message::Response {
+                failure: None,
                 id,
                 result: Ok(serde_json::Value::Null),
             },
@@ -944,6 +959,7 @@ async fn saturated_accept_loop_expires_incomplete_headers_and_serves_both_urgent
                         reply(
                             &mut tx,
                             &Message::Response {
+                                failure: None,
                                 id,
                                 result: Ok(json!(null)),
                             },
@@ -1060,4 +1076,50 @@ async fn saturated_accept_loop_expires_incomplete_headers_and_serves_both_urgent
             )
         });
     }
+}
+
+#[tokio::test]
+async fn response_metadata_survives_remote_stream_and_legacy_fallback() {
+    use crate::backend::HostFailure;
+    let (a, b, client, server) = endpoints().await;
+    let serve = tokio::spawn(async move {
+        for (id, code) in [
+            (1, None),
+            (2, Some("folder-permission")),
+            (3, Some("future-code")),
+        ] {
+            let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+            let header = Header::read(&mut rx).await.unwrap();
+            header.body(&mut rx).await.unwrap();
+            let response = Message::Response {
+                id,
+                result: Err("original diagnostic".into()),
+                failure: code.map(|code| HostFailure::new(code, "original diagnostic")),
+            };
+            reply(&mut tx, &response).await.unwrap();
+        }
+    });
+    for (id, code) in [
+        (1, None),
+        (2, Some("folder-permission")),
+        (3, Some("future-code")),
+    ] {
+        let response = call(&client, command(id, Method::ListTasks)).await.unwrap();
+        let response = decode_result(Method::ListTasks, response);
+        let Message::Response {
+            result, failure, ..
+        } = &response
+        else {
+            panic!("expected response")
+        };
+        assert_eq!(result.as_ref().unwrap_err(), "original diagnostic");
+        assert_eq!(failure.as_ref().map(|failure| failure.code.as_str()), code);
+        let json = serde_json::to_value(&response).unwrap();
+        if code.is_none() {
+            assert!(json["Response"].get("failure").is_none());
+        }
+    }
+    serve.await.unwrap();
+    a.close().await;
+    b.close().await;
 }

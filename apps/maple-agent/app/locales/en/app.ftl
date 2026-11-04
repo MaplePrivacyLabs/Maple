@@ -924,3 +924,305 @@ settings-editors-zed-help = Open Agent Settings, go to External Agents, click Ad
 settings-editors-jetbrains-help = In the AI Chat tool window, open the … menu and choose Add Custom Agent. Add this under agent_servers in the file that opens, then select { $name } in AI Chat.
 settings-local-api-checking = Checking…
 settings-local-api-unavailable = Unavailable
+
+## Runtime timeline presentation
+# Names, commands, paths and other detail arguments remain original content.
+runtime-timeline-thinking = Thinking
+runtime-timeline-notice = Agent notice
+runtime-timeline-compacted = Context compacted
+runtime-timeline-branch-summary = Branch summary
+runtime-timeline-stopped = Stopped by user
+runtime-timeline-compacted-body = Earlier messages were summarized to make room in the context.
+runtime-timeline-skill-loading = Loading skill: { $name }
+runtime-timeline-skill-loaded = Loaded skill: { $name }
+runtime-timeline-skill-failed = Couldn’t load skill: { $name }
+runtime-timeline-tool-detail = { $name }: { $detail }
+runtime-timeline-terminal = Terminal
+runtime-timeline-editor = Editor
+runtime-timeline-web-search = Web Search
+runtime-timeline-read-file = Read file
+runtime-timeline-write-file = Write file
+runtime-timeline-list-files = List files
+runtime-timeline-find-files = Find files
+runtime-timeline-search = Search
+
+## Runtime host failures
+runtime-error-store-locked = Maple is locked. Open Maple or run `maple-agent unlock`, then try again.
+runtime-error-store-setup = Maple needs local store setup. Open Maple to continue.
+runtime-error-store-busy = Maple is finishing a local store operation. Try again when it finishes.
+runtime-error-store-damaged = Maple's local store needs attention. Open Maple to continue.
+runtime-error-host-disconnected = Host disconnected
+runtime-error-host-updated = Maple has been updated. Quit and reopen Maple to continue.
+runtime-error-local-desktop = Store lifecycle commands require the local desktop
+
+# Model catalog names remain unchanged.
+runtime-timeline-model-switched = Switched to { $name }
+runtime-error-email-required = Enter an email address
+runtime-error-password-required = Enter a password
+runtime-error-account-id = That is not a valid account ID
+runtime-error-api-authentication = Maple API authentication failed
+runtime-error-login = Sign in failed. Check your email and password.
+runtime-error-guest-login = Sign in failed. Check your account ID and password.
+runtime-timeline-agent-start = External agent: start
+runtime-timeline-agent-send = External agent: continue
+runtime-timeline-agent-status = External agent: status
+runtime-timeline-agent-cancel = External agent: stop
+runtime-timeline-agent-providers = External agent: providers
+
+# External-agent identifiers and provider names remain unchanged.
+runtime-timeline-external-undelivered = The task could not be resumed. Send a message to read the agent's result.
+runtime-timeline-external-completed = External agent { $name } ({ $provider }) finished.
+runtime-timeline-external-failed = External agent { $name } ({ $provider }) failed.
+runtime-timeline-external-cancelled = External agent { $name } ({ $provider }) was interrupted.
+
+runtime-error-host-disconnected-current = The Maple host disconnected
+
+runtime-error-host-disconnected-before-send = The Maple host disconnected before this operation was sent.
+
+runtime-error-host-disconnected-retry = The Maple host disconnected. Reconnect before retrying.
+
+runtime-error-request-encoding = Could not encode host request
+
+runtime-error-request-parameters = Invalid host request parameters
+
+runtime-error-response-encoding = Could not encode host response
+
+runtime-error-updater-response-encoding = Could not encode desktop updater response
+
+runtime-error-account-id-required = Enter your account ID
+
+# Preserve the source labels of built-in file tools; their path detail stays visible.
+runtime-timeline-builtin-read = read
+runtime-timeline-builtin-edit = edit
+runtime-timeline-builtin-write = write
+
+runtime-timeline-error-authentication = Authentication failed
+runtime-timeline-error-credits = Credits exhausted
+runtime-timeline-error-context = Context limit exceeded
+runtime-timeline-error-agent = Agent error
+runtime-timeline-error-usage = Out of usage
+
+## Runtime local-store failures
+runtime-error-key-damaged = Maple's key file is damaged.
+runtime-error-key-mismatch = Maple's key file doesn't match its data.
+runtime-error-key-wrong-password = That password didn't unlock Maple.
+runtime-error-key-invalid-password = The unlock password is too long or invalid.
+runtime-error-key-weak-password = Choose a stronger unlock password.
+runtime-error-key-memory-lock = Maple couldn't protect its encryption key in memory.
+runtime-error-key-random = Maple couldn't obtain secure random bytes.
+runtime-error-key-unsafe-path = Maple's key file location isn't private and safe.
+runtime-error-key-io = Maple couldn't read or save its key file.
+runtime-error-key-sync-pending = The new unlock password took effect, but Maple couldn't confirm its key file was synchronized. Keep both passwords until synchronization finishes.
+runtime-error-lifecycle-cancelled = The local store operation was cancelled.
+runtime-error-lifecycle-confirmation = Type the confirmation exactly to continue.
+runtime-error-lifecycle-space = Maple needs room for a second copy of its local store.
+runtime-error-lifecycle-verification = Maple couldn't finish checking the replacement store. Retry the operation.
+runtime-error-lifecycle-generation = Maple found conflicting local store generations.
+runtime-error-lifecycle-recovery = Maple couldn't finish the store change. Keep the passwords used for this change and restart Maple to finish recovery.
+runtime-error-storage-locked = Maple's local store is locked
+runtime-error-storage-setup = Maple's local store needs setup
+runtime-error-storage-busy = Maple's local store is busy
+runtime-error-storage-disk-full = Maple could not save because the disk is full
+runtime-error-storage-damaged = Maple's local store is damaged
+runtime-error-storage-not-found = The local record was not found
+runtime-error-storage-conflict = The local record conflicts with saved data
+runtime-error-storage-epoch = The local history changed; reload its latest page
+runtime-error-storage-input = The local store request is invalid
+runtime-error-storage-data = The local store contains invalid data
+runtime-error-storage-unsafe-path = The local store path is not private and safe
+runtime-error-storage-filesystem = The local store needs a local filesystem; set XDG_DATA_HOME to a local directory
+runtime-error-storage-schema = The local store schema does not match Maple
+runtime-error-storage-newer = The local store was written by a newer Maple
+runtime-error-storage-epoch-schema = The local store uses a schema this Maple version cannot open
+runtime-error-storage-database = The local database operation failed
+runtime-error-storage-io = The local store file operation failed
+runtime-error-refusal-newer = This local store requires a newer Maple version. Update Maple and reopen this store.
+runtime-error-refusal-schema = This Maple version cannot open this local store schema. Use a compatible Maple build and keep the store folder intact.
+runtime-error-refusal-filesystem = This local store needs a local disk. Close Maple, keep the original folder, and copy this store to a private local folder before restarting with that data location.
+runtime-error-refusal-path = This local store is not in a private, safe folder. Close Maple and use a private local copy with the correct ownership and permissions.
+runtime-error-refusal-operation = This Maple version cannot resume this local store operation. Keep the store folder intact and reopen it with a compatible Maple build.
+runtime-error-refusal-unavailable = Maple could not open this local store. Check disk space and access permissions, then restart Maple.
+runtime-error-passwords-already-unlocked = Maple local data is already unlocked.
+runtime-error-passwords-unlock-validation = Unlock validation did not finish
+runtime-error-passwords-reset-unknown = Unknown local store reset
+runtime-error-passwords-reset-worker = Local store reset did not finish
+runtime-error-passwords-request = Invalid local store request
+runtime-error-passwords-response = Could not encode local store response
+runtime-error-passwords-setup-ack = Local store setup acknowledgement did not finish
+runtime-error-passwords-calibration = Password calibration did not finish
+runtime-error-passwords-generator = Passphrase generator is unavailable
+runtime-error-passwords-expired = Generate a new passphrase or choose your own password.
+runtime-error-passwords-generate-new = Generate a new passphrase.
+runtime-error-passwords-unlock-worker = Unlock did not finish
+runtime-error-passwords-change-worker = Password change did not finish
+runtime-error-passwords-remove-worker = Password removal did not finish
+runtime-error-passwords-setup-worker = Local store setup did not finish
+runtime-error-passwords-operation = Unknown local store operation
+runtime-error-repair-request = Invalid local recovery request
+runtime-error-repair-response = Could not encode local recovery response
+runtime-error-repair-preview = Review a new recovery preview.
+runtime-error-repair-damaged = Recovery requires a damaged local store.
+runtime-error-repair-unavailable = Local recovery is unavailable
+runtime-error-repair-busy = A local recovery operation is already running.
+runtime-error-repair-review = Review the recovery summary before saving.
+runtime-error-repair-native = Local recovery changes are unavailable until native validation is complete.
+runtime-error-repair-large = The recovery loss report is too large to review safely.
+runtime-error-repair-operation = Unknown local recovery operation
+runtime-error-repair-worker = The local recovery worker did not finish
+runtime-error-repair-page = Invalid recovery loss report page.
+runtime-error-repair-confirmation = Type SAVE READABLE DATA exactly to save readable data.
+runtime-error-key-memory = This computer doesn't have enough free memory to unlock Maple (it needs { $required_mib } MiB).
+
+## Runtime folders, attachments, and paging
+runtime-error-folder-browser-worker = Folder browser worker did not complete
+runtime-error-folder-create-worker = Folder creation worker did not complete
+runtime-error-folder-unicode = This folder path is not valid Unicode
+runtime-error-folder-long = This folder path is too long
+runtime-error-folder-path = Enter a valid absolute folder path
+runtime-error-folder-absolute = Enter an absolute folder path on this computer
+runtime-error-folder-missing = This folder no longer exists
+runtime-error-folder-permission = Permission denied for this folder
+runtime-error-folder-exists = A file or folder with this name already exists
+runtime-error-folder-directory = This path is not a folder
+runtime-error-folder-access = Could not access this folder
+runtime-error-folder-home = This computer's home folder is unavailable
+runtime-error-folder-cursor = Invalid folder page cursor
+runtime-error-folder-encode = Could not encode folder page
+runtime-error-folder-large = This folder entry is too large to display
+runtime-error-folder-many = This folder has too many entries to browse. Enter a child folder's full path.
+runtime-error-folder-name = Enter one folder name without path separators
+runtime-error-attachment-open = The staged attachment could not be opened
+runtime-error-attachment-inspect = Could not inspect the attachment
+runtime-error-attachment-regular = Attachments must be regular files of at most 30 MiB
+runtime-error-attachment-read = Could not read the attachment
+runtime-error-attachment-large = Attachment exceeds the 30 MiB limit
+runtime-error-attachment-changed = Attachment changed while preparing it
+runtime-error-attachment-worker = Attachment worker did not complete
+runtime-error-attachment-store = Local store is unavailable
+runtime-error-attachment-request = Invalid attachment import parameters
+runtime-error-attachment-staged-read = Could not read staged attachment
+runtime-error-attachment-encode = Could not encode attachment
+runtime-error-attachment-operation-request = Invalid attachment operation
+runtime-error-attachment-operation = Unknown attachment operation
+runtime-error-attachment-operation-encode = Could not encode attachment operation
+runtime-error-paging-store = Local store is unavailable
+runtime-error-paging-worker = Local store worker did not complete
+runtime-error-paging-request = Invalid host paging parameters
+runtime-error-paging-encode = Could not encode host page
+runtime-error-paging-timestamp = Project metadata has an invalid timestamp
+runtime-error-paging-queue = The queued message is no longer available
+runtime-error-paging-operation = Unknown Maple paging operation
+runtime-error-paging-navigation-budget = Navigation metadata exceeds its serialized page budget
+runtime-error-paging-open-budget = Invalid open-task page budget
+runtime-error-paging-row-limit = Invalid open-task row limit
+runtime-error-paging-reply-budget = Host reply exceeds its serialized page budget
+runtime-error-paging-changed = Task history changed while it was opening; try opening it again
+runtime-error-paging-queue-budget = Queued-message metadata exceeds the page budget
+runtime-error-paging-bounded-encode = Could not encode bounded host reply
+
+runtime-timeline-error-usage-body = You've run out of usage. See your options in Billing so you can keep working.
+
+## Runtime account deletion
+runtime-error-deletion-prepare = Could not prepare account deletion
+runtime-error-deletion-credentials = Could not prepare account deletion credentials
+runtime-error-deletion-status = Could not read account deletion status
+runtime-error-deletion-code = Enter the confirmation code from the email
+runtime-error-deletion-invalid = The account deletion confirmation is invalid
+runtime-error-deletion-store = Local store is unavailable
+runtime-error-deletion-spill = Could not clear temporary task output. No new account deletion request was sent.
+runtime-error-deletion-account-changed = The host account changed. Reopen this screen before continuing.
+runtime-error-deletion-save-intent = Could not save account deletion intent
+runtime-error-deletion-read-intent = Could not read account deletion intent
+runtime-error-deletion-read-credentials = Could not read saved credentials
+runtime-error-deletion-confirmation-save = The server confirmed account deletion, but Maple could not save that confirmation. Local history is retained pending recovery.
+runtime-error-deletion-interrupted = Account deletion persistence was interrupted; local history is retained
+runtime-error-deletion-pending = Account deletion has an unknown outcome. Maple has retained your local history and blocked this account. Local history will remain retained until a successful server confirmation or an authoritative server resolution is available. Signing out or a rejected retry cannot resolve an earlier lost response.
+runtime-error-deletion-wrong-code = That confirmation code is wrong or has expired
+
+## Runtime retained store completion notices
+runtime-notice-unlock-previous = That was your previous unlock password. Your current password is still active.
+runtime-notice-unlock-previous-pending = That was your previous unlock password. Your current password is still active. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-notice-unlock = Maple is unlocked.
+runtime-notice-unlock-pending = Maple is unlocked. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-notice-set-store-password = Local data is now encrypted on this computer.
+runtime-notice-set-store-password-pending = Local data is now encrypted on this computer. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-notice-change-store-password = Your unlock password changed on this computer.
+runtime-notice-change-store-password-pending = Your unlock password changed on this computer. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-notice-remove-store-password = Your unlock password was removed on this computer.
+runtime-notice-remove-store-password-pending = Your unlock password was removed on this computer. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-notice-erase-local-data = Local data was erased. Choose how to set up Maple.
+runtime-notice-erase-local-data-pending = Local data was erased. Choose how to set up Maple. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-notice-start-fresh = The current local data was deleted. Choose how to set up Maple.
+runtime-notice-start-fresh-pending = The current local data was deleted. Choose how to set up Maple. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-notice-setup-store = Maple local data is ready.
+runtime-notice-setup-store-pending = Maple local data is ready. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-notice-salvage-store = Readable local data was saved in a verified replacement. The original damaged store was deleted.
+runtime-notice-salvage-store-pending = Readable local data was saved in a verified replacement. The original damaged store was deleted. The change is active, but backup or metadata synchronization is still pending. Keep Maple open and retry before relying on a backup.
+runtime-error-host-running-tasks = Wait for running tasks to finish.
+runtime-error-host-stopping = Maple is stopping. Retry the operation after reopening Maple.
+
+## Runtime account, API keys, and billing
+runtime-error-account-load-status = Could not load the account. Try again.
+runtime-error-account-load-connection = Could not load the account. Check your connection and try again.
+runtime-error-verification-status = Could not send the verification email. Try again.
+runtime-error-verification-connection = Could not send the verification email. Check your connection and try again.
+runtime-error-password-change-status = Could not change the password. Try again.
+runtime-error-password-change-connection = Could not change the password. Check your connection and try again.
+runtime-error-deletion-start-status = Could not start account deletion. Try again.
+runtime-error-deletion-start-connection = Could not start account deletion. Check your connection and try again.
+runtime-error-keys-load-status = Could not load the API keys. Try again.
+runtime-error-keys-load-connection = Could not load the API keys. Check your connection and try again.
+runtime-error-key-create-status = Could not create the API key. Try again.
+runtime-error-key-create-connection = Could not create the API key. Check your connection and try again.
+runtime-error-key-delete-status = Could not delete the API key. Try again.
+runtime-error-key-delete-connection = Could not delete the API key. Check your connection and try again.
+runtime-error-account-current-required = Enter your current password
+runtime-error-account-current-wrong = The current password is incorrect
+runtime-error-billing-balance = Could not load the latest balance. Refresh to try again.
+runtime-error-billing-whole = Buy credits in whole dollars
+runtime-error-billing-guest = Anonymous accounts pay with Bitcoin
+runtime-error-billing-portal = Could not open the subscription portal. Try again, or use the pricing page on the web.
+runtime-error-billing-checkout = Could not start checkout. Try again, or use the pricing page on the web.
+runtime-error-billing-credit-checkout = Could not start the credit checkout. Try again, or use the pricing page on the web.
+runtime-error-key-plan = API keys need a Pro, Max, or Team plan
+runtime-error-key-exists = A key with that name already exists
+runtime-error-key-name-invalid = That key name is not allowed
+runtime-error-key-missing = That key no longer exists
+runtime-error-key-limit = You have reached the API key limit
+runtime-error-browser-portal-link = Could not open the subscription portal: unexpected link
+runtime-error-browser-portal-open = Could not open the subscription portal in your browser
+runtime-error-browser-checkout-link = Could not open checkout: unexpected link
+runtime-error-browser-checkout-open = Could not open checkout in your browser
+runtime-error-billing-timeout = billing request timed out
+runtime-error-key-name-required = Give the key a name
+runtime-error-key-name-length = Use at most { $count } characters for the key name
+runtime-error-account-password-length = Use at least { $count } characters for the new password
+runtime-error-credit-minimum = The minimum is ${ $amount }
+runtime-error-credit-maximum = The maximum is ${ $amount }
+runtime-error-credit-whole = Enter a whole-dollar amount
+
+runtime-error-account-auth-rejected = Maple API authentication was rejected
+runtime-error-billing-token-rejected = billing API rejected the session token
+
+## Runtime salvage boundaries
+runtime-error-salvage-boundary = Maple cannot determine an exact recovery boundary for this damage. The original data is preserved.
+runtime-error-salvage-review = The recovery loss report exceeds its review limit. The original data is preserved.
+runtime-error-salvage-stale = The local data changed after this recovery preview. Review a new preview.
+runtime-error-salvage-cancelled = The recovery preview was cancelled or exceeded its time budget.
+
+## Runtime sign-in attempts
+runtime-error-oauth-prepare = Could not prepare browser sign-in. Try again.
+runtime-error-oauth-start-github = Could not start GitHub sign in
+runtime-error-oauth-start-google = Could not start Google sign in
+runtime-error-oauth-start-apple = Could not start Apple sign in
+runtime-error-oauth-handoff = Browser sign-in failed or expired. Start again.
+runtime-error-oauth-complete-github = GitHub sign in failed
+runtime-error-oauth-complete-google = Google sign in failed
+runtime-error-oauth-complete-apple = Apple sign in failed
+runtime-error-oauth-cancelled = Sign in was cancelled. Start again.
+runtime-error-oauth-callback = This callback does not match the pending sign in. Start again.
+runtime-error-oauth-browser = Could not open your browser. Check your default browser and try again.
+runtime-error-oauth-url = Paste the full URL you were redirected to (it contains code and state)
+runtime-error-sign-in-publication = Sign in failed. Try again.
+runtime-error-account-already-signed-in = Maple is already signed in. Sign out before changing accounts.
+runtime-error-account-owner-read = Could not read saved sign-in ownership. Try again.

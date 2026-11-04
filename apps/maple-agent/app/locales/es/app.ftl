@@ -925,3 +925,305 @@ settings-editors-zed-help = Abre Agent Settings, ve a External Agents, haz clic 
 settings-editors-jetbrains-help = En la ventana AI Chat, abre el menú … y elige Add Custom Agent. Agrega esta configuración en agent_servers en el archivo que se abre y selecciona { $name } en AI Chat.
 settings-local-api-checking = Comprobando…
 settings-local-api-unavailable = No disponible
+
+## Runtime timeline presentation
+# Names, commands, paths and other detail arguments remain original content.
+runtime-timeline-thinking = Pensando
+runtime-timeline-notice = Aviso del agente
+runtime-timeline-compacted = Contexto compactado
+runtime-timeline-branch-summary = Resumen de la rama
+runtime-timeline-stopped = Detenido por el usuario
+runtime-timeline-compacted-body = Los mensajes anteriores se resumieron para liberar espacio en el contexto.
+runtime-timeline-skill-loading = Cargando habilidad: { $name }
+runtime-timeline-skill-loaded = Habilidad cargada: { $name }
+runtime-timeline-skill-failed = No se pudo cargar la habilidad: { $name }
+runtime-timeline-tool-detail = { $name }: { $detail }
+runtime-timeline-terminal = Terminal
+runtime-timeline-editor = Editor
+runtime-timeline-web-search = Búsqueda web
+runtime-timeline-read-file = Leer archivo
+runtime-timeline-write-file = Escribir archivo
+runtime-timeline-list-files = Listar archivos
+runtime-timeline-find-files = Buscar archivos
+runtime-timeline-search = Buscar
+
+## Runtime host failures
+runtime-error-store-locked = Maple está bloqueado. Abre Maple o ejecuta `maple-agent unlock` y vuelve a intentarlo.
+runtime-error-store-setup = Maple necesita que configures los datos locales. Abre Maple para continuar.
+runtime-error-store-busy = Maple está terminando una operación con los datos locales. Inténtalo de nuevo cuando termine.
+runtime-error-store-damaged = Los datos locales de Maple necesitan atención. Abre Maple para continuar.
+runtime-error-host-disconnected = Host desconectado
+runtime-error-host-updated = Maple se actualizó. Sal de Maple y vuelve a abrirlo para continuar.
+runtime-error-local-desktop = Los comandos para administrar los datos locales requieren la aplicación de escritorio local
+
+# Model catalog names remain unchanged.
+runtime-timeline-model-switched = Se cambió a { $name }
+runtime-error-email-required = Ingresa un correo electrónico
+runtime-error-password-required = Ingresa una contraseña
+runtime-error-account-id = Ese ID de cuenta no es válido
+runtime-error-api-authentication = Falló la autenticación con la API de Maple
+runtime-error-login = No se pudo iniciar sesión. Revisa tu correo electrónico y contraseña.
+runtime-error-guest-login = No se pudo iniciar sesión. Revisa tu ID de cuenta y contraseña.
+runtime-timeline-agent-start = Agente externo: iniciar
+runtime-timeline-agent-send = Agente externo: continuar
+runtime-timeline-agent-status = Agente externo: estado
+runtime-timeline-agent-cancel = Agente externo: detener
+runtime-timeline-agent-providers = Agente externo: proveedores
+
+# External-agent identifiers and provider names remain unchanged.
+runtime-timeline-external-undelivered = No se pudo reanudar la tarea. Envía un mensaje para leer el resultado del agente.
+runtime-timeline-external-completed = El agente externo { $name } ({ $provider }) terminó.
+runtime-timeline-external-failed = El agente externo { $name } ({ $provider }) falló.
+runtime-timeline-external-cancelled = Se interrumpió al agente externo { $name } ({ $provider }).
+
+runtime-error-host-disconnected-current = Se desconectó el host de Maple
+
+runtime-error-host-disconnected-before-send = El host de Maple se desconectó antes de que se enviara esta operación.
+
+runtime-error-host-disconnected-retry = El host de Maple se desconectó. Vuelve a conectarte antes de intentarlo de nuevo.
+
+runtime-error-request-encoding = No se pudo codificar la solicitud al host
+
+runtime-error-request-parameters = Los parámetros de la solicitud al host no son válidos
+
+runtime-error-response-encoding = No se pudo codificar la respuesta del host
+
+runtime-error-updater-response-encoding = No se pudo codificar la respuesta del actualizador de escritorio
+
+runtime-error-account-id-required = Ingresa tu ID de cuenta
+
+# Preserve the source labels of built-in file tools; their path detail stays visible.
+runtime-timeline-builtin-read = leer
+runtime-timeline-builtin-edit = editar
+runtime-timeline-builtin-write = escribir
+
+runtime-timeline-error-authentication = Error de autenticación
+runtime-timeline-error-credits = Créditos agotados
+runtime-timeline-error-context = Límite de contexto excedido
+runtime-timeline-error-agent = Error del agente
+runtime-timeline-error-usage = Uso agotado
+
+## Runtime local-store failures
+runtime-error-key-damaged = El archivo de claves de Maple está dañado.
+runtime-error-key-mismatch = El archivo de claves de Maple no corresponde a sus datos.
+runtime-error-key-wrong-password = Esa contraseña no desbloqueó Maple.
+runtime-error-key-invalid-password = La contraseña de desbloqueo es demasiado larga o no es válida.
+runtime-error-key-weak-password = Elige una contraseña de desbloqueo más segura.
+runtime-error-key-memory-lock = Maple no pudo proteger su clave de cifrado en la memoria.
+runtime-error-key-random = Maple no pudo obtener bytes aleatorios seguros.
+runtime-error-key-unsafe-path = La ubicación del archivo de claves de Maple no es privada y segura.
+runtime-error-key-io = Maple no pudo leer o guardar su archivo de claves.
+runtime-error-key-sync-pending = La nueva contraseña de desbloqueo ya está activa, pero Maple no pudo confirmar que su archivo de claves se haya sincronizado. Conserva ambas contraseñas hasta que termine la sincronización.
+runtime-error-lifecycle-cancelled = Se canceló la operación del almacén local.
+runtime-error-lifecycle-confirmation = Escribe la confirmación exactamente para continuar.
+runtime-error-lifecycle-space = Maple necesita espacio para una segunda copia de su almacén local.
+runtime-error-lifecycle-verification = Maple no pudo terminar de verificar el almacén de reemplazo. Vuelve a intentar la operación.
+runtime-error-lifecycle-generation = Maple encontró generaciones incompatibles del almacén local.
+runtime-error-lifecycle-recovery = Maple no pudo terminar el cambio del almacén. Conserva las contraseñas usadas para este cambio y reinicia Maple para terminar la recuperación.
+runtime-error-storage-locked = El almacén local de Maple está bloqueado
+runtime-error-storage-setup = El almacén local de Maple necesita configuración
+runtime-error-storage-busy = El almacén local de Maple está ocupado
+runtime-error-storage-disk-full = Maple no pudo guardar porque el disco está lleno
+runtime-error-storage-damaged = El almacén local de Maple está dañado
+runtime-error-storage-not-found = No se encontró el registro local
+runtime-error-storage-conflict = El registro local entra en conflicto con los datos guardados
+runtime-error-storage-epoch = El historial local cambió; vuelve a cargar su página más reciente
+runtime-error-storage-input = La solicitud al almacén local no es válida
+runtime-error-storage-data = El almacén local contiene datos no válidos
+runtime-error-storage-unsafe-path = La ruta del almacén local no es privada y segura
+runtime-error-storage-filesystem = El almacén local necesita un sistema de archivos local; configura XDG_DATA_HOME con un directorio local
+runtime-error-storage-schema = El esquema del almacén local no corresponde a Maple
+runtime-error-storage-newer = El almacén local se guardó con una versión más reciente de Maple
+runtime-error-storage-epoch-schema = El almacén local usa un esquema que esta versión de Maple no puede abrir
+runtime-error-storage-database = Falló la operación de la base de datos local
+runtime-error-storage-io = Falló la operación del archivo del almacén local
+runtime-error-refusal-newer = Este almacén local requiere una versión más reciente de Maple. Actualiza Maple y vuelve a abrir este almacén.
+runtime-error-refusal-schema = Esta versión de Maple no puede abrir el esquema de este almacén local. Usa una versión compatible de Maple y conserva intacta la carpeta del almacén.
+runtime-error-refusal-filesystem = Este almacén necesita un disco local. Cierra Maple, conserva la carpeta original y copia el almacén a una carpeta local privada antes de reiniciar con esa ubicación de datos.
+runtime-error-refusal-path = Este almacén local no está en una carpeta privada y segura. Cierra Maple y usa una copia local privada con el propietario y los permisos correctos.
+runtime-error-refusal-operation = Esta versión de Maple no puede reanudar la operación del almacén local. Conserva intacta la carpeta del almacén y vuelve a abrirla con una versión compatible de Maple.
+runtime-error-refusal-unavailable = Maple no pudo abrir este almacén local. Revisa el espacio en disco y los permisos de acceso, y reinicia Maple.
+runtime-error-passwords-already-unlocked = Los datos locales de Maple ya están desbloqueados.
+runtime-error-passwords-unlock-validation = La validación del desbloqueo no terminó
+runtime-error-passwords-reset-unknown = Restablecimiento del almacén local desconocido
+runtime-error-passwords-reset-worker = El restablecimiento del almacén local no terminó
+runtime-error-passwords-request = Solicitud al almacén local no válida
+runtime-error-passwords-response = No se pudo codificar la respuesta del almacén local
+runtime-error-passwords-setup-ack = La confirmación de la configuración del almacén local no terminó
+runtime-error-passwords-calibration = La calibración de la contraseña no terminó
+runtime-error-passwords-generator = El generador de frases de contraseña no está disponible
+runtime-error-passwords-expired = Genera una nueva frase de contraseña o elige tu propia contraseña.
+runtime-error-passwords-generate-new = Genera una nueva frase de contraseña.
+runtime-error-passwords-unlock-worker = El desbloqueo no terminó
+runtime-error-passwords-change-worker = El cambio de contraseña no terminó
+runtime-error-passwords-remove-worker = La eliminación de la contraseña no terminó
+runtime-error-passwords-setup-worker = La configuración del almacén local no terminó
+runtime-error-passwords-operation = Operación del almacén local desconocida
+runtime-error-repair-request = Solicitud de recuperación local no válida
+runtime-error-repair-response = No se pudo codificar la respuesta de recuperación local
+runtime-error-repair-preview = Revisa una nueva vista previa de recuperación.
+runtime-error-repair-damaged = La recuperación requiere un almacén local dañado.
+runtime-error-repair-unavailable = La recuperación local no está disponible
+runtime-error-repair-busy = Ya hay una operación de recuperación local en curso.
+runtime-error-repair-review = Revisa el resumen de recuperación antes de guardar.
+runtime-error-repair-native = Los cambios de recuperación local no están disponibles hasta que termine la validación nativa.
+runtime-error-repair-large = El informe de pérdidas de recuperación es demasiado grande para revisarlo de forma segura.
+runtime-error-repair-operation = Operación de recuperación local desconocida
+runtime-error-repair-worker = El proceso de recuperación local no terminó
+runtime-error-repair-page = Página del informe de pérdidas de recuperación no válida.
+runtime-error-repair-confirmation = Escribe SAVE READABLE DATA exactamente para guardar los datos legibles.
+runtime-error-key-memory = Esta computadora no tiene suficiente memoria libre para desbloquear Maple (necesita { $required_mib } MiB).
+
+## Runtime folders, attachments, and paging
+runtime-error-folder-browser-worker = El proceso de exploración de carpetas no terminó
+runtime-error-folder-create-worker = El proceso de creación de carpetas no terminó
+runtime-error-folder-unicode = La ruta de esta carpeta no es Unicode válido
+runtime-error-folder-long = La ruta de esta carpeta es demasiado larga
+runtime-error-folder-path = Ingresa una ruta absoluta de carpeta válida
+runtime-error-folder-absolute = Ingresa una ruta absoluta de carpeta en esta computadora
+runtime-error-folder-missing = Esta carpeta ya no existe
+runtime-error-folder-permission = Se denegó el acceso a esta carpeta
+runtime-error-folder-exists = Ya existe un archivo o una carpeta con este nombre
+runtime-error-folder-directory = Esta ruta no es una carpeta
+runtime-error-folder-access = No se pudo acceder a esta carpeta
+runtime-error-folder-home = La carpeta personal de esta computadora no está disponible
+runtime-error-folder-cursor = Cursor de página de carpetas no válido
+runtime-error-folder-encode = No se pudo codificar la página de carpetas
+runtime-error-folder-large = Esta entrada de carpeta es demasiado grande para mostrarla
+runtime-error-folder-many = Esta carpeta tiene demasiadas entradas para explorarla. Ingresa la ruta completa de una subcarpeta.
+runtime-error-folder-name = Ingresa un solo nombre de carpeta sin separadores de ruta
+runtime-error-attachment-open = No se pudo abrir el archivo adjunto preparado
+runtime-error-attachment-inspect = No se pudo inspeccionar el archivo adjunto
+runtime-error-attachment-regular = Los archivos adjuntos deben ser archivos regulares de hasta 30 MiB
+runtime-error-attachment-read = No se pudo leer el archivo adjunto
+runtime-error-attachment-large = El archivo adjunto excede el límite de 30 MiB
+runtime-error-attachment-changed = El archivo adjunto cambió durante su preparación
+runtime-error-attachment-worker = El proceso de archivos adjuntos no terminó
+runtime-error-attachment-store = El almacén local no está disponible
+runtime-error-attachment-request = Parámetros de importación del archivo adjunto no válidos
+runtime-error-attachment-staged-read = No se pudo leer el archivo adjunto preparado
+runtime-error-attachment-encode = No se pudo codificar el archivo adjunto
+runtime-error-attachment-operation-request = Operación de archivo adjunto no válida
+runtime-error-attachment-operation = Operación de archivo adjunto desconocida
+runtime-error-attachment-operation-encode = No se pudo codificar la operación del archivo adjunto
+runtime-error-paging-store = El almacén local no está disponible
+runtime-error-paging-worker = El proceso del almacén local no terminó
+runtime-error-paging-request = Parámetros de paginación del host no válidos
+runtime-error-paging-encode = No se pudo codificar la página del host
+runtime-error-paging-timestamp = Los metadatos del proyecto tienen una marca de tiempo no válida
+runtime-error-paging-queue = El mensaje en la cola ya no está disponible
+runtime-error-paging-operation = Operación de paginación de Maple desconocida
+runtime-error-paging-navigation-budget = Los metadatos de navegación exceden el límite de la página serializada
+runtime-error-paging-open-budget = Límite de página no válido para abrir la tarea
+runtime-error-paging-row-limit = Límite de filas no válido para abrir la tarea
+runtime-error-paging-reply-budget = La respuesta del host excede el límite de la página serializada
+runtime-error-paging-changed = El historial de la tarea cambió mientras se abría; intenta abrirla de nuevo
+runtime-error-paging-queue-budget = Los metadatos del mensaje en la cola exceden el límite de la página
+runtime-error-paging-bounded-encode = No se pudo codificar la respuesta limitada del host
+
+runtime-timeline-error-usage-body = Se agotó tu uso disponible. Consulta tus opciones en Facturación para seguir trabajando.
+
+## Runtime account deletion
+runtime-error-deletion-prepare = No se pudo preparar la eliminación de la cuenta
+runtime-error-deletion-credentials = No se pudieron preparar las credenciales para eliminar la cuenta
+runtime-error-deletion-status = No se pudo leer el estado de eliminación de la cuenta
+runtime-error-deletion-code = Ingresa el código de confirmación del correo electrónico
+runtime-error-deletion-invalid = La confirmación de eliminación de la cuenta no es válida
+runtime-error-deletion-store = El almacén local no está disponible
+runtime-error-deletion-spill = No se pudo borrar la salida temporal de las tareas. No se envió ninguna nueva solicitud de eliminación de la cuenta.
+runtime-error-deletion-account-changed = La cuenta del host cambió. Vuelve a abrir esta pantalla antes de continuar.
+runtime-error-deletion-save-intent = No se pudo guardar la intención de eliminar la cuenta
+runtime-error-deletion-read-intent = No se pudo leer la intención de eliminar la cuenta
+runtime-error-deletion-read-credentials = No se pudieron leer las credenciales guardadas
+runtime-error-deletion-confirmation-save = El servidor confirmó la eliminación de la cuenta, pero Maple no pudo guardar esa confirmación. El historial local se conserva hasta la recuperación.
+runtime-error-deletion-interrupted = Se interrumpió el guardado de la eliminación de la cuenta; el historial local se conserva
+runtime-error-deletion-pending = La eliminación de la cuenta tiene un resultado desconocido. Maple ha conservado tu historial local y bloqueado esta cuenta. El historial local se conservará hasta que haya una confirmación exitosa del servidor o una resolución definitiva del servidor. Cerrar sesión o el rechazo de un nuevo intento no pueden resolver una respuesta anterior perdida.
+runtime-error-deletion-wrong-code = Ese código de confirmación es incorrecto o ha caducado
+
+## Runtime retained store completion notices
+runtime-notice-unlock-previous = Esa era tu contraseña de desbloqueo anterior. Tu contraseña actual sigue activa.
+runtime-notice-unlock-previous-pending = Esa era tu contraseña de desbloqueo anterior. Tu contraseña actual sigue activa. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-notice-unlock = Maple está desbloqueado.
+runtime-notice-unlock-pending = Maple está desbloqueado. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-notice-set-store-password = Los datos locales ahora están cifrados en esta computadora.
+runtime-notice-set-store-password-pending = Los datos locales ahora están cifrados en esta computadora. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-notice-change-store-password = Tu contraseña de desbloqueo cambió en esta computadora.
+runtime-notice-change-store-password-pending = Tu contraseña de desbloqueo cambió en esta computadora. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-notice-remove-store-password = Se eliminó tu contraseña de desbloqueo en esta computadora.
+runtime-notice-remove-store-password-pending = Se eliminó tu contraseña de desbloqueo en esta computadora. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-notice-erase-local-data = Se borraron los datos locales. Elige cómo configurar Maple.
+runtime-notice-erase-local-data-pending = Se borraron los datos locales. Elige cómo configurar Maple. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-notice-start-fresh = Se eliminaron los datos locales actuales. Elige cómo configurar Maple.
+runtime-notice-start-fresh-pending = Se eliminaron los datos locales actuales. Elige cómo configurar Maple. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-notice-setup-store = Los datos locales de Maple están listos.
+runtime-notice-setup-store-pending = Los datos locales de Maple están listos. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-notice-salvage-store = Los datos locales legibles se guardaron en un reemplazo verificado. Se eliminó el almacén original dañado.
+runtime-notice-salvage-store-pending = Los datos locales legibles se guardaron en un reemplazo verificado. Se eliminó el almacén original dañado. El cambio está activo, pero la sincronización de la copia de seguridad o de los metadatos sigue pendiente. Mantén Maple abierto y vuelve a intentarlo antes de depender de una copia de seguridad.
+runtime-error-host-running-tasks = Espera a que terminen las tareas en curso.
+runtime-error-host-stopping = Maple se está cerrando. Vuelve a intentar la operación después de abrir Maple de nuevo.
+
+## Runtime account, API keys, and billing
+runtime-error-account-load-status = No se pudo cargar la cuenta. Vuelve a intentarlo.
+runtime-error-account-load-connection = No se pudo cargar la cuenta. Revisa tu conexión y vuelve a intentarlo.
+runtime-error-verification-status = No se pudo enviar el correo de verificación. Vuelve a intentarlo.
+runtime-error-verification-connection = No se pudo enviar el correo de verificación. Revisa tu conexión y vuelve a intentarlo.
+runtime-error-password-change-status = No se pudo cambiar la contraseña. Vuelve a intentarlo.
+runtime-error-password-change-connection = No se pudo cambiar la contraseña. Revisa tu conexión y vuelve a intentarlo.
+runtime-error-deletion-start-status = No se pudo iniciar la eliminación de la cuenta. Vuelve a intentarlo.
+runtime-error-deletion-start-connection = No se pudo iniciar la eliminación de la cuenta. Revisa tu conexión y vuelve a intentarlo.
+runtime-error-keys-load-status = No se pudieron cargar las claves de API. Vuelve a intentarlo.
+runtime-error-keys-load-connection = No se pudieron cargar las claves de API. Revisa tu conexión y vuelve a intentarlo.
+runtime-error-key-create-status = No se pudo crear la clave de API. Vuelve a intentarlo.
+runtime-error-key-create-connection = No se pudo crear la clave de API. Revisa tu conexión y vuelve a intentarlo.
+runtime-error-key-delete-status = No se pudo eliminar la clave de API. Vuelve a intentarlo.
+runtime-error-key-delete-connection = No se pudo eliminar la clave de API. Revisa tu conexión y vuelve a intentarlo.
+runtime-error-account-current-required = Ingresa tu contraseña actual
+runtime-error-account-current-wrong = La contraseña actual es incorrecta
+runtime-error-billing-balance = No se pudo cargar el saldo más reciente. Actualiza para volver a intentarlo.
+runtime-error-billing-whole = Compra créditos en dólares enteros
+runtime-error-billing-guest = Las cuentas anónimas pagan con Bitcoin
+runtime-error-billing-portal = No se pudo abrir el portal de suscripción. Vuelve a intentarlo o usa la página de precios en la web.
+runtime-error-billing-checkout = No se pudo iniciar el pago. Vuelve a intentarlo o usa la página de precios en la web.
+runtime-error-billing-credit-checkout = No se pudo iniciar el pago de créditos. Vuelve a intentarlo o usa la página de precios en la web.
+runtime-error-key-plan = Las claves de API necesitan un plan Pro, Max o Team
+runtime-error-key-exists = Ya existe una clave con ese nombre
+runtime-error-key-name-invalid = Ese nombre de clave no está permitido
+runtime-error-key-missing = Esa clave ya no existe
+runtime-error-key-limit = Alcanzaste el límite de claves de API
+runtime-error-browser-portal-link = No se pudo abrir el portal de suscripción: enlace inesperado
+runtime-error-browser-portal-open = No se pudo abrir el portal de suscripción en tu navegador
+runtime-error-browser-checkout-link = No se pudo abrir el pago: enlace inesperado
+runtime-error-browser-checkout-open = No se pudo abrir el pago en tu navegador
+runtime-error-billing-timeout = se agotó el tiempo de espera de la solicitud de facturación
+runtime-error-key-name-required = Dale un nombre a la clave
+runtime-error-key-name-length = Usa como máximo { $count } caracteres para el nombre de la clave
+runtime-error-account-password-length = Usa al menos { $count } caracteres para la nueva contraseña
+runtime-error-credit-minimum = El mínimo es ${ $amount }
+runtime-error-credit-maximum = El máximo es ${ $amount }
+runtime-error-credit-whole = Ingresa una cantidad en dólares enteros
+
+runtime-error-account-auth-rejected = La API de Maple rechazó la autenticación
+runtime-error-billing-token-rejected = la API de facturación rechazó el token de sesión
+
+## Runtime salvage boundaries
+runtime-error-salvage-boundary = Maple no puede determinar un límite exacto de recuperación para este daño. Los datos originales se conservan.
+runtime-error-salvage-review = El informe de pérdidas de recuperación excede su límite de revisión. Los datos originales se conservan.
+runtime-error-salvage-stale = Los datos locales cambiaron después de esta vista previa de recuperación. Revisa una nueva vista previa.
+runtime-error-salvage-cancelled = La vista previa de recuperación se canceló o excedió su límite de tiempo.
+
+## Runtime sign-in attempts
+runtime-error-oauth-prepare = No se pudo preparar el inicio de sesión en el navegador. Vuelve a intentarlo.
+runtime-error-oauth-start-github = No se pudo iniciar sesión con GitHub
+runtime-error-oauth-start-google = No se pudo iniciar sesión con Google
+runtime-error-oauth-start-apple = No se pudo iniciar sesión con Apple
+runtime-error-oauth-handoff = El inicio de sesión en el navegador falló o caducó. Vuelve a empezar.
+runtime-error-oauth-complete-github = Falló el inicio de sesión con GitHub
+runtime-error-oauth-complete-google = Falló el inicio de sesión con Google
+runtime-error-oauth-complete-apple = Falló el inicio de sesión con Apple
+runtime-error-oauth-cancelled = Se canceló el inicio de sesión. Vuelve a empezar.
+runtime-error-oauth-callback = Esta respuesta no coincide con el inicio de sesión pendiente. Vuelve a empezar.
+runtime-error-oauth-browser = No se pudo abrir tu navegador. Revisa tu navegador predeterminado y vuelve a intentarlo.
+runtime-error-oauth-url = Pega la URL completa a la que se te redirigió (contiene code y state)
+runtime-error-sign-in-publication = Falló el inicio de sesión. Vuelve a intentarlo.
+runtime-error-account-already-signed-in = Ya hay una sesión iniciada en Maple. Cierra sesión antes de cambiar de cuenta.
+runtime-error-account-owner-read = No se pudo leer el propietario de la sesión guardada. Vuelve a intentarlo.

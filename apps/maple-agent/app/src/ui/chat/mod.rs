@@ -220,6 +220,7 @@ use self::attachments::DraftAttachment;
 
 /// Shared read-only state the transcript rows render from.
 struct TranscriptCtx<'a> {
+    messages: &'a super::i18n::MessageCache,
     markdown_cache: &'a MarkdownCache,
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
@@ -691,6 +692,7 @@ pub struct ChatScreen {
     notice_dismiss_pending: std::cell::Cell<bool>,
     /// Per-item display strings, rebuilt when the item's revision moves.
     derived: DerivedCache,
+    timeline_messages: super::i18n::MessageCache,
     /// Background parses of the newest rows after a timeline load, so
     /// the first scroll finds them ready. A newer load replaces it.
     markdown_warmup: Option<gpui::Task<()>>,
@@ -1454,6 +1456,7 @@ impl ChatScreen {
             markdown_cache: MarkdownCache::default(),
             notice_dismiss_pending: std::cell::Cell::new(false),
             derived: DerivedCache::default(),
+            timeline_messages: Default::default(),
             markdown_warmup: None,
             timeline_index: HashMap::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
@@ -3014,6 +3017,7 @@ impl ChatScreen {
             .collect();
         self.markdown_cache.clear();
         self.derived.clear();
+        self.timeline_messages = Default::default();
         self.list_state
             .reset_with_uniform_height(self.timeline.len(), TRANSCRIPT_ROW_ESTIMATE);
         if let Some(old_navigation_order) = old_navigation_order {
@@ -5107,6 +5111,7 @@ impl ChatScreen {
 
     fn push_local_error(&mut self, title: &str, message: &str, cx: &mut Context<Self>) {
         let item = AgentTimelineItem {
+            label: None,
             persisted: None,
             live: None,
             truncated: None,
@@ -5635,6 +5640,7 @@ impl ChatScreen {
         let index = match position {
             Some(index) => {
                 let AgentTimelineItem {
+                    label: incoming_label,
                     persisted: incoming_persisted,
                     live: incoming_live,
                     truncated: incoming_truncated,
@@ -5652,6 +5658,12 @@ impl ChatScreen {
                 } = item;
                 let existing = &mut self.timeline[index];
                 existing.revision = incoming_revision;
+                if let Some(label) = incoming_label {
+                    match &mut existing.label {
+                        Some(previous) => previous.merge_from(label),
+                        None => existing.label = Some(label),
+                    }
+                }
                 existing.persisted = incoming_persisted.or_else(|| existing.persisted.take());
                 existing.live = incoming_live.or_else(|| existing.live.take());
                 existing.truncated = incoming_truncated;

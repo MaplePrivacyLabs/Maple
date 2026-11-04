@@ -42,12 +42,48 @@ pub(crate) struct StoreStatus {
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct StoreOperationNotice {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub pending: bool,
+    #[serde(default)]
+    pub failure: Option<crate::backend::HostFailure>,
     pub operation_id: String,
     pub message: String,
     #[serde(default)]
     pub is_error: bool,
     #[serde(default)]
     pub requires_attention: bool,
+}
+
+impl StoreOperationNotice {
+    pub(crate) fn presentation(&self) -> super::i18n::UiText {
+        if let Some(failure) = &self.failure {
+            return super::host_errors::failure_text(failure);
+        }
+        let key = match (self.label.as_deref(), self.pending) {
+            (Some("unlock-previous"), false) => "runtime-notice-unlock-previous",
+            (Some("unlock-previous"), true) => "runtime-notice-unlock-previous-pending",
+            (Some("unlock"), false) => "runtime-notice-unlock",
+            (Some("unlock"), true) => "runtime-notice-unlock-pending",
+            (Some("set_store_password"), false) => "runtime-notice-set-store-password",
+            (Some("set_store_password"), true) => "runtime-notice-set-store-password-pending",
+            (Some("change_store_password"), false) => "runtime-notice-change-store-password",
+            (Some("change_store_password"), true) => "runtime-notice-change-store-password-pending",
+            (Some("remove_store_password"), false) => "runtime-notice-remove-store-password",
+            (Some("remove_store_password"), true) => "runtime-notice-remove-store-password-pending",
+            (Some("erase_local_data"), false) => "runtime-notice-erase-local-data",
+            (Some("erase_local_data"), true) => "runtime-notice-erase-local-data-pending",
+            (Some("start_fresh"), false) => "runtime-notice-start-fresh",
+            (Some("start_fresh"), true) => "runtime-notice-start-fresh-pending",
+            (Some("setup_store"), false) => "runtime-notice-setup-store",
+            (Some("setup_store"), true) => "runtime-notice-setup-store-pending",
+            (Some("salvage_store"), false) => "runtime-notice-salvage-store",
+            (Some("salvage_store"), true) => "runtime-notice-salvage-store-pending",
+            _ => return super::i18n::UiText::Raw(self.message.clone()),
+        };
+        super::i18n::UiText::key(key)
+    }
 }
 
 impl StoreStatus {
@@ -116,7 +152,7 @@ pub struct StoreGate {
     bridges: RefCell<Vec<gpui::Task<()>>>,
     busy: bool,
     erase: bool,
-    message: Option<String>,
+    message: Option<super::i18n::UiText>,
     progress: OperationProgress,
     repair_progress: RepairProgress,
     progress_task: Option<gpui::Task<()>>,
@@ -130,7 +166,7 @@ impl StoreGate {
         if let Some(form) = &self.form {
             form.update(cx, |form, cx| form.show_local_store_notice(message, cx));
         } else {
-            self.message = Some(message);
+            self.message = Some(message.into());
             cx.notify();
         }
     }
@@ -259,7 +295,7 @@ impl StoreGate {
                 this.message = Some(match result {
                     Ok(true) => "Cancelling before the store is replaced…".into(),
                     Ok(false) => "The store is committing. Wait for it to finish.".into(),
-                    Err(message) => message,
+                    Err(message) => message.into(),
                 });
                 cx.notify();
             },
@@ -280,13 +316,16 @@ impl StoreGate {
         let backend = self.backend.clone();
         self.call(
             async move {
-                backend
-                    .local_control::<StoreStatus>("store_status", ())
-                    .await
+                Ok(backend
+                    .local_control_presented::<StoreStatus>("store_status", ())
+                    .await)
             },
             cx,
             |this, result, cx| {
-                match result {
+                match result
+                    .map_err(crate::backend::HostFailure::from)
+                    .and_then(|result| result)
+                {
                     Ok(status) => {
                         if this.state != status.state {
                             this.focus_pending = true;
@@ -324,7 +363,7 @@ impl StoreGate {
                         }
                         this.status = Some(status);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(failure) => this.message = Some(super::host_errors::failure_text(&failure)),
                 }
                 cx.notify();
             },
@@ -363,7 +402,7 @@ impl StoreGate {
                 match result {
                     Ok(_) => cx.emit(StoreGateChanged),
                     Err(message) => {
-                        this.message = Some(message);
+                        this.message = Some(message.into());
                         this.refresh(cx);
                     }
                 }
@@ -455,7 +494,7 @@ impl StoreGate {
                 this.busy = false;
                 match result {
                     Ok(_) => cx.emit(StoreGateChanged),
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 this.refresh(cx);
                 cx.notify();
@@ -479,7 +518,7 @@ impl StoreGate {
         }
         let required = if start_fresh { "START FRESH" } else { "ERASE" };
         if confirmation != required {
-            self.message = Some(format!("Type {required} exactly to continue."));
+            self.message = Some(format!("Type {required} exactly to continue.").into());
             cx.notify();
             return;
         }
@@ -511,7 +550,7 @@ impl StoreGate {
                         this.erase = false;
                         cx.emit(StoreGateChanged);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 this.refresh(cx);
                 cx.notify();
@@ -789,7 +828,7 @@ impl Render for StoreGate {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::status_warning()))
-                    .child(message.clone()),
+                    .child(message.resolve()),
             );
         }
         div()
@@ -2103,7 +2142,13 @@ mod tests {
             );
             gate.form = None;
             gate.show_local_store_notice("Retry unlocking.".into(), cx);
-            assert_eq!(gate.message.as_deref(), Some("Retry unlocking."));
+            assert_eq!(
+                gate.message
+                    .as_ref()
+                    .map(|text| text.resolve().to_string())
+                    .as_deref(),
+                Some("Retry unlocking.")
+            );
         });
     }
 
@@ -2311,6 +2356,7 @@ mod tests {
                 gate.message
                     .as_ref()
                     .unwrap()
+                    .resolve()
                     .contains("Type ERASE exactly")
             );
             assert_eq!(gate.state, StoreState::Locked);
@@ -2322,6 +2368,7 @@ mod tests {
                 gate.message
                     .as_ref()
                     .unwrap()
+                    .resolve()
                     .contains("Type START FRESH exactly")
             );
         });

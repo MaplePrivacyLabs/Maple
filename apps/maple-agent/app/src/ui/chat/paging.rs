@@ -185,6 +185,7 @@ impl ChatScreen {
             .collect();
         self.markdown_cache.clear();
         self.derived.clear();
+        self.timeline_messages = Default::default();
         self.tool_summaries
             .retain(|id, _| self.timeline_index.contains_key(id));
         self.unsaved_summaries
@@ -319,6 +320,7 @@ impl ChatScreen {
                             this.timeline[index] = item;
                             this.markdown_cache.clear();
                             this.derived.clear();
+                            this.timeline_messages = Default::default();
                             this.remeasure_item(index);
                             this.warm_markdown(cx);
                         }

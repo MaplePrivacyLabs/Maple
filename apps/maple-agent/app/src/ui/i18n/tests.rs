@@ -232,6 +232,13 @@ impl<'ast> Visit<'ast> for UiStrings {
         }
     }
 
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        // Runtime presenters select keys in match arms as well as direct calls.
+        if node.value().starts_with("runtime-") {
+            self.keys.insert(node.value());
+        }
+    }
+
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = &*node.func
             && path.path.segments.last().is_some_and(|segment| {
@@ -245,7 +252,9 @@ impl<'ast> Visit<'ast> for UiStrings {
                 lit: syn::Lit::Str(key),
                 ..
             })) = node.args.first()
-            && (key.value().starts_with("settings-") || key.value().starts_with("update-"))
+            && (key.value().starts_with("settings-")
+                || key.value().starts_with("update-")
+                || key.value().starts_with("runtime-"))
         {
             self.keys.insert(key.value());
         }
@@ -258,7 +267,7 @@ impl<'ast> Visit<'ast> for UiStrings {
                 lit: syn::Lit::Str(key),
                 ..
             })) = node.args.first()
-            && key.value().starts_with("settings-")
+            && (key.value().starts_with("settings-") || key.value().starts_with("runtime-"))
         {
             self.keys.insert(key.value());
         }
@@ -309,6 +318,8 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     // Grow this list with each extraction. Unconverted modules are explicitly
     // outside the gate rather than freezing hundreds of existing literals.
     let mut visitor = UiStrings::default();
+    visitor.visit_file(&syn::parse_file(include_str!("../timeline_labels.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../host_errors.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../update_confirmation.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/general.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings.rs")).unwrap());
@@ -421,7 +432,7 @@ fn parameterized_catalogs_format_all_messages_without_missing_arguments() {
                 .skip(1)
                 .map(|tail| {
                     tail.chars()
-                        .take_while(|ch| ch.is_alphanumeric() || *ch == '-')
+                        .take_while(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '_'))
                         .collect::<String>()
                 })
                 .collect::<Vec<_>>()
@@ -456,4 +467,216 @@ fn parameterized_catalogs_format_all_messages_without_missing_arguments() {
             }
         }
     }
+}
+
+#[test]
+fn timeline_semantics_reformat_without_changing_content() {
+    use crate::ui::timeline_labels;
+    let _locale = TestLocalizationGuard::enable();
+    let item: maple_agent::agent::AgentTimelineItem = serde_json::from_value(serde_json::json!({
+        "id": "tool", "itemType": "tool", "createdMs": 1, "merge": "replace",
+        "title": "Terminal: echo hola", "text": "user content",
+        "label": {"kind": "tool", "name": "read_file", "detail": "original.txt"}
+    }))
+    .unwrap();
+    let cache = MessageCache::default();
+    for (locale, expected) in [
+        ("en", "Read file"),
+        ("es", "Leer archivo"),
+        ("en", "Read file"),
+    ] {
+        apply_preference(Some(locale));
+        assert_eq!(
+            timeline_labels::tool_label(&item, &cache).unwrap().as_ref(),
+            expected
+        );
+        let title = timeline_labels::title(&item, &cache).unwrap();
+        assert!(title.starts_with('\u{2068}'));
+        assert!(title.contains(expected));
+        assert!(title.contains("original.txt"));
+        assert!(timeline_labels::body(&item, &cache).is_none());
+        assert_eq!(item.text.as_deref(), Some("user content"));
+    }
+    let mut unknown = item.clone();
+    unknown.label.as_mut().unwrap().kind = "future-kind".into();
+    assert!(timeline_labels::title(&unknown, &cache).is_none());
+    unknown.label = None;
+    assert!(timeline_labels::title(&unknown, &cache).is_none());
+}
+
+#[test]
+fn typed_host_failure_switches_locale_and_preserves_raw_diagnostic() {
+    use crate::{backend::HostFailure, ui::host_errors::failure_text};
+    let _locale = TestLocalizationGuard::enable();
+    let failure = HostFailure::new("store-locked", "raw diagnostic");
+    let notice = failure_text(&failure);
+    apply_preference(Some("en"));
+    assert!(notice.resolve().contains("Maple is locked"));
+    apply_preference(Some("es"));
+    assert!(notice.resolve().contains("Maple está bloqueado"));
+    assert_eq!(failure.message, "raw diagnostic");
+    for code in ["unknown", "future-code"] {
+        assert_eq!(
+            failure_text(&HostFailure::new(code, "untouched content"))
+                .resolve()
+                .as_ref(),
+            "untouched content"
+        );
+    }
+}
+
+#[test]
+fn builtin_tool_title_keeps_original_english_detail_and_raw_identifiers() {
+    use crate::ui::timeline_labels;
+    let _locale = TestLocalizationGuard::enable();
+    let item: maple_agent::agent::AgentTimelineItem = serde_json::from_value(serde_json::json!({
+        "id": "tool", "itemType": "tool", "createdMs": 1, "merge": "replace",
+        "title": "read: original.txt", "label": {"kind": "tool", "name": "read", "detail": "original.txt"}
+    })).unwrap();
+    let cache = MessageCache::default();
+    assert!(timeline_labels::tool_label(&item, &cache).is_none());
+    assert_eq!(
+        timeline_labels::title(&item, &cache).unwrap().as_ref(),
+        "\u{2068}read\u{2069}: \u{2068}original.txt\u{2069}"
+    );
+    apply_preference(Some("es"));
+    assert_eq!(
+        timeline_labels::title(&item, &cache).unwrap().as_ref(),
+        "\u{2068}leer\u{2069}: \u{2068}original.txt\u{2069}"
+    );
+    assert_eq!(item.label.as_ref().unwrap().name.as_deref(), Some("read"));
+}
+
+#[test]
+fn retained_runtime_notices_switch_locale_and_keep_legacy_fallback() {
+    use crate::ui::store_gate::StoreOperationNotice;
+    let _locale = TestLocalizationGuard::enable();
+    let notice: StoreOperationNotice = serde_json::from_value(serde_json::json!({
+        "operation_id":"same-operation", "message":"original fallback",
+        "label":"change_store_password", "pending":true
+    }))
+    .unwrap();
+    let presentation = notice.presentation();
+    for (locale, expected) in [
+        ("en", "Your unlock password changed on this computer."),
+        (
+            "es",
+            "Tu contraseña de desbloqueo cambió en esta computadora.",
+        ),
+        ("en", "Your unlock password changed on this computer."),
+    ] {
+        apply_preference(Some(locale));
+        assert!(presentation.resolve().starts_with(expected));
+        assert_eq!(notice.operation_id, "same-operation");
+        assert_eq!(notice.message, "original fallback");
+    }
+    for label in [serde_json::Value::Null, serde_json::json!("future-notice")] {
+        let legacy: StoreOperationNotice = serde_json::from_value(serde_json::json!({
+            "operation_id":"legacy", "message":"opaque old notice", "label":label
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy.presentation().resolve().as_ref(),
+            "opaque old notice"
+        );
+    }
+}
+
+#[test]
+fn runtime_usage_body_and_error_headings_follow_locale_without_mutating_diagnostics() {
+    use crate::ui::timeline_labels;
+    let _locale = TestLocalizationGuard::enable();
+    let mut item: maple_agent::agent::AgentTimelineItem =
+        serde_json::from_value(serde_json::json!({
+            "id":"error", "itemType":"error", "createdMs":1, "merge":"replace",
+            "text":"opaque retained diagnostic", "label":{"kind":"error-usage"}
+        }))
+        .unwrap();
+    let cache = MessageCache::default();
+    for (locale, title, body) in [
+        (
+            "en",
+            "Out of usage",
+            "You've run out of usage. See your options in Billing so you can keep working.",
+        ),
+        (
+            "es",
+            "Uso agotado",
+            "Se agotó tu uso disponible. Consulta tus opciones en Facturación para seguir trabajando.",
+        ),
+        (
+            "en",
+            "Out of usage",
+            "You've run out of usage. See your options in Billing so you can keep working.",
+        ),
+    ] {
+        apply_preference(Some(locale));
+        assert_eq!(
+            timeline_labels::title(&item, &cache).unwrap().as_ref(),
+            title
+        );
+        assert_eq!(timeline_labels::body(&item, &cache).unwrap().as_ref(), body);
+        assert_eq!(item.text.as_deref(), Some("opaque retained diagnostic"));
+    }
+    item.label.as_mut().unwrap().kind = "future-error".into();
+    assert!(timeline_labels::body(&item, &cache).is_none());
+    assert!(timeline_labels::title(&item, &cache).is_none());
+}
+
+#[test]
+fn runtime_auth_sources_keep_distinct_english_and_localize() {
+    use crate::{backend::HostFailure, ui::host_errors::failure_text};
+    let _locale = TestLocalizationGuard::enable();
+    for (code, english, spanish) in [
+        (
+            "api-authentication",
+            "Maple API authentication failed",
+            "Falló la autenticación con la API de Maple",
+        ),
+        (
+            "account-auth-rejected",
+            "Maple API authentication was rejected",
+            "La API de Maple rechazó la autenticación",
+        ),
+        (
+            "billing-token-rejected",
+            "billing API rejected the session token",
+            "la API de facturación rechazó el token de sesión",
+        ),
+    ] {
+        let text = failure_text(&HostFailure::new(code, english));
+        apply_preference(Some("en"));
+        assert_eq!(text.resolve().as_ref(), english);
+        apply_preference(Some("es"));
+        assert_eq!(text.resolve().as_ref(), spanish);
+    }
+}
+
+#[test]
+fn runtime_memory_requirement_and_password_retention_survive_locale_switch() {
+    use crate::{backend::HostFailure, ui::host_errors::failure_text};
+    let _locale = TestLocalizationGuard::enable();
+    let failure =
+        HostFailure::from(maple_agent::store::keys::KeyError::NotEnoughMemory { required_mib: 64 });
+    let text = failure_text(&failure);
+    for locale in ["en", "es", "en"] {
+        apply_preference(Some(locale));
+        assert!(text.resolve().contains("64"));
+        assert!(text.resolve().contains("MiB"));
+    }
+    let sync = HostFailure::from(maple_agent::store::keys::KeyError::SynchronizationPending {
+        kind: std::io::ErrorKind::Other,
+    });
+    apply_preference(Some("en"));
+    assert!(
+        failure_text(&sync)
+            .resolve()
+            .contains("Keep both passwords")
+    );
+    apply_preference(Some("es"));
+    assert!(
+        failure_text(&sync)
+            .resolve()
+            .contains("Conserva ambas contraseñas")
+    );
 }

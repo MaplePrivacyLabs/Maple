@@ -77,7 +77,7 @@ impl UploadHost {
                             (request.id, result)
                         }
                     };
-                    if protocol::write(&mut output, &protocol::Message::Response {
+                    if protocol::write(&mut output, &protocol::Message::Response { failure: None,
                         id: response.0,
                         result: response.1,
                     }).await.is_err() {

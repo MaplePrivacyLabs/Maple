@@ -30,10 +30,7 @@ use super::config::unix_ms;
 use super::runtime::AgentRuntime;
 use super::store::SessionFacts;
 use super::surface::{AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess};
-use super::timeline::{
-    LiveTimeline, MAPLE_NOTICE_ENTRY, STOPPED_NOTICE_TEXT, error_item, notice_entry_data,
-    notice_item,
-};
+use super::timeline::{LiveTimeline, MAPLE_NOTICE_ENTRY, STOPPED_NOTICE_TEXT, error_item};
 use super::{
     AgentDesktopQueueSnapshot, AgentEventDispatcher, AgentQueueControlRequest, AgentQueuedMessage,
     AgentRunEvent, AgentRunTerminal, AgentRunUsage, AgentRuntimeHandle, AgentSendMessageRequest,
@@ -1802,14 +1799,17 @@ impl AgentRuntime {
             let id = format!("stopped-{}", pi_ai::now_ms());
             session.extension_context().append_entry(
                 MAPLE_NOTICE_ENTRY,
-                Some(notice_entry_data(&id, STOPPED_NOTICE_TEXT)),
+                Some(super::timeline::stopped_notice_data(&id)),
             );
-            events.publish(AgentRunEvent::TimelineItem(notice_item(
-                id,
-                "Agent notice",
-                STOPPED_NOTICE_TEXT,
-                pi_ai::now_ms(),
-            )));
+            events.publish(AgentRunEvent::TimelineItem(
+                super::timeline::labeled_notice_item(
+                    id,
+                    "stopped",
+                    "Agent notice",
+                    STOPPED_NOTICE_TEXT,
+                    pi_ai::now_ms(),
+                ),
+            ));
         }
         let failed = failure.is_some() || deferred.failure.is_some();
         if let Some(item) = deferred.failure {

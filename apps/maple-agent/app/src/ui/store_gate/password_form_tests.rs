@@ -469,7 +469,11 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(gate.bridges.borrow().is_empty());
         assert!(
-            gate.message.as_deref().unwrap().contains("unlock password"),
+            gate.message
+                .as_ref()
+                .unwrap()
+                .resolve()
+                .contains("unlock password"),
             "unexpected unlock feedback: {:?}",
             gate.message
         );
@@ -497,8 +501,9 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(
             gate.message
-                .as_deref()
+                .as_ref()
                 .unwrap()
+                .resolve()
                 .contains("Type ERASE exactly")
         );
         assert_eq!(gate.confirmation.read(app).text(), "erase");
@@ -510,8 +515,9 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(
             gate.message
-                .as_deref()
+                .as_ref()
                 .unwrap()
+                .resolve()
                 .contains("Type ERASE exactly")
         );
     });

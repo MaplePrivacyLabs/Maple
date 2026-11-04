@@ -11,7 +11,10 @@ use rusqlite::Connection;
 use serde_json::json;
 
 fn database() -> Connection {
-    let mut connection = Connection::open_in_memory().unwrap();
+    initialize_database(Connection::open_in_memory().unwrap())
+}
+
+fn initialize_database(mut connection: Connection) -> Connection {
     connection
         .pragma_update(None, "application_id", super::super::schema::APPLICATION_ID)
         .unwrap();
@@ -415,7 +418,7 @@ fn timeline_format_pins_the_canonical_fixture() {
     assert_eq!(
         (TIMELINE_FORMAT, digest.as_str()),
         (
-            2,
+            3,
             "bd6b8487d68c8376bcda6a6d7323a632c5bd942368dbe742a9de26440af852c2"
         )
     );
@@ -755,4 +758,85 @@ fn compressed_sources_are_reduced_to_metadata_one_at_a_time() {
         std::mem::size_of_val(metadata.as_slice()) < 1024,
         "the retained batch contains no source payload strings"
     );
+}
+
+#[test]
+fn semantic_projection_rebuilds_equally_in_plain_and_keyed_stores() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut outputs = Vec::new();
+    for keyed in [false, true] {
+        let connection =
+            Connection::open(
+                directory
+                    .path()
+                    .join(if keyed { "keyed.db" } else { "plain.db" }),
+            )
+            .unwrap();
+        if keyed {
+            connection
+                .pragma_update(None, "key", "synthetic-projection-test-key")
+                .unwrap();
+        }
+        let mut connection = initialize_database(connection);
+        let mut entries = Vec::new();
+        add(&mut connection, &mut entries, assistant(1, Some("call")));
+        add(
+            &mut connection,
+            &mut entries,
+            result(2, "call", "raw tool output"),
+        );
+        add(
+            &mut connection,
+            &mut entries,
+            EntryKind::Custom {
+                custom_type: timeline::MAPLE_NOTICE_ENTRY.into(),
+                data: Some(timeline::stopped_notice_data("stopped-test")),
+            },
+        );
+        // A legacy entry with identical English is not retrospectively classified.
+        add(
+            &mut connection,
+            &mut entries,
+            EntryKind::Custom {
+                custom_type: timeline::MAPLE_NOTICE_ENTRY.into(),
+                data: Some(timeline::notice_entry_data(
+                    "legacy",
+                    timeline::STOPPED_NOTICE_TEXT,
+                )),
+            },
+        );
+        let source_before: Vec<Vec<u8>> = connection
+            .prepare("SELECT payload FROM entries ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        connection
+            .execute("UPDATE tasks SET timeline_format=2", [])
+            .unwrap();
+        add(&mut connection, &mut entries, user(5, "Stopped by user"));
+        let tx = connection.transaction().unwrap();
+        let epoch: i64 = tx
+            .query_row("SELECT rows_epoch FROM tasks WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let rows = read_all(&tx, epoch);
+        assert_eq!(rows[0].label.as_ref().unwrap().kind, "thinking");
+        assert_eq!(rows[2].label.as_ref().unwrap().kind, "tool");
+        assert_eq!(rows[3].label.as_ref().unwrap().kind, "stopped");
+        assert_eq!(rows[4].label.as_ref().unwrap().kind, "notice");
+        assert!(rows[5].label.is_none());
+        let source_after: Vec<Vec<u8>> = tx
+            .prepare("SELECT payload FROM entries WHERE seq<=4 ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(source_before, source_after);
+        outputs.push(rows);
+    }
+    assert_eq!(outputs[0], outputs[1]);
 }
