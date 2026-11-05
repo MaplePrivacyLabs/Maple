@@ -1845,3 +1845,9 @@ runtime-error-oauth-url = Paste the full URL you were redirected to (it contains
 runtime-error-sign-in-publication = Sign in failed. Try again.
 runtime-error-account-already-signed-in = Maple is already signed in. Sign out before changing accounts.
 runtime-error-account-owner-read = Could not read saved sign-in ownership. Try again.
+
+## Native desktop operation feedback
+native-project-unavailable = This computer is unavailable. Reconnect it before renaming the project.
+native-project-connection-changed = The computer connection changed. Check its current project name before trying again.
+native-task-unavailable = This computer is unavailable. Reconnect it before changing the task.
+native-task-connection-changed = The computer connection changed. Check the task before trying again.

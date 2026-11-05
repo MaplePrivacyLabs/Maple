@@ -40,7 +40,7 @@ pub(crate) struct StoreStatus {
     pub password_settings_available: bool,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct StoreOperationNotice {
     #[serde(default)]
     pub label: Option<String>,
