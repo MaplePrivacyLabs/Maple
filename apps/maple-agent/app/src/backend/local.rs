@@ -2877,6 +2877,21 @@ impl LocalBackend {
         Ok(())
     }
 
+    /// The local host checks, starts and saves the app; the catalog id is the
+    /// only thing a caller can choose.
+    pub async fn connect_mcp_app(
+        &self,
+        user_id: &str,
+        id: &str,
+    ) -> Result<maple_agent::agent::McpAppConnection, String> {
+        self.authorize_account(user_id)?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .connect_mcp_app(id)
+            .await
+    }
+
     pub async fn save_mcp_definition_edits_remote(
         &self,
         user_id: &str,

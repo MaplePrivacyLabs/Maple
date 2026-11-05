@@ -252,6 +252,13 @@ connection is on for new tasks until someone turns it off. A server that only
 accepts registered apps cannot be signed in to yet, and neither can a paired
 computer from its controller.
 
+Some catalog apps run on this computer, such as Playwright and, on macOS, Xcode.
+An entry names a pinned package or a command, what must be installed first, and
+which platforms it runs on, so these need no code either. Connect checks the
+requirements, starts the app, lists its tools and saves it as an ordinary stdio
+server. Node.js and uv come from the login shell's PATH. If one is missing, the
+card says what is needed and links to it.
+
 HTTP servers use the stateless `2026-07-28` revision of MCP when they offer it,
 and the `initialize` handshake otherwise. Stdio servers keep the handshake, since
 an older server may only answer the revision's probe by timing out. Only stdio

@@ -178,6 +178,8 @@ pub struct SettingsScreen {
     mcp_signing_in: Option<String>,
     /// The server whose sign-in last failed, and why.
     mcp_sign_in_error: Option<(String, String)>,
+    /// The app that needs something first, and what.
+    mcp_app_missing: Option<(String, maple_agent::agent::McpAppMissing)>,
     catalog_search: Entity<TextInput>,
     catalog_query: String,
     catalog_category: Option<maple_agent::agent::McpCatalogCategory>,
@@ -495,6 +497,7 @@ impl SettingsScreen {
             mcp_saving: false,
             mcp_signing_in: None,
             mcp_sign_in_error: None,
+            mcp_app_missing: None,
             catalog_search,
             catalog_query: String::new(),
             catalog_category: None,

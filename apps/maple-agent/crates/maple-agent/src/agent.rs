@@ -20,6 +20,7 @@ mod integrations;
 mod login_path;
 mod maintenance;
 mod mcp;
+pub use mcp::apps::{McpAppConnection, McpAppMissing};
 pub use mcp::catalog::{McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, mcp_catalog};
 pub use mcp::oauth::{McpBrowser, McpSignIn};
 mod persistence;
