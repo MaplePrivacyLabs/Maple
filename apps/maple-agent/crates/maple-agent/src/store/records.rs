@@ -14,6 +14,9 @@ use zeroize::Zeroizing;
 
 use super::{AccountId, Durability, Store, StoreError, StoreResult, tasks};
 
+mod oauth;
+pub use oauth::McpOAuthCredentials;
+
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 // Match the host's bounded 160 MiB request envelope, which admits image-heavy
 // sends. The smaller terminal-record limit must not shrink send admission.
@@ -798,6 +801,16 @@ impl Store {
                 let old_server = mcp_server_tx(tx,account,&edit.key)?;
                 let old_values = if let Some((id,_)) = &old_server { mcp_values_tx(tx,*id)? } else { BTreeMap::new() };
                 let target = mcp_target_hash(&definition.target)?;
+                // Ordinary metadata/default toggles retain OAuth. Changing its
+                // destination or adding generic credential inputs cannot reuse
+                // the dedicated OAuth grant.
+                if (old_server.as_ref().is_some_and(|(_,old)| old.target != definition.target)
+                    || !definition.environment.is_empty()
+                    || !definition.headers.is_empty())
+                    && let Some((id,_)) = &old_server
+                {
+                    tx.execute("DELETE FROM mcp_oauth_credentials WHERE server_id=?1",[id])?;
+                }
                 if origin == McpEditOrigin::Remote && old_server.as_ref().is_some_and(|(_,old)| old.target != definition.target) {
                     let explicit: BTreeSet<_> = edit.environment.iter()
                         .filter(|value| !matches!(&value.update, McpSecretUpdate::Keep))

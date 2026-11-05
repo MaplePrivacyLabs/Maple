@@ -3,6 +3,11 @@
 //! connects when first needed, a dropped connection is opened again on the
 //! next call, and a stdio server is stopped by closing its input, then
 //! SIGTERM, then SIGKILL to its whole process group.
+//!
+//! An HTTP server is opened on the stateless 2026-07-28 revision when it
+//! offers it, and with the older `initialize` handshake when it does not. A
+//! stdio server keeps the handshake: an older one may only answer the
+//! revision's probe by timing out, which would cost every task ten seconds.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,17 +19,21 @@ use http::{HeaderName, HeaderValue};
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotificationParam,
     ClientCapabilities, ClientConfig, ClientRequest, Implementation, JsonObject,
-    ProgressNotificationParam, ProgressToken, ServerResult, Tool,
+    ProgressNotificationParam, ProgressToken, ProtocolVersion, ServerNotification, ServerResult,
+    SubscriptionFilter, Tool,
 };
 // Roots, which newer drafts of MCP drop; see `Client::list_roots`.
 #[allow(deprecated)]
 use rmcp::model::{ListRootsResult, Root};
-use rmcp::service::{NotificationContext, PeerRequestOptions, RequestContext, RunningService};
+use rmcp::service::{
+    ClientInitializeError, ClientLifecycleMode, ClientServiceExt, NotificationContext, Peer,
+    PeerRequestOptions, RequestContext, RunningService,
+};
 use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
-use rmcp::{ClientHandler, ErrorData, RoleClient, ServiceError, ServiceExt};
+use rmcp::{ClientHandler, ErrorData, RoleClient, ServiceError};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
@@ -37,6 +46,9 @@ const STDIN_CLOSE_GRACE: Duration = Duration::from_millis(500);
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 /// The end of a stdio server's error output kept to explain a failure.
 const STDERR_TAIL_BYTES: usize = 2_000;
+/// How long after a stateless server's tool-change stream ends before it is
+/// opened again.
+const TOOLS_WATCH_RETRY: Duration = Duration::from_secs(30);
 
 /// Something to tell the task about a server: its tools changed, or it
 /// connected again and may offer others.
@@ -49,15 +61,16 @@ type Progress = Arc<StdMutex<HashMap<ProgressToken, pi_agent_core::ToolUpdates>>
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Listing {
     pub(crate) tools: Vec<Tool>,
-    /// How to use the server, from its `initialize` answer.
+    /// How to use the server, from its first answer.
     pub(crate) instructions: Option<String>,
 }
 
 /// The client side of one connection: who Maple is, the task's folder as a
-/// root, and where progress and tool-list changes go.
+/// root for a server on this computer, and where progress and tool-list
+/// changes go. A remote server is not told where the task lives.
 #[allow(deprecated)]
 struct Client {
-    root: Root,
+    root: Option<Root>,
     progress: Progress,
     tools_changed: ToolsChanged,
 }
@@ -65,11 +78,16 @@ struct Client {
 impl ClientHandler for Client {
     fn get_info(&self) -> ClientConfig {
         let mut capabilities = ClientCapabilities::default();
-        capabilities.roots = Some(Default::default());
+        if self.root.is_some() {
+            capabilities.roots = Some(Default::default());
+        }
+        // rmcp's default is the newest revision, which has no handshake, so
+        // this is the version a stdio server's `initialize` carries.
         ClientConfig::new(
             capabilities,
             Implementation::new("maple", env!("CARGO_PKG_VERSION")),
         )
+        .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
     }
 
     // Newer drafts of MCP drop roots; servers on today's protocol still read
@@ -79,7 +97,7 @@ impl ClientHandler for Client {
         &self,
         _context: RequestContext<RoleClient>,
     ) -> Result<ListRootsResult, ErrorData> {
-        Ok(ListRootsResult::new(vec![self.root.clone()]))
+        Ok(ListRootsResult::new(self.root.iter().cloned().collect()))
     }
 
     async fn on_progress(
@@ -109,6 +127,69 @@ fn lock<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Stateless when the HTTP server offers it, else the handshake.
+pub(super) fn http_lifecycle() -> ClientLifecycleMode {
+    ClientLifecycleMode::Auto {
+        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+        legacy_version: Some(ProtocolVersion::LATEST_WITH_INITIALIZE),
+    }
+}
+
+/// Why a server could not open: when neither way worked, the handshake's
+/// reason, since the probe failing is what an older server does anyway.
+fn open_failed(error: ClientInitializeError) -> String {
+    match error {
+        ClientInitializeError::LegacyFallbackFailed { fallback, .. } => fallback.to_string(),
+        error => error.to_string(),
+    }
+}
+
+/// Whether a server sends tool-list changes only on a stream the client
+/// opens: on the stateless revision there is no session for them to arrive on.
+fn needs_tools_watch(peer: &Peer<RoleClient>) -> bool {
+    peer.peer_info().is_some_and(|info| {
+        !info.protocol_version.has_initialize()
+            && info
+                .capabilities
+                .tools
+                .as_ref()
+                .is_some_and(|tools| tools.list_changed == Some(true))
+    })
+}
+
+/// Tell the task of a stateless server's tool-list changes for as long as the
+/// connection lasts. A stream that ends is opened again, and may have missed
+/// a change. A server that never opens one has nothing to watch.
+async fn watch_tools(peer: Peer<RoleClient>, tools_changed: ToolsChanged) {
+    let mut filter = SubscriptionFilter::new();
+    filter.tools_list_changed = Some(true);
+    let mut watched = false;
+    while !peer.is_transport_closed() {
+        match peer.listen(filter.clone()).await {
+            Ok(mut subscription) => {
+                if watched {
+                    tools_changed();
+                }
+                watched = true;
+                while let Ok(Some(notification)) = subscription.next().await {
+                    if matches!(
+                        notification,
+                        ServerNotification::ToolListChangedNotification(_)
+                    ) {
+                        tools_changed();
+                    }
+                }
+            }
+            Err(_) if !watched => {
+                log::debug!("MCP server tool-change stream did not open");
+                return;
+            }
+            Err(_) => log::debug!("MCP server tool-change stream did not reopen"),
+        }
+        tokio::time::sleep(TOOLS_WATCH_RETRY).await;
+    }
 }
 
 /// A stdio server's process and the end of its error output.
@@ -188,6 +269,8 @@ struct Connection {
     progress: Progress,
     listing: Listing,
     stdio: Option<StdioProcess>,
+    tools_watch: Option<tokio::task::JoinHandle<()>>,
+    oauth_generation: Option<String>,
 }
 
 /// One MCP server of a task.
@@ -199,6 +282,7 @@ pub(crate) struct McpServer {
     tools_changed: ToolsChanged,
     connection: tokio::sync::Mutex<Option<Connection>>,
     shutdown: CancellationToken,
+    oauth: Option<super::oauth::OAuthAccountContext>,
 }
 
 impl McpServer {
@@ -215,7 +299,16 @@ impl McpServer {
             tools_changed,
             connection: tokio::sync::Mutex::new(None),
             shutdown: CancellationToken::new(),
+            oauth: None,
         }
+    }
+
+    pub(crate) fn with_oauth_context(
+        mut self,
+        oauth: Option<super::oauth::OAuthAccountContext>,
+    ) -> Self {
+        self.oauth = oauth;
+        self
     }
 
     pub(crate) fn name(&self) -> &str {
@@ -247,7 +340,7 @@ impl McpServer {
         let tools = tokio::time::timeout(self.timeout(), open.service.peer().list_all_tools())
             .await
             .map_err(|_| "listing its tools took too long".to_string())?
-            .map_err(|error| format!("listing its tools failed: {error}"))?;
+            .map_err(|error| self.without_secrets(format!("listing its tools failed: {error}")))?;
         open.listing.tools = tools;
         Ok(open.listing.clone())
     }
@@ -258,9 +351,15 @@ impl McpServer {
         if self.shutdown.is_cancelled() {
             return Err("it was stopped".to_string());
         }
+        let generation = match (&self.oauth, &self.config.transport) {
+            (Some(context), AgentMcpTransport::StreamableHttp { url, .. }) => {
+                context.active_generation(&super::name_to_key(&self.config.name), url)?
+            }
+            _ => None,
+        };
         if connection
             .as_ref()
-            .is_some_and(|open| !open.service.is_closed())
+            .is_some_and(|open| !open.service.is_closed() && open.oauth_generation == generation)
         {
             return Ok(());
         }
@@ -273,7 +372,7 @@ impl McpServer {
             opened = self.open_connection() => opened,
             _ = self.shutdown.cancelled() => Err("it was stopped".to_string()),
         };
-        *connection = Some(opened?);
+        *connection = Some(opened.map_err(|error| self.without_secrets(error))?);
         if reopened {
             (self.tools_changed)();
         }
@@ -287,8 +386,9 @@ impl McpServer {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let local = matches!(self.config.transport, AgentMcpTransport::Stdio { .. });
         Client {
-            root: Root::new(url_of_path(&self.cwd)).with_name(name),
+            root: local.then(|| Root::new(url_of_path(&self.cwd)).with_name(name)),
             progress: Arc::clone(progress),
             tools_changed: Arc::clone(&self.tools_changed),
         }
@@ -309,12 +409,17 @@ impl McpServer {
                     return Err("its input and output could not be opened".into());
                 };
                 let transport = AsyncRwTransport::new_client(stdout, stdin);
-                match self.handshake(transport, &progress).await {
+                match self
+                    .handshake(transport, ClientLifecycleMode::Initialize, &progress)
+                    .await
+                {
                     Ok((service, listing)) => Ok(Connection {
                         service,
                         progress,
                         listing,
                         stdio: Some(stdio),
+                        tools_watch: None,
+                        oauth_generation: None,
                     }),
                     Err(error) => Err(stdio.failed(error).await),
                 }
@@ -324,6 +429,37 @@ impl McpServer {
                 environment,
                 headers,
             } => {
+                if let Some(context) = &self.oauth
+                    && let Some(client) = super::oauth::runtime_client(
+                        context,
+                        &super::name_to_key(&self.config.name),
+                        url,
+                    )
+                    .await?
+                {
+                    if !environment.is_empty() || !headers.is_empty() {
+                        return Err(
+                            "OAuth MCP endpoints cannot also carry custom credentials".into()
+                        );
+                    }
+                    let oauth_generation = client.generation();
+                    let transport = StreamableHttpClientTransport::with_client(
+                        client,
+                        StreamableHttpClientTransportConfig::with_uri(url.as_str()),
+                    );
+                    let (service, listing) = self
+                        .handshake(transport, http_lifecycle(), &progress)
+                        .await?;
+                    let tools_watch = self.tools_watch(&service);
+                    return Ok(Connection {
+                        service,
+                        progress,
+                        listing,
+                        stdio: None,
+                        tools_watch,
+                        oauth_generation,
+                    });
+                }
                 let mut custom = HashMap::new();
                 for header in headers {
                     let key = HeaderName::try_from(header.key.as_str())
@@ -344,21 +480,36 @@ impl McpServer {
                     StreamableHttpClientTransportConfig::with_uri(substitute(url, environment))
                         .custom_headers(custom),
                 );
-                let (service, listing) = self.handshake(transport, &progress).await?;
+                let (service, listing) = self
+                    .handshake(transport, http_lifecycle(), &progress)
+                    .await?;
+                let tools_watch = self.tools_watch(&service);
                 Ok(Connection {
                     service,
                     progress,
                     listing,
                     stdio: None,
+                    tools_watch,
+                    oauth_generation: None,
                 })
             }
         }
     }
 
-    /// Initialize, then list the tools, each within the timeout.
+    fn tools_watch(
+        &self,
+        service: &RunningService<RoleClient, Client>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let peer = service.peer();
+        needs_tools_watch(peer)
+            .then(|| tokio::spawn(watch_tools(peer.clone(), Arc::clone(&self.tools_changed))))
+    }
+
+    /// Open the connection, then list the tools, each within the timeout.
     async fn handshake<T, E, A>(
         &self,
         transport: T,
+        lifecycle: ClientLifecycleMode,
         progress: &Progress,
     ) -> Result<(RunningService<RoleClient, Client>, Listing), String>
     where
@@ -366,10 +517,14 @@ impl McpServer {
         E: std::error::Error + Send + Sync + 'static,
     {
         let timeout = self.timeout();
-        let mut service = tokio::time::timeout(timeout, self.client(progress).serve(transport))
-            .await
-            .map_err(|_| "it did not answer in time".to_string())?
-            .map_err(|error| error.to_string())?;
+        let mut service = tokio::time::timeout(
+            timeout,
+            self.client(progress)
+                .serve_with_lifecycle(transport, lifecycle),
+        )
+        .await
+        .map_err(|_| "it did not answer in time".to_string())?
+        .map_err(open_failed)?;
         let info = service.peer().peer_info();
         let instructions = info
             .as_ref()
@@ -537,10 +692,36 @@ impl McpServer {
             }
             other => other.to_string(),
         };
-        format!(
+        self.without_secrets(format!(
             "MCP server \"{}\" failed to run {tool}: {message}",
             self.name()
-        )
+        ))
+    }
+
+    /// An error's text with an HTTP server's endpoint and saved values taken
+    /// out. HTTP errors quote the URL, and these reach the log and the task.
+    fn without_secrets(&self, mut text: String) -> String {
+        let AgentMcpTransport::StreamableHttp {
+            url,
+            environment,
+            headers,
+        } = &self.config.transport
+        else {
+            return text;
+        };
+        let shown = url.split(['?', '#']).next().unwrap_or_default();
+        let endpoint = substitute(url, environment);
+        if let Ok(parsed) = reqwest::Url::parse(&endpoint) {
+            text = text.replace(parsed.as_str(), shown);
+        }
+        text = text.replace(&endpoint, shown);
+        for value in environment.iter().chain(headers).map(|entry| &entry.value) {
+            let value = substitute(value, environment);
+            if !value.is_empty() {
+                text = text.replace(&value, "[hidden]");
+            }
+        }
+        text
     }
 
     /// Close the connection and stop a stdio server. The server cannot
@@ -554,6 +735,9 @@ impl McpServer {
 }
 
 async fn close(mut open: Connection) {
+    if let Some(watch) = open.tools_watch.take() {
+        watch.abort();
+    }
     let _ = open.service.close_with_timeout(STDIN_CLOSE_GRACE).await;
     if let Some(stdio) = open.stdio.take() {
         stdio.stop().await;

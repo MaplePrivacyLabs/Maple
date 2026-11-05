@@ -2853,6 +2853,30 @@ impl LocalBackend {
             .await
     }
 
+    /// The local host owns the entire sign-in and its credentials. Only public
+    /// MCP metadata returns to the desktop once the server is installed.
+    pub async fn sign_in_mcp_server(
+        &self,
+        user_id: &str,
+        request: maple_agent::agent::McpSignIn,
+    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, String> {
+        self.authorize_account(user_id)?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .sign_in_mcp_server(request, Arc::new(open_sign_in))
+            .await
+    }
+
+    pub async fn cancel_mcp_sign_in(&self, user_id: &str, name: &str) -> Result<(), String> {
+        self.authorize_account(user_id)?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .cancel_mcp_sign_in(name);
+        Ok(())
+    }
+
     pub async fn save_mcp_definition_edits_remote(
         &self,
         user_id: &str,
@@ -3188,6 +3212,15 @@ fn decode_query_value(value: &str) -> String {
 fn billing_failure(error: String, fallback: &str) -> String {
     log::warn!("{fallback}: {error}");
     format!("{fallback}. Try again, or use the pricing page on the web.")
+}
+
+/// Open a server's sign-in page, which the runtime has checked. This runs in
+/// the local host's IPC worker, never the GPUI thread. A webbrowser error may
+/// contain the full URL; keep it out of logs and IPC.
+fn open_sign_in(address: String) -> Result<(), String> {
+    webbrowser::open(&address)
+        .map(|_| ())
+        .map_err(|_| "Could not open your browser to sign in. Check your default browser.".into())
 }
 
 /// Hand a billing URL to the system browser. Only `https` URLs are opened:

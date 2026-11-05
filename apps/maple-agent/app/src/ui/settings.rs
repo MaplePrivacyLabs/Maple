@@ -17,7 +17,7 @@ use maple_agent::agent::{
 use maple_agent::store::records::{McpDefinition, McpServerEdit, McpTarget};
 use zeroize::Zeroizing;
 
-use crate::ui::icons::icon;
+use crate::ui::icons::{icon, spinner};
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 
@@ -37,6 +37,7 @@ mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
+mod catalog;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
@@ -46,6 +47,7 @@ use self::account::AccountState;
 use self::acp::AcpUiState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
+use self::catalog::McpTokenField;
 #[cfg(feature = "proxy")]
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
@@ -172,6 +174,15 @@ pub struct SettingsScreen {
     mcp_editor: Option<McpEditor>,
     mcp_notice: Option<String>,
     mcp_saving: bool,
+    /// The server whose browser sign-in is in progress.
+    mcp_signing_in: Option<String>,
+    /// The server whose sign-in last failed, and why.
+    mcp_sign_in_error: Option<(String, String)>,
+    catalog_search: Entity<TextInput>,
+    catalog_query: String,
+    catalog_category: Option<maple_agent::agent::McpCatalogCategory>,
+    /// The catalog entries showing, worked out when they change.
+    catalog_visible: Vec<&'static maple_agent::agent::McpCatalogEntry>,
     /// Device-local integrations discovered by the runtime; None until loaded.
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<String>,
@@ -260,6 +271,19 @@ struct McpEditor {
     headers: Entity<TextInput>,
     saved_environment: Vec<McpSecretField>,
     saved_headers: Vec<McpSecretField>,
+    /// Where a catalog app's token comes from.
+    key_url: Option<String>,
+    /// A catalog app's token, which replaces the free-form values.
+    token: Option<McpTokenField>,
+}
+
+/// What the target field of the server form asks for.
+fn mcp_target_placeholder(http: bool) -> &'static str {
+    if http {
+        "https://mcp.example.com/mcp"
+    } else {
+        "npx -y @modelcontextprotocol/server-everything stdio"
+    }
 }
 
 /// Emitted with the section to open (composer "Manage integrations" link).
@@ -411,6 +435,22 @@ impl SettingsScreen {
                     window.focus(&search_application_focus, cx)
                 })
         });
+        let catalog_application_focus = application_focus.clone();
+        let catalog_search = cx.new(move |cx| {
+            TextInput::new("Search apps…", cx)
+                .with_tab_index(3)
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, cx| {
+                    window.focus(&catalog_application_focus, cx)
+                })
+        });
+        cx.on_release(|this, _| this.abandon_mcp_sign_in()).detach();
+        cx.observe(&catalog_search, |this, search, cx| {
+            this.catalog_query = search.read(cx).text().trim().to_lowercase();
+            this.refresh_catalog();
+            cx.notify();
+        })
+        .detach();
         cx.observe(&shortcut_search, |this, search, cx| {
             this.shortcut_query = search.read(cx).text().trim().to_lowercase();
             this.rebuild_shortcut_list_cache();
@@ -425,7 +465,7 @@ impl SettingsScreen {
         let application_anchor = ScrollAnchor::for_handle(pane_scroll.clone());
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
-        let this = Self {
+        let mut this = Self {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             integrations_backend,
@@ -453,6 +493,12 @@ impl SettingsScreen {
             mcp_editor: None,
             mcp_notice: None,
             mcp_saving: false,
+            mcp_signing_in: None,
+            mcp_sign_in_error: None,
+            catalog_search,
+            catalog_query: String::new(),
+            catalog_category: None,
+            catalog_visible: Vec::new(),
             integrations: None,
             integration_notice: None,
             integration_saving: HashSet::new(),
@@ -479,6 +525,7 @@ impl SettingsScreen {
         this.load_billing(cx);
         this.load_api_keys(cx);
         this.load_plan(cx);
+        this.refresh_catalog();
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
         this.load_advanced_status(cx);
@@ -527,7 +574,10 @@ impl SettingsScreen {
             cx,
             |this, result, cx| {
                 match result {
-                    Ok(servers) => this.mcp_servers = Some(servers),
+                    Ok(servers) => {
+                        this.mcp_servers = Some(servers);
+                        this.refresh_catalog();
+                    }
                     Err(message) => this.mcp_notice = Some(message),
                 }
                 if this.settings.application_vim_enabled {
@@ -704,6 +754,7 @@ impl SettingsScreen {
                     Ok(servers) => {
                         this.mcp_servers = Some(servers);
                         this.mcp_editor = None;
+                        this.refresh_catalog();
                     }
                     Err(message) => this.mcp_notice = Some(message),
                 }
@@ -789,19 +840,36 @@ impl SettingsScreen {
                 2,
                 false,
             ),
-            target: field(
-                "npx -y @modelcontextprotocol/server-everything stdio",
-                &target,
-                3,
-                false,
-            ),
+            target: field(mcp_target_placeholder(http), &target, 3, false),
             environment: field("KEY=value; OTHER=value", "", 4, false),
             headers: field("Authorization=Bearer …; X-Api-Key=…", "", 5, false),
             saved_environment,
             saved_headers,
+            key_url: None,
+            token: None,
         });
         self.mcp_notice = None;
         cx.notify();
+    }
+
+    /// Sign in to the HTTP server in the form, through the browser. The host
+    /// saves the server once the sign-in works, so nothing else is entered.
+    fn sign_in_mcp_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.mcp_editor.as_ref() else {
+            return;
+        };
+        let request = maple_agent::agent::McpSignIn {
+            name: editor.name.read(cx).text().trim().to_string(),
+            description: editor.description.read(cx).text().trim().to_string(),
+            url: editor.target.read(cx).text().trim().to_string(),
+            scopes: Vec::new(),
+        };
+        if request.name.is_empty() || request.url.is_empty() {
+            self.mcp_notice = Some("Enter a server name and URL".to_string());
+            cx.notify();
+            return;
+        }
+        self.start_mcp_sign_in(request, cx);
     }
 
     fn submit_mcp_editor(&mut self, cx: &mut Context<Self>) {
@@ -855,6 +923,9 @@ impl SettingsScreen {
             server.headers.extend(mcp::new_value_edits(&Zeroizing::new(
                 editor.headers.read(cx).text(),
             ))?);
+            if let Some(token) = &editor.token {
+                server.headers.push(token.edit(cx)?);
+            }
             mcp::require_target_choice(editor.original.as_ref(), &server)?;
             if !editor.http
                 && server.headers.iter().any(|entry| {
@@ -2532,6 +2603,7 @@ impl SettingsScreen {
             ));
         }
 
+        pane = pane.child(subsection_title("Built into Maple"));
         match &self.integrations {
             None => {
                 pane = pane.child(
@@ -2561,57 +2633,9 @@ impl SettingsScreen {
             }
         }
 
-        pane = pane.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .mt_2()
-                .pt_5()
-                .border_t_1()
-                .border_color(gpui::rgb(theme::border_subtle()))
-                .child(subsection_title("Custom MCP servers"))
-                .child(
-                    self.application_target(
-                        || SettingsTarget::McpAdd,
-                        widgets::primary_button("mcp-add")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.open_mcp_editor(None, cx);
-                            }))
-                            .child(icon("plus", widgets::ROW_ICON, theme::on_accent()))
-                            .child("Add server"),
-                    ),
-                ),
-        );
-        pane = pane.child(
-            div()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child("Connect additional tools over MCP."),
-        );
-        if let Some(notice) = &self.mcp_notice {
-            pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
-        }
-        if let Some(editor) = &self.mcp_editor {
-            pane = pane.child(self.render_mcp_editor(editor, cx));
-        }
         match &self.mcp_servers {
-            None => {
-                pane = pane.child(
-                    div()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child("Loading custom MCP servers…"),
-                );
-            }
-            Some(servers) if servers.is_empty() => {
-                pane = pane.child(
-                    div()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child("No custom MCP servers configured."),
-                );
-            }
-            Some(servers) => {
+            Some(servers) if !servers.is_empty() => {
+                pane = pane.child(catalog::section_heading(subsection_title("Connected")));
                 pane = pane.children(servers.iter().map(|server| {
                     let name = server.name.clone();
                     let summary = match &server.target {
@@ -2693,8 +2717,9 @@ impl SettingsScreen {
                     self.application_target(|| SettingsTarget::McpServer(server.name.clone()), card)
                 }));
             }
+            _ => {}
         }
-        pane
+        pane.child(self.render_app_catalog(cx))
     }
 
     fn render_integration_card(
@@ -2878,6 +2903,10 @@ impl SettingsScreen {
     }
 
     fn render_mcp_editor(&self, editor: &McpEditor, cx: &mut Context<Self>) -> Div {
+        let signing_in = self.mcp_editor_signing_in(cx);
+        let sign_in_error = self
+            .sign_in_error_for(editor.name.read(cx).text().trim())
+            .map(str::to_string);
         let field = |label: &'static str, hint: &'static str, input: Entity<TextInput>| {
             div()
                 .flex()
@@ -2972,6 +3001,12 @@ impl SettingsScreen {
                                     |this, _event, _window, cx| {
                                         if let Some(editor) = this.mcp_editor.as_mut() {
                                             editor.http = false;
+                                            editor.target.update(cx, |input, cx| {
+                                                input.set_placeholder(
+                                                    mcp_target_placeholder(false),
+                                                    cx,
+                                                )
+                                            });
                                         }
                                         cx.notify();
                                     },
@@ -2987,6 +3022,12 @@ impl SettingsScreen {
                                     |this, _event, _window, cx| {
                                         if let Some(editor) = this.mcp_editor.as_mut() {
                                             editor.http = true;
+                                            editor.target.update(cx, |input, cx| {
+                                                input.set_placeholder(
+                                                    mcp_target_placeholder(true),
+                                                    cx,
+                                                )
+                                            });
                                         }
                                         cx.notify();
                                     },
@@ -3007,17 +3048,33 @@ impl SettingsScreen {
                 col.child(subsection_title("Header values"))
                     .child(self.render_mcp_secret_fields(&editor.saved_headers, true, cx))
             })
-            .child(field(
-                "New environment values",
-                "KEY=value pairs separated by semicolons. Existing values use the choices above.",
-                editor.environment.clone(),
-            ))
-            .when(editor.http, |col| {
+            .when(editor.token.is_none(), |col| {
+                col.child(field(
+                    "New environment values",
+                    "KEY=value pairs separated by semicolons. Existing values use the choices above.",
+                    editor.environment.clone(),
+                ))
+            })
+            .when_some(editor.token.as_ref(), |col, token| {
+                col.child(field(token.label, "", token.input.clone()))
+            })
+            .when(editor.http && editor.token.is_none(), |col| {
                 col.child(field(
                     "New headers",
                     "Name=value pairs separated by semicolons.",
                     editor.headers.clone(),
                 ))
+            })
+            .when_some(editor.key_url.clone(), |col, url| {
+                col.child(
+                    div()
+                        .id("mcp-get-token")
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::link()))
+                        .hover(|style| style.underline().cursor_pointer())
+                        .on_click(move |_, _, _| crate::ui::rich_text::open_link(&url))
+                        .child("Get a token"),
+                )
             })
             .child(
                 div()
@@ -3033,9 +3090,36 @@ impl SettingsScreen {
                             }))
                             .child("Save"),
                     )
+                    .when(
+                        editor.http && editor.original.is_none() && editor.token.is_none(),
+                        |row| {
+                            row.child(if signing_in {
+                                widgets::ghost_button("mcp-sign-in")
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.cancel_mcp_sign_in(cx);
+                                    }))
+                                    .child(spinner(
+                                        "mcp-sign-in",
+                                        widgets::ROW_ICON,
+                                        theme::text_secondary(),
+                                    ))
+                                    .child("Stop signing in")
+                            } else {
+                                widgets::ghost_button("mcp-sign-in")
+                                    .when(self.mcp_signing_in.is_some(), |el| el.opacity(0.5))
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.sign_in_mcp_editor(cx);
+                                    }))
+                                    .child("Sign in with browser")
+                            })
+                        },
+                    )
                     .child(
                         widgets::ghost_button("mcp-cancel")
                             .on_click(cx.listener(|this, _event, _window, cx| {
+                                if this.mcp_editor_signing_in(cx) {
+                                    this.cancel_mcp_sign_in(cx);
+                                }
                                 this.mcp_editor = None;
                                 this.mcp_notice = None;
                                 cx.notify();
@@ -3043,6 +3127,14 @@ impl SettingsScreen {
                             .child("Cancel"),
                     ),
             )
+            .when_some(sign_in_error, |form, message| {
+                form.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::status_error()))
+                        .child(message),
+                )
+            })
     }
 }
 

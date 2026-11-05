@@ -61,6 +61,7 @@ pub(super) enum SettingsTarget {
     IntegrationSetup(String),
     McpAdd,
     McpServer(String),
+    McpCatalog(String),
 }
 
 #[derive(Clone, Debug)]
@@ -92,7 +93,11 @@ impl SettingsScreen {
     }
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
+        let mut inputs = vec![
+            self.prompt_editor.clone(),
+            self.shortcut_search.clone(),
+            self.catalog_search.clone(),
+        ];
         inputs.extend(self.account.inputs());
         inputs.push(self.api_keys.name.clone());
         inputs.push(self.billing.credits.custom.clone());
@@ -106,6 +111,7 @@ impl SettingsScreen {
                 editor.environment.clone(),
                 editor.headers.clone(),
             ]);
+            inputs.extend(editor.token.as_ref().map(|token| token.input.clone()));
         }
         for input in inputs {
             input.update(cx, |input, cx| {
@@ -186,13 +192,18 @@ impl SettingsScreen {
                     .into_iter()
                     .flatten()
                 })
-                .chain(std::iter::once(SettingsTarget::McpAdd))
                 .chain(
                     self.mcp_servers
                         .as_deref()
                         .unwrap_or_default()
                         .iter()
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
+                )
+                .chain(std::iter::once(SettingsTarget::McpAdd))
+                .chain(
+                    self.catalog_visible
+                        .iter()
+                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
                 )
                 .collect(),
             Section::Remote | Section::Usage | Section::About | Section::Advanced => Vec::new(),
@@ -387,6 +398,7 @@ impl SettingsScreen {
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
+            Some(SettingsTarget::McpCatalog(id)) => self.connect_catalog_entry(&id, cx),
             None => {}
         }
     }
@@ -459,6 +471,7 @@ impl SettingsScreen {
                 &editor.environment,
                 &editor.headers,
             ]);
+            inputs.extend(editor.token.as_ref().map(|token| &token.input));
         }
         inputs
             .into_iter()
@@ -768,9 +781,16 @@ mod tests {
                 vec![
                     SettingsTarget::IntegrationSetup("cua-driver".to_string()),
                     SettingsTarget::Integration("cua-driver".to_string()),
-                    SettingsTarget::McpAdd,
                     SettingsTarget::McpServer("custom".to_string()),
+                    SettingsTarget::McpAdd,
                 ]
+                .into_iter()
+                .chain(
+                    maple_agent::agent::mcp_catalog()
+                        .iter()
+                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone()))
+                )
+                .collect::<Vec<_>>()
             );
         });
     }
