@@ -228,6 +228,23 @@ impl ChatScreen {
             )
         })
         .child(div().flex_1())
+        .when_some(self.host_reconnect_status(), |row, status| {
+            row.child(
+                // The padding is hover room: the tooltip is how to find out
+                // what is happening, so it must not take a 14 px aim. The
+                // margin keeps the spinner itself on the row's gutter.
+                div()
+                    .id("host-reconnecting")
+                    .debug_selector(|| "host-reconnecting".to_string())
+                    .flex_none()
+                    .p_1()
+                    .mr(px(-4.))
+                    .role(gpui::Role::Status)
+                    .aria_label(status)
+                    .tooltip(widgets::tooltip(status, None))
+                    .child(spinner("host-reconnecting", px(14.), theme::text_muted())),
+            )
+        })
     }
 
     /// `button` as the opener of `popup`, with `menu` attached below or
