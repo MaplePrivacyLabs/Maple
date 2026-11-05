@@ -1,7 +1,7 @@
 //! Stable-ID application Vim navigation for Settings.
 //!
 //! The settings screen owns this projection because its visible controls are
-//! dynamic (shortcut filtering, integrations, MCP servers, and editors).
+//! dynamic (shortcut filtering, integrations, MCP servers, and ACP examples).
 //! Selecting a row is side-effect free; Enter delegates to the same existing
 //! method as its pointer control.
 
@@ -9,10 +9,10 @@ use crate::ui::i18n::UiText;
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
 use super::account::AccountTarget;
+#[cfg(feature = "acp")]
+use super::acp::AcpTarget;
 use super::api_keys::ApiKeysTarget;
 use super::billing::BillingTarget;
-#[cfg(feature = "acp")]
-use super::editors::EditorsTarget;
 #[cfg(feature = "proxy")]
 use super::local_api::LocalApiTarget;
 use super::{
@@ -54,7 +54,7 @@ pub(super) enum SettingsTarget {
     #[cfg(feature = "proxy")]
     LocalApi(LocalApiTarget),
     #[cfg(feature = "acp")]
-    Editors(EditorsTarget),
+    Acp(AcpTarget),
     Shortcut(String),
     PromptEditor,
     PromptSave,
@@ -63,6 +63,7 @@ pub(super) enum SettingsTarget {
     IntegrationSetup(String),
     McpAdd,
     McpServer(String),
+    McpCatalog(String),
 }
 
 #[derive(Clone, Debug)]
@@ -94,7 +95,11 @@ impl SettingsScreen {
     }
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
+        let mut inputs = vec![
+            self.prompt_editor.clone(),
+            self.shortcut_search.clone(),
+            self.catalog_search.clone(),
+        ];
         inputs.extend(self.account.inputs());
         inputs.push(self.api_keys.name.clone());
         inputs.push(self.billing.credits.custom.clone());
@@ -160,7 +165,7 @@ impl SettingsScreen {
             Section::Billing => self.billing_targets(),
             Section::Api => self.api_targets(),
             #[cfg(feature = "acp")]
-            Section::Editors => self.editors_targets(),
+            Section::Acp => self.acp_targets(),
             Section::Shortcuts => self
                 .shortcut_list_cache
                 .visible_indices
@@ -189,13 +194,18 @@ impl SettingsScreen {
                     .into_iter()
                     .flatten()
                 })
-                .chain(std::iter::once(SettingsTarget::McpAdd))
                 .chain(
                     self.mcp_servers
                         .as_deref()
                         .unwrap_or_default()
                         .iter()
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
+                )
+                .chain(std::iter::once(SettingsTarget::McpAdd))
+                .chain(
+                    self.catalog_visible
+                        .iter()
+                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
                 )
                 .collect(),
             Section::Remote | Section::Usage | Section::About | Section::Advanced => Vec::new(),
@@ -377,7 +387,7 @@ impl SettingsScreen {
                 self.activate_local_api_target(target, window, cx)
             }
             #[cfg(feature = "acp")]
-            Some(SettingsTarget::Editors(target)) => self.copy_editors_text(target, cx),
+            Some(SettingsTarget::Acp(target)) => self.activate_acp_target(target, cx),
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);
@@ -389,6 +399,7 @@ impl SettingsScreen {
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
+            Some(SettingsTarget::McpCatalog(id)) => self.connect_catalog_entry(&id, cx),
             None => {}
         }
     }
@@ -768,9 +779,16 @@ mod tests {
                 vec![
                     SettingsTarget::IntegrationSetup("cua-driver".to_string()),
                     SettingsTarget::Integration("cua-driver".to_string()),
-                    SettingsTarget::McpAdd,
                     SettingsTarget::McpServer("custom".to_string()),
+                    SettingsTarget::McpAdd,
                 ]
+                .into_iter()
+                .chain(
+                    maple_agent::agent::mcp_catalog()
+                        .iter()
+                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone()))
+                )
+                .collect::<Vec<_>>()
             );
         });
     }

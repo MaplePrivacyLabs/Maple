@@ -15,7 +15,7 @@ use super::cache::{MAX_DIFF_LINES, MarkdownKind};
 use super::speech::speak_message_button;
 use super::{CONTENT_WIDTH, ChatScreen, QuestionSelection, TranscriptCtx};
 
-use crate::ui::i18n::{MessageCache, tr, tr_args};
+use crate::ui::i18n::{MessageCache, tr};
 use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
 use crate::ui::motion;
@@ -98,7 +98,7 @@ impl ChatScreen {
                             )))
                             .text_xs()
                             .mt_2()
-                            .child(tr("chat-full-output"))
+                            .child(gpui::text!(tr("chat-full-output")))
                             .on_click(move |_, _, cx| {
                                 if let Some(chat) = target.upgrade() {
                                     chat.update(cx, |chat, cx| chat.expand_paged_row(&id, cx));
@@ -194,11 +194,11 @@ impl ChatScreen {
                         .mx_6()
                         .my_1()
                         .text_xs()
-                        .child(if self.pages.loading {
+                        .child(gpui::text!(if self.pages.loading {
                             tr("chat-history-loading")
                         } else {
                             tr("chat-history-older")
-                        })
+                        }))
                         .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(true, cx))),
                 )
             })
@@ -235,7 +235,7 @@ impl ChatScreen {
                         .mx_6()
                         .my_1()
                         .text_xs()
-                        .child(tr("chat-history-newer"))
+                        .child(gpui::text!(tr("chat-history-newer")))
                         .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(false, cx))),
                 )
             })
@@ -256,7 +256,7 @@ impl ChatScreen {
                         .child(
                             widgets::secondary_button("live-reload-latest")
                                 .text_xs()
-                                .child(tr("chat-reload-latest"))
+                                .child(gpui::text!(tr("chat-reload-latest")))
                                 .on_click(
                                     cx.listener(|chat, _, _, cx| chat.reload_paged_latest(cx)),
                                 ),
@@ -340,7 +340,7 @@ impl ChatScreen {
                         cx.notify();
                     }))
                     .child(icon("chevron-down", px(12.), theme::text_secondary()))
-                    .child(tr("chat-jump-latest")),
+                    .child(gpui::text!(tr("chat-jump-latest"))),
                 "jump-to-latest-reveal",
             ))
     }
@@ -1286,7 +1286,7 @@ fn render_tool(
         let raw = item.title.as_deref().unwrap_or(&item.item_type);
         SharedString::from(tool_label_title(raw).to_string())
     });
-    let mut card = div()
+    let card = div()
         .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
         .debug_selector(|| "tool-card".to_string())
         .role(gpui::Role::DisclosureTriangle)
@@ -1357,20 +1357,8 @@ fn render_tool(
                     theme::text_muted(),
                 )),
         );
-    if running
-        && shell_execution(item).is_some()
-        && let Some(status) = &transcript.derived.get(item, revision).shell_status
-    {
-        card = card.child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .debug_selector(|| "shell-execution-status".to_string())
-                .child(status.clone()),
-        );
-    }
-    // Collapsed: the header and live shell status; the summary takes over the title when
-    // it lands. Expanded cards also show the cached arguments and output.
+    // Collapsed: the header alone; the summary takes over the title when it lands.
+    // Expanded cards also show the cached arguments and output.
     if !details {
         return div().child(card);
     }
@@ -1391,7 +1379,10 @@ fn render_tool(
                 .text_color(gpui::rgb(theme::text_muted()))
                 .font_family(crate::assets::FONT_MONO)
                 .overflow_x_hidden()
-                .child(input.clone()),
+                .child(gpui::text!(
+                    id = SharedString::from(format!("tool-input-{}", item.id)),
+                    input.clone()
+                )),
         );
     }
     if let Some(output) = &derived.output_text {
@@ -1400,15 +1391,28 @@ fn render_tool(
                 .mt_1()
                 .w_full()
                 .text_color(gpui::rgb(theme::text_secondary()))
-                .child(markdown::render(&transcript.markdown_cache.get(
-                    &item.id,
-                    MarkdownKind::ToolOutput,
-                    revision,
-                    output,
-                ))),
+                .child(markdown::render_with(
+                    &transcript.markdown_cache.get(
+                        &item.id,
+                        MarkdownKind::ToolOutput,
+                        revision,
+                        output,
+                    ),
+                    &readable_ctx(transcript.render),
+                )),
         );
     }
     div().child(card.child(payload))
+}
+
+/// Keep a card's output out of the shared selection, which would treat its
+/// clicks as a text drag, but give it the ordinals that put it in the
+/// accessibility tree.
+fn readable_ctx(ctx: &RenderCtx) -> RenderCtx {
+    RenderCtx {
+        base_ordinal: ctx.base_ordinal,
+        ..RenderCtx::default()
+    }
 }
 
 /// Readable form of the call arguments: one `key: value` line per
@@ -1471,18 +1475,17 @@ fn render_external_agent_activity(
     }
     body = body.child(div().text_xs().text_color(muted).child(meta));
     if !activity.text.trim().is_empty() {
-        body = body.child(
-            div()
-                .w_full()
-                .text_sm()
-                .text_color(secondary)
-                .child(markdown::render(&transcript.markdown_cache.get(
+        body = body.child(div().w_full().text_sm().text_color(secondary).child(
+            markdown::render_with(
+                &transcript.markdown_cache.get(
                     &item.id,
                     MarkdownKind::ToolOutput,
                     revision,
                     &activity.text,
-                ))),
-        );
+                ),
+                &readable_ctx(transcript.render),
+            ),
+        ));
     }
     if !activity.commands.is_empty() {
         let mut list = div().flex().flex_col().gap_0p5();
@@ -1566,39 +1569,6 @@ pub(super) fn tool_output_markdown(item: &AgentTimelineItem) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-fn shell_execution(item: &AgentTimelineItem) -> Option<&serde_json::Value> {
-    item.output
-        .as_ref()?
-        .get("structuredContent")?
-        .get("shellExecution")
-}
-
-pub(super) fn shell_execution_status(item: &AgentTimelineItem) -> Option<String> {
-    let execution = shell_execution(item)?;
-    let cwd = execution.get("cwd")?.as_str()?;
-    let elapsed = execution.get("elapsedSeconds")?.as_u64()?;
-    let idle = execution.get("outputIdleSeconds")?.as_u64()?;
-    let deadline = execution
-        .get("timeoutSeconds")
-        .and_then(serde_json::Value::as_f64)
-        .map_or_else(
-            || tr("chat-shell-no-deadline").to_string(),
-            |seconds| tr_args("chat-shell-deadline", [("seconds", seconds.into())]).to_string(),
-        );
-    Some(
-        tr_args(
-            "chat-shell-status",
-            [
-                ("cwd", cwd.into()),
-                ("elapsed", elapsed.into()),
-                ("idle", idle.into()),
-                ("deadline", deadline.into()),
-            ],
-        )
-        .to_string(),
-    )
-}
-
 fn extract_output_text(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(text) => Some(text.clone()),
@@ -1667,7 +1637,7 @@ fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
             .as_deref()
             .is_some_and(|text| text.contains(USAGE_LIMIT_MESSAGE))
     {
-        return banner.child(text);
+        return banner.child(gpui::text!(text));
     }
     let chat = transcript.chat.clone();
     let button_id = format!("open-billing-{}", item.id);
@@ -1676,14 +1646,14 @@ fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
         .flex_col()
         .items_start()
         .gap_2()
-        .child(text)
+        .child(gpui::text!(text))
         .child(
             widgets::secondary_button(button_id.clone())
                 .debug_selector({
                     let button_id = button_id.clone();
                     move || button_id.clone()
                 })
-                .child(tr("chat-billing-open"))
+                .child(gpui::text!(tr("chat-billing-open")))
                 .on_click(move |_event, _window, cx| {
                     cx.stop_propagation();
                     let Some(chat) = chat.upgrade() else {
@@ -1722,13 +1692,19 @@ fn render_permission_row(item: &AgentTimelineItem) -> Div {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_primary()))
-                .child(title),
+                .child(gpui::text!(
+                    id = SharedString::from(format!("permission-title-{}", item.id)),
+                    title
+                )),
         )
         .child(
             div()
                 .text_xs()
                 .text_color(gpui::rgb(status.1))
-                .child(status.0),
+                .child(gpui::text!(
+                    id = SharedString::from(format!("permission-status-{}", item.id)),
+                    status.0
+                )),
         )
 }
 
@@ -1744,7 +1720,10 @@ fn render_system(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
     div()
         .text_sm()
         .text_color(gpui::rgb(theme::text_muted()))
-        .child(text)
+        .child(gpui::text!(
+            id = SharedString::from(format!("system-text-{}", item.id)),
+            text
+        ))
 }
 
 pub(super) fn render_question_card(
@@ -1971,11 +1950,11 @@ pub(super) fn render_question_card(
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.submit_question(cx);
                         }))
-                        .child(if has_more {
+                        .child(gpui::text!(if has_more {
                             tr("chat-next")
                         } else {
                             tr("chat-answer")
-                        }),
+                        })),
                 ),
         );
     }

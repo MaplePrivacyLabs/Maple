@@ -161,7 +161,7 @@ impl Render for UpdateConfirmation {
                                     .debug_selector(|| "update-confirmation-later".to_string())
                                     .track_focus(&self.later_focus)
                                     .focus_visible(widgets::focus_ring)
-                                    .child(tr("update-confirmation-later"))
+                                    .child(gpui::text!(tr("update-confirmation-later")))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.respond(0, window, cx)
                                     })),
@@ -171,7 +171,7 @@ impl Render for UpdateConfirmation {
                                     .debug_selector(|| "update-confirmation-restart".to_string())
                                     .track_focus(&self.restart_focus)
                                     .focus_visible(widgets::focus_ring)
-                                    .child(tr("update-confirmation-restart"))
+                                    .child(gpui::text!(tr("update-confirmation-restart")))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.respond(1, window, cx)
                                     })),

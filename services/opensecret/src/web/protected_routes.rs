@@ -7,6 +7,7 @@ use crate::private_key::{
 use crate::web::encryption_middleware::{
     decrypt_request, encrypt_response, Decrypted, TransportSession,
 };
+use crate::web::password_policy::validate_password;
 use crate::Error;
 use crate::{
     db::DBError, email::send_verification_email, models::email_verification::NewEmailVerification,
@@ -718,6 +719,10 @@ pub async fn change_password(
     Decrypted(change_request): Decrypted<ChangePasswordRequest>,
     Extension(session_id): Extension<TransportSession>,
 ) -> Result<Response, ApiError> {
+    // Reject a policy-violating new password before authenticating the
+    // current password or any credential rewrite effect.
+    validate_password(&change_request.new_password)?;
+
     // Check if user is an OAuth-only user
     if user.password_enc.is_none() {
         error!("OAuth-only user attempted to change password");

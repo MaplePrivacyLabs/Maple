@@ -286,6 +286,16 @@
             xdg-utils
           ];
 
+        # Release executables link against zig's glibc LINUX_GLIBC_FLOOR
+        # (scripts/ci/_common.sh) rather than this nixpkgs' glibc, so a nixpkgs
+        # bump cannot raise the glibc the Linux packages need.
+        linuxGlibcFloorPackages =
+          with pkgs;
+          lib.optionals stdenv.hostPlatform.isLinux [
+            cargo-zigbuild
+            zig
+          ];
+
         linuxdeploySupportPackages =
           with pkgs;
           lib.optionals stdenv.hostPlatform.isLinux (
@@ -608,6 +618,7 @@
         linuxShellHook = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           export MAPLE_NIX_CC=${pkgs.stdenv.cc}/bin/cc
           export MAPLE_NIX_GCC_LIB=${pkgs.stdenv.cc.cc.lib}
+          export MAPLE_NIX_ELF_INTERPRETER=${pkgs.stdenv.cc.bintools.dynamicLinker}
           export MAPLE_NIX_GDK_PIXBUF_BINARYDIR=${pkgs.gdk-pixbuf}/lib/gdk-pixbuf-2.0/2.10.0
           export MAPLE_NIX_GDK_PIXBUF_MODULEDIR=${pkgs.gdk-pixbuf}/lib/gdk-pixbuf-2.0/2.10.0/loaders
           export MAPLE_NIX_GLIB_SCHEMAS=${pkgs.glib.dev}/share/glib-2.0/schemas
@@ -705,7 +716,7 @@
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           desktop-linux =
             let
-              shellPackages = ciPackages ++ [ jdk ] ++ linuxTauriPackages;
+              shellPackages = ciPackages ++ [ jdk ] ++ linuxTauriPackages ++ linuxGlibcFloorPackages;
             in
             mkShellForHost {
               packages = shellPackages;

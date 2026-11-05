@@ -361,17 +361,16 @@ fn windows_prefers_a_real_executable_over_a_shim() {
 
 #[cfg(unix)]
 mod probes {
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     use super::*;
+    use crate::agent::test_executable::write_executable;
 
     /// A fake command line on a search path of its own, followed by the
     /// process's PATH so its script finds the usual tools.
     fn fake_cli(dir: &Path, name: &str, script: &str) -> String {
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&path, &format!("#!/bin/sh\n{script}\n"));
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let mut entries = vec![dir.to_path_buf()];
         entries.extend(std::env::split_paths(&inherited));

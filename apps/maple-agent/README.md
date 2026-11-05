@@ -83,9 +83,10 @@ agent runtime; its desktop Agent page points users to Maple Work.
   `timeout` explicitly. Search guidance asks for a short timeout (normally
   30 seconds) and a narrower scope if it expires; that shorter limit applies
   only when the call requests it.
-  Quiet commands report their starting folder, elapsed time, time since output and
-  deadline every five seconds, including on collapsed tool cards. Stop and
-  deadlines use Pi's process-group cleanup on Unix (process-tree cleanup on Windows).
+  Quiet commands refresh their timeline row every five seconds with their
+  starting folder, elapsed time, time since output and deadline. Tool cards do
+  not display these details. Stop and deadlines use Pi's process-group cleanup
+  on Unix (process-tree cleanup on Windows).
   Maple bounds the whole operation, including setup and stdin delivery, and allows
   up to one second for cooperative cancellation before dropping a stuck operation.
   The execution policy and progress reporting live in Maple; the Pi crates are unchanged.
@@ -238,8 +239,30 @@ A stdio server runs in the task's folder with the login shell's PATH, in its
 own process group; it is stopped by closing its input, then SIGTERM, then
 SIGKILL. For an HTTP server, `$NAME` and `${NAME}` in the URL and in header
 values are filled in from the server's environment variables, and redirects
-are not followed. Sign-in to servers (OAuth), and MCP resources and prompts,
-are not supported yet.
+are not followed. Errors leave out the endpoint's query and these saved values.
+MCP resources and prompts are not supported yet.
+
+Settings > Integrations also lists well-known apps from the bundled
+`crates/maple-agent/src/agent/mcp/catalog.json`, a subset of the MCP registry's
+`server.json`, so adding an app needs no code. Connecting one, or choosing
+**Sign in with browser** for a custom HTTP server, signs in on this computer: the
+browser returns to a loopback listener, Maple registers itself with the server
+(Dynamic Client Registration), and tokens stay in this computer's store. A new
+connection is on for new tasks until someone turns it off. A server that only
+accepts registered apps cannot be signed in to yet, and neither can a paired
+computer from its controller.
+
+Some catalog apps run on this computer, such as Playwright and, on macOS, Xcode.
+An entry names a pinned package or a command, what must be installed first, and
+which platforms it runs on, so these need no code either. Connect checks the
+requirements, starts the app, lists its tools and saves it as an ordinary stdio
+server. Node.js and uv come from the login shell's PATH. If one is missing, the
+card says what is needed and links to it.
+
+HTTP servers use the stateless `2026-07-28` revision of MCP when they offer it,
+and the `initialize` handshake otherwise. Stdio servers keep the handshake, since
+an older server may only answer the revision's probe by timing out. Only stdio
+servers are offered the task's folder as a root.
 
 #### Claude Code
 
@@ -519,8 +542,8 @@ Unlock through desktop or `maple-agent unlock`, then sign in through desktop or
 `maple-agent login` if needed. ACP never places an unlock prompt on its protocol
 stream.
 
-**Settings → Editors** shows the command for the running installation and
-entries to paste into Zed and JetBrains IDEs. Nothing needs enabling first.
+**Settings → ACP** shows the command for the running installation and examples
+for Zed, JetBrains IDEs, Paseo and T3 Code. Nothing needs enabling first.
 
 `session/new` creates a draft in the client's working directory. Account MCP
 servers use the Settings defaults with that project's saved choices applied.

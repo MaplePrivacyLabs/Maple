@@ -1,0 +1,4 @@
+# sign_in_page.rs pins this template's inline style by SHA-256, and its test
+# hashes the raw bytes. Windows Git defaults to CRLF, which changes that hash.
+# Browsers normalize newlines before hashing, so only the test would fail.
+crates/maple-agent/src/sign_in_page.html text eol=lf

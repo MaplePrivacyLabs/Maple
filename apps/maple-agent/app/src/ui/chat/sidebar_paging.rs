@@ -1133,7 +1133,7 @@ impl Sidebar {
             .my_1()
             .text_xs()
             .on_click(cx.listener(move |this, _event, _window, cx| this.load_page(kind, cx)))
-            .child(tr(
+            .child(gpui::text!(tr(
                 match (kind, loading, self.pages.failed.contains(&kind)) {
                     (PageKind::Pinned, true, _) => "chat-page-pinned-loading",
                     (PageKind::Pinned, false, true) => "chat-page-pinned-retry",
@@ -1154,7 +1154,7 @@ impl Sidebar {
                     (PageKind::Projects, false, true) => "chat-page-projects-retry",
                     (PageKind::Projects, false, false) => "chat-page-projects-more",
                 },
-            ))
+            )))
             .into_any_element()
     }
 

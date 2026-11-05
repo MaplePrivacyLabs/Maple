@@ -208,6 +208,8 @@ impl ChatScreen {
                     self.popup.is_open(&ChatPopup::Project),
                     false,
                 )
+                // Outside the composer box, so the standalone radius.
+                .rounded(theme::RADIUS_SM)
                 // The header is a window drag region; a press here is the
                 // chip's.
                 .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
@@ -232,6 +234,23 @@ impl ChatScreen {
             )
         })
         .child(div().flex_1())
+        .when_some(self.host_reconnect_status(), |row, status| {
+            row.child(
+                // The padding is hover room: the tooltip is how to find out
+                // what is happening, so it must not take a 14 px aim. The
+                // margin keeps the spinner itself on the row's gutter.
+                div()
+                    .id("host-reconnecting")
+                    .debug_selector(|| "host-reconnecting".to_string())
+                    .flex_none()
+                    .p_1()
+                    .mr(px(-4.))
+                    .role(gpui::Role::Status)
+                    .aria_label(status)
+                    .tooltip(widgets::tooltip(status, None))
+                    .child(spinner("host-reconnecting", px(14.), theme::text_muted())),
+            )
+        })
     }
 
     /// `button` as the opener of `popup`, with `menu` attached below or
@@ -358,6 +377,7 @@ impl ChatScreen {
                     theme::text_secondary(),
                 )
                 .size_8()
+                .rounded(theme::RADIUS_LG)
                 .debug_selector(|| "thinking-picker".to_string())
                 .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
                     button.bg(gpui::rgb(theme::bg_sidebar_pill()))
@@ -414,7 +434,7 @@ impl ChatScreen {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(theme::RADIUS_SM)
+                    .rounded(theme::RADIUS_LG)
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::accent_container()))
@@ -438,7 +458,7 @@ impl ChatScreen {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(theme::RADIUS_SM)
+                        .rounded(theme::RADIUS_LG)
                         .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
                         .hover(|style| {
                             style
@@ -1198,7 +1218,7 @@ impl ChatScreen {
                         .child(
                             widgets::secondary_button("cancel-attachment-upload")
                                 .text_xs()
-                                .child(tr("chat-cancel"))
+                                .child(gpui::text!(tr("chat-cancel")))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.cancel_attachment_send(&id, cx)
                                 })),
@@ -1213,7 +1233,7 @@ impl ChatScreen {
                             .relative()
                             .max_w(px(260.))
                             .h_16()
-                            .rounded(theme::RADIUS_LG)
+                            .rounded(theme::RADIUS_SM)
                             .border_1()
                             .border_color(gpui::rgb(theme::border()))
                             .bg(gpui::rgb(theme::bg_elevated()))
@@ -1225,7 +1245,7 @@ impl ChatScreen {
                                 Some(thumbnail) => div().size_16().flex_none().child(
                                     gpui::img(gpui::ImageSource::Image(Arc::clone(thumbnail)))
                                         .size_full()
-                                        .rounded(theme::RADIUS_LG),
+                                        .rounded(theme::RADIUS_SM),
                                 ),
                                 None => div()
                                     .size_12()
@@ -1515,7 +1535,8 @@ fn chip(
         .items_center()
         .gap_1()
         .px_2()
-        .rounded(theme::RADIUS_SM)
+        // Concentric with the composer box: 24px radius minus the 8px inset.
+        .rounded(theme::RADIUS_LG)
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))

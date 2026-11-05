@@ -49,6 +49,7 @@ case "$(host_os)" in
 
     release_config="$(linux_tauri_release_config)"
     run_with_nix_usr_bin pkg-config --modversion glib-2.0
+    configure_linux_glibc_floor_linker
     (cd "${TAURI_DIR}" && cargo build --locked --bins --features tauri/custom-protocol --release)
     sanitize_linux_target_release_executable
     run_with_nix_usr_bin bun tauri build --verbose --config "${release_config}"

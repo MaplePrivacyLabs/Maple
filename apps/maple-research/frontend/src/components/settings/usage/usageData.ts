@@ -601,14 +601,17 @@ export type PeriodProgress = {
   /** Local dates of the window, one per chart index. */
   dates: string[];
   todayIndex: number;
-  /** Cumulative plan credits per day through today. */
+  /** Cumulative credits from both pools per day through today. */
   actual: number[];
+  /** Plan credits used, from status. */
   used: number;
   allowance: number;
   /** Average credits per elapsed day. */
   pace: number;
   /** Plan credits at the window's end at the current pace. */
   projected: number;
+  /** Credits from both pools at the window's end at their current pace. */
+  projectedTotal: number;
   /** Local date the pace reaches the allowance, if inside the window. */
   runOutDate: string | null;
   exhausted: boolean;
@@ -630,9 +633,10 @@ export function periodTicks(totalDays: number): number[] {
 }
 
 /**
- * Cumulative plan use over the billing window with a straight-line projection.
- * `used` comes from status (the meter); the chart's last point is pinned to it
- * so the line and the meter agree even when the daily series lags.
+ * Cumulative use over the billing window with a straight-line projection.
+ * Plan use comes from status (the meter) and is pinned at the last point so the
+ * line and the meter agree even when the daily series lags. Extra credits stack
+ * on top, because status counts only the plan pool.
  */
 export function buildPeriodProgress({
   window,
@@ -659,19 +663,28 @@ export function buildPeriodProgress({
   const today = localDate(now, tz);
   const todayIndex = Math.min(totalDays - 1, Math.max(0, daysBetween(dates[0], today)));
 
-  const byDate = new Map<string, number>();
-  for (const day of days) byDate.set(day.date, (byDate.get(day.date) ?? 0) + day.plan_credits);
-  const actual: number[] = [];
-  let sum = 0;
-  for (let i = 0; i <= todayIndex; i += 1) {
-    sum += byDate.get(dates[i]) ?? 0;
-    actual.push(Math.min(sum, used));
+  const planByDate = new Map<string, number>();
+  const extraByDate = new Map<string, number>();
+  for (const day of days) {
+    planByDate.set(day.date, (planByDate.get(day.date) ?? 0) + day.plan_credits);
+    extraByDate.set(day.date, (extraByDate.get(day.date) ?? 0) + (day.extra_credits ?? 0));
   }
-  actual[todayIndex] = used;
+  const actual: number[] = [];
+  let plan = 0;
+  let extra = 0;
+  for (let i = 0; i <= todayIndex; i += 1) {
+    plan += planByDate.get(dates[i]) ?? 0;
+    extra += extraByDate.get(dates[i]) ?? 0;
+    actual.push(Math.min(plan, used) + extra);
+  }
+  const usedTotal = used + extra;
+  actual[todayIndex] = usedTotal;
 
   const elapsed = todayIndex + 1;
+  const remaining = totalDays - elapsed;
   const pace = used / elapsed;
-  const projected = used + pace * (totalDays - elapsed);
+  const projected = used + pace * remaining;
+  const projectedTotal = usedTotal + (usedTotal / elapsed) * remaining;
   const exhausted = used >= allowance;
   let runOutDate: string | null = null;
   if (!exhausted && pace > 0) {
@@ -687,6 +700,7 @@ export function buildPeriodProgress({
     allowance,
     pace,
     projected,
+    projectedTotal,
     runOutDate,
     exhausted,
     daysLeft: Math.max(0, Math.ceil((endMs - now.getTime()) / DAY_MS)),

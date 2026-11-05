@@ -1078,6 +1078,11 @@ impl Sidebar {
         cx.notify();
     }
 
+    #[cfg(test)]
+    pub(super) fn selected_for_test(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
     pub(super) fn set_selected(&mut self, selected: Option<String>, cx: &mut Context<Self>) {
         if self.selected == selected {
             return;
@@ -3312,7 +3317,7 @@ impl Sidebar {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.clear_search(cx);
                         }))
-                        .child(tr("chat-clear-search")),
+                        .child(gpui::text!(tr("chat-clear-search"))),
                 )
                 .into_any_element(),
             Some(SidebarEntry::ArchivedHeader) => {

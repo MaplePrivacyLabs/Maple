@@ -28,6 +28,7 @@ case "$(host_os)" in
     remove_build_tree "${TAURI_DIR}/target/release/bundle/appimage"
     remove_build_tree "${TAURI_DIR}/target/release/bundle/deb"
     remove_build_tree "${TAURI_DIR}/target/release/bundle/rpm"
+    configure_linux_glibc_floor_linker
     (cd "${TAURI_DIR}" && cargo build --locked --bins --features tauri/custom-protocol --release)
     sanitize_linux_target_release_executable
     run_with_nix_usr_bin bun tauri build --verbose --no-sign --config "$(linux_tauri_pr_config)"

@@ -341,6 +341,14 @@ impl RemoteClient {
     }
 }
 
+/// Whether `error` is a call failing because the host socket dropped.
+/// [`maintain_connection`] reconnects and resyncs without the caller, so the
+/// chat shows one reconnecting state rather than one error per failed call.
+#[cfg(feature = "desktop")]
+pub fn is_host_disconnect(error: &str) -> bool {
+    error.starts_with("The Maple host disconnected") || error == "Host disconnected"
+}
+
 /// Own the socket independently of the UI. Reconnection never starts a host or
 /// replays a request: pending callers fail (sends query their admission receipt).
 async fn maintain_connection(
@@ -4115,6 +4123,43 @@ mod tests {
         let rebound = ConnectionGeneration::capture(&backend).unwrap();
         assert!(rebound.check(&backend, "set_ui_settings").is_ok());
         store.close().unwrap();
+    }
+
+    #[cfg(feature = "desktop")]
+    #[tokio::test]
+    async fn calls_cut_off_by_a_dropped_host_read_as_a_disconnect() {
+        let root = tempfile::tempdir().unwrap();
+        let state = Arc::new(ClientState {
+            pending: Mutex::new(Some(HashMap::new())),
+            user_id: RwLock::new(None),
+            store: RwLock::new(StoreState::Open),
+            generation: AtomicU64::new(0),
+        });
+        let (requests, mut received) = mpsc::channel(MAX_CALLS);
+        let client = Arc::new(RemoteClient {
+            endpoint: ipc::Endpoint::for_test(root.path().to_path_buf()),
+            requests,
+            state: state.clone(),
+            next_id: AtomicU64::new(1),
+            events: tokio::sync::Mutex::new(None),
+            permits: Semaphore::new(MAX_CALLS),
+        });
+        let in_flight = tokio::spawn({
+            let client = client.clone();
+            async move { client.call::<serde_json::Value>("store_status", ()).await }
+        });
+        received.recv().await.unwrap();
+        state.disconnect();
+        let error = in_flight.await.unwrap().unwrap_err();
+        assert!(is_host_disconnect(&error), "{error}");
+        let error = client
+            .call::<serde_json::Value>("store_status", ())
+            .await
+            .unwrap_err();
+        assert!(is_host_disconnect(&error), "{error}");
+        assert!(!is_host_disconnect(
+            "Maple local data changed. Reconnect before retrying this operation."
+        ));
     }
 
     #[tokio::test]

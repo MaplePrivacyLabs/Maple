@@ -1277,6 +1277,152 @@ linuxdeploy_tools_arch() {
 TAURI_LINUXDEPLOY_HASH="07333c6"
 TAURI_LINUXDEPLOY_CLI="2.12.3"
 
+# Research's Linux packages run on the host's glibc: the packaged executable
+# keeps the system ELF interpreter and the AppImage bundles no libc. The newest
+# GLIBC_x.y symbol version it references is therefore the oldest distribution it
+# starts on. Ubuntu 24.04, the oldest supported distribution (maple.ai/downloads),
+# ships glibc 2.39. The Nix shell's own glibc moves with every nixpkgs bump, so
+# the executable links against zig's glibc of this version instead, and package
+# verification rejects newer symbol versions.
+LINUX_GLIBC_FLOOR="2.39"
+
+# The AppImage is different: it bundles Nix-built WebKitGTK, GTK and GStreamer,
+# which need the glibc of the pinned nixpkgs and cannot be relinked, while the
+# host still supplies libc. Its floor is therefore declared, not chosen: this is
+# the newest glibc release any bundled file needs. AppRun refuses to start below
+# it and points to the .deb and .rpm, and package verification fails when the
+# bundle needs more or less than this, so a nixpkgs bump moves it on purpose.
+LINUX_APPIMAGE_GLIBC_FLOOR="2.44"
+
+# The C hardening nixpkgs' compiler wrapper applies (NIX_HARDENING_ENABLE). zig
+# cc does not read it, so the C and C++ dependencies get the same flags here.
+LINUX_C_HARDENING_FLAGS=(
+  -fstack-protector-strong
+  -fstack-clash-protection
+  -U_FORTIFY_SOURCE
+  -D_FORTIFY_SOURCE=3
+  -fno-strict-overflow
+  -fzero-call-used-regs=used-gpr
+  -fstrict-flex-arrays=1
+  -Wformat
+  -Wformat-security
+  -Werror=format-security
+)
+
+linux_glibc_floor_zig_target() {
+  local rust_target="$1"
+
+  case "${rust_target}" in
+    x86_64-unknown-linux-gnu)
+      printf 'x86_64-linux-gnu.%s\n' "${LINUX_GLIBC_FLOOR}"
+      ;;
+    aarch64-unknown-linux-gnu)
+      printf 'aarch64-linux-gnu.%s\n' "${LINUX_GLIBC_FLOOR}"
+      ;;
+    *)
+      echo "Unsupported Rust host target for the Linux glibc floor: ${rust_target}" >&2
+      return 1
+      ;;
+  esac
+}
+
+write_linux_glibc_floor_compiler_wrapper() {
+  local path="$1" shell="$2" zigbuild="$3" zig="$4" zig_version="$5" rustc_version="$6" compiler="$7" zig_target="$8"
+
+  # The same wrapper cargo-zigbuild generates for `cargo zigbuild --target
+  # <triple>.<glibc>`: cargo-zigbuild rewrites the cc driver arguments rustc and
+  # the cc crate pass (response files, -lgcc_s, lld selection) for zig cc. The
+  # exports pin the zig and rustc it would otherwise probe: sccache also wraps
+  # C compiles and its server cannot run `$RUSTC_WRAPPER rustc -vV` again. The
+  # shell is the Nix one: the build's LD_LIBRARY_PATH names the Nix glibc,
+  # which the host's /bin/sh cannot load.
+  cat > "${path}" <<EOF
+#!${shell}
+export CARGO_ZIGBUILD_ZIG_COMMAND="${zig}"
+export CARGO_ZIGBUILD_ZIG_VERSION="${zig_version}"
+export CARGO_ZIGBUILD_RUSTC_VERSION="${rustc_version}"
+exec "${zigbuild}" zig ${compiler} -- -target ${zig_target} "\$@"
+EOF
+  chmod 755 "${path}"
+}
+
+# Make every Cargo invocation in this shell, including the ones tauri-cli
+# starts, link Linux executables and compile their C dependencies against glibc
+# LINUX_GLIBC_FLOOR. Cargo's target.<host triple> linker applies without
+# --target, so Tauri keeps its target/release layout.
+configure_linux_glibc_floor_linker() {
+  local shell zigbuild zig zig_version rustc_info rustc_version rust_target zig_target env_target
+  local wrapper_dir cc_wrapper cxx_wrapper
+  local library_path lib_dir flag var_name
+  local lib_dirs=()
+
+  if [ "$(host_os)" != "linux" ]; then
+    return 0
+  fi
+
+  zigbuild="$(command -v cargo-zigbuild)" || {
+    echo "cargo-zigbuild is required to link Linux packages against glibc ${LINUX_GLIBC_FLOOR}; run inside the desktop-linux Nix shell." >&2
+    return 1
+  }
+  zig="$(command -v zig)" || {
+    echo "zig is required to link Linux packages against glibc ${LINUX_GLIBC_FLOOR}; run inside the desktop-linux Nix shell." >&2
+    return 1
+  }
+  if [ -z "${MAPLE_NIX_ELF_INTERPRETER:-}" ]; then
+    echo "MAPLE_NIX_ELF_INTERPRETER is required to link Linux packages against glibc ${LINUX_GLIBC_FLOOR}; run inside the desktop-linux Nix shell." >&2
+    return 1
+  fi
+  shell="$(command -v bash)" || return 1
+  zig_version="$("${zig}" version)" || return 1
+  rustc_info="$(rustc -vV)" || return 1
+  rust_target="$(awk '/^host:/ { print $2 }' <<< "${rustc_info}")"
+  rustc_version="$(awk '/^release:/ { print $2 }' <<< "${rustc_info}")"
+  zig_target="$(linux_glibc_floor_zig_target "${rust_target}")" || return 1
+  env_target="${rust_target//-/_}"
+
+  wrapper_dir="${CARGO_TARGET_DIR:-${TAURI_DIR}/target}/glibc-floor"
+  mkdir -p "${wrapper_dir}"
+  cc_wrapper="${wrapper_dir}/zig-cc"
+  cxx_wrapper="${wrapper_dir}/zig-c++"
+  write_linux_glibc_floor_compiler_wrapper "${cc_wrapper}" "${shell}" "${zigbuild}" "${zig}" "${zig_version}" "${rustc_version}" cc "${zig_target}"
+  write_linux_glibc_floor_compiler_wrapper "${cxx_wrapper}" "${shell}" "${zigbuild}" "${zig}" "${zig_version}" "${rustc_version}" c++ "${zig_target}"
+
+  export "CARGO_TARGET_${env_target^^}_LINKER=${cc_wrapper}"
+  export "CC_${env_target}=${cc_wrapper}"
+  export "CXX_${env_target}=${cxx_wrapper}"
+  for flag in "${LINUX_C_HARDENING_FLAGS[@]}"; do
+    for var_name in CFLAGS CXXFLAGS CMAKE_C_FLAGS CMAKE_CXX_FLAGS; do
+      append_env_word_once "${var_name}" "${flag}"
+    done
+  done
+
+  # Build scripts link the same way and run during the build, where
+  # LD_LIBRARY_PATH names the Nix runtime libraries, glibc included. Give every
+  # executable the Nix loader so it matches that libc; the packaged executable
+  # gets the system loader back in sanitize_linux_package_executable.
+  append_env_words_once RUSTFLAGS "-C link-arg=-Wl,--dynamic-linker=${MAPLE_NIX_ELF_INTERPRETER}"
+  # zig does not read the Nix compiler wrapper's library search paths, so name
+  # the Nix runtime library directories explicitly. Those libraries are
+  # link-time stand-ins for the host's copies, which resolve their own glibc
+  # symbols at runtime, so undefined symbols inside them are not errors.
+  append_env_words_once RUSTFLAGS "-C link-arg=-Wl,--allow-shlib-undefined"
+  library_path="$(linux_runtime_library_path)"
+  if [ -n "${library_path}" ]; then
+    IFS=: read -ra lib_dirs <<< "${library_path}"
+    for lib_dir in "${lib_dirs[@]}"; do
+      append_env_words_once RUSTFLAGS "-L native=${lib_dir}"
+    done
+  fi
+
+  printf 'configured-linux-glibc-floor  %s  %s  %s\n' "${LINUX_GLIBC_FLOOR}" "${zig_target}" "${cc_wrapper}"
+}
+
+# The packaged executable must start on the floor's glibc and show that
+# LINUX_C_HARDENING_FLAGS reached its C dependencies.
+verify_linux_package_executable_glibc_floor() {
+  "$(python3_runner)" "${SCRIPT_DIR}/elf_glibc_floor.py" --floor "${LINUX_GLIBC_FLOOR}" --require-fortify "$@"
+}
+
 tauri_linuxdeploy_wrapper() {
   local arch
   arch="$(linuxdeploy_tools_arch)" || return 1
@@ -3483,6 +3629,92 @@ EOF
   touch -h -d "@${SOURCE_DATE_EPOCH}" "${hook}"
 }
 
+# Sourced first by AppRun, on the host's own bash and libc. Below the
+# AppImage's glibc floor the dynamic loader would only report missing symbol
+# versions, so say what is wrong and what to install instead.
+write_linux_appimage_glibc_floor_hook() {
+  local appdir="$1"
+  local hook="${appdir}/apprun-hooks/maple-glibc-floor.sh"
+
+  mkdir -p "$(dirname "${hook}")"
+  cat > "${hook}" <<EOF
+#! /usr/bin/env bash
+
+maple_appimage_glibc_floor="${LINUX_APPIMAGE_GLIBC_FLOOR}"
+maple_package_glibc_floor="${LINUX_GLIBC_FLOOR}"
+
+maple_host_glibc_version() {
+  local reported
+  reported="\$(getconf GNU_LIBC_VERSION 2>/dev/null)" || return 1
+  case "\${reported}" in
+    "glibc "[0-9]*.[0-9]*)
+      printf '%s\n' "\${reported#glibc }"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+maple_glibc_at_least() {
+  local have_major have_minor need_major need_minor rest
+  IFS=. read -r have_major have_minor rest <<< "\$1"
+  IFS=. read -r need_major need_minor rest <<< "\$2"
+  case "\${have_major}\${have_minor}" in
+    "" | *[!0-9]*)
+      return 0
+      ;;
+  esac
+  if [ "\${have_major}" -ne "\${need_major}" ]; then
+    [ "\${have_major}" -gt "\${need_major}" ]
+    return
+  fi
+  [ "\${have_minor}" -ge "\${need_minor}" ]
+}
+
+maple_check_glibc_floor() {
+  local host message
+
+  if [ "\${MAPLE_APPIMAGE_SKIP_GLIBC_CHECK:-0}" = "1" ]; then
+    return 0
+  fi
+  # A system that does not report a glibc version is not ours to refuse.
+  if ! host="\$(maple_host_glibc_version)"; then
+    return 0
+  fi
+  if maple_glibc_at_least "\${host}" "\${maple_appimage_glibc_floor}"; then
+    return 0
+  fi
+
+  message="Maple's AppImage cannot run on this system.
+
+It needs glibc \${maple_appimage_glibc_floor} or newer, and this system has glibc \${host}. The AppImage bundles its own WebKitGTK, which is built against a recent glibc.
+
+Install Maple's .deb or .rpm package instead. Those use your system's WebKitGTK and support glibc \${maple_package_glibc_floor} and newer (Ubuntu 24.04 and later):
+https://maple.ai/downloads
+
+To try this AppImage anyway, set MAPLE_APPIMAGE_SKIP_GLIBC_CHECK=1."
+  printf '%s\n' "\${message}" >&2
+
+  # Started from a file manager there is no terminal to read; best effort only.
+  if [ -n "\${DISPLAY:-}\${WAYLAND_DISPLAY:-}" ]; then
+    if command -v zenity >/dev/null 2>&1; then
+      zenity --error --title="Maple" --no-markup --text="\${message}" >/dev/null 2>&1 || true
+    elif command -v kdialog >/dev/null 2>&1; then
+      kdialog --title "Maple" --error "\${message}" >/dev/null 2>&1 || true
+    elif command -v notify-send >/dev/null 2>&1; then
+      notify-send "Maple" "\${message}" >/dev/null 2>&1 || true
+    fi
+  fi
+  exit 1
+}
+
+maple_check_glibc_floor
+EOF
+  chmod 0755 "${hook}"
+  touch -h -d "@${SOURCE_DATE_EPOCH}" "${hook}"
+}
+
 write_linux_appimage_maple_apprun() {
   local appdir="$1"
   local app_run="${appdir}/AppRun"
@@ -3495,6 +3727,7 @@ set -e
 this_dir="$(readlink -f "$(dirname "$0")")"
 export APPDIR="${APPDIR:-${this_dir}}"
 
+source "$this_dir"/apprun-hooks/"maple-glibc-floor.sh"
 source "$this_dir"/apprun-hooks/"linuxdeploy-plugin-gtk.sh"
 source "$this_dir"/apprun-hooks/"linuxdeploy-plugin-gstreamer.sh"
 source "$this_dir"/apprun-hooks/"maple-webkitgtk.sh"
@@ -3557,6 +3790,7 @@ stage_linux_appdir_webkit_runtime() {
     "${webkit_store}" \
     "${bwrap_source}" \
     "${xdg_dbus_proxy_source}"
+  write_linux_appimage_glibc_floor_hook "${appdir}"
   write_linux_appimage_maple_apprun "${appdir}"
 
   printf 'staged-linux-appimage-webkit-runtime  %s\n' "${webkit_store}"
@@ -3722,6 +3956,7 @@ verify_linux_appdir_webkit_runtime() {
   local status=0
   local path
   local required_paths=(
+    "apprun-hooks/maple-glibc-floor.sh"
     "apprun-hooks/maple-webkitgtk.sh"
     "usr/lib/libwebkit2gtk-4.1.so.0"
     "usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess"
@@ -3745,6 +3980,10 @@ verify_linux_appdir_webkit_runtime() {
   done
 
   if [ -f "${appdir}/AppRun" ]; then
+    if ! grep -Fq 'apprun-hooks/"maple-glibc-floor.sh"' "${appdir}/AppRun"; then
+      echo "AppImage AppRun does not check the host glibc before starting Maple." >&2
+      status=1
+    fi
     if ! grep -Fq 'apprun-hooks/"maple-webkitgtk.sh"' "${appdir}/AppRun"; then
       echo "AppImage AppRun does not source the Maple WebKit runtime hook." >&2
       status=1
@@ -3849,6 +4088,38 @@ sanitize_linux_deb_payload() {
 
 sanitize_linux_target_release_executable() {
   sanitize_linux_package_executable "${TAURI_DIR}/target/release/maple"
+  # Fail here, before bundling, when the link did not honour the glibc floor.
+  # The linuxdeploy plugin sanitizes copies without Python; the package
+  # verifiers check every packaged copy again.
+  verify_linux_package_executable_glibc_floor "${TAURI_DIR}/target/release/maple"
+}
+
+# Every ELF file the AppImage carries runs on the host's glibc. Hold the whole
+# bundle to LINUX_APPIMAGE_GLIBC_FLOOR, and the floor to what the bundle needs,
+# and require AppRun to announce that same floor.
+verify_linux_appdir_glibc_floor() {
+  local appdir="$1"
+  local hook="${appdir}/apprun-hooks/maple-glibc-floor.sh"
+  local path
+  local elf_files=()
+
+  if ! grep -Fxq "maple_appimage_glibc_floor=\"${LINUX_APPIMAGE_GLIBC_FLOOR}\"" "${hook}" 2>/dev/null; then
+    echo "AppImage AppRun does not announce the ${LINUX_APPIMAGE_GLIBC_FLOOR} glibc floor: ${hook}" >&2
+    return 1
+  fi
+
+  while IFS= read -r -d '' path; do
+    if [ "$(head -c 4 "${path}" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; then
+      elf_files+=("${path}")
+    fi
+  done < <(find "${appdir}" -type f -print0 | LC_ALL=C sort -z)
+  if [ "${#elf_files[@]}" -eq 0 ]; then
+    echo "AppImage contains no ELF files: ${appdir}" >&2
+    return 1
+  fi
+
+  "$(python3_runner)" "${SCRIPT_DIR}/elf_glibc_floor.py" --floor "${LINUX_APPIMAGE_GLIBC_FLOOR}" --exact \
+    --summary "${appdir}" "${elf_files[@]}"
 }
 
 verify_linux_deb_package_executable_metadata() {
@@ -3866,6 +4137,7 @@ verify_linux_deb_package_executable_metadata() {
     tar -xzf data.tar.gz -C data &&
     (cd data && md5sum --strict --check ../control/md5sums) &&
     verify_linux_package_executable_metadata "${tmp}/data/usr/bin/maple" &&
+    verify_linux_package_executable_glibc_floor "${tmp}/data/usr/bin/maple" &&
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect deb "${tmp}/data/usr/bin/maple"
   ) || status=$?
   rm -rf "${tmp}"
@@ -3881,10 +4153,12 @@ verify_linux_appimage_executable_metadata() {
   (
     extract_appimage_tool "${appimage}" "${tmp}/AppDir" &&
     verify_linux_package_executable_metadata "${tmp}/AppDir/usr/bin/maple" &&
+    verify_linux_package_executable_glibc_floor "${tmp}/AppDir/usr/bin/maple" &&
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect appimage "${tmp}/AppDir/usr/bin/maple" &&
     verify_linux_appdir_runtime_closure "${tmp}/AppDir" &&
     verify_linux_appdir_portable_runtime_paths "${tmp}/AppDir" &&
-    verify_linux_appdir_webkit_runtime "${tmp}/AppDir"
+    verify_linux_appdir_webkit_runtime "${tmp}/AppDir" &&
+    verify_linux_appdir_glibc_floor "${tmp}/AppDir"
   ) || status=$?
   rm -rf "${tmp}"
   return "${status}"
@@ -3911,6 +4185,7 @@ verify_linux_rpm_package_executable_metadata() {
   (
     rpm2cpio "${rpm}" | cpio -i --quiet --to-stdout './usr/bin/maple' > "${tmp}/maple" &&
     verify_linux_package_executable_metadata "${tmp}/maple" &&
+    verify_linux_package_executable_glibc_floor "${tmp}/maple" &&
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect rpm "${tmp}/maple"
   ) || status=$?
   rm -rf "${tmp}"

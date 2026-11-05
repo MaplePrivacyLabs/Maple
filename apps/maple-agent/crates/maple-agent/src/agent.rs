@@ -20,6 +20,9 @@ mod integrations;
 mod login_path;
 mod maintenance;
 mod mcp;
+pub use mcp::apps::{McpAppConnection, McpAppMissing};
+pub use mcp::catalog::{McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, mcp_catalog};
+pub use mcp::oauth::{McpBrowser, McpSignIn};
 mod persistence;
 mod projects;
 pub(crate) mod provider;
@@ -1203,3 +1206,6 @@ mod cache_tests;
 
 #[cfg(test)]
 mod shutdown_tests;
+
+#[cfg(all(test, unix))]
+mod test_executable;

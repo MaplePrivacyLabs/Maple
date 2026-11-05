@@ -2239,7 +2239,7 @@ impl RemoteScreen {
                             .debug_selector(|| "cancel-remote-update".into())
                             .track_focus(&confirmation.cancel_focus)
                             .focus_visible(widgets::focus_ring)
-                            .child(tr("settings-remote-cancel"))
+                            .child(gpui::text!(tr("settings-remote-cancel")))
                             .on_click(cx.listener(|screen, _, window, cx| {
                                 screen.cancel_remote_install(window, cx)
                             })),

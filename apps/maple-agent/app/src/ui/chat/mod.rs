@@ -573,6 +573,9 @@ pub struct ChatScreen {
     /// Task being opened whose snapshot has not landed yet, so the pane
     /// can say so instead of showing the previous task.
     loading_session: Option<String>,
+    /// The selection generation of that open. A superseded open never lands
+    /// and can leave the marker behind, so it needs this to lose the highlight.
+    loading_generation: u64,
     loading_timeline: HashMap<String, AgentTimelineItem>,
     snapshot_revision: u64,
     /// Virtualized transcript state; bottom-aligned like a chat log.
@@ -859,6 +862,25 @@ impl ChatScreen {
         self.host_recovery.ended
     }
 
+    /// What the host connection is doing while it recovers by itself, for
+    /// the header spinner, or nothing when it is not. An outcome that needs
+    /// the user (the host is gone, the reload failed, local data is being
+    /// updated) sets `runtime_error` instead, so the spinner never turns
+    /// beside a banner that says to reopen Maple.
+    fn host_reconnect_status(&self) -> Option<&'static str> {
+        if !self.host_recovery.unavailable
+            || self.host_recovery.ended
+            || self.runtime_error.is_some()
+        {
+            return None;
+        }
+        Some(if self.host_recovery.events.is_some() {
+            "Reconnected. Refreshing task history. Sending and switching tasks are paused."
+        } else {
+            "Reconnecting to the Maple host. Sending and switching tasks are paused."
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_store_maintenance_for_test(
         &mut self,
@@ -989,7 +1011,7 @@ impl ChatScreen {
     /// any of them changed; the sidebar rebuilds only what moved.
     fn sync_sidebar(&mut self, cx: &mut Context<Self>) {
         let sessions = self.sessions.clone();
-        let selected = self.selected_session.clone();
+        let selected = self.sidebar_selection();
         let activity = self.task_activity();
         let roots = self.recent_roots.clone();
         self.sidebar.update(cx, |sidebar, cx| {
@@ -1033,8 +1055,17 @@ impl ChatScreen {
         completed || failed
     }
 
+    /// The clicked task takes the sidebar's highlight straight away, ahead of
+    /// the snapshot that selects it. A newer navigation outranks that open.
+    fn sidebar_selection(&self) -> Option<String> {
+        self.loading_session
+            .clone()
+            .filter(|_| self.loading_generation == self.selection_generation)
+            .or_else(|| self.selected_session.clone())
+    }
+
     fn sync_sidebar_selection(&mut self, cx: &mut Context<Self>) {
-        let selected = self.selected_session.clone();
+        let selected = self.sidebar_selection();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_selected(selected, cx));
         self.refresh_selected_title();
@@ -1430,6 +1461,7 @@ impl ChatScreen {
             locale: crate::ui::i18n::current_locale(),
             booting: true,
             loading_session: None,
+            loading_generation: 0,
             loading_timeline: HashMap::new(),
             snapshot_revision: 0,
             list_state: transcript_list_state(),
@@ -1914,7 +1946,9 @@ impl ChatScreen {
             return;
         }
         self.begin_navigation();
-        if !self.draft {
+        if self.draft {
+            self.sync_sidebar_selection(cx);
+        } else {
             self.clear_selected_session_presentation(cx);
         }
         self.set_project_context(Some(project_root), cx);
@@ -2906,9 +2940,8 @@ impl ChatScreen {
     /// Load a task and make it current when its snapshot lands; its
     /// persisted root then becomes the visible project context.
     pub(crate) fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        // The header's spinner or banner already says why.
         if self.host_recovery.unavailable {
-            self.notice = Some(UiText::key("chat-history-reconnecting"));
-            cx.notify();
             return;
         }
         // The side thread belongs to the task it forked.
@@ -2955,6 +2988,8 @@ impl ChatScreen {
                 self.loading_timeline.clear();
             }
             self.loading_session = Some(session_id.to_string());
+            self.loading_generation = self.selection_generation;
+            self.sync_sidebar_selection(cx);
             cx.notify();
         }
         let backend = self.backend.clone();
@@ -2995,6 +3030,7 @@ impl ChatScreen {
                     Ok(detail) => detail,
                     Err(message) => {
                         this.finish_loading(&session_id);
+                        this.sync_sidebar_selection(cx);
                         this.notice = Some(message.into());
                         cx.notify();
                         return;
@@ -4103,8 +4139,22 @@ impl ChatScreen {
 
     /// The current notice as a dismissable row, or nothing. Showing it
     /// arms a timer that clears it after `NOTICE_TTL` unless it changed.
+    /// A call cut off by a dropped host connection gets no row, whichever
+    /// side of the reconnect its failure lands on: there is nothing to do
+    /// about it, and the row would outlive the reconnect it asks for.
     pub(super) fn render_notice(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let notice = self.notice.clone()?;
+        let notice = self.notice.clone().filter(|notice| {
+            fn disconnected(text: &UiText) -> bool {
+                match text {
+                    UiText::Raw(raw) => crate::host::is_host_disconnect(raw),
+                    UiText::Message { key, .. } => {
+                        key.starts_with("runtime-error-host-disconnected")
+                    }
+                    UiText::Context { inner, .. } => disconnected(inner),
+                }
+            }
+            !disconnected(notice)
+        })?;
         self.schedule_notice_dismiss(notice.clone(), cx);
         Some(div().child(motion::fade_in(
             widgets::notice(
@@ -4558,9 +4608,9 @@ impl ChatScreen {
         if self.loading_session.is_some() {
             return;
         }
+        // The header's spinner or banner already says why, and the text
+        // stays in the composer for the user to send afterwards.
         if self.host_recovery.unavailable {
-            self.notice = Some(UiText::key("chat-wait-recovery"));
-            cx.notify();
             return;
         }
         if self.thinking_saving {
@@ -6319,7 +6369,8 @@ impl ChatScreen {
                 }
                 self.begin_navigation();
                 self.runtime_error_reason = None;
-                self.runtime_error = Some(UiText::key("chat-host-reconnecting"));
+                // Recovery runs by itself: the header spinner shows it.
+                self.runtime_error = None;
                 cx.emit(NavigationChanged);
                 return true;
             }
@@ -7118,13 +7169,36 @@ impl Render for ChatScreen {
             .children(feedback)
             .children(trust_prompt)
             .children(self.project_folder_dialog.clone().map(|dialog| {
-                dialog.cached(
+                embed_cached_view(
+                    dialog,
                     gpui::StyleRefinement::default()
                         .absolute()
                         .inset_0()
                         .size_full(),
+                    window.is_a11y_active(),
                 )
             }))
+    }
+}
+
+/// Embed `view` as a cached view, or render it every frame while an
+/// accessibility client is connected.
+///
+/// GPUI builds its accessibility tree during prepaint and paint, and a cached
+/// view that reuses its last frame runs neither. Each tree update replaces the
+/// whole tree, so any repaint elsewhere in the window would remove the view's
+/// nodes, focus, and action handlers until the view next re-rendered.
+fn embed_cached_view<V: Render>(
+    view: Entity<V>,
+    style: gpui::StyleRefinement,
+    a11y_active: bool,
+) -> gpui::AnyElement {
+    if a11y_active {
+        let mut wrapper = div();
+        *wrapper.style() = style;
+        wrapper.child(view).into_any_element()
+    } else {
+        view.cached(style).into_any_element()
     }
 }
 
@@ -7161,14 +7235,14 @@ impl ChatScreen {
                         .opacity(expansion)
                         // Fixed bounds keep labels from wrapping as the
                         // outer column narrows; settled frames stay cached.
-                        .child(
-                            self.sidebar.clone().cached(
-                                gpui::StyleRefinement::default()
-                                    .w(SIDEBAR_WIDTH)
-                                    .h_full()
-                                    .flex_none(),
-                            ),
-                        ),
+                        .child(embed_cached_view(
+                            self.sidebar.clone(),
+                            gpui::StyleRefinement::default()
+                                .w(SIDEBAR_WIDTH)
+                                .h_full()
+                                .flex_none(),
+                            window.is_a11y_active(),
+                        )),
                 )
             })
             .child(self.render_sidebar_settings(expansion, window, cx))
@@ -7456,7 +7530,7 @@ impl ChatScreen {
                             panel.child(
                                 widgets::secondary_button("retry-local-store-persistence")
                                     .debug_selector(|| "retry-local-store-persistence".to_string())
-                                    .child(tr("chat-retry-save"))
+                                    .child(gpui::text!(tr("chat-retry-save")))
                                     .on_click(cx.listener(|_this, _event, _window, cx| {
                                         cx.emit(crate::ui::store_gate::RetryStorePersistence);
                                     })),

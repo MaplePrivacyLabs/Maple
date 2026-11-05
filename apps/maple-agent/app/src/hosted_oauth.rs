@@ -277,7 +277,7 @@ fn completion_response(outcome: Result<bool, ()>, locale: CompletionLocale) -> S
     // Catalog text is trusted release content, escaped for its HTML text context.
     let title = escape_html(&title);
     let message = escape_html(&message);
-    let body = include_str!("hosted_oauth_complete.html")
+    let body = include_str!("../../crates/maple-agent/src/sign_in_page.html")
         .replace("{{locale}}", locale.tag())
         .replace("{{title}}", &title)
         .replace("{{message}}", &message);

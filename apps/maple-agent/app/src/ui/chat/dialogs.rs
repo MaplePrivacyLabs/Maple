@@ -121,7 +121,7 @@ impl ChatScreen {
             }
             .py_1p5()
             .when(saving, |button| button.opacity(0.6))
-            .child(label)
+            .child(gpui::text!(label))
         };
         let keep_path = status.path.clone();
         let trust_path = status.path.clone();
@@ -314,7 +314,7 @@ impl ChatScreen {
                 widgets::secondary_button(id)
             }
             .py_1p5()
-            .child(label)
+            .child(gpui::text!(label))
         };
         div()
             .id("confirm-backdrop")

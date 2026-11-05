@@ -466,7 +466,7 @@ impl Render for LoginScreen {
                                     this.set_guest(false, cx);
                                 }))
                             })
-                            .child(tr("flows-login-back")),
+                            .child(gpui::text!(tr("flows-login-back"))),
                     );
             }
             OAuthFlow::Idle => {
@@ -518,7 +518,7 @@ impl Render for LoginScreen {
                                             this.set_guest(true, cx);
                                         }))
                                     })
-                                    .child(tr("flows-login-anon")),
+                                    .child(gpui::text!(tr("flows-login-anon"))),
                             ),
                     );
             }
@@ -557,11 +557,11 @@ impl Render for LoginScreen {
                                     this.confirm_oauth(cx);
                                 }))
                             })
-                            .child(if busy {
+                            .child(gpui::text!(if busy {
                                 tr("flows-login-completing")
                             } else {
                                 tr("flows-login-complete")
-                            }),
+                            })),
                     )
                     .child(
                         widgets::ghost_button("oauth-cancel")
@@ -570,7 +570,7 @@ impl Render for LoginScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
                             }))
-                            .child(tr("flows-login-back")),
+                            .child(gpui::text!(tr("flows-login-back"))),
                     );
             }
             OAuthFlow::Hosted { provider } => {
@@ -605,7 +605,7 @@ impl Render for LoginScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
                             }))
-                            .child(tr("flows-login-back")),
+                            .child(gpui::text!(tr("flows-login-back"))),
                     );
             }
         }
@@ -635,11 +635,11 @@ fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> gpui::Stateful<Di
         .when(!busy, |el| {
             el.on_click(cx.listener(LoginScreen::submit_clicked))
         })
-        .child(if busy {
+        .child(gpui::text!(if busy {
             tr("flows-login-signing-in").to_string()
         } else {
             tr("flows-login-sign-in").to_string()
-        })
+        }))
 }
 
 fn deletion_status_text(status: crate::backend::AccountDeletionStatus) -> UiText {
@@ -667,7 +667,7 @@ fn oauth_button(
             })
         })
     })
-    .child(provider.label().to_string())
+    .child(gpui::text!(provider.label().to_string()))
 }
 
 fn field(label: &str, input: impl IntoElement) -> Div {

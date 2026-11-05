@@ -2309,8 +2309,16 @@ mod tests {
         )
         .unwrap();
         let payload = root.path().join("release.app.tar.gz");
+        // The flags of `macos_archive_app` in scripts/macos-release-app.sh:
+        // macOS can tag these files with metadata the scanner rejects.
         let status = std::process::Command::new("/usr/bin/tar")
             .env("COPYFILE_DISABLE", "1")
+            .args([
+                "--no-xattrs",
+                "--no-fflags",
+                "--no-acls",
+                "--no-mac-metadata",
+            ])
             .arg("-czf")
             .arg(&payload)
             .arg("-C")

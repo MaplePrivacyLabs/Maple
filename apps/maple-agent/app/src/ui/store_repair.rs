@@ -381,14 +381,14 @@ impl Render for RepairPanel {
                             .on_click(
                                 cx.listener(|this, _event, _window, cx| this.authenticate(cx)),
                             )
-                            .child(tr("flows-repair-authenticate")),
+                            .child(gpui::text!(tr("flows-repair-authenticate"))),
                     )
                 });
         } else {
             pane = pane.child(
                 widgets::secondary_button("repair-diagnostics")
                     .on_click(cx.listener(|this, _event, _window, cx| this.check(cx)))
-                    .child(tr("flows-repair-check")),
+                    .child(gpui::text!(tr("flows-repair-check"))),
             );
             if let Some(report) = &self.diagnostic {
                 pane = pane
@@ -406,7 +406,7 @@ impl Render for RepairPanel {
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                                 }
                             }))
-                            .child(tr("flows-repair-copy")),
+                            .child(gpui::text!(tr("flows-repair-copy"))),
                     );
             }
             if self.actions_available {
@@ -415,7 +415,7 @@ impl Render for RepairPanel {
                     .child(
                         widgets::secondary_button("repair-preview-salvage")
                             .on_click(cx.listener(|this, _event, _window, cx| this.preview(cx)))
-                            .child(tr("flows-repair-preview")),
+                            .child(gpui::text!(tr("flows-repair-preview"))),
                     );
             }
             if self.actions_available
@@ -445,7 +445,7 @@ impl Render for RepairPanel {
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 this.load_preview(id.clone(), offset, cx)
                             }))
-                            .child(tr("flows-repair-next")),
+                            .child(gpui::text!(tr("flows-repair-next"))),
                     );
                 }
                 pane = pane.child(div().text_sm().child(tr("flows-repair-save-body")));
@@ -455,7 +455,7 @@ impl Render for RepairPanel {
                             .on_click(
                                 cx.listener(|this, _event, _window, cx| this.save_readable(cx)),
                             )
-                            .child(tr("flows-repair-save")),
+                            .child(gpui::text!(tr("flows-repair-save"))),
                     );
                 }
             }
@@ -480,7 +480,7 @@ impl Render for RepairPanel {
                 pane = pane.child(
                     widgets::secondary_button("repair-cancel")
                         .on_click(cx.listener(|this, _event, _window, cx| this.cancel(cx)))
-                        .child(tr("flows-repair-cancel")),
+                        .child(gpui::text!(tr("flows-repair-cancel"))),
                 );
             }
         }

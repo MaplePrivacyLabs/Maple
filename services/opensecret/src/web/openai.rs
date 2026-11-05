@@ -7024,6 +7024,11 @@ mod tests {
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert!(ensure_completion_model_access("kimi-k3", ModelPlan::Paid).is_ok());
+        assert!(matches!(
+            ensure_completion_model_access("kimi-k3-1-pro", ModelPlan::Free),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        assert!(ensure_completion_model_access("kimi-k3-1-pro", ModelPlan::Paid).is_ok());
         assert!(ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::Free).is_ok());
         assert!(ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::Paid).is_ok());
         for retired_free in ["gpt-oss-120b", "gpt-oss-safeguard-120b", "llama3-3-70b"] {
@@ -7728,6 +7733,7 @@ mod tests {
             ("tinfoil", "gpt-oss-120b"),
             ("tinfoil", "deepseek-v4-1-flash"),
             ("maple", "deepseek-v4-1-flash"),
+            ("tinfoil", "kimi-k3-1-pro"),
             ("tinfoil", "kimi-k3"),
             ("tinfoil", "glm-5-3"),
             ("tinfoil", "glm-5-3-flash"),
@@ -7755,6 +7761,7 @@ mod tests {
         for (provider_model, public_model) in [
             ("glm-5.3-flash", "glm-5-3-flash"),
             ("glm-5.3", "glm-5-3"),
+            ("kimi-k3-1-pro", "kimi-k3-1-pro"),
             ("kimi-k3", "kimi-k3"),
             ("glm-5-3-flash", "glm-5-3-flash"),
         ] {

@@ -7,11 +7,11 @@
 use crate::model_config::{
     DECISION_LARGE_MODEL_ID, DECISION_MEDIUM_MODEL_ID, DECISION_SMALL_MODEL_ID,
     DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-    GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, KIMI_K3_MODEL_ID,
+    GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v7";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v9";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
 /// routing; customer pricing and accounting continue to use the Maple family.
@@ -192,6 +192,14 @@ const GEMMA4_31B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
+const KIMI_K3_1_PRO_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Tinfoil,
+    provider_model_id: KIMI_K3_1_PRO_MODEL_ID,
+    response_model_id: KIMI_K3_1_PRO_MODEL_ID,
+    weight: 100,
+    enabled: true,
+}];
+
 const KIMI_K3_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
     provider_model_id: KIMI_K3_MODEL_ID,
@@ -229,12 +237,32 @@ const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
 }];
 
 // Provider multipliers allocate 1% of fresh stock DeepSeek account buckets to
-// shared Tinfoil and 99% to dedicated i01: 70 * 10 : 100 * 693. The Tinfoil
-// share keeps live traffic and probes on that route so its health and circuit
-// state stay current for fallback. i02 remains reserved for its distinct
-// model. Eligible sticky routes and health gates retain their normal
-// precedence over this initial allocation.
+// shared Tinfoil and 99% to dedicated i02: 70 * 10 : 100 * 693. i01 serves
+// uncensored only. Verified readiness and health gates exclude i02 until its
+// approved stock release is available; eligible sticky routes retain their
+// normal precedence over the initial allocation.
 const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
+    ModelRouteSpec {
+        provider: ProviderId::Tinfoil,
+        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        weight: 10,
+        enabled: true,
+    },
+    ModelRouteSpec {
+        provider: ProviderId::Maple(MapleInstanceId::I02),
+        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        weight: 693,
+        enabled: true,
+    },
+];
+
+// Preserve coverage of the normal shared/dedicated split independently of the
+// production maintenance topology. Provider multipliers allocate 1% shared and
+// 99% dedicated: 70 * 10 : 100 * 693.
+#[cfg(test)]
+const STOCK_REPLICA_TEST_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Tinfoil,
         provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -251,10 +279,20 @@ const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
     },
 ];
 
+#[cfg(test)]
+pub(crate) static STOCK_REPLICA_TEST_REGISTRY: ProviderRegistry = ProviderRegistry {
+    providers: PROVIDERS,
+    completion_models: &[
+        completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, STOCK_REPLICA_TEST_ROUTES),
+        completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
+    ],
+    decision_models: &[],
+};
+
 // A distinct checkpoint has a distinct identity at every boundary. Stock
 // DeepSeek providers are not fallbacks for the uncensored model.
 const DEEPSEEK_V4_1_FLASH_UNCENSORED_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
-    provider: ProviderId::Maple(MapleInstanceId::I02),
+    provider: ProviderId::Maple(MapleInstanceId::I01),
     provider_model_id: DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
     response_model_id: DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
     weight: 100,
@@ -262,7 +300,7 @@ const DEEPSEEK_V4_1_FLASH_UNCENSORED_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpe
 }];
 
 // A test-only route table proves that Router V2 still supports two independent
-// Maple replicas of the same public model after i02 leaves the production route.
+// Maple replicas of one public model while production guests serve distinct models.
 #[cfg(test)]
 const DUAL_INSTANCE_TEST_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
@@ -320,6 +358,7 @@ const GPT_OSS_SAFEGUARD_120B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
 const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model(GPT_OSS_120B_MODEL_ID, GPT_OSS_120B_ROUTES),
     completion_model("gemma4-31b", GEMMA4_31B_ROUTES),
+    completion_model(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_ROUTES),
     completion_model(KIMI_K3_MODEL_ID, KIMI_K3_ROUTES),
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
     completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
@@ -379,13 +418,13 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn uncensored_model_is_distinct_and_has_only_i02_without_stock_fallback() {
+    fn uncensored_model_is_distinct_and_has_only_i01_without_stock_fallback() {
         let derivative = PROVIDER_REGISTRY
             .completion_model(DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID)
             .unwrap();
         assert_eq!(derivative.routes.len(), 1);
         let route = derivative.routes[0];
-        assert_eq!(route.provider, ProviderId::Maple(MapleInstanceId::I02));
+        assert_eq!(route.provider, ProviderId::Maple(MapleInstanceId::I01));
         assert_eq!(
             route.provider_model_id,
             DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID
@@ -399,7 +438,7 @@ mod tests {
             .unwrap()
             .routes
         {
-            assert_ne!(route.provider, ProviderId::Maple(MapleInstanceId::I02));
+            assert_ne!(route.provider, ProviderId::Maple(MapleInstanceId::I01));
             assert_eq!(route.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         }
     }
@@ -476,6 +515,7 @@ mod tests {
             vec![
                 GPT_OSS_120B_MODEL_ID,
                 "gemma4-31b",
+                KIMI_K3_1_PRO_MODEL_ID,
                 KIMI_K3_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
@@ -532,6 +572,12 @@ mod tests {
                     "gemma4-31b"
                 ),
                 (
+                    KIMI_K3_1_PRO_MODEL_ID,
+                    ProviderId::Tinfoil,
+                    KIMI_K3_1_PRO_MODEL_ID,
+                    KIMI_K3_1_PRO_MODEL_ID
+                ),
+                (
                     KIMI_K3_MODEL_ID,
                     ProviderId::Tinfoil,
                     KIMI_K3_MODEL_ID,
@@ -563,13 +609,13 @@ mod tests {
                 ),
                 (
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                    ProviderId::Maple(MapleInstanceId::I01),
+                    ProviderId::Maple(MapleInstanceId::I02),
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID
                 ),
                 (
                     DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
-                    ProviderId::Maple(MapleInstanceId::I02),
+                    ProviderId::Maple(MapleInstanceId::I01),
                     DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
                     DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID
                 ),
@@ -601,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn stock_deepseek_has_shared_and_i01_routes_under_one_public_identity() {
+    fn stock_deepseek_has_shared_and_i02_routes_under_one_public_identity() {
         let model = PROVIDER_REGISTRY
             .completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID)
             .expect("canonical DeepSeek model");
@@ -612,7 +658,7 @@ mod tests {
                 .iter()
                 .map(|route| route.provider)
                 .collect::<Vec<_>>(),
-            [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)]
+            [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I02)]
         );
         assert_eq!(
             model

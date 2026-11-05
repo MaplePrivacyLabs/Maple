@@ -105,12 +105,35 @@ struct ComputerHostPage {
     errors: HashMap<String, UiText>,
     loaded: HashSet<String>,
     retained_heads: HashSet<String>,
+    /// First pages a refresh is replacing. Their rows stay on screen, so the
+    /// read draws no progress row of its own.
+    replacing: HashSet<String>,
+    /// Continuation rows from before that refresh. Their cursors are gone, so
+    /// each holds its place, inert, until the fresh first page decides.
+    held_more: HashSet<String>,
 }
 
 impl ComputerHostPage {
     /// Keep the visible projection until a fresh first page replaces it, but
     /// never use continuation cursors from before the refresh.
     fn invalidate(&mut self) {
+        for (kind, cursor) in [
+            (ComputerPageKind::Groups, &self.next_groups),
+            (
+                ComputerPageKind::Tasks { settled: false },
+                &self.next_active,
+            ),
+            (
+                ComputerPageKind::Tasks { settled: true },
+                &self.next_settled,
+            ),
+            (ComputerPageKind::Search, &self.next_search),
+            (ComputerPageKind::Archived, &self.next_archived),
+        ] {
+            if cursor.is_some() {
+                self.held_more.insert(kind.key());
+            }
+        }
         self.next_groups = None;
         self.next_active = None;
         self.next_settled = None;
@@ -118,12 +141,37 @@ impl ComputerHostPage {
         self.next_archived = None;
         self.next_projects = None;
         for group in &mut self.groups {
+            for (settled, cursor) in [(false, &group.more.active), (true, &group.more.settled)] {
+                if cursor.is_some() {
+                    let root = group.project.root.clone();
+                    self.held_more
+                        .insert(ComputerPageKind::Project { root, settled }.key());
+                }
+            }
             group.more = Default::default();
         }
         self.loading.clear();
-        self.loaded.clear();
+        self.replacing.extend(self.loaded.drain());
         self.errors.clear();
         self.retained_heads.clear();
+    }
+
+    /// Whether a refresh in flight is keeping this continuation row in place.
+    fn holds_more(&self, kind: &ComputerPageKind) -> bool {
+        let first_page = match kind {
+            ComputerPageKind::Project { .. } => ComputerPageKind::Groups.key(),
+            kind => kind.key(),
+        };
+        self.loading.contains(&first_page) && self.held_more.contains(&kind.key())
+    }
+
+    /// A first page settled these rows, whichever way it went.
+    fn finish_refresh(&mut self, kind: &ComputerPageKind) {
+        self.replacing.remove(&kind.key());
+        self.held_more.remove(&kind.key());
+        if matches!(kind, ComputerPageKind::Groups) {
+            self.held_more.retain(|key| !key.starts_with("project:"));
+        }
     }
 
     fn cursor_is_current(&self, kind: &ComputerPageKind, cursor: &Option<String>) -> bool {
@@ -478,6 +526,11 @@ fn snapshot_page(computer: &Computer, query: &str, archived_expanded: bool) -> C
                 });
             }
         }
+    }
+    // Summaries already on screen make the first read a refresh as well, as
+    // when a reconnecting computer rebuilds its page from this snapshot.
+    if page.groups.iter().any(|group| !group.tasks.is_empty()) {
+        page.replacing.insert(ComputerPageKind::Groups.key());
     }
     page
 }
@@ -1186,6 +1239,7 @@ impl Sidebar {
                 return;
             }
             Err(error) => {
+                page.finish_refresh(&action.kind);
                 page.errors.insert(key, error.into());
                 self.finish_computer_revalidation(cx);
                 self.rebuild_entries();
@@ -1193,6 +1247,7 @@ impl Sidebar {
                 return;
             }
         };
+        page.finish_refresh(&action.kind);
         let retain_head = action.cursor.is_none() && page.retained_heads.remove(&key);
         page.loaded.insert(key);
         let mut own_tasks = Vec::new();
@@ -1336,7 +1391,11 @@ impl Sidebar {
         let key = kind.key();
         let loading = page.loading.contains(&key);
         let failed = page.errors.contains_key(&key);
-        if cursor.is_none() && !loading && !failed {
+        let held = cursor.is_none() && page.holds_more(&kind);
+        // Rows already on screen wait for their replacement in place. Only a
+        // read with nothing to show yet, or one this row asked for, reports it.
+        let progress = loading && (cursor.is_some() || !page.replacing.contains(&key));
+        if cursor.is_none() && !progress && !held && !failed {
             return;
         }
         let index = self.group_pages.more.len();
@@ -1345,13 +1404,13 @@ impl Sidebar {
             generation: self.group_pages.generation,
             kind,
             cursor,
-            loading,
+            loading: loading || held,
             label: if failed {
                 self.messages.get(
                     "chat-load-tasks-retry",
                     [("label", label.to_string().into())],
                 )
-            } else if loading {
+            } else if progress && !held {
                 tr("chat-loading-tasks")
             } else {
                 label.to_string().into()
@@ -1553,11 +1612,11 @@ impl Sidebar {
             .map_or(group.tasks.as_slice(), |stored| stored.tasks.as_slice());
         prefix::Prefix::new(
             [false, true].map(|settled| {
-                let key = ComputerPageKind::Project {
+                let kind = ComputerPageKind::Project {
                     root: group.project.root.clone(),
                     settled,
-                }
-                .key();
+                };
+                let key = kind.key();
                 prefix::Stream {
                     source: settled,
                     end: source
@@ -1577,7 +1636,9 @@ impl Sidebar {
                     } else {
                         group.more.active.is_none()
                     }) && page.is_none_or(|page| {
-                        !page.loading.contains(&key) && !page.errors.contains_key(&key)
+                        !page.loading.contains(&key)
+                            && !page.errors.contains_key(&key)
+                            && !page.holds_more(&kind)
                     }),
                 }
             }),
@@ -1617,8 +1678,9 @@ impl Sidebar {
                             })
                             .max(),
                         complete: page.is_some_and(|page| {
-                            !page.loading.contains(&key)
+                            (!page.loading.contains(&key) || page.replacing.contains(&key))
                                 && !page.errors.contains_key(&key)
+                                && !page.holds_more(&kind)
                                 && if settled {
                                     page.next_settled.is_none()
                                 } else {
@@ -2773,6 +2835,201 @@ mod paging_tests {
             label: "Loading tasks…".into(),
             loading: true,
         }
+    }
+
+    fn more_rows(sidebar: &Sidebar) -> Vec<String> {
+        sidebar
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                SidebarEntry::ComputerMore(index) => {
+                    Some(sidebar.group_pages.more[*index].label.to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn connection_sidebar(cx: &mut gpui::TestAppContext) -> Entity<Sidebar> {
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let sidebar = test_sidebar(cx, backend, "user");
+        sidebar.update(cx, |sidebar, _| {
+            seed_browse_pages(sidebar);
+            sidebar.view.group = SidebarGroup::Connection;
+            sidebar.rebuild_sections();
+        });
+        sidebar
+    }
+
+    fn without_continuations(sidebar: &mut Sidebar) {
+        for page in sidebar.group_pages.hosts.values_mut() {
+            page.next_groups = None;
+            for group in &mut page.groups {
+                group.more = Default::default();
+            }
+        }
+        sidebar.rebuild_sections();
+    }
+
+    fn with_newer_task(computers: &[Computer], index: usize) -> Arc<Vec<Computer>> {
+        let mut computers = computers.to_vec();
+        let mut session = session_from_summary(&task("newer"));
+        session.updated_ms += 60_000;
+        computers[index].sessions.push(session);
+        Arc::new(computers)
+    }
+
+    #[gpui::test]
+    fn a_background_refresh_leaves_every_row_in_place(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        for continuations in [false, true] {
+            let sidebar = connection_sidebar(cx);
+            sidebar.update(cx, |sidebar, cx| {
+                if !continuations {
+                    without_continuations(sidebar);
+                }
+                let (entries, more) = (sidebar.entries.clone(), more_rows(sidebar));
+                assert_eq!(more.is_empty(), !continuations);
+                let computers = with_newer_task(&sidebar.computers, 0);
+                sidebar.set_computers(computers, cx);
+                assert!(
+                    sidebar
+                        .group_pages
+                        .hosts
+                        .values()
+                        .all(|page| page.loading.contains("groups")),
+                    "one changed computer refreshes every computer"
+                );
+                assert_eq!(sidebar.entries, entries);
+                assert_eq!(more_rows(sidebar), more);
+                // Their cursors are gone, so these rows must not act on them.
+                assert!(sidebar.group_pages.more.iter().all(|row| row.loading));
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn switching_to_a_stale_sidebar_shows_no_progress(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let first = connection_sidebar(cx);
+        first.update(cx, |sidebar, _| without_continuations(sidebar));
+        let computers = first.read_with(cx, |sidebar, _| sidebar.computers.clone());
+        let remote = computers[1].backend.clone().unwrap();
+        for stale in [true, false] {
+            // A hidden sidebar holds an old snapshot, or none before its
+            // first visit. The desktop pushes the latest one, then the state.
+            let second = test_sidebar(cx, remote.clone(), "user");
+            let latest = with_newer_task(&computers, 0);
+            let state = first.read_with(cx, |sidebar, cx| sidebar.browse_state(cx));
+            second.update(cx, |sidebar, cx| {
+                sidebar.pages.enabled = true;
+                sidebar.view = state.view;
+                if stale {
+                    sidebar.computers = computers.clone();
+                }
+                sidebar.set_computers(latest, cx);
+                sidebar.restore_browse_state(state, cx);
+                sidebar.rebuild_sections();
+                assert!(
+                    sidebar
+                        .group_pages
+                        .hosts
+                        .values()
+                        .all(|page| page.loading.contains("groups"))
+                );
+                assert_eq!(visible_tasks(sidebar), ["local-cached", "remote-cached"]);
+                assert_eq!(more_rows(sidebar), Vec::<String>::new());
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn a_reconnecting_computer_keeps_its_snapshot_rows_in_place(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let sidebar = connection_sidebar(cx);
+        sidebar.update(cx, |sidebar, _| {
+            without_continuations(sidebar);
+            let mut computer = sidebar.computers[1].clone();
+            computer.sessions.push(session_from_summary(&task("known")));
+            let mut page = snapshot_page(&computer, "", false);
+            page.loading.insert("groups".into());
+            sidebar.group_pages.hosts.insert(computer.key, page);
+            sidebar.rebuild_sections();
+            assert_eq!(more_rows(sidebar), Vec::<String>::new());
+        });
+    }
+
+    #[gpui::test]
+    fn a_read_with_nothing_on_screen_still_reports_progress(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let sidebar = connection_sidebar(cx);
+        sidebar.update(cx, |sidebar, cx| {
+            without_continuations(sidebar);
+            sidebar.group_pages.hosts.insert(
+                None,
+                ComputerHostPage {
+                    loading: HashSet::from(["groups".into()]),
+                    ..Default::default()
+                },
+            );
+            sidebar.rebuild_sections();
+            assert_eq!(more_rows(sidebar), ["Loading tasks…"]);
+
+            // A failed refresh surfaces, and its retry shows the read it starts.
+            let action = group_reply_action(sidebar);
+            let page = sidebar.group_pages.hosts.get_mut(&None).unwrap();
+            page.replacing.insert("groups".into());
+            page.held_more.insert("groups".into());
+            sidebar.apply_computer_page(action.clone(), Err("offline".into()), cx);
+            let page = &sidebar.group_pages.hosts[&None];
+            assert!(page.replacing.is_empty() && page.held_more.is_empty());
+            assert_eq!(more_rows(sidebar).len(), 1);
+            assert!(more_rows(sidebar)[0].starts_with("Could not load tasks"));
+            sidebar.load_computer_page(action, cx);
+            assert_eq!(more_rows(sidebar), ["Loading tasks…"]);
+        });
+    }
+
+    #[gpui::test]
+    fn a_held_row_ends_with_its_refresh(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let sidebar = connection_sidebar(cx);
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.start_computer_revalidation(cx);
+            let held = sidebar.group_pages.hosts[&None].held_more.clone();
+            assert!(held.contains("groups"));
+            assert!(held.iter().any(|key| key.starts_with("project:")));
+            // A computer that cannot answer shows nothing it cannot deliver.
+            sidebar
+                .group_pages
+                .hosts
+                .get_mut(&None)
+                .unwrap()
+                .loading
+                .clear();
+            let page = &sidebar.group_pages.hosts[&None];
+            assert!(!page.holds_more(&ComputerPageKind::Groups));
+            let action = group_reply_action(sidebar);
+            sidebar
+                .group_pages
+                .hosts
+                .get_mut(&None)
+                .unwrap()
+                .loading
+                .insert("groups".into());
+            sidebar.apply_computer_page(
+                action,
+                Ok(ComputerPageReply::Groups(Default::default())),
+                cx,
+            );
+            assert!(sidebar.group_pages.hosts[&None].held_more.is_empty());
+        });
     }
 
     #[gpui::test]

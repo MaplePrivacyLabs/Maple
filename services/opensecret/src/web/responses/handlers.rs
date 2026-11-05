@@ -3032,6 +3032,8 @@ mod tests {
             ("glm-5-3-flash", false, 1.0, 0.95, None),
             ("glm-5-3", true, 1.0, 0.95, None),
             ("gemma4-31b", false, 1.0, 0.95, Some(64)),
+            ("kimi-k3-1-pro", false, 1.0, 0.95, None),
+            ("kimi-k3-1-pro", true, 1.0, 0.95, None),
             ("kimi-k3", false, 1.0, 0.95, None),
             ("kimi-k3", true, 1.0, 1.0, None),
             ("gpt-oss-120b", true, 1.0, 1.0, None),
@@ -3083,6 +3085,14 @@ mod tests {
         );
         assert!(matches!(
             resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Free),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        assert_eq!(
+            resolve_responses_model("kimi-k3-1-pro", "tinfoil", ModelPlan::Paid).unwrap(),
+            "kimi-k3-1-pro"
+        );
+        assert!(matches!(
+            resolve_responses_model("kimi-k3-1-pro", "tinfoil", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert!(matches!(

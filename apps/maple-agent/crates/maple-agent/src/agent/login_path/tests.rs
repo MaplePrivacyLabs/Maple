@@ -1,20 +1,12 @@
 use super::probe::{
     LOGIN_SHELL_PATH_TIMEOUT, parse_login_shell_search_paths, query_login_shell_search_paths,
 };
+use crate::agent::test_executable::write_executable;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 const COMMAND_NAME: &str = "maple-login-path-fixture";
 const RESTRICTED_GUI_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
-
-fn write_executable(path: &Path, contents: &str) {
-    fs::write(path, contents).expect("fixture should be writable");
-    let mut permissions = fs::metadata(path).unwrap().permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(path, permissions).unwrap();
-}
 
 #[test]
 fn parses_marked_path_and_ignores_banners_relative_and_duplicate_entries() {

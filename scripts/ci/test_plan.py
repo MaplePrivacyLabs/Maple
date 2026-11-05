@@ -549,6 +549,7 @@ class ClientLaneTests(unittest.TestCase):
                              ("scripts/ci/desktop-windows-pr.sh", {"repo"}),
                              (tauri + "scripts/onnxruntime-pins.sh", {"research-ios", "research-rust"}),
                              ("scripts/ci/verify-release-artifacts.sh", {"repo"}),
+                             ("scripts/ci/elf_glibc_floor.py", {"repo"}),
                              ("scripts/ci/research-dev-desktop.sh", {"repo"})):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), lanes_)

@@ -6,7 +6,7 @@ use super::{StoreError, StoreResult};
 
 pub(super) const APPLICATION_ID: i64 = 1_296_126_028;
 pub(super) const SCHEMA_EPOCH: i64 = 1;
-pub(super) const VERSION: i64 = 4;
+pub(super) const VERSION: i64 = 5;
 
 /// Original migration schema, including partial indexes and constraints.
 /// Validation executes the complete append-only migration chain as its reference.
@@ -294,6 +294,18 @@ DROP TABLE blobs;
 DELETE FROM store_meta WHERE key IN ('attachment_migration_phase','attachment_migration_cursor');
 "#;
 
+// OAuth credentials have a distinct host-only record. A generation fences
+// clients retained across disconnect/reconnect; revision fences token rotation.
+const MCP_OAUTH_DDL: &str = r#"
+CREATE TABLE mcp_oauth_credentials (
+  server_id INTEGER PRIMARY KEY REFERENCES mcp_servers(id) ON DELETE CASCADE,
+  target BLOB NOT NULL CHECK (length(target) = 32),
+  generation TEXT NOT NULL CHECK (length(generation) = 32),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  payload BLOB CHECK (payload IS NULL OR (length(payload) > 0 AND length(payload) <= 65536))
+) STRICT;
+"#;
+
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -310,6 +322,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 4,
         sql: RETIRE_BLOBS_DDL,
+    },
+    Migration {
+        version: 5,
+        sql: MCP_OAUTH_DDL,
     },
 ];
 
@@ -506,7 +522,7 @@ mod tests {
         migrate(&mut connection, 42).unwrap();
         validate(&connection).unwrap();
         let tables: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get(0)).unwrap();
-        assert_eq!(tables, 16);
+        assert_eq!(tables, 17);
         assert_eq!(
             connection
                 .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))

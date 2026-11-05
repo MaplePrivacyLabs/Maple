@@ -1990,6 +1990,83 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn reconnecting_shows_only_the_header_spinner(cx: &mut TestAppContext) {
+        let (screen, cx) = chat_window(cx, |this, _| {
+            this.booting = false;
+        });
+        assert_eq!(cx.debug_bounds("host-reconnecting"), None);
+        let title = cx.debug_bounds("header-title").unwrap();
+        screen.update(cx, |this, cx| {
+            assert_eq!(this.host_reconnect_status(), None);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            assert!(
+                this.host_reconnect_status()
+                    .unwrap()
+                    .contains("Reconnecting")
+            );
+            assert!(this.runtime_error.is_none());
+            // A call the drop cut off adds no row of its own.
+            this.notice = Some("The Maple host disconnected. Reconnect before retrying.".into());
+            assert!(this.render_notice(cx).is_none());
+            this.notice = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let spinner = cx.debug_bounds("host-reconnecting").expect("the spinner");
+        let header = cx.debug_bounds("chat-header").unwrap();
+        // 14 px of icon in 4 px of hover room, the icon on the row's gutter.
+        assert_eq!(spinner.size.width, px(22.));
+        assert_eq!(
+            spinner.right(),
+            header.right() - px(8.),
+            "the row's far end"
+        );
+        assert_eq!(cx.debug_bounds("header-title"), Some(title));
+
+        // Hovering is how to find out what is going on, and the tooltip
+        // stays on screen although the spinner is at the window's edge.
+        cx.simulate_mouse_move(spinner.center(), None, gpui::Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        let tooltip = cx.debug_bounds("tooltip").expect("the tooltip");
+        assert!(tooltip.right() <= px(1200.), "{tooltip:?}");
+        assert!(tooltip.left() >= px(0.), "{tooltip:?}");
+
+        screen.update(cx, |this, cx| {
+            // Refused actions stay quiet too, and lose nothing. The fixture's
+            // unreachable API can raise a notice of its own at any point, so
+            // start from none inside this update.
+            this.notice = None;
+            this.fill_empty_composer("send this after the reconnect", cx);
+            this.send_inner(cx);
+            this.select_session("another-task", cx);
+            assert_eq!(this.notice, None);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("send this after the reconnect")
+            );
+
+            // The socket is back and history is reloading.
+            this.host_recovery.events = Some(Vec::new());
+            assert!(this.host_reconnect_status().unwrap().contains("Refreshing"));
+            this.host_recovery.events = None;
+
+            // Everything else still shows, and an outcome that needs the
+            // user stops the spinner rather than turning beside its banner.
+            this.notice = Some("Conversation compacted".into());
+            assert!(this.render_notice(cx).is_some());
+            this.runtime_error = Some("Could not reload host state".into());
+            assert_eq!(this.host_reconnect_status(), None);
+            this.runtime_error = None;
+            this.handle_service_event(AgentServiceEvent::HostDisconnected, cx);
+            assert_eq!(this.host_reconnect_status(), None);
+            assert!(this.runtime_error.is_some());
+        });
+    }
+
+    #[gpui::test]
     fn test_question_event_sets_pending_card(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
@@ -6510,6 +6587,39 @@ mod state_tests {
         });
     }
 
+    /// The clicked row lights up at once, before its snapshot lands, and gives
+    /// the highlight back if that open fails or is superseded.
+    #[gpui::test]
+    fn test_opening_a_task_moves_the_sidebar_highlight_at_once(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.selected_session = Some("s1".to_string());
+            this.sync_sidebar(cx);
+            let highlighted = |this: &ChatScreen, cx: &gpui::App| {
+                this.sidebar.read(cx).selected_for_test().map(str::to_owned)
+            };
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
+
+            this.select_session("s2", cx);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s2"));
+            // An unrelated sidebar update while it opens keeps the highlight.
+            this.sync_sidebar(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s2"));
+
+            this.begin_navigation();
+            this.sync_sidebar(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
+
+            this.select_session("s2", cx);
+            this.finish_loading("s2");
+            this.sync_sidebar_selection(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
+        });
+    }
+
     /// A run on a settled task shows it active from the start: the
     /// running set covers the first frame, the runtime's record keeps it
     /// there, and finishing leaves it active with its unread marker.
@@ -8401,6 +8511,54 @@ mod state_tests {
             assert!(this.project_folder_dialog.is_some());
             assert!(this.popup.open_key().is_none());
         });
+    }
+
+    /// A frame that reuses a cached view leaves its nodes out of the tree
+    /// update, so an accessibility client must see the view render every
+    /// frame. `Window::is_a11y_active` stays false on the test platform, so
+    /// both branches are chosen here directly.
+    #[gpui::test]
+    fn cached_views_render_every_frame_for_accessibility(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+
+        struct Counted(Rc<Cell<usize>>);
+        impl Render for Counted {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.0.set(self.0.get() + 1);
+                div().size_full()
+            }
+        }
+        struct Host {
+            view: Entity<Counted>,
+            a11y_active: bool,
+        }
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(crate::ui::chat::embed_cached_view(
+                    self.view.clone(),
+                    gpui::StyleRefinement::default().size_full(),
+                    self.a11y_active,
+                ))
+            }
+        }
+
+        for (a11y_active, extra_renders) in [(false, 0), (true, 2)] {
+            let renders = Rc::new(Cell::new(0));
+            let view = cx.new(|_| Counted(renders.clone()));
+            let (host, window) = cx.add_window_view(|_, _| Host { view, a11y_active });
+            window.run_until_parked();
+            let first_frame = renders.get();
+            assert!(first_frame > 0);
+            for _ in 0..2 {
+                host.update(window, |_, cx| cx.notify());
+                window.run_until_parked();
+            }
+            assert_eq!(
+                renders.get(),
+                first_frame + extra_renders,
+                "a11y_active = {a11y_active}"
+            );
+        }
     }
 
     /// The native accessibility builder rejects two focused nodes in one
@@ -11645,19 +11803,9 @@ mod state_tests {
 
         let card = cx.debug_bounds("tool-card").expect("the tool card renders");
         assert!(
-            cx.debug_bounds("shell-execution-status").is_some(),
-            "shell status remains visible on a collapsed card"
+            cx.debug_bounds("shell-execution-status").is_none(),
+            "a running shell card keeps a fixed height while progress arrives"
         );
-        chat.read_with(cx, |chat, _| {
-            let status = super::super::transcript::shell_execution_status(&chat.timeline[0])
-                .unwrap()
-                .replace(['\u{2068}', '\u{2069}'], "");
-            assert!(status.contains("/fixture/worktree"));
-            assert!(status.contains("Running 65s"));
-            assert!(status.contains("no output for 60s"));
-            assert!(status.contains("deadline 120s"));
-            assert!(status.contains("Stop cancels command"));
-        });
         let tool_title = cx
             .debug_bounds("tool-title")
             .expect("the tool card title renders");
