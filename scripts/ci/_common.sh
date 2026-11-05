@@ -1277,6 +1277,122 @@ linuxdeploy_tools_arch() {
 TAURI_LINUXDEPLOY_HASH="07333c6"
 TAURI_LINUXDEPLOY_CLI="2.12.3"
 
+# Research's Linux packages run on the host's glibc: the packaged executable
+# keeps the system ELF interpreter and the AppImage bundles no libc. The newest
+# GLIBC_x.y symbol version it references is therefore the oldest distribution it
+# starts on. Ubuntu 24.04, the oldest supported distribution (maple.ai/downloads),
+# ships glibc 2.39. The Nix shell's own glibc moves with every nixpkgs bump, so
+# the executable links against zig's glibc of this version instead, and package
+# verification rejects newer symbol versions.
+LINUX_GLIBC_FLOOR="2.39"
+
+linux_glibc_floor_zig_target() {
+  local rust_target="$1"
+
+  case "${rust_target}" in
+    x86_64-unknown-linux-gnu)
+      printf 'x86_64-linux-gnu.%s\n' "${LINUX_GLIBC_FLOOR}"
+      ;;
+    aarch64-unknown-linux-gnu)
+      printf 'aarch64-linux-gnu.%s\n' "${LINUX_GLIBC_FLOOR}"
+      ;;
+    *)
+      echo "Unsupported Rust host target for the Linux glibc floor: ${rust_target}" >&2
+      return 1
+      ;;
+  esac
+}
+
+write_linux_glibc_floor_compiler_wrapper() {
+  local path="$1" shell="$2" zigbuild="$3" zig="$4" zig_version="$5" rustc_version="$6" compiler="$7" zig_target="$8"
+
+  # The same wrapper cargo-zigbuild generates for `cargo zigbuild --target
+  # <triple>.<glibc>`: cargo-zigbuild rewrites the cc driver arguments rustc and
+  # the cc crate pass (response files, -lgcc_s, lld selection) for zig cc. The
+  # exports pin the zig and rustc it would otherwise probe: sccache also wraps
+  # C compiles and its server cannot run `$RUSTC_WRAPPER rustc -vV` again. The
+  # shell is the Nix one: the build's LD_LIBRARY_PATH names the Nix glibc,
+  # which the host's /bin/sh cannot load.
+  cat > "${path}" <<EOF
+#!${shell}
+export CARGO_ZIGBUILD_ZIG_COMMAND="${zig}"
+export CARGO_ZIGBUILD_ZIG_VERSION="${zig_version}"
+export CARGO_ZIGBUILD_RUSTC_VERSION="${rustc_version}"
+exec "${zigbuild}" zig ${compiler} -- -target ${zig_target} "\$@"
+EOF
+  chmod 755 "${path}"
+}
+
+# Make every Cargo invocation in this shell, including the ones tauri-cli
+# starts, link Linux executables and compile their C dependencies against glibc
+# LINUX_GLIBC_FLOOR. Cargo's target.<host triple> linker applies without
+# --target, so Tauri keeps its target/release layout.
+configure_linux_glibc_floor_linker() {
+  local shell zigbuild zig zig_version rustc_info rustc_version rust_target zig_target env_target
+  local wrapper_dir cc_wrapper cxx_wrapper
+  local library_path lib_dir
+  local lib_dirs=()
+
+  if [ "$(host_os)" != "linux" ]; then
+    return 0
+  fi
+
+  zigbuild="$(command -v cargo-zigbuild)" || {
+    echo "cargo-zigbuild is required to link Linux packages against glibc ${LINUX_GLIBC_FLOOR}; run inside the desktop-linux Nix shell." >&2
+    return 1
+  }
+  zig="$(command -v zig)" || {
+    echo "zig is required to link Linux packages against glibc ${LINUX_GLIBC_FLOOR}; run inside the desktop-linux Nix shell." >&2
+    return 1
+  }
+  if [ -z "${MAPLE_NIX_ELF_INTERPRETER:-}" ]; then
+    echo "MAPLE_NIX_ELF_INTERPRETER is required to link Linux packages against glibc ${LINUX_GLIBC_FLOOR}; run inside the desktop-linux Nix shell." >&2
+    return 1
+  fi
+  shell="$(command -v bash)" || return 1
+  zig_version="$("${zig}" version)" || return 1
+  rustc_info="$(rustc -vV)" || return 1
+  rust_target="$(awk '/^host:/ { print $2 }' <<< "${rustc_info}")"
+  rustc_version="$(awk '/^release:/ { print $2 }' <<< "${rustc_info}")"
+  zig_target="$(linux_glibc_floor_zig_target "${rust_target}")" || return 1
+  env_target="${rust_target//-/_}"
+
+  wrapper_dir="${CARGO_TARGET_DIR:-${TAURI_DIR}/target}/glibc-floor"
+  mkdir -p "${wrapper_dir}"
+  cc_wrapper="${wrapper_dir}/zig-cc"
+  cxx_wrapper="${wrapper_dir}/zig-c++"
+  write_linux_glibc_floor_compiler_wrapper "${cc_wrapper}" "${shell}" "${zigbuild}" "${zig}" "${zig_version}" "${rustc_version}" cc "${zig_target}"
+  write_linux_glibc_floor_compiler_wrapper "${cxx_wrapper}" "${shell}" "${zigbuild}" "${zig}" "${zig_version}" "${rustc_version}" c++ "${zig_target}"
+
+  export "CARGO_TARGET_${env_target^^}_LINKER=${cc_wrapper}"
+  export "CC_${env_target}=${cc_wrapper}"
+  export "CXX_${env_target}=${cxx_wrapper}"
+
+  # Build scripts link the same way and run during the build, where
+  # LD_LIBRARY_PATH names the Nix runtime libraries, glibc included. Give every
+  # executable the Nix loader so it matches that libc; the packaged executable
+  # gets the system loader back in sanitize_linux_package_executable.
+  append_env_words_once RUSTFLAGS "-C link-arg=-Wl,--dynamic-linker=${MAPLE_NIX_ELF_INTERPRETER}"
+  # zig does not read the Nix compiler wrapper's library search paths, so name
+  # the Nix runtime library directories explicitly. Those libraries are
+  # link-time stand-ins for the host's copies, which resolve their own glibc
+  # symbols at runtime, so undefined symbols inside them are not errors.
+  append_env_words_once RUSTFLAGS "-C link-arg=-Wl,--allow-shlib-undefined"
+  library_path="$(linux_runtime_library_path)"
+  if [ -n "${library_path}" ]; then
+    IFS=: read -ra lib_dirs <<< "${library_path}"
+    for lib_dir in "${lib_dirs[@]}"; do
+      append_env_words_once RUSTFLAGS "-L native=${lib_dir}"
+    done
+  fi
+
+  printf 'configured-linux-glibc-floor  %s  %s  %s\n' "${LINUX_GLIBC_FLOOR}" "${zig_target}" "${cc_wrapper}"
+}
+
+verify_linux_package_executable_glibc_floor() {
+  "$(python3_runner)" "${SCRIPT_DIR}/elf_glibc_floor.py" --floor "${LINUX_GLIBC_FLOOR}" "$@"
+}
+
 tauri_linuxdeploy_wrapper() {
   local arch
   arch="$(linuxdeploy_tools_arch)" || return 1
@@ -3849,6 +3965,10 @@ sanitize_linux_deb_payload() {
 
 sanitize_linux_target_release_executable() {
   sanitize_linux_package_executable "${TAURI_DIR}/target/release/maple"
+  # Fail here, before bundling, when the link did not honour the glibc floor.
+  # The linuxdeploy plugin sanitizes copies without Python; the package
+  # verifiers check every packaged copy again.
+  verify_linux_package_executable_glibc_floor "${TAURI_DIR}/target/release/maple"
 }
 
 verify_linux_deb_package_executable_metadata() {
@@ -3866,6 +3986,7 @@ verify_linux_deb_package_executable_metadata() {
     tar -xzf data.tar.gz -C data &&
     (cd data && md5sum --strict --check ../control/md5sums) &&
     verify_linux_package_executable_metadata "${tmp}/data/usr/bin/maple" &&
+    verify_linux_package_executable_glibc_floor "${tmp}/data/usr/bin/maple" &&
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect deb "${tmp}/data/usr/bin/maple"
   ) || status=$?
   rm -rf "${tmp}"
@@ -3881,6 +4002,7 @@ verify_linux_appimage_executable_metadata() {
   (
     extract_appimage_tool "${appimage}" "${tmp}/AppDir" &&
     verify_linux_package_executable_metadata "${tmp}/AppDir/usr/bin/maple" &&
+    verify_linux_package_executable_glibc_floor "${tmp}/AppDir/usr/bin/maple" &&
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect appimage "${tmp}/AppDir/usr/bin/maple" &&
     verify_linux_appdir_runtime_closure "${tmp}/AppDir" &&
     verify_linux_appdir_portable_runtime_paths "${tmp}/AppDir" &&
@@ -3911,6 +4033,7 @@ verify_linux_rpm_package_executable_metadata() {
   (
     rpm2cpio "${rpm}" | cpio -i --quiet --to-stdout './usr/bin/maple' > "${tmp}/maple" &&
     verify_linux_package_executable_metadata "${tmp}/maple" &&
+    verify_linux_package_executable_glibc_floor "${tmp}/maple" &&
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect rpm "${tmp}/maple"
   ) || status=$?
   rm -rf "${tmp}"

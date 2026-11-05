@@ -32,6 +32,7 @@ if [ "$(host_os)" = "linux" ]; then
   cd "${FRONTEND_DIR}"
   # The DEB is only an intermediate payload. Distribute the normalized RPM below.
   remove_build_tree "${CARGO_TARGET_DIR}/release/bundle/deb"
+  configure_linux_glibc_floor_linker
   bun tauri build --bundles deb --no-sign --config "${config}"
   debs=()
   while IFS= read -r -d '' deb; do
@@ -62,6 +63,7 @@ if [ "$(host_os)" = "linux" ]; then
   # Do not use production's RPM verifier: its dependency policy is independent
   # of the Dev profile. Verify this package's executable and requirements here.
   verify_linux_package_executable_metadata "${payload}/installed/usr/bin/${name}"
+  verify_linux_package_executable_glibc_floor "${payload}/installed/usr/bin/${name}"
   python3 "${SCRIPT_DIR}/tauri_bundle_type.py" --expect rpm "${payload}/installed/usr/bin/${name}"
   python3 "${SCRIPT_DIR}/research-dev-profile.py" verify-linux --bundle "${payload}/installed" --rpm "${rpm}" > "${evidence_dir}/build-profile.json"
   verify_frontend_dist_unchanged

@@ -291,6 +291,12 @@ macOS 13.4 and iOS 16.0.
 Research Linux packaging builds AppImage and DEB with Tauri, then the RPM from
 the normalized DEB payload. `scripts/ci/sccache-stats.sh` reports compiler-cache
 statistics with the build's own cache configuration.
+The packaged executable runs on the host's glibc, so it links against zig's
+glibc `LINUX_GLIBC_FLOOR` (`scripts/ci/_common.sh`; 2.39, Ubuntu 24.04) through
+cargo-zigbuild rather than the Nix shell's glibc, and
+`scripts/ci/elf_glibc_floor.py` rejects a packaged `maple` that needs newer
+symbol versions. The AppImage's bundled WebKitGTK and other Nix libraries still
+follow nixpkgs' glibc; the floor check does not cover them.
 The RPM builder preserves explicit `bundle.linux.rpm.depends` from the Tauri
 configuration. WebKitGTK (`webkit2gtk4.1`) is required on Fedora, including KDE;
 package verification rejects RPMs missing that requirement. Install a downloaded
