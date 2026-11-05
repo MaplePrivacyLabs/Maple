@@ -201,12 +201,24 @@ macro_rules! authorize_arg {
     };
     ($backend:ident, $name:ident, $value:ident) => {};
 }
+// Some operations are consumed through call_presented; keep their wire dispatch
+// entries without generating an unused legacy String client wrapper.
+macro_rules! operation_client {
+    (dispatch_only; $name:ident ($( $arg:ident : $ty:tt ),*) -> $result:ty) => {};
+    (test_only; $name:ident ($( $arg:ident : $ty:tt ),*) -> $result:ty) => {
+        #[cfg(test)]
+        operation_client!(; $name($($arg: $ty),*) -> $result);
+    };
+    (; $name:ident ($( $arg:ident : $ty:tt ),*) -> $result:ty) => {
+        pub async fn $name(&self, $($arg: unpack_type!($ty)),*) -> Result<$result, String> {
+            self.call(stringify!($name), ($($arg,)* )).await
+        }
+    };
+}
 macro_rules! operations {
-    ($( $name:ident ( $( $arg:ident : $ty:tt ),* ) -> $result:ty; )*) => {
+    ($( $([$mode:ident])? $name:ident ( $( $arg:ident : $ty:tt ),* ) -> $result:ty; )*) => {
         impl AgentBackend {
-            $(pub async fn $name(&self, $($arg: unpack_type!($ty)),*) -> Result<$result, String> {
-                self.call(stringify!($name), ($($arg,)* )).await
-            })*
+            $(operation_client!($($mode)?; $name($($arg: $ty),*) -> $result);)*
         }
         pub(crate) async fn dispatch_inner(backend: &LocalBackend, request: Request) -> Result<serde_json::Value, HostFailure> {
             match request.method.as_str() {
@@ -236,48 +248,48 @@ operations! {
     add_word(word: (String)) -> bool;
     get_remote_sidebars(user_id: (&str)) -> HashMap<String, crate::settings::RemoteSidebarSettings>;
     set_remote_sidebar(user_id: (&str), computer: (String), patch: (serde_json::Value)) -> ();
-    get_sidebar_order(user_id: (&str)) -> crate::settings::SidebarOrder;
-    set_sidebar_order(user_id: (&str), order: (crate::settings::SidebarOrder)) -> ();
-    set_task_pinned(user_id: (&str), task: (&str), pinned: (bool)) -> ();
+    [dispatch_only] get_sidebar_order(user_id: (&str)) -> crate::settings::SidebarOrder;
+    [dispatch_only] set_sidebar_order(user_id: (&str), order: (crate::settings::SidebarOrder)) -> ();
+    [dispatch_only] set_task_pinned(user_id: (&str), task: (&str), pinned: (bool)) -> ();
     login(email: (String), password: (String)) -> AuthSession;
     login_guest(account_id: (String), password: (String)) -> AuthSession;
     logout_and_clear(account_user: (&str)) -> ();
-    oauth_start(provider: (OAuthProvider)) -> String;
-    oauth_wait_for_handoff(provider: (OAuthProvider)) -> AuthSession;
-    oauth_complete(provider: (OAuthProvider), redirected_url: (String)) -> AuthSession;
+    [dispatch_only] oauth_start(provider: (OAuthProvider)) -> String;
+    [dispatch_only] oauth_wait_for_handoff(provider: (OAuthProvider)) -> AuthSession;
+    [dispatch_only] oauth_complete(provider: (OAuthProvider), redirected_url: (String)) -> AuthSession;
     account(user_id: (&str)) -> MapleAccount;
-    request_verification_email(user_id: (&str)) -> ();
-    change_password(user_id: (&str), current_password: (String), new_password: (String)) -> ();
-    request_account_deletion(user_id: (&str)) -> String;
-    account_deletion_status() -> Option<AccountDeletionStatus>;
-    confirm_account_deletion(account_user: (&str), confirmation_code: (String), plaintext_secret: (String)) -> ();
-    list_api_keys(user_id: (&str)) -> Vec<MapleApiKey>;
-    create_api_key(user_id: (&str), name: (String)) -> MapleApiKeyCreated;
-    delete_api_key(user_id: (&str), name: (&str)) -> ();
+    [dispatch_only] request_verification_email(user_id: (&str)) -> ();
+    [dispatch_only] change_password(user_id: (&str), current_password: (String), new_password: (String)) -> ();
+    [dispatch_only] request_account_deletion(user_id: (&str)) -> String;
+    [dispatch_only] account_deletion_status() -> Option<AccountDeletionStatus>;
+    [dispatch_only] confirm_account_deletion(account_user: (&str), confirmation_code: (String), plaintext_secret: (String)) -> ();
+    [dispatch_only] list_api_keys(user_id: (&str)) -> Vec<MapleApiKey>;
+    [dispatch_only] create_api_key(user_id: (&str), name: (String)) -> MapleApiKeyCreated;
+    [dispatch_only] delete_api_key(user_id: (&str), name: (&str)) -> ();
     plan_usage(user_id: (&str)) -> Option<crate::billing::PlanUsage>;
     billing_status(user_id: (&str)) -> crate::billing::BillingStatus;
-    billing_products() -> Vec<crate::billing::Product>;
-    open_billing_portal(user_id: (&str)) -> ();
-    start_checkout(user_id: (&str), product_id: (String)) -> ();
-    api_credit_balance(user_id: (&str)) -> i64;
-    purchase_api_credits(user_id: (&str), method: (crate::billing::PaymentMethod), credits: (u64)) -> ();
-    start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
+    [dispatch_only] billing_products() -> Vec<crate::billing::Product>;
+    [dispatch_only] open_billing_portal(user_id: (&str)) -> ();
+    [dispatch_only] start_checkout(user_id: (&str), product_id: (String)) -> ();
+    [dispatch_only] api_credit_balance(user_id: (&str)) -> i64;
+    [dispatch_only] purchase_api_credits(user_id: (&str), method: (crate::billing::PaymentMethod), credits: (u64)) -> ();
+    [dispatch_only] start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
     stop_runtime(user_id: (&str)) -> AgentRuntimeStatus;
     select_project_root(user_id: (&str), path: (String)) -> SelectedProject;
     browse_project_folders(user_id: (&str), request: (ProjectFolderRequest)) -> ProjectFolderPage;
     create_project_folder(user_id: (&str), parent_path: (String), name: (String)) -> String;
     rename_project_root(user_id: (&str), path: (String), name: (String)) -> RecentProjectRoot;
     archive_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
-    create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
+    [dispatch_only] create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
     set_session_state(user_id: (&str), session_id: (&str), state: (AgentTaskState)) -> AgentSessionSummary;
     delete_session(user_id: (&str), session_id: (&str)) -> ();
     rename_session(user_id: (&str), session_id: (&str), title: (String)) -> AgentSessionSummary;
     project_trust(user_id: (&str), path: (String)) -> AgentProjectTrustStatus;
     set_project_trust(user_id: (&str), path: (String), trusted: (bool)) -> AgentProjectTrustStatus;
-    cancel_queued_message(user_id: (&str), session_id: (&str), queue_id: (&str)) -> AgentDesktopQueueSnapshot;
-    begin_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
-    end_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
-    cancel_run(user_id: (&str), run_id: (&str)) -> ();
+    [dispatch_only] cancel_queued_message(user_id: (&str), session_id: (&str), queue_id: (&str)) -> AgentDesktopQueueSnapshot;
+    [dispatch_only] begin_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
+    [dispatch_only] end_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
+    [dispatch_only] cancel_run(user_id: (&str), run_id: (&str)) -> ();
     available_model_ids(user_id: (&str)) -> Vec<String>;
     model_catalog(user_id: (&str)) -> maple_sdk::ModelCatalogResponse;
     model_catalog_entry(user_id: (&str), model: (&str)) -> Option<maple_agent::agent::CatalogEntry>;
@@ -285,26 +297,26 @@ operations! {
     synthesize_speech(user_id: (&str), text: (String), voice: (String), speed: (f32)) -> Vec<u8>;
     transcribe_audio(user_id: (&str), wav: (Vec<u8>)) -> String;
     list_session_mcp_servers(user_id: (&str), session_id: (&str)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
-    set_session_mcp_server_enabled(user_id: (&str), session_id: (&str), name: (&str), kind: (maple_agent::agent::AgentSessionIntegrationKind), enabled: (bool)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
+    [dispatch_only] set_session_mcp_server_enabled(user_id: (&str), session_id: (&str), name: (&str), kind: (maple_agent::agent::AgentSessionIntegrationKind), enabled: (bool)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
     list_mcp_servers(user_id: (&str)) -> Vec<maple_agent::agent::AgentMcpServer>;
     list_mcp_definitions(user_id: (&str)) -> Vec<maple_agent::store::records::McpDefinition>;
     list_project_mcp_servers(user_id: (&str), project_root: (&str)) -> Vec<maple_agent::agent::AgentMcpServer>;
-    set_project_mcp_server_enabled(user_id: (&str), project_root: (&str), name: (&str), enabled: (bool)) -> ();
+    [test_only] set_project_mcp_server_enabled(user_id: (&str), project_root: (&str), name: (&str), enabled: (bool)) -> ();
     list_integrations(user_id: (&str)) -> Vec<AgentIntegration>;
     set_integration_enabled(user_id: (&str), id: (&str), enabled: (bool)) -> Vec<AgentIntegration>;
     setup_integration(user_id: (&str), id: (&str), permissions: (AgentIntegrationPermissions)) -> Vec<AgentIntegration>;
-    set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
-    compact_session(user_id: (&str), session_id: (&str)) -> ();
+    [dispatch_only] set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
+    [dispatch_only] compact_session(user_id: (&str), session_id: (&str)) -> ();
     session_subagents(user_id: (&str), session_id: (&str)) -> Vec<AgentSubagent>;
-    cancel_external_agent(user_id: (&str), session_id: (&str), agent_id: (&str)) -> ();
+    [dispatch_only] cancel_external_agent(user_id: (&str), session_id: (&str), agent_id: (&str)) -> ();
     list_slash_commands(user_id: (&str), working_dir: (Option<String>)) -> Vec<AgentSlashCommand>;
-    resolve_slash_command(user_id: (&str), working_dir: (Option<String>), command: (String), args: (String)) -> Option<String>;
+    [dispatch_only] resolve_slash_command(user_id: (&str), working_dir: (Option<String>), command: (String), args: (String)) -> Option<String>;
     summarize_tool_call(user_id: (&str), session_id: (&str), tool_name: (String), input: (Option<serde_json::Value>), output_text: (String)) -> Option<String>;
     summarize_tool_call_start(user_id: (&str), session_id: (&str), tool_name: (String), input: (Option<serde_json::Value>)) -> Option<String>;
     summarize_thinking(user_id: (&str), session_id: (&str), thinking_text: (String)) -> Option<String>;
     ask_side_question(user_id: (&str), session_id: (&str), request_id: (String), prior: (Vec<maple_agent::agent::SideQuestionTurn>), question: (String)) -> ();
     context_usage(user_id: (&str), session_id: (&str), model: (Option<&str>)) -> Option<(i64, i64)>;
-    answer_question(user_id: (&str), request_id: (&str), answer: (String)) -> bool;
+    [dispatch_only] answer_question(user_id: (&str), request_id: (&str), answer: (String)) -> bool;
     thinking_state(user_id: (&str), session_id: (Option<&str>), model: (&str)) -> maple_agent::agent::AgentThinkingState;
     set_thinking_level(user_id: (&str), session_id: (Option<&str>), model: (&str), level: (maple_agent::agent::ThinkingLevel)) -> maple_agent::agent::AgentThinkingState;
     save_default_model(user_id: (&str), model: (String)) -> ();
@@ -553,23 +565,39 @@ impl AgentBackend {
     }
     /// The composer retains this ID through uncertain delivery. Only receipt
     /// queries, never another send, use it after a connection loss.
+    #[cfg(test)]
     pub async fn send_message_identified(
         &self,
         user: &str,
         request: AgentSendMessageRequest,
         id: String,
     ) -> Result<String, String> {
-        self.ensure_active()?;
+        self.send_message_identified_presented(user, request, id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn send_message_identified_presented(
+        &self,
+        user: &str,
+        request: AgentSendMessageRequest,
+        id: String,
+    ) -> Result<String, HostFailure> {
+        self.ensure_active()
+            .map_err(|message| HostFailure::new("host-updated", message))?;
         match &self.client {
             BackendClient::Host(client) => {
                 client
-                    .call_identified("send_message", (user, request), Some(id))
+                    .call_identified_presented("send_message", (user, request), Some(id))
                     .await
             }
             #[cfg(test)]
-            BackendClient::InProcess(backend) => backend.send_message(user, request).await,
+            BackendClient::InProcess(backend) => backend
+                .send_message(user, request)
+                .await
+                .map_err(HostFailure::from),
         }
     }
+    #[cfg(test)]
     pub async fn send_outcome(&self, id: String) -> Result<crate::host::receipts::Outcome, String> {
         self.call("send_outcome", id).await
     }
@@ -659,19 +687,6 @@ impl AgentBackend {
             }
         });
     }
-    /// Local IPC enforces an exact build match. Remote hosts may predate the
-    /// optional locale API, so retain their original sign-in method and copy.
-    pub async fn oauth_start_localized(
-        &self,
-        provider: OAuthProvider,
-        locale: String,
-    ) -> Result<String, String> {
-        if self.remote_host.is_some() {
-            return self.oauth_start(provider).await;
-        }
-        self.call("oauth_start_localized", (provider, locale)).await
-    }
-
     pub fn cancel_oauth(self: &Arc<Self>) {
         let backend = self.clone();
         self.spawn(async move {

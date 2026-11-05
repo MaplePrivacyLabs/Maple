@@ -102,7 +102,7 @@ struct ComputerHostPage {
     search_text: String,
     archived_count: u64,
     loading: HashSet<String>,
-    errors: HashMap<String, String>,
+    errors: HashMap<String, UiText>,
     loaded: HashSet<String>,
     retained_heads: HashSet<String>,
 }
@@ -199,14 +199,29 @@ async fn computer_task_page(
     user: String,
     query: catalog::TaskQuery,
     manual: Option<catalog::ManualOrder>,
-) -> Result<NavigationTaskPage, String> {
+) -> Result<NavigationTaskPage, UiFailure> {
     if let Some(order) = manual {
         return reader.page(backend, user, query, order).await;
     }
     match query {
-        catalog::TaskQuery::Tasks(query) => backend.list_tasks(&user, query).await,
-        catalog::TaskQuery::Search(query) => backend.search_tasks(&user, query).await,
-        catalog::TaskQuery::Pinned(query) => backend.pinned_tasks(&user, query).await,
+        catalog::TaskQuery::Tasks(query) => backend
+            .call_presented::<maple_agent::store::NavigationTaskPage>("list_tasks", (&user, query))
+            .await
+            .map_err(UiFailure::from),
+        catalog::TaskQuery::Search(query) => backend
+            .call_presented::<maple_agent::store::NavigationTaskPage>(
+                "search_tasks",
+                (&user, query),
+            )
+            .await
+            .map_err(UiFailure::from),
+        catalog::TaskQuery::Pinned(query) => backend
+            .call_presented::<maple_agent::store::NavigationTaskPage>(
+                "pinned_tasks",
+                (&user, query),
+            )
+            .await
+            .map_err(UiFailure::from),
     }
 }
 
@@ -218,7 +233,7 @@ async fn manual_computer_groups(
     user: String,
     mut page: NavigationGroupPage,
     order: catalog::ManualOrder,
-) -> Result<NavigationGroupPage, String> {
+) -> Result<NavigationGroupPage, UiFailure> {
     let mut remaining = 200usize;
     for group in &mut page.groups {
         let budget = remaining.min(20) as u16;
@@ -1031,41 +1046,53 @@ impl Sidebar {
         let matched_roots = page.search_roots.clone();
         let search_text = page.search_text.clone();
         let request = action.clone();
-        self.call(
+        self.call_semantic(
             async move {
                 match &request.kind {
                     ComputerPageKind::ArchiveCount => backend
-                        .list_project_groups(
-                            &user,
-                            NavigationGroupQuery {
-                                limit_groups: 1,
-                                per_project: 1,
-                                cursor: None,
-                            },
+                        .call_presented::<maple_agent::store::NavigationGroupPage>(
+                            "list_project_groups",
+                            (
+                                &user,
+                                NavigationGroupQuery {
+                                    limit_groups: 1,
+                                    per_project: 1,
+                                    cursor: None,
+                                },
+                            ),
                         )
                         .await
+                        .map_err(UiFailure::from)
                         .map(|page| ComputerPageReply::ArchiveCount(page.archived_count)),
                     ComputerPageKind::Projects => backend
-                        .list_projects(
-                            &user,
-                            ProjectPageRequest {
-                                cursor: request.cursor.clone(),
-                                limit: 50,
-                            },
+                        .call_presented::<maple_agent::store::NavigationProjectPage>(
+                            "list_projects",
+                            (
+                                &user,
+                                ProjectPageRequest {
+                                    cursor: request.cursor.clone(),
+                                    limit: 50,
+                                },
+                            ),
                         )
                         .await
+                        .map_err(UiFailure::from)
                         .map(ComputerPageReply::Projects),
                     ComputerPageKind::Groups => {
                         let groups = backend
-                            .list_project_groups(
-                                &user,
-                                NavigationGroupQuery {
-                                    limit_groups: 20,
-                                    per_project: 20,
-                                    cursor: request.cursor.clone(),
-                                },
+                            .call_presented::<maple_agent::store::NavigationGroupPage>(
+                                "list_project_groups",
+                                (
+                                    &user,
+                                    NavigationGroupQuery {
+                                        limit_groups: 20,
+                                        per_project: 20,
+                                        cursor: request.cursor.clone(),
+                                    },
+                                ),
                             )
-                            .await?;
+                            .await
+                            .map_err(UiFailure::from)?;
                         let groups = if let Some(order) = manual {
                             manual_computer_groups(reader, backend, user, groups, order).await?
                         } else {
@@ -1138,7 +1165,7 @@ impl Sidebar {
     fn apply_computer_page(
         &mut self,
         action: ComputerMore,
-        result: Result<ComputerPageReply, String>,
+        result: Result<ComputerPageReply, UiFailure>,
         cx: &mut Context<Self>,
     ) {
         let key = action.kind.key();
@@ -1154,12 +1181,12 @@ impl Sidebar {
         page.loading.remove(&key);
         let result = match result {
             Ok(reply) => reply,
-            Err(error) if error == catalog::CANCELLED => {
+            Err(UiFailure::Local(catalog::CANCELLED, _)) => {
                 self.load_computer_page(action, cx);
                 return;
             }
             Err(error) => {
-                page.errors.insert(key, error);
+                page.errors.insert(key, error.into());
                 self.finish_computer_revalidation(cx);
                 self.rebuild_entries();
                 cx.notify();

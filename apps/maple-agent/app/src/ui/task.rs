@@ -8,7 +8,7 @@ use std::future::Future;
 
 use gpui::{Context, Task};
 
-use crate::backend::AgentBackend;
+use crate::backend::{AgentBackend, HostFailure};
 
 /// Keep a bridging task alive on its view. Finished bridges are pruned
 /// first, so the vector stays bounded by the number of calls in flight
@@ -58,13 +58,47 @@ where
 pub(crate) enum Failure {
     Cancelled(&'static str),
     Backend(String),
+    Host(HostFailure),
+    Local(&'static str, &'static str),
+    Context {
+        key: &'static str,
+        args: Vec<(&'static str, String)>,
+        inner: Box<Failure>,
+        fallback: Option<String>,
+    },
 }
 
 impl Failure {
+    /// Worker-side context remains data until the UI receives the result.
+    pub(crate) fn with_context(
+        self,
+        key: &'static str,
+        args: Vec<(&'static str, String)>,
+        fallback: Option<String>,
+    ) -> Self {
+        Self::Context {
+            key,
+            args,
+            inner: Box::new(self),
+            fallback,
+        }
+    }
+    /// Diagnostics are never localized or used to infer a first-party code.
+    pub(crate) fn raw_message(&self) -> Option<&str> {
+        match self {
+            Self::Backend(message) => Some(message),
+            Self::Host(failure) => Some(&failure.message),
+            Self::Context { fallback, .. } => fallback.as_deref(),
+            Self::Local(_, fallback) => Some(fallback),
+            Self::Cancelled(_) => None,
+        }
+    }
+
     pub(crate) fn context(self, key: &'static str) -> super::i18n::UiText {
         match self {
             Self::Cancelled(cancelled) => super::i18n::UiText::key(cancelled),
-            Self::Backend(error) => super::i18n::UiText::message(key, [("error", error.into())]),
+            Self::Backend(error) => super::i18n::UiText::context(key, "error", error.into()),
+            failure => super::i18n::UiText::context(key, "error", failure.into()),
         }
     }
 }
@@ -74,7 +108,23 @@ impl From<Failure> for super::i18n::UiText {
         match failure {
             Failure::Cancelled(key) => Self::key(key),
             Failure::Backend(error) => error.into(),
+            Failure::Host(failure) => super::host_errors::failure_text(&failure),
+            Failure::Local(key, _) => Self::key(key),
+            Failure::Context {
+                key, args, inner, ..
+            } => Self::context_args(
+                key,
+                args.into_iter().map(|(name, value)| (name, value.into())),
+                "error",
+                (*inner).into(),
+            ),
         }
+    }
+}
+
+impl From<HostFailure> for Failure {
+    fn from(failure: HostFailure) -> Self {
+        Self::Host(failure)
     }
 }
 
@@ -90,12 +140,12 @@ impl From<&str> for Failure {
     }
 }
 
-pub(crate) fn completion<T>(
-    result: Result<Result<T, String>, tokio::task::JoinError>,
+pub(crate) fn completion<T, E: Into<Failure>>(
+    result: Result<Result<T, E>, tokio::task::JoinError>,
     cancelled: &'static str,
 ) -> Result<T, Failure> {
     match result {
-        Ok(result) => result.map_err(Failure::Backend),
+        Ok(result) => result.map_err(Into::into),
         Err(error) => {
             log::debug!("backend task failed: {error:?}");
             Err(Failure::Cancelled(cancelled))
@@ -105,7 +155,7 @@ pub(crate) fn completion<T>(
 
 /// Semantic counterpart to `call` for UI consumers. Legacy callers that use
 /// raw errors for recovery retain their existing String contract.
-pub(crate) fn call_semantic<V, T, F>(
+pub(crate) fn call_semantic<V, T, E, F>(
     backend: &AgentBackend,
     future: F,
     cancelled: &'static str,
@@ -115,7 +165,8 @@ pub(crate) fn call_semantic<V, T, F>(
 where
     V: 'static,
     T: Send + 'static,
-    F: Future<Output = Result<T, String>> + Send + 'static,
+    E: Into<Failure> + Send + 'static,
+    F: Future<Output = Result<T, E>> + Send + 'static,
 {
     let task = backend.spawn(future);
     cx.spawn(async move |this, cx| {
@@ -129,6 +180,25 @@ mod tests {
     use super::*;
     use crate::ui::i18n::{TestLocalizationGuard, UiText, apply_preference};
 
+    #[test]
+    fn semantic_completion_keeps_cancellation_and_context_behavior() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Failure>();
+        let _locale = TestLocalizationGuard::enable();
+        let result: Result<(), Failure> = Err(Failure::Cancelled("chat-task-cancelled"));
+        let notice = completion(Ok(result), "chat-agent-task-cancelled")
+            .unwrap_err()
+            .context("chat-attachment-failed");
+        for (locale, expected) in [
+            ("en", "The task was cancelled"),
+            ("es", "La tarea se canceló"),
+            ("en", "The task was cancelled"),
+        ] {
+            apply_preference(Some(locale));
+            assert_eq!(notice.resolve().as_ref(), expected);
+        }
+    }
+
     #[tokio::test]
     async fn cancellation_reformats_but_backend_diagnostic_stays_raw() {
         let _locale = TestLocalizationGuard::enable();
@@ -138,7 +208,7 @@ mod tests {
             .unwrap_err()
             .into();
         let backend: UiText =
-            completion::<()>(Ok(Err("Provider diagnostic".into())), "chat-task-cancelled")
+            completion::<(), String>(Ok(Err("Provider diagnostic".into())), "chat-task-cancelled")
                 .unwrap_err()
                 .into();
         for (locale, expected) in [
@@ -149,6 +219,40 @@ mod tests {
             apply_preference(Some(locale));
             assert_eq!(cancelled.resolve().as_ref(), expected);
             assert_eq!(backend.resolve().as_ref(), "Provider diagnostic");
+        }
+    }
+}
+
+#[cfg(test)]
+mod presented_tests {
+    use super::*;
+    use crate::ui::i18n::{TestLocalizationGuard, UiText, apply_preference};
+
+    #[test]
+    fn typed_host_failure_crosses_worker_and_nested_context_keeps_metadata() {
+        let _locale = TestLocalizationGuard::enable();
+        let failure = std::thread::spawn(|| {
+            Failure::from(HostFailure::new("host-disconnected", "raw diagnostic")).with_context(
+                "chat-upload-confirm-failed",
+                vec![],
+                Some("original contextual diagnostic".into()),
+            )
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            failure.raw_message(),
+            Some("original contextual diagnostic")
+        );
+        let notice: UiText = failure.into();
+        for locale in ["en", "es", "en"] {
+            apply_preference(Some(locale));
+            assert!(
+                notice
+                    .resolve()
+                    .contains(crate::ui::i18n::tr("runtime-error-host-disconnected").as_ref())
+            );
+            assert!(!notice.resolve().contains("raw diagnostic"));
         }
     }
 }

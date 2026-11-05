@@ -33,7 +33,7 @@ pub(super) enum AccountTarget {
 pub(super) struct AccountState {
     /// The profile; None until loaded or when loading failed.
     pub(super) info: Option<MapleAccount>,
-    pub(super) load_error: Option<String>,
+    pub(super) load_error: Option<UiText>,
     pub(super) verification_notice: Option<UiText>,
     pub(super) verification_busy: bool,
     pub(super) password: PasswordForm,
@@ -151,11 +151,25 @@ impl AccountState {
 }
 
 impl SettingsScreen {
+    /// Preserve typed backend failures and semantic cancellation until the UI thread.
+    pub(super) fn call_presented<T: Send + 'static>(
+        &self,
+        future: impl std::future::Future<Output = Result<T, crate::backend::HostFailure>>
+        + Send
+        + 'static,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Result<T, crate::ui::task::Failure>, &mut Context<Self>) + 'static,
+    ) {
+        let bridge =
+            crate::ui::task::call_semantic(&self.backend, future, "flows-task-cancelled", cx, then);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
+    }
+
     pub(super) fn load_account(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.account(&user_id).await },
+        self.call_presented(
+            async move { backend.call_presented("account", (&user_id,)).await },
             cx,
             |this, result, cx| {
                 match result {
@@ -163,7 +177,7 @@ impl SettingsScreen {
                         this.account.info = Some(info);
                         this.account.load_error = None;
                     }
-                    Err(message) => this.account.load_error = Some(message),
+                    Err(message) => this.account.load_error = Some(message.into()),
                 }
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
@@ -288,8 +302,12 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.request_account_deletion(&user_id).await },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented("request_account_deletion", (&user_id,))
+                    .await
+            },
             cx,
             |this, result, cx| {
                 this.account.delete_busy = false;
@@ -326,10 +344,10 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
+        self.call_presented(
             async move {
                 backend
-                    .confirm_account_deletion(&user_id, code, secret)
+                    .call_presented::<()>("confirm_account_deletion", (&user_id, code, secret))
                     .await
             },
             cx,
@@ -361,8 +379,12 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.change_password(&user_id, current, new).await },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented::<()>("change_password", (&user_id, current, new))
+                    .await
+            },
             cx,
             |this, result, cx| {
                 this.account.password.busy = false;
@@ -389,8 +411,12 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.request_verification_email(&user_id).await },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented::<()>("request_verification_email", (&user_id,))
+                    .await
+            },
             cx,
             |this, result, cx| {
                 this.account.verification_busy = false;
@@ -417,8 +443,8 @@ impl SettingsScreen {
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_faint()))
                     .child(match &self.account.load_error {
-                        Some(message) => message.clone(),
-                        None => tr("settings-account-loading-account").to_string(),
+                        Some(message) => message.resolve(),
+                        None => tr("settings-account-loading-account"),
                     }),
             );
         };
@@ -788,12 +814,8 @@ pub(super) fn password_form_check(current: &str, new: &str, confirm: &str) -> Re
     if current.is_empty() {
         return Err(UiText::key("settings-account-enter-your-current-password"));
     }
-    crate::backend::validate_new_password(new).map_err(|_| {
-        UiText::message(
-            "settings-account-password-minimum",
-            [("count", crate::backend::MIN_PASSWORD_LENGTH.into())],
-        )
-    })?;
+    crate::backend::validate_new_password_presented(new)
+        .map_err(|failure| crate::ui::host_errors::failure_text(&failure))?;
     if new != confirm {
         return Err(UiText::key(
             "settings-account-the-new-passwords-do-not-match",

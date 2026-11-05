@@ -21,7 +21,7 @@ pub(super) enum BillingTarget {
 
 pub(super) struct BillingState {
     pub(super) status: Option<BillingStatus>,
-    pub(super) status_error: Option<String>,
+    pub(super) status_error: Option<UiText>,
     pub(super) products: Option<Vec<Product>>,
     /// True while a portal or checkout link is being minted.
     pub(super) busy: bool,
@@ -97,8 +97,8 @@ impl SettingsScreen {
         self.load_credit_balance(cx);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.billing_status(&user_id).await },
+        self.call_presented(
+            async move { backend.call_presented("billing_status", (&user_id,)).await },
             cx,
             |this, result, cx| {
                 match result {
@@ -106,7 +106,7 @@ impl SettingsScreen {
                         this.billing.status = Some(status);
                         this.billing.status_error = None;
                     }
-                    Err(message) => this.billing.status_error = Some(message),
+                    Err(message) => this.billing.status_error = Some(message.into()),
                 }
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
@@ -115,8 +115,12 @@ impl SettingsScreen {
             },
         );
         let backend = self.backend.clone();
-        self.call(
-            async move { backend.billing_products().await },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented::<Vec<crate::billing::Product>>("billing_products", ())
+                    .await
+            },
             cx,
             |this, result, cx| {
                 if let Ok(mut products) = result {
@@ -188,8 +192,8 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.open_billing_portal(&user_id).await },
+        self.call_presented(
+            async move { backend.call_presented::<()>("open_billing_portal", (&user_id,)).await },
             cx,
             |this, result, cx| {
                 this.billing.busy = false;
@@ -223,14 +227,12 @@ impl SettingsScreen {
             ProductAction::Current => {}
             ProductAction::Portal => self.open_billing_portal(cx),
             ProductAction::Web => {
-                self.billing.notice = Some(
-                    match crate::backend::open_in_browser(crate::billing::PRICING_URL, "pricing") {
-                        Ok(()) => {
-                            UiText::key("settings-billing-opened-the-pricing-page-in-your-browser")
-                        }
-                        Err(message) => message.into(),
-                    },
-                );
+                self.billing.notice = Some(match crate::backend::open_pricing_page_presented() {
+                    Ok(()) => {
+                        UiText::key("settings-billing-opened-the-pricing-page-in-your-browser")
+                    }
+                    Err(message) => crate::ui::host_errors::failure_text(&message),
+                });
                 cx.notify();
             }
             ProductAction::Checkout => {
@@ -240,8 +242,8 @@ impl SettingsScreen {
                 let backend = self.backend.clone();
                 let user_id = self.user_id.clone();
                 let product_id = product.id.clone();
-                self.call(
-                    async move { backend.start_checkout(&user_id, product_id).await },
+                self.call_presented(
+                    async move { backend.call_presented::<()>("start_checkout", (&user_id, product_id)).await },
                     cx,
                     |this, result, cx| {
                         this.billing.busy = false;
@@ -282,8 +284,8 @@ impl SettingsScreen {
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_faint()))
                     .child(match &self.billing.status_error {
-                        Some(message) => message.clone(),
-                        None => tr("settings-billing-loading-plan").to_string(),
+                        Some(message) => message.resolve(),
+                        None => tr("settings-billing-loading-plan"),
                     }),
             );
         };

@@ -1846,3 +1846,49 @@ runtime-error-oauth-url = Pega la URL completa a la que se te redirigió (contie
 runtime-error-sign-in-publication = Falló el inicio de sesión. Vuelve a intentarlo.
 runtime-error-account-already-signed-in = Ya hay una sesión iniciada en Maple. Cierra sesión antes de cambiar de cuenta.
 runtime-error-account-owner-read = No se pudo leer el propietario de la sesión guardada. Vuelve a intentarlo.
+
+## Chat attachment staging
+chat-staging-file-limit = Hay demasiados archivos adjuntos guardados. Elimina algunos archivos de tus borradores antes de adjuntar más.
+chat-staging-byte-limit = Los archivos adjuntos guardados superan los 300 MiB. Elimina algunos archivos de tus borradores antes de adjuntar más.
+chat-staging-unsafe-directory = La carpeta temporal de archivos adjuntos no es segura
+chat-staging-private-directory = La carpeta temporal de archivos adjuntos no es privada
+chat-staging-not-file = Elige un archivo, no una carpeta
+chat-staging-file-too-large = Los archivos deben ser de 30 MiB o menos
+chat-staging-file-grew = El archivo aumentó de tamaño mientras se adjuntaba. Vuelve a adjuntarlo.
+chat-staging-prepare-failed = No se pudo preparar la carpeta temporal de archivos adjuntos: { $error }
+chat-staging-open-failed = No se pudo abrir el archivo adjunto: { $error }
+chat-subscribe-history-failed = No fue posible suscribirse al historial de la tarea: { $error }
+chat-web-change-error = No se pudo cambiar el acceso web: { $error }
+chat-integration-change-error = No se pudo cambiar { $name }: { $error }
+chat-project-integrations-load-failed = No se pudieron cargar las integraciones del proyecto: { $error }
+chat-output-full-budget = La salida completa supera el límite actual de visualización de 32 MiB.
+chat-output-range-invalid = El fragmento de salida no es válido
+chat-output-range-stalled = El fragmento de salida no avanzó.
+chat-output-invalid = La salida completa no es válida
+chat-sidebar-order-invalid = El orden manual de la barra lateral no es válido
+chat-sidebar-summary-failed = No se pudieron preparar los resúmenes de la barra lateral
+chat-sidebar-account-inactive = La cuenta de la barra lateral ya no está activa
+chat-sidebar-page-large = La página de la barra lateral es demasiado grande
+chat-sidebar-page-stalled = La paginación de los resúmenes de la barra lateral no avanzó
+chat-sidebar-order-cancelled = Se canceló el orden manual de la barra lateral
+chat-sidebar-order-changed = El orden de la barra lateral cambió; actualiza esta lista
+chat-search-unavailable = La búsqueda no está disponible
+chat-sidebar-order-save-failed = No se pudo guardar el orden de la barra lateral
+chat-upload-cancelled-unsent = Se canceló la carga. No se envió ningún mensaje.
+chat-upload-retained-unconfirmed = No se pudo confirmar la carga del archivo guardado. Tu borrador se conserva; vuelve a intentarlo cuando se restablezca la conexión.
+chat-upload-receipt-cancelled = Se canceló la carga del archivo. Tu borrador se conserva.
+chat-upload-retained-pending = La carga del archivo guardado sigue en curso. Tu borrador se conserva; vuelve a intentarlo cuando termine.
+chat-upload-preparing = El archivo adjunto todavía se está preparando
+chat-upload-confirm-failed = No se pudo confirmar la carga del archivo: { $error }. Tu borrador se conserva; vuelve a intentarlo cuando se restablezca la conexión.
+chat-settings-sync-unavailable = El host de Maple no está disponible; los cambios de configuración siguen pendientes
+chat-settings-sync-timeout = Se agotó el tiempo de sincronización de la configuración de Maple
+chat-sidebar-sync-state-changed = El estado de la configuración de Maple cambió; los cambios en el orden de la barra lateral siguen pendientes
+chat-sidebar-sync-timeout = Se agotó el tiempo de sincronización del orden de la barra lateral de Maple
+chat-send-failed-heading = No se pudo enviar
+
+## Flows: typed task completion
+flows-task-cancelled = La tarea se canceló
+
+## Flows: direct pricing-page browser errors
+runtime-error-browser-pricing-link = No se pudo abrir la página de precios: enlace inesperado
+runtime-error-browser-pricing-open = No se pudo abrir la página de precios en tu navegador

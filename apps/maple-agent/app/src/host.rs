@@ -234,7 +234,7 @@ impl RemoteClient {
             .map_err(|failure| failure.message)
     }
 
-    async fn call_identified_presented<R: DeserializeOwned>(
+    pub(crate) async fn call_identified_presented<R: DeserializeOwned>(
         &self,
         method: &str,
         params: impl Serialize,

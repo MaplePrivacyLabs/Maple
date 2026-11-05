@@ -69,6 +69,7 @@ impl ChatScreen {
                     };
                     let transcript = TranscriptCtx {
                         messages: &chat.messages,
+                        local_error_text: &chat.local_error_text,
                         markdown_cache: &chat.markdown_cache,
                         derived: &chat.derived,
                         attachment_images: &chat.attachment_images,
@@ -359,15 +360,14 @@ pub(super) fn render_timeline_item(
         "message" => (Some(gpui::Role::Article), Some("Maple".into())),
         "error" => (
             Some(gpui::Role::Alert),
-            super::super::timeline_labels::title(item, transcript.messages)
-                .or_else(|| item.title.clone().map(Into::into)),
+            error_presentation(item, transcript.local_error_text, transcript.messages).0,
         ),
         _ => (None, None),
     };
     let description = (item.item_type == "error").then(|| {
-        super::super::timeline_labels::body(item, transcript.messages)
+        error_presentation(item, transcript.local_error_text, transcript.messages)
+            .1
             .map(|text| text.to_string())
-            .or_else(|| item.text.clone())
             .unwrap_or_default()
     });
     let item = match item.item_type.as_str() {
@@ -1630,10 +1630,28 @@ fn extract_output_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Both visible error copy and accessibility text use this presentation layer.
+/// Raw body fields still drive protocol/usage-limit behavior below.
+pub(super) fn error_presentation(
+    item: &AgentTimelineItem,
+    local: &std::collections::HashMap<String, crate::ui::i18n::UiText>,
+    messages: &crate::ui::i18n::MessageCache,
+) -> (Option<SharedString>, Option<SharedString>) {
+    if let Some(body) = local.get(&item.id) {
+        return (Some(tr("chat-send-failed-heading")), Some(body.resolve()));
+    }
+    (
+        super::super::timeline_labels::title(item, messages)
+            .or_else(|| item.title.clone().map(Into::into)),
+        super::super::timeline_labels::body(item, messages)
+            .or_else(|| item.text.clone().map(Into::into)),
+    )
+}
+
 fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
-    let text = super::super::timeline_labels::body(item, transcript.messages)
+    let text = error_presentation(item, transcript.local_error_text, transcript.messages)
+        .1
         .map(|text| text.to_string())
-        .or_else(|| item.text.clone())
         .or_else(|| item.title.clone())
         .unwrap_or_default();
     if text.trim().is_empty() {

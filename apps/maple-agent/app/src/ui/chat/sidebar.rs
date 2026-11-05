@@ -24,6 +24,7 @@ use super::computers::{
     Computer, Destination, Navigate, ProjectRenameRequest, ProjectTarget, TaskAction,
     TaskActionRequest,
 };
+use crate::ui::task::Failure as UiFailure;
 use computers::{ComputerPages, OtherTask};
 use paging::{PageKind, SidebarPages};
 
@@ -2146,37 +2147,18 @@ impl Sidebar {
     }
 
     /// Run a backend future and hand its result back on this thread.
-    fn call_semantic<T, F>(
+    fn call_semantic<T, E, F>(
         &self,
         future: F,
         cx: &mut Context<Self>,
         then: impl FnOnce(&mut Self, Result<T, crate::ui::task::Failure>, &mut Context<Self>) + 'static,
     ) where
         T: Send + 'static,
-        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+        E: Into<crate::ui::task::Failure> + Send + 'static,
+        F: std::future::Future<Output = Result<T, E>> + Send + 'static,
     {
         let bridge =
             crate::ui::task::call_semantic(&self.backend, future, "chat-task-cancelled", cx, then);
-        crate::ui::task::retain(&self.bridged_tasks, bridge);
-    }
-
-    fn call<T, F>(
-        &self,
-        future: F,
-        cx: &mut Context<Self>,
-        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
-    ) where
-        T: Send + 'static,
-        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
-    {
-        let task = self.backend.spawn(future);
-        let bridge = cx.spawn(async move |this, cx| {
-            let result = task.await.unwrap_or_else(|error| {
-                log::debug!("sidebar task failed: {error:?}");
-                Err("The task was cancelled".to_string())
-            });
-            this.update(cx, |this, cx| then(this, result, cx)).ok();
-        });
         crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
@@ -2215,9 +2197,15 @@ impl Sidebar {
                     } else {
                         serde_json::json!({"pinned_tasks":{"remove":[task]}})
                     };
-                    backend.set_remote_sidebar(&user, computer, patch).await
+                    backend
+                        .call_presented::<()>("set_remote_sidebar", (&user, computer, patch))
+                        .await
+                        .map_err(UiFailure::from)
                 } else {
-                    backend.set_task_pinned(&user, &task, pinned).await
+                    backend
+                        .call_presented::<()>("set_task_pinned", (&user, &task, pinned))
+                        .await
+                        .map_err(UiFailure::from)
                 }
             },
             cx,
@@ -2461,7 +2449,15 @@ impl Sidebar {
                 let backend = self.backend.clone();
                 let user_id = self.user_id.clone();
                 self.call_semantic(
-                    async move { backend.rename_session(&user_id, &session_id, name).await },
+                    async move {
+                        backend
+                            .call_presented::<maple_agent::agent::AgentSessionSummary>(
+                                "rename_session",
+                                (&user_id, &session_id, name),
+                            )
+                            .await
+                            .map_err(UiFailure::from)
+                    },
                     cx,
                     |_this, result, cx| match result {
                         Ok(session) => cx.emit(SidebarEvent::SessionChanged(session)),
@@ -2495,7 +2491,15 @@ impl Sidebar {
                 }
                 let path = root.path.clone();
                 self.call_semantic(
-                    async move { backend.rename_project_root(&user_id, path, name).await },
+                    async move {
+                        backend
+                            .call_presented::<maple_agent::agent::RecentProjectRoot>(
+                                "rename_project_root",
+                                (&user_id, path, name),
+                            )
+                            .await
+                            .map_err(UiFailure::from)
+                    },
                     cx,
                     move |this, result, cx| {
                         this.pending_project_names.remove(&root);
@@ -2574,8 +2578,16 @@ impl Sidebar {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let path = root.path.clone();
-        self.call(
-            async move { backend.project_trust(&user_id, path).await },
+        self.call_semantic(
+            async move {
+                backend
+                    .call_presented::<maple_agent::agent::AgentProjectTrustStatus>(
+                        "project_trust",
+                        (&user_id, path),
+                    )
+                    .await
+                    .map_err(UiFailure::from)
+            },
             cx,
             move |this, result, cx| {
                 if let Ok(status) = result

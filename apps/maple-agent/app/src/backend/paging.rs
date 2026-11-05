@@ -6,15 +6,15 @@ use std::sync::Arc;
 
 use maple_agent::agent::{
     AgentDesktopQueueSnapshot, AgentMcpConnectionError, AgentPersistedRowIdentity,
-    AgentQueuedMessage, AgentRuntimeStatus, AgentServiceEvent, AgentSessionSummary, AgentTaskState,
-    AgentTimelineItem,
+    AgentRuntimeStatus, AgentServiceEvent, AgentSessionSummary, AgentTaskState, AgentTimelineItem,
 };
+#[cfg(test)]
+use maple_agent::store::NavigationProjectPage;
 use maple_agent::store::{AccountId, PageTransport, Store};
 pub use maple_agent::store::{
-    AttachmentRangeReply, HistoryAnchorRequest, HistoryPage, HistoryPageRequest,
-    NavigationGetTasksReply, NavigationGroupPage, NavigationGroupQuery, NavigationProjectPage,
-    NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery, OpenTaskPageRequest,
-    ProjectSummary, RowRange, RowRangeRequest, TaskSummary, TimelineRow,
+    AttachmentRangeReply, HistoryAnchorRequest, HistoryPageRequest, NavigationGroupQuery,
+    NavigationSearchQuery, NavigationTaskQuery, OpenTaskPageRequest, ProjectSummary,
+    RowRangeRequest, TaskSummary, TimelineRow,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -173,30 +173,7 @@ impl AgentBackend {
             + 1
     }
 
-    pub async fn navigation_bootstrap(&self, user: &str) -> Result<NavigationBootstrap, String> {
-        self.call("navigation_bootstrap", (user,)).await
-    }
-    pub async fn list_tasks(
-        &self,
-        user: &str,
-        request: NavigationTaskQuery,
-    ) -> Result<NavigationTaskPage, String> {
-        self.call("list_tasks", (user, request)).await
-    }
-    pub async fn pinned_tasks(
-        &self,
-        user: &str,
-        request: PinnedTasksRequest,
-    ) -> Result<NavigationTaskPage, String> {
-        self.call("pinned_tasks", (user, request)).await
-    }
-    pub async fn get_tasks(
-        &self,
-        user: &str,
-        request: GetTasksRequest,
-    ) -> Result<NavigationGetTasksReply, String> {
-        self.call("get_tasks", (user, request)).await
-    }
+    #[cfg(test)]
     pub async fn list_projects(
         &self,
         user: &str,
@@ -204,39 +181,48 @@ impl AgentBackend {
     ) -> Result<NavigationProjectPage, String> {
         self.call("list_projects", (user, request)).await
     }
-    pub async fn list_project_groups(
-        &self,
-        user: &str,
-        request: NavigationGroupQuery,
-    ) -> Result<NavigationGroupPage, String> {
-        self.call("list_project_groups", (user, request)).await
-    }
-    pub async fn search_tasks(
-        &self,
-        user: &str,
-        request: NavigationSearchQuery,
-    ) -> Result<NavigationTaskPage, String> {
-        self.call("search_tasks", (user, request)).await
-    }
+    #[cfg(test)]
     pub async fn open_task(
         &self,
         user: &str,
         request: OpenTaskPageRequest,
         intent: u64,
     ) -> Result<PagedTaskDetail, String> {
-        self.subscribe_task(user, &request.task, intent).await?;
-        self.call("open_task", (user, request)).await
+        self.open_task_presented(user, request, intent)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    #[cfg(test)]
+    pub async fn subscribe_task(&self, user: &str, task: &str, intent: u64) -> Result<(), String> {
+        self.subscribe_task_presented(user, task, intent)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn open_task_presented(
+        &self,
+        user: &str,
+        request: OpenTaskPageRequest,
+        intent: u64,
+    ) -> Result<PagedTaskDetail, HostFailure> {
+        self.subscribe_task_presented(user, &request.task, intent)
+            .await?;
+        self.call_presented("open_task", (user, request)).await
     }
 
     /// Select transcript deltas before sending to a newly created task. The
     /// caller reserves the intent synchronously with its navigation action.
-    pub async fn subscribe_task(&self, user: &str, task: &str, intent: u64) -> Result<(), String> {
+    pub async fn subscribe_task_presented(
+        &self,
+        user: &str,
+        task: &str,
+        intent: u64,
+    ) -> Result<(), HostFailure> {
         #[cfg(test)]
         let subscribe = matches!(&self.client, super::BackendClient::Host(_));
         #[cfg(not(test))]
         let subscribe = true;
         if subscribe {
-            self.call::<()>(
+            self.call_presented::<()>(
                 "subscribe",
                 (
                     user,
@@ -249,23 +235,6 @@ impl AgentBackend {
             .await?;
         }
         Ok(())
-    }
-    pub async fn history_before_anchor(
-        &self,
-        user: &str,
-        request: HistoryAnchorRequest,
-    ) -> Result<HistoryPage, String> {
-        self.call("history_before", (user, request)).await
-    }
-    pub async fn history_forward_after(
-        &self,
-        user: &str,
-        request: HistoryAnchorRequest,
-    ) -> Result<HistoryPage, String> {
-        self.call("history_forward", (user, request)).await
-    }
-    pub async fn read_row(&self, user: &str, request: RowRangeRequest) -> Result<RowRange, String> {
-        self.call("read_row", (user, request)).await
     }
     pub async fn read_attachment(
         &self,
@@ -280,13 +249,6 @@ impl AgentBackend {
         request: StoreToolSummaryRequest,
     ) -> Result<(), String> {
         self.call("store_tool_summary", (user, request)).await
-    }
-    pub async fn queued_message(
-        &self,
-        user: &str,
-        request: QueuedMessageRequest,
-    ) -> Result<AgentQueuedMessage, String> {
-        self.call("queued_message", (user, request)).await
     }
 }
 

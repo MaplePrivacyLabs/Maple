@@ -27,6 +27,7 @@ pub(super) struct DraftAttachment {
 #[derive(Debug)]
 enum PreparationError {
     Raw(String),
+    Staging(staging::Failure),
     Stopped,
     Failed(String),
     ImageTooLarge,
@@ -40,10 +41,34 @@ impl From<String> for PreparationError {
     }
 }
 
+impl From<staging::Failure> for PreparationError {
+    fn from(error: staging::Failure) -> Self {
+        Self::Staging(error)
+    }
+}
+
 impl PreparationError {
     fn into_text(self) -> UiText {
         match self {
             Self::Raw(error) => error.into(),
+            Self::Staging(error) => match error {
+                staging::Failure::RetainedFileLimit => UiText::key("chat-staging-file-limit"),
+                staging::Failure::RetainedByteLimit => UiText::key("chat-staging-byte-limit"),
+                staging::Failure::UnsafeDirectory => UiText::key("chat-staging-unsafe-directory"),
+                staging::Failure::NonPrivateDirectory => {
+                    UiText::key("chat-staging-private-directory")
+                }
+                staging::Failure::NotAFile => UiText::key("chat-staging-not-file"),
+                staging::Failure::FileTooLarge => UiText::key("chat-staging-file-too-large"),
+                staging::Failure::FileGrew => UiText::key("chat-staging-file-grew"),
+                staging::Failure::PrepareDirectory(error) => {
+                    UiText::context("chat-staging-prepare-failed", "error", error.into())
+                }
+                staging::Failure::OpenAttachment(error) => {
+                    UiText::context("chat-staging-open-failed", "error", error.into())
+                }
+                staging::Failure::Raw(error) => error.into(),
+            },
             Self::Stopped => UiText::key("chat-attachment-stopped"),
             Self::Failed(error) => {
                 UiText::message("chat-attachment-failed", [("error", error.into())])
@@ -160,28 +185,30 @@ impl ChatScreen {
         self.notice = None;
         self.call_semantic(
             async move {
-                Ok(async move {
-                    let permit = preparation_slots()
-                        .clone()
-                        .acquire_owned()
+                Ok::<_, String>(
+                    async move {
+                        let permit = preparation_slots()
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .map_err(|_| PreparationError::Stopped)?;
+                        tokio::task::spawn_blocking(move || {
+                            let _permit = permit;
+                            let mime = draft_image_mime(&name, &image.bytes)?;
+                            let staged = staging::copy_bytes(&staging::root(), &image.bytes)?;
+                            let thumbnail = square_thumbnail(&image.bytes).ok().map(Arc::new);
+                            Ok((
+                                staged,
+                                mime.to_string(),
+                                image.bytes.len() as u64,
+                                thumbnail,
+                            ))
+                        })
                         .await
-                        .map_err(|_| PreparationError::Stopped)?;
-                    tokio::task::spawn_blocking(move || {
-                        let _permit = permit;
-                        let mime = draft_image_mime(&name, &image.bytes)?;
-                        let staged = staging::copy_bytes(&staging::root(), &image.bytes)?;
-                        let thumbnail = square_thumbnail(&image.bytes).ok().map(Arc::new);
-                        Ok((
-                            staged,
-                            mime.to_string(),
-                            image.bytes.len() as u64,
-                            thumbnail,
-                        ))
-                    })
-                    .await
-                    .map_err(|e| PreparationError::Failed(e.to_string()))?
-                }
-                .await)
+                        .map_err(|e| PreparationError::Failed(e.to_string()))?
+                    }
+                    .await,
+                )
             },
             cx,
             move |this, result, cx| {
@@ -265,7 +292,7 @@ impl ChatScreen {
                         ),
                     )
                     .await;
-                    Ok(())
+                    Ok::<_, String>(())
                 },
                 cx,
                 |_, _, _| {},
@@ -343,20 +370,22 @@ impl ChatScreen {
         for (id, path) in work {
             self.call_semantic(
                 async move {
-                    Ok(async move {
-                        let permit = preparation_slots()
-                            .clone()
-                            .acquire_owned()
+                    Ok::<_, String>(
+                        async move {
+                            let permit = preparation_slots()
+                                .clone()
+                                .acquire_owned()
+                                .await
+                                .map_err(|_| PreparationError::Stopped)?;
+                            tokio::task::spawn_blocking(move || {
+                                let _permit = permit;
+                                prepare_file(&path)
+                            })
                             .await
-                            .map_err(|_| PreparationError::Stopped)?;
-                        tokio::task::spawn_blocking(move || {
-                            let _permit = permit;
-                            prepare_file(&path)
-                        })
-                        .await
-                        .map_err(|e| PreparationError::Failed(e.to_string()))?
-                    }
-                    .await)
+                            .map_err(|e| PreparationError::Failed(e.to_string()))?
+                        }
+                        .await,
+                    )
                 },
                 cx,
                 move |this, result, cx| {
@@ -524,6 +553,31 @@ pub(super) fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_failure_reformats_after_returning_from_worker() {
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        let failure = std::thread::spawn(|| {
+            PreparationError::from(staging::Failure::OpenAttachment(
+                "OS detail /tmp/raw".into(),
+            ))
+        })
+        .join()
+        .unwrap();
+        let notice = failure.into_text();
+        for (locale, prefix) in [
+            ("en", "Could not open the attachment:"),
+            ("es", "No se pudo abrir el archivo adjunto:"),
+            ("en", "Could not open the attachment:"),
+        ] {
+            apply_preference(Some(locale));
+            let text = notice.resolve();
+            assert!(text.starts_with(prefix));
+            assert!(text.contains("OS detail /tmp/raw"));
+        }
+    }
+
     #[test]
     fn changing_the_draft_task_uses_a_new_upload_operation() {
         let mut draft = DraftAttachment::preparing(1, "report.zip".into());

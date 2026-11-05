@@ -221,7 +221,7 @@ impl ChatScreen {
         &mut self,
         send_id: String,
         send: UnresolvedSend,
-        result: Result<String, String>,
+        result: Result<String, UiFailure>,
         cx: &mut Context<Self>,
     ) {
         let session = send.session.clone();
@@ -236,7 +236,10 @@ impl ChatScreen {
             }
             Err(message) => {
                 self.sending_previews.remove(&send_id);
-                let uncertain = message.starts_with("Send outcome unknown");
+                let raw = message.raw_message().map(str::to_owned);
+                let uncertain = raw
+                    .as_deref()
+                    .is_none_or(|raw| raw.starts_with("Send outcome unknown"));
                 self.unresolved_sends.insert(send_id.clone(), send);
                 if self.is_selected(&session) {
                     self.awaiting_first_token = false;
@@ -245,12 +248,14 @@ impl ChatScreen {
                     self.notice = Some(UiText::key("chat-send-uncertain"));
                     self.check_unresolved_sends(cx);
                 } else {
+                    let raw = raw.expect("definite failure retains its original diagnostic");
+                    // `message` still carries semantic presentation for the UI-only error renderer.
                     if self.is_selected(&session) {
-                        self.push_local_error("Send failed", &message, cx);
+                        self.push_local_error("Send failed", &raw, message.into(), cx);
                     }
                     self.apply_send_receipt(
                         &send_id,
-                        Some(crate::host::receipts::Outcome::Finished(Err(message))),
+                        Some(crate::host::receipts::Outcome::Finished(Err(raw))),
                         cx,
                     );
                 }

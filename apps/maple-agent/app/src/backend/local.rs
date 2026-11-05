@@ -34,6 +34,7 @@ use crate::hosted_oauth::{ATTEMPT_TIMEOUT, HandoffListener};
 
 #[path = "deletion.rs"]
 mod deletion;
+#[cfg(feature = "desktop")]
 pub use deletion::AccountDeletionStatus;
 
 #[cfg(feature = "proxy")]
@@ -3491,6 +3492,11 @@ fn billing_failure(error: HostFailure, fallback: &str, code: &str) -> HostFailur
     )
 }
 
+/// Open the fixed pricing page while retaining typed browser failures.
+pub(crate) fn open_pricing_page_presented() -> Result<(), HostFailure> {
+    open_in_browser_presented(crate::billing::PRICING_URL, "pricing", "browser-pricing")
+}
+
 /// Hand a billing URL to the system browser. Only `https` URLs are opened:
 /// the billing API is trusted, but a bad deploy must not launch anything
 /// else through the browser handler.
@@ -3596,12 +3602,6 @@ fn account_error_message(error: MapleAccountError, fallback: &str, code: &str) -
 
 pub fn open_in_browser(url: &str, what: &str) -> Result<(), String> {
     open_in_browser_presented(url, what, "unknown").map_err(|failure| failure.message)
-}
-pub fn validate_api_key_name(name: &str) -> Result<String, String> {
-    validate_api_key_name_presented(name).map_err(|failure| failure.message)
-}
-pub fn validate_new_password(password: &str) -> Result<(), String> {
-    validate_new_password_presented(password).map_err(|failure| failure.message)
 }
 fn credit_amount_failure(error: crate::billing::CreditAmountError) -> HostFailure {
     use crate::billing::CreditAmountError;

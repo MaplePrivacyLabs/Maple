@@ -247,6 +247,10 @@ impl<'ast> Visit<'ast> for UiStrings {
                     || segment.ident == "localized"
                     || segment.ident == "key"
                     || segment.ident == "message"
+                    || segment.ident == "context"
+                    || segment.ident == "context_args"
+                    || segment.ident == "with_context"
+                    || segment.ident == "Local"
             })
             && let Some(syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Str(key),
@@ -265,7 +269,7 @@ impl<'ast> Visit<'ast> for UiStrings {
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if node.method == "get"
+        if (node.method == "get" || node.method == "context" || node.method == "with_context")
             && let Some(syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Str(key),
                 ..
@@ -303,6 +307,56 @@ fn visit_ui(path: &Path, visitor: &mut UiStrings) {
         {
             visitor.visit_file(&syn::parse_file(&std::fs::read_to_string(path).unwrap()).unwrap());
         }
+    }
+}
+
+#[test]
+fn nested_notice_context_reformats_each_layer_and_preserves_raw_details() {
+    let _locale = TestLocalizationGuard::enable();
+    let semantic = UiText::context(
+        "chat-attachment-failed",
+        "error",
+        UiText::context(
+            "chat-staging-open-failed",
+            "error",
+            UiText::key("chat-task-cancelled"),
+        ),
+    );
+    let raw = UiText::context(
+        "chat-staging-open-failed",
+        "error",
+        "OS detail /tmp/raw".into(),
+    );
+    let cloned = semantic.clone();
+    for (locale, outer, inner, cancelled) in [
+        (
+            "en",
+            "Attachment preparation failed:",
+            "Could not open the attachment:",
+            "The task was cancelled",
+        ),
+        (
+            "es",
+            "No se pudo preparar el archivo adjunto:",
+            "No se pudo abrir el archivo adjunto:",
+            "La tarea se canceló",
+        ),
+        (
+            "en",
+            "Attachment preparation failed:",
+            "Could not open the attachment:",
+            "The task was cancelled",
+        ),
+    ] {
+        apply_preference(Some(locale));
+        let text = semantic.resolve();
+        assert!(text.starts_with(outer));
+        assert!(text.contains(inner));
+        assert!(text.contains(cancelled));
+        assert_eq!(text, cloned.resolve());
+        assert_eq!(semantic, cloned);
+        assert!(raw.resolve().starts_with(inner));
+        assert!(raw.resolve().contains("OS detail /tmp/raw"));
     }
 }
 
@@ -364,6 +418,7 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../chat/navigation.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/paging.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/attachments.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/staging.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/speech.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/computers.rs")).unwrap());
     assert!(
@@ -713,4 +768,31 @@ fn runtime_memory_requirement_and_password_retention_survive_locale_switch() {
             .resolve()
             .contains("Conserva ambas contraseñas")
     );
+}
+
+#[test]
+fn nested_context_keeps_outer_arguments_and_inner_wins_over_duplicate() {
+    let _locale = TestLocalizationGuard::enable();
+    let notice = UiText::context_args(
+        "chat-project-integration-save-failed",
+        [
+            ("name", "Raw MCP".into()),
+            ("project", "/raw/project".into()),
+            ("error", "must not win".into()),
+        ],
+        "error",
+        UiText::key("chat-task-cancelled"),
+    );
+    for (locale, inner) in [
+        ("en", "The task was cancelled"),
+        ("es", "La tarea se canceló"),
+        ("en", "The task was cancelled"),
+    ] {
+        apply_preference(Some(locale));
+        let text = notice.resolve();
+        assert!(text.contains("Raw MCP"));
+        assert!(text.contains("/raw/project"));
+        assert!(text.contains(inner));
+        assert!(!text.contains("must not win"));
+    }
 }

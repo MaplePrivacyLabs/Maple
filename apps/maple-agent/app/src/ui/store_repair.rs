@@ -114,11 +114,14 @@ impl RepairPanel {
     }
     fn call<T: Send + 'static>(
         &self,
-        future: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+        future: impl std::future::Future<Output = Result<T, crate::backend::HostFailure>>
+        + Send
+        + 'static,
         cx: &mut Context<Self>,
-        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+        then: impl FnOnce(&mut Self, Result<T, super::task::Failure>, &mut Context<Self>) + 'static,
     ) {
-        let bridge = super::task::call(&self.backend, future, cx, then);
+        let bridge =
+            super::task::call_semantic(&self.backend, future, "flows-task-cancelled", cx, then);
         super::task::retain(&self.bridges, bridge);
     }
     fn poll_progress(&mut self, cx: &mut Context<Self>) {
@@ -134,7 +137,7 @@ impl RepairPanel {
                 let result = backend
                     .spawn(async move {
                         control
-                            .local_control::<RepairProgress>("repair_progress", ())
+                            .local_control_presented::<RepairProgress>("repair_progress", ())
                             .await
                     })
                     .await;
@@ -159,7 +162,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<bool>("cancel_store_repair", ())
+                    .local_control_presented::<bool>("cancel_store_repair", ())
                     .await
             },
             cx,
@@ -178,7 +181,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<RepairStatus>("repair_status", ())
+                    .local_control_presented::<RepairStatus>("repair_status", ())
                     .await
             },
             cx,
@@ -209,7 +212,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "authenticate_repair_password",
                         PasswordRequest {
                             password: &password,
@@ -241,7 +244,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "check_store_integrity",
                         serde_json::json!({"kind":"full"}),
                     )
@@ -270,7 +273,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<SalvagePage>("preview_salvage", ())
+                    .local_control_presented::<SalvagePage>("preview_salvage", ())
                     .await
             },
             cx,
@@ -296,7 +299,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<SalvagePage>(
+                    .local_control_presented::<SalvagePage>(
                         "salvage_preview_page",
                         serde_json::json!({"preview_id":preview_id,"offset":offset}),
                     )
@@ -336,7 +339,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "salvage_store",
                         serde_json::json!({"preview_id":preview_id,"confirmation":confirmation}),
                     )
