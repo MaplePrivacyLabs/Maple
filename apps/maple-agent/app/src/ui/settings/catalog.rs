@@ -564,14 +564,8 @@ mod tests {
             screen
         });
         drop(screen);
-        // Loads started with the screen may hold it a moment longer.
-        for _ in 0..500 {
-            cx.run_until_parked();
-            if released.get() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        // Entities are released when effects flush, which parking never does.
+        cx.update(|_| {});
         assert!(released.get());
     }
 
