@@ -12,7 +12,6 @@ trademark of its owner and is used only to identify that app. Fetched 2026-11-04
 | cloudflare | https://www.cloudflare.com/favicon.ico |
 | dropbox | https://fjord.dropboxstatic.com/warp/conversion/dropbox/warp/icons/Dropbox-logo-nav.svg |
 | evernote | https://evernote.com/images/evernote-logo-icon.svg |
-| github | https://github.githubassets.com/assets/pinned-octocat-093da3e6fa40.svg |
 | gitlab | https://about.gitlab.com/images/ico/favicon-192x192.png |
 | intercom | https://github.com/intercom.png (verified organization) |
 | linear | https://linear.app/static/favicon.svg |

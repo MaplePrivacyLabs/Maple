@@ -89,8 +89,6 @@ pub enum McpCatalogConnection {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpCatalogRemote {
     pub url: String,
-    #[serde(default)]
-    pub headers: Vec<McpCatalogHeader>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -151,26 +149,11 @@ impl McpCatalogPlatform {
     }
 }
 
-/// A header the person fills in. `{token}` in `value` marks where the secret goes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct McpCatalogHeader {
-    pub name: String,
-    pub value: String,
-    pub description: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(
-    tag = "kind",
-    rename_all = "lowercase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum McpCatalogAuth {
     /// Browser sign-in, which [`McpCatalogEntry::sign_in`] starts.
     Oauth,
-    /// A token the person gets from the app and pastes in.
-    Token { get_key_url: String },
     /// Nothing to sign in to.
     None,
 }
@@ -385,28 +368,5 @@ mod tests {
             mcp_catalog().iter().any(|entry| entry.id == "xcode"),
             cfg!(target_os = "macos")
         );
-    }
-
-    #[test]
-    fn a_token_entry_says_where_to_get_it_and_where_it_goes() {
-        for entry in every_entry()
-            .iter()
-            .filter(|entry| entry.remote().is_some())
-        {
-            let remote = entry.remote().unwrap();
-            if let McpCatalogAuth::Token { get_key_url } = &entry.auth {
-                assert!(get_key_url.starts_with("https://"), "{}", entry.name);
-                assert!(
-                    remote
-                        .headers
-                        .iter()
-                        .any(|header| header.value.contains("{token}")),
-                    "{} has nowhere to put its token",
-                    entry.name
-                );
-            } else {
-                assert!(remote.headers.is_empty(), "{}", entry.name);
-            }
-        }
     }
 }

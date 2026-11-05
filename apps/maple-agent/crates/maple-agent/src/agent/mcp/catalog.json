@@ -229,27 +229,6 @@
     }
   },
   {
-    "id": "github",
-    "name": "GitHub",
-    "summary": "Read your repositories, issues and pull requests",
-    "category": "developer",
-    "connect": {
-      "type": "streamable-http",
-      "url": "https://api.githubcopilot.com/mcp/readonly",
-      "headers": [
-        {
-          "name": "Authorization",
-          "value": "Bearer {token}",
-          "description": "GitHub personal access token"
-        }
-      ]
-    },
-    "auth": {
-      "kind": "token",
-      "getKeyUrl": "https://github.com/settings/tokens"
-    }
-  },
-  {
     "id": "gitlab",
     "name": "GitLab",
     "summary": "Work with your projects, issues and merge requests",
