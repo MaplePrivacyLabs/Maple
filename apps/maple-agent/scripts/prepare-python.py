@@ -18,6 +18,16 @@ REPO = Path(__file__).resolve().parent.parent
 PINS = Path(__file__).with_name("python-runtime.json")
 RECEIPT = ".prepared.json"
 LICENSES = Path(__file__).with_name("python-licenses")
+# The worker has no use for Tk GUIs, and Python Build Standalone's Linux Tcl/Tk
+# libraries carry an absolute build-host RPATH (/tools/deps/lib). Every bundle
+# leaves Tcl/Tk, tkinter, IDLE and turtledemo out.
+PRUNED = (
+    "bin/idle3*", "lib/libtcl9*", "lib/tcl9*", "lib/tk9*", "lib/itcl*", "lib/thread3*",
+    "lib/python3.*/tkinter", "lib/python3.*/idlelib", "lib/python3.*/turtledemo",
+    "lib/python3.*/lib-dynload/_tkinter.*",
+    "tcl", "Lib/tkinter", "Lib/idlelib", "Lib/turtledemo", "DLLs/_tkinter.pyd", "DLLs/tcl*.dll",
+    "DLLs/tk*.dll", "Scripts/idle*",
+)
 
 
 def digest(path):
@@ -122,6 +132,16 @@ def safe_extract(archive, destination):
     return destination / "python"
 
 
+def prune(runtime):
+    """Remove PRUNED paths; symlinks are removed, never followed."""
+    for pattern in PRUNED:
+        for path in sorted(runtime.glob(pattern)):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+
+
 def inventory(root):
     files = {}
     for path in sorted(root.rglob("*")):
@@ -179,7 +199,7 @@ def prepare_pbs(target, destination, cache, worker, offline=False):
         "executable": asset["executable"],
         "worker": "worker.py",
     }
-    identity = {"manifest": manifest, "archive_sha256": asset["sha256"], "worker_sha256": digest(worker), "licenses": inventory(LICENSES)}
+    identity = {"manifest": manifest, "archive_sha256": asset["sha256"], "worker_sha256": digest(worker), "licenses": inventory(LICENSES), "pruned": list(PRUNED)}
     destination.parent.mkdir(parents=True, exist_ok=True)
     with preparation_lock(destination.with_name(destination.name + ".lock")):
         if reusable(destination, identity):
@@ -188,6 +208,7 @@ def prepare_pbs(target, destination, cache, worker, offline=False):
         archive = download(asset, cache, offline)
         with tempfile.TemporaryDirectory(prefix=".python-stage-", dir=destination.parent) as temporary:
             runtime = safe_extract(archive, Path(temporary))
+            prune(runtime)
             if not (runtime / asset["executable"]).is_file():
                 raise ValueError(f"Python archive lacks {asset['executable']}")
             if not list(runtime.rglob("*LICENSE*")) and not list(runtime.rglob("*license*")):
