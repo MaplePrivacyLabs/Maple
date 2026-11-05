@@ -266,7 +266,6 @@ pub(super) struct ItemDerived {
     /// Readable tool output for the expanded card.
     pub(super) output_text: Option<SharedString>,
     /// Shell execution status stays visible even on a collapsed card.
-    pub(super) shell_status: Option<SharedString>,
     /// `input: {json}` for the expanded card.
     pub(super) input_line: Option<SharedString>,
     /// +/- lines of an edit or write tool, capped at `MAX_DIFF_LINES`.
@@ -295,7 +294,6 @@ impl ItemDerived {
                 })
                 .collect(),
             output_text,
-            shell_status: super::transcript::shell_execution_status(item).map(SharedString::from),
             input_line: tool_input_line(item).map(SharedString::from),
             diff_lines: Arc::new(diff_lines_for(item)),
             external_agent: external_agent_activity(item).map(Arc::new),
