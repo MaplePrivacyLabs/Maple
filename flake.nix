@@ -763,7 +763,7 @@
           # Every scripts/ci test (workflow policy, contracts, the planner, the
           # release and publication scripts).
           ci-scripts = pkgs.runCommand "maple-ci-scripts-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash binutils findutils git jq minisign python3 unzip yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash binutils findutils git jq minisign patchelf stdenv.cc python3 unzip yq-go ];
             src = ./.;
           } ''
             cd "$src"
