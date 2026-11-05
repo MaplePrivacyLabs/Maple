@@ -11559,18 +11559,9 @@ mod state_tests {
 
         let card = cx.debug_bounds("tool-card").expect("the tool card renders");
         assert!(
-            cx.debug_bounds("shell-execution-status").is_some(),
-            "shell status remains visible on a collapsed card"
+            cx.debug_bounds("shell-execution-status").is_none(),
+            "a running shell card keeps a fixed height while progress arrives"
         );
-        chat.read_with(cx, |chat, _| {
-            let status =
-                super::super::transcript::shell_execution_status(&chat.timeline[0]).unwrap();
-            assert!(status.contains("/fixture/worktree"));
-            assert!(status.contains("Running 65s"));
-            assert!(status.contains("no output for 60s"));
-            assert!(status.contains("deadline 120s"));
-            assert!(status.contains("Stop cancels command"));
-        });
         let tool_title = cx
             .debug_bounds("tool-title")
             .expect("the tool card title renders");

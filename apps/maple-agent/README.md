@@ -83,9 +83,10 @@ agent runtime; its desktop Agent page points users to Maple Work.
   `timeout` explicitly. Search guidance asks for a short timeout (normally
   30 seconds) and a narrower scope if it expires; that shorter limit applies
   only when the call requests it.
-  Quiet commands report their starting folder, elapsed time, time since output and
-  deadline every five seconds, including on collapsed tool cards. Stop and
-  deadlines use Pi's process-group cleanup on Unix (process-tree cleanup on Windows).
+  Quiet commands refresh their timeline row every five seconds with their
+  starting folder, elapsed time, time since output and deadline. Tool cards do
+  not display these details. Stop and deadlines use Pi's process-group cleanup
+  on Unix (process-tree cleanup on Windows).
   Maple bounds the whole operation, including setup and stdin delivery, and allows
   up to one second for cooperative cancellation before dropping a stuck operation.
   The execution policy and progress reporting live in Maple; the Pi crates are unchanged.
