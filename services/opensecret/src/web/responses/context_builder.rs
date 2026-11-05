@@ -864,6 +864,7 @@ mod tests {
     fn test_prompt_budget_uses_model_context_window() {
         assert_eq!(prompt_token_budget("llama3-3-70b"), 131_072);
         assert_eq!(prompt_token_budget("glm-5-3"), 262_144);
+        assert_eq!(prompt_token_budget("kimi-k3-1-pro"), 262_144);
         assert_eq!(prompt_token_budget("glm-5-3-flash"), 1_048_576);
         assert_eq!(prompt_token_budget("deepseek-v4-1-flash"), 1_048_576);
     }

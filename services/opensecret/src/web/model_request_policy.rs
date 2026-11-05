@@ -239,13 +239,14 @@ mod tests {
     use super::*;
     use crate::model_config::{
         DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
-        GPT_OSS_120B_MODEL_ID, KIMI_K3_MODEL_ID,
+        GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_MODEL_ID,
     };
 
-    const REASONING_MODELS: [&str; 7] = [
+    const REASONING_MODELS: [&str; 8] = [
         GPT_OSS_120B_MODEL_ID,
         "gpt-oss-safeguard-120b",
         "gemma4-31b",
+        KIMI_K3_1_PRO_MODEL_ID,
         KIMI_K3_MODEL_ID,
         GLM_5_3_MODEL_ID,
         GLM_5_3_FLASH_MODEL_ID,
@@ -298,6 +299,20 @@ mod tests {
             message,
             "Unsupported value: 'medium' is not supported with the 'kimi-k3' model. Supported values are: 'none', 'low', 'high', 'max'."
         );
+        for rejected in ["none", "medium"] {
+            let message = resolve(
+                KIMI_K3_1_PRO_MODEL_ID,
+                json!(rejected),
+                ModelSelection::Explicit,
+            )
+            .unwrap_err();
+            assert_eq!(
+                message,
+                format!(
+                    "Unsupported value: '{rejected}' is not supported with the 'kimi-k3-1-pro' model. Supported values are: 'low', 'high', 'max'."
+                )
+            );
+        }
     }
 
     #[test]
@@ -314,6 +329,8 @@ mod tests {
             (GPT_OSS_120B_MODEL_ID, "max", "high"),
             (KIMI_K3_MODEL_ID, "medium", "high"),
             (KIMI_K3_MODEL_ID, "none", "none"),
+            (KIMI_K3_1_PRO_MODEL_ID, "medium", "high"),
+            (KIMI_K3_1_PRO_MODEL_ID, "none", "low"),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, "minimal", "low"),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, "medium", "high"),
             ("gemma4-31b", "none", "none"),
@@ -425,6 +442,7 @@ mod tests {
             GLM_5_3_MODEL_ID,
             GLM_5_3_FLASH_MODEL_ID,
             GPT_OSS_120B_MODEL_ID,
+            KIMI_K3_1_PRO_MODEL_ID,
         ] {
             let mut request = body(json!({
                 "model": model,

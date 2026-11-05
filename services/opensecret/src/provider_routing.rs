@@ -941,6 +941,8 @@ mod tests {
             "unknown-model",
             "kimi-k-3",
             "kimi-k3-latest",
+            "kimi-k3.1-pro",
+            "kimi-k3-1-pro-latest",
             "deepseek-v4-flash",
             "deepseek-v4-flash-0731",
             "deepseek-v4.1-flash",
@@ -1571,7 +1573,7 @@ mod tests {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
 
-        for model_id in ["kimi-k3", "deepseek-v4-1-flash"] {
+        for model_id in ["kimi-k3-1-pro", "kimi-k3", "deepseek-v4-1-flash"] {
             let mut request = intent(model_id, model_id);
             request.account_uuid = uuid_for_bucket(75);
             let selected = router
@@ -1594,6 +1596,8 @@ mod tests {
         for model_id in [
             "kimi-k-3",
             "kimi-k3-latest",
+            "kimi-k3.1-pro",
+            "kimi-k3-1-pro-latest",
             "deepseek-v4-flash",
             "deepseek-v4-flash-0731",
             "deepseek-v4flash",
