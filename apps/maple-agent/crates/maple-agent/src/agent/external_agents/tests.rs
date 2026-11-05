@@ -12,13 +12,13 @@ use std::fs;
 use std::future::Future;
 use std::io::{BufRead, Write};
 use std::os::fd::FromRawFd;
-use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex as StdMutex;
 
 use pi_ai::content_text;
 
 use super::*;
 use crate::agent::AgentEventSink;
+use crate::agent::test_executable::write_executable;
 
 mod claude_fixture;
 mod end_to_end;
@@ -94,9 +94,7 @@ impl Fixtures {
             self.log_file.display(),
             std::env::current_exe().unwrap().display(),
         );
-        let path = self.shim_dir.join(provider);
-        fs::write(&path, shim).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&self.shim_dir.join(provider), &shim);
     }
 
     fn search_path(&self) -> String {
