@@ -442,6 +442,7 @@ pub const GLM_5_3_MODEL_ID: &str = "glm-5-3";
 pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
 pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
+pub const KIMI_K3_1_PRO_MODEL_ID: &str = "kimi-k3-1-pro";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
 /// The Quick tier's preferred model on every plan.
 pub const QUICK_MODEL_ID: &str = DEEPSEEK_V4_1_FLASH_MODEL_ID;
@@ -915,6 +916,20 @@ const KIMI_K3_REASONING: ModelReasoning = ModelReasoning::tiers(
     ReasoningEffort::Max,
 );
 
+// moonshotai/Kimi-K3.1-Pro model card and quickstart: low/high/max, default max,
+// and thinking is always on. Tinfoil's pinned build still passes `medium`, which
+// Moonshot has since removed, and `none`, which Moonshot never offered, so
+// neither is accepted here.
+const KIMI_K3_1_PRO_REASONING: ModelReasoning = ModelReasoning::tiers(
+    true,
+    ReasoningEffortSet::of(&[
+        ReasoningEffort::Low,
+        ReasoningEffort::High,
+        ReasoningEffort::Max,
+    ]),
+    ReasoningEffort::Max,
+);
+
 // GLM-5.3 and GLM-5.3-Flash never reject a value: anything but low/high runs
 // at max, and every thinking-off control leaks the reasoning into `content`
 // on the deployed builds (vLLM fix d95d1dc is unreleased). Reasoning is
@@ -974,6 +989,15 @@ const KIMI_K3_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfi
     SamplingConfig::new(1.0, 0.95).with_tool_use_top_p(1.0),
     ReasoningHistoryStrategy::KimiPreserveThinking,
 );
+
+// moonshotai/Kimi-K3.1-Pro quickstart: temperature 1.0 and top_p 0.95 are fixed
+// for every task, and each later turn needs the complete assistant message,
+// reasoning included. vLLM's default top_p is 1.0, so 0.95 is sent explicitly.
+const KIMI_K3_1_PRO_RESPONSES_MODEL_CONFIG: ResponsesModelConfig =
+    ResponsesModelConfig::recommended(
+        SamplingConfig::new(1.0, 0.95),
+        ReasoningHistoryStrategy::KimiPreserveThinking,
+    );
 
 // deepseek-ai/DeepSeek-V4.1-Flash model card, "Recommended sampling parameters"
 // (top_p 0.95 or 1.0), and its encoding guide: reasoning is kept for every
@@ -1051,6 +1075,29 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         &["text"],
         None,
         None,
+    )),
+    ModelConfigEntry::new(
+        KIMI_K3_1_PRO_MODEL_ID,
+        "Kimi K3.1 Pro",
+        "Kimi K3.1 Pro",
+        "Multimodal reasoning and tool-use model for long-horizon coding and agent work.",
+        ModelAccessTier::Pro,
+        ModelCapabilities::chat(true, true),
+        &["New"],
+        true,
+        true,
+        false,
+        28,
+        262_144,
+        KIMI_K3_1_PRO_RESPONSES_MODEL_CONFIG,
+    )
+    .with_reasoning(KIMI_K3_1_PRO_REASONING)
+    .with_developer_role_as_system()
+    .with_catalog_metadata(ModelCatalogMetadata::new(
+        &["text", "image"],
+        &["text"],
+        Some("2.8T"),
+        Some("104B"),
     )),
     ModelConfigEntry::new(
         KIMI_K3_MODEL_ID,
@@ -1433,6 +1480,7 @@ mod tests {
         assert_eq!(model_context_window("glm-5-3"), 262_144);
         assert_eq!(model_context_window("glm-5-3-flash"), 1_048_576);
         assert_eq!(model_context_window("kimi-k3"), 262_144);
+        assert_eq!(model_context_window("kimi-k3-1-pro"), 262_144);
         assert_eq!(model_context_window("deepseek-v4-1-flash"), 1_048_576);
         assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 1_048_576);
         assert_eq!(model_context_window(AUTO_POWERFUL_MODEL_ID), 262_144);
@@ -1446,6 +1494,7 @@ mod tests {
             ("gemma4-31b", 1.0, 0.95, None, Some(64)),
             ("glm-5-3", 1.0, 0.95, None, None),
             ("glm-5-3-flash", 1.0, 0.95, None, None),
+            ("kimi-k3-1-pro", 1.0, 0.95, None, None),
             ("kimi-k3", 1.0, 0.95, Some(1.0), None),
             ("deepseek-v4-1-flash", 1.0, 1.0, None, None),
             (
@@ -1504,6 +1553,10 @@ mod tests {
             ("gemma4-31b", ReasoningHistoryStrategy::CurrentTurn),
             ("glm-5-3", ReasoningHistoryStrategy::GlmClearThinking),
             ("glm-5-3-flash", ReasoningHistoryStrategy::GlmClearThinking),
+            (
+                "kimi-k3-1-pro",
+                ReasoningHistoryStrategy::KimiPreserveThinking,
+            ),
             ("kimi-k3", ReasoningHistoryStrategy::KimiPreserveThinking),
             (
                 "deepseek-v4-1-flash",
@@ -1529,6 +1582,7 @@ mod tests {
             ("gemma4-31b", CurrentTurn, CurrentTurn),
             ("glm-5-3", CurrentTurn, CurrentTurn),
             ("glm-5-3-flash", CurrentTurn, CurrentTurn),
+            ("kimi-k3-1-pro", All, All),
             ("kimi-k3", All, All),
             ("deepseek-v4-1-flash", None, All),
             ("llama3-3-70b", None, None),
@@ -1617,6 +1671,10 @@ mod tests {
         assert_eq!(resolve_public_model_id("kimi-k2-5"), None);
         assert_eq!(resolve_public_model_id("kimi-k2-6"), None);
         assert_eq!(resolve_public_model_id("kimi-k3"), Some("kimi-k3"));
+        assert_eq!(
+            resolve_public_model_id("kimi-k3-1-pro"),
+            Some("kimi-k3-1-pro")
+        );
         assert_eq!(resolve_public_model_id("glm-5-3"), Some("glm-5-3"));
         assert_eq!(
             resolve_public_model_id("glm-5-3-flash"),
@@ -1777,6 +1835,7 @@ mod tests {
             let targets = ModelAliasTargets::for_plan(plan);
             for model in [
                 QUICK_MODEL_ID,
+                KIMI_K3_1_PRO_MODEL_ID,
                 KIMI_K3_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
@@ -1824,6 +1883,7 @@ mod tests {
             "gpt-oss-safeguard-120b",
             "llama3-3-70b",
             "gemma4-31b",
+            "kimi-k3-1-pro",
             "kimi-k3",
             "glm-5-3",
             "glm-5-3-flash",
@@ -2006,6 +2066,7 @@ mod tests {
         let openai_models = openai_models_response();
 
         for model in [
+            "kimi-k3-1-pro",
             "kimi-k3",
             "deepseek-v4-1-flash",
             GLM_5_3_FLASH_MODEL_ID,
@@ -2018,7 +2079,10 @@ mod tests {
 
     #[test]
     fn test_new_badges_match_the_currently_launched_models() {
-        let expected = vec![DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string()];
+        let expected = vec![
+            DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+            KIMI_K3_1_PRO_MODEL_ID.to_string(),
+        ];
 
         assert_eq!(
             model_ids_with_badge(&model_catalog_response(ModelPlan::Free), "New"),
@@ -2049,6 +2113,20 @@ mod tests {
         assert_eq!(kimi["capabilities"]["reasoning"], true);
         assert_eq!(kimi["capabilities"]["tool_use"], true);
         assert_eq!(kimi["tasks"], json!(["generate", "vision"]));
+
+        let kimi_k3_1 = catalog_model(&catalog, KIMI_K3_1_PRO_MODEL_ID);
+        assert_eq!(kimi_k3_1["access"], "pro");
+        assert_eq!(kimi_k3_1["provider_id"], KIMI_K3_1_PRO_MODEL_ID);
+        assert_eq!(kimi_k3_1["display_name"], "Kimi K3.1 Pro");
+        assert_eq!(kimi_k3_1["context_window"], 262_144);
+        assert_eq!(kimi_k3_1["input_modalities"], json!(["text", "image"]));
+        assert_eq!(kimi_k3_1["output_modalities"], json!(["text"]));
+        assert_eq!(kimi_k3_1["parameter_size"], "2.8T");
+        assert_eq!(kimi_k3_1["active_parameter_size"], "104B");
+        assert_eq!(kimi_k3_1["capabilities"]["vision"], true);
+        assert_eq!(kimi_k3_1["capabilities"]["reasoning"], true);
+        assert_eq!(kimi_k3_1["capabilities"]["tool_use"], true);
+        assert_eq!(kimi_k3_1["tasks"], json!(["generate", "vision"]));
 
         assert!(!has_model(&catalog, "deepseek-v4-flash"));
 
@@ -2082,7 +2160,7 @@ mod tests {
             Option<&'static [&'static str]>,
             Option<&'static str>,
         );
-        let expected: [Expected; 9] = [
+        let expected: [Expected; 10] = [
             (
                 "gpt-oss-120b",
                 true,
@@ -2098,6 +2176,13 @@ mod tests {
                 Some("medium"),
             ),
             ("gemma4-31b", false, false, None, None),
+            (
+                "kimi-k3-1-pro",
+                true,
+                true,
+                Some(&["max", "high", "low"]),
+                Some("max"),
+            ),
             (
                 "kimi-k3",
                 false,
@@ -2335,7 +2420,10 @@ mod tests {
             );
             assert_eq!(
                 model_ids_with_badge(&catalog, "New"),
-                vec![DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string()]
+                vec![
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+                    KIMI_K3_1_PRO_MODEL_ID.to_string()
+                ]
             );
         }
     }
