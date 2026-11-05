@@ -361,3 +361,31 @@ fn errors_carry_heading_semantics_without_replacing_provider_detail() {
         assert_eq!(item.text.as_deref(), Some(message));
     }
 }
+
+#[test]
+fn provider_body_metadata_preserves_retry_diagnostics_and_clock_specificity() {
+    use super::super::provider::*;
+    for (message, code) in [
+        (AUTHENTICATION_ERROR_MESSAGE, "authentication"),
+        (CREDITS_EXHAUSTED_MESSAGE, "credits"),
+        (CONTEXT_OVERFLOW_MESSAGE, "context"),
+        (RATE_LIMIT_MESSAGE, "rate-limit"),
+        (ENDPOINT_NOT_FOUND_MESSAGE, "endpoint"),
+        (REQUEST_TIMEOUT_MESSAGE, "timeout"),
+        (CONNECT_ERROR_MESSAGE, "connect"),
+        (NETWORK_ERROR_MESSAGE, "network"),
+        (STREAM_TIMEOUT_MESSAGE, "stream-timeout"),
+        (STREAM_ERROR_MESSAGE, "stream"),
+        (ATTESTATION_VERIFICATION_ERROR_MESSAGE, "attestation"),
+        (DEVICE_CLOCK_ERROR_MESSAGE, "clock"),
+        (SECURE_CONNECTION_ERROR_MESSAGE, "secure-connection"),
+    ] {
+        let raw = format!("Request failed (500): {message}");
+        let row = error_item(raw.clone());
+        assert_eq!(row.label.unwrap().name.as_deref(), Some(code));
+        assert_eq!(row.text.as_deref(), Some(raw.as_str()));
+    }
+    let row = error_item("unknown provider diagnostic".into());
+    assert!(row.label.unwrap().name.is_none());
+    assert_eq!(row.text.as_deref(), Some("unknown provider diagnostic"));
+}

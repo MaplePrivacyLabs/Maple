@@ -46,11 +46,11 @@ fn spanish_preference_formats_existing_surfaces_and_initializes_once() {
             [("version", "0.0.16".into())]
         )
         .as_ref(),
-        "¿Reiniciar Maple para instalar la versión \u{2068}0.0.16\u{2069}?"
+        "¿Reiniciar Maple para instalar la versión 0.0.16?"
     );
     assert_eq!(
         tr_args("settings-language-system", [("language", "Español".into())]).as_ref(),
-        "Sistema (\u{2068}Español\u{2069})"
+        "Sistema (Español)"
     );
     initialize_saved_preference(Some("en"));
     assert_eq!(tr("settings-language").as_ref(), "Idioma");
@@ -101,7 +101,7 @@ fn missing_keys_and_locales_fall_back_without_blank_text() {
     );
     assert_eq!(
         tr_args("settings-language-system", [("language", "English".into())]).as_ref(),
-        "System (\u{2068}English\u{2069})"
+        "System (English)"
     );
 }
 
@@ -234,7 +234,7 @@ impl<'ast> Visit<'ast> for UiStrings {
 
     fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
         // Runtime presenters select keys in match arms as well as direct calls.
-        if node.value().starts_with("runtime-") {
+        if node.value().starts_with("runtime-") || node.value().starts_with("chat-vim-notice-") {
             self.keys.insert(node.value());
         }
     }
@@ -580,7 +580,7 @@ fn timeline_semantics_reformat_without_changing_content() {
             expected
         );
         let title = timeline_labels::title(&item, &cache).unwrap();
-        assert!(title.starts_with('\u{2068}'));
+        assert!(!title.contains(['\u{2068}', '\u{2069}']));
         assert!(title.contains(expected));
         assert!(title.contains("original.txt"));
         assert!(timeline_labels::body(&item, &cache).is_none());
@@ -626,12 +626,12 @@ fn builtin_tool_title_keeps_original_english_detail_and_raw_identifiers() {
     assert!(timeline_labels::tool_label(&item, &cache).is_none());
     assert_eq!(
         timeline_labels::title(&item, &cache).unwrap().as_ref(),
-        "\u{2068}read\u{2069}: \u{2068}original.txt\u{2069}"
+        "read: original.txt"
     );
     apply_preference(Some("es"));
     assert_eq!(
         timeline_labels::title(&item, &cache).unwrap().as_ref(),
-        "\u{2068}leer\u{2069}: \u{2068}original.txt\u{2069}"
+        "leer: original.txt"
     );
     assert_eq!(item.label.as_ref().unwrap().name.as_deref(), Some("read"));
 }
@@ -795,4 +795,73 @@ fn nested_context_keeps_outer_arguments_and_inner_wins_over_duplicate() {
         assert!(text.contains(inner));
         assert!(!text.contains("must not win"));
     }
+}
+
+#[test]
+fn cleared_store_returns_to_system_then_hydrates_next_store() {
+    let _guard = TestLocalizationGuard::enable();
+    apply_preference(Some("es"));
+    clear_saved_preference();
+    assert_eq!(current_locale(), ENGLISH);
+    initialize_saved_preference(Some("es"));
+    assert_eq!(current_locale(), langid!("es"));
+}
+
+#[test]
+fn malformed_timeline_presentation_keeps_raw_row_and_authority() {
+    for label in [
+        serde_json::json!({}),
+        serde_json::json!({"kind":42}),
+        serde_json::json!({"kind":"tool","detail":[]}),
+        serde_json::json!("future"),
+    ] {
+        let item: maple_agent::agent::AgentTimelineItem =
+            serde_json::from_value(serde_json::json!({
+                "id":"raw-id", "itemType":"error", "text":"original diagnostic", "createdMs":1,
+                "merge":"replace", "label":label,
+                "persisted":{"taskId":"task", "rowsEpoch":2, "rowSeq":3, "updateSeq":4}
+            }))
+            .unwrap();
+        assert!(item.label.is_none());
+        assert_eq!(item.text.as_deref(), Some("original diagnostic"));
+        assert_eq!(item.persisted.unwrap().row_seq, 3);
+    }
+}
+
+#[test]
+fn provider_body_switches_language_without_changing_raw_retry_text() {
+    let _guard = TestLocalizationGuard::enable();
+    let item: maple_agent::agent::AgentTimelineItem = serde_json::from_value(serde_json::json!({
+        "id":"error", "itemType":"error", "text":"Network error: could not connect to Maple",
+        "createdMs":1,"merge":"replace", "label":{"kind":"error-agent","name":"connect"}
+    }))
+    .unwrap();
+    let cache = MessageCache::default();
+    for (locale, expected) in [
+        ("en", "Network error: could not connect to Maple"),
+        ("es", "Error de red: no se pudo conectar con Maple"),
+        ("en", "Network error: could not connect to Maple"),
+    ] {
+        apply_preference(Some(locale));
+        assert_eq!(
+            crate::ui::timeline_labels::body(&item, &cache)
+                .unwrap()
+                .as_ref(),
+            expected
+        );
+        assert_eq!(
+            item.text.as_deref(),
+            Some("Network error: could not connect to Maple")
+        );
+    }
+}
+
+#[test]
+fn future_error_kinds_do_not_inherit_known_provider_copy() {
+    let item: maple_agent::agent::AgentTimelineItem = serde_json::from_value(serde_json::json!({
+        "id":"error", "itemType":"error", "text":"future diagnostic", "createdMs":1,
+        "merge":"replace", "label":{"kind":"error-future","name":"connect"}
+    }))
+    .unwrap();
+    assert!(crate::ui::timeline_labels::body(&item, &MessageCache::default()).is_none());
 }

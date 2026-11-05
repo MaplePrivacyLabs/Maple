@@ -1897,3 +1897,133 @@ flows-task-cancelled = The task was cancelled
 ## Flows: direct pricing-page browser errors
 runtime-error-browser-pricing-link = Could not open pricing: unexpected link
 runtime-error-browser-pricing-open = Could not open pricing in your browser
+
+settings-settings-connected = Connected
+
+# Integration app catalog
+settings-catalog-search = Search apps…
+settings-catalog-cancel = Cancel
+settings-catalog-connect = Connect
+settings-catalog-apps = Apps
+settings-catalog-custom = Custom server
+settings-catalog-intro = New tasks can use the apps you connect. Your sign-ins stay on this computer.
+settings-catalog-all = All
+settings-catalog-empty = No apps match.
+settings-catalog-stop-sign-in = Stop signing in
+settings-catalog-browser-sign-in = Sign in with browser
+settings-catalog-server-required = Enter a server name and URL
+settings-catalog-productivity = Productivity
+settings-catalog-teams = Teams
+settings-catalog-business = Business
+settings-catalog-developer = Developer
+settings-catalog-get-app = Get { $name }
+settings-catalog-needs-app = Needs { $name }.
+settings-catalog-needs-version = Needs { $name } { $version } or newer.
+settings-catalog-summary-notion = Search and update your pages and databases
+settings-catalog-summary-todoist = Manage your tasks and projects
+settings-catalog-summary-dropbox = Find and read your files
+settings-catalog-summary-airtable = Work with your bases and records
+settings-catalog-summary-evernote = Search, write and organize your notes
+settings-catalog-summary-miro = Read and add to your boards
+settings-catalog-summary-zapier = Run your Zaps and connected apps
+settings-catalog-summary-atlassian = Work with your issues and pages
+settings-catalog-summary-linear = Plan and track issues and projects
+settings-catalog-summary-monday = Manage your boards and work
+settings-catalog-summary-clickup = Manage your tasks and docs
+settings-catalog-summary-stripe = Look up customers, payments and invoices
+settings-catalog-summary-paypal = Work with your invoices and payments
+settings-catalog-summary-square = Work with your orders, items and customers
+settings-catalog-summary-intercom = Search your conversations and contacts
+settings-catalog-summary-wix = Manage your sites and business
+settings-catalog-summary-wordpress = Manage your sites and posts
+settings-catalog-summary-gitlab = Work with your projects, issues and merge requests
+settings-catalog-summary-vercel = Check your projects and deployments
+settings-catalog-summary-cloudflare = Work with your Cloudflare account
+settings-catalog-summary-supabase = Manage your databases and projects
+settings-catalog-summary-sentry = Look into your errors and issues
+settings-catalog-summary-playwright = Browse websites, click through pages and fill in forms
+settings-catalog-summary-xcode = Build and test your Xcode projects
+
+# ACP client setup
+settings-section-acp = ACP
+settings-acp-copy-path = Copy executable path
+settings-acp-copy-config = Copy configuration
+settings-acp-examples = ACP examples
+settings-acp-title = ACP
+settings-acp-command = Command
+settings-acp-copy-command = Copy command
+settings-acp-examples-heading = Examples
+settings-acp-intro = Apps that support the Agent Client Protocol can run Maple as their agent, from editors like Zed and JetBrains IDEs to agent harnesses like Paseo and T3 Code. They use this computer's sign-in, tasks and history, and start Maple themselves, so this window doesn't need to be open.
+settings-acp-command-hint = Point any ACP client at this command. It talks to the client over standard input and output.
+settings-acp-folder = Maple works in the folder the client has open. The first time you use a folder, the client asks whether to trust it.
+settings-acp-tools = As in this app, Maple runs tools without asking each time.
+settings-acp-desktop-only = Computer use and handing work to Codex or Claude Code only work in this app.
+settings-acp-troubleshoot = If a client can't start Maple, open this app and check that you're signed in.
+settings-acp-temporary = { $name } is running from a temporary location. Move it to your Applications folder and reopen it before connecting an ACP client.
+settings-acp-zed-open = Open Agent Settings, go to External Agents, click Add Agent and choose Add Custom Agent.
+settings-acp-zed-config = In the file Zed opens, replace the example under agent_servers with the entry below.
+settings-acp-zed-start = Start a new thread with { $name }.
+settings-acp-jb-open = In the AI Chat tool window, open the … menu and choose Add Custom Agent.
+settings-acp-jb-config = Add the entry below under agent_servers in the file that opens.
+settings-acp-jb-select = Select { $name } in AI Chat.
+settings-acp-paseo-open = Open ~/.paseo/config.json.
+settings-acp-paseo-config = Add the entry below under agents.providers.
+settings-acp-paseo-start = Run paseo reload, then start an agent with { $name }.
+settings-acp-t3-open = Open Settings → Providers → Add provider, then choose Show more and Local ACP command.
+settings-acp-t3-config = Paste the path below as the executable and add acp as its only argument.
+settings-acp-t3-start = Name it { $name }, then select it in a new thread.
+
+# Maple inference failures; raw diagnostics remain unchanged.
+runtime-provider-clock = Maple could not verify the secure server connection because this device's date or time looks wrong. Check the device's date, time and time zone settings, then try again
+runtime-provider-authentication = Maple authentication failed
+runtime-provider-credits = Maple credits are exhausted
+runtime-provider-context = The request exceeds the context window of this model
+runtime-provider-rate-limit = Maple rate limit exceeded
+runtime-provider-endpoint = The Maple inference endpoint was not found
+runtime-provider-timeout = The Maple request timed out
+runtime-provider-connect = Network error: could not connect to Maple
+runtime-provider-network = Network error: the Maple request failed
+runtime-provider-stream-timeout = Maple's response stream timed out
+runtime-provider-stream = Network error: Maple's encrypted response stream failed
+runtime-provider-attestation = Maple could not verify the secure server connection
+runtime-provider-secure-connection = Maple's encrypted connection could not be recovered
+runtime-provider-prepare = Maple could not prepare the encrypted request
+runtime-provider-cancelled = Maple request cancelled
+
+settings-built-in = Built into Maple
+native-dismiss = Dismiss
+
+runtime-persistence-disk-full = The disk is full. Recent changes could not be saved. Keep Maple open, free disk space, then retry saving.
+runtime-persistence-save-failed = Recent changes could not be saved. Keep Maple open and retry saving before quitting.
+
+# Connection and modal-editing notices.
+chat-host-refreshing = Reconnected. Refreshing task history. Sending and switching tasks are paused.
+chat-host-reconnecting-detail = Reconnecting to the Maple host. Sending and switching tasks are paused.
+chat-vim-notice-1 = invalid Vim command
+chat-vim-notice-2 = Vim count capped at 999999
+chat-vim-notice-3 = multiplied Vim count capped at 999999
+chat-vim-notice-4 = Vim motion cannot move
+chat-vim-notice-5 = Vim command made no change
+chat-vim-notice-6 = line is already empty
+chat-vim-notice-7 = text object is unavailable
+chat-vim-notice-8 = no character to change
+chat-vim-notice-9 = not enough characters to replace
+chat-vim-notice-10 = no line to join
+chat-vim-notice-11 = insert edit was not on grapheme boundaries
+chat-vim-notice-12 = insert cursor escaped its committed replacement
+chat-vim-notice-13 = insert change committed without a replayable delta
+chat-vim-notice-14 = no grapheme to delete
+chat-vim-notice-15 = unnamed register is empty
+chat-vim-notice-16 = paste made no change
+chat-vim-notice-17 = Visual selection is empty
+chat-vim-notice-18 = Visual paste made no change
+chat-vim-notice-19 = no Vim change to repeat
+chat-vim-notice-20 = Vim repeat could not apply at this position
+chat-vim-notice-21 = Vim repeat exceeds the safe output limit
+chat-vim-notice-22 = Vim repeat made no change
+
+# Keep the command and PATH unchanged.
+settings-integration-install-codex = Install the Codex CLI and make sure `codex` is on your PATH, then reopen this page.
+
+# Keep the command and PATH unchanged.
+settings-integration-install-claude = Install Claude Code and make sure `claude` is on PATH, then reopen this page.

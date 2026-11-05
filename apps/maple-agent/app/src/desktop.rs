@@ -559,6 +559,7 @@ impl MapleApp {
     fn verify_current_store_state(&mut self, cx: &mut Context<Self>) {
         crate::settings::clear_decrypted_cache();
         ui::spell::clear_user_words();
+        ui::i18n::clear_saved_preference();
         self.password_settings_refresh_pending = true;
         let epoch = self.store_load_epoch;
         let backend = self.backend.clone();
@@ -754,6 +755,7 @@ impl MapleApp {
         self.updater.set_auto_download(false);
         crate::settings::clear_decrypted_cache();
         ui::spell::clear_user_words();
+        ui::i18n::clear_saved_preference();
         self.settings = crate::settings::AppSettings::default();
         ui::theme::apply_preference(ui::theme::Preference::parse(&self.settings.theme), cx);
         ui::typography::apply(
@@ -856,6 +858,7 @@ impl MapleApp {
                     if this.store_id.is_some() && this.store_id != status.store_id {
                         crate::settings::discard_decrypted_cache();
                         ui::spell::clear_user_words();
+                        ui::i18n::clear_saved_preference();
                     }
                     this.store_id = status.store_id.clone();
                     this.apply_store_completion_notice(&status, cx);
@@ -3515,6 +3518,19 @@ impl Render for StartupError {
                             ),
                     )
             })
+            .when(self.close_is_allowed(), |view| {
+                view.child(
+                    div()
+                        .id("close-startup-error")
+                        .cursor_pointer()
+                        .px_4()
+                        .py_2()
+                        .rounded_md()
+                        .bg(gpui::rgb(ui::theme::bg_elevated()))
+                        .child(gpui::text!(tr("native-close")))
+                        .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
+                )
+            })
     }
 }
 
@@ -4088,6 +4104,7 @@ mod tests {
         let _locale = ui::i18n::TestLocalizationGuard::enable();
         for count in [0, 1, 2] {
             let prompt = QuitPrompt {
+                closing: false,
                 kind: QuitPromptKind::Confirm(HostActivity {
                     running_tasks: count,
                     acp_clients: count,
@@ -4137,10 +4154,7 @@ mod tests {
                 let (_, detail, retry) = prompt.presentation();
                 assert!(!retry);
                 for label in labels {
-                    assert!(
-                        detail.contains(&format!("{label} (\u{2068}{count}\u{2069})")),
-                        "{detail}"
-                    );
+                    assert!(detail.contains(&format!("{label} ({count})")), "{detail}");
                 }
                 assert!(detail.contains(drain));
                 assert!(

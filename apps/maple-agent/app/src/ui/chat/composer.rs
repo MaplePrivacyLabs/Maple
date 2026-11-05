@@ -246,7 +246,7 @@ impl ChatScreen {
                     .p_1()
                     .mr(px(-4.))
                     .role(gpui::Role::Status)
-                    .aria_label(status)
+                    .aria_label(status.clone())
                     .tooltip(widgets::tooltip(status, None))
                     .child(spinner("host-reconnecting", px(14.), theme::text_muted())),
             )
@@ -614,7 +614,16 @@ impl ChatScreen {
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
                             .line_clamp(2)
-                            .child(server.description.clone()),
+                            .child(
+                                if server.kind
+                                    == maple_agent::agent::AgentSessionIntegrationKind::Mcp
+                                    && server.name == "cua-driver"
+                                {
+                                    tr("settings-integration-cua-description")
+                                } else {
+                                    server.description.clone().into()
+                                },
+                            ),
                     )
                 })
                 .when(!available, |column| {
@@ -1154,7 +1163,7 @@ impl ChatScreen {
                                 .truncate()
                                 .text_xs()
                                 .text_color(gpui::rgb(theme::text_muted()))
-                                .child(notice.message),
+                                .child(tr(notice.message)),
                         )
                     })
             });

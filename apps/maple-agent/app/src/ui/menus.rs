@@ -156,13 +156,13 @@ mod tests {
         assert_eq!(
             maple_action_names(true),
             vec![
-                format!("About \u{2068}{}\u{2069}", crate::profile::DISPLAY_NAME),
+                format!("About {}", crate::profile::DISPLAY_NAME),
                 "Check for Updates…".to_string(),
                 "Settings…".to_string(),
-                format!("Hide \u{2068}{}\u{2069}", crate::profile::DISPLAY_NAME),
+                format!("Hide {}", crate::profile::DISPLAY_NAME),
                 "Hide Others".to_string(),
                 "Show All".to_string(),
-                format!("Quit \u{2068}{}\u{2069}", crate::profile::DISPLAY_NAME),
+                format!("Quit {}", crate::profile::DISPLAY_NAME),
             ]
         );
     }
@@ -172,10 +172,10 @@ mod tests {
         assert_eq!(
             maple_action_names(false),
             vec![
-                format!("About \u{2068}{}\u{2069}", crate::profile::DISPLAY_NAME),
+                format!("About {}", crate::profile::DISPLAY_NAME),
                 "Check for Updates…".to_string(),
                 "Settings…".to_string(),
-                format!("Quit \u{2068}{}\u{2069}", crate::profile::DISPLAY_NAME)
+                format!("Quit {}", crate::profile::DISPLAY_NAME)
             ]
         );
     }

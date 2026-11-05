@@ -47,6 +47,7 @@ pub(crate) struct StoreOperationNotice {
     #[serde(default)]
     pub pending: bool,
     #[serde(default)]
+    #[serde(deserialize_with = "crate::backend::HostFailure::deserialize_optional")]
     pub failure: Option<crate::backend::HostFailure>,
     pub operation_id: String,
     pub message: String,
@@ -2489,7 +2490,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .resolve()
-                    .contains("Type \u{2068}ERASE\u{2069} exactly")
+                    .contains("Type ERASE exactly")
             );
             assert_eq!(gate.state, StoreState::Locked);
             gate.confirmation
@@ -2501,7 +2502,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .resolve()
-                    .contains("Type \u{2068}START FRESH\u{2069} exactly")
+                    .contains("Type START FRESH exactly")
             );
         });
     }

@@ -10,6 +10,13 @@ pub struct HostFailure {
     pub message: String,
 }
 impl HostFailure {
+    pub(crate) fn deserialize_optional<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Self>, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(serde_json::from_value(value).ok())
+    }
+
     pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),

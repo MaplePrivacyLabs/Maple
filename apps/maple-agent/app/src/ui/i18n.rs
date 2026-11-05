@@ -11,6 +11,7 @@ fluent_templates::static_loader! {
     static CATALOGS = {
         locales: "./locales",
         fallback_language: "en",
+        customise: |bundle| bundle.set_use_isolating(false),
     };
 }
 
@@ -136,6 +137,15 @@ pub(crate) fn apply_preference(preference: Option<&str>) {
     ACTIVE.with_borrow_mut(|state| {
         state.locale = preference.map_or_else(|| SYSTEM.clone(), |value| resolve(Some(value)));
         state.loaded = true;
+        state.messages.clear();
+        state.system_label = None;
+    });
+}
+
+pub(crate) fn clear_saved_preference() {
+    ACTIVE.with_borrow_mut(|state| {
+        state.locale = SYSTEM.clone();
+        state.loaded = false;
         state.messages.clear();
         state.system_label = None;
     });

@@ -1264,18 +1264,19 @@ impl RemoteScreen {
             cx.notify();
             return;
         }
+        let Some(user) = self.backend.saved_user_id() else {
+            self.error = Some(tr("settings-remote-sign-in-before-naming-a-remote-computer").into());
+            cx.notify();
+            return;
+        };
         let key = key.clone();
         self.names.insert(key.clone(), name.clone());
         self.renaming = None;
         self.error = None;
         let backend = self.backend.clone();
-        let user = backend.saved_user_id();
         let saved_key = key.clone();
         let saved_name = name.clone();
         let request = self.backend.spawn(async move {
-            let user = user.ok_or(tr(
-                "settings-remote-sign-in-before-naming-a-remote-computer",
-            ))?;
             backend
                 .set_remote_sidebar(
                     &user,

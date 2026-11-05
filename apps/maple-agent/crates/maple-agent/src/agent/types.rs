@@ -885,6 +885,7 @@ pub struct AgentSessionDetail {
 pub struct AgentTimelineItem {
     /// Presentation semantics; legacy and unknown labels retain raw text fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "AgentTimelineLabel::deserialize_optional")]
     pub label: Option<AgentTimelineLabel>,
     /// Durable occurrence identity; legacy `id` remains projector presentation data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -929,6 +930,13 @@ pub struct AgentTimelineLabel {
 }
 
 impl AgentTimelineLabel {
+    fn deserialize_optional<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Self>, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(serde_json::from_value(value).ok())
+    }
+
     /// Partial streaming updates may omit detail already supplied by this tool.
     /// A different semantic kind or tool identity must not inherit stale data.
     pub fn merge_from(&mut self, incoming: Self) {

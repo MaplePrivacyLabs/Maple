@@ -1898,3 +1898,133 @@ flows-task-cancelled = La tarea se canceló
 ## Flows: direct pricing-page browser errors
 runtime-error-browser-pricing-link = No se pudo abrir la página de precios: enlace inesperado
 runtime-error-browser-pricing-open = No se pudo abrir la página de precios en tu navegador
+
+settings-settings-connected = Conectados
+
+# Integration app catalog
+settings-catalog-search = Buscar aplicaciones…
+settings-catalog-cancel = Cancelar
+settings-catalog-connect = Conectar
+settings-catalog-apps = Aplicaciones
+settings-catalog-custom = Servidor personalizado
+settings-catalog-intro = Las nuevas tareas pueden usar las aplicaciones que conectes. Tus sesiones se quedan en esta computadora.
+settings-catalog-all = Todas
+settings-catalog-empty = No hay aplicaciones que coincidan.
+settings-catalog-stop-sign-in = Cancelar inicio de sesión
+settings-catalog-browser-sign-in = Iniciar sesión con el navegador
+settings-catalog-server-required = Escribe el nombre y la URL del servidor
+settings-catalog-productivity = Productividad
+settings-catalog-teams = Equipos
+settings-catalog-business = Negocios
+settings-catalog-developer = Desarrollo
+settings-catalog-get-app = Obtener { $name }
+settings-catalog-needs-app = Requiere { $name }.
+settings-catalog-needs-version = Requiere { $name } { $version } o una versión posterior.
+settings-catalog-summary-notion = Busca y actualiza tus páginas y bases de datos
+settings-catalog-summary-todoist = Administra tus tareas y proyectos
+settings-catalog-summary-dropbox = Busca y lee tus archivos
+settings-catalog-summary-airtable = Trabaja con tus bases y registros
+settings-catalog-summary-evernote = Busca, escribe y organiza tus notas
+settings-catalog-summary-miro = Consulta y agrega contenido a tus tableros
+settings-catalog-summary-zapier = Ejecuta tus Zaps y aplicaciones conectadas
+settings-catalog-summary-atlassian = Trabaja con tus incidencias y páginas
+settings-catalog-summary-linear = Planea y da seguimiento a incidencias y proyectos
+settings-catalog-summary-monday = Administra tus tableros y trabajo
+settings-catalog-summary-clickup = Administra tus tareas y documentos
+settings-catalog-summary-stripe = Consulta clientes, pagos y facturas
+settings-catalog-summary-paypal = Trabaja con tus facturas y pagos
+settings-catalog-summary-square = Trabaja con tus pedidos, artículos y clientes
+settings-catalog-summary-intercom = Busca en tus conversaciones y contactos
+settings-catalog-summary-wix = Administra tus sitios y tu negocio
+settings-catalog-summary-wordpress = Administra tus sitios y publicaciones
+settings-catalog-summary-gitlab = Trabaja con tus proyectos, incidencias y solicitudes de fusión
+settings-catalog-summary-vercel = Revisa tus proyectos e implementaciones
+settings-catalog-summary-cloudflare = Trabaja con tu cuenta de Cloudflare
+settings-catalog-summary-supabase = Administra tus bases de datos y proyectos
+settings-catalog-summary-sentry = Investiga tus errores e incidencias
+settings-catalog-summary-playwright = Navega por sitios web, haz clic en las páginas y llena formularios
+settings-catalog-summary-xcode = Compila y prueba tus proyectos de Xcode
+
+# ACP client setup
+settings-section-acp = ACP
+settings-acp-copy-path = Copiar la ruta del ejecutable
+settings-acp-copy-config = Copiar configuración
+settings-acp-examples = Ejemplos de ACP
+settings-acp-title = ACP
+settings-acp-command = Comando
+settings-acp-copy-command = Copiar comando
+settings-acp-examples-heading = Ejemplos
+settings-acp-intro = Las aplicaciones compatibles con Agent Client Protocol pueden ejecutar Maple como su agente, desde editores como Zed y los IDE de JetBrains hasta aplicaciones de agentes como Paseo y T3 Code. Usan la sesión, las tareas y el historial de esta computadora e inician Maple por su cuenta, así que no es necesario mantener abierta esta ventana.
+settings-acp-command-hint = Configura cualquier cliente ACP con este comando. Se comunica con el cliente mediante la entrada y la salida estándar.
+settings-acp-folder = Maple trabaja en la carpeta que el cliente tiene abierta. La primera vez que uses una carpeta, el cliente te preguntará si confías en ella.
+settings-acp-tools = Al igual que en esta aplicación, Maple ejecuta herramientas sin preguntar cada vez.
+settings-acp-desktop-only = El uso de la computadora y la delegación de trabajo a Codex o Claude Code solo funcionan en esta aplicación.
+settings-acp-troubleshoot = Si un cliente no puede iniciar Maple, abre esta aplicación y verifica que hayas iniciado sesión.
+settings-acp-temporary = { $name } se está ejecutando desde una ubicación temporal. Muévelo a la carpeta Aplicaciones y ábrelo de nuevo antes de conectar un cliente ACP.
+settings-acp-zed-open = Abre Agent Settings, ve a External Agents, haz clic en Add Agent y elige Add Custom Agent.
+settings-acp-zed-config = En el archivo que abre Zed, reemplaza el ejemplo de agent_servers con la entrada de abajo.
+settings-acp-zed-start = Inicia una nueva conversación con { $name }.
+settings-acp-jb-open = En la ventana de herramientas AI Chat, abre el menú … y elige Add Custom Agent.
+settings-acp-jb-config = Agrega la entrada de abajo en agent_servers, en el archivo que se abre.
+settings-acp-jb-select = Selecciona { $name } en AI Chat.
+settings-acp-paseo-open = Abre ~/.paseo/config.json.
+settings-acp-paseo-config = Agrega la entrada de abajo en agents.providers.
+settings-acp-paseo-start = Ejecuta paseo reload y luego inicia un agente con { $name }.
+settings-acp-t3-open = Abre Settings → Providers → Add provider y luego elige Show more y Local ACP command.
+settings-acp-t3-config = Pega la ruta de abajo como ejecutable y agrega acp como único argumento.
+settings-acp-t3-start = Asígnale el nombre { $name } y luego selecciónalo en una nueva conversación.
+
+# Maple inference failures; raw diagnostics remain unchanged.
+runtime-provider-clock = Maple no pudo verificar la conexión segura con el servidor porque la fecha o la hora de este dispositivo parece incorrecta. Revisa la fecha, la hora y la zona horaria del dispositivo e inténtalo de nuevo
+runtime-provider-authentication = Falló la autenticación de Maple
+runtime-provider-credits = Se agotaron los créditos de Maple
+runtime-provider-context = La solicitud supera la ventana de contexto de este modelo
+runtime-provider-rate-limit = Se superó el límite de solicitudes de Maple
+runtime-provider-endpoint = No se encontró el servicio de inferencia de Maple
+runtime-provider-timeout = Se agotó el tiempo de espera de la solicitud a Maple
+runtime-provider-connect = Error de red: no se pudo conectar con Maple
+runtime-provider-network = Error de red: falló la solicitud a Maple
+runtime-provider-stream-timeout = Se agotó el tiempo de espera de la respuesta de Maple
+runtime-provider-stream = Error de red: falló la transmisión de la respuesta cifrada de Maple
+runtime-provider-attestation = Maple no pudo verificar la conexión segura con el servidor
+runtime-provider-secure-connection = No se pudo restablecer la conexión cifrada de Maple
+runtime-provider-prepare = Maple no pudo preparar la solicitud cifrada
+runtime-provider-cancelled = Se canceló la solicitud a Maple
+
+settings-built-in = Integrado en Maple
+native-dismiss = Cerrar
+
+runtime-persistence-disk-full = El disco está lleno. No se pudieron guardar los cambios recientes. Mantén Maple abierto, libera espacio en el disco y vuelve a intentar guardar.
+runtime-persistence-save-failed = No se pudieron guardar los cambios recientes. Mantén Maple abierto y vuelve a intentar guardar antes de salir.
+
+# Connection and modal-editing notices.
+chat-host-refreshing = Se restableció la conexión. Se está actualizando el historial de tareas. El envío y el cambio de tareas están en pausa.
+chat-host-reconnecting-detail = Se está restableciendo la conexión con el host de Maple. El envío y el cambio de tareas están en pausa.
+chat-vim-notice-1 = Comando de Vim no válido
+chat-vim-notice-2 = El conteo de Vim se limitó a 999999
+chat-vim-notice-3 = El conteo multiplicado de Vim se limitó a 999999
+chat-vim-notice-4 = El movimiento de Vim no puede avanzar
+chat-vim-notice-5 = El comando de Vim no hizo cambios
+chat-vim-notice-6 = La línea ya está vacía
+chat-vim-notice-7 = El objeto de texto no está disponible
+chat-vim-notice-8 = No hay un carácter que cambiar
+chat-vim-notice-9 = No hay suficientes caracteres para reemplazar
+chat-vim-notice-10 = No hay una línea que unir
+chat-vim-notice-11 = La edición de inserción no respetó los límites de los grafemas
+chat-vim-notice-12 = El cursor de inserción salió del reemplazo confirmado
+chat-vim-notice-13 = El cambio de inserción se confirmó sin una modificación reproducible
+chat-vim-notice-14 = No hay un grafema que eliminar
+chat-vim-notice-15 = El registro sin nombre está vacío
+chat-vim-notice-16 = La acción de pegar no hizo cambios
+chat-vim-notice-17 = La selección visual está vacía
+chat-vim-notice-18 = La acción de pegar en modo visual no hizo cambios
+chat-vim-notice-19 = No hay un cambio de Vim que repetir
+chat-vim-notice-20 = La repetición de Vim no se pudo aplicar en esta posición
+chat-vim-notice-21 = La repetición de Vim supera el límite seguro de salida
+chat-vim-notice-22 = La repetición de Vim no hizo cambios
+
+# Keep the command and PATH unchanged.
+settings-integration-install-codex = Instala la CLI de Codex y asegúrate de que `codex` esté en tu PATH. Después, vuelve a abrir esta página.
+
+# Keep the command and PATH unchanged.
+settings-integration-install-claude = Instala Claude Code y asegúrate de que `claude` esté en PATH. Después, vuelve a abrir esta página.

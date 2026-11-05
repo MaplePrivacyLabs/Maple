@@ -1037,3 +1037,54 @@ pub(crate) fn opensecret_error_category(error: &maple_sdk::Error) -> &'static st
 
 #[cfg(test)]
 mod tests;
+
+/// Source-owned presentation codes for our diagnostics, including Pi wrappers.
+/// The original diagnostic remains unchanged for retry/overflow classifiers.
+pub(crate) fn error_presentation(message: &str) -> Option<&'static str> {
+    if message.contains(DEVICE_CLOCK_ERROR_MESSAGE) {
+        return Some("clock");
+    }
+    if message.contains(AUTHENTICATION_ERROR_MESSAGE) {
+        return Some("authentication");
+    }
+    if message.contains(CREDITS_EXHAUSTED_MESSAGE) {
+        return Some("credits");
+    }
+    if message.contains(CONTEXT_OVERFLOW_MESSAGE) {
+        return Some("context");
+    }
+    if message.contains(RATE_LIMIT_MESSAGE) {
+        return Some("rate-limit");
+    }
+    if message.contains(ENDPOINT_NOT_FOUND_MESSAGE) {
+        return Some("endpoint");
+    }
+    if message.contains(REQUEST_TIMEOUT_MESSAGE) {
+        return Some("timeout");
+    }
+    if message.contains(CONNECT_ERROR_MESSAGE) {
+        return Some("connect");
+    }
+    if message.contains(NETWORK_ERROR_MESSAGE) {
+        return Some("network");
+    }
+    if message.contains(STREAM_TIMEOUT_MESSAGE) {
+        return Some("stream-timeout");
+    }
+    if message.contains(STREAM_ERROR_MESSAGE) {
+        return Some("stream");
+    }
+    if message.contains(ATTESTATION_VERIFICATION_ERROR_MESSAGE) {
+        return Some("attestation");
+    }
+    if message.contains(SECURE_CONNECTION_ERROR_MESSAGE) {
+        return Some("secure-connection");
+    }
+    if message.contains(PREPARE_ERROR_MESSAGE) {
+        return Some("prepare");
+    }
+    if message.contains(CANCELLED_MESSAGE) {
+        return Some("cancelled");
+    }
+    None
+}

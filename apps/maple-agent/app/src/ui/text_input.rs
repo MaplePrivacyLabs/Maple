@@ -161,7 +161,7 @@ pub struct TextInput {
     misspelled: Vec<Range<usize>>,
     /// `spell::generation()` at the last check. Text set before the
     /// dictionary finished loading is re-checked when this falls behind.
-    spell_generation: u32,
+    spell_generation: (u32, bool),
     /// The misspelled word under the open right-click menu, with its
     /// replacement candidates.
     spell_menu: Option<(Range<usize>, Vec<String>)>,
@@ -297,7 +297,7 @@ impl TextInput {
             on_key: None,
             spell_check: false,
             misspelled: Vec::new(),
-            spell_generation: 0,
+            spell_generation: (0, false),
             spell_menu: None,
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
@@ -380,6 +380,9 @@ impl TextInput {
     /// Recompute the misspelled ranges. Call after every content change.
     fn refresh_spelling(&mut self) {
         if self.spell_check && !self.mask {
+            if self.spell_generation != spell::generation() {
+                self.spell_menu = None;
+            }
             self.spell_generation = spell::generation();
             self.misspelled = spell::misspelled_ranges(&self.content);
         }
@@ -1888,6 +1891,7 @@ impl TextInput {
         self.finish_vim_lifecycle(LifecycleEvent::PopupTakeover, cx);
         window.focus(&self.focus_handle, cx);
         let index = self.index_for_mouse_position(event.position);
+        self.refresh_spelling();
         self.spell_menu = self
             .misspelled
             .iter()
@@ -1909,7 +1913,7 @@ impl TextInput {
     ) -> Option<gpui::AnyElement> {
         let position = *self.popup.open_key()?;
         let has_selection = !self.selected_range.is_empty();
-        let mut menu = Menu::new("text-input-menu", px(160.))
+        let mut menu = Menu::new("text-input-menu", px(240.))
             .label(super::i18n::tr("native-edit"))
             .application_vim(self.application_vim);
         if let Some((range, suggestions)) = &self.spell_menu {

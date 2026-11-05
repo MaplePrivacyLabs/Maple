@@ -65,8 +65,8 @@ including additions/removals. `fluent-bundle` supplies typed argument values.
 - Translate accessibility labels too. Keep element IDs, keymap slots, commands,
   protocol values and other machine-readable identifiers stable.
 - Keep complete sentences together. Add translator comments explaining args.
-  Fluent bidi isolation (U+2068/U+2069) remains enabled; assertions must account
-  for it. GPUI shaping/fallback-font checks are required before enabling scripts
+  Fluent bidi isolation is disabled for the supported left-to-right languages,
+  so native controls and editable fallback names do not acquire invisible marks. GPUI shaping/fallback-font checks are required before enabling scripts
   that need them.
 
 Lookup tries the selected catalog, then English, then the key itself. Empty or
@@ -78,7 +78,7 @@ log a fallback once per first resolution rather than on every frame.
 
 The existing `agent-test` cargo suite checks catalog syntax, duplicate IDs,
 identical shipped key sets, enabled/catalog parity, literal UI lookup keys,
-fallback behavior, argument isolation and numeric plurals. The converted-module
+fallback behavior, argument formatting and numeric plurals. The converted-module
 check rejects direct literals in common label methods; expand its module list
 as extraction proceeds. It is deliberately a narrow heuristic, not proof that
 all user-facing text has been found. Existing unconverted modules remain debt;
@@ -132,3 +132,25 @@ they do not read the GPUI thread's active locale.
 - RTL layout/mirroring is not supported by this implementation. Do not enable
   RTL locales until the GPUI/platform limitation is addressed. CJK and other
   scripts require font-fallback testing on every supported desktop platform.
+
+## Mexican Spanish terminology
+
+Use **computadora** for a computer and **equipo** for a team; avoid using the
+same noun for both on a screen. Use **almacén** for the local store,
+**cuadro de mensaje** for the composer, **salida** for tool output, and **Salir**
+for quitting the app (closing a window can leave the host running). Keep CLI
+commands, tokens, paths, model names, and external product names unchanged.
+Use informal **tú** and Mexican Spanish rather than Spain-specific forms.
+
+The English dictionary is enabled only for English UI. Switching to Spanish
+clears its underlines and suggestions; switching back checks the retained text.
+A Spanish dictionary remains future work. Optional timeline/error presentation
+metadata is decoded leniently: malformed metadata falls back to the original
+text, while response identity, authoritative results, and row identity still
+use strict decoding. Provider diagnostics remain untouched for Pi retry and
+context-overflow decisions; their presentation codes select translated bodies.
+
+The nonblocking dispatch-macro consolidation, global locale observers, and a
+catalog translation-revision/dead-key audit remain follow-up maintenance work.
+These changes do not establish Windows runtime evidence: exercise live language
+switching, native prompts/menus and DirectWrite on Windows before release.

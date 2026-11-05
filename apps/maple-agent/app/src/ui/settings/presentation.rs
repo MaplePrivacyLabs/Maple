@@ -191,6 +191,22 @@ pub(crate) fn reset_date(
     })
 }
 
+/// Missing CLI hints are owned by Maple, while detected tool problems stay raw.
+pub(super) fn integration_detail(
+    integration: &maple_agent::agent::AgentIntegration,
+    fallback: &str,
+) -> SharedString {
+    use maple_agent::agent::AgentIntegrationAvailability;
+    if integration.availability == AgentIntegrationAvailability::NotDetected {
+        match integration.id.as_str() {
+            "codex" => return tr("settings-integration-install-codex"),
+            "claude" => return tr("settings-integration-install-claude"),
+            _ => {}
+        }
+    }
+    fallback.to_owned().into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

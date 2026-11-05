@@ -366,7 +366,6 @@ fn computer_revision(computers: &[Computer]) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     for computer in computers {
         computer.key.hash(&mut hash);
-        computer.label.hash(&mut hash);
         computer.backend.as_ref().map(Arc::as_ptr).hash(&mut hash);
         computer.host_epoch.hash(&mut hash);
         computer.loading.hash(&mut hash);
@@ -3329,9 +3328,20 @@ mod revalidation_tests {
                     },
                 );
             }
+            let mut relabeled = sidebar.computers.as_ref().clone();
+            relabeled[0].label = "Esta computadora".into();
+            sidebar.set_computers(Arc::new(relabeled), cx);
+            assert_eq!(sidebar.group_pages.generation, generation);
+            assert!(
+                !sidebar.group_pages.revalidation_pending,
+                "presentation changes must not invalidate task paging"
+            );
             for revision in 0..20 {
                 let mut computers = sidebar.computers.as_ref().clone();
-                computers[0].label = format!("Updated computer {revision}").into();
+                computers[0].project_names.insert(
+                    "/fixture/project".into(),
+                    format!("Updated project {revision}"),
+                );
                 sidebar.set_computers(Arc::new(computers), cx);
             }
             assert_eq!(sidebar.group_pages.generation, generation);

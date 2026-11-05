@@ -227,7 +227,7 @@ mod tests {
         oneshot::Receiver<usize>,
         &mut gpui::VisualTestContext,
     ) {
-        show_with_title(cx, "Restart Maple to install v\u{2068}0.0.14\u{2069}?")
+        show_with_title(cx, "Restart Maple to install v0.0.14?")
     }
 
     fn show_with_title<'a>(
@@ -277,10 +277,8 @@ mod tests {
     ) {
         let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
         crate::ui::i18n::initialize_saved_preference(Some("es"));
-        let (_host, mut answer, cx) = show_with_title(
-            cx,
-            "¿Reiniciar Maple para instalar la versión \u{2068}0.0.14\u{2069}?",
-        );
+        let (_host, mut answer, cx) =
+            show_with_title(cx, "¿Reiniciar Maple para instalar la versión 0.0.14?");
         assert_layout(cx);
         cx.simulate_keystrokes("escape");
         assert_eq!(answer.try_recv().unwrap(), 0);

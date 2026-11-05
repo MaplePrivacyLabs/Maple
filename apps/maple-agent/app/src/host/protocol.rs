@@ -256,6 +256,7 @@ pub enum Message {
         id: u64,
         result: Result<serde_json::Value, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "super::HostFailure::deserialize_optional")]
         failure: Option<super::HostFailure>,
     },
     Event(Box<maple_agent::agent::AgentServiceEvent>),
@@ -315,6 +316,7 @@ pub(super) enum IncomingMessage {
         id: u64,
         result: Result<SensitiveValue, String>,
         #[serde(default)]
+        #[serde(deserialize_with = "super::HostFailure::deserialize_optional")]
         failure: Option<super::failure::HostFailure>,
     },
     Event(Box<maple_agent::agent::AgentServiceEvent>),
@@ -399,6 +401,40 @@ pub(crate) async fn write_encoded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_display_failure_preserves_response_and_raw_diagnostic() {
+        for failure in [
+            serde_json::json!({"code":"future","args":[],"message":"raw"}),
+            serde_json::json!({"args":{"x":42}}),
+            serde_json::json!("future"),
+            serde_json::Value::Null,
+        ] {
+            let value = serde_json::json!({"Response":{"id":17,"result":{"Err":"original diagnostic"},"failure":failure}});
+            let Message::Response {
+                id,
+                result,
+                failure,
+            } = serde_json::from_value(value.clone()).unwrap()
+            else {
+                panic!("response")
+            };
+            assert_eq!(id, 17);
+            assert_eq!(result.unwrap_err(), "original diagnostic");
+            assert!(failure.is_none());
+            let IncomingMessage::Response {
+                id,
+                result,
+                failure,
+            } = serde_json::from_value(value).unwrap()
+            else {
+                panic!("response")
+            };
+            assert_eq!(id, 17);
+            assert!(matches!(result, Err(message) if message == "original diagnostic"));
+            assert!(failure.is_none());
+        }
+    }
 
     #[test]
     fn invalid_response_identity_wipes_an_already_parsed_secret_result() {

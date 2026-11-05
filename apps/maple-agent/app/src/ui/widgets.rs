@@ -396,7 +396,16 @@ pub fn notice(
         .text_color(gpui::rgb(theme::text_primary()))
         .child(icon("zap", ROW_ICON, theme::status_warning()))
         .child(div().flex_1().min_w_0().line_clamp(2).child(text))
-        .child(icon_button(id, "x", "Dismiss", px(12.), theme::text_muted()).on_click(on_close))
+        .child(
+            icon_button(
+                id,
+                "x",
+                super::i18n::tr("native-dismiss"),
+                px(12.),
+                theme::text_muted(),
+            )
+            .on_click(on_close),
+        )
 }
 
 /// Icon size in a popup menu row or an [`icon_button`] in a list row.

@@ -566,7 +566,7 @@ mod tests {
         let report = serde_json::json!({"outcome":{"status":"partial"},"complete":false,"findings":[{"kind":"timeout"}],"untrusted":"synthetic-content"});
         let text = diagnostic_summary(&report, &MessageCache::default());
         assert!(text.contains("partial"));
-        assert!(text.contains("Findings: \u{2068}1\u{2069}"));
+        assert!(text.contains("Findings: 1"));
         assert!(!text.contains("synthetic-content"));
     }
 }

@@ -527,7 +527,7 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
                 .map(UiText::resolve)
                 .as_deref()
                 .unwrap()
-                .contains("Type \u{2068}ERASE\u{2069} exactly")
+                .contains("Type ERASE exactly")
         );
         assert_eq!(gate.confirmation.read(app).text(), "erase");
     });
@@ -542,7 +542,7 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
                 .map(UiText::resolve)
                 .as_deref()
                 .unwrap()
-                .contains("Type \u{2068}ERASE\u{2069} exactly")
+                .contains("Type ERASE exactly")
         );
     });
     cx.simulate_keystrokes("tab");

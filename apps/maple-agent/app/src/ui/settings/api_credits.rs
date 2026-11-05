@@ -617,7 +617,7 @@ mod tests {
     fn balance_label_covers_loaded_loading_and_error() {
         assert_eq!(
             balance_label(Some(12_345), false, &Default::default()),
-            "\u{2068}12,345\u{2069} credits"
+            "12,345 credits"
         );
         assert_eq!(
             balance_label(None, false, &Default::default()),

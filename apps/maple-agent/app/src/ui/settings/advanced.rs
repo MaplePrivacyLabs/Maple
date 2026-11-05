@@ -320,7 +320,11 @@ impl SettingsScreen {
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .child(tr("settings-advanced-changes-need-saving")),
                     )
-                    .child(div().text_sm().child(failure.message()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(crate::ui::host_errors::persistence_text(failure).resolve()),
+                    )
                     .child(
                         widgets::secondary_button("advanced-retry-store-persistence")
                             .on_click(cx.listener(|_this, _, _, cx| cx.emit(RetryStorePersistence)))
@@ -335,7 +339,7 @@ impl SettingsScreen {
                 .as_ref()
                 .map(UiText::resolve)
                 .as_deref()
-                != Some(notice.message.as_str())
+                != Some(notice.presentation().resolve().as_ref())
             && persistence.is_none_or(|failure| failure.message() != notice.message.as_str())
         {
             pane = pane.child(

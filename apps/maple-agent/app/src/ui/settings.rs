@@ -2498,7 +2498,7 @@ impl SettingsScreen {
             ));
         }
 
-        pane = pane.child(subsection_title("Built into Maple"));
+        pane = pane.child(subsection_title(&tr("settings-built-in")));
         match &self.integrations {
             None => {
                 pane = pane.child(
@@ -2728,7 +2728,7 @@ impl SettingsScreen {
                     // A detail can carry the address of something the user has
                     // to fetch, which needs more room than a short status line.
                     .line_clamp(3)
-                    .child(detail.clone()),
+                    .child(presentation::integration_detail(integration, detail)),
             );
         }
 

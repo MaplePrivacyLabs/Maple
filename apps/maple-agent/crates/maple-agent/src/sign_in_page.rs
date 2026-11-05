@@ -11,6 +11,11 @@ pub fn sign_in_page_response(
     let body = include_str!("sign_in_page.html")
         .replace("{{title}}", title)
         .replace("{{message}}", message);
+    page_response(status, &body)
+}
+
+/// Wrap the shared sign-in template after text-context escaping by the caller.
+pub fn page_response(status: &'static str, body: &str) -> String {
     // Hashes authorize only the template's exact script/style contents. Update
     // the corresponding hash when editing either inline block in the template.
     format!(

@@ -2008,6 +2008,17 @@ mod state_tests {
             // A call the drop cut off adds no row of its own.
             this.notice = Some("The Maple host disconnected. Reconnect before retrying.".into());
             assert!(this.render_notice(cx).is_none());
+            this.notice = Some(UiText::context(
+                "chat-answer-failed",
+                "message",
+                UiText::Raw("The Maple host disconnected. Reconnect before retrying.".into()),
+            ));
+            assert!(
+                this.render_notice(cx).is_some(),
+                "an interrupted action must remain visible"
+            );
+            this.notice = None;
+
             this.notice = None;
             cx.notify();
         });

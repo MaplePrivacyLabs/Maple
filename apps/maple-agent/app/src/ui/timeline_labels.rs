@@ -56,6 +56,33 @@ pub(crate) fn title(item: &AgentTimelineItem, cache: &MessageCache) -> Option<Sh
 }
 
 pub(crate) fn body(item: &AgentTimelineItem, cache: &MessageCache) -> Option<SharedString> {
+    let label = item.label.as_ref()?;
+    if matches!(
+        label.kind.as_str(),
+        "error-agent" | "error-authentication" | "error-credits" | "error-context"
+    ) {
+        let key = match label.name.as_deref() {
+            Some("clock") => Some("runtime-provider-clock"),
+            Some("authentication") => Some("runtime-provider-authentication"),
+            Some("credits") => Some("runtime-provider-credits"),
+            Some("context") => Some("runtime-provider-context"),
+            Some("rate-limit") => Some("runtime-provider-rate-limit"),
+            Some("endpoint") => Some("runtime-provider-endpoint"),
+            Some("timeout") => Some("runtime-provider-timeout"),
+            Some("connect") => Some("runtime-provider-connect"),
+            Some("network") => Some("runtime-provider-network"),
+            Some("stream-timeout") => Some("runtime-provider-stream-timeout"),
+            Some("stream") => Some("runtime-provider-stream"),
+            Some("attestation") => Some("runtime-provider-attestation"),
+            Some("secure-connection") => Some("runtime-provider-secure-connection"),
+            Some("prepare") => Some("runtime-provider-prepare"),
+            Some("cancelled") => Some("runtime-provider-cancelled"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            return Some(tr(key));
+        }
+    }
     Some(match item.label.as_ref()?.kind.as_str() {
         "external-undelivered" => tr("runtime-timeline-external-undelivered"),
         "external-completed" | "external-failed" | "external-cancelled" => {

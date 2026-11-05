@@ -4016,7 +4016,7 @@ impl Sidebar {
         let open = self.project_popup.is_open(&root.target);
         let menu = open.then(|| {
             let items = self.project_menu_items(&root.target);
-            let mut menu = Menu::new(root.target.element_id("project-menu"), px(180.))
+            let mut menu = Menu::new(root.target.element_id("project-menu"), px(260.))
                 .label(tr("chat-project-options"))
                 .application_vim(self.application_vim_enabled)
                 .items(items.actions.into_iter().map(menu_item));

@@ -867,18 +867,18 @@ impl ChatScreen {
     /// the user (the host is gone, the reload failed, local data is being
     /// updated) sets `runtime_error` instead, so the spinner never turns
     /// beside a banner that says to reopen Maple.
-    fn host_reconnect_status(&self) -> Option<&'static str> {
+    fn host_reconnect_status(&self) -> Option<SharedString> {
         if !self.host_recovery.unavailable
             || self.host_recovery.ended
             || self.runtime_error.is_some()
         {
             return None;
         }
-        Some(if self.host_recovery.events.is_some() {
-            "Reconnected. Refreshing task history. Sending and switching tasks are paused."
+        Some(tr(if self.host_recovery.events.is_some() {
+            "chat-host-refreshing"
         } else {
-            "Reconnecting to the Maple host. Sending and switching tasks are paused."
-        })
+            "chat-host-reconnecting-detail"
+        }))
     }
 
     #[cfg(test)]
@@ -4150,7 +4150,8 @@ impl ChatScreen {
                     UiText::Message { key, .. } => {
                         key.starts_with("runtime-error-host-disconnected")
                     }
-                    UiText::Context { inner, .. } => disconnected(inner),
+                    // Wrapped failures describe an action the user still needs to resolve.
+                    UiText::Context { .. } => false,
                 }
             }
             !disconnected(notice)
@@ -7524,7 +7525,7 @@ impl ChatScreen {
                         .flex_col()
                         .items_start()
                         .gap_2()
-                        .child(failure.message())
+                        .child(crate::ui::host_errors::persistence_text(failure).resolve())
                         .when(remote, |panel| panel.child(tr("chat-retry-save-remote")))
                         .when(!remote, |panel| {
                             panel.child(

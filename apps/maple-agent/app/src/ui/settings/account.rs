@@ -877,7 +877,7 @@ mod tests {
     #[test]
     fn member_since_formats_a_date_and_keeps_unparseable_text() {
         let formatted = member_since("2024-03-05T12:00:00Z", &Default::default());
-        assert!(formatted.ends_with(", \u{2068}2024\u{2069}"), "{formatted}");
+        assert!(formatted.ends_with(", 2024"), "{formatted}");
         assert_eq!(member_since("soon", &Default::default()), "soon");
     }
 

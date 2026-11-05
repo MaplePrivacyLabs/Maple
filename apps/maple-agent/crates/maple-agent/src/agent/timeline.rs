@@ -532,7 +532,7 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
         .unwrap_or_else(|| "The model's reply failed".to_string());
     let (title, text, kind) = error_row_copy(&message);
     AgentTimelineItem {
-        label: Some(label(kind)),
+        label: Some(error_label(kind, &message)),
         persisted: None,
         live: None,
         truncated: None,
@@ -548,6 +548,12 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
         created_ms: created_ms(reply.timestamp),
         merge: "replace".to_string(),
     }
+}
+
+fn error_label(kind: &str, message: &str) -> AgentTimelineLabel {
+    let mut label = label(kind);
+    label.name = super::provider::error_presentation(message).map(str::to_owned);
+    label
 }
 
 /// The row heading and body for a failed reply. An out-of-usage refusal
@@ -615,7 +621,7 @@ pub(crate) fn error_item(message: String) -> AgentTimelineItem {
     let now = pi_ai::now_ms();
     let (title, text, kind) = error_row_copy(&message);
     AgentTimelineItem {
-        label: Some(label(kind)),
+        label: Some(error_label(kind, &message)),
         persisted: None,
         live: None,
         truncated: None,

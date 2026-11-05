@@ -252,6 +252,16 @@ pub(crate) fn failure_text(failure: &HostFailure) -> UiText {
     UiText::key(key)
 }
 
+pub(crate) fn persistence_text(
+    failure: &maple_agent::store::PersistenceFailure,
+) -> super::i18n::UiText {
+    use maple_agent::store::PersistenceFailureReason;
+    super::i18n::UiText::key(match failure.reason {
+        PersistenceFailureReason::DiskFull => "runtime-persistence-disk-full",
+        PersistenceFailureReason::SaveFailed => "runtime-persistence-save-failed",
+    })
+}
+
 #[cfg(test)]
 mod pricing_tests {
     use super::*;

@@ -1202,7 +1202,7 @@ fn confirmed_remote_outcome_stays_historical_after_later_upgrade() {
     };
     update.reconcile_operation();
     let confirmed = update.attempt.as_ref().unwrap().label.resolve();
-    assert_eq!(confirmed, "Updated to \u{2068}v0.0.7\u{2069}.");
+    assert_eq!(confirmed, "Updated to v0.0.7.");
     for status in [None, Some(OperationState::Failed)] {
         let mut later = historical_info(status);
         later.running.version = "0.0.8".into();
@@ -1933,10 +1933,7 @@ fn every_card_state_is_one_short_line_with_at_most_one_action() {
         match name {
             "past success" => assert!(update.note.is_none(), "history stays quiet"),
             "failed, still offered" => {
-                assert_eq!(
-                    note(&update),
-                    Some("The update to \u{2068}v0.0.7\u{2069} didn’t finish.")
-                );
+                assert_eq!(note(&update), Some("The update to v0.0.7 didn’t finish."));
                 assert_eq!(update.note.as_ref().unwrap().1, Tone::Error);
             }
             "password protected" => {
