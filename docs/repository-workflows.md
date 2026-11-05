@@ -297,9 +297,16 @@ cargo-zigbuild rather than the Nix shell's glibc, and
 `scripts/ci/elf_glibc_floor.py` rejects a packaged `maple` that needs newer
 symbol versions. zig does not apply the Nix compiler wrapper's hardening, so
 `LINUX_C_HARDENING_FLAGS` gives C dependencies the same flags and the same
-check rejects a `maple` that imports no fortified glibc function. The
-AppImage's bundled WebKitGTK and other Nix libraries still follow nixpkgs'
-glibc; the floor check does not cover them.
+check rejects a `maple` that imports no fortified glibc function.
+The AppImage has its own, higher floor. It bundles Nix-built WebKitGTK, GTK and
+GStreamer, which need the pinned nixpkgs' glibc and cannot be relinked, while
+the host still supplies libc. `LINUX_APPIMAGE_GLIBC_FLOOR` declares the newest
+glibc any bundled file needs (2.44). `AppRun` checks the host's glibc first and,
+below that floor, explains the requirement and points to the DEB and RPM instead
+of failing in the dynamic loader. Package verification scans every ELF file in
+the AppImage and fails when the bundle needs more or less than the declared
+floor, so a nixpkgs bump that moves it must change the constant in the same
+change. Raising it drops the distributions below it for AppImage users.
 The RPM builder preserves explicit `bundle.linux.rpm.depends` from the Tauri
 configuration. WebKitGTK (`webkit2gtk4.1`) is required on Fedora, including KDE;
 package verification rejects RPMs missing that requirement. Install a downloaded

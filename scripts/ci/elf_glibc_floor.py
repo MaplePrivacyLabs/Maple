@@ -10,6 +10,10 @@ zig compiler applies no C hardening unless asked, and the stack protector
 leaves no import to check (zig's compiler-rt supplies __stack_chk_fail), so a
 glibc __*_chk import is the evidence that the hardening flags reached the C
 dependencies.
+
+--summary prints one line for the whole set instead of one per file, and
+--exact also fails when no file needs the floor itself, so a declared floor
+cannot drift above what the files really need.
 """
 
 import argparse
@@ -27,7 +31,11 @@ ABI_PREFIX = "GLIBC_ABI_"
 # without the feature refuses the file. Distributions backport them, so they do
 # not follow release order: list each with the first release whose every build
 # defines it. Any other marker counts as above the floor.
-ABI_MARKER_SINCE = {"GLIBC_ABI_DT_RELR": (2, 36)}
+ABI_MARKER_SINCE = {
+    "GLIBC_ABI_DT_RELR": (2, 36),
+    "GLIBC_ABI_DT_X86_64_PLT": (2, 43),
+    "GLIBC_ABI_GNU2_TLS": (2, 43),
+}
 
 
 def parse_version(text):
@@ -186,10 +194,16 @@ def main():
                         help="highest glibc symbol version the file may require, e.g. 2.39")
     parser.add_argument("--require-fortify", action="store_true",
                         help="also require at least one fortified glibc __*_chk import")
+    parser.add_argument("--exact", action="store_true",
+                        help="also fail when no file needs the floor release itself")
+    parser.add_argument("--summary", metavar="LABEL",
+                        help="print one line for all files, named LABEL, instead of one per file")
     parser.add_argument("files", nargs="+", type=Path)
     args = parser.parse_args()
+    floor = format_version(args.floor)
 
     status = 0
+    newest_overall = None
     for path in args.files:
         try:
             newest, above, fortified = check(path, args.floor)
@@ -198,8 +212,7 @@ def main():
             status = 1
             continue
         if above:
-            print(f"{path} needs glibc symbol versions above the {format_version(args.floor)} floor:",
-                  file=sys.stderr)
+            print(f"{path} needs glibc symbol versions above the {floor} floor:", file=sys.stderr)
             for (library, name), names in sorted(above.items()):
                 if name.startswith(ABI_PREFIX):
                     listed = "loader ABI marker the floor's glibc does not define"
@@ -213,9 +226,22 @@ def main():
         if above or unfortified:
             status = 1
             continue
-        fortify = f"  fortify={len(fortified)}" if args.require_fortify else ""
-        print(f"verified-linux-glibc-floor  {VERSION_PREFIX}{format_version(newest) if newest else 'none'}"
-              f"  floor={format_version(args.floor)}{fortify}  {path}")
+        if newest is not None:
+            newest_overall = newest if newest_overall is None else max(newest_overall, newest)
+        if args.summary is None:
+            fortify = f"  fortify={len(fortified)}" if args.require_fortify else ""
+            print(f"verified-linux-glibc-floor  {VERSION_PREFIX}{format_version(newest) if newest else 'none'}"
+                  f"  floor={floor}{fortify}  {path}")
+
+    label = args.summary if args.summary is not None else "the files"
+    if status == 0 and args.exact and newest_overall != args.floor:
+        needed = format_version(newest_overall) if newest_overall else "none"
+        print(f"{label}: the newest glibc release needed is {needed}, below the declared {floor} floor; "
+              "lower the declared floor to match", file=sys.stderr)
+        status = 1
+    if status == 0 and args.summary is not None:
+        print(f"verified-linux-glibc-floor  {VERSION_PREFIX}{format_version(newest_overall) if newest_overall else 'none'}"
+              f"  floor={floor}  files={len(args.files)}  {args.summary}")
     return status
 
 

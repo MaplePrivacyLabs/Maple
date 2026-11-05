@@ -144,15 +144,41 @@ class ElfGlibcFloorTests(unittest.TestCase):
         self.assertEqual(result.stdout, f"verified-linux-glibc-floor  GLIBC_2.34  floor=2.39  {relr}\n")
         self.assertEqual(self.run_helper("--floor", "2.35", str(relr)).returncode, 1)
 
-        for marker in ("GLIBC_ABI_GNU2_TLS", "GLIBC_ABI_SOMETHING_NEW"):
-            with self.subTest(marker=marker):
-                path = self.write("marker", [("libc.so.6", "GLIBC_2.34", ["dlopen"]), ("libc.so.6", marker, [])])
-                result = self.run_helper("--floor", "2.39", str(path))
-                self.assertEqual(result.returncode, 1)
-                self.assertIn(f"libc.so.6 {marker}: loader ABI marker", result.stderr)
+        # glibc 2.43 introduced the TLS-descriptor marker; Ubuntu 24.04's 2.39 does not define it.
+        tls = self.write("tls", [("libc.so.6", "GLIBC_2.34", ["dlopen"]), ("libc.so.6", "GLIBC_ABI_GNU2_TLS", [])])
+        for floor, expected in (("2.39", 1), ("2.42", 1), ("2.43", 0), ("2.44", 0)):
+            with self.subTest(floor=floor):
+                result = self.run_helper("--floor", floor, str(tls))
+                self.assertEqual(result.returncode, expected, result.stderr)
                 self.assertNotIn("invalid glibc version", result.stderr)
-                # No numbered release covers a marker the floor does not define.
-                self.assertEqual(self.run_helper("--floor", "2.99", str(path)).returncode, 1)
+        self.assertIn("libc.so.6 GLIBC_ABI_GNU2_TLS: loader ABI marker",
+                      self.run_helper("--floor", "2.39", str(tls)).stderr)
+
+        # No numbered release covers a marker this check does not know.
+        unknown = self.write("unknown", [("libc.so.6", "GLIBC_2.34", ["dlopen"]), ("libc.so.6", "GLIBC_ABI_SOMETHING_NEW", [])])
+        result = self.run_helper("--floor", "2.99", str(unknown))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("libc.so.6 GLIBC_ABI_SOMETHING_NEW: loader ABI marker", result.stderr)
+
+    def test_a_set_of_files_is_summarised_and_held_to_exactly_the_floor(self):
+        old = self.write("old", [("libc.so.6", "GLIBC_2.34", ["dlopen"])])
+        newest = self.write("newest", [("libm.so.6", "GLIBC_2.44", ["cosh"])])
+        static = self.write("static", [])
+        result = self.run_helper("--floor", "2.44", "--exact", "--summary", "AppDir", str(old), str(newest), str(static))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "verified-linux-glibc-floor  GLIBC_2.44  floor=2.44  files=3  AppDir\n")
+
+        # One file above the floor fails the set and is named.
+        result = self.run_helper("--floor", "2.43", "--exact", "--summary", "AppDir", str(old), str(newest))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn(f"{newest} needs glibc symbol versions above the 2.43 floor", result.stderr)
+
+        # A declared floor nothing needs is stale, but only --exact objects.
+        result = self.run_helper("--floor", "2.45", "--exact", "--summary", "AppDir", str(old), str(newest))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("AppDir: the newest glibc release needed is 2.44, below the declared 2.45 floor", result.stderr)
+        self.assertEqual(self.run_helper("--floor", "2.45", "--summary", "AppDir", str(old), str(newest)).returncode, 0)
 
     def test_a_fortified_glibc_import_is_required_only_on_request(self):
         fortified = self.write("fortified", [("libc.so.6", "GLIBC_2.34", ["dlopen"]),
@@ -326,6 +352,115 @@ class LinuxGlibcFloorLinkerTests(unittest.TestCase):
         result = self.run_shell(f'verify_linux_package_executable_glibc_floor "{path}"')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("GLIBC_2.39  floor=2.39  fortify=1", result.stdout)
+
+
+class AppImageGlibcFloorTests(unittest.TestCase):
+    """The AppImage declares its own glibc floor, checks it at start and is verified against it."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.appdir = self.root / "AppDir"
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        getconf = self.bin / "getconf"
+        getconf.write_text(f"#!{shutil.which('bash')}\n"
+                           '[ "$1" = GNU_LIBC_VERSION ] || exit 2\n'
+                           '[ -n "${FAKE_GLIBC:-}" ] || exit 1\n'
+                           'printf "%s\\n" "$FAKE_GLIBC"\n')
+        getconf.chmod(0o755)
+
+    def run_shell(self, commands, **extra_env):
+        env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", APPDIR_FIXTURE=str(self.appdir),
+                   SOURCE_DATE_EPOCH="1234567890", **extra_env)
+        for name in ("DISPLAY", "WAYLAND_DISPLAY", "MAPLE_APPIMAGE_SKIP_GLIBC_CHECK"):
+            if name not in extra_env:
+                env.pop(name, None)
+        return subprocess.run(["bash", "-c", "source scripts/ci/_common.sh\n" + commands],
+                              cwd=ROOT, env=env, capture_output=True, text=True)
+
+    def start(self, **env):
+        """Source the generated hook the way AppRun does and report whether Maple would start."""
+        return self.run_shell('write_linux_appimage_glibc_floor_hook "$APPDIR_FIXTURE"\n'
+                              'bash -c \'set -e; source "$1"; echo started\' start '
+                              '"$APPDIR_FIXTURE/apprun-hooks/maple-glibc-floor.sh"\n', **env)
+
+    def test_a_host_below_the_floor_is_told_what_to_install_instead(self):
+        result = self.start(FAKE_GLIBC="glibc 2.39")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("started", result.stdout)
+        for text in ("needs glibc 2.44 or newer", "this system has glibc 2.39", ".deb or .rpm",
+                     "support glibc 2.39 and newer", "https://maple.ai/downloads"):
+            self.assertIn(text, result.stderr)
+
+    def test_hosts_at_or_above_the_floor_start(self):
+        for version in ("glibc 2.44", "glibc 2.45", "glibc 2.100", "glibc 3.0", "glibc 2.44.1"):
+            with self.subTest(version=version):
+                result = self.start(FAKE_GLIBC=version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "started\n")
+                self.assertEqual(result.stderr, "")
+        # 2.9 is older than 2.44: the comparison is numeric, not textual.
+        self.assertEqual(self.start(FAKE_GLIBC="glibc 2.9").returncode, 1)
+
+    def test_an_unknown_libc_or_an_explicit_override_is_not_refused(self):
+        for env in ({}, {"FAKE_GLIBC": "musl"}, {"FAKE_GLIBC": "glibc 2.39", "MAPLE_APPIMAGE_SKIP_GLIBC_CHECK": "1"}):
+            with self.subTest(env=env):
+                result = self.start(**env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "started\n")
+
+    def test_apprun_checks_the_floor_before_any_bundled_runtime_hook(self):
+        result = self.run_shell('mkdir -p "$APPDIR_FIXTURE"; write_linux_appimage_maple_apprun "$APPDIR_FIXTURE"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sourced = [line for line in (self.appdir / "AppRun").read_text().splitlines() if line.startswith("source ")]
+        self.assertIn("maple-glibc-floor.sh", sourced[0])
+        self.assertGreater(len(sourced), 1)
+
+    def write_elf(self, relative, needed):
+        path = self.appdir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(synthetic_elf(needed))
+
+    def verify(self, prefix=""):
+        return self.run_shell(prefix + 'verify_linux_appdir_glibc_floor "$APPDIR_FIXTURE"')
+
+    def test_the_whole_bundle_is_held_to_exactly_the_announced_floor(self):
+        announce = 'write_linux_appimage_glibc_floor_hook "$APPDIR_FIXTURE"\n'
+        self.write_elf("usr/bin/maple", [("libc.so.6", "GLIBC_2.39", ["pidfd_spawnp"])])
+        self.write_elf("usr/lib/libwebkit2gtk-4.1.so.0", [("libm.so.6", "GLIBC_2.44", ["cosh"]),
+                                                          ("libc.so.6", "GLIBC_ABI_GNU2_TLS", [])])
+        (self.appdir / "usr/share").mkdir(parents=True)
+        (self.appdir / "usr/share/readme.txt").write_text("not an ELF file\n")
+
+        # Without the start-up check the floor is unannounced.
+        result = self.verify()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not announce the 2.44 glibc floor", result.stderr)
+
+        result = self.verify(announce)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"verified-linux-glibc-floor  GLIBC_2.44  floor=2.44  files=2  {self.appdir}", result.stdout)
+
+        # A nixpkgs bump that raises what the bundle needs must raise the declared floor too...
+        self.write_elf("usr/lib/libnew.so", [("libc.so.6", "GLIBC_2.45", ["something_new"])])
+        result = self.verify(announce)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("libnew.so needs glibc symbol versions above the 2.44 floor", result.stderr)
+        (self.appdir / "usr/lib/libnew.so").unlink()
+
+        # ...and the announced floor may not overstate what the bundle needs.
+        (self.appdir / "usr/lib/libwebkit2gtk-4.1.so.0").unlink()
+        result = self.verify(announce)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("below the declared 2.44 floor", result.stderr)
+
+        # An AppImage announcing another floor than the pipeline declares is stale.
+        result = self.verify(announce + "LINUX_APPIMAGE_GLIBC_FLOOR=2.45\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not announce the 2.45 glibc floor", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1286,6 +1286,14 @@ TAURI_LINUXDEPLOY_CLI="2.12.3"
 # verification rejects newer symbol versions.
 LINUX_GLIBC_FLOOR="2.39"
 
+# The AppImage is different: it bundles Nix-built WebKitGTK, GTK and GStreamer,
+# which need the glibc of the pinned nixpkgs and cannot be relinked, while the
+# host still supplies libc. Its floor is therefore declared, not chosen: this is
+# the newest glibc release any bundled file needs. AppRun refuses to start below
+# it and points to the .deb and .rpm, and package verification fails when the
+# bundle needs more or less than this, so a nixpkgs bump moves it on purpose.
+LINUX_APPIMAGE_GLIBC_FLOOR="2.44"
+
 # The C hardening nixpkgs' compiler wrapper applies (NIX_HARDENING_ENABLE). zig
 # cc does not read it, so the C and C++ dependencies get the same flags here.
 LINUX_C_HARDENING_FLAGS=(
@@ -3621,6 +3629,92 @@ EOF
   touch -h -d "@${SOURCE_DATE_EPOCH}" "${hook}"
 }
 
+# Sourced first by AppRun, on the host's own bash and libc. Below the
+# AppImage's glibc floor the dynamic loader would only report missing symbol
+# versions, so say what is wrong and what to install instead.
+write_linux_appimage_glibc_floor_hook() {
+  local appdir="$1"
+  local hook="${appdir}/apprun-hooks/maple-glibc-floor.sh"
+
+  mkdir -p "$(dirname "${hook}")"
+  cat > "${hook}" <<EOF
+#! /usr/bin/env bash
+
+maple_appimage_glibc_floor="${LINUX_APPIMAGE_GLIBC_FLOOR}"
+maple_package_glibc_floor="${LINUX_GLIBC_FLOOR}"
+
+maple_host_glibc_version() {
+  local reported
+  reported="\$(getconf GNU_LIBC_VERSION 2>/dev/null)" || return 1
+  case "\${reported}" in
+    "glibc "[0-9]*.[0-9]*)
+      printf '%s\n' "\${reported#glibc }"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+maple_glibc_at_least() {
+  local have_major have_minor need_major need_minor rest
+  IFS=. read -r have_major have_minor rest <<< "\$1"
+  IFS=. read -r need_major need_minor rest <<< "\$2"
+  case "\${have_major}\${have_minor}" in
+    "" | *[!0-9]*)
+      return 0
+      ;;
+  esac
+  if [ "\${have_major}" -ne "\${need_major}" ]; then
+    [ "\${have_major}" -gt "\${need_major}" ]
+    return
+  fi
+  [ "\${have_minor}" -ge "\${need_minor}" ]
+}
+
+maple_check_glibc_floor() {
+  local host message
+
+  if [ "\${MAPLE_APPIMAGE_SKIP_GLIBC_CHECK:-0}" = "1" ]; then
+    return 0
+  fi
+  # A system that does not report a glibc version is not ours to refuse.
+  if ! host="\$(maple_host_glibc_version)"; then
+    return 0
+  fi
+  if maple_glibc_at_least "\${host}" "\${maple_appimage_glibc_floor}"; then
+    return 0
+  fi
+
+  message="Maple's AppImage cannot run on this system.
+
+It needs glibc \${maple_appimage_glibc_floor} or newer, and this system has glibc \${host}. The AppImage bundles its own WebKitGTK, which is built against a recent glibc.
+
+Install Maple's .deb or .rpm package instead. Those use your system's WebKitGTK and support glibc \${maple_package_glibc_floor} and newer (Ubuntu 24.04 and later):
+https://maple.ai/downloads
+
+To try this AppImage anyway, set MAPLE_APPIMAGE_SKIP_GLIBC_CHECK=1."
+  printf '%s\n' "\${message}" >&2
+
+  # Started from a file manager there is no terminal to read; best effort only.
+  if [ -n "\${DISPLAY:-}\${WAYLAND_DISPLAY:-}" ]; then
+    if command -v zenity >/dev/null 2>&1; then
+      zenity --error --title="Maple" --no-markup --text="\${message}" >/dev/null 2>&1 || true
+    elif command -v kdialog >/dev/null 2>&1; then
+      kdialog --title "Maple" --error "\${message}" >/dev/null 2>&1 || true
+    elif command -v notify-send >/dev/null 2>&1; then
+      notify-send "Maple" "\${message}" >/dev/null 2>&1 || true
+    fi
+  fi
+  exit 1
+}
+
+maple_check_glibc_floor
+EOF
+  chmod 0755 "${hook}"
+  touch -h -d "@${SOURCE_DATE_EPOCH}" "${hook}"
+}
+
 write_linux_appimage_maple_apprun() {
   local appdir="$1"
   local app_run="${appdir}/AppRun"
@@ -3633,6 +3727,7 @@ set -e
 this_dir="$(readlink -f "$(dirname "$0")")"
 export APPDIR="${APPDIR:-${this_dir}}"
 
+source "$this_dir"/apprun-hooks/"maple-glibc-floor.sh"
 source "$this_dir"/apprun-hooks/"linuxdeploy-plugin-gtk.sh"
 source "$this_dir"/apprun-hooks/"linuxdeploy-plugin-gstreamer.sh"
 source "$this_dir"/apprun-hooks/"maple-webkitgtk.sh"
@@ -3695,6 +3790,7 @@ stage_linux_appdir_webkit_runtime() {
     "${webkit_store}" \
     "${bwrap_source}" \
     "${xdg_dbus_proxy_source}"
+  write_linux_appimage_glibc_floor_hook "${appdir}"
   write_linux_appimage_maple_apprun "${appdir}"
 
   printf 'staged-linux-appimage-webkit-runtime  %s\n' "${webkit_store}"
@@ -3860,6 +3956,7 @@ verify_linux_appdir_webkit_runtime() {
   local status=0
   local path
   local required_paths=(
+    "apprun-hooks/maple-glibc-floor.sh"
     "apprun-hooks/maple-webkitgtk.sh"
     "usr/lib/libwebkit2gtk-4.1.so.0"
     "usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess"
@@ -3883,6 +3980,10 @@ verify_linux_appdir_webkit_runtime() {
   done
 
   if [ -f "${appdir}/AppRun" ]; then
+    if ! grep -Fq 'apprun-hooks/"maple-glibc-floor.sh"' "${appdir}/AppRun"; then
+      echo "AppImage AppRun does not check the host glibc before starting Maple." >&2
+      status=1
+    fi
     if ! grep -Fq 'apprun-hooks/"maple-webkitgtk.sh"' "${appdir}/AppRun"; then
       echo "AppImage AppRun does not source the Maple WebKit runtime hook." >&2
       status=1
@@ -3993,6 +4094,34 @@ sanitize_linux_target_release_executable() {
   verify_linux_package_executable_glibc_floor "${TAURI_DIR}/target/release/maple"
 }
 
+# Every ELF file the AppImage carries runs on the host's glibc. Hold the whole
+# bundle to LINUX_APPIMAGE_GLIBC_FLOOR, and the floor to what the bundle needs,
+# and require AppRun to announce that same floor.
+verify_linux_appdir_glibc_floor() {
+  local appdir="$1"
+  local hook="${appdir}/apprun-hooks/maple-glibc-floor.sh"
+  local path
+  local elf_files=()
+
+  if ! grep -Fxq "maple_appimage_glibc_floor=\"${LINUX_APPIMAGE_GLIBC_FLOOR}\"" "${hook}" 2>/dev/null; then
+    echo "AppImage AppRun does not announce the ${LINUX_APPIMAGE_GLIBC_FLOOR} glibc floor: ${hook}" >&2
+    return 1
+  fi
+
+  while IFS= read -r -d '' path; do
+    if [ "$(head -c 4 "${path}" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; then
+      elf_files+=("${path}")
+    fi
+  done < <(find "${appdir}" -type f -print0 | LC_ALL=C sort -z)
+  if [ "${#elf_files[@]}" -eq 0 ]; then
+    echo "AppImage contains no ELF files: ${appdir}" >&2
+    return 1
+  fi
+
+  "$(python3_runner)" "${SCRIPT_DIR}/elf_glibc_floor.py" --floor "${LINUX_APPIMAGE_GLIBC_FLOOR}" --exact \
+    --summary "${appdir}" "${elf_files[@]}"
+}
+
 verify_linux_deb_package_executable_metadata() {
   local deb="$1"
   local tmp status
@@ -4028,7 +4157,8 @@ verify_linux_appimage_executable_metadata() {
     "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect appimage "${tmp}/AppDir/usr/bin/maple" &&
     verify_linux_appdir_runtime_closure "${tmp}/AppDir" &&
     verify_linux_appdir_portable_runtime_paths "${tmp}/AppDir" &&
-    verify_linux_appdir_webkit_runtime "${tmp}/AppDir"
+    verify_linux_appdir_webkit_runtime "${tmp}/AppDir" &&
+    verify_linux_appdir_glibc_floor "${tmp}/AppDir"
   ) || status=$?
   rm -rf "${tmp}"
   return "${status}"
