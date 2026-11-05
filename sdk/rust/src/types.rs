@@ -490,6 +490,141 @@ pub struct ConfirmAccountDeletionRequest {
     pub plaintext_secret: String,
 }
 
+/// The emailed reset code and client secret that prove a pending password
+/// reset, scoped to one project's account space.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PasswordResetProof {
+    pub email: String,
+    pub alphanumeric_code: String,
+    pub plaintext_secret: String,
+    pub client_id: Uuid,
+}
+
+impl std::fmt::Debug for PasswordResetProof {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasswordResetProof")
+            .field("email", &self.email)
+            .field("alphanumeric_code", &"[REDACTED]")
+            .field("plaintext_secret", &"[REDACTED]")
+            .field("client_id", &self.client_id)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasswordResetOptionsRequest {
+    pub proof: PasswordResetProof,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasswordResetOptions {
+    pub recovery_enrolled: bool,
+    pub destructive_reset_available: bool,
+}
+
+/// How a V2 password reset completes.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordResetCompletion {
+    /// Opens the enrolled seed with the recovery code and keeps all encrypted
+    /// data. A well-formed but wrong code consumes the reset request.
+    Preserve { recovery_code: String },
+    /// Replaces the seed and loses all encrypted data. The server rejects the
+    /// request unless `acknowledge_data_loss` is true.
+    Destructive { acknowledge_data_loss: bool },
+}
+
+impl std::fmt::Debug for PasswordResetCompletion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preserve { .. } => f
+                .debug_struct("Preserve")
+                .field("recovery_code", &"[REDACTED]")
+                .finish(),
+            Self::Destructive {
+                acknowledge_data_loss,
+            } => f
+                .debug_struct("Destructive")
+                .field("acknowledge_data_loss", acknowledge_data_loss)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CompletePasswordResetRequest {
+    pub proof: PasswordResetProof,
+    pub new_password: String,
+    pub mode: PasswordResetCompletion,
+}
+
+impl std::fmt::Debug for CompletePasswordResetRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompletePasswordResetRequest")
+            .field("proof", &self.proof)
+            .field("new_password", &"[REDACTED]")
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CompletePasswordResetResponse {
+    pub message: String,
+    pub access_token: String,
+    pub refresh_token: String,
+}
+
+impl std::fmt::Debug for CompletePasswordResetResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompletePasswordResetResponse")
+            .field("message", &self.message)
+            .field("access_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+// Recovery Code Types
+
+/// The current password, required as a step-up to enroll, rotate, or disable a
+/// recovery code.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RecoveryCodePasswordRequest {
+    pub current_password: String,
+}
+
+impl std::fmt::Debug for RecoveryCodePasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryCodePasswordRequest")
+            .field("current_password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryCodeStatus {
+    pub enrolled: bool,
+    pub enrolled_at: Option<DateTime<Utc>>,
+    /// Last seed-preserving password reset that used the enrolled code.
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub use_count: i32,
+}
+
+/// A newly enrolled or rotated recovery code. The server returns it only once.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RecoveryCodeResponse {
+    pub recovery_code: String,
+}
+
+impl std::fmt::Debug for RecoveryCodeResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryCodeResponse")
+            .field("recovery_code", &"[REDACTED]")
+            .finish()
+    }
+}
+
 // API Key Management Types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -1464,6 +1599,120 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    fn reset_proof() -> PasswordResetProof {
+        PasswordResetProof {
+            email: "user@example.test".to_string(),
+            alphanumeric_code: "ABCD1234".to_string(),
+            plaintext_secret: "client-reset-secret".to_string(),
+            client_id: Uuid::nil(),
+        }
+    }
+
+    #[test]
+    fn password_reset_completion_matches_the_server_wire_shape() {
+        let proof = json!({
+            "email": "user@example.test",
+            "alphanumeric_code": "ABCD1234",
+            "plaintext_secret": "client-reset-secret",
+            "client_id": Uuid::nil(),
+        });
+        let preserve = CompletePasswordResetRequest {
+            proof: reset_proof(),
+            new_password: "new-password".to_string(),
+            mode: PasswordResetCompletion::Preserve {
+                recovery_code: "MPLRC1-CODE".to_string(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&preserve).unwrap(),
+            json!({
+                "proof": proof,
+                "new_password": "new-password",
+                "mode": {"preserve": {"recovery_code": "MPLRC1-CODE"}},
+            })
+        );
+
+        let destructive = CompletePasswordResetRequest {
+            mode: PasswordResetCompletion::Destructive {
+                acknowledge_data_loss: true,
+            },
+            ..preserve
+        };
+        assert_eq!(
+            serde_json::to_value(&destructive).unwrap()["mode"],
+            json!({"destructive": {"acknowledge_data_loss": true}})
+        );
+
+        assert_eq!(
+            serde_json::to_value(PasswordResetOptionsRequest {
+                proof: reset_proof()
+            })
+            .unwrap(),
+            json!({ "proof": proof })
+        );
+    }
+
+    #[test]
+    fn recovery_status_accepts_unenrolled_and_enrolled_responses() {
+        let unenrolled: RecoveryCodeStatus = serde_json::from_value(json!({
+            "enrolled": false,
+            "enrolled_at": null,
+            "last_used_at": null,
+            "use_count": 0,
+        }))
+        .unwrap();
+        assert!(!unenrolled.enrolled);
+        assert!(unenrolled.enrolled_at.is_none());
+
+        let enrolled: RecoveryCodeStatus = serde_json::from_value(json!({
+            "enrolled": true,
+            "enrolled_at": "2026-11-01T12:00:00Z",
+            "last_used_at": "2026-11-02T08:30:00.123456Z",
+            "use_count": 1,
+        }))
+        .unwrap();
+        assert!(enrolled.enrolled);
+        assert!(enrolled.last_used_at.is_some());
+        assert_eq!(enrolled.use_count, 1);
+    }
+
+    #[test]
+    fn recovery_secrets_are_redacted_from_debug_output() {
+        let secrets = [
+            "MPLRC1-SECRET",
+            "ABCD1234",
+            "client-reset-secret",
+            "new-password",
+            "current-password",
+            "reset-access-token",
+            "reset-refresh-token",
+        ];
+        let debug = format!(
+            "{:?} {:?} {:?} {:?}",
+            CompletePasswordResetRequest {
+                proof: reset_proof(),
+                new_password: "new-password".to_string(),
+                mode: PasswordResetCompletion::Preserve {
+                    recovery_code: "MPLRC1-SECRET".to_string(),
+                },
+            },
+            RecoveryCodePasswordRequest {
+                current_password: "current-password".to_string(),
+            },
+            RecoveryCodeResponse {
+                recovery_code: "MPLRC1-SECRET".to_string(),
+            },
+            CompletePasswordResetResponse {
+                message: "Password reset successful.".to_string(),
+                access_token: "reset-access-token".to_string(),
+                refresh_token: "reset-refresh-token".to_string(),
+            },
+        );
+        for secret in secrets {
+            assert!(!debug.contains(secret), "Debug output leaked {secret}");
+        }
+    }
 
     #[test]
     fn nullable_field_request_serialization_distinguishes_missing_and_null() {

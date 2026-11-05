@@ -1,6 +1,6 @@
 mod common;
 
-use maple_sdk::{OpenSecretClient, Result};
+use maple_sdk::{Error, OpenSecretClient, PasswordResetCompletion, Result};
 use std::env;
 use uuid::Uuid;
 
@@ -78,6 +78,139 @@ async fn test_guest_change_password_keeps_authenticated_token_state() -> Result<
         .login_with_id(guest_response.id, new_password, client_id)
         .await?;
     assert_eq!(relogin_response.id, guest_response.id);
+
+    Ok(())
+}
+
+fn assert_api_status<T: std::fmt::Debug>(result: Result<T>, expected: u16) {
+    match result {
+        Err(Error::Api { status, .. }) => assert_eq!(status, expected),
+        other => panic!("expected API status {expected}, got {other:?}"),
+    }
+}
+
+/// Registers a fresh email account so recovery state never touches the shared
+/// test account.
+async fn register_recovery_test_user(client: &OpenSecretClient, client_id: Uuid) -> Result<String> {
+    let password = format!("Recovery-test-{}", Uuid::new_v4());
+    client
+        .register(
+            format!("recovery-{}@local.test", Uuid::new_v4()),
+            password.clone(),
+            client_id,
+            None,
+        )
+        .await?;
+    Ok(password)
+}
+
+#[tokio::test]
+async fn test_recovery_code_lifecycle() -> Result<()> {
+    let client_id = test_client_id();
+    let client = setup_client().await?;
+    let password = register_recovery_test_user(&client, client_id).await?;
+
+    let status = client.get_recovery_code_status().await?;
+    assert!(!status.enrolled);
+    assert!(status.enrolled_at.is_none());
+    assert!(status.last_used_at.is_none());
+    assert_eq!(status.use_count, 0);
+
+    assert_api_status(
+        client
+            .enroll_recovery_code("not-the-password".to_string())
+            .await,
+        401,
+    );
+    // Rotation needs an existing enrollment.
+    assert_api_status(client.rotate_recovery_code(password.clone()).await, 400);
+
+    let enrolled = client.enroll_recovery_code(password.clone()).await?;
+    assert!(enrolled.recovery_code.starts_with("MPLRC1-"));
+    let status = client.get_recovery_code_status().await?;
+    assert!(status.enrolled);
+    assert!(status.enrolled_at.is_some());
+    assert_eq!(status.use_count, 0);
+
+    assert_api_status(client.enroll_recovery_code(password.clone()).await, 409);
+
+    let rotated = client.rotate_recovery_code(password.clone()).await?;
+    assert!(rotated.recovery_code.starts_with("MPLRC1-"));
+    assert_ne!(rotated.recovery_code, enrolled.recovery_code);
+    assert!(client.get_recovery_code_status().await?.enrolled);
+
+    assert_api_status(
+        client
+            .disable_recovery_code("not-the-password".to_string())
+            .await,
+        401,
+    );
+    client.disable_recovery_code(password.clone()).await?;
+    assert!(!client.get_recovery_code_status().await?.enrolled);
+    // Disabling is idempotent.
+    client.disable_recovery_code(password).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_guest_cannot_enroll_recovery_code() -> Result<()> {
+    let client_id = test_client_id();
+    let client = setup_client().await?;
+    let password = format!("Recovery-guest-{}", Uuid::new_v4());
+    client.register_guest(password.clone(), client_id).await?;
+
+    assert_api_status(client.enroll_recovery_code(password).await, 400);
+    assert!(!client.get_recovery_code_status().await?.enrolled);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_v2_password_reset_rejects_invalid_proofs() -> Result<()> {
+    let client_id = test_client_id();
+    let client = setup_client().await?;
+    let email = format!("recovery-reset-{}@local.test", Uuid::new_v4());
+
+    assert_api_status(
+        client
+            .get_password_reset_options(
+                email.clone(),
+                "ABCD1234".to_string(),
+                "not-a-reset-secret".to_string(),
+                client_id,
+            )
+            .await,
+        400,
+    );
+
+    for mode in [
+        PasswordResetCompletion::Preserve {
+            recovery_code: "MPLRC1-0000".to_string(),
+        },
+        PasswordResetCompletion::Destructive {
+            acknowledge_data_loss: true,
+        },
+        PasswordResetCompletion::Destructive {
+            acknowledge_data_loss: false,
+        },
+    ] {
+        assert_api_status(
+            client
+                .complete_password_reset(
+                    email.clone(),
+                    "ABCD1234".to_string(),
+                    "not-a-reset-secret".to_string(),
+                    "New-password-1234".to_string(),
+                    client_id,
+                    mode,
+                )
+                .await,
+            400,
+        );
+    }
+    // A rejected completion leaves the client signed out.
+    assert!(client.get_access_token()?.is_none());
 
     Ok(())
 }

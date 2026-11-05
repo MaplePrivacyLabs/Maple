@@ -294,6 +294,14 @@ export async function requestPasswordReset(
   );
 }
 
+/**
+ * Completes a password reset through the legacy one-shot endpoint.
+ *
+ * This reset is always destructive: the account receives a fresh seed and
+ * loses its encrypted data. Use {@link fetchPasswordResetOptions} and
+ * {@link completePasswordReset} to offer a seed-preserving reset when the
+ * account has an enrolled recovery code.
+ */
 export async function confirmPasswordReset(
   email: string,
   alphanumericCode: string,
@@ -314,6 +322,218 @@ export async function confirmPasswordReset(
     confirmData,
     undefined,
     "Failed to confirm password reset"
+  );
+}
+
+export type PasswordResetOptions = {
+  recovery_enrolled: boolean;
+  destructive_reset_available: boolean;
+};
+
+/**
+ * How a V2 password reset completes.
+ *
+ * - `preserve` opens the enrolled seed with the account's recovery code and
+ *   keeps all encrypted data.
+ * - `destructive` replaces the seed and loses all encrypted data; the caller
+ *   must acknowledge that explicitly.
+ */
+export type PasswordResetCompletion =
+  { mode: "preserve"; recoveryCode: string } | { mode: "destructive"; acknowledgeDataLoss: true };
+
+export type CompletePasswordResetResponse = {
+  message: string;
+  access_token: string;
+  refresh_token: string;
+};
+
+type PasswordResetProof = {
+  email: string;
+  alphanumeric_code: string;
+  plaintext_secret: string;
+  client_id: string;
+};
+
+type PasswordResetCompletionWire =
+  { preserve: { recovery_code: string } } | { destructive: { acknowledge_data_loss: boolean } };
+
+function passwordResetCompletionWire(
+  completion: PasswordResetCompletion
+): PasswordResetCompletionWire {
+  switch (completion.mode) {
+    case "preserve":
+      return { preserve: { recovery_code: completion.recoveryCode } };
+    case "destructive":
+      return { destructive: { acknowledge_data_loss: completion.acknowledgeDataLoss } };
+  }
+}
+
+/**
+ * Reports which completions a pending password reset supports.
+ *
+ * The server verifies the emailed code and client secret before revealing
+ * whether the account has an enrolled recovery code, and does not consume the
+ * reset request. Every proof failure returns the same generic error.
+ */
+export async function fetchPasswordResetOptions(
+  email: string,
+  alphanumericCode: string,
+  plaintextSecret: string,
+  client_id: string
+): Promise<PasswordResetOptions> {
+  const optionsData: { proof: PasswordResetProof } = {
+    proof: {
+      email,
+      alphanumeric_code: alphanumericCode,
+      plaintext_secret: plaintextSecret,
+      client_id
+    }
+  };
+  return encryptedApiCall<typeof optionsData, PasswordResetOptions>(
+    `${apiUrl}/password-reset/v2/options`,
+    "POST",
+    optionsData,
+    undefined,
+    "Failed to fetch password reset options"
+  );
+}
+
+/**
+ * Completes a password reset and signs the user in with the new password.
+ *
+ * A preserving completion with a wrong recovery code consumes the reset
+ * request, so the user must request a new reset email before trying again.
+ * A malformed code leaves the request active. The server returns the same
+ * generic error for every rejection.
+ */
+export async function completePasswordReset(
+  email: string,
+  alphanumericCode: string,
+  plaintextSecret: string,
+  newPassword: string,
+  client_id: string,
+  completion: PasswordResetCompletion
+): Promise<CompletePasswordResetResponse> {
+  const targetApiUrl = apiUrl;
+  const expected = snapshotTransportV2Auth(targetApiUrl, "user");
+  const completeData: {
+    proof: PasswordResetProof;
+    new_password: string;
+    mode: PasswordResetCompletionWire;
+  } = {
+    proof: {
+      email,
+      alphanumeric_code: alphanumericCode,
+      plaintext_secret: plaintextSecret,
+      client_id
+    },
+    new_password: newPassword,
+    mode: passwordResetCompletionWire(completion)
+  };
+  const response = await encryptedApiCall<typeof completeData, CompletePasswordResetResponse>(
+    `${targetApiUrl}/password-reset/v2/complete`,
+    "POST",
+    completeData,
+    undefined,
+    "Failed to complete password reset"
+  );
+  installTransportV2Credentials(
+    targetApiUrl,
+    "user",
+    response.access_token,
+    response.refresh_token,
+    expected
+  );
+  return response;
+}
+
+export type RecoveryCodeStatus = {
+  enrolled: boolean;
+  enrolled_at: string | null;
+  /** Last seed-preserving password reset that used the enrolled code. */
+  last_used_at: string | null;
+  use_count: number;
+};
+
+export type RecoveryCodeResponse = {
+  /** Shown once; the server cannot display it again. */
+  recovery_code: string;
+};
+
+/**
+ * Fetches the recovery-code enrollment status for the signed-in user.
+ */
+export async function fetchRecoveryCodeStatus(
+  expectedUserId?: string
+): Promise<RecoveryCodeStatus> {
+  return authenticatedApiCall<void, RecoveryCodeStatus>(
+    `${apiUrl}/protected/recovery-code`,
+    "GET",
+    undefined,
+    "Failed to fetch recovery code status",
+    expectedUserId
+  );
+}
+
+/**
+ * Enrolls a recovery code that can preserve encrypted data across a password
+ * reset. Only email-and-password accounts can enroll.
+ *
+ * @param currentPassword - The user's current password, required as a step-up
+ * @returns The new recovery code, which the server returns only once
+ * @throws An error with status 409 when a recovery code is already enrolled
+ */
+export async function enrollRecoveryCode(
+  currentPassword: string,
+  expectedUserId?: string
+): Promise<RecoveryCodeResponse> {
+  const enrollData = { current_password: currentPassword };
+  return authenticatedApiCall<typeof enrollData, RecoveryCodeResponse>(
+    `${apiUrl}/protected/recovery-code/enroll`,
+    "POST",
+    enrollData,
+    "Failed to enroll recovery code",
+    expectedUserId
+  );
+}
+
+/**
+ * Replaces the enrolled recovery code. The previous code stops working.
+ *
+ * @param currentPassword - The user's current password, required as a step-up
+ * @returns The replacement recovery code, which the server returns only once
+ */
+export async function rotateRecoveryCode(
+  currentPassword: string,
+  expectedUserId?: string
+): Promise<RecoveryCodeResponse> {
+  const rotateData = { current_password: currentPassword };
+  return authenticatedApiCall<typeof rotateData, RecoveryCodeResponse>(
+    `${apiUrl}/protected/recovery-code/rotate`,
+    "POST",
+    rotateData,
+    "Failed to rotate recovery code",
+    expectedUserId
+  );
+}
+
+/**
+ * Removes the enrolled recovery code. Later password resets are destructive.
+ * Succeeds when no code is enrolled.
+ *
+ * @param currentPassword - The user's current password, required as a step-up
+ */
+export async function disableRecoveryCode(
+  currentPassword: string,
+  expectedUserId?: string
+): Promise<void> {
+  const disableData = { current_password: currentPassword };
+  await authenticatedApiCall<typeof disableData, { message: string }>(
+    `${apiUrl}/protected/recovery-code`,
+    "DELETE",
+    disableData,
+    "Failed to disable recovery code",
+    expectedUserId
   );
 }
 
