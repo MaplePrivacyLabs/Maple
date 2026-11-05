@@ -2,6 +2,8 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { PasswordResetCompletion } from "@mapleai/sdk";
 import { PasswordResetFlow } from "./PasswordResetFlow";
+import { useState } from "react";
+import { RootRuntimeLayout } from "./RootRuntimeLayout";
 
 function text(node: ReactTestInstance): string {
   return node.children.map((child) => (typeof child === "string" ? child : text(child))).join("");
@@ -193,3 +195,42 @@ describe("PasswordResetFlow", () => {
     expect(view.root.findByProps({ id: "reset-email-code" }).props.value).toBe("");
   });
 });
+
+for (const pathname of ["/password-reset", "/password-reset/confirm"]) {
+  test(`reset completion survives the signed-in transition on ${pathname}`, async () => {
+    function Transition() {
+      const [userId, setUserId] = useState<string | null>(null);
+      return (
+        <RootRuntimeLayout
+          userId={userId}
+          pathname={pathname}
+          authenticatedHome={null}
+          accountScopedUi={null}
+          routeContent={
+            <PasswordResetFlow
+              {...props}
+              api={{
+                getPasswordResetOptions: async () => ({
+                  recovery_enrolled: true,
+                  destructive_reset_available: true
+                }),
+                completePasswordReset: async () => {
+                  setUserId("reset-user");
+                }
+              }}
+            />
+          }
+        />
+      );
+    }
+    await act(async () => {
+      view = create(<Transition />);
+    });
+    await verify();
+    await passwords();
+    await input("reset-recovery-code", "saved-code-fixture");
+    await submit();
+    expect(text(view.root)).toContain("Password reset successful");
+    expect(view.root.findAllByType("input")).toHaveLength(0);
+  });
+}
