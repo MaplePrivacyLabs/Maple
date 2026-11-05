@@ -54,7 +54,7 @@ pub struct LoginScreen {
     backend_tasks: std::cell::RefCell<Vec<tokio::task::AbortHandle>>,
     subscriptions: Vec<Subscription>,
     error: Option<UiText>,
-    deletion_notice: Option<String>,
+    deletion_notice: Option<UiText>,
     busy: bool,
     messages: MessageCache,
 }
@@ -118,13 +118,21 @@ impl LoginScreen {
         let backend = this.backend.clone();
         // This safe status includes no token, deletion secret or server guess.
         // Keep its callback separate from sign-in's busy lifecycle.
-        let bridge = super::task::call(
+        let bridge = super::task::call_semantic(
             &this.backend,
-            async move { backend.account_deletion_status().await },
+            async move {
+                backend
+                    .call_presented::<Option<crate::backend::AccountDeletionStatus>>(
+                        "account_deletion_status",
+                        (),
+                    )
+                    .await
+            },
+            "flows-login-task-cancelled",
             cx,
             |this, result, cx| {
                 if let Ok(Some(status)) = result {
-                    this.deletion_notice = Some(status.message);
+                    this.deletion_notice = Some(deletion_status_text(status));
                     cx.notify();
                 }
             },
@@ -174,7 +182,9 @@ impl LoginScreen {
                 // Keep the allocation zeroizing until the typed backend API
                 // requires an owned String. Move it without making a UI copy;
                 // the backend/SDK own their subsequent serialization copies.
-                backend.login(email, std::mem::take(&mut *password)).await
+                backend
+                    .call_presented::<AuthSession>("login", (email, std::mem::take(&mut *password)))
+                    .await
             },
             cx,
             |this, result, cx| match result {
@@ -193,7 +203,10 @@ impl LoginScreen {
         self.call(
             async move {
                 backend
-                    .login_guest(account_id, std::mem::take(&mut *password))
+                    .call_presented::<AuthSession>(
+                        "login_guest",
+                        (account_id, std::mem::take(&mut *password)),
+                    )
                     .await
             },
             cx,
@@ -242,7 +255,7 @@ impl LoginScreen {
         then: impl FnOnce(&mut Self, Result<T, UiText>, &mut Context<Self>) + 'static,
     ) where
         T: Send + 'static,
-        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+        F: std::future::Future<Output = Result<T, crate::backend::HostFailure>> + Send + 'static,
     {
         let task = self.backend.spawn(future);
         let mut tasks = self.backend_tasks.borrow_mut();
@@ -255,13 +268,8 @@ impl LoginScreen {
         // abort handle owned by this login screen. cx.spawn receives only a
         // WeakEntity; waiting for the browser cannot keep the screen alive.
         let bridge = cx.spawn(async move |this, cx| {
-            let result = match task.await {
-                Ok(result) => result.map_err(UiText::from),
-                Err(error) => {
-                    log::debug!("backend task failed: {error:?}");
-                    Err(UiText::key("flows-login-task-cancelled"))
-                }
-            };
+            let result = super::task::completion(task.await, "flows-login-task-cancelled")
+                .map_err(UiText::from);
             this.update(cx, |this, cx| {
                 this.busy = false;
                 then(this, result, cx);
@@ -292,14 +300,27 @@ impl LoginScreen {
         let backend = self.begin(cx);
         let locale = super::i18n::current_locale().to_string();
         self.call(
-            async move { backend.oauth_start_localized(provider, locale).await },
+            async move {
+                // Older remote hosts only know the original OAuth method.
+                if backend.remote_host().is_some() {
+                    backend.call_presented("oauth_start", (provider,)).await
+                } else {
+                    backend
+                        .call_presented("oauth_start_localized", (provider, locale))
+                        .await
+                }
+            },
             cx,
             move |this, result, cx| match result {
                 Ok(_) if this.backend.uses_hosted_oauth() => {
                     this.oauth = OAuthFlow::Hosted { provider };
                     let backend = this.begin(cx);
                     this.call(
-                        async move { backend.oauth_wait_for_handoff(provider).await },
+                        async move {
+                            backend
+                                .call_presented("oauth_wait_for_handoff", (provider,))
+                                .await
+                        },
                         cx,
                         Self::oauth_completed,
                     );
@@ -325,7 +346,11 @@ impl LoginScreen {
         }
         let backend = self.begin(cx);
         self.call(
-            async move { backend.oauth_complete(provider, redirected).await },
+            async move {
+                backend
+                    .call_presented("oauth_complete", (provider, redirected))
+                    .await
+            },
             cx,
             Self::oauth_completed,
         );
@@ -407,8 +432,12 @@ impl Render for LoginScreen {
         match &self.oauth {
             OAuthFlow::Idle if self.deletion_notice.is_some() => {
                 card = card.child(
-                    widgets::banner(theme::status_warning())
-                        .child(self.deletion_notice.clone().unwrap_or_default()),
+                    widgets::banner(theme::status_warning()).child(
+                        self.deletion_notice
+                            .as_ref()
+                            .map(UiText::resolve)
+                            .unwrap_or_default(),
+                    ),
                 );
             }
             OAuthFlow::Idle if self.guest => {
@@ -613,6 +642,13 @@ fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> gpui::Stateful<Di
         })
 }
 
+fn deletion_status_text(status: crate::backend::AccountDeletionStatus) -> UiText {
+    match status.label.as_deref() {
+        Some("deletion-pending") => UiText::key("runtime-error-deletion-pending"),
+        _ => status.message.into(),
+    }
+}
+
 fn oauth_button(
     provider: OAuthProvider,
     busy: bool,
@@ -653,6 +689,29 @@ mod tests {
     use gpui::{Focusable, TestAppContext, px, size};
     use std::{cell::RefCell, rc::Rc};
 
+    #[test]
+    fn deletion_status_retains_semantics_and_legacy_fallback() {
+        let _locale = super::super::i18n::TestLocalizationGuard::enable();
+        for label in [None, Some("deletion-pending"), Some("future-status")] {
+            let status = serde_json::from_value(serde_json::json!({
+                "user_id":"account", "started_ms":0, "message":"Legacy diagnostic", "label":label
+            }))
+            .unwrap();
+            let notice = deletion_status_text(status);
+            super::super::i18n::apply_preference(Some("en"));
+            let english = notice.resolve();
+            super::super::i18n::apply_preference(Some("es"));
+            if label == Some("deletion-pending") {
+                assert_ne!(notice.resolve(), english);
+                assert!(english.contains("unknown outcome"));
+            } else {
+                assert_eq!(notice.resolve().as_ref(), "Legacy diagnostic");
+            }
+            super::super::i18n::apply_preference(Some("en"));
+            assert_eq!(notice.resolve(), english);
+        }
+    }
+
     #[gpui::test]
     fn unresolved_account_deletion_blocks_password_and_oauth_without_reconstructing_credentials(
         cx: &mut TestAppContext,
@@ -679,6 +738,7 @@ mod tests {
                     .deletion_notice
                     .as_ref()
                     .unwrap()
+                    .resolve()
                     .contains("history is retained")
             );
         });
@@ -1074,7 +1134,7 @@ mod tests {
             this.call(
                 async move {
                     let _owned = owned;
-                    std::future::pending::<Result<AuthSession, String>>().await
+                    std::future::pending::<Result<AuthSession, crate::backend::HostFailure>>().await
                 },
                 cx,
                 LoginScreen::oauth_completed,

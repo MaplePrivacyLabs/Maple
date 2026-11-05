@@ -5,6 +5,8 @@
 // there by design.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
+use crate::backend::HostFailure;
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RemoteSidebarSettings {
     #[serde(default)]
@@ -515,19 +517,38 @@ pub(crate) fn retire_sidebar_account(user: &str) {
 
 /// Queue account-owned ordering through the same Quit barrier as
 /// ordinary settings. The captured account/backend are never rebound on retry.
-pub(crate) fn save_sidebar_order(
+fn queue_sidebar_order(
     backend: std::sync::Arc<crate::backend::AgentBackend>,
     user: String,
     order: SidebarOrder,
-) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+) {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.sidebar_orders.insert(user.clone(), order.clone());
     cache
         .pending_sidebar_orders
         .insert(user, PendingSidebarOrder { backend, order });
     drop(cache);
+}
+
+pub(crate) fn save_sidebar_order(
+    backend: std::sync::Arc<crate::backend::AgentBackend>,
+    user: String,
+    order: SidebarOrder,
+) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+    queue_sidebar_order(backend, user, order);
     let (sender, receiver) = tokio::sync::oneshot::channel();
     queue_flush(Some(SettingsAck::Async(sender)));
+    receiver
+}
+
+pub(crate) fn save_sidebar_order_presented(
+    backend: std::sync::Arc<crate::backend::AgentBackend>,
+    user: String,
+    order: SidebarOrder,
+) -> tokio::sync::oneshot::Receiver<Result<(), HostFailure>> {
+    queue_sidebar_order(backend, user, order);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    queue_flush(Some(SettingsAck::Presented(sender)));
     receiver
 }
 
@@ -576,6 +597,7 @@ enum SettingsAck {
     #[cfg(test)]
     Sync(std::sync::mpsc::Sender<Result<(), String>>),
     Async(tokio::sync::oneshot::Sender<Result<(), String>>),
+    Presented(tokio::sync::oneshot::Sender<Result<(), HostFailure>>),
 }
 
 fn queue_flush(ack: Option<SettingsAck>) {
@@ -601,9 +623,14 @@ fn queue_flush(ack: Option<SettingsAck>) {
                         match ack {
                             #[cfg(test)]
                             SettingsAck::Sync(sender) => {
-                                let _ = sender.send(result.clone());
+                                let _ =
+                                    sender.send(result.clone().map_err(|failure| failure.message));
                             }
                             SettingsAck::Async(sender) => {
+                                let _ =
+                                    sender.send(result.clone().map_err(|failure| failure.message));
+                            }
+                            SettingsAck::Presented(sender) => {
                                 let _ = sender.send(result.clone());
                             }
                         }
@@ -618,7 +645,7 @@ fn queue_flush(ack: Option<SettingsAck>) {
     }
 }
 
-fn synchronize_once() -> Result<(), String> {
+fn synchronize_once() -> Result<(), HostFailure> {
     let (generation, sink, patch, words, sidebar_orders) = {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if cache.pending.is_empty()
@@ -635,11 +662,19 @@ fn synchronize_once() -> Result<(), String> {
             cache.pending_sidebar_orders.clone(),
         )
     };
-    match sink.ok_or("Maple host is unavailable; settings edits remain pending")? {
+    match sink.ok_or_else(|| {
+        HostFailure::new(
+            "settings-sync-unavailable",
+            "Maple host is unavailable; settings edits remain pending",
+        )
+    })? {
         SettingsSink::Host(backend) => {
-            let backend = backend
-                .upgrade()
-                .ok_or("Maple host is unavailable; settings edits remain pending")?;
+            let backend = backend.upgrade().ok_or_else(|| {
+                HostFailure::new(
+                    "settings-sync-unavailable",
+                    "Maple host is unavailable; settings edits remain pending",
+                )
+            })?;
             backend.runtime_handle().block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     if !patch.is_empty() {
@@ -653,7 +688,13 @@ fn synchronize_once() -> Result<(), String> {
                     backend.flush_ui_settings().await
                 })
                 .await
-                .map_err(|_| "Maple settings synchronization timed out".to_string())?
+                .map_err(|_| {
+                    HostFailure::new(
+                        "settings-sync-timeout",
+                        "Maple settings synchronization timed out",
+                    )
+                })?
+                .map_err(HostFailure::from)
             })?;
         }
         #[cfg(test)]
@@ -670,7 +711,10 @@ fn synchronize_once() -> Result<(), String> {
             return if sidebar_orders.is_empty() {
                 Ok(())
             } else {
-                Err("Maple settings state changed; sidebar order edits remain pending".into())
+                Err(HostFailure::new(
+                    "sidebar-sync-state-changed",
+                    "Maple settings state changed; sidebar order edits remain pending",
+                ))
             };
         }
         for (key, value) in patch {
@@ -688,7 +732,10 @@ fn synchronize_once() -> Result<(), String> {
             let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
             if cache.generation != generation || cache.sink.is_none() {
                 first_error.get_or_insert_with(|| {
-                    "Maple settings state changed; sidebar order edits remain pending".to_string()
+                    HostFailure::new(
+                        "sidebar-sync-state-changed",
+                        "Maple settings state changed; sidebar order edits remain pending",
+                    )
                 });
                 break;
             }
@@ -698,32 +745,43 @@ fn synchronize_once() -> Result<(), String> {
                 std::time::Duration::from_secs(5),
                 pending
                     .backend
-                    .set_sidebar_order(&user, pending.order.clone()),
+                    .call_presented::<()>("set_sidebar_order", (&user, pending.order.clone())),
             )
             .await
-            .map_err(|_| "Maple sidebar order synchronization timed out".to_string())?
+            .map_err(|_| {
+                HostFailure::new(
+                    "sidebar-sync-timeout",
+                    "Maple sidebar order synchronization timed out",
+                )
+            })?
         });
-        match result {
-            Ok(()) => {
-                let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-                if cache.generation == generation
-                    && cache
-                        .pending_sidebar_orders
-                        .get(&user)
-                        .is_some_and(|current| {
-                            current.order == pending.order
-                                && std::sync::Arc::ptr_eq(&current.backend, &pending.backend)
-                        })
-                {
-                    cache.pending_sidebar_orders.remove(&user);
-                }
-            }
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
+        if let Err(error) = complete_sidebar_order(generation, &user, &pending, result) {
+            first_error.get_or_insert(error);
         }
     }
     first_error.map_or(Ok(()), Err)
+}
+
+fn complete_sidebar_order(
+    generation: u64,
+    user: &str,
+    pending: &PendingSidebarOrder,
+    result: Result<(), HostFailure>,
+) -> Result<(), HostFailure> {
+    result?;
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.generation == generation
+        && cache
+            .pending_sidebar_orders
+            .get(user)
+            .is_some_and(|current| {
+                current.order == pending.order
+                    && std::sync::Arc::ptr_eq(&current.backend, &pending.backend)
+            })
+    {
+        cache.pending_sidebar_orders.remove(user);
+    }
+    Ok(())
 }
 
 fn merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
@@ -1278,6 +1336,48 @@ mod tests {
                 .root()
                 .join("staging/config/settings.json")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn typed_sidebar_failure_preserves_newer_edit_and_original_backend() {
+        let _guard = SETTINGS_IO_LOCK.lock();
+        install_test_settings(AppSettings::default());
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .unwrap(),
+        );
+        let old = PendingSidebarOrder {
+            backend: backend.clone(),
+            order: SidebarOrder::default(),
+        };
+        let mut newer = old.order.clone();
+        newer.created_before_ms = 10;
+        queue_sidebar_order(backend.clone(), "account".into(), newer.clone());
+        let generation = CACHE.lock().unwrap().generation;
+        let failure = HostFailure::new("sidebar-sync-timeout", "original timeout diagnostic");
+        let result = complete_sidebar_order(generation, "account", &old, Err(failure.clone()));
+        assert_eq!(result, Err(failure));
+        {
+            let cache = CACHE.lock().unwrap();
+            let pending = &cache.pending_sidebar_orders["account"];
+            assert_eq!(pending.order, newer);
+            assert!(std::sync::Arc::ptr_eq(&pending.backend, &backend));
+        }
+        // Even a late success for the old value cannot acknowledge the newer edit.
+        complete_sidebar_order(generation, "account", &old, Ok(())).unwrap();
+        assert_eq!(
+            CACHE.lock().unwrap().pending_sidebar_orders["account"].order,
+            newer
+        );
+        let current = CACHE.lock().unwrap().pending_sidebar_orders["account"].clone();
+        complete_sidebar_order(generation, "account", &current, Ok(())).unwrap();
+        assert!(
+            !CACHE
+                .lock()
+                .unwrap()
+                .pending_sidebar_orders
+                .contains_key("account")
         );
     }
 

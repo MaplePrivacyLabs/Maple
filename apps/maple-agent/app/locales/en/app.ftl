@@ -1851,3 +1851,49 @@ native-project-unavailable = This computer is unavailable. Reconnect it before r
 native-project-connection-changed = The computer connection changed. Check its current project name before trying again.
 native-task-unavailable = This computer is unavailable. Reconnect it before changing the task.
 native-task-connection-changed = The computer connection changed. Check the task before trying again.
+
+## Chat attachment staging
+chat-staging-file-limit = Too many retained attachments. Remove some draft files before attaching more.
+chat-staging-byte-limit = Retained attachments exceed 300 MiB. Remove some draft files before attaching more.
+chat-staging-unsafe-directory = Attachment staging directory is unsafe
+chat-staging-private-directory = Attachment staging directory is not private
+chat-staging-not-file = Choose a file, not a folder
+chat-staging-file-too-large = Files must be 30 MiB or smaller
+chat-staging-file-grew = The file grew while it was being attached. Please attach it again.
+chat-staging-prepare-failed = Could not prepare attachment staging: { $error }
+chat-staging-open-failed = Could not open the attachment: { $error }
+chat-subscribe-history-failed = Could not subscribe to task history: { $error }
+chat-web-change-error = Could not change web access: { $error }
+chat-integration-change-error = Could not change { $name }: { $error }
+chat-project-integrations-load-failed = Could not load project integrations: { $error }
+chat-output-full-budget = Full output exceeds the 32 MiB view budget.
+chat-output-range-invalid = Invalid output range
+chat-output-range-stalled = The output range did not advance.
+chat-output-invalid = Invalid full output
+chat-sidebar-order-invalid = Invalid sidebar manual order
+chat-sidebar-summary-failed = Could not prepare sidebar summaries
+chat-sidebar-account-inactive = The sidebar account is no longer active
+chat-sidebar-page-large = Sidebar page is too large
+chat-sidebar-page-stalled = Sidebar summary paging did not advance
+chat-sidebar-order-cancelled = Sidebar manual ordering was cancelled
+chat-sidebar-order-changed = The sidebar order changed; refresh this list
+chat-search-unavailable = Search is unavailable
+chat-sidebar-order-save-failed = Could not save sidebar order
+chat-upload-cancelled-unsent = Upload cancelled. No message was sent.
+chat-upload-retained-unconfirmed = Could not confirm the retained file upload. Your draft is retained; try again when the connection recovers.
+chat-upload-receipt-cancelled = The file upload was cancelled. Your draft is retained.
+chat-upload-retained-pending = The retained file upload is still in progress. Your draft is retained; try again when it completes.
+chat-upload-preparing = Attachment is still being prepared
+chat-upload-confirm-failed = File upload could not be confirmed: { $error }. Your draft is retained; try again when the connection recovers.
+chat-settings-sync-unavailable = Maple host is unavailable; settings edits remain pending
+chat-settings-sync-timeout = Maple settings synchronization timed out
+chat-sidebar-sync-state-changed = Maple settings state changed; sidebar order edits remain pending
+chat-sidebar-sync-timeout = Maple sidebar order synchronization timed out
+chat-send-failed-heading = Send failed
+
+## Flows: typed task completion
+flows-task-cancelled = The task was cancelled
+
+## Flows: direct pricing-page browser errors
+runtime-error-browser-pricing-link = Could not open pricing: unexpected link
+runtime-error-browser-pricing-open = Could not open pricing in your browser

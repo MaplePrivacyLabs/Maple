@@ -3672,7 +3672,7 @@ mod state_tests {
 
             this.fail_new_session_setup(
                 summary_at("created", "New Task", &absolute_fixture_root("work")),
-                "Could not change web access: boom".to_string(),
+                "Could not change web access: boom".into(),
                 generation,
                 cx,
             );
@@ -3747,7 +3747,7 @@ mod state_tests {
             );
 
             // The create fails: the text stays, and the history has it.
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
             assert_eq!(this.composer_text(cx).as_deref(), Some("hello"));
             assert!(this.prompt_history.contains(&"hello".to_string()));
             assert!(this.draft);
@@ -4052,7 +4052,7 @@ mod state_tests {
             this.send_text("hello".to_string(), cx);
             assert!(this.session_setup_pending);
 
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
 
             assert!(!this.session_setup_pending);
             assert!(this.pending_first_send.is_none());
@@ -4087,7 +4087,7 @@ mod state_tests {
                 this.pending_first_send,
                 Some(FirstSend::SideQuestion("what is this".to_string()))
             );
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
 
             this.slash_commands = vec![AgentSlashCommand {
                 name: "deploy".to_string(),
@@ -4100,7 +4100,7 @@ mod state_tests {
                 Some(FirstSend::Command("/deploy staging".to_string()))
             );
             // Unknown commands still fall through to a normal send.
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
             assert!(!this.try_command(None, "/definitely-not-a-command", cx));
         });
     }
@@ -11788,6 +11788,196 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn local_error_text_switches_locale_without_mutating_raw_rows_or_receipts(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::host::receipts::Outcome;
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.selected_session = Some("s1".into());
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            composer.update(cx, |input, cx| input.set_text("newer draft", cx));
+            chat.composer = Some(composer);
+            chat.host_recovery.unavailable = true;
+            chat.finish_send(
+                "failure".into(),
+                UnresolvedSend {
+                    backend: chat.backend.clone(),
+                    outcome: None,
+                    session: "s1".into(),
+                    text: "original draft".into(),
+                    attachments: vec![],
+                    from_composer: true,
+                },
+                Err(crate::backend::HostFailure::new(
+                    "host-disconnected",
+                    "untouched host diagnostic",
+                )
+                .into()),
+                cx,
+            );
+            let item = chat.timeline.last().unwrap().clone();
+            let raw_row = serde_json::to_value(&item).unwrap();
+            let receipt = Some(Outcome::Finished(Err("untouched host diagnostic".into())));
+            for locale in ["en", "es", "en"] {
+                apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                let (title, body) =
+                    transcript::error_presentation(&item, &chat.local_error_text, &chat.messages);
+                assert_eq!(
+                    title.unwrap(),
+                    crate::ui::i18n::tr("chat-send-failed-heading")
+                );
+                assert_eq!(
+                    body.unwrap(),
+                    crate::ui::i18n::tr("runtime-error-host-disconnected")
+                );
+                assert_eq!(
+                    serde_json::to_value(chat.timeline.last().unwrap()).unwrap(),
+                    raw_row
+                );
+                assert_eq!(chat.unresolved_sends["failure"].outcome, receipt);
+                assert_eq!(chat.composer_text(cx).as_deref(), Some("newer draft"));
+            }
+            let mut replacement = item.clone();
+            replacement.text = Some("replacement raw content".into());
+            chat.apply_timeline_item("s1", replacement);
+            assert!(!chat.local_error_text.contains_key(&item.id));
+            assert_eq!(
+                transcript::error_presentation(
+                    &chat.timeline[0],
+                    &chat.local_error_text,
+                    &chat.messages
+                )
+                .1
+                .unwrap()
+                .as_ref(),
+                "replacement raw content"
+            );
+            chat.push_local_error("Send failed", "raw", UiText::key("chat-task-cancelled"), cx);
+            assert_eq!(chat.local_error_text.len(), 1);
+            for index in 0..2000 {
+                chat.timeline
+                    .push(user_item(&format!("evict-{index}"), "user content"));
+            }
+            chat.bound_transcript_window(true);
+            chat.rebuild_window(None);
+            assert!(
+                chat.local_error_text.is_empty(),
+                "eviction drops semantic state"
+            );
+            chat.push_local_error("Send failed", "raw", UiText::key("chat-task-cancelled"), cx);
+            assert_eq!(chat.local_error_text.len(), 1);
+            chat.set_active_session(
+                summary("other", "Another task"),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+            assert!(
+                chat.local_error_text.is_empty(),
+                "task replacement drops semantic state"
+            );
+            assert_eq!(chat.unresolved_sends["failure"].outcome, receipt);
+        });
+    }
+
+    #[gpui::test]
+    fn typed_send_failures_preserve_receipt_authority_and_task_fences(cx: &mut TestAppContext) {
+        use crate::host::receipts::Outcome;
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            chat.composer = Some(composer.clone());
+            chat.host_recovery.unavailable = true;
+            for selected in ["s1", "other"] {
+                for kind in 0..4 {
+                    chat.unresolved_sends.clear();
+                    chat.selected_session = Some(selected.into());
+                    chat.replace_timeline(Vec::new());
+                    chat.awaiting_first_token = true;
+                    composer.update(cx, |input, cx| input.set_text("newer draft", cx));
+                    let (failure, diagnostic) = match kind {
+                        0 => (
+                            UiFailure::from(crate::backend::HostFailure::new(
+                                "host-disconnected",
+                                "original host diagnostic",
+                            )),
+                            Some("original host diagnostic"),
+                        ),
+                        1 => (
+                            UiFailure::Local(
+                                "chat-upload-cancelled-unsent",
+                                "Upload cancelled. No message was sent.",
+                            ),
+                            Some("Upload cancelled. No message was sent."),
+                        ),
+                        2 => (UiFailure::Cancelled("chat-agent-task-cancelled"), None),
+                        _ => (
+                            UiFailure::Local(
+                                "chat-upload-preparing",
+                                "Attachment is still being prepared",
+                            )
+                            .with_context(
+                                "chat-upload-confirm-failed",
+                                vec![],
+                                None,
+                            ),
+                            None,
+                        ),
+                    };
+                    chat.finish_send(
+                        "typed-send".into(),
+                        UnresolvedSend {
+                            backend: chat.backend.clone(),
+                            outcome: None,
+                            session: "s1".into(),
+                            text: "original draft".into(),
+                            attachments: vec![],
+                            from_composer: true,
+                        },
+                        Err(failure),
+                        cx,
+                    );
+                    let send = &chat.unresolved_sends["typed-send"];
+                    assert_eq!(send.session, "s1");
+                    assert_eq!(send.text, "original draft");
+                    assert_eq!(
+                        send.outcome,
+                        diagnostic.map(|raw| Outcome::Finished(Err(raw.into())))
+                    );
+                    assert_eq!(send.awaiting_receipt(), diagnostic.is_none());
+                    assert_eq!(composer.read(cx).text_ref(), "newer draft");
+                    assert!(chat.active_runs.is_empty());
+                    if selected == "other" {
+                        assert!(
+                            chat.timeline.is_empty(),
+                            "failure must not enter the newly selected task"
+                        );
+                        assert!(chat.awaiting_first_token);
+                    } else {
+                        assert!(!chat.awaiting_first_token);
+                        assert_eq!(chat.timeline.len(), usize::from(diagnostic.is_some()));
+                    }
+                    if diagnostic.is_none() {
+                        assert_eq!(
+                            chat.notice.as_ref().unwrap(),
+                            &UiText::key("chat-send-uncertain")
+                        );
+                    } else {
+                        assert_eq!(
+                            chat.notice.as_ref().unwrap(),
+                            &UiText::key("chat-send-failed-retained")
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[gpui::test]
     fn receipt_completion_uncertainty_never_restores_or_replays_the_original_draft(
         cx: &mut TestAppContext,
     ) {
@@ -11810,7 +12000,7 @@ mod state_tests {
                     text: "already admitted original message".into(),
                     from_composer: true,
                     attachments: vec![DraftAttachment::for_test(50, "image.png", true)],
-                }, Err(format!("Send outcome unknown ({id}). Reload this task before sending again; it may already be running.")), cx);
+                }, Err(format!("Send outcome unknown ({id}). Reload this task before sending again; it may already be running.").into()), cx);
                 assert_eq!(composer.read(cx).text_ref(), draft);
                 assert!(chat.draft_attachments.is_empty());
                 assert_eq!(chat.unresolved_sends[&id].attachments.len(), 1);

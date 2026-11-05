@@ -4,7 +4,6 @@ use super::{AgentBackend, HostFailure, LocalBackend};
 use crate::host::protocol::Request;
 use maple_agent::store::{AccountId, Store};
 use maple_agent::store::{AttachmentUploadMetadata, AttachmentUploadStart};
-pub use maple_agent::store::{AttachmentUploadStatus, StoredAttachment};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -252,20 +251,6 @@ pub(crate) async fn dispatch_presented(
     })
 }
 impl AgentBackend {
-    pub async fn import_attachment(
-        &self,
-        user: &str,
-        request: ImportAttachmentRequest,
-    ) -> Result<StoredAttachment, String> {
-        self.call("import_attachment", (user, request)).await
-    }
-    pub async fn attachment_upload_status(
-        &self,
-        user: &str,
-        request: AttachmentUploadRequest,
-    ) -> Result<AttachmentUploadStatus, String> {
-        self.call("attachment_upload_status", (user, request)).await
-    }
     pub async fn cancel_attachment_upload(
         &self,
         user: &str,
@@ -301,7 +286,7 @@ pub(crate) async fn dispatch(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use maple_agent::store::{NewTask, TaskKind};
+    use maple_agent::store::{AttachmentUploadStatus, NewTask, StoredAttachment, TaskKind};
 
     pub(crate) fn fixture(root: &std::path::Path) -> LocalBackend {
         let mut backend = LocalBackend::isolated_for_test(root);

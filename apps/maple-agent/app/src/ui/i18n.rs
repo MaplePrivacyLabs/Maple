@@ -276,6 +276,13 @@ impl MessageCache {
 #[derive(Clone, Debug)]
 pub(crate) enum UiText {
     Raw(String),
+    Context {
+        key: &'static str,
+        args: MessageArgs,
+        argument: &'static str,
+        inner: Box<UiText>,
+        cached: std::rc::Rc<RefCell<ResolvedMessage>>,
+    },
     Message {
         key: &'static str,
         args: MessageArgs,
@@ -286,6 +293,22 @@ impl PartialEq for UiText {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Raw(a), Self::Raw(b)) => a == b,
+            (
+                Self::Context {
+                    key: a,
+                    args: av,
+                    argument: aa,
+                    inner: ai,
+                    ..
+                },
+                Self::Context {
+                    key: b,
+                    args: bv,
+                    argument: ba,
+                    inner: bi,
+                    ..
+                },
+            ) => a == b && av == bv && aa == ba && ai == bi,
             (
                 Self::Message {
                     key: a, args: aa, ..
@@ -312,9 +335,50 @@ impl UiText {
             cached: Default::default(),
         }
     }
+    /// Retain inner semantic text so every layer follows locale changes.
+    pub(crate) fn context(key: &'static str, argument: &'static str, inner: UiText) -> Self {
+        Self::context_args(key, [], argument, inner)
+    }
+    /// The semantic inner argument wins over any duplicate raw argument.
+    pub(crate) fn context_args(
+        key: &'static str,
+        args: impl IntoIterator<Item = (&'static str, FluentValue<'static>)>,
+        argument: &'static str,
+        inner: UiText,
+    ) -> Self {
+        Self::Context {
+            key,
+            args: args
+                .into_iter()
+                .filter(|(name, _)| *name != argument)
+                .collect(),
+            argument,
+            inner: Box::new(inner),
+            cached: Default::default(),
+        }
+    }
     pub(crate) fn resolve(&self) -> SharedString {
         match self {
             Self::Raw(value) => value.clone().into(),
+            Self::Context {
+                key,
+                args,
+                argument,
+                inner,
+                cached,
+            } => {
+                let locale = current_locale();
+                if let Some((previous, text)) = &*cached.borrow()
+                    && previous == &locale
+                {
+                    return text.clone();
+                }
+                let mut args = args.clone();
+                args.push((*argument, inner.resolve().to_string().into()));
+                let text = tr_args(key, args);
+                *cached.borrow_mut() = Some((locale, text.clone()));
+                text
+            }
             Self::Message { key, args, cached } => {
                 let locale = current_locale();
                 if let Some((previous, text)) = &*cached.borrow()

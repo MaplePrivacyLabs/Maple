@@ -38,7 +38,7 @@ enum CreditChoice {
 pub(super) struct CreditsState {
     messages: crate::ui::i18n::MessageCache,
     balance: Option<i64>,
-    balance_error: Option<String>,
+    balance_error: Option<UiText>,
     choice: CreditChoice,
     pub(super) custom: Entity<TextInput>,
     /// Credits for the typed custom amount, parsed when the field changes.
@@ -104,24 +104,24 @@ impl CreditsState {
 
     /// Compact label for the API keys strip.
     pub(super) fn balance_label(&self) -> String {
-        balance_label(self.balance, self.balance_error.as_deref(), &self.messages)
+        balance_label(self.balance, self.balance_error.is_some(), &self.messages)
     }
 }
 
 fn balance_label(
     balance: Option<i64>,
-    balance_error: Option<&str>,
+    has_balance_error: bool,
     messages: &crate::ui::i18n::MessageCache,
 ) -> String {
-    match (balance, balance_error) {
+    match (balance, has_balance_error) {
         (Some(balance), _) => messages
             .get(
                 "settings-credits-balance",
                 [("arg1", (format_count(balance)).to_string().into())],
             )
             .to_string(),
-        (None, None) => tr("settings-api-credits-loading-balance").to_string(),
-        (None, Some(_)) => tr("settings-api-credits-balance-unavailable").to_string(),
+        (None, false) => tr("settings-api-credits-loading-balance").to_string(),
+        (None, true) => tr("settings-api-credits-balance-unavailable").to_string(),
     }
 }
 
@@ -190,8 +190,12 @@ impl SettingsScreen {
     pub(super) fn load_credit_balance(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.api_credit_balance(&user_id).await },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented("api_credit_balance", (&user_id,))
+                    .await
+            },
             cx,
             |this, result, cx| {
                 let credits = &mut this.billing.credits;
@@ -200,7 +204,7 @@ impl SettingsScreen {
                         credits.balance = Some(balance);
                         credits.balance_error = None;
                     }
-                    Err(message) => credits.balance_error = Some(message),
+                    Err(message) => credits.balance_error = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -285,8 +289,8 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.purchase_api_credits(&user_id, method, amount).await },
+        self.call_presented(
+            async move { backend.call_presented::<()>("purchase_api_credits", (&user_id, method, amount)).await },
             cx,
             move |this, result, cx| {
                 this.billing.credits.purchasing = None;
@@ -612,15 +616,15 @@ mod tests {
     #[test]
     fn balance_label_covers_loaded_loading_and_error() {
         assert_eq!(
-            balance_label(Some(12_345), None, &Default::default()),
+            balance_label(Some(12_345), false, &Default::default()),
             "\u{2068}12,345\u{2069} credits"
         );
         assert_eq!(
-            balance_label(None, None, &Default::default()),
+            balance_label(None, false, &Default::default()),
             "Loading balance…"
         );
         assert_eq!(
-            balance_label(None, Some("no"), &Default::default()),
+            balance_label(None, true, &Default::default()),
             "Balance unavailable"
         );
     }

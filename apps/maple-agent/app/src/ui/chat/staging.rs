@@ -22,6 +22,21 @@ const MAX_SWEEP_ENTRIES: usize = 512;
 const MAX_LIVE_FILES: usize = 64;
 const MAX_LIVE_BYTES: u64 = 300 * 1024 * 1024;
 
+/// Sendable failure data; only UI consumers format presentation.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Failure {
+    RetainedFileLimit,
+    RetainedByteLimit,
+    UnsafeDirectory,
+    NonPrivateDirectory,
+    NotAFile,
+    FileTooLarge,
+    FileGrew,
+    PrepareDirectory(String),
+    OpenAttachment(String),
+    Raw(String),
+}
+
 #[derive(Default)]
 struct StagingBudget {
     files: AtomicUsize,
@@ -34,14 +49,12 @@ struct Reservation {
 }
 
 impl StagingBudget {
-    fn reserve(self: &Arc<Self>, bytes: u64) -> Result<Reservation, String> {
+    fn reserve(self: &Arc<Self>, bytes: u64) -> Result<Reservation, Failure> {
         self.files
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |files| {
                 (files < MAX_LIVE_FILES).then_some(files + 1)
             })
-            .map_err(
-                |_| "Too many retained attachments. Remove some draft files before attaching more.",
-            )?;
+            .map_err(|_| Failure::RetainedFileLimit)?;
         if self
             .bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
@@ -51,7 +64,7 @@ impl StagingBudget {
             .is_err()
         {
             self.files.fetch_sub(1, Ordering::AcqRel);
-            return Err("Retained attachments exceed 300 MiB. Remove some draft files before attaching more.".into());
+            return Err(Failure::RetainedByteLimit);
         }
         Ok(Reservation {
             budget: self.clone(),
@@ -125,7 +138,7 @@ pub(super) fn root() -> PathBuf {
     }
 }
 
-fn private_directory(path: &Path) -> Result<(), String> {
+fn private_directory(path: &Path) -> Result<(), Failure> {
     let builder = fs::DirBuilder::new();
     #[cfg(unix)]
     let builder = {
@@ -137,20 +150,20 @@ fn private_directory(path: &Path) -> Result<(), String> {
     match builder.create(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+            let metadata = fs::symlink_metadata(path).map_err(|e| Failure::Raw(e.to_string()))?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err("Attachment staging directory is unsafe".into());
+                return Err(Failure::UnsafeDirectory);
             }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 if metadata.permissions().mode() & 0o077 != 0 {
-                    return Err("Attachment staging directory is not private".into());
+                    return Err(Failure::NonPrivateDirectory);
                 }
             }
             Ok(())
         }
-        Err(error) => Err(format!("Could not prepare attachment staging: {error}")),
+        Err(error) => Err(Failure::PrepareDirectory(error.to_string())),
     }
 }
 
@@ -201,11 +214,11 @@ fn sweep(root: &Path, now: SystemTime) {
     }
 }
 
-fn begin(root: &Path, reservation: Reservation) -> Result<(Arc<StagedFile>, File), String> {
+fn begin(root: &Path, reservation: Reservation) -> Result<(Arc<StagedFile>, File), Failure> {
     // The profile root is already owned by Maple; tests use an isolated parent.
     // Create the staging child with its own private permissions in both cases.
     if let Some(parent) = root.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent).map_err(|e| Failure::Raw(e.to_string()))?;
     }
     private_directory(root)?;
     sweep(root, SystemTime::now());
@@ -218,17 +231,17 @@ fn begin(root: &Path, reservation: Reservation) -> Result<(Arc<StagedFile>, File
     };
     let owner = file_options(true)
         .open(directory.join("owner"))
-        .map_err(|e| e.to_string())?;
-    owner.try_lock().map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::Raw(e.to_string()))?;
+    owner.try_lock().map_err(|e| Failure::Raw(e.to_string()))?;
     staged.owner = Some(owner);
     let output = file_options(true)
         .open(&staged.path)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::Raw(e.to_string()))?;
     let staged = Arc::new(staged);
     Ok((staged, output))
 }
 
-pub(super) fn copy_file(root: &Path, source: &Path) -> Result<(Arc<StagedFile>, u64), String> {
+pub(super) fn copy_file(root: &Path, source: &Path) -> Result<(Arc<StagedFile>, u64), Failure> {
     let mut input_options = OpenOptions::new();
     input_options.read(true);
     #[cfg(unix)]
@@ -238,34 +251,36 @@ pub(super) fn copy_file(root: &Path, source: &Path) -> Result<(Arc<StagedFile>, 
     }
     let input = input_options
         .open(source)
-        .map_err(|e| format!("Could not open the attachment: {e}"))?;
-    let metadata = input.metadata().map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::OpenAttachment(e.to_string()))?;
+    let metadata = input.metadata().map_err(|e| Failure::Raw(e.to_string()))?;
     if !metadata.is_file() {
-        return Err("Choose a file, not a folder".into());
+        return Err(Failure::NotAFile);
     }
     if metadata.len() > MAX_FILE_BYTES {
-        return Err("Files must be 30 MiB or smaller".into());
+        return Err(Failure::FileTooLarge);
     }
     let reserved_size = metadata.len();
     let reservation = budget().reserve(reserved_size)?;
     let (staged, mut output) = begin(root, reservation)?;
     let copied = std::io::copy(&mut input.take(reserved_size + 1), &mut output)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::Raw(e.to_string()))?;
     if copied > reserved_size {
-        return Err("The file grew while it was being attached. Please attach it again.".into());
+        return Err(Failure::FileGrew);
     }
-    output.sync_all().map_err(|e| e.to_string())?;
+    output.sync_all().map_err(|e| Failure::Raw(e.to_string()))?;
     Ok((staged, copied))
 }
 
-pub(super) fn copy_bytes(root: &Path, bytes: &[u8]) -> Result<Arc<StagedFile>, String> {
+pub(super) fn copy_bytes(root: &Path, bytes: &[u8]) -> Result<Arc<StagedFile>, Failure> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err("Files must be 30 MiB or smaller".into());
+        return Err(Failure::FileTooLarge);
     }
     let reservation = budget().reserve(bytes.len() as u64)?;
     let (staged, mut output) = begin(root, reservation)?;
-    output.write_all(bytes).map_err(|e| e.to_string())?;
-    output.sync_all().map_err(|e| e.to_string())?;
+    output
+        .write_all(bytes)
+        .map_err(|e| Failure::Raw(e.to_string()))?;
+    output.sync_all().map_err(|e| Failure::Raw(e.to_string()))?;
     Ok(staged)
 }
 
@@ -274,17 +289,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn staging_failures_are_sendable_and_preserve_open_diagnostics() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Failure>();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("missing");
+        let expected = File::open(&source).unwrap_err().to_string();
+        assert_eq!(
+            copy_file(&directory.path().join("staging"), &source)
+                .err()
+                .unwrap(),
+            Failure::OpenAttachment(expected)
+        );
+        assert!(!directory.path().join("staging").exists());
+    }
+
+    #[test]
     fn live_staging_budget_counts_files_and_bytes_and_releases_on_drop() {
         let budget = Arc::new(StagingBudget::default());
         let reservation = budget.reserve(MAX_LIVE_BYTES).unwrap();
-        assert!(budget.reserve(1).is_err());
+        assert_eq!(budget.reserve(1).err().unwrap(), Failure::RetainedByteLimit);
         assert_eq!(budget.files.load(Ordering::Acquire), 1);
         drop(reservation);
         assert_eq!(budget.bytes.load(Ordering::Acquire), 0);
         let reservations: Vec<_> = (0..MAX_LIVE_FILES)
             .map(|_| budget.reserve(0).unwrap())
             .collect();
-        assert!(budget.reserve(0).is_err());
+        assert_eq!(budget.reserve(0).err().unwrap(), Failure::RetainedFileLimit);
         drop(reservations);
         assert_eq!(budget.files.load(Ordering::Acquire), 0);
         assert!(budget.reserve(MAX_LIVE_BYTES).is_ok());
@@ -327,7 +358,7 @@ mod tests {
         let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
         let result = copy_file(&directory.path().join("staging"), &fifo);
-        assert!(result.err().unwrap().contains("not a folder"));
+        assert_eq!(result.err().unwrap(), Failure::NotAFile);
         assert!(!directory.path().join("staging").exists());
     }
 
@@ -415,7 +446,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
         let error = copy_bytes(&root, b"private attachment").err().unwrap();
-        assert!(error.contains("not private"));
+        assert_eq!(error, Failure::NonPrivateDirectory);
         assert_eq!(
             fs::metadata(&root).unwrap().permissions().mode() & 0o777,
             0o755

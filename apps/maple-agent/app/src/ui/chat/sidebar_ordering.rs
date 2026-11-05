@@ -40,8 +40,13 @@ impl Sidebar {
         self.order_loading = true;
         let backend = self.backend.clone();
         let user = self.user_id.clone();
-        self.call(
-            async move { backend.get_sidebar_order(&user).await },
+        self.call_semantic(
+            async move {
+                backend
+                    .call_presented::<crate::settings::SidebarOrder>("get_sidebar_order", (&user,))
+                    .await
+                    .map_err(UiFailure::from)
+            },
             cx,
             |this, result, cx| {
                 this.order_loading = false;
@@ -65,16 +70,22 @@ impl Sidebar {
         if !self.order_loaded {
             return;
         }
-        let saved = crate::settings::save_sidebar_order(
+        let saved = crate::settings::save_sidebar_order_presented(
             self.backend.clone(),
             self.user_id.clone(),
             self.order.clone(),
         );
-        self.call(
+        self.call_semantic(
             async move {
                 saved
                     .await
-                    .map_err(|_| "Could not save sidebar order".to_string())?
+                    .map_err(|_| {
+                        crate::backend::HostFailure::new(
+                            "settings-sync-stopped",
+                            "Could not save sidebar order",
+                        )
+                    })?
+                    .map_err(UiFailure::from)
             },
             cx,
             |_, result, cx| {

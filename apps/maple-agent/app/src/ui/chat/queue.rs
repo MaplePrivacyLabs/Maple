@@ -12,6 +12,7 @@ use super::{COMPOSER_PLACEHOLDER, ChatScreen, QUEUE_EDIT_PLACEHOLDER, QueueEdit}
 use crate::backend::QueuedMessageRequest;
 use crate::ui::i18n::{UiText, tr};
 use crate::ui::icons::icon;
+use crate::ui::task::Failure as UiFailure;
 use crate::ui::theme;
 
 impl ChatScreen {
@@ -44,14 +45,18 @@ impl ChatScreen {
         self.call_semantic(
             async move {
                 backend
-                    .queued_message(
-                        &user_id,
-                        QueuedMessageRequest {
-                            task: session_id,
-                            queue_id,
-                        },
+                    .call_presented::<maple_agent::agent::AgentQueuedMessage>(
+                        "queued_message",
+                        (
+                            &user_id,
+                            QueuedMessageRequest {
+                                task: session_id,
+                                queue_id,
+                            },
+                        ),
                     )
                     .await
+                    .map_err(UiFailure::from)
             },
             cx,
             move |this, result, cx| {
@@ -90,8 +95,12 @@ impl ChatScreen {
         self.call_semantic(
             async move {
                 backend
-                    .cancel_queued_message(&user_id, &session_id, &queue_id)
+                    .call_presented::<maple_agent::agent::AgentDesktopQueueSnapshot>(
+                        "cancel_queued_message",
+                        (&user_id, &session_id, &queue_id),
+                    )
                     .await
+                    .map_err(UiFailure::from)
             },
             cx,
             move |this, result, cx| {
@@ -136,31 +145,43 @@ impl ChatScreen {
         self.call_semantic(
             async move {
                 let item = backend
-                    .queued_message(
-                        &user_id,
-                        QueuedMessageRequest {
-                            task: session_id.clone(),
-                            queue_id: queue_id.clone(),
-                        },
+                    .call_presented::<maple_agent::agent::AgentQueuedMessage>(
+                        "queued_message",
+                        (
+                            &user_id,
+                            QueuedMessageRequest {
+                                task: session_id.clone(),
+                                queue_id: queue_id.clone(),
+                            },
+                        ),
                     )
-                    .await?;
+                    .await
+                    .map_err(UiFailure::from)?;
                 if item.session_id != session_id || item.queue_id != queue_id {
                     return Ok(None);
                 }
                 backend
-                    .begin_queued_message_edit(&user_id, &session_id, &queue_id)
-                    .await?;
+                    .call_presented::<()>(
+                        "begin_queued_message_edit",
+                        (&user_id, &session_id, &queue_id),
+                    )
+                    .await
+                    .map_err(UiFailure::from)?;
                 // Read again under the hold: another client could have edited
                 // this message between the first read and acquiring the hold.
                 match backend
-                    .queued_message(
-                        &user_id,
-                        QueuedMessageRequest {
-                            task: session_id.clone(),
-                            queue_id: queue_id.clone(),
-                        },
+                    .call_presented::<maple_agent::agent::AgentQueuedMessage>(
+                        "queued_message",
+                        (
+                            &user_id,
+                            QueuedMessageRequest {
+                                task: session_id.clone(),
+                                queue_id: queue_id.clone(),
+                            },
+                        ),
                     )
                     .await
+                    .map_err(UiFailure::from)
                 {
                     Ok(current)
                         if current.session_id == session_id && current.queue_id == queue_id =>
@@ -169,8 +190,12 @@ impl ChatScreen {
                     }
                     result => {
                         let _ = backend
-                            .end_queued_message_edit(&user_id, &session_id, &queue_id)
-                            .await;
+                            .call_presented::<()>(
+                                "end_queued_message_edit",
+                                (&user_id, &session_id, &queue_id),
+                            )
+                            .await
+                            .map_err(UiFailure::from);
                         result.map(|_| None)
                     }
                 }
@@ -270,8 +295,12 @@ impl ChatScreen {
         self.call_semantic(
             async move {
                 backend
-                    .end_queued_message_edit(&user_id, &session_id, &queue_id)
+                    .call_presented::<()>(
+                        "end_queued_message_edit",
+                        (&user_id, &session_id, &queue_id),
+                    )
                     .await
+                    .map_err(UiFailure::from)
             },
             cx,
             |_this, result, _cx| {

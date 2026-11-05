@@ -120,10 +120,10 @@ impl SettingsScreen {
 
     pub(super) fn load_advanced_status(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
-        self.call(
+        self.call_presented(
             async move {
                 backend
-                    .local_control::<StoreStatus>("store_status", ())
+                    .local_control_presented::<StoreStatus>("store_status", ())
                     .await
             },
             cx,
@@ -224,10 +224,10 @@ impl SettingsScreen {
         self.advanced.notice = None;
         self.advanced.success = None;
         let backend = self.backend.clone();
-        self.call(
+        self.call_presented(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "erase_local_data",
                         ConfirmationRequest {
                             confirmation: &confirmation,
@@ -267,10 +267,10 @@ impl SettingsScreen {
         self.advanced.mode_notice_acknowledging = Some(notice.clone());
         let backend = self.backend.clone();
         let requested = notice.clone();
-        self.call(
+        self.call_presented(
             async move {
                 backend
-                    .local_control::<bool>(
+                    .local_control_presented::<bool>(
                         "acknowledge_mode_change_notice",
                         (&requested.store_id, &requested.notice_id),
                     )

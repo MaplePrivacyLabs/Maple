@@ -251,8 +251,10 @@ impl StoreGate {
                 let response = backend
                     .spawn(async move {
                         tokio::join!(
-                            control.local_control::<OperationProgress>("store_progress", ()),
-                            control.local_control::<RepairProgress>("repair_progress", ())
+                            control
+                                .local_control_presented::<OperationProgress>("store_progress", ()),
+                            control
+                                .local_control_presented::<RepairProgress>("repair_progress", ())
                         )
                     })
                     .await;
@@ -288,7 +290,7 @@ impl StoreGate {
         self.call(
             async move {
                 backend
-                    .local_control::<bool>(
+                    .local_control_presented::<bool>(
                         if repair {
                             "cancel_store_repair"
                         } else {
@@ -312,11 +314,14 @@ impl StoreGate {
 
     fn call<T: Send + 'static>(
         &self,
-        future: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+        future: impl std::future::Future<Output = Result<T, crate::backend::HostFailure>>
+        + Send
+        + 'static,
         cx: &mut Context<Self>,
-        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+        then: impl FnOnce(&mut Self, Result<T, super::task::Failure>, &mut Context<Self>) + 'static,
     ) {
-        let bridge = super::task::call(&self.backend, future, cx, then);
+        let bridge =
+            super::task::call_semantic(&self.backend, future, "flows-task-cancelled", cx, then);
         super::task::retain(&self.bridges, bridge);
     }
 
@@ -324,16 +329,13 @@ impl StoreGate {
         let backend = self.backend.clone();
         self.call(
             async move {
-                Ok(backend
+                backend
                     .local_control_presented::<StoreStatus>("store_status", ())
-                    .await)
+                    .await
             },
             cx,
             |this, result, cx| {
-                match result
-                    .map_err(crate::backend::HostFailure::from)
-                    .and_then(|result| result)
-                {
+                match result {
                     Ok(status) => {
                         if this.state != status.state {
                             this.focus_pending = true;
@@ -371,7 +373,7 @@ impl StoreGate {
                         }
                         this.status = Some(status);
                     }
-                    Err(failure) => this.message = Some(super::host_errors::failure_text(&failure)),
+                    Err(failure) => this.message = Some(failure.into()),
                 }
                 cx.notify();
             },
@@ -394,7 +396,7 @@ impl StoreGate {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "unlock",
                         PasswordRequest {
                             password: &password,
@@ -487,7 +489,7 @@ impl StoreGate {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "setup_store",
                         SetupRequest {
                             password: None,
@@ -541,7 +543,7 @@ impl StoreGate {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         if start_fresh {
                             "start_fresh"
                         } else {
@@ -959,7 +961,7 @@ struct SuggestedPhrase {
 }
 
 struct PasswordAttempt {
-    result: Result<Value, String>,
+    result: Result<Value, super::task::Failure>,
     generated_retry_valid: bool,
 }
 
@@ -1168,11 +1170,14 @@ impl PasswordForm {
     }
     fn call<T: Send + 'static>(
         &self,
-        future: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+        future: impl std::future::Future<Output = Result<T, crate::backend::HostFailure>>
+        + Send
+        + 'static,
         cx: &mut Context<Self>,
-        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+        then: impl FnOnce(&mut Self, Result<T, super::task::Failure>, &mut Context<Self>) + 'static,
     ) {
-        let bridge = super::task::call(&self.backend, future, cx, then);
+        let bridge =
+            super::task::call_semantic(&self.backend, future, "flows-task-cancelled", cx, then);
         super::task::retain(&self.bridges, bridge);
     }
     fn generate(&mut self, cx: &mut Context<Self>) {
@@ -1189,7 +1194,7 @@ impl PasswordForm {
         self.call(
             async move {
                 backend
-                    .local_control::<SuggestedPhrase>("generate_store_passphrase", ())
+                    .local_control_presented::<SuggestedPhrase>("generate_store_passphrase", ())
                     .await
             },
             cx,
@@ -1332,7 +1337,7 @@ impl PasswordForm {
         let backend = self.backend.clone();
         self.call(
             async move {
-                let result = async {
+                let result: Result<Value, crate::backend::HostFailure> = async {
                     if action != PasswordAction::Setup {
                         crate::settings::flush_pending().await?;
                         backend.flush_ui_settings().await?;
@@ -1340,7 +1345,7 @@ impl PasswordForm {
                     match action {
                         PasswordAction::Set => {
                             backend
-                                .local_control::<Value>(
+                                .local_control_presented::<Value>(
                                     "set_store_password",
                                     PasswordRequest {
                                         password: &password,
@@ -1352,7 +1357,7 @@ impl PasswordForm {
                         }
                         PasswordAction::Change => {
                             backend
-                                .local_control::<Value>(
+                                .local_control_presented::<Value>(
                                     "change_store_password",
                                     ChangeRequest {
                                         current_password: &current,
@@ -1366,7 +1371,7 @@ impl PasswordForm {
                         }
                         PasswordAction::Remove => {
                             backend
-                                .local_control::<Value>(
+                                .local_control_presented::<Value>(
                                     "remove_store_password",
                                     CurrentRequest {
                                         current_password: &current,
@@ -1377,7 +1382,7 @@ impl PasswordForm {
                         }
                         PasswordAction::Setup => {
                             backend
-                                .local_control::<Value>(
+                                .local_control_presented::<Value>(
                                     "setup_store",
                                     SetupRequest {
                                         password: Some(&password),
@@ -1394,7 +1399,7 @@ impl PasswordForm {
                 // rejection. Query it after failure; never replay automatically.
                 let generated_retry_valid = if result.is_err() && generated_id.is_some() {
                     backend
-                        .local_control::<PasswordAssessment>(
+                        .local_control_presented::<PasswordAssessment>(
                             "assess_store_password",
                             PasswordRequest {
                                 password: &password,
@@ -1408,7 +1413,7 @@ impl PasswordForm {
                     false
                 };
                 Ok(PasswordAttempt {
-                    result,
+                    result: result.map_err(Into::into),
                     generated_retry_valid,
                 })
             },
@@ -1419,7 +1424,7 @@ impl PasswordForm {
 
     fn submission_completed(
         &mut self,
-        attempt: Result<PasswordAttempt, String>,
+        attempt: Result<PasswordAttempt, super::task::Failure>,
         cx: &mut Context<Self>,
     ) {
         let PasswordAttempt {
@@ -1453,9 +1458,10 @@ impl PasswordForm {
                     self.suggested && self.phrase.is_some() && !generated_retry_valid;
                 self.assess(cx);
                 self.message = Some(if self.suggestion_retry_blocked {
-                    UiText::message(
+                    UiText::context(
                         "settings-password-unconfirmed-attempt",
-                        [("message", message.into())],
+                        "message",
+                        message.into(),
                     )
                 } else {
                     message.into()
@@ -1482,7 +1488,7 @@ impl PasswordForm {
                 let response = backend
                     .spawn(async move {
                         control
-                            .local_control::<OperationProgress>("store_progress", ())
+                            .local_control_presented::<OperationProgress>("store_progress", ())
                             .await
                     })
                     .await;
@@ -1514,7 +1520,7 @@ impl PasswordForm {
         self.call(
             async move {
                 backend
-                    .local_control::<bool>("cancel_store_operation", ())
+                    .local_control_presented::<bool>("cancel_store_operation", ())
                     .await
             },
             cx,
@@ -2254,6 +2260,33 @@ mod tests {
         assert!(normalized_equal("Cafe\u{301}", "Café"));
         assert!(!normalized_equal("", ""));
     }
+    #[test]
+    fn nested_password_failure_reformats_both_context_and_host_reason() {
+        let _locale = super::super::i18n::TestLocalizationGuard::enable();
+        let failure: super::super::task::Failure = crate::backend::HostFailure::new(
+            "key-wrong-password",
+            "That password didn't unlock Maple.",
+        )
+        .into();
+        let notice = UiText::context(
+            "settings-password-unconfirmed-attempt",
+            "message",
+            failure.into(),
+        );
+        super::super::i18n::apply_preference(Some("en"));
+        let english = notice.resolve();
+        assert!(english.contains("That password didn't unlock Maple."));
+        super::super::i18n::apply_preference(Some("es"));
+        assert_ne!(notice.resolve(), english);
+        assert!(
+            !notice
+                .resolve()
+                .contains("That password didn't unlock Maple.")
+        );
+        super::super::i18n::apply_preference(Some("en"));
+        assert_eq!(notice.resolve(), english);
+    }
+
     #[test]
     fn completed_password_notices_retain_semantics_across_language_changes() {
         let _locale = crate::ui::i18n::TestLocalizationGuard::enable();

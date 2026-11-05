@@ -6,7 +6,7 @@
 //! settings. The Local API card is on every plan: a key can belong to another
 //! account, and a listener left on after a downgrade must still turn off.
 
-use crate::ui::i18n::tr;
+use crate::ui::i18n::{UiText, tr};
 use gpui::{
     Context, Div, Entity, Focusable, ScrollAnchor, ScrollHandle, SharedString, Window, div,
     prelude::*,
@@ -58,7 +58,7 @@ pub(super) enum ApiKeysTarget {
 
 pub(super) struct ApiKeysState {
     pub(super) keys: Option<Vec<MapleApiKey>>,
-    pub(super) error: Option<String>,
+    pub(super) error: Option<UiText>,
     pub(super) name: Entity<TextInput>,
     pub(super) creating: bool,
     /// The key just created, shown once until dismissed.
@@ -70,7 +70,7 @@ pub(super) struct ApiKeysState {
     /// The key name awaiting delete confirmation.
     pub(super) confirm_delete: Option<String>,
     pub(super) deleting: Option<String>,
-    pub(super) notice: Option<String>,
+    pub(super) notice: Option<UiText>,
 }
 
 impl ApiKeysState {
@@ -114,8 +114,8 @@ impl SettingsScreen {
     pub(super) fn load_api_keys(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.list_api_keys(&user_id).await },
+        self.call_presented(
+            async move { backend.call_presented("list_api_keys", (&user_id,)).await },
             cx,
             |this, result, cx| {
                 match result {
@@ -123,7 +123,7 @@ impl SettingsScreen {
                         this.api_keys.keys = Some(keys);
                         this.api_keys.error = None;
                     }
-                    Err(message) => this.api_keys.error = Some(message),
+                    Err(message) => this.api_keys.error = Some(message.into()),
                 }
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
@@ -202,8 +202,8 @@ impl SettingsScreen {
             return;
         }
         let name = self.api_keys.name.read(cx).text();
-        if let Err(message) = crate::backend::validate_api_key_name(&name) {
-            self.api_keys.notice = Some(message);
+        if let Err(message) = crate::backend::validate_api_key_name_presented(&name) {
+            self.api_keys.notice = Some(crate::ui::host_errors::failure_text(&message));
             cx.notify();
             return;
         }
@@ -213,14 +213,18 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.create_api_key(&user_id, name).await },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented("create_api_key", (&user_id, name))
+                    .await
+            },
             cx,
             |this, result, cx| {
                 this.api_keys.creating = false;
                 match result {
                     Ok(created) => this.show_created_key(created, cx),
-                    Err(message) => this.api_keys.notice = Some(message),
+                    Err(message) => this.api_keys.notice = Some(message.into()),
                 }
                 this.reconcile_application_vim_target();
                 cx.notify();
@@ -260,8 +264,13 @@ impl SettingsScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let name = name.to_string();
-        self.call(
-            async move { backend.delete_api_key(&user_id, &name).await.map(|()| name) },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented::<()>("delete_api_key", (&user_id, &name))
+                    .await
+                    .map(|()| name)
+            },
             cx,
             |this, result, cx| {
                 this.api_keys.deleting = None;
@@ -279,7 +288,7 @@ impl SettingsScreen {
                             this.api_keys.created = None;
                         }
                     }
-                    Err(message) => this.api_keys.notice = Some(message),
+                    Err(message) => this.api_keys.notice = Some(message.into()),
                 }
                 this.reconcile_application_vim_target();
                 cx.notify();
@@ -419,7 +428,7 @@ impl SettingsScreen {
             )),
             Some(keys) => rows.extend(keys.iter().map(|key| self.render_key_row(key, cx))),
             None => rows.push(placeholder(match &self.api_keys.error {
-                Some(message) => message.clone(),
+                Some(message) => message.resolve().to_string(),
                 None => tr("settings-api-keys-loading-keys").to_string(),
             })),
         }
@@ -657,6 +666,29 @@ mod tests {
                 cx,
             )
         })
+    }
+
+    #[gpui::test]
+    fn typed_name_validation_follows_locale_without_losing_input(cx: &mut TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let settings = screen(cx);
+        settings.update(cx, |this, cx| {
+            let name = "x".repeat(crate::backend::MAX_API_KEY_NAME_LENGTH + 1);
+            this.api_keys
+                .name
+                .update(cx, |input, cx| input.set_text(&name, cx));
+            this.create_api_key(cx);
+            assert!(!this.api_keys.creating);
+            let notice = this.api_keys.notice.as_ref().expect("invalid key name");
+            crate::ui::i18n::apply_preference(Some("en"));
+            let english = notice.resolve();
+            assert!(english.contains("key name"));
+            crate::ui::i18n::apply_preference(Some("es"));
+            assert_ne!(notice.resolve(), english);
+            crate::ui::i18n::apply_preference(Some("en"));
+            assert_eq!(notice.resolve(), english);
+            assert_eq!(this.api_keys.name.read(cx).text(), name);
+        });
     }
 
     #[gpui::test]

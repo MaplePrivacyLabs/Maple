@@ -15,9 +15,10 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::backend::{AgentBackend, PinnedTasksRequest};
+use crate::ui::task::Failure as UiFailure;
 
-pub(super) const CANCELLED: &str = "Sidebar manual ordering was cancelled";
-const BAD_CURSOR: &str = "The sidebar order changed; refresh this list";
+pub(super) const CANCELLED: &str = "chat-sidebar-order-cancelled";
+const BAD_CURSOR: &str = "chat-sidebar-order-changed";
 const CURSOR_PREFIX: &str = "sidebar-manual-v1:";
 const MAX_CURSOR_BYTES: usize = 4096;
 const MAX_WIRE_CURSOR_BYTES: usize = 16 * 1024;
@@ -52,9 +53,12 @@ impl ManualOrder {
         tasks.sort_by_cached_key(|task| ranks.position(task));
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), UiFailure> {
         if self.cutoff < 0 || self.tasks.len() > 8192 {
-            return Err("Invalid sidebar manual order".into());
+            return Err(UiFailure::Local(
+                "chat-sidebar-order-invalid",
+                "Invalid sidebar manual order",
+            ));
         }
         let mut seen = std::collections::HashSet::new();
         for task in &self.tasks {
@@ -63,7 +67,10 @@ impl ManualOrder {
                 || task.chars().any(char::is_control)
                 || !seen.insert(task)
             {
-                return Err("Invalid sidebar manual order".into());
+                return Err(UiFailure::Local(
+                    "chat-sidebar-order-invalid",
+                    "Invalid sidebar manual order",
+                ));
             }
         }
         Ok(())
@@ -120,11 +127,29 @@ impl TaskQuery {
         backend: &AgentBackend,
         user: &str,
         cursor: Option<String>,
-    ) -> Result<NavigationTaskPage, String> {
+    ) -> Result<NavigationTaskPage, UiFailure> {
         match self.wire_query(cursor) {
-            Self::Tasks(query) => backend.list_tasks(user, query).await,
-            Self::Search(query) => backend.search_tasks(user, query).await,
-            Self::Pinned(query) => backend.pinned_tasks(user, query).await,
+            Self::Tasks(query) => backend
+                .call_presented::<maple_agent::store::NavigationTaskPage>(
+                    "list_tasks",
+                    (user, query),
+                )
+                .await
+                .map_err(UiFailure::from),
+            Self::Search(query) => backend
+                .call_presented::<maple_agent::store::NavigationTaskPage>(
+                    "search_tasks",
+                    (user, query),
+                )
+                .await
+                .map_err(UiFailure::from),
+            Self::Pinned(query) => backend
+                .call_presented::<maple_agent::store::NavigationTaskPage>(
+                    "pinned_tasks",
+                    (user, query),
+                )
+                .await
+                .map_err(UiFailure::from),
         }
     }
 }
@@ -323,7 +348,7 @@ impl Candidates {
         scope: [u8; 32],
         after: Option<Position>,
         limit: usize,
-    ) -> Result<NavigationTaskPage, String> {
+    ) -> Result<NavigationTaskPage, UiFailure> {
         let mut rows = self.rows.into_sorted_vec();
         let more = rows.len() > limit;
         rows.truncate(limit);
@@ -342,30 +367,43 @@ struct Cursor {
     after: Option<Position>,
 }
 
-fn encode_cursor(scope: [u8; 32], after: Option<Position>) -> Result<String, String> {
-    let bytes = serde_json::to_vec(&Cursor { scope, after }).map_err(|_| BAD_CURSOR.to_string())?;
+fn encode_cursor(scope: [u8; 32], after: Option<Position>) -> Result<String, UiFailure> {
+    let bytes = serde_json::to_vec(&Cursor { scope, after }).map_err(|_| {
+        UiFailure::Local(BAD_CURSOR, "The sidebar order changed; refresh this list")
+    })?;
     Ok(format!("{CURSOR_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
-fn decode_cursor(cursor: Option<&str>, scope: [u8; 32]) -> Result<Option<Position>, String> {
+fn decode_cursor(cursor: Option<&str>, scope: [u8; 32]) -> Result<Option<Position>, UiFailure> {
     let Some(cursor) = cursor else {
         return Ok(None);
     };
     if cursor.len() > MAX_CURSOR_BYTES {
-        return Err(BAD_CURSOR.into());
+        return Err(UiFailure::Local(
+            BAD_CURSOR,
+            "The sidebar order changed; refresh this list",
+        ));
     }
-    let encoded = cursor.strip_prefix(CURSOR_PREFIX).ok_or(BAD_CURSOR)?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .map_err(|_| BAD_CURSOR.to_string())?;
-    let cursor: Cursor = serde_json::from_slice(&bytes).map_err(|_| BAD_CURSOR.to_string())?;
+    let encoded = cursor.strip_prefix(CURSOR_PREFIX).ok_or(UiFailure::Local(
+        BAD_CURSOR,
+        "The sidebar order changed; refresh this list",
+    ))?;
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+        UiFailure::Local(BAD_CURSOR, "The sidebar order changed; refresh this list")
+    })?;
+    let cursor: Cursor = serde_json::from_slice(&bytes).map_err(|_| {
+        UiFailure::Local(BAD_CURSOR, "The sidebar order changed; refresh this list")
+    })?;
     if cursor.scope != scope
         || cursor
             .after
             .as_ref()
             .is_some_and(|after| after.band > 2 || after.id.is_empty() || after.id.len() > 256)
     {
-        return Err(BAD_CURSOR.into());
+        return Err(UiFailure::Local(
+            BAD_CURSOR,
+            "The sidebar order changed; refresh this list",
+        ));
     }
     Ok(cursor.after)
 }
@@ -375,7 +413,7 @@ fn scopes(
     user: &str,
     query: &TaskQuery,
     order: &ManualOrder,
-) -> Result<([u8; 32], [u8; 32]), String> {
+) -> Result<([u8; 32], [u8; 32]), UiFailure> {
     let mut hash = Sha256::new();
     hash.update(b"maple.sidebar.catalog.v1");
     hash.update((Arc::as_ptr(backend) as usize).to_be_bytes());
@@ -384,18 +422,27 @@ fn scopes(
     let host = backend.remote_host().unwrap_or("");
     hash.update((host.len() as u64).to_be_bytes());
     hash.update(host.as_bytes());
-    hash.update(serde_json::to_vec(&query.wire_query(None)).map_err(|_| BAD_CURSOR.to_string())?);
+    hash.update(serde_json::to_vec(&query.wire_query(None)).map_err(|_| {
+        UiFailure::Local(BAD_CURSOR, "The sidebar order changed; refresh this list")
+    })?);
     let inventory: [u8; 32] = hash.finalize().into();
     let mut hash = Sha256::new();
     hash.update(inventory);
-    hash.update(serde_json::to_vec(order).map_err(|_| BAD_CURSOR.to_string())?);
+    hash.update(serde_json::to_vec(order).map_err(|_| {
+        UiFailure::Local(BAD_CURSOR, "The sidebar order changed; refresh this list")
+    })?);
     Ok((inventory, hash.finalize().into()))
 }
 
-fn charged_bytes(task: &TaskSummary) -> Result<usize, String> {
+fn charged_bytes(task: &TaskSummary) -> Result<usize, UiFailure> {
     // Charge owned strings, struct/index overhead and JSON escaping conservatively.
     Ok(serde_json::to_vec(task)
-        .map_err(|_| "Could not prepare sidebar summaries".to_string())?
+        .map_err(|_| {
+            UiFailure::Local(
+                "chat-sidebar-summary-failed",
+                "Could not prepare sidebar summaries",
+            )
+        })?
         .len()
         .saturating_add(std::mem::size_of::<TaskSummary>())
         .saturating_add(task.uuid.len())
@@ -403,19 +450,28 @@ fn charged_bytes(task: &TaskSummary) -> Result<usize, String> {
 }
 
 impl Reader {
-    fn owner(&self) -> Result<Arc<Shared>, String> {
+    fn owner(&self) -> Result<Arc<Shared>, UiFailure> {
         if self.pending.is_cancelled() {
-            return Err(CANCELLED.into());
+            return Err(UiFailure::Local(
+                CANCELLED,
+                "Sidebar manual ordering was cancelled",
+            ));
         }
-        self.shared.upgrade().ok_or_else(|| CANCELLED.into())
+        self.shared.upgrade().ok_or(UiFailure::Local(
+            CANCELLED,
+            "Sidebar manual ordering was cancelled",
+        ))
     }
 
-    fn authorize(&self, backend: &AgentBackend, user: &str) -> Result<(), String> {
+    fn authorize(&self, backend: &AgentBackend, user: &str) -> Result<(), UiFailure> {
         self.owner()?;
         // The IPC client's current account is maintained by its host event
         // stream. This also fences cache-only replies without a network call.
         if backend.saved_user_id().as_deref() != Some(user) {
-            return Err("The sidebar account is no longer active".into());
+            return Err(UiFailure::Local(
+                "chat-sidebar-account-inactive",
+                "The sidebar account is no longer active",
+            ));
         }
         Ok(())
     }
@@ -424,7 +480,7 @@ impl Reader {
         &self,
         backend: &Arc<AgentBackend>,
         scope: [u8; 32],
-    ) -> Result<Option<Arc<Vec<TaskSummary>>>, String> {
+    ) -> Result<Option<Arc<Vec<TaskSummary>>>, UiFailure> {
         let shared = self.owner()?;
         let mut state = shared
             .state
@@ -495,11 +551,14 @@ impl Reader {
         order: &ManualOrder,
         page: &NavigationTaskPage,
         keep: usize,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, UiFailure> {
         self.authorize(backend, user)?;
         order.validate()?;
         if keep > page.tasks.len() {
-            return Err(BAD_CURSOR.into());
+            return Err(UiFailure::Local(
+                BAD_CURSOR,
+                "The sidebar order changed; refresh this list",
+            ));
         }
         if keep == page.tasks.len() && page.next_cursor.is_none() {
             return Ok(None);
@@ -514,12 +573,12 @@ impl Reader {
         encode_cursor(scope, after).map(Some)
     }
 
-    async fn scan_slot(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+    async fn scan_slot(&self) -> Result<tokio::sync::OwnedSemaphorePermit, UiFailure> {
         let slots = self.owner()?.scan_slots.clone();
         tokio::select! {
             biased;
-            _ = self.pending.cancelled() => Err(CANCELLED.into()),
-            permit = slots.acquire_owned() => permit.map_err(|_| CANCELLED.to_string()),
+            _ = self.pending.cancelled() => Err(UiFailure::Local(CANCELLED, "Sidebar manual ordering was cancelled")),
+            permit = slots.acquire_owned() => permit.map_err(|_| UiFailure::Local(CANCELLED, "Sidebar manual ordering was cancelled")),
         }
     }
 
@@ -529,12 +588,15 @@ impl Reader {
         user: String,
         query: TaskQuery,
         order: ManualOrder,
-    ) -> Result<NavigationTaskPage, String> {
+    ) -> Result<NavigationTaskPage, UiFailure> {
         self.authorize(&backend, &user)?;
         order.validate()?;
         let limit = query.limit();
         if limit > MAX_PAGE {
-            return Err("Sidebar page is too large".into());
+            return Err(UiFailure::Local(
+                "chat-sidebar-page-large",
+                "Sidebar page is too large",
+            ));
         }
         let (inventory_scope, scope) = scopes(&backend, &user, &query, &order)?;
         let after = decode_cursor(query.cursor(), scope)?;
@@ -579,12 +641,15 @@ impl Reader {
             self.authorize(&backend, &user)?;
             let page = tokio::select! {
                 biased;
-                _ = self.pending.cancelled() => return Err(CANCELLED.into()),
+                _ = self.pending.cancelled() => return Err(UiFailure::Local(CANCELLED, "Sidebar manual ordering was cancelled")),
                 page = query.fetch(&backend, &user, wire_cursor.clone()) => page?,
             };
             self.authorize(&backend, &user)?;
             if page.tasks.is_empty() && page.next_cursor.is_some() {
-                return Err("Sidebar summary paging did not advance".into());
+                return Err(UiFailure::Local(
+                    "chat-sidebar-page-stalled",
+                    "Sidebar summary paging did not advance",
+                ));
             }
             for task in page.tasks {
                 if let Some(rows) = &mut inventory {
@@ -614,7 +679,10 @@ impl Reader {
                 || wire_cursor.as_ref() == Some(&next)
                 || checkpoint.as_ref() == Some(&next)
             {
-                return Err("Sidebar summary paging did not advance".into());
+                return Err(UiFailure::Local(
+                    "chat-sidebar-page-stalled",
+                    "Sidebar summary paging did not advance",
+                ));
             }
             distance = distance.saturating_add(1);
             if distance == power {
@@ -658,7 +726,7 @@ mod cancellation_tests {
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), queued)
             .await
             .expect("cancelled queued scan must not wait for an old slot");
-        assert!(matches!(result, Err(message) if message == CANCELLED));
+        assert!(matches!(result, Err(UiFailure::Local(CANCELLED, _))));
         drop((first, second));
         assert!(catalog.reader().scan_slot().await.is_ok());
     }
@@ -670,8 +738,14 @@ mod cancellation_tests {
         let queued = catalog.reader();
         catalog.cancel_pending();
         catalog.invalidate();
-        assert!(matches!(active.owner(), Err(message) if message == CANCELLED));
-        assert!(matches!(queued.owner(), Err(message) if message == CANCELLED));
+        assert!(matches!(
+            active.owner(),
+            Err(UiFailure::Local(CANCELLED, _))
+        ));
+        assert!(matches!(
+            queued.owner(),
+            Err(UiFailure::Local(CANCELLED, _))
+        ));
         assert!(catalog.reader().owner().is_ok());
     }
 }

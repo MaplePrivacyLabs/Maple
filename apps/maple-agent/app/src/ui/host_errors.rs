@@ -33,6 +33,12 @@ pub(crate) fn failure_text(failure: &HostFailure) -> UiText {
         };
     }
     let key = match failure.code.as_str() {
+        "settings-sync-unavailable" => "chat-settings-sync-unavailable",
+        "settings-sync-timeout" => "chat-settings-sync-timeout",
+        "sidebar-sync-state-changed" => "chat-sidebar-sync-state-changed",
+        "sidebar-sync-timeout" => "chat-sidebar-sync-timeout",
+        "settings-sync-stopped" => "chat-sidebar-order-save-failed",
+
         "email-required" => "runtime-error-email-required",
         "password-required" => "runtime-error-password-required",
         "account-id-required" => "runtime-error-account-id-required",
@@ -215,6 +221,8 @@ pub(crate) fn failure_text(failure: &HostFailure) -> UiText {
         "browser-portal-open" => "runtime-error-browser-portal-open",
         "browser-checkout-link" => "runtime-error-browser-checkout-link",
         "browser-checkout-open" => "runtime-error-browser-checkout-open",
+        "browser-pricing-link" => "runtime-error-browser-pricing-link",
+        "browser-pricing-open" => "runtime-error-browser-pricing-open",
         "billing-timeout" => "runtime-error-billing-timeout",
         "key-name-required" => "runtime-error-key-name-required",
         "credit-whole" => "runtime-error-credit-whole",
@@ -242,4 +250,33 @@ pub(crate) fn failure_text(failure: &HostFailure) -> UiText {
         _ => return UiText::Raw(failure.message.clone()),
     };
     UiText::key(key)
+}
+
+#[cfg(test)]
+mod pricing_tests {
+    use super::*;
+    use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+
+    #[test]
+    fn pricing_failures_follow_locale_and_unknown_browser_errors_remain_raw() {
+        let _locale = TestLocalizationGuard::enable();
+        for code in ["browser-pricing-link", "browser-pricing-open"] {
+            let text = failure_text(&HostFailure::new(code, "Legacy browser diagnostic"));
+            apply_preference(Some("en"));
+            let english = text.resolve();
+            assert!(english.contains("pricing"));
+            apply_preference(Some("es"));
+            assert_ne!(text.resolve(), english);
+            apply_preference(Some("en"));
+            assert_eq!(text.resolve(), english);
+        }
+        let raw = failure_text(&HostFailure::new(
+            "future-browser-failure",
+            "Original diagnostic",
+        ));
+        for locale in ["en", "es", "en"] {
+            apply_preference(Some(locale));
+            assert_eq!(raw.resolve().as_ref(), "Original diagnostic");
+        }
+    }
 }

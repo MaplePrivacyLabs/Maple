@@ -162,6 +162,15 @@ async fn accept_client(listener: &mut ipc::Listener, endpoint: &ipc::Endpoint) -
 #[tokio::test]
 async fn client_queries_the_original_typed_receipt_after_completion_failure_without_replaying_send()
 {
+    identified_receipt_recovery(false).await;
+}
+
+#[tokio::test]
+async fn presented_client_preserves_identified_receipt_without_replaying_send() {
+    identified_receipt_recovery(true).await;
+}
+
+async fn identified_receipt_recovery(presented: bool) {
     let root = directory();
     let store = Arc::new(Store::open(StorePaths::new(root.path().join("data"))).unwrap());
     let (identity, params) = seed(&store, root.path());
@@ -259,10 +268,18 @@ async fn client_queries_the_original_typed_receipt_after_completion_failure_with
         .await
         .unwrap();
     });
-    let run = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.call_identified::<String>("send_message", params, Some(identity.clone())),
-    )
+    let run = tokio::time::timeout(Duration::from_secs(5), async {
+        if presented {
+            client
+                .call_identified_presented::<String>("send_message", params, Some(identity.clone()))
+                .await
+        } else {
+            client
+                .call_identified::<String>("send_message", params, Some(identity.clone()))
+                .await
+                .map_err(super::HostFailure::from)
+        }
+    })
     .await
     .unwrap()
     .unwrap();
