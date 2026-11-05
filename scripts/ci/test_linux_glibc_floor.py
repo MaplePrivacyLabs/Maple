@@ -136,6 +136,42 @@ class ElfGlibcFloorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("GLIBC_none", result.stdout)
 
+    def test_loader_abi_markers_count_by_the_release_that_defines_them(self):
+        # Every glibc from 2.36 defines DT_RELR; the floor's glibc lacks the TLS-descriptor marker.
+        relr = self.write("relr", [("libc.so.6", "GLIBC_2.34", ["dlopen"]), ("libc.so.6", "GLIBC_ABI_DT_RELR", [])])
+        result = self.run_helper("--floor", "2.39", str(relr))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"verified-linux-glibc-floor  GLIBC_2.34  floor=2.39  {relr}\n")
+        self.assertEqual(self.run_helper("--floor", "2.35", str(relr)).returncode, 1)
+
+        for marker in ("GLIBC_ABI_GNU2_TLS", "GLIBC_ABI_SOMETHING_NEW"):
+            with self.subTest(marker=marker):
+                path = self.write("marker", [("libc.so.6", "GLIBC_2.34", ["dlopen"]), ("libc.so.6", marker, [])])
+                result = self.run_helper("--floor", "2.39", str(path))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"libc.so.6 {marker}: loader ABI marker", result.stderr)
+                self.assertNotIn("invalid glibc version", result.stderr)
+                # No numbered release covers a marker the floor does not define.
+                self.assertEqual(self.run_helper("--floor", "2.99", str(path)).returncode, 1)
+
+    def test_a_fortified_glibc_import_is_required_only_on_request(self):
+        fortified = self.write("fortified", [("libc.so.6", "GLIBC_2.34", ["dlopen"]),
+                                             ("libc.so.6", "GLIBC_2.3.4", ["__vfprintf_chk", "__vsnprintf_chk"])])
+        result = self.run_helper("--floor", "2.39", "--require-fortify", str(fortified))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"verified-linux-glibc-floor  GLIBC_2.34  floor=2.39  fortify=2  {fortified}\n")
+
+        # zig's compiler-rt defines __stack_chk_fail itself, so that import is no evidence either way.
+        for needed in ([("libc.so.6", "GLIBC_2.34", ["dlopen"])],
+                       [("libc.so.6", "GLIBC_2.4", ["__stack_chk_fail"])]):
+            with self.subTest(needed=needed):
+                path = self.write("soft", needed)
+                self.assertEqual(self.run_helper("--floor", "2.39", str(path)).returncode, 0)
+                result = self.run_helper("--floor", "2.39", "--require-fortify", str(path))
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("imports no fortified glibc __*_chk function", result.stderr)
+
     def test_non_elf_input_fails_closed(self):
         path = self.directory / "text"
         path.write_bytes(b"#!/bin/sh\nexec maple\n")
@@ -172,6 +208,8 @@ class LinuxGlibcFloorLinkerTests(unittest.TestCase):
         path.chmod(0o755)
 
     def run_shell(self, commands, **extra_env):
+        for name in ("CFLAGS", "CXXFLAGS", "CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS"):
+            extra_env.setdefault(name, "")
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                    MAPLE_NIX_LINUX_CLOSURE_INFO=str(self.closure), FIXTURE_ROOT=str(self.root),
                    MAPLE_NIX_ELF_INTERPRETER="/nix/store/fixture-glibc/lib/ld-linux-x86-64.so.2", **extra_env)
@@ -219,6 +257,26 @@ class LinuxGlibcFloorLinkerTests(unittest.TestCase):
         searched = [flags[i + 1] for i, flag in enumerate(flags) if flag == "-L"]
         self.assertEqual(searched, [f"native={self.root / 'gtk3/lib'}", f"native={self.root / 'webkitgtk/lib'}"])
 
+    def test_c_dependencies_keep_the_nix_wrapper_hardening(self):
+        # zig cc ignores NIX_HARDENING_ENABLE, so the flags travel in the variables the cc crate and CMake read.
+        result = self.run_shell(
+            'export CFLAGS="-ffile-prefix-map=/src=/maple"\n'
+            "configure_linux_glibc_floor_linker >/dev/null\n"
+            "configure_linux_glibc_floor_linker >/dev/null\n"
+            'printf "%s\n" "$CFLAGS" "$CXXFLAGS" "$CMAKE_C_FLAGS" "$CMAKE_CXX_FLAGS"\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cflags, cxxflags, cmake_c, cmake_cxx = (line.split() for line in result.stdout.splitlines())
+        self.assertEqual(cflags[0], "-ffile-prefix-map=/src=/maple")
+        hardening = cflags[1:]
+        self.assertEqual(cxxflags, hardening)
+        self.assertEqual(cmake_c, hardening)
+        self.assertEqual(cmake_cxx, hardening)
+        self.assertEqual(len(hardening), len(set(hardening)))
+        for flag in ("-fstack-protector-strong", "-fstack-clash-protection", "-D_FORTIFY_SOURCE=3"):
+            self.assertIn(flag, hardening)
+        # The macro is undefined first so a compiler default cannot clash with it.
+        self.assertLess(hardening.index("-U_FORTIFY_SOURCE"), hardening.index("-D_FORTIFY_SOURCE=3"))
+
     def test_existing_rustflags_and_cargo_target_dir_are_kept(self):
         result = self.run_shell(
             'export RUSTFLAGS="--remap-path-prefix=/src=/build"\n'
@@ -251,16 +309,23 @@ class LinuxGlibcFloorLinkerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "[]")
 
-    def test_package_verification_uses_the_floor(self):
+    def test_package_verification_uses_the_floor_and_requires_fortified_c(self):
+        fortified = [("libc.so.6", "GLIBC_2.3.4", ["__vsnprintf_chk"])]
         path = self.root / "maple"
-        path.write_bytes(synthetic_elf([("libm.so.6", "GLIBC_2.43", ["acosf"])]))
+        path.write_bytes(synthetic_elf(fortified + [("libm.so.6", "GLIBC_2.43", ["acosf"])]))
         result = self.run_shell(f'verify_linux_package_executable_glibc_floor "{path}"')
         self.assertEqual(result.returncode, 1)
         self.assertIn("libm.so.6 GLIBC_2.43: acosf", result.stderr)
+
         path.write_bytes(synthetic_elf([("libc.so.6", "GLIBC_2.39", ["pidfd_spawnp"])]))
         result = self.run_shell(f'verify_linux_package_executable_glibc_floor "{path}"')
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("imports no fortified glibc __*_chk function", result.stderr)
 
+        path.write_bytes(synthetic_elf(fortified + [("libc.so.6", "GLIBC_2.39", ["pidfd_spawnp"])]))
+        result = self.run_shell(f'verify_linux_package_executable_glibc_floor "{path}"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GLIBC_2.39  floor=2.39  fortify=1", result.stdout)
 
 if __name__ == "__main__":
     unittest.main()

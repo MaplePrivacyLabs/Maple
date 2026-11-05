@@ -1286,6 +1286,21 @@ TAURI_LINUXDEPLOY_CLI="2.12.3"
 # verification rejects newer symbol versions.
 LINUX_GLIBC_FLOOR="2.39"
 
+# The C hardening nixpkgs' compiler wrapper applies (NIX_HARDENING_ENABLE). zig
+# cc does not read it, so the C and C++ dependencies get the same flags here.
+LINUX_C_HARDENING_FLAGS=(
+  -fstack-protector-strong
+  -fstack-clash-protection
+  -U_FORTIFY_SOURCE
+  -D_FORTIFY_SOURCE=3
+  -fno-strict-overflow
+  -fzero-call-used-regs=used-gpr
+  -fstrict-flex-arrays=1
+  -Wformat
+  -Wformat-security
+  -Werror=format-security
+)
+
 linux_glibc_floor_zig_target() {
   local rust_target="$1"
 
@@ -1330,7 +1345,7 @@ EOF
 configure_linux_glibc_floor_linker() {
   local shell zigbuild zig zig_version rustc_info rustc_version rust_target zig_target env_target
   local wrapper_dir cc_wrapper cxx_wrapper
-  local library_path lib_dir
+  local library_path lib_dir flag var_name
   local lib_dirs=()
 
   if [ "$(host_os)" != "linux" ]; then
@@ -1367,6 +1382,11 @@ configure_linux_glibc_floor_linker() {
   export "CARGO_TARGET_${env_target^^}_LINKER=${cc_wrapper}"
   export "CC_${env_target}=${cc_wrapper}"
   export "CXX_${env_target}=${cxx_wrapper}"
+  for flag in "${LINUX_C_HARDENING_FLAGS[@]}"; do
+    for var_name in CFLAGS CXXFLAGS CMAKE_C_FLAGS CMAKE_CXX_FLAGS; do
+      append_env_word_once "${var_name}" "${flag}"
+    done
+  done
 
   # Build scripts link the same way and run during the build, where
   # LD_LIBRARY_PATH names the Nix runtime libraries, glibc included. Give every
@@ -1389,8 +1409,10 @@ configure_linux_glibc_floor_linker() {
   printf 'configured-linux-glibc-floor  %s  %s  %s\n' "${LINUX_GLIBC_FLOOR}" "${zig_target}" "${cc_wrapper}"
 }
 
+# The packaged executable must start on the floor's glibc and show that
+# LINUX_C_HARDENING_FLAGS reached its C dependencies.
 verify_linux_package_executable_glibc_floor() {
-  "$(python3_runner)" "${SCRIPT_DIR}/elf_glibc_floor.py" --floor "${LINUX_GLIBC_FLOOR}" "$@"
+  "$(python3_runner)" "${SCRIPT_DIR}/elf_glibc_floor.py" --floor "${LINUX_GLIBC_FLOOR}" --require-fortify "$@"
 }
 
 tauri_linuxdeploy_wrapper() {

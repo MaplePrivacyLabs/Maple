@@ -295,8 +295,11 @@ The packaged executable runs on the host's glibc, so it links against zig's
 glibc `LINUX_GLIBC_FLOOR` (`scripts/ci/_common.sh`; 2.39, Ubuntu 24.04) through
 cargo-zigbuild rather than the Nix shell's glibc, and
 `scripts/ci/elf_glibc_floor.py` rejects a packaged `maple` that needs newer
-symbol versions. The AppImage's bundled WebKitGTK and other Nix libraries still
-follow nixpkgs' glibc; the floor check does not cover them.
+symbol versions. zig does not apply the Nix compiler wrapper's hardening, so
+`LINUX_C_HARDENING_FLAGS` gives C dependencies the same flags and the same
+check rejects a `maple` that imports no fortified glibc function. The
+AppImage's bundled WebKitGTK and other Nix libraries still follow nixpkgs'
+glibc; the floor check does not cover them.
 The RPM builder preserves explicit `bundle.linux.rpm.depends` from the Tauri
 configuration. WebKitGTK (`webkit2gtk4.1`) is required on Fedora, including KDE;
 package verification rejects RPMs missing that requirement. Install a downloaded

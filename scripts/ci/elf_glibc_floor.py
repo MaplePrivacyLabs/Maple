@@ -4,6 +4,12 @@
 Research's Linux packages run on the host's glibc, so the newest GLIBC_x.y
 version a packaged executable references is the oldest distribution it can
 start on. The floor is the glibc of the oldest supported distribution.
+
+--require-fortify also fails a file with no fortified glibc import. The floor's
+zig compiler applies no C hardening unless asked, and the stack protector
+leaves no import to check (zig's compiler-rt supplies __stack_chk_fail), so a
+glibc __*_chk import is the evidence that the hardening flags reached the C
+dependencies.
 """
 
 import argparse
@@ -16,6 +22,12 @@ SHT_DYNSYM = 11
 SHT_GNU_VERNEED = 0x6FFFFFFE
 SHT_GNU_VERSYM = 0x6FFFFFFF
 VERSION_PREFIX = "GLIBC_"
+ABI_PREFIX = "GLIBC_ABI_"
+# The linker adds GLIBC_ABI_* markers for loader features, so that a glibc
+# without the feature refuses the file. Distributions backport them, so they do
+# not follow release order: list each with the first release whose every build
+# defines it. Any other marker counts as above the floor.
+ABI_MARKER_SINCE = {"GLIBC_ABI_DT_RELR": (2, 36)}
 
 
 def parse_version(text):
@@ -100,73 +112,110 @@ def needed_versions(elf):
     return versions
 
 
-def symbols_by_version(elf, versions):
-    """Map version index -> sorted undefined symbol names bound to it."""
+def dynamic_symbols(elf):
+    """Yield (index, name, is_undefined) for every .dynsym entry."""
     dynsym = elf.section_of_type(SHT_DYNSYM)
-    versym = elf.section_of_type(SHT_GNU_VERSYM)
-    if dynsym is None or versym is None:
-        return {}
+    if dynsym is None:
+        return
     strings = elf.sections[dynsym["link"]]
     entsize = dynsym["entsize"] or 24
-    count = dynsym["size"] // entsize
-    versym_data = elf.bytes_of(versym)
-    result = {}
-    for index in range(min(count, len(versym_data) // 2)):
+    for index in range(dynsym["size"] // entsize):
         name, _info, _other, shndx, _value, _size = struct.unpack_from(
             "<IBBHQQ", elf.data, dynsym["offset"] + index * entsize)
+        yield index, elf.string(strings, name), shndx == 0
+
+
+def symbols_by_version(elf, versions):
+    """Map version index -> sorted undefined symbol names bound to it."""
+    versym = elf.section_of_type(SHT_GNU_VERSYM)
+    if versym is None:
+        return {}
+    versym_data = elf.bytes_of(versym)
+    result = {}
+    for index, name, undefined in dynamic_symbols(elf):
+        if not undefined or index * 2 + 2 > len(versym_data):
+            continue
         version_index, = struct.unpack_from("<H", versym_data, index * 2)
         version_index &= 0x7FFF
-        if shndx == 0 and version_index in versions:
-            result.setdefault(version_index, []).append(elf.string(strings, name))
+        if version_index in versions:
+            result.setdefault(version_index, []).append(name)
     return {index: sorted(names) for index, names in result.items()}
 
 
-def glibc_requirements(path):
-    """Return {(library, version tuple): [symbols]} for every GLIBC_ version needed."""
-    elf = Elf64(Path(path).read_bytes())
+def glibc_requirements(elf):
+    """Return {(library, version name): [symbols]} for every GLIBC_ version needed."""
     versions = needed_versions(elf)
     symbols = symbols_by_version(elf, versions)
     requirements = {}
     for index, (library, name) in versions.items():
-        if not name.startswith(VERSION_PREFIX):
-            continue
-        key = (library, parse_version(name[len(VERSION_PREFIX):]))
-        requirements.setdefault(key, []).extend(symbols.get(index, []))
+        if name.startswith(VERSION_PREFIX):
+            requirements.setdefault((library, name), []).extend(symbols.get(index, []))
     return requirements
 
 
+def required_release(name):
+    """The glibc release a version name needs, or None for an unknown ABI marker."""
+    if name.startswith(ABI_PREFIX):
+        return ABI_MARKER_SINCE.get(name)
+    return parse_version(name[len(VERSION_PREFIX):])
+
+
+def fortified_imports(elf):
+    """The glibc _FORTIFY_SOURCE entry points the file imports."""
+    return sorted(name for _, name, is_undefined in dynamic_symbols(elf)
+                  if is_undefined and name.startswith("__") and name.endswith("_chk"))
+
+
 def check(path, floor):
-    requirements = glibc_requirements(path)
-    newest = max((version for _, version in requirements), default=None)
-    above = {key: names for key, names in requirements.items() if key[1] > floor}
-    return newest, above
+    """Return (newest numbered release needed, {(library, name): symbols} above the floor, fortified imports)."""
+    elf = Elf64(Path(path).read_bytes())
+    newest = None
+    above = {}
+    for (library, name), names in glibc_requirements(elf).items():
+        release = required_release(name)
+        if release is None or release > floor:
+            above[(library, name)] = names
+        if release is not None and not name.startswith(ABI_PREFIX):
+            newest = release if newest is None else max(newest, release)
+    return newest, above, fortified_imports(elf)
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--floor", required=True, type=parse_version,
                         help="highest glibc symbol version the file may require, e.g. 2.39")
+    parser.add_argument("--require-fortify", action="store_true",
+                        help="also require at least one fortified glibc __*_chk import")
     parser.add_argument("files", nargs="+", type=Path)
     args = parser.parse_args()
 
     status = 0
     for path in args.files:
         try:
-            newest, above = check(path, args.floor)
-        except (OSError, ValueError) as error:
+            newest, above, fortified = check(path, args.floor)
+        except (OSError, ValueError, struct.error) as error:
             print(f"glibc floor check failed: {path}: {error}", file=sys.stderr)
             status = 1
             continue
         if above:
-            status = 1
             print(f"{path} needs glibc symbol versions above the {format_version(args.floor)} floor:",
                   file=sys.stderr)
-            for (library, version), names in sorted(above.items()):
-                listed = ", ".join(names) if names else "<no undefined symbols listed>"
-                print(f"  {library} {VERSION_PREFIX}{format_version(version)}: {listed}", file=sys.stderr)
+            for (library, name), names in sorted(above.items()):
+                if name.startswith(ABI_PREFIX):
+                    listed = "loader ABI marker the floor's glibc does not define"
+                else:
+                    listed = ", ".join(names) if names else "<no undefined symbols listed>"
+                print(f"  {library} {name}: {listed}", file=sys.stderr)
+        unfortified = args.require_fortify and not fortified
+        if unfortified:
+            print(f"{path} imports no fortified glibc __*_chk function: "
+                  "its C code was built without the hardening flags", file=sys.stderr)
+        if above or unfortified:
+            status = 1
             continue
+        fortify = f"  fortify={len(fortified)}" if args.require_fortify else ""
         print(f"verified-linux-glibc-floor  {VERSION_PREFIX}{format_version(newest) if newest else 'none'}"
-              f"  floor={format_version(args.floor)}  {path}")
+              f"  floor={format_version(args.floor)}{fortify}  {path}")
     return status
 
 
