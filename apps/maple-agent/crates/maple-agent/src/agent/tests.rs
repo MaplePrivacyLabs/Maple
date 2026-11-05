@@ -1425,6 +1425,38 @@ async fn mixed_files_and_images_use_committed_paths_and_preserve_refs_in_queue_e
 }
 
 #[tokio::test]
+async fn accepted_message_refreshes_project_recency_but_rejected_send_does_not() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let (store, account) = harness.handle.test_persistence().unwrap();
+    let root = harness
+        .handle
+        .store()
+        .unwrap()
+        .get(&task)
+        .unwrap()
+        .unwrap()
+        .project_root;
+    store.register_explicit_project(account, &root, 1).unwrap();
+    let before = store.project(account, &root).unwrap().unwrap();
+    let mut invalid = harness.request(&task, "Reject invalid attachment");
+    invalid.attachments = vec!["not-an-id".into()];
+    assert!(harness.handle.send_message(invalid).await.is_err());
+    assert_eq!(store.project(account, &root).unwrap().unwrap(), before);
+    harness.faux.push_text("Done");
+    let mut run = harness.send(&task, "Use this project again").await;
+    let after = store.project(account, &root).unwrap().unwrap();
+    assert!(after.last_used_ms > before.last_used_ms);
+    assert_eq!(after.position, before.position);
+    finished(&mut run).await;
+    // Model completion is not a new user choice.
+    assert_eq!(
+        store.project(account, &root).unwrap().unwrap().last_used_ms,
+        after.last_used_ms
+    );
+}
+
+#[tokio::test]
 async fn an_invalid_or_foreign_attachment_rejects_the_whole_send_before_inference() {
     let harness = Harness::new().await;
     let task = harness.create_task().await;

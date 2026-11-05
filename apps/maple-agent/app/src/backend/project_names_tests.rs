@@ -131,10 +131,19 @@ async fn project_rename_ipc_preserves_account_boundary_and_recovery_metadata() {
     assert_eq!(renamed.name, "Owner project");
     assert!(renamed.name_revision > 0);
     project_event(&mut events, &path, "Owner project").await;
+    let value = crate::backend::dispatch(&backend, request("recent_project_roots", json!([USER])))
+        .await
+        .unwrap();
+    let recent: Vec<RecentProjectRoot> = serde_json::from_value(value).unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].path, path);
+    assert_eq!(recent[0].name, "Owner project");
+    assert!(recent[0].last_used_ms > 0);
 
     for method in [
         "rename_project_root",
         "navigation_bootstrap",
+        "recent_project_roots",
         "list_projects",
     ] {
         let params = match method {
@@ -395,6 +404,25 @@ async fn project_folder_ipc_and_iroh_use_owner_paths_and_preserve_account_guards
                 .is_err()
         );
     }
+    assert!(
+        crate::backend::dispatch(
+            &backend,
+            request("create_scratch_project", json!(["another-account"]))
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        remote_call(
+            &backend,
+            &client,
+            &server,
+            wire::Method::CreateScratchProject,
+            json!(["another-account"])
+        )
+        .await
+        .is_err()
+    );
     assert!(!folder.path().join("unauthorized").exists());
     assert!(
         remote_call(
@@ -433,6 +461,7 @@ async fn project_folder_operations_require_an_open_store() {
             json!([USER, {"path":path,"after":null,"limit":10}]),
         ),
         ("create_project_folder", json!([USER, path, "locked-child"])),
+        ("create_scratch_project", json!([USER])),
     ] {
         assert!(
             crate::backend::dispatch(&backend, request(method, params))

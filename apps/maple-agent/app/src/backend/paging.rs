@@ -347,10 +347,10 @@ fn ensure_workspace_project(
             .as_ref()
             .is_none_or(|project| project.removed_ms.is_none() && project.position.is_none())
         {
-            let now = chrono::Utc::now().timestamp_millis();
-            // Switcher pages include explicit positions or task-bearing roots.
-            // The offered empty workspace is an explicit choice at the end.
-            store.remember_project(account, &root, i64::MAX, now)?;
+            // Offering the empty workspace is not a use. Preserve existing
+            // recency when assigning an unpositioned workspace its list rank.
+            let last_used_ms = project.as_ref().map_or(0, |project| project.last_used_ms);
+            store.remember_project(account, &root, i64::MAX, last_used_ms)?;
         }
     }
     Ok(())
@@ -826,9 +826,20 @@ mod tests {
             page.projects[0].root.as_str(),
             workspace.to_string_lossy().as_ref()
         );
-        store
-            .remove_project(account, &page.projects[0].root, 2)
-            .unwrap();
+        let root = &page.projects[0].root;
+        let offered = store.project(account, root).unwrap().unwrap();
+        assert_eq!(offered.last_used_ms, 0);
+        assert!(store.recently_used_projects(account).unwrap().is_empty());
+        store.register_explicit_project(account, root, 10).unwrap();
+        let selected = store.project(account, root).unwrap().unwrap();
+        assert_eq!(selected.position, offered.position);
+        ensure_workspace_project(&store, account).unwrap();
+        assert_eq!(store.project(account, root).unwrap().unwrap(), selected);
+        assert_eq!(
+            store.recently_used_projects(account).unwrap(),
+            vec![selected]
+        );
+        store.remove_project(account, root, 20).unwrap();
         ensure_workspace_project(&store, account).unwrap();
         assert!(
             store
