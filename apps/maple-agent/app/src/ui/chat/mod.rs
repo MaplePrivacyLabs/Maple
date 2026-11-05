@@ -565,6 +565,9 @@ pub struct ChatScreen {
     /// Task being opened whose snapshot has not landed yet, so the pane
     /// can say so instead of showing the previous task.
     loading_session: Option<String>,
+    /// The selection generation of that open. A superseded open never lands
+    /// and can leave the marker behind, so it needs this to lose the highlight.
+    loading_generation: u64,
     loading_timeline: HashMap<String, AgentTimelineItem>,
     snapshot_revision: u64,
     /// Virtualized transcript state; bottom-aligned like a chat log.
@@ -1000,7 +1003,7 @@ impl ChatScreen {
     /// any of them changed; the sidebar rebuilds only what moved.
     fn sync_sidebar(&mut self, cx: &mut Context<Self>) {
         let sessions = self.sessions.clone();
-        let selected = self.selected_session.clone();
+        let selected = self.sidebar_selection();
         let activity = self.task_activity();
         let roots = self.recent_roots.clone();
         self.sidebar.update(cx, |sidebar, cx| {
@@ -1044,8 +1047,17 @@ impl ChatScreen {
         completed || failed
     }
 
+    /// The clicked task takes the sidebar's highlight straight away, ahead of
+    /// the snapshot that selects it. A newer navigation outranks that open.
+    fn sidebar_selection(&self) -> Option<String> {
+        self.loading_session
+            .clone()
+            .filter(|_| self.loading_generation == self.selection_generation)
+            .or_else(|| self.selected_session.clone())
+    }
+
     fn sync_sidebar_selection(&mut self, cx: &mut Context<Self>) {
-        let selected = self.selected_session.clone();
+        let selected = self.sidebar_selection();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_selected(selected, cx));
         self.refresh_selected_title();
@@ -1437,6 +1449,7 @@ impl ChatScreen {
             notice: None,
             booting: true,
             loading_session: None,
+            loading_generation: 0,
             loading_timeline: HashMap::new(),
             snapshot_revision: 0,
             list_state: transcript_list_state(),
@@ -1872,7 +1885,9 @@ impl ChatScreen {
             return;
         }
         self.begin_navigation();
-        if !self.draft {
+        if self.draft {
+            self.sync_sidebar_selection(cx);
+        } else {
             self.clear_selected_session_presentation(cx);
         }
         self.set_project_context(Some(project_root), cx);
@@ -2885,6 +2900,8 @@ impl ChatScreen {
                 self.loading_timeline.clear();
             }
             self.loading_session = Some(session_id.to_string());
+            self.loading_generation = self.selection_generation;
+            self.sync_sidebar_selection(cx);
             cx.notify();
         }
         let backend = self.backend.clone();
@@ -2924,6 +2941,7 @@ impl ChatScreen {
                     Ok(detail) => detail,
                     Err(message) => {
                         this.finish_loading(&session_id);
+                        this.sync_sidebar_selection(cx);
                         this.notice = Some(message.into());
                         cx.notify();
                         return;
