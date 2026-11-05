@@ -107,8 +107,8 @@ test: python-test
 vim-cases:
     nix shell --inputs-from . nixpkgs#neovim -c nvim --clean --headless -l scripts/record-vim-cases.lua app/src/ui/text_input/vim_neovim_cases.json
 
-# Build the debug binary.
-build:
+# Build the debug binary, with the pinned CPython beside it for the python tool.
+build: python-prepare
     cargo build -p maple-agent-app
 
 # Stage the debug binary in a stable macOS app bundle. A stable bundle identity

@@ -9,14 +9,19 @@
 //! get the plan the user watches (`todo_write`) and questions the user
 //! answers (`request_user_input`), and every task gets `web_search` and
 //! `open_url` while its web switch is on. For an image, `read` sends a model
-//! that cannot see images to `read_image`, which describes it.
+//! that cannot see images to `read_image`, which describes it. A build that
+//! bundles CPython also gives every task `python`, a persistent scratchpad.
 
 mod desktop;
+mod python;
 mod read_image;
 pub(super) mod shell;
 pub(crate) mod web;
 
 pub(super) use desktop::parse_user_questions;
+pub(crate) use python::{
+    ARCHIVED_REASON, PROJECT_REMOVED_REASON, PythonWorkers, python_extension, python_tool,
+};
 pub(crate) use read_image::ReadImageFor;
 
 use std::path::PathBuf;

@@ -1195,6 +1195,7 @@ fn render_tool_with_diff(
 pub(super) fn tool_label_title(title: &str) -> &str {
     const LABELS: &[&str] = &[
         "Terminal",
+        "Python",
         "Editor",
         "Web Search",
         "Read file",

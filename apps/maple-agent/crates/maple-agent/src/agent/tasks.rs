@@ -648,6 +648,9 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         let store = self.store()?;
         let task = session_id.clone();
+        let archived = runtime
+            .clone()
+            .filter(|_| state == AgentTaskState::Archived);
         let summary = tokio::task::spawn_blocking(move || {
             let action = || {
                 store
@@ -673,6 +676,11 @@ impl AgentRuntimeHandle {
         })
         .await
         .map_err(|_| "Task state worker did not complete".to_owned())??;
+        if let Some(runtime) = archived {
+            runtime
+                .discard_python(&session_id, super::tools::ARCHIVED_REASON)
+                .await;
+        }
         emit_agent_event(
             &self.service.host.events,
             AgentServiceEvent::SessionUpdated {
