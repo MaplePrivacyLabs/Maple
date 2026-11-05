@@ -2,8 +2,10 @@
 //! Provides server-side conversation state management compatible with OpenAI's Conversations API
 
 use crate::{
+    db::DBError,
     encrypt::{decrypt_content, encrypt_with_key},
     jwt::AuthContext,
+    models::response_compaction::{CompactionError, CompactionMarkerMetadata},
     models::responses::{ConversationProjectFilter, NewConversation},
     models::users::User,
     web::{
@@ -240,6 +242,76 @@ pub struct ConversationItemListResponse {
     pub has_more: bool,
     pub first_id: Option<Uuid>,
     pub last_id: Option<Uuid>,
+}
+
+/// Additive visibility metadata. Canonical conversation items are unchanged.
+#[derive(Debug, Serialize)]
+pub struct ConversationCompactionMarker {
+    pub id: Uuid,
+    pub object: &'static str,
+    pub status: &'static str,
+    pub response_id: Uuid,
+    /// None for preparation before this response's user item is persisted.
+    /// Otherwise the exact canonical item preceding this checkpoint.
+    pub after_item_id: Option<Uuid>,
+    pub created_at: i64,
+    pub generation: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConversationCompactionListResponse {
+    pub object: &'static str,
+    pub data: Vec<ConversationCompactionMarker>,
+    pub has_more: bool,
+    pub first_id: Option<Uuid>,
+    pub last_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListCompactionsParams {
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    pub after: Option<Uuid>,
+    #[serde(default = "default_order")]
+    pub order: String,
+}
+
+impl ListCompactionsParams {
+    fn validate(&self) -> Result<(), ApiError> {
+        if !(1..=MAX_PAGINATION_LIMIT).contains(&self.limit)
+            || !matches!(self.order.as_str(), "asc" | "desc")
+        {
+            return Err(ApiError::BadRequest);
+        }
+        Ok(())
+    }
+}
+
+fn compaction_marker_page(
+    mut rows: Vec<CompactionMarkerMetadata>,
+    limit: usize,
+) -> ConversationCompactionListResponse {
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    let data: Vec<_> = rows
+        .into_iter()
+        .map(|row| ConversationCompactionMarker {
+            id: row.uuid,
+            object: "conversation.compaction",
+            status: "completed",
+            response_id: row.origin_response_uuid,
+            after_item_id: row.after_item_uuid,
+            created_at: row.created_at.timestamp(),
+            generation: row.generation,
+        })
+        .collect();
+    ConversationCompactionListResponse {
+        object: OBJECT_TYPE_LIST,
+        first_id: data.first().map(|item| item.id),
+        last_id: data.last().map(|item| item.id),
+        has_more,
+        data,
+    }
 }
 
 /// Response for listing conversations (custom OpenSecret extension)
@@ -637,6 +709,37 @@ async fn list_conversation_items(
     encrypt_response(&state, &session_id, &response).await
 }
 
+/// GET /v1/conversations/{id}/compactions - Paginated durable markers only.
+async fn list_conversation_compactions(
+    State(state): State<Arc<AppState>>,
+    Path(conversation_id): Path<Uuid>,
+    Query(params): Query<ListCompactionsParams>,
+    Extension(session_id): Extension<TransportSession>,
+    Extension(user): Extension<User>,
+) -> Result<Response, ApiError> {
+    params.validate()?;
+    let conversation = state
+        .db
+        .get_conversation_by_uuid_and_user(conversation_id, user.uuid)
+        .map_err(error_mapping::map_conversation_error)?;
+    let rows = state
+        .db
+        .list_conversation_compaction_markers(
+            conversation.id,
+            user.uuid,
+            params.limit + 1,
+            params.after,
+            &params.order,
+        )
+        .map_err(|error| match error {
+            DBError::CompactionError(CompactionError::InvalidSelection) => ApiError::BadRequest,
+            DBError::CompactionError(CompactionError::ConversationNotFound) => ApiError::NotFound,
+            _ => ApiError::InternalServerError,
+        })?;
+    let response = compaction_marker_page(rows, params.limit as usize);
+    encrypt_response(&state, &session_id, &response).await
+}
+
 /// GET /v1/conversations/{conversation_id}/items/{item_id} - Retrieve a single item
 async fn get_conversation_item(
     State(state): State<Arc<AppState>>,
@@ -920,6 +1023,11 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .layer(from_fn_with_state(state.clone(), decrypt_request::<()>)),
         )
         .route(
+            "/v1/conversations/:id/compactions",
+            get(list_conversation_compactions)
+                .layer(from_fn_with_state(state.clone(), decrypt_request::<()>)),
+        )
+        .route(
             "/v1/conversations/:id/items/:item_id",
             get(get_conversation_item)
                 .layer(from_fn_with_state(state.clone(), decrypt_request::<()>)),
@@ -929,13 +1037,98 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
+    use super::{compaction_marker_page, ListCompactionsParams};
     use super::{
         default_limit, default_order, BatchUpdateConversationProjectRequest,
         ListConversationsParams, UpdateConversationRequest,
     };
+    use crate::models::response_compaction::CompactionMarkerMetadata;
     use crate::web::responses::NullableField;
     use crate::ApiError;
     use uuid::Uuid;
+
+    #[test]
+    fn compaction_visibility_rejects_unbounded_pages_and_unknown_order() {
+        for limit in [-1, 0, 101, i64::MAX] {
+            let params = ListCompactionsParams {
+                limit,
+                after: None,
+                order: "desc".into(),
+            };
+            assert!(matches!(params.validate(), Err(ApiError::BadRequest)));
+        }
+        for order in ["asc", "desc"] {
+            for limit in [1, 20, 100] {
+                assert!(ListCompactionsParams {
+                    limit,
+                    after: None,
+                    order: order.into()
+                }
+                .validate()
+                .is_ok());
+            }
+        }
+        assert!(ListCompactionsParams {
+            limit: 20,
+            after: None,
+            order: "ASC; SELECT 1".into()
+        }
+        .validate()
+        .is_err());
+        let defaults: ListCompactionsParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.limit, 20);
+        assert_eq!(defaults.order, "desc");
+    }
+
+    #[test]
+    fn compaction_marker_projection_is_bounded_and_contains_only_safe_metadata() {
+        let rows: Vec<_> = (1..=3)
+            .map(|generation| CompactionMarkerMetadata {
+                uuid: Uuid::new_v4(),
+                origin_response_uuid: Uuid::new_v4(),
+                after_item_uuid: (generation == 2).then(Uuid::new_v4),
+                created_at: chrono::Utc::now(),
+                generation,
+            })
+            .collect();
+        let first = rows[0].uuid;
+        let last = rows[1].uuid;
+        let page = compaction_marker_page(rows, 2);
+        assert!(page.has_more);
+        assert_eq!(page.first_id, Some(first));
+        assert_eq!(page.last_id, Some(last));
+        assert_eq!(page.data.len(), 2);
+        let wire = serde_json::to_value(page).unwrap();
+        for marker in wire["data"].as_array().unwrap() {
+            let keys: std::collections::HashSet<_> = marker
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    "id",
+                    "object",
+                    "status",
+                    "response_id",
+                    "after_item_id",
+                    "created_at",
+                    "generation"
+                ]
+                .into_iter()
+                .collect()
+            );
+            assert_eq!(marker["object"], "conversation.compaction");
+            assert_eq!(marker["status"], "completed");
+        }
+        assert!(wire["data"][0]["after_item_id"].is_null());
+        assert!(wire["data"][1]["after_item_id"].is_string());
+        let empty = compaction_marker_page(Vec::new(), 20);
+        assert!(!empty.has_more);
+        assert!(empty.first_id.is_none() && empty.last_id.is_none());
+    }
 
     #[test]
     fn update_request_distinguishes_null_from_omitted_project_id() {

@@ -1,4 +1,4 @@
-//! Prepaid API credits in the API keys section: the balance and a card or
+//! Prepaid API credits on the Billing page: the balance and a card or
 //! Bitcoin top-up, like the web app's API credits settings. Checkout opens
 //! in the browser and returns to the web app; the billing service credits
 //! the account from the payment provider, so this pane only re-reads the
@@ -6,7 +6,7 @@
 
 use gpui::{Context, Div, Entity, Focusable, div, prelude::*};
 
-use super::api_keys::ApiKeysTarget;
+use super::billing::BillingTarget;
 use super::{SettingsScreen, SettingsTarget, section_title};
 use crate::billing::{
     CREDIT_PACKAGES_DOLLARS, CREDITS_PER_DOLLAR, MAX_CREDIT_PURCHASE_DOLLARS,
@@ -38,7 +38,7 @@ pub(super) struct CreditsState {
     balance: Option<i64>,
     balance_error: Option<String>,
     choice: CreditChoice,
-    custom: Entity<TextInput>,
+    pub(super) custom: Entity<TextInput>,
     /// Credits for the typed custom amount, parsed when the field changes.
     /// None while it is empty.
     custom_credits: Option<Result<u64, String>>,
@@ -67,8 +67,8 @@ impl CreditsState {
         });
         cx.observe(&custom, |this, input, cx| {
             let credits = crate::billing::parse_custom_dollars(input.read(cx).text_ref());
-            if this.api_keys.credits.custom_credits != credits {
-                this.api_keys.credits.custom_credits = credits;
+            if this.billing.credits.custom_credits != credits {
+                this.billing.credits.custom_credits = credits;
                 cx.notify();
             }
         })
@@ -86,6 +86,19 @@ impl CreditsState {
 
     fn selected_credits(&self) -> Result<u64, String> {
         selected_credits(self.choice, &self.custom_credits)
+    }
+
+    /// Compact label for the API keys strip.
+    pub(super) fn balance_label(&self) -> String {
+        balance_label(self.balance, self.balance_error.as_deref())
+    }
+}
+
+fn balance_label(balance: Option<i64>, balance_error: Option<&str>) -> String {
+    match (balance, balance_error) {
+        (Some(balance), _) => format!("{} credits", format_count(balance)),
+        (None, None) => "Loading balance…".to_string(),
+        (None, Some(_)) => "Balance unavailable".to_string(),
     }
 }
 
@@ -120,7 +133,7 @@ impl SettingsScreen {
             async move { backend.api_credit_balance(&user_id).await },
             cx,
             |this, result, cx| {
-                let credits = &mut this.api_keys.credits;
+                let credits = &mut this.billing.credits;
                 match result {
                     Ok(balance) => {
                         credits.balance = Some(balance);
@@ -134,7 +147,7 @@ impl SettingsScreen {
     }
 
     pub(super) fn credits_targets(&self) -> Vec<SettingsTarget> {
-        let target = |target| SettingsTarget::ApiKeys(ApiKeysTarget::Credits(target));
+        let target = |target| SettingsTarget::Billing(BillingTarget::Credits(target));
         let mut targets = vec![target(CreditsTarget::Refresh)];
         targets.extend(
             CREDIT_PACKAGES_DOLLARS
@@ -142,7 +155,7 @@ impl SettingsScreen {
                 .map(|dollars| target(CreditsTarget::Package(*dollars))),
         );
         targets.push(target(CreditsTarget::Custom));
-        if self.api_keys.credits.choice == CreditChoice::Custom {
+        if self.billing.credits.choice == CreditChoice::Custom {
             targets.push(target(CreditsTarget::CustomAmount));
         }
         if !self.guest_account() {
@@ -165,7 +178,7 @@ impl SettingsScreen {
             }
             CreditsTarget::Custom => self.choose_credits(CreditChoice::Custom, cx),
             CreditsTarget::CustomAmount => {
-                let handle = self.api_keys.credits.custom.read(cx).focus_handle(cx);
+                let handle = self.billing.credits.custom.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
             CreditsTarget::Pay(method) => self.purchase_credits(method, cx),
@@ -173,13 +186,13 @@ impl SettingsScreen {
     }
 
     fn refresh_credit_balance(&mut self, cx: &mut Context<Self>) {
-        self.api_keys.credits.notice = None;
+        self.billing.credits.notice = None;
         self.load_credit_balance(cx);
         cx.notify();
     }
 
     fn choose_credits(&mut self, choice: CreditChoice, cx: &mut Context<Self>) {
-        let credits = &mut self.api_keys.credits;
+        let credits = &mut self.billing.credits;
         if credits.choice == choice {
             return;
         }
@@ -192,22 +205,22 @@ impl SettingsScreen {
     }
 
     pub(super) fn purchase_credits(&mut self, method: PaymentMethod, cx: &mut Context<Self>) {
-        if self.api_keys.credits.purchasing.is_some() {
+        if self.billing.credits.purchasing.is_some() {
             return;
         }
         if method == PaymentMethod::Stripe && self.guest_account() {
             return;
         }
-        let amount = match self.api_keys.credits.selected_credits() {
+        let amount = match self.billing.credits.selected_credits() {
             Ok(amount) => amount,
             Err(message) => {
-                self.api_keys.credits.notice = Some(message);
+                self.billing.credits.notice = Some(message);
                 cx.notify();
                 return;
             }
         };
-        self.api_keys.credits.purchasing = Some(method);
-        self.api_keys.credits.notice = None;
+        self.billing.credits.purchasing = Some(method);
+        self.billing.credits.notice = None;
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -215,8 +228,8 @@ impl SettingsScreen {
             async move { backend.purchase_api_credits(&user_id, method, amount).await },
             cx,
             move |this, result, cx| {
-                this.api_keys.credits.purchasing = None;
-                this.api_keys.credits.notice = Some(match result {
+                this.billing.credits.purchasing = None;
+                this.billing.credits.notice = Some(match result {
                     Ok(()) => match method {
                         PaymentMethod::Stripe => "Opened checkout in your browser. Refresh \
                                                   after paying to see the new balance."
@@ -234,8 +247,8 @@ impl SettingsScreen {
     }
 
     pub(super) fn render_credits(&self, cx: &mut Context<Self>) -> Div {
-        let credits = &self.api_keys.credits;
-        let target = |target| move || SettingsTarget::ApiKeys(ApiKeysTarget::Credits(target));
+        let credits = &self.billing.credits;
+        let target = |target| move || SettingsTarget::Billing(BillingTarget::Credits(target));
         let mut section = div().flex().flex_col().gap_3().child(
             div()
                 .flex()
@@ -444,7 +457,7 @@ impl SettingsScreen {
         detail: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let selected = self.api_keys.credits.choice == choice;
+        let selected = self.billing.credits.choice == choice;
         let id = match choice {
             CreditChoice::Package(dollars) => {
                 gpui::SharedString::from(format!("credits-package-{dollars}"))
@@ -505,5 +518,12 @@ mod tests {
             Ok(12_000)
         );
         assert!(selected_credits(CreditChoice::Custom, &Some(Err("no".into()))).is_err());
+    }
+
+    #[test]
+    fn balance_label_covers_loaded_loading_and_error() {
+        assert_eq!(balance_label(Some(12_345), None), "12,345 credits");
+        assert_eq!(balance_label(None, None), "Loading balance…");
+        assert_eq!(balance_label(None, Some("no")), "Balance unavailable");
     }
 }

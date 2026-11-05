@@ -145,13 +145,11 @@ Preflight also rechecks master after collecting evidence. Stop on any failure; c
 Never overwrite or move a release tag.
 
 Review the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy)
-for the clients being released. Record the frontend's selected SDK from its
-manifest/lockfile and each Rust consumer's resolved version/source using the
-policy's `cargo metadata --locked` command. Local links are allowed. If those
-clients will ship unpublished SDK changes, recommend publishing the SDK and
-pinning those consumers first; an intentional local-source release can proceed
-with the exact monorepo commit recorded. Unrelated SDK source changes do not
-require a pinned client to upgrade, and this preference adds no release gate.
+for the clients being released. Confirm the frontend's manifest/lockfile still
+link the in-tree SDK and record each Rust consumer's resolved version/source using
+the policy's `cargo metadata --locked` command. Clients ship in-tree SDK source, so
+record the exact monorepo commit; this adds no release gate and does not call for
+publishing the SDK first.
 Publishing changed SDK source requires a new registry version; neither an app
 release nor an in-tree edit replaces an already published package.
 

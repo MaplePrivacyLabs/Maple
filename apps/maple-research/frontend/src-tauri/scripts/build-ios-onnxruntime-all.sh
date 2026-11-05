@@ -23,7 +23,7 @@ BUILD_DIR="${TAURI_DIR}/onnxruntime-build"
 OUTPUT_DIR="${TAURI_DIR}/onnxruntime-ios"
 XCFRAMEWORK_DIR="${OUTPUT_DIR}/onnxruntime.xcframework"
 
-IOS_DEPLOYMENT_TARGET="13.0"
+IOS_DEPLOYMENT_TARGET="16.0"
 
 echo "========================================"
 echo "Building ONNX Runtime ${ORT_VERSION} for iOS"

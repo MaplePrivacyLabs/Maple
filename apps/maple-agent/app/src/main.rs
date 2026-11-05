@@ -41,6 +41,8 @@ mod update;
 mod windows_bootstrap;
 #[cfg(all(feature = "desktop", target_os = "windows"))]
 mod windows_integration;
+#[cfg(windows)]
+mod windows_ownership;
 
 use backend::AgentBackend;
 use clap::{Args, Parser, Subcommand};
@@ -296,7 +298,10 @@ fn main() {
                             root,
                             profile::PROFILE,
                         )
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| {
+                            internal_exit_code = error.windows_installer_exit_code();
+                            error.to_string()
+                        })
                     }),
             )
         } else if !cli.internal_windows_installer_prepare.is_empty() {
@@ -315,7 +320,10 @@ fn main() {
                             profile::PROFILE,
                             generation,
                         )
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| {
+                            internal_exit_code = error.windows_installer_exit_code();
+                            error.to_string()
+                        })
                     }),
             )
         } else if let Some(generation) = &cli.internal_windows_installer_activate {
@@ -389,7 +397,13 @@ fn main() {
         }
         return;
     }
-    // SAFETY: argument parsing and hardening start no threads. No other
+    #[cfg(windows)]
+    if let Err(error) = windows_ownership::prepare() {
+        init_logging(LogOutput::FileAndStderr);
+        log::error!("Cannot prepare Windows per-user object ownership: {error}");
+        std::process::exit(1);
+    }
+    // SAFETY: argument parsing, hardening and ownership preparation start no threads. No other
     // thread exists yet, so environment mutation cannot race a reader.
     unsafe { maple_agent::prepare_process_environment() };
     #[cfg(feature = "desktop")]
@@ -514,13 +528,8 @@ fn host_error_summary(error: &str) -> &'static str {
 fn run_proxy(args: ProxyArgs) -> Result<(), String> {
     let backend_url = maple_agent::maple_api::validate_api_url(&configured_api_url())?;
     let pcr0 = maple_agent::open_secret_config::configured_pcr0_environment()?;
-    let mut config = maple_proxy::Config::new(args.host.clone(), args.port, backend_url)
-        .with_pcr0_environment(pcr0)
-        .with_debug(false)
-        // The browser boundary is owned below so the Authorization header
-        // can be allowed explicitly and browser requests rejected when CORS
-        // is off; maple-proxy's permissive layer stays out.
-        .with_cors(false);
+    // The host owns the browser boundary; the shared config keeps proxy CORS off.
+    let mut config = local_api::work_proxy_config(args.host.clone(), args.port, backend_url, pcr0);
     if let Some(api_key) = args.api_key.clone() {
         config = config.with_api_key(api_key);
     }

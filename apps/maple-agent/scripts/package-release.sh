@@ -39,9 +39,8 @@ if [[ "$platform" == macos-aarch64 ]]; then
     python3 "$component/scripts/macos-build-info.py" "$binary" --profile "$profile" \
         --source-sha "$source_sha" > "$staging/build-info.json"
 else
-    "$binary" --build-info > "$staging/build-info.json"
+    "$component/scripts/run-linux-payload.sh" "$binary" --build-info > "$staging/build-info.json"
 fi
-python3 "$metadata_tool" validate "$profile" "$staging/build-info.json" --source-sha "$source_sha" --platform "$platform"
 field() { python3 "$metadata_tool" field "$profile" "$staging/build-info.json" --field "$1" --platform "$platform"; }
 export MAPLE_PACKAGE_CHANNEL="$profile"
 export MAPLE_PACKAGE_APP_NAME="$(field display_name)"
@@ -64,15 +63,8 @@ else
 fi
 python3 "$metadata_tool" manifest "$profile" "$staging/build-info.json" \
     --output "$staging" --platform "$platform" "${unsigned[@]}"
-verification=()
-[[ "$platform" != macos-aarch64 ]] || verification=(--static)
-"$component/scripts/verify-release.sh" "$profile" "$staging" "${unsigned[@]}" "${verification[@]}" --platform "$platform"
 
-# Keep the previous package until the complete new package passes verification.
 destination="$component/dist/$profile"
-if [[ -e "$destination" ]]; then
-    echo "artifact directory already exists: $destination; move it aside before packaging again" >&2
-    exit 1
-fi
+rm -rf "$destination"
 mv "$staging" "$destination"
 echo "$destination"

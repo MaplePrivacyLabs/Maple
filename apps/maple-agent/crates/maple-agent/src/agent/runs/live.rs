@@ -77,6 +77,21 @@ impl LiveSnapshot {
         self.sources.push_back(receipt);
     }
 
+    /// A row of an entry Maple appended itself, such as a notice, as that
+    /// entry's only row. The live row takes the stored row's identity, so a
+    /// reload during the run shows it once.
+    pub(super) fn note_entry_row(&mut self, entry_id: &str, row_id: &str) {
+        let occurrence = self.occurrence(self.group, row_id);
+        let origin = Origin {
+            entry_id: entry_id.into(),
+            item_index: 0,
+        };
+        self.origins.insert(origin.clone(), occurrence);
+        if let Some(commit) = self.commits.get(&origin).cloned() {
+            self.persisted.insert(occurrence, commit);
+        }
+    }
+
     pub(super) fn end_message(&mut self, message: &SessionMessage) -> Vec<AgentTimelineItem> {
         self.completed_source = None;
         let signature = message_signature(message);

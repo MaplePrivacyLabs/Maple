@@ -57,7 +57,7 @@ PCR approval edit).
 | --- | --- |
 | Pull request | Selected lanes, each a few minutes; the iOS and Android builds when their native inputs change, and the OpenSecret EIF candidate for measured inputs. Desktop bundles and packaging rehearsals never block a PR; add `ci:package` to run them. A new push cancels the superseded run. |
 | Master push | The selected lanes that also run on push: the Research web, Rust and platform lanes and `auth` run only on pull requests, because `frontend-tests.yml`, `rust-tests.yml`, `web-build.yml`, the signed builds and `auth-pages-ci.yml` cover master. Agent inputs add the full Agent suites on Linux and macOS. Also the signed builds (Agent: Prod only), the release-evidence workflows and CodeQL. Never cancelled. |
-| Nightly (UTC) | At 04:17 `ci.yml` runs its nightly lanes on the master tip, Rust advisories, packaging rehearsals and the Agent's native Windows suites included, which also refreshes their caches. At 05:47 `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures and [quarantined lanes](#quarantine) open or update one `ci-nightly` issue; a green night closes it. CodeQL runs at 05:28. At 10:37 `agent-desktop-build.yml` builds, signs and verifies the Agent Dev packages; the `ci-nightly` issue covers neither of these. |
+| Nightly | `ci.yml` runs its nightly lanes on the master tip, Rust advisories, packaging rehearsals and the Agent's native Windows suites included, which also refreshes their caches. `nightly.yml` runs the Bun advisories and the SQLCipher provider suite on every OS. Failures and [quarantined lanes](#quarantine) open or update one `ci-nightly` issue, whose report waits up to two hours for `ci.yml`'s run to finish; a green night closes it. CodeQL also runs nightly, and `agent-desktop-build.yml` builds the Agent Dev packages for every platform, Windows ARM64 included, and signs the macOS and Windows ones; the `ci-nightly` issue covers neither of these. The crons say 04:17 (`ci.yml`), 05:28 (CodeQL), 05:47 (`nightly.yml`) and 10:37 UTC (Agent Dev), but GitHub starts scheduled runs hours late, so nothing may depend on exact times. |
 | On demand | PR labels (below), or a `ci.yml` dispatch with comma-separated lane ids or `all`. Dispatch runs never save caches. `os-eif` cannot be dispatched: an id that is not a dispatch lane, a typo included, makes the run fall back to every dispatch lane. |
 
 `master` requires `ci-ok` and auto-merge is on. Branches need not be up to
@@ -83,7 +83,7 @@ later push runs the labelled lanes again until the label is removed.
 | Label | Adds |
 | --- | --- |
 | `ci:full` | Every lane except the OpenSecret EIF candidate |
-| `ci:package` | Unsigned Agent and Research desktop packages on every OS, and the unsigned Research Dev app |
+| `ci:package` | Unsigned Agent and Research desktop packages on every OS, the native Windows ARM64 Agent installer included, and the unsigned Research Dev app |
 | `ci:windows` | The Agent's Windows Clippy, native updater tests and full Windows suite |
 | `ci:ios`, `ci:android` | The Research iOS simulator or Android build |
 | `ci:research-dev-macos` | The unsigned Research Dev app |
@@ -94,7 +94,8 @@ later push runs the labelled lanes again until the label is removed.
 `just lane <id>` (the same as `python3 scripts/ci/plan.py run <id>`) runs the
 lane's command in its pinned Nix shell, exactly as `ci.yml` does. macOS lanes
 need macOS and use its selected Xcode (CI pins it with
-`scripts/ci/select-xcode.py`), Windows lanes need Windows with the toolchain
+`scripts/ci/select-xcode.py`; only the packaging rehearsal also needs its Metal
+Toolchain), Windows lanes need Windows with the toolchain
 from `.github/actions/setup-agent-windows`, `os-sdk-e2e` needs PostgreSQL on
 `127.0.0.1:5432` with the credentials in `scripts/ci/opensecret-sdk-e2e.sh`,
 `os-helpers` needs Docker that builds `linux/arm64`, and `os-eif` needs Linux
@@ -169,11 +170,13 @@ org's 16-core GitHub runner are billed by the minute.
 
 | Runner | Lanes | Why |
 | --- | --- | --- |
-| `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-6vcpu-macos-26`, `blacksmith-8vcpu-windows-2025` | Most compiling lanes, for example Research Rust, OpenSecret Rust, every macOS lane and the Agent's Windows Clippy | Fast, with warm caches in Blacksmith's store |
+| `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-6vcpu-macos-27`, `blacksmith-8vcpu-windows-2025` | Most compiling lanes, for example Research Rust, OpenSecret Rust, every macOS lane and the Agent's Windows Clippy | Fast, with warm caches in Blacksmith's store |
 | `blacksmith-32vcpu-ubuntu-2404` | `agent-lint`, `agent-test` | The heaviest cold builds |
+| `xcode-27` | `metal-toolchain` | GitHub's Xcode 27 image ships Xcode's Metal Toolchain, which Blacksmith's macOS image lacks and cannot download; it exports it for the macOS packaging rehearsal, the only lane that compiles gpui's shaders. The Agent's other macOS lanes build with runtime shaders. It is a public-preview label without an SLA; if GitHub retires it, use the label that carries Xcode 27.1 |
 | `ubuntu-latest`, `ubuntu-24.04-arm` | Lighter lanes, for example `repo`, SDK, proxy, Research web, services, `deps-*` and `os-pcr` | Free, and fast enough without Blacksmith |
 | `windows-2025` | `agent-windows-updater`, `agent-full-windows` | Blacksmith's Windows workspace inherits a foreign write ACE that the updater's storage validation rejects, and the reparse tests need the symlink privilege GitHub's runner grants |
-| `maple-windows-2025-16core` | `agent-package-windows` (its install smoke needs GitHub's image), `research-desktop-windows` (for speed) | Same image and cache store as `windows-2025`, with more cores |
+| `windows-11-arm` | `agent-package-windows-arm64` | Native ARM64 compilation and the unsigned installer |
+| `maple-windows-2025-16core` | `agent-package-windows`, `research-desktop-windows` (for speed) | Same image and cache store as `windows-2025`, with more cores |
 | `blacksmith-16vcpu-ubuntu-2404-arm` | `os-eif` | The release EIF builder's class ([contracts](repository-workflows.md#contracts)) |
 
 During an outage or a queue burst, set the repository variable

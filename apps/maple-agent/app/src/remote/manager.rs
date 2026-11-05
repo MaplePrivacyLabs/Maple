@@ -561,7 +561,7 @@ impl Manager {
                 if info.update.offered.as_ref() != Some(&install.target) {
                     return refused(Refusal::UpdateChanged);
                 }
-                if info.update.state != super::update::UpdateState::Ready || info.update.blocked.is_some() {
+                if !info.install_requestable() {
                     return refused(if info.update.blocked == Some(super::update::BlockedReason::Busy) { Refusal::Busy } else { Refusal::NotReady });
                 }
                 if self.backend.authorize_account(&account).is_err() {
@@ -597,6 +597,8 @@ impl Manager {
                     Ok(value) => value,
                     // The execution host replies Err only when admission failed.
                     // Do not copy its arbitrary private error into the client UI.
+                    // An older host refuses an offer it has not downloaded.
+                    Err(_) if info.needs_local_download() => return refused(Refusal::DownloadRequired),
                     Err(_) => return refused(Refusal::Unavailable),
                 };
                 let accepted: super::update::InstallAccepted = serde_json::from_value(value)

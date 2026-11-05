@@ -6,7 +6,7 @@ change to the Agent's runtime. Scenarios the runtime tests cover are marked
 result recorded in the table at the end.
 
 Setup: a signed-in account on a local or development stack, a project folder
-with a few files, the built-in computer-use backend set up (macOS or Linux),
+with a few files, the built-in computer-use backend set up (macOS, Linux or Windows),
 Codex and Claude Code installed and signed in on the machine, and one custom
 stdio MCP server configured in Settings > Integrations.
 
@@ -31,6 +31,7 @@ stdio MCP server configured in Settings > Integrations.
 | C4 | Attachments | Attach an image by picker and by paste, then send | The model sees the image (vision model) or a `read_image` reference (text model) |
 | C5 | Voice input | Dictate a message | The transcript of the dictation lands in the composer |
 | C6 | Per-task pickers | Switch the model, Web and an integration on the draft, then send | The created task carries the three choices |
+| C7 | Switch models mid-task | In a task with history, pick another model and send; reopen the task after a restart | The reply comes from the new model with the earlier context, the transcript shows "Switched to …", and the task reopens on the new model (**automated**: `a_run_wakes_a_settled_task_and_a_started_task_switches_models`) |
 
 ## Slash commands and skills
 
@@ -48,7 +49,7 @@ stdio MCP server configured in Settings > Integrations.
 |---|---|---|---|
 | L1 | `read`, `bash`, `edit`, `write` | One prompt that uses all four | Each runs without a card and the files match |
 | L2 | Images in tools | On a text-only model, `read_image` on a local and a public https image, then `read` on the local one; on a vision model, `read` on it | The text-only model gets both described, and `read` sends it to `read_image`; the vision model sees the image (**automated** for `read`: `a_model_without_vision_looks_at_images_through_read_image`) |
-| L3 | `todo_write` | Ask for a multi-step plan | The plan pins above the composer and updates |
+| L3 | `todo_write` | Ask for a multi-step plan | The plan pins above the composer and updates; once every item is checked it leaves the composer and stays in the transcript as a foldable Plan row |
 | L4 | `web_search` and `open_url` | Ask for a page title | Web results and the title come back |
 | L5 | `request_user_input` | Ask the model to ask you a question | The card shows; the answer reaches the model; Escape skips |
 
@@ -72,6 +73,7 @@ stdio MCP server configured in Settings > Integrations.
 | M2 | A server that cannot connect | Give a task a server whose command does not exist, then run it twice | The first run's notice names it, the second's does not; switching it on again fails with the reason (**automated**: `a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on`) |
 | A1 | ACP agent mode | A stdio ACP client: `session/new`, a tool prompt, `session/list`, `session/load`, cancel, `/compact` | No modes advertised, zero `session/request_permission` for tools, the trust chooser on an untrusted project, no task left by a session closed before its first prompt, and every turn on the model's catalog vision and context window, which `usage_update` reports (**automated**: `acp::tests`) |
 | A2 | Proxy, `login`, `--version` | Run each mode | Each works as the README says |
+| A4 | ACP client setup | Follow each Settings → ACP example in Zed, a JetBrains IDE, Paseo and T3 Code on a packaged build | Each lists the agent, starts a task in the open folder, and keeps working after an update (launcher paths **automated**: `acp::tests`) |
 
 ## Shared local host
 
@@ -94,6 +96,7 @@ stdio MCP server configured in Settings > Integrations.
 | D4 | Plan meter | Settings > Usage | The plan, percent used and reset date show, nothing else |
 | D5 | Notifications | Finish a task and ask a question with the window in the background | Two notifications, none for permissions |
 | D6 | Appearance, fonts, motion, Vim | Change each setting | Each applies live |
+| D8 | Compaction after a switch to a smaller window | A long task on a large-window model, then a model whose window it exceeds | The task compacts before the next reply, summarized by the previous model (log line "summarized by"), and the reply comes from the new one (**automated**: `a_switch_to_a_smaller_window_compacts_with_the_previous_model`) |
 | D7 | Tasks from a Goose build | Open the app on an account with tasks a Goose build saved | The app starts and runs new tasks; the old ones are not listed, since the Pi runtime reads no Goose-era data |
 
 ## Results

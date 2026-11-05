@@ -45,11 +45,11 @@ use crate::extensions::{
     CustomMessageDraft, Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner,
     ExtensionUi, ForkPosition, Input, InputAction, InputSource, MessageEnd, ModelSelect,
     ProviderStreamEvent, RegisteredTool, ResourcesDiscover, ResourcesDiscoverReason,
-    ResourcesDiscoverResult, SessionBeforeCompact, SessionBeforeFork, SessionBeforeSwitch,
-    SessionBeforeTree, SessionCompact, SessionCompactFailed, SessionInfoChanged, SessionShutdown,
-    SessionStart, SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource,
-    ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult, TreePreparation, TreeSummary,
-    TurnEnd, UserBash, UserBashResult,
+    ResourcesDiscoverResult, RunTrigger, SessionBeforeCompact, SessionBeforeFork,
+    SessionBeforeSwitch, SessionBeforeTree, SessionCompact, SessionCompactFailed,
+    SessionInfoChanged, SessionShutdown, SessionStart, SessionStartReason, SessionTree,
+    SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt,
+    ToolResult, TreePreparation, TreeSummary, TurnEnd, UserBash, UserBashResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -1047,8 +1047,9 @@ impl AgentSession {
     /// Start a turn with a custom message and wait for it, as Pi's `sendCustomMessage`
     /// does with `triggerTurn`, for a host that hands the model something the user did
     /// not type, such as a background agent's result. A message not to `display` stays
-    /// out of the transcript the user sees but reaches the model. During a prompt it is
-    /// queued as steering instead.
+    /// out of the transcript the user sees but reaches the model. The run starts as a
+    /// prompt's does, with `before_agent_start` and the next-turn messages. During a
+    /// prompt it is queued as steering instead.
     pub async fn send_custom_message(
         &self,
         draft: CustomMessageDraft,
@@ -1068,7 +1069,8 @@ impl AgentSession {
                 _ => return Err(AgentSessionError::Busy),
             }
         };
-        core.run_delivered(activity, custom_message(draft)).await?;
+        core.start_run(activity, RunTrigger::Custom(custom(draft)))
+            .await?;
         Ok(PromptOutcome::Completed)
     }
 
@@ -1720,14 +1722,18 @@ fn user_message(text: &str, images: Vec<ImageContent>) -> SessionMessage {
     }))
 }
 
-fn custom_message(draft: CustomMessageDraft) -> SessionMessage {
-    SessionMessage::Custom(CustomMessage {
+fn custom(draft: CustomMessageDraft) -> CustomMessage {
+    CustomMessage {
         custom_type: draft.custom_type,
         content: draft.content,
         display: draft.display,
         details: draft.details,
         timestamp: now_ms(),
-    })
+    }
+}
+
+fn custom_message(draft: CustomMessageDraft) -> SessionMessage {
+    SessionMessage::Custom(custom(draft))
 }
 
 impl SessionCore {
@@ -2288,11 +2294,47 @@ impl SessionCore {
                 _ => return Err(AgentSessionError::Busy),
             }
         };
+        self.start_run(
+            activity,
+            RunTrigger::User {
+                prompt: text,
+                images,
+            },
+        )
+        .await?;
+        Ok(PromptOutcome::Completed)
+    }
+
+    /// Start a run from a prompt or a custom message, as Pi's `_startRun`. The session is
+    /// busy from here on, so messages sent while `before_agent_start` handlers run join
+    /// this run, and an abort requested meanwhile stops it once it starts.
+    async fn start_run(
+        self: &Arc<Self>,
+        activity: ActivityGuard<'_>,
+        trigger: RunTrigger,
+    ) -> Result<(), AgentSessionError> {
+        lock(&self.run).abort_requested = false;
+        let prepared = self.prepare_run(trigger).await;
+        // What extensions and the user's own commands added meanwhile goes before the
+        // run's messages, as when idle; no run exists yet to split a call from its result.
+        self.flush_pending_bash();
+        self.flush_pending_custom();
+        self.run_prompt(activity, prepared?).await
+    }
+
+    /// The messages that start a run, as Pi's `_prepareRun`: compact first when needed,
+    /// ask `before_agent_start`, apply the run's prompt options and tools, then the
+    /// starting message, the waiting next-turn messages and the handlers' messages, after
+    /// a prompt update when the prompt changed.
+    async fn prepare_run(
+        self: &Arc<Self>,
+        trigger: RunTrigger,
+    ) -> Result<Vec<SessionMessage>, AgentSessionError> {
         if self.model().is_none() {
             return Err(AgentSessionError::NoModel);
         }
         // As in Pi, a stopped run, or a switch to a smaller model, can leave a context to
-        // compact before the new prompt, which is the one that runs next.
+        // compact before the new message, which is the one that runs next.
         let last = self.agent.with_messages(|messages| {
             messages.iter().rev().find_map(|message| match message {
                 SessionMessage::Llm(Message::Assistant(assistant)) => Some(assistant.clone()),
@@ -2305,8 +2347,7 @@ impl SessionCore {
 
         let base = self.prompt_options();
         let event = BeforeAgentStart {
-            prompt: text.clone(),
-            images: images.clone(),
+            trigger: trigger.clone(),
             system_prompt: render(&base).unwrap_or_default(),
             options: base.clone(),
         };
@@ -2325,22 +2366,28 @@ impl SessionCore {
             .system_update(&self.run_prompt_options())?
             .into_iter()
             .collect();
-        // As in Pi, attached images are made to fit, after the handlers, with notes on
-        // what was done; one that cannot be used is left out, its note kept.
-        let auto_resize = lock(&self.settings).images.auto_resize;
-        let (images, hints) = normalize_prompt_images(images, auto_resize).await;
-        if !hints.is_empty() {
-            text = format!("{text}\n\n{}", hints.join("\n"));
+        match trigger {
+            RunTrigger::User { prompt, images } => {
+                // As in Pi, attached images are made to fit, after the handlers, with notes
+                // on what was done; one that cannot be used is left out, its note kept.
+                let auto_resize = lock(&self.settings).images.auto_resize;
+                let (images, hints) = normalize_prompt_images(images, auto_resize).await;
+                let text = if hints.is_empty() {
+                    prompt
+                } else {
+                    format!("{prompt}\n\n{}", hints.join("\n"))
+                };
+                messages.push(user_message(&text, images));
+            }
+            RunTrigger::Custom(message) => messages.push(SessionMessage::Custom(message)),
         }
-        messages.push(user_message(&text, images));
         {
             let mut run = lock(&self.run);
             run.forced_prompt = forced.or(prompt_options.force_prompt.clone());
             messages.append(&mut run.next_turn_messages);
         }
         messages.extend(drafts.into_iter().map(custom_message));
-        self.run_prompt(activity, messages).await?;
-        Ok(PromptOutcome::Completed)
+        Ok(messages)
     }
 
     /// Expand a skill command, then a prompt template.
@@ -2390,23 +2437,6 @@ impl SessionCore {
         Ok(PromptOutcome::Queued)
     }
 
-    /// Start a run with a message an extension sent, bringing the prompt up to date first.
-    async fn run_delivered(
-        self: &Arc<Self>,
-        activity: ActivityGuard<'_>,
-        message: SessionMessage,
-    ) -> Result<(), AgentSessionError> {
-        if self.model().is_none() {
-            return Err(AgentSessionError::NoModel);
-        }
-        let mut messages: Vec<SessionMessage> = self
-            .system_update(&self.prompt_options())?
-            .into_iter()
-            .collect();
-        messages.push(message);
-        self.run_prompt(activity, messages).await
-    }
-
     async fn run_prompt(
         self: &Arc<Self>,
         activity: ActivityGuard<'_>,
@@ -2414,7 +2444,6 @@ impl SessionCore {
     ) -> Result<(), AgentSessionError> {
         {
             let mut run = lock(&self.run);
-            run.abort_requested = false;
             run.overflow_recovery_attempted = false;
             run.boundary_changed = false;
         }
@@ -2861,28 +2890,57 @@ impl SessionCore {
         completed && !self.abort_requested()
     }
 
-    /// Omit the latest assistant message from the context with a context edit.
+    /// Omit the latest assistant message from the context with a context edit, and the
+    /// tool results that answer its calls with it, as Pi's `_omitRecoveryAttempt` does: a
+    /// result without its call would be sent on its own.
     fn omit_last_assistant(&self) {
-        let edit = {
+        let edits = {
             let mut session = lock(&self.session);
-            let target = session
-                .branch()
+            let targets: Vec<String> = {
+                let branch = session.branch();
+                let Some((position, assistant)) =
+                    branch
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(position, entry)| match &entry.kind {
+                            EntryKind::Message {
+                                message: SessionMessage::Llm(Message::Assistant(assistant)),
+                            } => Some((position, assistant)),
+                            _ => None,
+                        })
+                else {
+                    return;
+                };
+                let calls: Vec<&str> = assistant
+                    .tool_calls()
+                    .map(|call| call.id.as_str())
+                    .collect();
+                let results = branch[position + 1..]
+                    .iter()
+                    .filter_map(|entry| match &entry.kind {
+                        EntryKind::Message {
+                            message: SessionMessage::Llm(Message::ToolResult(result)),
+                        } if calls.contains(&result.tool_call_id.as_str()) => {
+                            Some(entry.id.clone())
+                        }
+                        _ => None,
+                    });
+                std::iter::once(branch[position].id.clone())
+                    .chain(results)
+                    .collect()
+            };
+            targets
                 .iter()
-                .rev()
-                .find_map(|entry| match &entry.kind {
-                    EntryKind::Message {
-                        message: SessionMessage::Llm(Message::Assistant(_)),
-                    } => Some(entry.id.clone()),
-                    _ => None,
-                });
-            target.and_then(|target| {
-                let id = session.append_context_edit(&target, None).ok()?;
-                session.entry(&id).cloned()
-            })
+                .filter_map(|target| {
+                    let id = session.append_context_edit(target, None).ok()?;
+                    session.entry(&id).cloned()
+                })
+                .collect::<Vec<_>>()
         };
         self.report_persistence();
         self.rebuild_messages();
-        if let Some(entry) = edit {
+        for entry in edits {
             self.emit(AgentSessionEvent::EntryAppended { entry });
         }
     }
@@ -3598,7 +3656,7 @@ struct SessionListener {
 
 #[async_trait]
 impl AgentListener<SessionMessage> for SessionListener {
-    async fn on_event(&self, event: &AgentEvent<SessionMessage>, _cancel: &CancellationToken) {
+    async fn on_event(&self, event: &AgentEvent<SessionMessage>, cancel: &CancellationToken) {
         let Some(core) = self.core.upgrade() else {
             return;
         };
@@ -3634,7 +3692,15 @@ impl AgentListener<SessionMessage> for SessionListener {
                     core.emit_queue();
                 }
             }
-            AgentEvent::AgentStart => lock(&core.run).turn_index = 0,
+            AgentEvent::AgentStart => {
+                let mut run = lock(&core.run);
+                run.turn_index = 0;
+                // An abort requested while the run was starting, during
+                // `before_agent_start` say, stops it here, before its first request.
+                if run.abort_requested {
+                    cancel.cancel();
+                }
+            }
             AgentEvent::TurnEnd { .. } => lock(&core.run).turn_index += 1,
             AgentEvent::AgentEnd { messages } => {
                 let will_retry = core.will_retry(messages);
@@ -3883,7 +3949,8 @@ impl ExtensionContext {
     /// Add a message to the conversation as `delivery` says.
     pub fn send_message(&self, draft: CustomMessageDraft, delivery: Delivery) {
         let Some(core) = self.core() else { return };
-        let message = custom_message(draft);
+        let custom = custom(draft);
+        let message = SessionMessage::Custom(custom.clone());
         let prompting = core.activity() == Activity::Prompt;
         let behavior = match delivery {
             Delivery::NextTurn => {
@@ -3912,7 +3979,7 @@ impl ExtensionContext {
                 core.queue(behavior, message);
                 return;
             };
-            if let Err(error) = core.run_delivered(activity, message).await {
+            if let Err(error) = core.start_run(activity, RunTrigger::Custom(custom)).await {
                 core.runner.report(&extension, "send_message", error);
             }
         });

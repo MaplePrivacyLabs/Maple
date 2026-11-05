@@ -14,6 +14,9 @@ use zeroize::Zeroizing;
 
 use super::{AccountId, Durability, Store, StoreError, StoreResult, tasks};
 
+mod oauth;
+pub use oauth::McpOAuthCredentials;
+
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 // Match the host's bounded 160 MiB request envelope, which admits image-heavy
 // sends. The smaller terminal-record limit must not shrink send admission.
@@ -798,6 +801,16 @@ impl Store {
                 let old_server = mcp_server_tx(tx,account,&edit.key)?;
                 let old_values = if let Some((id,_)) = &old_server { mcp_values_tx(tx,*id)? } else { BTreeMap::new() };
                 let target = mcp_target_hash(&definition.target)?;
+                // Ordinary metadata/default toggles retain OAuth. Changing its
+                // destination or adding generic credential inputs cannot reuse
+                // the dedicated OAuth grant.
+                if (old_server.as_ref().is_some_and(|(_,old)| old.target != definition.target)
+                    || !definition.environment.is_empty()
+                    || !definition.headers.is_empty())
+                    && let Some((id,_)) = &old_server
+                {
+                    tx.execute("DELETE FROM mcp_oauth_credentials WHERE server_id=?1",[id])?;
+                }
                 if origin == McpEditOrigin::Remote && old_server.as_ref().is_some_and(|(_,old)| old.target != definition.target) {
                     let explicit: BTreeSet<_> = edit.environment.iter()
                         .filter(|value| !matches!(&value.update, McpSecretUpdate::Keep))
@@ -837,6 +850,36 @@ impl Store {
                     tx.execute("DELETE FROM mcp_servers WHERE id=?1 AND account_id=?2",params![id,account.0])?;
                 }
             }
+            Ok(())
+        })
+    }
+
+    /// Add one server with no secrets, leaving the others as they are. A server
+    /// already saved under this key is a conflict and is never replaced.
+    pub fn add_mcp_definition(&self, account: AccountId, edit: &McpServerEdit) -> StoreResult<()> {
+        if !edit.environment.is_empty() || !edit.headers.is_empty() {
+            return Err(StoreError::InvalidInput);
+        }
+        let json =
+            serde_json::to_string(&mcp_definition(edit)?).map_err(|_| StoreError::InvalidInput)?;
+        self.write(Durability::Durable, |tx| {
+            tasks::writable_account(tx, account)?;
+            if mcp_server_tx(tx, account, &edit.key)?.is_some() {
+                return Err(StoreError::Conflict);
+            }
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM mcp_servers WHERE account_id=?1",
+                [account.0],
+                |row| row.get(0),
+            )?;
+            if count >= MAX_MCP_SERVERS as i64 {
+                return Err(StoreError::InvalidInput);
+            }
+            tx.execute(
+                "INSERT INTO mcp_servers(account_id,key,position,definition) \
+                 SELECT ?1,?2,coalesce(max(position),-1)+1,?3 FROM mcp_servers WHERE account_id=?1",
+                params![account.0, edit.key, json],
+            )?;
             Ok(())
         })
     }

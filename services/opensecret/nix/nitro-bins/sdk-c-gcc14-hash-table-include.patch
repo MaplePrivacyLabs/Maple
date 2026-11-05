@@ -1,0 +1,11 @@
+diff --git a/bin/kmstool-instance/main.c b/bin/kmstool-instance/main.c
+--- a/bin/kmstool-instance/main.c
++++ b/bin/kmstool-instance/main.c
+@@ -4,6 +4,7 @@
+ #include <aws/common/command_line_parser.h>
+ #include <aws/common/condition_variable.h>
+ #include <aws/common/encoding.h>
++#include <aws/common/hash_table.h>
+ #include <aws/common/logging.h>
+ #include <aws/common/mutex.h>
+ #include <aws/common/string.h>

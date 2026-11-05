@@ -1518,7 +1518,8 @@ impl LocalBackend {
         self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?;
+            .map_err(|_| "Maple API authentication failed".to_string())?
+            .with_client_app(maple_sdk::ClientApp::Work);
         let response = client
             .login(email, password, self.client_id)
             .await
@@ -1543,7 +1544,8 @@ impl LocalBackend {
         self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?;
+            .map_err(|_| "Maple API authentication failed".to_string())?
+            .with_client_app(maple_sdk::ClientApp::Work);
         let response = client
             .login_with_id(account_id, password, self.client_id)
             .await
@@ -1762,6 +1764,7 @@ impl LocalBackend {
     fn oauth_client(&self) -> Result<OpenSecretClient, String> {
         let environment = configured_pcr0_environment()?;
         OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
+            .map(|client| client.with_client_app(maple_sdk::ClientApp::Work))
             .map_err(|_| "Maple API authentication failed".to_string())
     }
 
@@ -2349,30 +2352,6 @@ impl LocalBackend {
     }
 
     #[cfg(feature = "acp")]
-    pub async fn get_acp_config(
-        &self,
-        user_id: &str,
-    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
-        self.authorize_account(user_id)?;
-        maple_agent::acp::load_acp_config(self.open_store()?.as_ref(), user_id)
-    }
-
-    #[cfg(feature = "acp")]
-    pub async fn set_acp_config(
-        &self,
-        user_id: &str,
-        config: maple_agent::acp::AgentAcpConfig,
-    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
-        self.authorize_account(user_id)?;
-        maple_agent::acp::save_acp_config(
-            self.open_store()?.as_ref(),
-            user_id,
-            config,
-            chrono::Utc::now().timestamp_millis(),
-        )
-    }
-
-    #[cfg(feature = "acp")]
     pub(crate) async fn serve_acp<R, W>(&self, read: R, write: W) -> Result<(), String>
     where
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -2395,9 +2374,8 @@ impl LocalBackend {
         let start = maple_agent::acp::shared_runtime_start(async move {
             starting.start(session, None).await.map(|_| ())
         });
-        let config = maple_agent::acp::load_acp_config(self.open_store()?.as_ref(), &user_id)?;
         drop(account);
-        maple_agent::acp::serve_connection(handle, config, start, read, write).await
+        maple_agent::acp::serve_connection(handle, start, read, write).await
     }
 
     /// Rename one project on the execution computer. The owner publishes a
@@ -2875,6 +2853,45 @@ impl LocalBackend {
             .await
     }
 
+    /// The local host owns the entire sign-in and its credentials. Only public
+    /// MCP metadata returns to the desktop once the server is installed.
+    pub async fn sign_in_mcp_server(
+        &self,
+        user_id: &str,
+        request: maple_agent::agent::McpSignIn,
+    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, String> {
+        self.authorize_account(user_id)?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .sign_in_mcp_server(request, Arc::new(open_sign_in))
+            .await
+    }
+
+    pub async fn cancel_mcp_sign_in(&self, user_id: &str, name: &str) -> Result<(), String> {
+        self.authorize_account(user_id)?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .cancel_mcp_sign_in(name);
+        Ok(())
+    }
+
+    /// The local host checks, starts and saves the app; the catalog id is the
+    /// only thing a caller can choose.
+    pub async fn connect_mcp_app(
+        &self,
+        user_id: &str,
+        id: &str,
+    ) -> Result<maple_agent::agent::McpAppConnection, String> {
+        self.authorize_account(user_id)?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .connect_mcp_app(id)
+            .await
+    }
+
     pub async fn save_mcp_definition_edits_remote(
         &self,
         user_id: &str,
@@ -3115,17 +3132,17 @@ impl LocalBackend {
 
     /// Persist the UI's model choice as the account's default model.
     pub async fn save_default_model(&self, user_id: &str, model: String) -> Result<(), String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let mut config = handle.load_config().await?;
-        config.default_model = model;
-        handle.save_config(config).await
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .save_model_choice(model)
+            .await
     }
 
-    /// The account's saved default model, if any.
+    /// The model the user last picked, if any.
     pub async fn saved_model(&self, user_id: &str) -> Option<String> {
         let handle = self.service.handle_for_user(user_id).await.ok()?;
-        let config = handle.load_config().await.ok()?;
-        Some(config.default_model).filter(|model| !model.is_empty())
+        handle.model_choice().await.ok().flatten()
     }
 }
 
@@ -3210,6 +3227,15 @@ fn decode_query_value(value: &str) -> String {
 fn billing_failure(error: String, fallback: &str) -> String {
     log::warn!("{fallback}: {error}");
     format!("{fallback}. Try again, or use the pricing page on the web.")
+}
+
+/// Open a server's sign-in page, which the runtime has checked. This runs in
+/// the local host's IPC worker, never the GPUI thread. A webbrowser error may
+/// contain the full URL; keep it out of logs and IPC.
+fn open_sign_in(address: String) -> Result<(), String> {
+    webbrowser::open(&address)
+        .map(|_| ())
+        .map_err(|_| "Could not open your browser to sign in. Check your default browser.".into())
 }
 
 /// Hand a billing URL to the system browser. Only `https` URLs are opened:

@@ -74,6 +74,9 @@ pub(super) fn permission_status() -> AgentIntegrationPermissions {
     {
         linux_requirements()
     }
+    // Windows has no consent gate for accessibility, input or capture: any
+    // process at the user's integrity level may use them. Enabling computer
+    // use in Settings is the only grant, so nothing is left to read here.
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         AgentIntegrationPermissions::none_required()

@@ -1,0 +1,18 @@
+[package]
+name = "tauri-plugin-sign-in-with-apple"
+version = "1.0.2"
+authors = [ "Manaf941" ]
+description = "Add Sign In With Apple capabilities to your Tauri iOS App."
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+exclude = ["/examples", "/webview-dist", "/webview-src", "/node_modules"]
+links = "tauri-plugin-sign-in-with-apple"
+
+[dependencies]
+tauri = { version = "2.1.0" }
+serde = "1.0"
+thiserror = "2"
+
+[build-dependencies]
+tauri-plugin = { version = "2.0.2", features = ["build"] }

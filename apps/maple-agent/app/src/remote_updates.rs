@@ -23,6 +23,10 @@ const MAX_RECEIPTS: usize = 512;
 const MAX_JOURNAL: u64 = 1024 * 1024;
 const ACK_LIFETIME: Duration = Duration::from_secs(60);
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(40);
+/// The one desktop completion error a receipt records verbatim. Nothing was
+/// stopped or installed, so another request may simply be tried.
+pub(crate) const DOWNLOAD_FAILED: &str =
+    "This computer could not download or verify the update. Nothing was installed.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -435,7 +439,14 @@ impl Broker {
             // Keep caller errors in the desktop's live UI. Durable receipts
             // retain controlled diagnostics only, never an account/path-bearing
             // error copied from a frontend or installation tool.
-            receipt.operation.message = Some("The update did not complete. Open Maple on this computer to review it before trying again.".into());
+            receipt.operation.message = Some(
+                if request.error.as_deref() == Some(DOWNLOAD_FAILED) {
+                    DOWNLOAD_FAILED
+                } else {
+                    "The update did not complete. Open Maple on this computer to review it before trying again."
+                }
+                .into(),
+            );
             state.authorities.remove(&request.operation_id);
             Ok(())
         })
@@ -514,10 +525,7 @@ impl Broker {
                 .as_ref()
                 .filter(|l| l.expires > Instant::now() && l.account == account)
                 .ok_or("Open Maple on the remote computer before updating it")?;
-            if lease.status.state != UpdateState::Ready
-                || lease.status.blocked.is_some()
-                || lease.status.offered.as_ref() != Some(&request.target)
-            {
+            if !admits_request(&lease.status, &request.target) {
                 return Err("That exact remote update is no longer ready".into());
             }
             if state.receipts.values().any(|r| {
@@ -730,6 +738,14 @@ fn reconcile_startup(
     // Reconciliation is outcome reporting only. It never recreates a lease,
     // captured authority, acknowledgement or queued installation.
     changed
+}
+
+/// An Available offer is downloaded and verified by the execution desktop
+/// before it stops anything; the typed stop still requires Ready or Installing.
+fn admits_request(status: &RemoteUpdateStatus, target: &ReleaseIdentity) -> bool {
+    matches!(status.state, UpdateState::Ready | UpdateState::Available)
+        && status.blocked.is_none()
+        && status.offered.as_ref() == Some(target)
 }
 
 fn lease<'a>(state: &'a mut State, account: &str, id: &str) -> Result<&'a mut Lease, String> {
@@ -1453,6 +1469,82 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn requests_admit_only_the_exact_unblocked_ready_or_available_offer() {
+        let status = |state, blocked| RemoteUpdateStatus {
+            state,
+            offered: Some(target()),
+            blocked,
+            operation: None,
+        };
+        assert!(admits_request(&status(UpdateState::Ready, None), &target()));
+        assert!(admits_request(
+            &status(UpdateState::Available, None),
+            &target()
+        ));
+        for state in [
+            UpdateState::Downloading,
+            UpdateState::Installing,
+            UpdateState::Error,
+            UpdateState::Current,
+            UpdateState::Unknown,
+        ] {
+            assert!(
+                !admits_request(&status(state, None), &target()),
+                "{state:?}"
+            );
+        }
+        for blocked in [
+            BlockedReason::PasswordProtected,
+            BlockedReason::UnsupportedInstallation,
+            BlockedReason::UpdateNotReady,
+            BlockedReason::Busy,
+        ] {
+            assert!(!admits_request(
+                &status(UpdateState::Available, Some(blocked)),
+                &target()
+            ));
+        }
+        let mut changed = target();
+        changed.manifest_sha256 = "c".repeat(64);
+        assert!(!admits_request(
+            &status(UpdateState::Available, None),
+            &changed
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_remote_download_is_recorded_without_arbitrary_desktop_errors() {
+        let (_directory, _store, broker) = fixture();
+        let lease = desktop(&broker).await;
+        for (error, expected) in [
+            (Some(DOWNLOAD_FAILED.to_owned()), DOWNLOAD_FAILED),
+            (
+                Some("/Users/alice/private path".to_owned()),
+                "The update did not complete. Open Maple on this computer to review it before trying again.",
+            ),
+        ] {
+            let id = receipt(&broker, &lease, OperationState::Installing).await;
+            broker
+                .complete(CompleteRequest {
+                    expected_account: "alice".into(),
+                    lease: lease.id.clone(),
+                    operation_id: id,
+                    error,
+                })
+                .await
+                .unwrap();
+            let operation = broker
+                .status("alice", "paired-peer")
+                .await
+                .unwrap()
+                .operation
+                .unwrap();
+            assert_eq!(operation.state, OperationState::Failed);
+            assert_eq!(operation.message.as_deref(), Some(expected));
+        }
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 //! Settings screen: left navigation with content panes, following Maple's
-//! settings layout. Sections: General (defaults), Account, System prompt,
+//! settings layout. Sections: General (defaults), Account, Additional instructions,
 //! Integrations, Keyboard Shortcuts, Usage, About.
 
 use std::collections::HashSet;
@@ -17,7 +17,7 @@ use maple_agent::agent::{
 use maple_agent::store::records::{McpDefinition, McpServerEdit, McpTarget};
 use zeroize::Zeroizing;
 
-use crate::ui::icons::icon;
+use crate::ui::icons::{icon, spinner};
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 
@@ -31,17 +31,23 @@ use crate::ui::theme;
 use crate::ui::widgets;
 
 mod account;
+#[cfg(feature = "acp")]
+mod acp;
 mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
+mod catalog;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
 mod navigation;
 use self::account::AccountState;
+#[cfg(feature = "acp")]
+use self::acp::AcpUiState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
+use self::catalog::McpTokenField;
 #[cfg(feature = "proxy")]
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
@@ -62,9 +68,9 @@ pub enum Section {
     General,
     Account,
     Billing,
-    ApiKeys,
-    #[cfg(feature = "proxy")]
-    LocalApi,
+    Api,
+    #[cfg(feature = "acp")]
+    Acp,
     Shortcuts,
     Prompt,
     Integrations,
@@ -80,11 +86,11 @@ impl Section {
             Self::General => "General",
             Self::Account => "Account",
             Self::Billing => "Billing",
-            Self::ApiKeys => "API keys",
-            #[cfg(feature = "proxy")]
-            Self::LocalApi => "Local API",
+            Self::Api => "API",
+            #[cfg(feature = "acp")]
+            Self::Acp => "ACP",
             Self::Shortcuts => "Keyboard Shortcuts",
-            Self::Prompt => "System prompt",
+            Self::Prompt => "Additional instructions",
             Self::Integrations => "Integrations",
             Self::Remote => "Remote computers",
             Self::Usage => "Usage",
@@ -97,9 +103,9 @@ impl Section {
         Self::General,
         Self::Account,
         Self::Billing,
-        Self::ApiKeys,
-        #[cfg(feature = "proxy")]
-        Self::LocalApi,
+        Self::Api,
+        #[cfg(feature = "acp")]
+        Self::Acp,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -159,6 +165,8 @@ pub struct SettingsScreen {
     api_keys: ApiKeysState,
     #[cfg(feature = "proxy")]
     local_api: LocalApiUiState,
+    #[cfg(feature = "acp")]
+    acp: AcpUiState,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
     /// Account MCP servers; None until loaded.
@@ -166,11 +174,22 @@ pub struct SettingsScreen {
     mcp_editor: Option<McpEditor>,
     mcp_notice: Option<String>,
     mcp_saving: bool,
+    /// The server whose browser sign-in is in progress.
+    mcp_signing_in: Option<String>,
+    /// The server whose sign-in last failed, and why.
+    mcp_sign_in_error: Option<(String, String)>,
+    /// The app that needs something first, and what.
+    mcp_app_missing: Option<(String, maple_agent::agent::McpAppMissing)>,
+    catalog_search: Entity<TextInput>,
+    catalog_query: String,
+    catalog_category: Option<maple_agent::agent::McpCatalogCategory>,
+    /// The catalog entries showing, worked out when they change.
+    catalog_visible: Vec<&'static maple_agent::agent::McpCatalogEntry>,
     /// Device-local integrations discovered by the runtime; None until loaded.
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<String>,
     integration_saving: HashSet<String>,
-    /// Editor for the opening system prompt text (harness instructions).
+    /// Editor for the user's additional instructions (harness instructions).
     prompt_editor: Entity<TextInput>,
     prompt_notice: Option<String>,
     shortcut_snapshot: ShortcutSnapshot,
@@ -254,13 +273,25 @@ struct McpEditor {
     headers: Entity<TextInput>,
     saved_environment: Vec<McpSecretField>,
     saved_headers: Vec<McpSecretField>,
+    /// Where a catalog app's token comes from.
+    key_url: Option<String>,
+    /// A catalog app's token, which replaces the free-form values.
+    token: Option<McpTokenField>,
+}
+
+/// What the target field of the server form asks for.
+fn mcp_target_placeholder(http: bool) -> &'static str {
+    if http {
+        "https://mcp.example.com/mcp"
+    } else {
+        "npx -y @modelcontextprotocol/server-everything stdio"
+    }
 }
 
 /// Emitted with the section to open (composer "Manage integrations" link).
 pub struct OpenSettingsSection(pub Section);
 
 impl EventEmitter<super::remote::ComputersChanged> for SettingsScreen {}
-impl EventEmitter<super::remote::ConnectComputer> for SettingsScreen {}
 impl EventEmitter<super::remote::ComputerNamed> for SettingsScreen {}
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<crate::update::UpdateRequested> for SettingsScreen {}
@@ -316,7 +347,15 @@ impl SettingsScreen {
     }
 
     fn visible_sections(&self) -> Vec<Section> {
-        Section::ALL.to_vec()
+        Section::ALL
+            .iter()
+            .copied()
+            .filter(|&section| {
+                section != Section::Advanced
+                    || self.section == Section::Advanced
+                    || self.advanced_has_content()
+            })
+            .collect()
     }
 
     pub fn update_remote_status(
@@ -373,21 +412,12 @@ impl SettingsScreen {
             },
         )
         .detach();
-        cx.subscribe(
-            &remote_screen,
-            |_, _, event: &super::remote::ConnectComputer, cx| {
-                // The desktop accepts this only from its current settings
-                // screen and closes that same screen before navigating.
-                cx.emit(super::remote::ConnectComputer(event.0.clone()));
-            },
-        )
-        .detach();
-        let prompt_text = settings.effective_harness_instructions();
+        let prompt_text = settings.harness_instructions.clone();
         let application_vim_enabled = settings.application_vim_enabled;
         let application_focus = cx.focus_handle();
         let prompt_application_focus = application_focus.clone();
         let prompt_editor = cx.new(move |cx| {
-            let mut input = TextInput::new("You are …", cx)
+            let mut input = TextInput::new("Add instructions for every task…", cx)
                 .with_tab_index(1)
                 .multiline(16)
                 .spell_check()
@@ -407,6 +437,22 @@ impl SettingsScreen {
                     window.focus(&search_application_focus, cx)
                 })
         });
+        let catalog_application_focus = application_focus.clone();
+        let catalog_search = cx.new(move |cx| {
+            TextInput::new("Search apps…", cx)
+                .with_tab_index(3)
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, cx| {
+                    window.focus(&catalog_application_focus, cx)
+                })
+        });
+        cx.on_release(|this, _| this.abandon_mcp_sign_in()).detach();
+        cx.observe(&catalog_search, |this, search, cx| {
+            this.catalog_query = search.read(cx).text().trim().to_lowercase();
+            this.refresh_catalog();
+            cx.notify();
+        })
+        .detach();
         cx.observe(&shortcut_search, |this, search, cx| {
             this.shortcut_query = search.read(cx).text().trim().to_lowercase();
             this.rebuild_shortcut_list_cache();
@@ -421,7 +467,7 @@ impl SettingsScreen {
         let application_anchor = ScrollAnchor::for_handle(pane_scroll.clone());
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
-        let this = Self {
+        let mut this = Self {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             integrations_backend,
@@ -433,15 +479,29 @@ impl SettingsScreen {
             section,
             popup: Popup::new(|this| &mut this.popup, cx),
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
-            billing: BillingState::new(),
-            api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
+            billing: BillingState::new(application_vim_enabled, application_focus.clone(), cx),
+            api_keys: ApiKeysState::new(
+                application_vim_enabled,
+                application_focus.clone(),
+                pane_scroll.clone(),
+                cx,
+            ),
             #[cfg(feature = "proxy")]
             local_api: LocalApiUiState::new(application_vim_enabled, application_focus.clone(), cx),
+            #[cfg(feature = "acp")]
+            acp: AcpUiState::new(),
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
             mcp_notice: None,
             mcp_saving: false,
+            mcp_signing_in: None,
+            mcp_sign_in_error: None,
+            mcp_app_missing: None,
+            catalog_search,
+            catalog_query: String::new(),
+            catalog_category: None,
+            catalog_visible: Vec::new(),
             integrations: None,
             integration_notice: None,
             integration_saving: HashSet::new(),
@@ -468,6 +528,7 @@ impl SettingsScreen {
         this.load_billing(cx);
         this.load_api_keys(cx);
         this.load_plan(cx);
+        this.refresh_catalog();
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
         this.load_advanced_status(cx);
@@ -516,7 +577,10 @@ impl SettingsScreen {
             cx,
             |this, result, cx| {
                 match result {
-                    Ok(servers) => this.mcp_servers = Some(servers),
+                    Ok(servers) => {
+                        this.mcp_servers = Some(servers);
+                        this.refresh_catalog();
+                    }
                     Err(message) => this.mcp_notice = Some(message),
                 }
                 if this.settings.application_vim_enabled {
@@ -693,6 +757,7 @@ impl SettingsScreen {
                     Ok(servers) => {
                         this.mcp_servers = Some(servers);
                         this.mcp_editor = None;
+                        this.refresh_catalog();
                     }
                     Err(message) => this.mcp_notice = Some(message),
                 }
@@ -778,19 +843,36 @@ impl SettingsScreen {
                 2,
                 false,
             ),
-            target: field(
-                "npx -y @modelcontextprotocol/server-everything stdio",
-                &target,
-                3,
-                false,
-            ),
+            target: field(mcp_target_placeholder(http), &target, 3, false),
             environment: field("KEY=value; OTHER=value", "", 4, false),
             headers: field("Authorization=Bearer …; X-Api-Key=…", "", 5, false),
             saved_environment,
             saved_headers,
+            key_url: None,
+            token: None,
         });
         self.mcp_notice = None;
         cx.notify();
+    }
+
+    /// Sign in to the HTTP server in the form, through the browser. The host
+    /// saves the server once the sign-in works, so nothing else is entered.
+    fn sign_in_mcp_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.mcp_editor.as_ref() else {
+            return;
+        };
+        let request = maple_agent::agent::McpSignIn {
+            name: editor.name.read(cx).text().trim().to_string(),
+            description: editor.description.read(cx).text().trim().to_string(),
+            url: editor.target.read(cx).text().trim().to_string(),
+            scopes: Vec::new(),
+        };
+        if request.name.is_empty() || request.url.is_empty() {
+            self.mcp_notice = Some("Enter a server name and URL".to_string());
+            cx.notify();
+            return;
+        }
+        self.start_mcp_sign_in(request, cx);
     }
 
     fn submit_mcp_editor(&mut self, cx: &mut Context<Self>) {
@@ -844,6 +926,9 @@ impl SettingsScreen {
             server.headers.extend(mcp::new_value_edits(&Zeroizing::new(
                 editor.headers.read(cx).text(),
             ))?);
+            if let Some(token) = &editor.token {
+                server.headers.push(token.edit(cx)?);
+            }
             mcp::require_target_choice(editor.original.as_ref(), &server)?;
             if !editor.http
                 && server.headers.iter().any(|entry| {
@@ -1325,27 +1410,21 @@ impl SettingsScreen {
         self.set_application_vim_enabled(next, cx);
     }
 
-    /// Persist the editor text as the harness instructions and hand it to
-    /// the running backend. Text equal to the default is saved as empty so
-    /// a future default change still applies.
+    /// Persist the editor text as the additional instructions and hand the
+    /// combined harness instructions to the running backend.
     fn save_prompt(&mut self, cx: &mut Context<Self>) {
-        let text = self.prompt_editor.read(cx).text().trim().to_string();
-        self.settings.harness_instructions = if text == settings::DEFAULT_HARNESS_INSTRUCTIONS {
-            String::new()
-        } else {
-            text
-        };
+        self.settings.harness_instructions = self.prompt_editor.read(cx).text().trim().to_string();
         let instructions = self.settings.harness_instructions.clone();
         settings::update_settings_in_background(move |s| s.harness_instructions = instructions);
         self.backend
             .set_harness_instructions(self.settings.effective_harness_instructions());
-        self.prompt_notice = Some("Saved. New tasks use this prompt.".to_string());
+        self.prompt_notice = Some("Saved. New tasks use these instructions.".to_string());
         cx.notify();
     }
 
-    fn reset_prompt(&mut self, cx: &mut Context<Self>) {
+    fn clear_prompt(&mut self, cx: &mut Context<Self>) {
         self.prompt_editor.update(cx, |input, cx| {
-            input.set_text(settings::DEFAULT_HARNESS_INSTRUCTIONS, cx);
+            input.set_text("", cx);
         });
         self.prompt_notice = None;
         cx.notify();
@@ -1522,7 +1601,7 @@ impl SettingsScreen {
         self.close_setting_menu(cx);
         self.section = section;
         #[cfg(feature = "proxy")]
-        if section == Section::LocalApi {
+        if section == Section::Api {
             self.refresh_local_api_status(cx);
         }
         self.remote_screen.update(cx, |screen, cx| {
@@ -1566,6 +1645,9 @@ impl Render for SettingsScreen {
                 // ScrollAnchor defers until the fresh layout origin is available.
                 self.application_anchor.scroll_to(window, cx);
             }
+        }
+        if std::mem::take(&mut self.api_keys.reveal_card) {
+            self.api_keys.card_anchor.scroll_to(window, cx);
         }
         div()
             .key_context(self.application_vim_context())
@@ -1899,12 +1981,12 @@ impl SettingsScreen {
             Section::Billing => {
                 pane = pane.child(self.render_billing_pane(cx));
             }
-            Section::ApiKeys => {
-                pane = pane.child(self.render_api_keys_pane(cx));
+            Section::Api => {
+                pane = pane.child(self.render_api_pane(cx));
             }
-            #[cfg(feature = "proxy")]
-            Section::LocalApi => {
-                pane = pane.child(self.render_local_api_pane(cx));
+            #[cfg(feature = "acp")]
+            Section::Acp => {
+                pane = pane.child(self.render_acp_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));
@@ -1950,7 +2032,7 @@ impl SettingsScreen {
                         "Version",
                         format!("v{}", crate::ui::titlebar::TitleBar::version()),
                     ))
-                    .child(info_row("Update", self.update.label.clone()))
+                    .child(self.render_update_row(cx))
                     .child(toggle_row(
                         "Automatically download updates",
                         "Download verified updates in the background. Installation always waits for Restart to Update.",
@@ -1960,37 +2042,116 @@ impl SettingsScreen {
                             this.edit_setting(move |settings| settings.automatic_update_downloads = enabled, cx);
                             cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::AutomaticDownloads(enabled)));
                         }),
-                    ))
-                    .child(div().flex().flex_wrap().gap_3()
-                        .child(widgets::ghost_button("updates-check")
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Check))))
-                            .child(if self.update.busy() { "Checking / updating…" } else if self.update.state == crate::update::State::Error { "Retry" } else { "Check for Updates" }))
-                        .when_some(self.update.primary.filter(|action| *action != crate::update::UpdateAction::Check), |row, action| row.child(
-                            widgets::ghost_button("updates-primary")
-                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(crate::update::UpdateRequested(action))))
-                                .child(self.update.primary_label)
-                        ))
-                        .when(self.update.state == crate::update::State::Error && self.update.manual_download_url.is_some(), |row| row.child(
-                            widgets::ghost_button("updates-manual")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::ManualDownload))))
-                                .child("Download manually")
-                        ))
-                        .when(self.update.state == crate::update::State::Ready, |row| row.child(
-                            widgets::ghost_button("updates-later")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Later))))
-                                .child("Later")
-                        ))
-                    )
-                    .child(info_row("Backend", self.backend.api_url().to_string()))
-                    .child(info_row(
-                        "Instruction directory",
-                        crate::backend::instruction_config_root()
-                            .to_string_lossy()
-                            .to_string(),
                     ));
             }
         }
         pane
+    }
+}
+
+impl SettingsScreen {
+    /// One status and the one thing to do next: a release action when
+    /// there is one, otherwise a quiet check. Remote computer cards follow
+    /// the same rule.
+    fn render_update_row(&self, cx: &mut Context<Self>) -> Div {
+        use crate::update::{State, UpdateAction, UpdateRequested};
+
+        let request = |action| cx.listener(move |_, _, _, cx| cx.emit(UpdateRequested(action)));
+        let actions = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .my(px(-8.))
+            .when(
+                self.update.state == State::Ready && self.update.show_banner,
+                |row| {
+                    row.child(
+                        widgets::ghost_button("updates-later")
+                            .on_click(request(UpdateAction::Later))
+                            .child("Later"),
+                    )
+                },
+            )
+            .when(
+                self.update.state == State::Error && self.update.manual_download_url.is_some(),
+                |row| {
+                    row.child(
+                        widgets::ghost_button("updates-manual")
+                            .on_click(request(UpdateAction::ManualDownload))
+                            .child("Download manually"),
+                    )
+                },
+            )
+            .when_some(next_update_action(&self.update), |row, action| {
+                row.child(
+                    widgets::primary_button("updates-primary")
+                        .on_click(request(action))
+                        .child(self.update.primary_label),
+                )
+            })
+            .map(|row| match update_check(&self.update) {
+                UpdateCheck::Hidden => row,
+                UpdateCheck::Running => row.child(
+                    div()
+                        .flex_none()
+                        .size_7()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::ui::icons::spinning_icon(
+                            "updates-check",
+                            "rotate-cw",
+                            widgets::ROW_ICON,
+                            theme::text_secondary(),
+                        )),
+                ),
+                UpdateCheck::Ready(label) => row.child(
+                    widgets::icon_button(
+                        "updates-check",
+                        "rotate-cw",
+                        label,
+                        widgets::ROW_ICON,
+                        theme::text_secondary(),
+                    )
+                    .on_click(request(UpdateAction::Check)),
+                ),
+            });
+        let has_actions = update_check(&self.update) != UpdateCheck::Hidden
+            || next_update_action(&self.update).is_some();
+        info_row("Update", self.update.label.clone()).when(has_actions, |row| row.child(actions))
+    }
+}
+
+/// The small check control in the Update row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateCheck {
+    Hidden,
+    Running,
+    Ready(&'static str),
+}
+
+/// The release action the Update row offers, if any. A plain check is not
+/// one: it has its own control.
+fn next_update_action(update: &crate::update::Snapshot) -> Option<crate::update::UpdateAction> {
+    update
+        .primary
+        .filter(|action| *action != crate::update::UpdateAction::Check)
+}
+
+fn update_check(update: &crate::update::Snapshot) -> UpdateCheck {
+    use crate::update::State;
+
+    if update.busy() {
+        UpdateCheck::Running
+    } else if matches!(update.state, State::Disabled | State::RestartRequired)
+        || next_update_action(update).is_some()
+    {
+        UpdateCheck::Hidden
+    } else if update.state == State::Error {
+        UpdateCheck::Ready("Retry")
+    } else {
+        UpdateCheck::Ready("Check for updates")
     }
 }
 
@@ -2358,15 +2519,15 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title("System prompt"))
+            .child(section_title("Additional instructions"))
             .child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(
-                        "Opens every task's system prompt: who the agent is and how it \
-                         behaves. Maple appends its tool and runtime guidance after this \
-                         text. Changes apply to tasks started after you save.",
+                        "Added to every task after Maple's own system prompt. Use it for \
+                         preferences such as tone, language, or how you like to work. \
+                         Changes apply to tasks started after you save.",
                     ),
             )
             .child(
@@ -2397,12 +2558,12 @@ impl SettingsScreen {
                         ),
                     ))
                     .child(self.application_target(
-                        || SettingsTarget::PromptReset,
+                        || SettingsTarget::PromptClear,
                         pill_button(
-                            "prompt-reset".to_string(),
-                            "Reset to default",
+                            "prompt-clear".to_string(),
+                            "Clear",
                             false,
-                            cx.listener(|this, _event, _window, cx| this.reset_prompt(cx)),
+                            cx.listener(|this, _event, _window, cx| this.clear_prompt(cx)),
                         ),
                     )),
             );
@@ -2445,6 +2606,7 @@ impl SettingsScreen {
             ));
         }
 
+        pane = pane.child(subsection_title("Built into Maple"));
         match &self.integrations {
             None => {
                 pane = pane.child(
@@ -2474,57 +2636,9 @@ impl SettingsScreen {
             }
         }
 
-        pane = pane.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .mt_2()
-                .pt_5()
-                .border_t_1()
-                .border_color(gpui::rgb(theme::border_subtle()))
-                .child(subsection_title("Custom MCP servers"))
-                .child(
-                    self.application_target(
-                        || SettingsTarget::McpAdd,
-                        widgets::primary_button("mcp-add")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.open_mcp_editor(None, cx);
-                            }))
-                            .child(icon("plus", widgets::ROW_ICON, theme::on_accent()))
-                            .child("Add server"),
-                    ),
-                ),
-        );
-        pane = pane.child(
-            div()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child("Connect additional tools over MCP."),
-        );
-        if let Some(notice) = &self.mcp_notice {
-            pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
-        }
-        if let Some(editor) = &self.mcp_editor {
-            pane = pane.child(self.render_mcp_editor(editor, cx));
-        }
         match &self.mcp_servers {
-            None => {
-                pane = pane.child(
-                    div()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child("Loading custom MCP servers…"),
-                );
-            }
-            Some(servers) if servers.is_empty() => {
-                pane = pane.child(
-                    div()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child("No custom MCP servers configured."),
-                );
-            }
-            Some(servers) => {
+            Some(servers) if !servers.is_empty() => {
+                pane = pane.child(catalog::section_heading(subsection_title("Connected")));
                 pane = pane.children(servers.iter().map(|server| {
                     let name = server.name.clone();
                     let summary = match &server.target {
@@ -2606,8 +2720,9 @@ impl SettingsScreen {
                     self.application_target(|| SettingsTarget::McpServer(server.name.clone()), card)
                 }));
             }
+            _ => {}
         }
-        pane
+        pane.child(self.render_app_catalog(cx))
     }
 
     fn render_integration_card(
@@ -2641,7 +2756,7 @@ impl SettingsScreen {
                             .text_color(gpui::rgb(theme::text_primary()))
                             .child(display_name),
                     )
-                    .child(integration_status_badge(availability, availability_color)),
+                    .child(widgets::status_badge(availability, availability_color)),
             )
             .when(!description.is_empty(), |col| {
                 col.child(
@@ -2791,6 +2906,10 @@ impl SettingsScreen {
     }
 
     fn render_mcp_editor(&self, editor: &McpEditor, cx: &mut Context<Self>) -> Div {
+        let signing_in = self.mcp_editor_signing_in(cx);
+        let sign_in_error = self
+            .sign_in_error_for(editor.name.read(cx).text().trim())
+            .map(str::to_string);
         let field = |label: &'static str, hint: &'static str, input: Entity<TextInput>| {
             div()
                 .flex()
@@ -2885,6 +3004,12 @@ impl SettingsScreen {
                                     |this, _event, _window, cx| {
                                         if let Some(editor) = this.mcp_editor.as_mut() {
                                             editor.http = false;
+                                            editor.target.update(cx, |input, cx| {
+                                                input.set_placeholder(
+                                                    mcp_target_placeholder(false),
+                                                    cx,
+                                                )
+                                            });
                                         }
                                         cx.notify();
                                     },
@@ -2900,6 +3025,12 @@ impl SettingsScreen {
                                     |this, _event, _window, cx| {
                                         if let Some(editor) = this.mcp_editor.as_mut() {
                                             editor.http = true;
+                                            editor.target.update(cx, |input, cx| {
+                                                input.set_placeholder(
+                                                    mcp_target_placeholder(true),
+                                                    cx,
+                                                )
+                                            });
                                         }
                                         cx.notify();
                                     },
@@ -2920,17 +3051,33 @@ impl SettingsScreen {
                 col.child(subsection_title("Header values"))
                     .child(self.render_mcp_secret_fields(&editor.saved_headers, true, cx))
             })
-            .child(field(
-                "New environment values",
-                "KEY=value pairs separated by semicolons. Existing values use the choices above.",
-                editor.environment.clone(),
-            ))
-            .when(editor.http, |col| {
+            .when(editor.token.is_none(), |col| {
+                col.child(field(
+                    "New environment values",
+                    "KEY=value pairs separated by semicolons. Existing values use the choices above.",
+                    editor.environment.clone(),
+                ))
+            })
+            .when_some(editor.token.as_ref(), |col, token| {
+                col.child(field(token.label, "", token.input.clone()))
+            })
+            .when(editor.http && editor.token.is_none(), |col| {
                 col.child(field(
                     "New headers",
                     "Name=value pairs separated by semicolons.",
                     editor.headers.clone(),
                 ))
+            })
+            .when_some(editor.key_url.clone(), |col, url| {
+                col.child(
+                    div()
+                        .id("mcp-get-token")
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::link()))
+                        .hover(|style| style.underline().cursor_pointer())
+                        .on_click(move |_, _, _| crate::ui::rich_text::open_link(&url))
+                        .child("Get a token"),
+                )
             })
             .child(
                 div()
@@ -2946,9 +3093,36 @@ impl SettingsScreen {
                             }))
                             .child("Save"),
                     )
+                    .when(
+                        editor.http && editor.original.is_none() && editor.token.is_none(),
+                        |row| {
+                            row.child(if signing_in {
+                                widgets::ghost_button("mcp-sign-in")
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.cancel_mcp_sign_in(cx);
+                                    }))
+                                    .child(spinner(
+                                        "mcp-sign-in",
+                                        widgets::ROW_ICON,
+                                        theme::text_secondary(),
+                                    ))
+                                    .child("Stop signing in")
+                            } else {
+                                widgets::ghost_button("mcp-sign-in")
+                                    .when(self.mcp_signing_in.is_some(), |el| el.opacity(0.5))
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.sign_in_mcp_editor(cx);
+                                    }))
+                                    .child("Sign in with browser")
+                            })
+                        },
+                    )
                     .child(
                         widgets::ghost_button("mcp-cancel")
                             .on_click(cx.listener(|this, _event, _window, cx| {
+                                if this.mcp_editor_signing_in(cx) {
+                                    this.cancel_mcp_sign_in(cx);
+                                }
                                 this.mcp_editor = None;
                                 this.mcp_notice = None;
                                 cx.notify();
@@ -2956,6 +3130,14 @@ impl SettingsScreen {
                             .child("Cancel"),
                     ),
             )
+            .when_some(sign_in_error, |form, message| {
+                form.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::status_error()))
+                        .child(message),
+                )
+            })
     }
 }
 
@@ -3101,18 +3283,6 @@ fn cua_backend_label(_integration: &AgentIntegration) -> &'static str {
     "Built into Maple"
 }
 
-fn integration_status_badge(label: &'static str, color: u32) -> Div {
-    div()
-        .px_2()
-        .py_0p5()
-        .rounded_full()
-        .bg(gpui::rgb(theme::bg_sidebar_pill()))
-        .text_xs()
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(gpui::rgb(color))
-        .child(label)
-}
-
 fn integration_metadata_badge(label: &'static str) -> Div {
     div()
         .px_2()
@@ -3178,6 +3348,12 @@ fn pill_button(
         .active(|style| style.opacity(0.7))
         .on_click(handler)
         .child(label)
+}
+
+/// Whether a key press presses the focused control, as a click does.
+fn activates(event: &gpui::KeyDownEvent) -> bool {
+    !event.keystroke.modifiers.modified()
+        && matches!(event.keystroke.key.as_str(), "enter" | "space" | " ")
 }
 
 /// Pane heading in the brand display face, like the section titles of
@@ -3294,7 +3470,7 @@ fn portable_keystroke_token(keystroke: &gpui::Keystroke) -> String {
 }
 
 /// Title and description column shared by every settings row.
-fn setting_copy(title: &str, description: &str) -> Div {
+pub(crate) fn setting_copy(title: &str, description: &str) -> Div {
     div()
         .flex()
         .flex_col()
@@ -3383,6 +3559,51 @@ fn info_row(label: &str, value: String) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_row_offers_a_check_only_when_nothing_else_is_next() {
+        use crate::update::{Snapshot, State, UpdateAction};
+
+        let snapshot = |state, primary| {
+            let mut update = Snapshot::initial();
+            update.state = state;
+            update.primary = primary;
+            update
+        };
+        let check = UpdateCheck::Ready("Check for updates");
+
+        assert_eq!(update_check(&snapshot(State::Idle, None)), check);
+        assert_eq!(
+            update_check(&snapshot(State::Current, Some(UpdateAction::Check))),
+            check
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Error, Some(UpdateAction::Check))),
+            UpdateCheck::Ready("Retry")
+        );
+        for state in [State::Checking, State::Downloading, State::Installing] {
+            assert_eq!(update_check(&snapshot(state, None)), UpdateCheck::Running);
+        }
+        assert_eq!(
+            update_check(&snapshot(State::Available, Some(UpdateAction::Download))),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Ready, Some(UpdateAction::Restart))),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(
+                State::RestartRequired,
+                Some(UpdateAction::Relaunch)
+            )),
+            UpdateCheck::Hidden
+        );
+        assert_eq!(
+            update_check(&snapshot(State::Disabled, None)),
+            UpdateCheck::Hidden
+        );
+    }
 
     fn shortcut_row(
         slot_id: &str,

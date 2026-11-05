@@ -49,6 +49,7 @@ fn assistant(timestamp: i64, call: Option<&str>) -> EntryKind {
             id: id.into(),
             name: "read".into(),
             arguments: json!({"path":"README.md"}).as_object().unwrap().clone(),
+            arguments_error: None,
             partial_json: None,
         }));
     }
@@ -485,6 +486,7 @@ fn chunked_rebuild_resumes_inside_a_large_entry_and_publishes_once() {
                 id: format!("call-{index}"),
                 name: "read".into(),
                 arguments: json!({"path":"file"}).as_object().unwrap().clone(),
+                arguments_error: None,
                 partial_json: None,
             }));
         }

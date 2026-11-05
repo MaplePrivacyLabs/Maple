@@ -53,6 +53,7 @@ configure_reproducible_build_metadata() { check_stage metadata; }
 build_frontend_dist() { check_stage frontend; export MAPLE_FRONTEND_DIST_TREE_SHA256=fixture; }
 verify_ios_onnxruntime_manifest() { check_stage onnx; }
 print_ios_onnxruntime_hashes() { :; }
+require_ios_scene_manifest() { :; }
 write_ios_onnxruntime_reproducibility_manifest() { :; }
 remove_build_tree() { rm -rf "$1"; }
 repo_relative_path() { printf '%s\n' "${1#"${REPO_ROOT}"/}"; }

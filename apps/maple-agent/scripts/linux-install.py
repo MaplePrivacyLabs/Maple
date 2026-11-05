@@ -29,6 +29,9 @@ MAX_FILE = 2 * 1024**3
 MAX_TOTAL = 4 * 1024**3
 MAX_PATH = 1024
 MAX_DESCRIPTOR = 16 * 1024
+# Non-ELF executables. The bundle format v1 compatibility launcher keeps the
+# path where releases that bundled glibc expect their loader.
+SCRIPT_EXECUTABLES = ("AppRun", "install.sh", "usr/lib/ld-linux-x86-64.so.2")
 
 
 class InstallError(RuntimeError):
@@ -101,7 +104,7 @@ def inventory(root):
             need(total <= MAX_TOTAL, "expanded bundle exceeds bounds")
             with path.open("rb") as source:
                 executable = source.read(4) == b"\x7fELF"
-            executable = executable or relative in ("AppRun", "install.sh")
+            executable = executable or relative in SCRIPT_EXECUTABLES
             need(mode == (0o755 if executable else 0o644), "bundle file has unsafe permissions")
             record = ("file", mode, info.st_size, digest(path))
         elif stat.S_ISLNK(info.st_mode):
@@ -125,7 +128,7 @@ def validate_bundle(root, profile=None):
     need(root.name == PROFILES[descriptor["profile"]][0], "unexpected bundle root name")
     records = inventory(root)
     for relative in ("AppRun", "usr/bin/maple-agent", "usr/lib/ld-linux-x86-64.so.2",
-                     "usr/lib/libc.so.6", "install.sh", "usr/share/maple-agent/install.py"):
+                     "install.sh", "usr/share/maple-agent/install.py"):
         need(relative in records and records[relative][0] == "file", "bundle is missing a required regular file")
     return descriptor, records
 
@@ -254,7 +257,9 @@ def main():
              "unsafe installer lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         paths = install(source, home)
-        print("Installed " + PROFILES[descriptor["profile"]][3] + ". Launch " + str(paths["wrapper"]))
+        display = PROFILES[descriptor["profile"]][3]
+        print("Installed " + display + ". Open your application menu and search for " + display + ".")
+        print("Or launch from a terminal: " + shlex.quote(str(paths["wrapper"])))
         print("Updates are managed by the app. Profile data was not changed.")
 
 

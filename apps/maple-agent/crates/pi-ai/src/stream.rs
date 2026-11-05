@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Map;
 use tokio::sync::mpsc;
 
-use crate::json::parse_streaming_json;
+use crate::json::{parse_streaming_json, parse_tool_call_arguments};
 use crate::types::{
     AssistantContent, AssistantMessage, Model, StopReason, TextContent, ThinkingContent, ToolCall,
     Usage, now_ms,
@@ -90,6 +90,7 @@ pub fn apply_event(partial: &mut AssistantMessage, event: &AssistantMessageEvent
                 id: id.clone(),
                 name: name.clone(),
                 arguments: Map::new(),
+                arguments_error: None,
                 partial_json: Some(String::new()),
             }))
         }
@@ -269,7 +270,7 @@ impl AssistantMessageBuilder {
         let index = match self.open {
             Some(OpenBlock::Text(index)) => index,
             _ => {
-                self.close_block();
+                self.close_block(false);
                 self.start();
                 let index = self.partial.content.len();
                 self.partial.content.push(AssistantContent::text(""));
@@ -296,7 +297,7 @@ impl AssistantMessageBuilder {
         let index = match self.open {
             Some(OpenBlock::Thinking(index)) => index,
             _ => {
-                self.close_block();
+                self.close_block(false);
                 self.start();
                 let index = self.partial.content.len();
                 self.partial.content.push(AssistantContent::thinking(""));
@@ -318,7 +319,7 @@ impl AssistantMessageBuilder {
 
     /// Open a tool-call block and return its content index.
     pub fn tool_call_start(&mut self, id: impl Into<String>, name: impl Into<String>) -> usize {
-        self.close_block();
+        self.close_block(false);
         self.start();
         let index = self.partial.content.len();
         let (id, name) = (id.into(), name.into());
@@ -328,6 +329,7 @@ impl AssistantMessageBuilder {
                 id: id.clone(),
                 name: name.clone(),
                 arguments: Map::new(),
+                arguments_error: None,
                 partial_json: None,
             }));
         self.arguments.push((index, String::new()));
@@ -363,7 +365,12 @@ impl AssistantMessageBuilder {
         }
     }
 
-    fn finish_tool_call(&mut self, index: usize) -> Option<ToolCall> {
+    /// Parse the arguments of the tool call at `index`. A call closes when the next block
+    /// starts and can still get fragments, so until the response finishes its arguments
+    /// are read as they stream. Once it finishes, as when Pi's stream ends, the complete
+    /// text is parsed strictly: malformed arguments leave no repaired prefix, and the call
+    /// carries the error instead, which validation reports to the model.
+    fn finish_tool_call(&mut self, index: usize, complete: bool) -> Option<ToolCall> {
         let raw = self
             .arguments
             .iter()
@@ -372,18 +379,25 @@ impl AssistantMessageBuilder {
         let AssistantContent::ToolCall(call) = self.partial.content.get_mut(index)? else {
             return None;
         };
-        call.arguments = parse_streaming_json(&raw);
+        (call.arguments, call.arguments_error) = if complete {
+            match parse_tool_call_arguments(&raw) {
+                Ok(arguments) => (arguments, None),
+                Err(error) => (Map::new(), Some(error)),
+            }
+        } else {
+            (parse_streaming_json(&raw), None)
+        };
         Some(call.clone())
     }
 
-    fn close_block(&mut self) {
+    fn close_block(&mut self, complete: bool) {
         match self.open.take() {
             Some(OpenBlock::Text(index)) => self.send(AssistantMessageEvent::TextEnd { index }),
             Some(OpenBlock::Thinking(index)) => {
                 self.send(AssistantMessageEvent::ThinkingEnd { index })
             }
             Some(OpenBlock::ToolCall(index)) => {
-                if let Some(tool_call) = self.finish_tool_call(index) {
+                if let Some(tool_call) = self.finish_tool_call(index, complete) {
                     self.send(AssistantMessageEvent::ToolCallEnd { index, tool_call });
                 }
             }
@@ -393,10 +407,10 @@ impl AssistantMessageBuilder {
 
     /// Re-parse every tool call's arguments, including fragments that arrived for a block
     /// after it was closed.
-    fn settle_tool_calls(&mut self) {
+    fn settle_tool_calls(&mut self, complete: bool) {
         let indexes: Vec<usize> = self.arguments.iter().map(|(index, _)| *index).collect();
         for index in indexes {
-            self.finish_tool_call(index);
+            self.finish_tool_call(index, complete);
         }
     }
 
@@ -415,9 +429,9 @@ impl AssistantMessageBuilder {
 
     /// End the response successfully and return the final message.
     pub fn finish(mut self, stop_reason: StopReason, usage: Usage) -> AssistantMessage {
-        self.close_block();
+        self.close_block(true);
         self.start();
-        self.settle_tool_calls();
+        self.settle_tool_calls(true);
         self.partial.stop_reason = stop_reason;
         self.partial.usage = usage;
         let message = self.partial.clone();
@@ -429,8 +443,8 @@ impl AssistantMessageBuilder {
 
     /// End the response with an error or abort, keeping the content received so far.
     pub fn fail(mut self, stop_reason: StopReason, error: impl Into<String>) -> AssistantMessage {
-        self.close_block();
-        self.settle_tool_calls();
+        self.close_block(false);
+        self.settle_tool_calls(false);
         self.partial.stop_reason = stop_reason;
         self.partial.error_message = Some(error.into());
         let message = self.partial.clone();
@@ -511,6 +525,32 @@ mod tests {
             apply_event(&mut partial, event);
         }
         assert_eq!(partial.content, message.content);
+    }
+
+    #[tokio::test]
+    async fn arguments_cut_off_when_the_response_ends_carry_an_error() {
+        let (sender, stream) = AssistantMessageStream::channel();
+        let mut builder = AssistantMessageBuilder::new(sender, &model());
+        let call = builder.tool_call_start("c1", "write");
+        builder.tool_call_delta(call, "{\"path\":\"a.txt\",\"content\":\"hel");
+        let message = builder.finish(StopReason::Length, Usage::default());
+        let call = message.tool_calls().next().unwrap();
+        assert!(call.arguments.is_empty());
+        assert!(
+            call.arguments_error
+                .as_deref()
+                .unwrap()
+                .ends_with("\n\nReceived arguments:\n{\"path\":\"a.txt\",\"content\":\"hel")
+        );
+        // The call's end event says the same.
+        let ended = collect(stream)
+            .await
+            .into_iter()
+            .find_map(|event| match event {
+                AssistantMessageEvent::ToolCallEnd { tool_call, .. } => Some(tool_call),
+                _ => None,
+            });
+        assert_eq!(ended.as_ref(), Some(call));
     }
 
     #[tokio::test]

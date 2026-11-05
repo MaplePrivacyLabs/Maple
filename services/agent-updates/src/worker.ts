@@ -221,6 +221,26 @@ const deliveryWorker = {
       return response(404, request.method);
     try {
       if (
+        path === "/agent/stable/windows-arm64/latest.json" ||
+        path === "/download/agent/stable/windows-arm64"
+      ) {
+        const current = await metadata(
+          env.AGENT_RELEASES,
+          "stable/windows-arm64/latest.json",
+          "maple-agent-update-v4",
+        );
+        if (!current) return response(404, request.method);
+        return path.startsWith("/download/")
+          ? new Response(null, {
+              status: 302,
+              headers: {
+                ...NO_STORE,
+                location: current.manifest.downloads["windows-arm64"].path,
+              },
+            })
+          : metadataResponse(request, current.bytes);
+      }
+      if (
         path === "/agent/stable/windows/latest.json" ||
         path === "/download/agent/stable/windows"
       ) {
@@ -302,18 +322,23 @@ const deliveryWorker = {
             ? (["maple-agent-update-v2"] as const)
             : release.file === "windows-manifest.json"
               ? (["maple-agent-update-v3"] as const)
-              : ([
-                  "maple-agent-update-v1",
-                  "maple-agent-update-v2",
-                  "maple-agent-update-v3",
-                ] as const);
+              : release.file === "windows-arm64-manifest.json"
+                ? (["maple-agent-update-v4"] as const)
+                : ([
+                    "maple-agent-update-v1",
+                    "maple-agent-update-v2",
+                    "maple-agent-update-v3",
+                    "maple-agent-update-v4",
+                  ] as const);
       for (const format of candidates) {
         const file =
           format === "maple-agent-update-v1"
             ? "manifest.json"
             : format === "maple-agent-update-v2"
               ? "linux-manifest.json"
-              : "windows-manifest.json";
+              : format === "maple-agent-update-v3"
+                ? "windows-manifest.json"
+                : "windows-arm64-manifest.json";
         const published = await metadata(
           env.AGENT_RELEASES,
           `stable/releases/${release.version}/${file}`,

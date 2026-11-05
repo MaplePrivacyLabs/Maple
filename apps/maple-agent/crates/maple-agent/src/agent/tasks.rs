@@ -473,8 +473,8 @@ impl AgentRuntimeHandle {
             .collect())
     }
 
-    /// A task's summary, transcript and queue.
-    /// Change a draft task's model at the same boundary that admits its first run.
+    /// Select the model of a task's next run, at the same boundary that
+    /// admits runs. A started task switches when that run starts.
     pub async fn set_task_model(
         &self,
         session_id: &str,
@@ -483,10 +483,6 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         let runtime = self.runtime().await?;
         let summary = runtime.runs.while_idle(session_id, || {
-            let row = runtime.store.get(session_id)?.ok_or("Task was not found")?;
-            if row.message_count > 0 && row.model.as_deref() != Some(model) {
-                return Err("Maple tasks are model-locked after their first message".into());
-            }
             runtime
                 .store
                 .update(session_id, |row| row.model = Some(model.into()))?
@@ -504,6 +500,7 @@ impl AgentRuntimeHandle {
         Ok(summary)
     }
 
+    /// A task's summary, transcript and queue.
     pub async fn load_session(&self, session_id: String) -> Result<AgentSessionDetail, String> {
         self.ensure_task_history_ready(&session_id).await?;
         let runtime = self.current_runtime().await?;

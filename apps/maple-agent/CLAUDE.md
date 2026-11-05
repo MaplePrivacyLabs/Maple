@@ -9,6 +9,12 @@ GPUI desktop app for Maple. Workspace crates: `app` (package `maple-agent-app`, 
 `crates/pi-agent-core`, `crates/pi-coding-agent`, which must not depend on Maple
 crates. See `README.md` for the layout, prerequisites, and command line modes.
 
+Keep `crates/pi-*` unchanged for Maple product work. Implement policy and UI
+behavior through the existing host, extension, and operations interfaces in
+`crates/maple-agent` and `app`. Exceptions must address a critical need and
+explain why existing interfaces are insufficient; see `crates/UPSTREAM.md` for
+upstream review work.
+
 Packaged Dev and Prod OAuth use their compiled Auth origins and a one-attempt
 loopback listener in `app/src/hosted_oauth.rs`; unpackaged builds retain the
 provider callback paste flow. Keep the listener bound to `127.0.0.1` through

@@ -97,6 +97,19 @@ class XcodeSelectionTests(unittest.TestCase):
                 selector.select_xcode(self.pin, self.directory)
             run.assert_not_called()
 
+    def test_suffixed_release_install_is_selected_by_exact_build(self):
+        self.install("Xcode_26.5_beta_2.app")
+        developer = self.install("Xcode_26.5_Release_Candidate.app")
+        with patch.object(selector.subprocess, "run", return_value=self.result()) as run:
+            self.assertEqual(selector.select_xcode(self.pin, self.directory), developer)
+        self.assertEqual(run.call_count, 1)
+
+    def test_suffixed_install_with_another_build_is_rejected(self):
+        self.install("Xcode_26.5_Release_Candidate.app")
+        with patch.object(selector.subprocess, "run", return_value=self.result(build="17F40")):
+            with self.assertRaisesRegex(selector.ToolchainError, "26.5 build 17F42"):
+                selector.select_xcode(self.pin, self.directory)
+
     def test_rolling_default_is_skipped_when_pinned_release_is_available(self):
         self.install("Xcode_26.5.app")
         developer = self.install("Xcode_26.5.0.app")

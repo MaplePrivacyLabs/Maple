@@ -211,6 +211,7 @@ if [ -z "${unsigned_app}" ]; then
   exit 1
 fi
 verify_ios_profile verify-app "${unsigned_app}"
+require_ios_scene_manifest "${unsigned_app}"
 unsigned_app_canonical_hash="$(print_canonical_ios_app_hash "${unsigned_app}" "$(repo_relative_path "${unsigned_app}")" | tee "${repro_dir}/ios-release-unsigned-app-canonical.sha256" | awk '{ print $2 }')"
 cat "${repro_dir}/ios-release-unsigned-app-canonical.sha256"
 write_ios_canonical_app_file_manifest "${unsigned_app}" "${repro_dir}/ios-release-unsigned-app-canonical-files.sha256"
@@ -240,6 +241,7 @@ if [ -z "${signed_app}" ]; then
   exit 1
 fi
 verify_ios_profile verify-app "${signed_app}"
+require_ios_scene_manifest "${signed_app}"
 signed_app_canonical_hash="$(print_canonical_ios_app_hash "${signed_app}" "$(repo_relative_path "${signed_app}")" | tee "${repro_dir}/ios-release-archive-app-canonical.sha256" | awk '{ print $2 }')"
 cat "${repro_dir}/ios-release-archive-app-canonical.sha256"
 write_ios_canonical_app_file_manifest "${signed_app}" "${repro_dir}/ios-release-archive-app-canonical-files.sha256"

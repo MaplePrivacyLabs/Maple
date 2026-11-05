@@ -43,6 +43,17 @@ pub enum UpdateAction {
     AutomaticDownloads(bool),
 }
 
+/// Title of the restart confirmation. It names the version, since the
+/// sidebar's update button shows only an icon.
+pub fn restart_title(version: Option<&str>) -> String {
+    version.map_or_else(
+        || "Restart Maple to update?".to_string(),
+        |version| format!("Restart Maple to install v{version}?"),
+    )
+}
+
+pub const RESTART_DETAIL: &str = "This stops running tasks and remote access on this computer. Editors using Maple must reconnect after the update.";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub state: State,
@@ -233,7 +244,12 @@ impl Controller {
             Some(BlockedReason::UnsupportedInstallation)
         } else {
             match snapshot.state {
-                State::Ready | State::Installing | State::Current | State::Idle => None,
+                // An Available offer is downloaded on remote request.
+                State::Ready
+                | State::Available
+                | State::Installing
+                | State::Current
+                | State::Idle => None,
                 State::Disabled => Some(BlockedReason::UpdatesDisabled),
                 State::Checking | State::Downloading => Some(BlockedReason::Busy),
                 _ => Some(BlockedReason::UpdateNotReady),
@@ -702,6 +718,70 @@ impl Controller {
             }
         }
     }
+    /// Download and verify exactly `target` for an admitted remote request,
+    /// following the same signed download and staging path as a local click.
+    /// Nothing is stopped here; installation still revalidates the candidate.
+    /// A failed attempt restores the prior Available offer, so that computer
+    /// shows no local error and another request can retry. The receipt reports
+    /// the failure instead.
+    pub(crate) async fn download_remote(
+        &self,
+        target: &crate::remote::update::ReleaseIdentity,
+    ) -> Result<(), &'static str> {
+        self.download_remote_with(target, |release| async move {
+            if let Ok(service) = self.service().await {
+                self.download_inner(service, release).await;
+            }
+        })
+        .await
+    }
+
+    async fn download_remote_with<D, F>(
+        &self,
+        target: &crate::remote::update::ReleaseIdentity,
+        download: D,
+    ) -> Result<(), &'static str>
+    where
+        D: FnOnce(VerifiedRelease) -> F,
+        F: std::future::Future<Output = ()>,
+    {
+        const CHANGED: &str = "The remote update changed before it was downloaded";
+        if self.0.cancel.is_cancelled() || self.restart_path().is_some() {
+            return Err(CHANGED);
+        }
+        let Ok(_operation) = self.0.operation.try_lock() else {
+            return Err("The updater is busy");
+        };
+        let previous = self.snapshot();
+        if previous.remote_candidate.as_ref() != Some(target)
+            || previous.primary == Some(UpdateAction::ManualDownload)
+        {
+            return Err(CHANGED);
+        }
+        match previous.state {
+            State::Ready => return Ok(()),
+            State::Available => {}
+            _ => return Err(CHANGED),
+        }
+        let release = self
+            .0
+            .releases
+            .lock()
+            .await
+            .release
+            .clone()
+            .filter(|release| release_identity(release) == *target)
+            .ok_or(CHANGED)?;
+        download(release).await;
+        let after = self.snapshot();
+        if after.state == State::Ready && after.remote_candidate.as_ref() == Some(target) {
+            return Ok(());
+        }
+        if after.state == State::Error {
+            self.publish(previous);
+        }
+        Err(crate::remote_updates::DOWNLOAD_FAILED)
+    }
     /// Apply on the UI thread accepting the current settings generation. A
     /// delayed runtime task must never overwrite a newer saved opt-out.
     pub fn set_auto_download(&self, enabled: bool) {
@@ -1034,10 +1114,9 @@ async fn cleanup_installed_update(service: &Service) {
         if service.manual_only() {
             return;
         }
-        let target = if cfg!(target_os = "windows") {
-            Target::WindowsX86_64
-        } else {
-            Target::LinuxX86_64
+        let Some(target) = Target::for_platform(std::env::consts::OS, std::env::consts::ARCH)
+        else {
+            return;
         };
         let Ok(origin) = compiled_feed_url(target) else {
             return;
@@ -1088,13 +1167,7 @@ async fn discard_preparation_with_lock(
 }
 
 fn manual_download_url(release: &VerifiedRelease) -> Option<String> {
-    let target = if cfg!(target_os = "linux") {
-        Target::LinuxX86_64
-    } else if cfg!(target_os = "windows") {
-        Target::WindowsX86_64
-    } else {
-        Target::DarwinAarch64
-    };
+    let target = Target::for_platform(std::env::consts::OS, std::env::consts::ARCH)?;
     manual_download_url_for_target(release, target)
 }
 
@@ -1103,6 +1176,7 @@ fn manual_download_url_for_target(release: &VerifiedRelease, target: Target) -> 
         Target::DarwinAarch64 => release.manifest.downloads.macos.as_ref()?,
         Target::LinuxX86_64 => release.manifest.downloads.linux_bundle.as_ref()?,
         Target::WindowsX86_64 => release.manifest.downloads.windows.as_ref()?,
+        Target::WindowsAarch64 => release.manifest.downloads.windows_arm64.as_ref()?,
     };
     release
         .origin
@@ -1116,15 +1190,8 @@ fn build_service() -> Result<Service, String> {
         installed_path,
         manual_only,
     } = installation()?;
-    let target = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Target::DarwinAarch64
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Target::LinuxX86_64
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Target::WindowsX86_64
-    } else {
-        return Err("Updates are not supported on this platform".into());
-    };
+    let target = Target::for_platform(std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or("Updates are not supported on this platform")?;
     let config = Config {
         feed_url: compiled_feed_url(target)?,
         public_keys: crate::profile::UPDATE_PUBLIC_KEYS
@@ -1234,9 +1301,9 @@ fn installation() -> Result<Installation, String> {
 
 #[cfg(any(target_os = "linux", all(test, unix)))]
 fn linux_installation(executable: &Path, resolved: Result<PathBuf, String>) -> Installation {
-    // AppRun may execute through the bundled loader. Resolve that entrypoint
-    // through the shared launcher, then let the installer validate its bundle
-    // layout, compiled identity and replacement permissions.
+    // Resolve the AppRun entrypoint through the shared launcher, then let the
+    // installer validate its bundle layout, compiled identity and replacement
+    // permissions.
     let Ok(path) = resolved else {
         return Installation::manual(executable);
     };
@@ -1253,7 +1320,7 @@ fn linux_installation(executable: &Path, resolved: Result<PathBuf, String>) -> I
     }
 }
 #[cfg(any(target_os = "macos", test))]
-fn manual_macos_path(path: &Path) -> bool {
+pub(crate) fn manual_macos_path(path: &Path) -> bool {
     path.starts_with("/Volumes")
         || path
             .components()
@@ -1493,10 +1560,154 @@ mod tests {
         }
     }
 
+    fn available_remote_fixture() -> (Controller, Snapshot, VerifiedRelease) {
+        let feed = "https://updates.trymaple.ai/agent/stable/latest.json"
+            .parse()
+            .unwrap();
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        let release = maple_agent_updater::manifest::verify_envelope(
+            include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"),
+            &feed,
+            &[key],
+        )
+        .unwrap();
+        let controller = Controller::new(false);
+        controller.0.releases.try_lock().unwrap().release = Some(release.clone());
+        let mut available = Snapshot::new(State::Available, "v0.0.2 is available");
+        available.version = Some(release.manifest.version.clone());
+        available.remote_candidate = Some(release_identity(&release));
+        available.primary = Some(UpdateAction::Download);
+        available.primary_label = "Download";
+        available.show_banner = true;
+        controller.publish(available.clone());
+        (controller, available, release)
+    }
+
+    #[tokio::test]
+    async fn remote_download_prepares_only_the_exact_available_candidate() {
+        use std::sync::atomic::AtomicUsize;
+        let (controller, available, _release) = available_remote_fixture();
+        let target = available.remote_candidate.clone().unwrap();
+        assert!(controller.remote_status().blocked.is_none());
+        let calls = AtomicUsize::new(0);
+        controller
+            .download_remote_with(&target, |downloaded| {
+                assert_eq!(release_identity(&downloaded), target);
+                calls.fetch_add(1, Ordering::SeqCst);
+                let mut ready = available.clone();
+                ready.state = State::Ready;
+                ready.primary = Some(UpdateAction::Restart);
+                controller.publish(ready);
+                async {}
+            })
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(controller.snapshot().state, State::Ready);
+        // Already prepared: nothing is downloaded again.
+        controller
+            .download_remote_with(&target, |_| async { panic!("Ready needs no download") })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_remote_download_restores_the_retryable_offer_without_a_local_error() {
+        let (controller, available, _release) = available_remote_fixture();
+        let target = available.remote_candidate.clone().unwrap();
+        for _attempt in 0..2 {
+            let result = controller
+                .download_remote_with(&target, |_| {
+                    controller
+                        .fail("Could not download or verify the update. Retry when you are ready.");
+                    async {}
+                })
+                .await;
+            assert_eq!(result, Err(crate::remote_updates::DOWNLOAD_FAILED));
+            assert_eq!(controller.snapshot(), available);
+            let status = controller.remote_status();
+            assert_eq!(status.state, crate::remote::update::UpdateState::Available);
+            assert!(
+                status.blocked.is_none(),
+                "a failed attempt must stay retryable"
+            );
+        }
+        // A download that ends anywhere but Ready for this target is a failure.
+        let result = controller
+            .download_remote_with(&target, |_| {
+                controller.publish(Snapshot::new(State::Current, "Withdrawn"));
+                async {}
+            })
+            .await;
+        assert_eq!(result, Err(crate::remote_updates::DOWNLOAD_FAILED));
+        assert_eq!(controller.snapshot().state, State::Current);
+    }
+
+    #[tokio::test]
+    async fn remote_download_refuses_changed_busy_or_manual_offers_without_downloading() {
+        let (controller, available, _release) = available_remote_fixture();
+        let target = available.remote_candidate.clone().unwrap();
+        let never = |_| async { panic!("must not download") };
+        let mut changed = target.clone();
+        changed.manifest_sha256 = "c".repeat(64);
+        assert!(
+            controller
+                .download_remote_with(&changed, never)
+                .await
+                .is_err()
+        );
+        let operation = controller.0.operation.lock().await;
+        assert!(
+            controller
+                .download_remote_with(&target, never)
+                .await
+                .is_err()
+        );
+        drop(operation);
+        let mut manual = available.clone();
+        manual.primary = Some(UpdateAction::ManualDownload);
+        controller.publish(manual);
+        assert!(
+            controller
+                .download_remote_with(&target, never)
+                .await
+                .is_err()
+        );
+        let mut downloading = available.clone();
+        downloading.state = State::Downloading;
+        controller.publish(downloading);
+        assert!(
+            controller
+                .download_remote_with(&target, never)
+                .await
+                .is_err()
+        );
+        // The verified release itself must still match, not only the snapshot.
+        controller.publish(available);
+        controller
+            .0
+            .releases
+            .lock()
+            .await
+            .release
+            .as_mut()
+            .unwrap()
+            .envelope
+            .push('\n');
+        assert!(
+            controller
+                .download_remote_with(&target, never)
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn current_and_unchecked_computers_have_no_false_missing_download_warning() {
         let controller = Controller::new(true);
-        for state in [State::Current, State::Idle] {
+        for state in [State::Current, State::Idle, State::Available] {
             controller.publish(Snapshot::new(state, "No prepared update"));
             assert!(controller.remote_status().blocked.is_none());
             assert!(controller.remote_status().offered.is_none());
@@ -1555,26 +1766,26 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let parent = directory.path().canonicalize().unwrap();
         let bundle = linux_bundle_fixture(&parent);
-        let loader = bundle.join("usr/lib/ld-linux-x86-64.so.2");
+        let executable = bundle.join("usr/bin/maple-agent");
         let legacy_appimage = parent.join("old-maple.AppImage");
         std::fs::write(&legacy_appimage, b"legacy AppImage context").unwrap();
-        let automatic = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        let automatic = linux_installation(&executable, Ok(bundle.join("AppRun")));
         assert!(!automatic.manual_only);
         assert_eq!(automatic.installed_path, bundle);
 
         for resolved in [
             Err("invalid launcher context".into()),
-            Ok(loader.clone()),
+            Ok(executable.clone()),
             Ok(legacy_appimage),
         ] {
-            let manual = linux_installation(&loader, resolved);
+            let manual = linux_installation(&executable, resolved);
             assert!(manual.manual_only);
-            assert_eq!(manual.installed_path, loader);
+            assert_eq!(manual.installed_path, executable);
         }
         std::fs::remove_file(bundle.join("bundle.json")).unwrap();
-        let invalid = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        let invalid = linux_installation(&executable, Ok(bundle.join("AppRun")));
         assert!(invalid.manual_only);
-        assert_eq!(invalid.installed_path, loader);
+        assert_eq!(invalid.installed_path, executable);
     }
 
     #[cfg(unix)]
@@ -1589,12 +1800,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let parent = directory.path().canonicalize().unwrap();
         let bundle = linux_bundle_fixture(&parent);
-        let loader = bundle.join("usr/lib/ld-linux-x86-64.so.2");
+        let executable = bundle.join("usr/bin/maple-agent");
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let manual = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        let manual = linux_installation(&executable, Ok(bundle.join("AppRun")));
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(manual.manual_only);
-        assert_eq!(manual.installed_path, loader);
+        assert_eq!(manual.installed_path, executable);
     }
 
     #[cfg(unix)]
@@ -1698,6 +1909,22 @@ mod tests {
             );
             assert!(feed_url_for_target(&mac, Target::LinuxX86_64).is_err());
             assert!(feed_url_for_target(&linux, Target::DarwinAarch64).is_err());
+            let windows = format!("{origin}/agent/stable/windows/latest.json");
+            let windows_arm64 = format!("{origin}/agent/stable/windows-arm64/latest.json");
+            assert_eq!(
+                feed_url_for_target(&windows, Target::WindowsX86_64)
+                    .unwrap()
+                    .as_str(),
+                windows
+            );
+            assert_eq!(
+                feed_url_for_target(&windows_arm64, Target::WindowsAarch64)
+                    .unwrap()
+                    .as_str(),
+                windows_arm64
+            );
+            assert!(feed_url_for_target(&windows, Target::WindowsAarch64).is_err());
+            assert!(feed_url_for_target(&windows_arm64, Target::WindowsX86_64).is_err());
         }
         assert!(feed_url_for_target("not a URL", Target::LinuxX86_64).is_err());
     }
@@ -1724,6 +1951,32 @@ mod tests {
                 .ends_with("/Maple-Agent.dmg")
         );
         assert!(manual_download_url_for_target(&release, Target::LinuxX86_64).is_none());
+    }
+
+    #[test]
+    fn windows_manual_download_stays_on_the_verified_architecture() {
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        for (target, bytes, suffix, other) in [
+            (
+                Target::WindowsX86_64,
+                include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-windows-v3-envelope.json").as_slice(),
+                "/Maple-Agent-windows-x86_64-setup.exe",
+                Target::WindowsAarch64,
+            ),
+            (
+                Target::WindowsAarch64,
+                include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-windows-arm64-v4-envelope.json").as_slice(),
+                "/Maple-Agent-windows-aarch64-setup.exe",
+                Target::WindowsX86_64,
+            ),
+        ] {
+            let feed = format!("https://updates.maple.ai{}", target.feed_path()).parse().unwrap();
+            let release = maple_agent_updater::manifest::verify_envelope(bytes, &feed, std::slice::from_ref(&key)).unwrap();
+            assert!(manual_download_url_for_target(&release, target).unwrap().ends_with(suffix));
+            assert!(manual_download_url_for_target(&release, other).is_none());
+        }
     }
 
     #[test]

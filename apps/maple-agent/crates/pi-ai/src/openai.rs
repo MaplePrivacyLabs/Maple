@@ -600,7 +600,8 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
             }
             Message::Assistant(assistant) => {
                 // A model gets its own reasoning back, in the field it came in. Another
-                // model's reasoning goes back as plain text.
+                // model's reasoning is dropped: sent as text, it reads as part of the reply,
+                // and the new model can start writing its reasoning into its answers.
                 let same_model = assistant.provider == model.provider
                     && assistant.api == model.api
                     && assistant.model == model.id;
@@ -613,15 +614,13 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                             text_parts.push(text.text.as_str())
                         }
                         AssistantContent::Thinking(thinking)
-                            if !thinking.redacted && !thinking.thinking.trim().is_empty() =>
+                            if same_model
+                                && !thinking.redacted
+                                && !thinking.thinking.trim().is_empty() =>
                         {
-                            if same_model {
-                                reasoning.push(thinking.thinking.as_str());
-                                reasoning_field =
-                                    reasoning_field.or(thinking.thinking_signature.as_deref());
-                            } else {
-                                text_parts.push(thinking.thinking.as_str());
-                            }
+                            reasoning.push(thinking.thinking.as_str());
+                            reasoning_field =
+                                reasoning_field.or(thinking.thinking_signature.as_deref());
                         }
                         _ => {}
                     }
@@ -664,7 +663,9 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                 if has_images {
                     images_from_tools.extend(content.iter().filter_map(image_part));
                 }
-                let text = match (text.is_empty(), has_images) {
+                // Some servers reject output that is only whitespace, such as a bare
+                // line break, so it counts as none.
+                let text = match (text.trim().is_empty(), has_images) {
                     (false, _) => text,
                     (true, true) => "(see attached image)".to_string(),
                     (true, false) => "(no tool output)".to_string(),
@@ -1165,7 +1166,7 @@ impl HttpTransport for ReqwestTransport {
 mod tests {
     use super::*;
     use crate::overflow::{is_context_overflow, is_retryable_error};
-    use crate::types::{SystemMessage, ThinkingContent, Tool, ToolChoice, UserMessage};
+    use crate::types::{SystemMessage, ThinkingContent, Tool, ToolCall, ToolChoice, UserMessage};
     use futures_util::FutureExt;
     use std::sync::Mutex;
 
@@ -1293,6 +1294,44 @@ mod tests {
         assert_eq!(
             body["messages"][1],
             json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_final_arguments_are_reported_instead_of_a_parsed_prefix() {
+        let transport = transport(
+            200,
+            vec![
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"a\\\",\\\"offset\\\":.5}\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"\\\\usepackage\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n",
+            ],
+        );
+        let provider = OpenAiCompletions::new(transport);
+        let context = Context::new(
+            "sys",
+            vec![tool()],
+            vec![Message::User(UserMessage::text("hi"))],
+        );
+        let options = StreamOptions {
+            api_key: Some("key".into()),
+            ..StreamOptions::default()
+        };
+        let message = provider.stream(&model(), context, options).result().await;
+        let calls: Vec<&ToolCall> = message.tool_calls().collect();
+        assert!(calls[0].arguments.is_empty());
+        let error = calls[0].arguments_error.as_deref().unwrap();
+        assert!(
+            error.ends_with("\n\nReceived arguments:\n{\"path\":\"a\",\"offset\":.5}"),
+            "{error}"
+        );
+        // A repairable escape is no error.
+        assert_eq!(calls[1].arguments["path"], "\\usepackage");
+        assert_eq!(calls[1].arguments_error, None);
+        let error = crate::validate_tool_arguments(&tool(), calls[0]).unwrap_err();
+        assert!(
+            error.starts_with("Invalid arguments for tool \"read\": "),
+            "{error}"
         );
     }
 
@@ -2290,22 +2329,93 @@ mod tests {
     }
 
     #[test]
-    fn another_models_reasoning_goes_back_as_text() {
+    fn another_models_reasoning_is_dropped() {
         let model = model();
         let mut earlier = AssistantMessage::empty(&model);
         earlier.model = "other-model".into();
         earlier.content = vec![
-            thinking("plan", Some("reasoning_content")),
-            AssistantContent::text("answer"),
+            thinking("Candidates: proxy, IPv6, TLS.", Some("reasoning_content")),
+            AssistantContent::text("Let me check the TLS versions."),
+            AssistantContent::tool_call("c1", "bash", json!({ "command": "curl -v" })),
         ];
+        let mut thought_only = AssistantMessage::empty(&model);
+        thought_only.model = "other-model".into();
+        thought_only.content = vec![thinking("nothing to say", Some("reasoning"))];
         let context = Context::from_messages(vec![
             Message::User(UserMessage::text("a")),
             Message::Assistant(earlier),
+            Message::ToolResult(ToolResultMessage {
+                tool_call_id: "c1".into(),
+                tool_name: "bash".into(),
+                content: vec![Content::text("TLSv1.2")],
+                details: None,
+                usage: None,
+                is_error: false,
+                timestamp: 0,
+            }),
+            Message::User(UserMessage::text("b")),
+            Message::Assistant(thought_only),
+            Message::User(UserMessage::text("c")),
         ]);
         let messages = convert_messages(&model, &context);
-        // Text blocks join without a separator.
-        assert_eq!(messages[1]["content"], "plananswer");
-        assert!(messages[1].get("reasoning_content").is_none());
+        // The text and the tool call stay; the reasoning goes in no field and not as text.
+        assert_eq!(messages[1]["content"], "Let me check the TLS versions.");
+        assert_eq!(messages[1]["tool_calls"][0]["id"], "c1");
+        assert!(
+            REASONING_FIELDS
+                .iter()
+                .all(|field| messages[1].get(*field).is_none())
+        );
+        // A reply that was only reasoning leaves nothing to send.
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "user", "user"]);
+    }
+
+    #[test]
+    fn only_the_target_models_reasoning_comes_back_when_models_alternate() {
+        let model = model();
+        let reply = |id: &str, thought: &str, text: &str| {
+            let mut reply = AssistantMessage::empty(&model);
+            reply.model = id.into();
+            reply.content = vec![
+                thinking(thought, Some("reasoning_content")),
+                AssistantContent::text(text),
+            ];
+            Message::Assistant(reply)
+        };
+        let context = Context::from_messages(vec![
+            Message::User(UserMessage::text("1")),
+            reply(&model.id, "mine 1", "a"),
+            Message::User(UserMessage::text("2")),
+            reply("other-model", "theirs 1", "b"),
+            Message::User(UserMessage::text("3")),
+            reply(&model.id, "mine 2", "c"),
+            Message::User(UserMessage::text("4")),
+            reply("other-model", "theirs 2", "d"),
+            Message::User(UserMessage::text("hi")),
+        ]);
+        let replies: Vec<(Value, Option<Value>)> = convert_messages(&model, &context)
+            .into_iter()
+            .filter(|message| message["role"] == "assistant")
+            .map(|message| {
+                (
+                    message["content"].clone(),
+                    message.get("reasoning_content").cloned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            replies,
+            [
+                (json!("a"), Some(json!("mine 1"))),
+                (json!("b"), None),
+                (json!("c"), Some(json!("mine 2"))),
+                (json!("d"), None),
+            ]
+        );
     }
 
     #[test]
@@ -2403,6 +2513,20 @@ mod tests {
         // A user message with nothing in it is not sent.
         assert_eq!(messages[2]["content"][0]["text"], "look");
         assert_eq!(messages[4]["content"], "(no tool output)");
+    }
+
+    #[test]
+    fn whitespace_only_tool_output_counts_as_none() {
+        let model = model();
+        let messages = tool_exchange(vec![
+            vec![Content::text("\r\n")],
+            vec![Content::text(" \t"), Content::image("AAAA", "image/png")],
+            vec![Content::text("  kept as is \n")],
+        ]);
+        let messages = convert_messages(&model, &Context::from_messages(messages));
+        assert_eq!(messages[2]["content"], "(no tool output)");
+        assert_eq!(messages[3]["content"], "(see attached image)");
+        assert_eq!(messages[4]["content"], "  kept as is \n");
     }
 
     #[test]

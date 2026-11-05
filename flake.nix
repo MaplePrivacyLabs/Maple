@@ -14,12 +14,34 @@
       flake-utils,
       rust-overlay,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    # Nixpkgs 26.11 dropped x86_64-darwin; Intel Mac builds cross-compile from aarch64-darwin.
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (
       system:
       let
         overlays = [
           (import rust-overlay)
-          (_final: prev: {
+          (final: prev: {
+            # Keep bun on versions.bun (and setup-bun's Windows pin) when nixpkgs moves ahead.
+            bun = prev.bun.overrideAttrs (old: rec {
+              version = versions.bun;
+              src = passthru.sources.${final.stdenv.hostPlatform.system};
+              passthru = old.passthru // {
+                sources = {
+                  aarch64-darwin = final.fetchurl {
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-darwin-aarch64.zip";
+                    hash = "sha256-2xdYikrqiASFaCXUvq0/BeHzcnbKYG8342m09y810/s=";
+                  };
+                  aarch64-linux = final.fetchurl {
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-linux-aarch64.zip";
+                    hash = "sha256-7QEAD4W9l3hSKK0oRdySoYYLgFSFaCbXMXaQrI+O50s=";
+                  };
+                  x86_64-linux = final.fetchurl {
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-linux-x64.zip";
+                    hash = "sha256-cFHYapJK7+o+C5YhO1/Y95wHk/nK5lNCM+Yn5cPbRmk=";
+                  };
+                };
+              };
+            });
             # actionlint must start analyzer readers before feeding their stdin.
             actionlint = prev.actionlint.overrideAttrs (old: {
               patches = (old.patches or [ ]) ++ [ ./scripts/ci/patches/actionlint-stream-stdin.patch ];
@@ -105,7 +127,7 @@
         nixRustTargets = lib.unique (
           [ hostRustTarget ]
           ++ lib.optionals supportsAndroidHost androidRustTargets
-          ++ lib.optionals pkgs.stdenv.isDarwin appleRustTargets
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin appleRustTargets
         );
 
         rustToolchain = pkgs.rust-bin.stable.${versions.rust}.default.override {
@@ -116,7 +138,7 @@
           ];
           targets =
             lib.optionals supportsAndroidHost androidRustTargets
-            ++ lib.optionals pkgs.stdenv.isDarwin appleRustTargets;
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin appleRustTargets;
         };
 
         rustupShim = pkgs.writeShellScriptBin "rustup" ''
@@ -238,7 +260,7 @@
 
         linuxTauriPackages =
           with pkgs;
-          lib.optionals stdenv.isLinux [
+          lib.optionals stdenv.hostPlatform.isLinux [
             atk
             bubblewrap
             cairo
@@ -266,11 +288,12 @@
 
         linuxdeploySupportPackages =
           with pkgs;
-          lib.optionals stdenv.isLinux (
+          lib.optionals stdenv.hostPlatform.isLinux (
             [
               bash
               binutils
               coreutils
+              findutils
               desktop-file-utils
               diffutils
               file
@@ -297,7 +320,7 @@
           );
 
         linuxRuntimeClosure =
-          if pkgs.stdenv.isLinux then
+          if pkgs.stdenv.hostPlatform.isLinux then
             pkgs.closureInfo {
               rootPaths = linuxTauriPackages ++ [ pkgs.stdenv.cc.cc.lib ];
             }
@@ -334,7 +357,7 @@
         };
 
         tauriLinuxdeployTools =
-          if pkgs.stdenv.isLinux && linuxTauriToolsArch != null then
+          if pkgs.stdenv.hostPlatform.isLinux && linuxTauriToolsArch != null then
             let
               arch = linuxTauriToolsArch;
               linuxdeployArch = if arch == "i686" then "i386" else arch;
@@ -549,7 +572,7 @@
 
         darwinPackages =
           with pkgs;
-          lib.optionals stdenv.isDarwin [
+          lib.optionals stdenv.hostPlatform.isDarwin [
             cmake
             libiconv
             python3
@@ -575,14 +598,14 @@
           else
             null;
 
-        androidPackages = lib.optionals pkgs.stdenv.isLinux [
+        androidPackages = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.apksigner
           jdk
         ] ++ lib.optionals supportsAndroidHost [ androidComposition.androidsdk ];
 
-        mkShellForHost = if pkgs.stdenv.isDarwin && pkgs ? mkShellNoCC then pkgs.mkShellNoCC else pkgs.mkShell;
+        mkShellForHost = if pkgs.stdenv.hostPlatform.isDarwin && pkgs ? mkShellNoCC then pkgs.mkShellNoCC else pkgs.mkShell;
 
-        linuxShellHook = lib.optionalString pkgs.stdenv.isLinux ''
+        linuxShellHook = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           export MAPLE_NIX_CC=${pkgs.stdenv.cc}/bin/cc
           export MAPLE_NIX_GCC_LIB=${pkgs.stdenv.cc.cc.lib}
           export MAPLE_NIX_GDK_PIXBUF_BINARYDIR=${pkgs.gdk-pixbuf}/lib/gdk-pixbuf-2.0/2.10.0
@@ -601,7 +624,7 @@
           export GIO_MODULE_DIR=${pkgs.glib-networking}/lib/gio/modules
         '';
 
-        linuxDesktopShellHook = lib.optionalString pkgs.stdenv.isLinux ''
+        linuxDesktopShellHook = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           ${lib.optionalString (tauriLinuxdeployTools != null) "export MAPLE_NIX_TAURI_LINUXDEPLOY_TOOLS=${tauriLinuxdeployTools}"}
           ${lib.optionalString (linuxTauriToolsArch != null) "export MAPLE_NIX_TAURI_LINUXDEPLOY_ARCH=${linuxTauriToolsArch}"}
         '';
@@ -616,7 +639,7 @@
           elif [ -d "$ANDROID_HOME/ndk-bundle" ]; then
             export NDK_HOME="$ANDROID_HOME/ndk-bundle"
           fi
-        '' + lib.optionalString (pkgs.stdenv.isLinux && !supportsAndroidHost) ''
+        '' + lib.optionalString (pkgs.stdenv.hostPlatform.isLinux && !supportsAndroidHost) ''
           export MAPLE_ANDROID_UNSUPPORTED_HOST=1
           echo "Android PR builds require x86_64-linux; current Nix system is ${system}."
         '';
@@ -630,7 +653,7 @@
           export MAPLE_NIX_XCODE_BUILD_VERSION=${appleToolchain.build}
           export MAPLE_NIX_GNUTAR=${pkgs.gnutar}/bin/tar
           export MAPLE_NIX_GZIP=${pkgs.gzip}/bin/gzip
-          ${lib.optionalString pkgs.stdenv.isDarwin "export MAPLE_NIX_LIBICONV=${pkgs.libiconv}"}
+          ${lib.optionalString pkgs.stdenv.hostPlatform.isDarwin "export MAPLE_NIX_LIBICONV=${pkgs.libiconv}"}
           export CARGO_TERM_COLOR=always
           export RUST_BACKTRACE=1
           if [ -z "''${CI:-}" ] \
@@ -679,7 +702,7 @@
               shellHook = pathShellHook shellPackages;
             };
         }
-        // lib.optionalAttrs pkgs.stdenv.isLinux {
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           desktop-linux =
             let
               shellPackages = ciPackages ++ [ jdk ] ++ linuxTauriPackages;
@@ -698,7 +721,7 @@
               shellHook = pathShellHook shellPackages + commonShellHook + androidShellHook;
             };
         }
-        // lib.optionalAttrs pkgs.stdenv.isDarwin {
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           apple =
             let
               shellPackages = ciPackages ++ [ jdk ] ++ darwinPackages;
@@ -738,14 +761,13 @@
           '';
 
           # Every scripts/ci test (workflow policy, contracts, the planner, the
-          # release and publication scripts) and the Agent update publisher.
+          # release and publication scripts).
           ci-scripts = pkgs.runCommand "maple-ci-scripts-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash git jq minisign python3 unzip yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash binutils findutils git jq minisign python3 unzip yq-go ];
             src = ./.;
           } ''
             cd "$src"
             python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'
-            python3 -I -m unittest discover -s services/agent-updates/publisher -p 'test_*.py'
             touch "$out"
           '';
 
@@ -780,7 +802,9 @@
           release-gates = pkgs.runCommand "maple-release-gates-check" {
             nativeBuildInputs = with pkgs; [
               mapleBash
+              binutils
               coreutils
+              findutils
               git
               jq
               python3
@@ -807,7 +831,7 @@
                 echo "error: nix must be available on PATH" >&2
                 exit 127
               fi
-              exec nix develop --no-update-lock-file ".#${if pkgs.stdenv.isLinux then "desktop-linux" else "ci"}" -c ./scripts/ci/research-dev-desktop.sh "$@"
+              exec nix develop --no-update-lock-file ".#${if pkgs.stdenv.hostPlatform.isLinux then "desktop-linux" else "ci"}" -c ./scripts/ci/research-dev-desktop.sh "$@"
             '';
           };
         };

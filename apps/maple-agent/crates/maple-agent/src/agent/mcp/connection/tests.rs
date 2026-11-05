@@ -115,8 +115,8 @@ async fn an_http_server_connects_and_runs_its_tools() {
         Some("Use echo to repeat things.")
     );
     assert_eq!(
-        fake.methods()[..2],
-        ["initialize", "notifications/initialized"]
+        fake.methods()[..3],
+        ["server/discover", "initialize", "notifications/initialized"]
     );
     assert!(
         fake.authorization()
@@ -185,6 +185,191 @@ async fn an_http_server_connects_and_runs_its_tools() {
 
     server.shutdown().await;
     assert_eq!(server.connect().await.unwrap_err(), "it was stopped");
+}
+
+#[tokio::test]
+async fn a_stateless_server_connects_without_a_handshake() {
+    let fake = FakeServer::start_stateless(Some("Use echo to repeat things.")).await;
+    let server = server(http_config(&fake.url, 30));
+
+    let listing = server.connect().await.unwrap();
+    assert_eq!(listing.tools.len(), 6);
+    assert_eq!(
+        listing.instructions.as_deref(),
+        Some("Use echo to repeat things.")
+    );
+    let echoed = server
+        .call_tool(
+            "echo",
+            arguments(json!({ "text": "hi" })),
+            CancellationToken::new(),
+            pi_agent_core::ToolUpdates::none(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&echoed), "hi");
+
+    let methods = fake.methods();
+    assert_eq!(methods[0], "server/discover");
+    assert!(!methods.iter().any(|method| method.contains("initialize")));
+    // Every request names its revision, since no session remembers it.
+    let headers = fake.protocol_headers();
+    let at = |method: &str| methods.iter().position(|seen| seen == method).unwrap();
+    for method in ["tools/list", "tools/call"] {
+        assert_eq!(
+            headers[at(method)],
+            (Some("2026-07-28".to_string()), Some(method.to_string()))
+        );
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_older_server_is_opened_with_the_handshake() {
+    let fake = FakeServer::start(None).await;
+    let server = server(http_config(&fake.url, 30));
+    assert_eq!(server.connect().await.unwrap().tools.len(), 6);
+    assert_eq!(fake.handshakes()[0].0, "2025-11-25");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_older_server_may_refuse_the_probe_outright() {
+    let fake = FakeServer::start_refusing_probe().await;
+    let server = server(http_config(&fake.url, 30));
+    assert_eq!(server.connect().await.unwrap().tools.len(), 6);
+    assert_eq!(fake.methods()[..2], ["server/discover", "initialize"]);
+    server.shutdown().await;
+}
+
+#[test]
+fn only_a_server_on_this_computer_learns_the_tasks_folder() {
+    let local = server(stdio_config("true"));
+    let remote = server(http_config("https://example.com/mcp", 30));
+    let progress = Progress::default();
+    assert!(local.client(&progress).root.is_some());
+    assert!(
+        local
+            .client(&progress)
+            .get_info()
+            .capabilities
+            .roots
+            .is_some()
+    );
+    assert!(remote.client(&progress).root.is_none());
+    assert!(
+        remote
+            .client(&progress)
+            .get_info()
+            .capabilities
+            .roots
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_remote_server_is_not_offered_roots() {
+    let fake = FakeServer::start(None).await;
+    let server = server(http_config(&fake.url, 30));
+    server.connect().await.unwrap();
+    assert_eq!(fake.handshakes()[0].1.get("roots"), None);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_connection_keeps_endpoint_secrets_out_of_its_reason() {
+    // Nothing listens here, so the HTTP client's own error is what comes back.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut config = http_config("", 5);
+    config.transport = AgentMcpTransport::StreamableHttp {
+        url: format!("http://127.0.0.1:{port}/mcp/${{PATH_KEY}}?literal=q1w2e3&key=${{KEY}}"),
+        environment: vec![
+            key_value("KEY", "s3cret-query"),
+            key_value("PATH_KEY", "s3cret-path"),
+        ],
+        headers: vec![key_value("Authorization", "Bearer s3cret-header")],
+    };
+    let error = server(config).connect().await.unwrap_err();
+    for secret in ["s3cret-query", "s3cret-path", "s3cret-header", "q1w2e3"] {
+        assert!(!error.contains(secret), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn a_changed_tool_list_on_a_stateless_server_is_heard_on_its_stream() {
+    let fake = FakeServer::start_stateless(None).await;
+    let changed = Arc::new(tokio::sync::Notify::new());
+    let tools_changed: ToolsChanged = {
+        let changed = Arc::clone(&changed);
+        Arc::new(move || changed.notify_one())
+    };
+    let server = McpServer::new(
+        http_config(&fake.url, 30),
+        &std::env::temp_dir(),
+        None,
+        tools_changed,
+    );
+    assert_eq!(server.connect().await.unwrap().tools.len(), 6);
+    for _ in 0..50 {
+        if fake
+            .methods()
+            .iter()
+            .any(|method| method == "subscriptions/listen")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    server
+        .call_tool(
+            "grow",
+            JsonObject::new(),
+            CancellationToken::new(),
+            pi_agent_core::ToolUpdates::none(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), changed.notified())
+        .await
+        .expect("the server's notice arrives on the stream");
+    assert_eq!(server.refresh().await.unwrap().tools.len(), 7);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stopped_call_on_a_stateless_server_closes_its_stream() {
+    let fake = FakeServer::start_stateless(None).await;
+    let server = server(http_config(&fake.url, 30));
+    let cancel = CancellationToken::new();
+    let stop = {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            cancel.cancel();
+        })
+    };
+    let error = server
+        .call_tool(
+            "slow",
+            JsonObject::new(),
+            cancel,
+            pi_agent_core::ToolUpdates::none(),
+        )
+        .await
+        .unwrap_err();
+    stop.await.unwrap();
+    assert_eq!(error, "slow was cancelled");
+    for _ in 0..100 {
+        if fake.closed_streams() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(fake.closed_streams(), 1);
+    assert!(fake.cancelled().is_empty());
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -299,6 +484,67 @@ async fn a_server_that_exits_shows_its_error_output() {
     ));
     let error = broken.connect().await.unwrap_err();
     assert!(error.ends_with("\nno token configured"), "{error}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_server_that_went_away_starts_again_for_the_next_call() {
+    // Answers one call with how many times it has started, then exits, as an
+    // app does when it quits or updates while a task is open.
+    const SERVER: &str = r#"echo started >> "$1"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}}\n' "$id" ;;
+    *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"work","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+    *'"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"start %s"}]}}\n' "$id" "$(wc -l < "$1" | tr -d ' ')"; exit 0 ;;
+  esac
+done"#;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("server.sh");
+    std::fs::write(&script, SERVER).unwrap();
+    let starts = dir.path().join("starts");
+    let changes = Arc::new(AtomicUsize::new(0));
+    let tools_changed: ToolsChanged = {
+        let changes = Arc::clone(&changes);
+        Arc::new(move || {
+            changes.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    let server = McpServer::new(
+        stdio_config(&format!("sh {} {}", script.display(), starts.display())),
+        &std::env::temp_dir(),
+        None,
+        tools_changed,
+    );
+    let call = || {
+        server.call_tool(
+            "work",
+            JsonObject::new(),
+            CancellationToken::new(),
+            pi_agent_core::ToolUpdates::none(),
+        )
+    };
+    assert_eq!(text(&call().await.unwrap()), "start 1");
+    assert_eq!(changes.load(Ordering::SeqCst), 0);
+
+    for _ in 0..250 {
+        let connection = server.connection.lock().await;
+        let open = connection.as_ref().unwrap();
+        if open.service.peer().is_transport_closed() {
+            break;
+        }
+        drop(connection);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(text(&call().await.unwrap()), "start 2");
+    assert_eq!(
+        changes.load(Ordering::SeqCst),
+        1,
+        "the task reads its tools anew"
+    );
+    server.shutdown().await;
 }
 
 #[cfg(unix)]

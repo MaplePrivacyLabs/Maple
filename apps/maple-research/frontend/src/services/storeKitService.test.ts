@@ -201,6 +201,7 @@ describe("StoreKit acknowledgement ordering", () => {
     const other = {
       ...transaction,
       transactionId: "9007199254740995",
+      originalTransactionId: "9007199254740995",
       jws: "other.signed.snapshot"
     };
     const submitted: string[] = [];
@@ -449,6 +450,81 @@ describe("StoreKit acknowledgement ordering", () => {
     pending.resolve({ acknowledged_transaction_id: transaction.transactionId });
     await first;
     expect(f.finished).toEqual([other.transactionId, transaction.transactionId]);
+  });
+
+  test("renewals of one subscription submit one at a time, even after a failure", async () => {
+    const renewals = ["101", "102", "103"].map((transactionId) => ({
+      ...transaction,
+      transactionId,
+      jws: `renewal.${transactionId}`
+    }));
+    const finished: string[] = [];
+    const bridge = {
+      ...fixture().bridge,
+      async getSignedTransactions() {
+        return {
+          transactions: renewals,
+          unfinishedTransactionIds: renewals.map(({ transactionId }) => transactionId)
+        };
+      },
+      async finishTransaction(id: string) {
+        finished.push(id);
+      }
+    };
+    const submissions = renewals.map(() => controlledSubmission());
+    const started: string[] = [];
+    const recovery = new StoreKitRecovery(bridge, (_jws, transactionId) => {
+      const index = started.push(transactionId) - 1;
+      return submissions[index].submit();
+    });
+
+    const recovered = recovery.recover();
+    await submissions[0].started;
+    await Promise.resolve();
+    expect(started).toEqual(["101"]);
+
+    submissions[0].reject(new Error("apple_confirmation_unavailable"));
+    await submissions[1].started;
+    expect(started).toEqual(["101", "102"]);
+    submissions[1].resolve({ acknowledged_transaction_id: "102" });
+    await submissions[2].started;
+    expect(started).toEqual(["101", "102", "103"]);
+    submissions[2].resolve({ acknowledged_transaction_id: "103" });
+
+    const failure = await recovered.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(StoreKitRecoveryError);
+    expect((failure as StoreKitRecoveryError).failures.map((f) => f.transactionId)).toEqual([
+      "101"
+    ]);
+    expect(finished).toEqual(["102", "103"]);
+  });
+
+  test("disposal stops queued submissions for the same subscription", async () => {
+    const f = fixture();
+    const pending = controlledSubmission();
+    const renewal = { ...transaction, transactionId: "102", jws: "renewal.102" };
+    const started: string[] = [];
+    const recovery = new StoreKitRecovery(f.bridge, (_jws, transactionId) => {
+      started.push(transactionId);
+      return pending.submit();
+    });
+    const settled = Promise.allSettled([
+      recovery.acknowledge(transaction),
+      recovery.acknowledge(renewal)
+    ]);
+    await pending.started;
+
+    recovery.dispose();
+    pending.resolve({ acknowledged_transaction_id: transaction.transactionId });
+
+    for (const result of await settled) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason.message).toBe("storekit_session_changed");
+      }
+    }
+    expect(started).toEqual([transaction.transactionId]);
+    expect(f.finished).toEqual([]);
   });
 
   test("partial recovery reports completed acknowledgements in a typed error", async () => {

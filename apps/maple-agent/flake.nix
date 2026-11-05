@@ -188,10 +188,15 @@
           ] ++ linuxRuntimeInputs;
           isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           mkDevShell = if isDarwin then pkgs.mkShellNoCC else pkgs.mkShell;
+          portableRuntime =
+            if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64 then
+              import ./scripts/linux-runtime.nix { inherit pkgs; }
+            else
+              null;
           xcrun = pkgs.writeShellScriptBin "xcrun" ''
             exec /usr/bin/xcrun "$@"
           '';
-          # Agent owns its distribution tools and runtime closure. These fixed
+          # Agent owns its distribution tools. These fixed
           # hashes also pin the tools used by Research, without importing its
           # Tauri packaging scripts or requiring its flake.
           appimageTools =
@@ -211,13 +216,6 @@
                 install -m 0755 ${linuxdeploy} "$out/linuxdeploy-x86_64.AppImage"
                 install -m 0755 ${runtime} "$out/runtime-x86_64"
               ''
-            else
-              null;
-          linuxRuntimeClosure =
-            if pkgs.stdenv.hostPlatform.isLinux then
-              pkgs.closureInfo {
-                rootPaths = linuxBuildInputs ++ [ pkgs.stdenv.cc.cc.lib pkgs.glibc ];
-              }
             else
               null;
         in
@@ -241,8 +239,11 @@
             ++ pkgs.lib.optionals isDarwin [ xcrun ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.binutils
+              # Release builds link against an old glibc floor (build-release.sh).
+              pkgs.cargo-zigbuild
               pkgs.patchelf
               pkgs.squashfsTools
+              pkgs.zig
             ];
 
             buildInputs =
@@ -268,8 +269,13 @@
             '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH="${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               export VK_ADD_DRIVER_FILES="${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d:${pkgs.mesa}/share/vulkan/icd.d''${VK_ADD_DRIVER_FILES:+:$VK_ADD_DRIVER_FILES}"
-              export MAPLE_AGENT_LINUX_CLOSURE_INFO="${linuxRuntimeClosure}"
+              # run-linux-payload.sh runs release binaries on this runtime.
               export MAPLE_AGENT_LINUX_GLIBC="${pkgs.glibc}"
+              export MAPLE_AGENT_LINUX_RUNTIME_PATH="${pkgs.lib.makeLibraryPath (linuxBuildInputs ++ [ pkgs.stdenv.cc.cc.lib ])}"
+            '' + pkgs.lib.optionalString (portableRuntime != null) ''
+              # Instantiate the pinned runtime here, but build it only when
+              # packaging requests it. Lint/test shells need no library rebuild.
+              export MAPLE_AGENT_LINUX_RUNTIME_CLOSURE_DRV="${builtins.unsafeDiscardOutputDependency portableRuntime.runtimePaths.drvPath}"
             '' + pkgs.lib.optionalString (appimageTools != null) ''
               export MAPLE_AGENT_APPIMAGE_TOOLS="${appimageTools}"
             '' + pkgs.lib.optionalString isDarwin ''
@@ -310,6 +316,11 @@
               # nixpkgs' generic clang wrapper cannot infer that SDK boundary.
               export CC="$(/usr/bin/xcrun --find clang)"
               export CXX="$(/usr/bin/xcrun --find clang++)"
+              # Rust links through `cc`, which is nixpkgs' clang wrapper and its
+              # older ld64. That ld64 cannot read the macOS 27 SDK's .tbd stubs
+              # (they list the arm64e.x1 architecture), so link with Xcode too.
+              export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$CC"
+              export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$CC"
               export PATH="${xcrun}/bin:$PATH"
 
               unset maple_nix_developer_dir maple_nix_selected_developer_dir

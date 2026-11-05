@@ -104,7 +104,8 @@ async fn recovery_reseals_identical_binary_request_with_fresh_session_and_reques
         mount_recovery_then_success(&server, &state, code, false, 2).await;
         let client =
             OpenSecretClient::new_with_api_key(server.uri(), "fixture-api-key".to_string())
-                .unwrap();
+                .unwrap()
+                .with_client_app(crate::ClientApp::Work);
         let bytes = Bytes::from_static(b"\0\xff\r\n--fixture-boundary\r\nbinary\0payload");
         let mut request = HttpRequest::post("/v1/audio/transcriptions?language=en")
             .header(
@@ -130,6 +131,11 @@ async fn recovery_reseals_identical_binary_request_with_fresh_session_and_reques
         let logical = state.captured_requests();
         assert_eq!(logical[0]["credential"]["kind"], "api_key");
         assert_eq!(logical[0]["credential"]["value"], "fixture-api-key");
+        for request in &logical {
+            assert!(request["headers"].as_array().unwrap().iter().any(|header| {
+                header["name"] == "x-maple-client-app" && header["value"] == "work"
+            }));
+        }
         assert!(logical[0]["cache_namespace_root"].is_string());
         let ids = state.captured_request_ids();
         assert_ne!(ids[0], ids[1]);
@@ -145,6 +151,7 @@ async fn recovery_reseals_identical_binary_request_with_fresh_session_and_reques
         for request in requests {
             assert!(!request.headers.contains_key(header::AUTHORIZATION));
             assert!(!request.headers.contains_key(header::COOKIE));
+            assert!(!request.headers.contains_key("x-maple-client-app"));
         }
     }
 }

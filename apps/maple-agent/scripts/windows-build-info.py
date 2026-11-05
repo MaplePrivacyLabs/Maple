@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read bounded x64 PE metadata and imports without executing the artifact.
+"""Read bounded native Windows PE metadata and imports without executing the artifact.
 
 The layout follows https://learn.microsoft.com/windows/win32/debug/pe-format.
 This is a release preflight, not an Authenticode signature verifier.
@@ -24,6 +24,8 @@ MAX_IMPORT_BYTES = 128 * 1024
 MAX_DLL_BYTES = 256
 MAX_ICON_BYTES = 1024 * 1024
 MACHINE_AMD64 = 0x8664
+MACHINE_ARM64 = 0xAA64
+MACHINES = {"x86_64": MACHINE_AMD64, "aarch64": MACHINE_ARM64}
 IMAGE_FILE_EXECUTABLE_IMAGE = 0x0002
 IMAGE_FILE_DLL = 0x2000
 IMAGE_SCN_CNT_INITIALIZED_DATA = 0x0040
@@ -48,7 +50,9 @@ def regular_file(status):
 
 
 @contextmanager
-def open_artifact(path):
+def open_artifact(path, arch=None):
+    if arch is not None and arch not in MACHINES:
+        raise ValueError("unsupported Windows architecture")
     path = Path(path)
     before = path.lstat()
     if not regular_file(before):
@@ -66,24 +70,27 @@ def open_artifact(path):
             raise ValueError("PE artifact changed or is not a regular file")
         if not 0 < status.st_size <= 4 * 1024 * 1024 * 1024:
             raise ValueError("PE artifact is empty or oversized")
-        yield PEImage(binary, status.st_size)
+        yield PEImage(binary, status.st_size, arch)
 
 
 class PEImage:
-    def __init__(self, binary, size):
+    def __init__(self, binary, size, arch=None):
         self.binary, self.size = binary, size
         dos = self.read(0, 64)
         if dos[:2] != b"MZ":
-            raise ValueError("release artifact must be an x64 PE executable")
+            raise ValueError("release artifact must be a supported native Windows PE executable")
         position = struct.unpack_from("<I", dos, 0x3C)[0]
         if position < 64 or position > MAX_HEADER_BYTES:
             raise ValueError("invalid PE header offset")
         header = self.read(position, 24)
         machine, count, _, _, _, optional_size, characteristics = struct.unpack_from("<HHIIIHH", header, 4)
-        if header[:4] != b"PE\0\0" or machine != MACHINE_AMD64 or (
+        if header[:4] != b"PE\0\0" or machine not in MACHINES.values() or (
             not characteristics & IMAGE_FILE_EXECUTABLE_IMAGE or characteristics & IMAGE_FILE_DLL
         ):
-            raise ValueError("release artifact must be an x64 PE executable")
+            raise ValueError("release artifact must be a supported native Windows PE executable")
+        self.arch = next(name for name, code in MACHINES.items() if code == machine)
+        if arch is not None and self.arch != arch:
+            raise ValueError("PE architecture does not match the selected Windows target")
         if not 1 <= count <= 96 or not 112 <= optional_size <= 4096:
             raise ValueError("invalid PE section count or optional header size")
         optional = self.read(position + 24, optional_size)
@@ -271,7 +278,7 @@ class PEImage:
 def inspect_pe(path):
     """Return native architecture, subsystem and all regular/delay DLL imports."""
     with open_artifact(path) as image:
-        return {"machine": "x86_64", "subsystem": image.subsystem, "imports": image.imports()}
+        return {"machine": image.arch, "subsystem": image.subsystem, "imports": image.imports()}
 
 
 def read_build_info(path):
@@ -284,13 +291,15 @@ def verify_icon(path, icon_path):
         image.verify_icon(Path(icon_path).read_bytes())
 
 
-def validated_build_info(profile, path, source_sha):
+def validated_build_info(profile, path, source_sha, arch="x86_64"):
     if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise ValueError("expected source commit must be a full lowercase SHA")
     spec = importlib.util.spec_from_file_location("release_info", Path(__file__).with_name("release-info.py"))
     release_info = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(release_info)
-    return release_info.validate_info(profile, read_build_info(path), source_sha, platform="windows-x86_64")
+    with open_artifact(path, arch) as image:
+        info = image.build_info()
+    return release_info.validate_info(profile, info, source_sha, platform="windows-" + arch)
 
 
 def main():
@@ -298,8 +307,9 @@ def main():
     parser.add_argument("binary")
     parser.add_argument("--profile", choices=("dev", "prod"), required=True)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--arch", choices=tuple(MACHINES), default="x86_64")
     args = parser.parse_args()
-    print(json.dumps(validated_build_info(args.profile, args.binary, args.source_sha), sort_keys=True, separators=(",", ":")))
+    print(json.dumps(validated_build_info(args.profile, args.binary, args.source_sha, args.arch), sort_keys=True, separators=(",", ":")))
 
 
 if __name__ == "__main__":

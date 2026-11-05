@@ -16,6 +16,7 @@ pub enum Target {
     DarwinAarch64,
     LinuxX86_64,
     WindowsX86_64,
+    WindowsAarch64,
 }
 
 impl Target {
@@ -24,6 +25,7 @@ impl Target {
             Self::DarwinAarch64 => "darwin-aarch64",
             Self::LinuxX86_64 => "linux-x86_64",
             Self::WindowsX86_64 => "windows-x86_64",
+            Self::WindowsAarch64 => "windows-aarch64",
         }
     }
 
@@ -32,6 +34,7 @@ impl Target {
             Self::DarwinAarch64 => "/agent/stable/latest.json",
             Self::LinuxX86_64 => "/agent/stable/linux/latest.json",
             Self::WindowsX86_64 => "/agent/stable/windows/latest.json",
+            Self::WindowsAarch64 => "/agent/stable/windows-arm64/latest.json",
         }
     }
 
@@ -40,6 +43,7 @@ impl Target {
             Self::DarwinAarch64 => "manifest.json",
             Self::LinuxX86_64 => "linux-manifest.json",
             Self::WindowsX86_64 => "windows-manifest.json",
+            Self::WindowsAarch64 => "windows-arm64-manifest.json",
         }
     }
 
@@ -55,6 +59,17 @@ impl Target {
             Self::DarwinAarch64 => "maple-agent-update-v1",
             Self::LinuxX86_64 => "maple-agent-update-v2",
             Self::WindowsX86_64 => "maple-agent-update-v3",
+            Self::WindowsAarch64 => "maple-agent-update-v4",
+        }
+    }
+
+    pub fn for_platform(os: &str, architecture: &str) -> Option<Self> {
+        match (os, architecture) {
+            ("macos", "aarch64") => Some(Self::DarwinAarch64),
+            ("linux", "x86_64") => Some(Self::LinuxX86_64),
+            ("windows", "x86_64") => Some(Self::WindowsX86_64),
+            ("windows", "aarch64") => Some(Self::WindowsAarch64),
+            _ => None,
         }
     }
 }
@@ -78,6 +93,8 @@ pub struct Downloads {
     pub linux_bundle: Option<Artifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub windows: Option<Artifact>,
+    #[serde(rename = "windows-arm64", skip_serializing_if = "Option::is_none")]
+    pub windows_arm64: Option<Artifact>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -216,7 +233,9 @@ fn validate_download_fields(text: &str, format: &str) -> Result<()> {
         .context("invalid download inventory")?;
     match format {
         "maple-agent-update-v1" => ensure!(
-            !downloads.contains_key("linux-bundle") && !downloads.contains_key("windows"),
+            !downloads.contains_key("linux-bundle")
+                && !downloads.contains_key("windows")
+                && !downloads.contains_key("windows-arm64"),
             "platform downloads require their own update format"
         ),
         "maple-agent-update-v2" => ensure!(
@@ -227,6 +246,10 @@ fn validate_download_fields(text: &str, format: &str) -> Result<()> {
             downloads.len() == 1 && downloads.contains_key("windows"),
             "update format v3 requires only the Windows installer download"
         ),
+        "maple-agent-update-v4" => ensure!(
+            downloads.len() == 1 && downloads.contains_key("windows-arm64"),
+            "update format v4 requires only the Windows ARM64 installer download"
+        ),
         _ => bail!("unsupported update format"),
     }
     Ok(())
@@ -236,7 +259,10 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
     ensure!(
         matches!(
             manifest.format.as_str(),
-            "maple-agent-update-v1" | "maple-agent-update-v2" | "maple-agent-update-v3"
+            "maple-agent-update-v1"
+                | "maple-agent-update-v2"
+                | "maple-agent-update-v3"
+                | "maple-agent-update-v4"
         ),
         "unsupported update format"
     );
@@ -272,13 +298,16 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
         "maple-agent-update-v1" => validate_v1_inventory(manifest),
         "maple-agent-update-v2" => validate_v2_inventory(manifest),
         "maple-agent-update-v3" => validate_v3_inventory(manifest),
+        "maple-agent-update-v4" => validate_v4_inventory(manifest),
         _ => unreachable!("update format was validated above"),
     }
 }
 
 fn validate_v1_inventory(manifest: &Manifest) -> Result<()> {
     ensure!(
-        manifest.downloads.linux_bundle.is_none() && manifest.downloads.windows.is_none(),
+        manifest.downloads.linux_bundle.is_none()
+            && manifest.downloads.windows.is_none()
+            && manifest.downloads.windows_arm64.is_none(),
         "platform downloads require their own update format"
     );
     ensure!(
@@ -325,7 +354,8 @@ fn validate_v2_inventory(manifest: &Manifest) -> Result<()> {
     ensure!(
         manifest.downloads.macos.is_none()
             && manifest.downloads.linux_appimage.is_none()
-            && manifest.downloads.windows.is_none(),
+            && manifest.downloads.windows.is_none()
+            && manifest.downloads.windows_arm64.is_none(),
         "update format v2 requires only the Linux bundle download"
     );
     let artifact = &manifest.artifacts["linux-x86_64"];
@@ -345,7 +375,8 @@ fn validate_v3_inventory(manifest: &Manifest) -> Result<()> {
     ensure!(
         manifest.downloads.macos.is_none()
             && manifest.downloads.linux_appimage.is_none()
-            && manifest.downloads.linux_bundle.is_none(),
+            && manifest.downloads.linux_bundle.is_none()
+            && manifest.downloads.windows_arm64.is_none(),
         "update format v3 requires only the Windows installer download"
     );
     validate_artifact(
@@ -359,6 +390,35 @@ fn validate_v3_inventory(manifest: &Manifest) -> Result<()> {
             .windows
             .as_ref()
             .context("Windows installer download is required")?,
+        &manifest.version,
+        ".exe",
+    )?;
+    Ok(())
+}
+
+fn validate_v4_inventory(manifest: &Manifest) -> Result<()> {
+    ensure!(
+        manifest.artifacts.len() == 1 && manifest.artifacts.contains_key("windows-aarch64"),
+        "update format v4 requires only the Windows ARM64 artifact"
+    );
+    ensure!(
+        manifest.downloads.macos.is_none()
+            && manifest.downloads.linux_appimage.is_none()
+            && manifest.downloads.linux_bundle.is_none()
+            && manifest.downloads.windows.is_none(),
+        "update format v4 requires only the Windows ARM64 installer download"
+    );
+    validate_artifact(
+        &manifest.artifacts["windows-aarch64"],
+        &manifest.version,
+        ".tar.gz",
+    )?;
+    validate_artifact(
+        manifest
+            .downloads
+            .windows_arm64
+            .as_ref()
+            .context("Windows ARM64 installer download is required")?,
         &manifest.version,
         ".exe",
     )?;
@@ -464,6 +524,63 @@ mod windows_tests {
                 "accepted {manifest:?}"
             );
         }
+    }
+
+    #[test]
+    fn windows_arm64_v4_requires_its_own_complete_bounded_inventory() {
+        let release = verify_envelope(
+            include_bytes!("../tests/fixtures/signed-windows-arm64-v4-envelope.json"),
+            &"https://updates.example.test".parse().unwrap(),
+            &[include_str!("../tests/fixtures/public-test-key.pub").to_owned()],
+        )
+        .unwrap();
+        let mutations: Vec<fn(&mut Manifest)> = vec![
+            |m| m.format = "maple-agent-update-v3".into(),
+            |m| m.artifacts.clear(),
+            |m| {
+                let artifact = m.artifacts.remove("windows-aarch64").unwrap();
+                m.artifacts.insert("windows-x86_64".into(), artifact);
+            },
+            |m| {
+                m.artifacts.insert(
+                    "windows-x86_64".into(),
+                    m.artifacts["windows-aarch64"].clone(),
+                );
+            },
+            |m| m.downloads.windows_arm64 = None,
+            |m| m.downloads.windows = m.downloads.windows_arm64.clone(),
+            |m| m.downloads.macos = m.downloads.windows_arm64.clone(),
+            |m| m.downloads.linux_bundle = m.downloads.windows_arm64.clone(),
+            |m| m.downloads.linux_appimage = m.downloads.windows_arm64.clone(),
+            |m| m.artifacts.get_mut("windows-aarch64").unwrap().size = 0,
+            |m| m.artifacts.get_mut("windows-aarch64").unwrap().size = MAX_ARTIFACT_BYTES + 1,
+            |m| m.artifacts.get_mut("windows-aarch64").unwrap().sha256 = "A".repeat(64),
+            |m| m.downloads.windows_arm64.as_mut().unwrap().size = 0,
+            |m| m.downloads.windows_arm64.as_mut().unwrap().sha256 = "bad".into(),
+            |m| {
+                m.downloads.windows_arm64.as_mut().unwrap().path =
+                    "/agent/stable/releases/0.0.1/wrong.exe".into()
+            },
+            |m| {
+                m.downloads.windows_arm64.as_mut().unwrap().path =
+                    "/agent/stable/releases/0.0.2/wrong.tar.gz".into()
+            },
+            |m| {
+                m.artifacts.get_mut("windows-aarch64").unwrap().path =
+                    "/agent/stable/releases/0.0.2/wrong.exe".into()
+            },
+        ];
+        for mutate in mutations {
+            let mut manifest = release.manifest.clone();
+            mutate(&mut manifest);
+            assert!(
+                validate_manifest(&manifest).is_err(),
+                "accepted {manifest:?}"
+            );
+        }
+        let mut legacy = fixture().manifest;
+        legacy.downloads.windows_arm64 = release.manifest.downloads.windows_arm64;
+        assert!(validate_manifest(&legacy).is_err());
     }
 
     #[test]

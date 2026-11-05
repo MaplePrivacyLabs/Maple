@@ -5766,7 +5766,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent"
-version = "0.0.13"
+version = "0.0.18"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -5804,9 +5804,11 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sse-stream",
  "tempfile",
  "tokio",
  "tokio-util",
+ "tracing",
  "unicode-normalization",
  "uuid",
  "windows-sys 0.61.2",
@@ -5818,7 +5820,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent-app"
-version = "0.0.13"
+version = "0.0.18"
 dependencies = [
  "ashpd",
  "axum",
@@ -5880,7 +5882,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent-updater"
-version = "0.0.13"
+version = "0.0.18"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5910,7 +5912,7 @@ dependencies = [
 
 [[package]]
 name = "maple-billing"
-version = "0.0.13"
+version = "0.0.18"
 dependencies = [
  "reqwest 0.13.4",
  "serde",
@@ -5920,7 +5922,7 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5941,7 +5943,7 @@ dependencies = [
 
 [[package]]
 name = "maple-sdk"
-version = "4.1.3"
+version = "4.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6826,6 +6828,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "oauth2"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "getrandom 0.2.17",
+ "http",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7688,7 +7709,7 @@ dependencies = [
 
 [[package]]
 name = "pi-agent-core"
-version = "0.0.13"
+version = "0.0.18"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -7701,7 +7722,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "0.0.13"
+version = "0.0.18"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7718,7 +7739,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "0.0.13"
+version = "0.0.18"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -8287,9 +8308,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.13.1",
  "memchr",
@@ -8991,16 +9012,19 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.4.1"
+version = "3.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b6317cd8c13e3ec9033cf2aa5aa92cd743f0f4f8a93cddc42ea0ae6ce3b8898"
+checksum = "f8be15815186873ea063bf005011d16c356804973489e40c39116ae3a2878d1f"
 dependencies = [
+ "async-trait",
  "base64 0.23.1",
  "bytes",
  "chrono",
  "futures",
  "http",
  "indexmap 2.14.0",
+ "libc",
+ "oauth2",
  "pin-project-lite",
  "reqwest 0.13.4",
  "serde",
@@ -9011,6 +9035,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -10111,7 +10136,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "store-bench"
-version = "0.0.13"
+version = "0.0.18"
 dependencies = [
  "anyhow",
  "maple-agent",
@@ -10529,7 +10554,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

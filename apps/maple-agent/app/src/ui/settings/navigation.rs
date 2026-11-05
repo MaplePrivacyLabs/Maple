@@ -1,13 +1,15 @@
 //! Stable-ID application Vim navigation for Settings.
 //!
 //! The settings screen owns this projection because its visible controls are
-//! dynamic (shortcut filtering, integrations, MCP servers, and editors).
+//! dynamic (shortcut filtering, integrations, MCP servers, and ACP examples).
 //! Selecting a row is side-effect free; Enter delegates to the same existing
 //! method as its pointer control.
 
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
 use super::account::AccountTarget;
+#[cfg(feature = "acp")]
+use super::acp::AcpTarget;
 use super::api_keys::ApiKeysTarget;
 use super::billing::BillingTarget;
 #[cfg(feature = "proxy")]
@@ -49,14 +51,17 @@ pub(super) enum SettingsTarget {
     ApiKeys(ApiKeysTarget),
     #[cfg(feature = "proxy")]
     LocalApi(LocalApiTarget),
+    #[cfg(feature = "acp")]
+    Acp(AcpTarget),
     Shortcut(String),
     PromptEditor,
     PromptSave,
-    PromptReset,
+    PromptClear,
     Integration(String),
     IntegrationSetup(String),
     McpAdd,
     McpServer(String),
+    McpCatalog(String),
 }
 
 #[derive(Clone, Debug)]
@@ -88,9 +93,14 @@ impl SettingsScreen {
     }
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
+        let mut inputs = vec![
+            self.prompt_editor.clone(),
+            self.shortcut_search.clone(),
+            self.catalog_search.clone(),
+        ];
         inputs.extend(self.account.inputs());
         inputs.push(self.api_keys.name.clone());
+        inputs.push(self.billing.credits.custom.clone());
         #[cfg(feature = "proxy")]
         inputs.push(self.local_api.port.clone());
         if let Some(editor) = &self.mcp_editor {
@@ -101,6 +111,7 @@ impl SettingsScreen {
                 editor.environment.clone(),
                 editor.headers.clone(),
             ]);
+            inputs.extend(editor.token.as_ref().map(|token| token.input.clone()));
         }
         for input in inputs {
             input.update(cx, |input, cx| {
@@ -150,9 +161,9 @@ impl SettingsScreen {
             .collect(),
             Section::Account => self.account_targets(),
             Section::Billing => self.billing_targets(),
-            Section::ApiKeys => self.api_keys_targets(),
-            #[cfg(feature = "proxy")]
-            Section::LocalApi => self.local_api_targets(),
+            Section::Api => self.api_targets(),
+            #[cfg(feature = "acp")]
+            Section::Acp => self.acp_targets(),
             Section::Shortcuts => self
                 .shortcut_list_cache
                 .visible_indices
@@ -163,7 +174,7 @@ impl SettingsScreen {
             Section::Prompt => vec![
                 SettingsTarget::PromptEditor,
                 SettingsTarget::PromptSave,
-                SettingsTarget::PromptReset,
+                SettingsTarget::PromptClear,
             ],
             Section::Integrations => self
                 .integrations
@@ -181,13 +192,18 @@ impl SettingsScreen {
                     .into_iter()
                     .flatten()
                 })
-                .chain(std::iter::once(SettingsTarget::McpAdd))
                 .chain(
                     self.mcp_servers
                         .as_deref()
                         .unwrap_or_default()
                         .iter()
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
+                )
+                .chain(std::iter::once(SettingsTarget::McpAdd))
+                .chain(
+                    self.catalog_visible
+                        .iter()
+                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
                 )
                 .collect(),
             Section::Remote | Section::Usage | Section::About | Section::Advanced => Vec::new(),
@@ -359,7 +375,9 @@ impl SettingsScreen {
             Some(SettingsTarget::Account(target)) => {
                 self.activate_account_target(target, window, cx)
             }
-            Some(SettingsTarget::Billing(target)) => self.activate_billing_target(target, cx),
+            Some(SettingsTarget::Billing(target)) => {
+                self.activate_billing_target(target, window, cx)
+            }
             Some(SettingsTarget::ApiKeys(target)) => {
                 self.activate_api_keys_target(target, window, cx)
             }
@@ -367,17 +385,20 @@ impl SettingsScreen {
             Some(SettingsTarget::LocalApi(target)) => {
                 self.activate_local_api_target(target, window, cx)
             }
+            #[cfg(feature = "acp")]
+            Some(SettingsTarget::Acp(target)) => self.activate_acp_target(target, cx),
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
             Some(SettingsTarget::PromptSave) => self.save_prompt(cx),
-            Some(SettingsTarget::PromptReset) => self.reset_prompt(cx),
+            Some(SettingsTarget::PromptClear) => self.clear_prompt(cx),
             Some(SettingsTarget::Integration(id)) => self.toggle_integration(&id, cx),
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
+            Some(SettingsTarget::McpCatalog(id)) => self.connect_catalog_entry(&id, cx),
             None => {}
         }
     }
@@ -437,8 +458,9 @@ impl SettingsScreen {
     fn application_text_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         let focused = window.focused(cx);
         let mut inputs = vec![&self.prompt_editor, &self.shortcut_search];
-        #[cfg(feature = "proxy")]
-        if self.section == Section::LocalApi {
+        if self.section == Section::Api {
+            inputs.push(&self.api_keys.name);
+            #[cfg(feature = "proxy")]
             inputs.push(&self.local_api.port);
         }
         if let Some(editor) = &self.mcp_editor {
@@ -449,6 +471,7 @@ impl SettingsScreen {
                 &editor.environment,
                 &editor.headers,
             ]);
+            inputs.extend(editor.token.as_ref().map(|token| &token.input));
         }
         inputs
             .into_iter()
@@ -758,9 +781,16 @@ mod tests {
                 vec![
                     SettingsTarget::IntegrationSetup("cua-driver".to_string()),
                     SettingsTarget::Integration("cua-driver".to_string()),
-                    SettingsTarget::McpAdd,
                     SettingsTarget::McpServer("custom".to_string()),
+                    SettingsTarget::McpAdd,
                 ]
+                .into_iter()
+                .chain(
+                    maple_agent::agent::mcp_catalog()
+                        .iter()
+                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone()))
+                )
+                .collect::<Vec<_>>()
             );
         });
     }

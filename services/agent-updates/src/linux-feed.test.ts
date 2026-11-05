@@ -267,6 +267,7 @@ test("Linux discovery cannot authorize a release without its complete immutable 
     "get:stable/releases/0.0.2/manifest.json",
     "get:stable/releases/0.0.2/linux-manifest.json",
     "get:stable/releases/0.0.2/windows-manifest.json",
+    "get:stable/releases/0.0.2/windows-arm64-manifest.json",
   ]);
 });
 

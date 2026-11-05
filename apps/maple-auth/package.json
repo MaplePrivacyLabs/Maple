@@ -47,6 +47,7 @@
     "vite": "6.4.4"
   },
   "resolutions": {
+    "zod": "4.6.7",
     "postcss-selector-parser": "^7.1.6",
     "source-map-js": "^1.2.2"
   }

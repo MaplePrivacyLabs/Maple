@@ -66,6 +66,20 @@ const CONSTRAINTS: &[Constraints] = &[
         checks: &[(1, "kind IN ('env', 'header')"), (1, "length(target) = 32")],
     },
     Constraints {
+        table: "mcp_oauth_credentials",
+        finding: IntegrityTable::McpOAuthCredentials,
+        removed: None,
+        checks: &[
+            (5, "length(target) = 32"),
+            (5, "length(generation) = 32"),
+            (5, "revision >= 0"),
+            (
+                5,
+                "payload IS NULL OR (length(payload) > 0 AND length(payload) <= 65536)",
+            ),
+        ],
+    },
+    Constraints {
         table: "tasks",
         finding: IntegrityTable::Tasks,
         removed: None,

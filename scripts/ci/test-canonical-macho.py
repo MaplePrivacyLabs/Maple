@@ -71,6 +71,35 @@ def local_absolute_symbols(path):
     return symbols
 
 
+def swap_local_absolute_symbols(path):
+    """Swap the first two local absolute nlist entries in place."""
+    data = bytearray(Path(path).read_bytes())
+    _, _, _, _, ncmds, _, _, _ = struct.unpack_from("<IiiIIIII", data)
+    command_offset = 32
+    for _ in range(ncmds):
+        command, command_size = struct.unpack_from("<II", data, command_offset)
+        if command == LC_SYMTAB:
+            symbol_offset, symbol_count, _, _ = struct.unpack_from(
+                "<IIII", data, command_offset + 8
+            )
+            break
+        command_offset += command_size
+    else:
+        raise AssertionError(f"Mach-O has no symbol table: {path}")
+    entries = []
+    for index in range(symbol_count):
+        entry_offset = symbol_offset + index * 16
+        symbol_type = data[entry_offset + 4]
+        if not symbol_type & N_STAB and (symbol_type & N_TYPE) == N_ABS and not symbol_type & N_EXT:
+            entries.append(entry_offset)
+    first, second = entries[:2]
+    data[first:first + 16], data[second:second + 16] = (
+        data[second:second + 16],
+        data[first:first + 16],
+    )
+    Path(path).write_bytes(bytes(data))
+
+
 class CanonicalMachoTests(unittest.TestCase):
     def build_executable(self, output, local_symbols, return_value, global_symbol):
         object_path = output.with_suffix(".o")
@@ -145,6 +174,10 @@ class CanonicalMachoTests(unittest.TestCase):
             )
 
             self.assertEqual(local_absolute_symbols(executable_ab), symbols_ab)
+            if local_absolute_symbols(executable_ba) == symbols_ab:
+                # Xcode 27's ld sorts local absolute symbols, so reproduce the
+                # input-order variant older linkers emitted by swapping the entries.
+                swap_local_absolute_symbols(executable_ba)
             self.assertEqual(local_absolute_symbols(executable_ba), symbols_ba)
 
             canonical_ab = CANONICALIZER.canonical_macho(executable_ab)

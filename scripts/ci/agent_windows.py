@@ -17,6 +17,13 @@ LINKER_ENV = "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
 MARKER = "MAPLE_WINDOWS_LINKER_SMOKE"
 
 
+def target_identity(architecture: str) -> tuple[str, str]:
+    if architecture not in {"x86_64", "aarch64"}:
+        raise ValueError("unsupported native Windows build architecture")
+    host = architecture + "-pc-windows-msvc"
+    return host, "CARGO_TARGET_" + host.upper().replace("-", "_") + "_LINKER"
+
+
 def required_executable(name: str) -> Path:
     selected = shutil.which(name)
     if not selected:
@@ -89,17 +96,18 @@ def main() -> None:
         check=True, timeout=30,
     ).stdout.strip()
     hosts = [line.removeprefix("host:").strip() for line in identity.splitlines() if line.startswith("host:")]
-    if hosts != [HOST]:
-        raise ValueError(f"Agent Windows linker check requires Rust host {HOST}")
+    host, linker_env = target_identity(os.environ.get("MAPLE_WINDOWS_ARCH", "x86_64"))
+    if hosts != [host]:
+        raise ValueError(f"Agent Windows linker check requires Rust host {host}")
     linker = selected_linker(dict(os.environ))
     print(identity, flush=True)
     print(f"Selected MSVC Cargo linker: {linker}", flush=True)
-    os.environ[LINKER_ENV] = str(linker)
+    os.environ[linker_env] = str(linker)
     smoke(required_executable("cargo"), dict(os.environ))
     # GITHUB_ENV affects subsequent steps only. Publish the selection after the
     # Python -> Cargo -> rustc build-script and executable link has succeeded.
     with Path(github_env).open("a", encoding="utf-8") as output:
-        output.write(f"{LINKER_ENV}={linker}\n")
+        output.write(f"{linker_env}={linker}\n")
     print("Verified native Cargo build-script linking and executable startup", flush=True)
 
 

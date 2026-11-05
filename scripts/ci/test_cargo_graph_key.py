@@ -199,6 +199,16 @@ class ToolchainTests(unittest.TestCase):
         flake["nodes"]["nixpkgs"]["locked"]["rev"] = "b" * 40
         self.assertNotEqual(key(flake=flake), key())
 
+    def test_toolchain_pins_join_the_key_only_when_given(self):
+        pin = '{\n  "version": "27.1",\n  "build": "27A9275"\n}\n'
+        lockfiles = (lock_text(PACKAGES), json.dumps(FLAKE, indent=2))
+        self.assertEqual(cargo_graph_key.key(*lockfiles, ()), key())
+        self.assertNotEqual(cargo_graph_key.key(*lockfiles, (pin,)), key())
+        self.assertNotEqual(cargo_graph_key.key(*lockfiles, (pin.replace("27A9275", "27A9276"),)),
+                            cargo_graph_key.key(*lockfiles, (pin,)))
+        self.assertEqual(cargo_graph_key.key(*lockfiles, (pin.replace("\n", "\r\n"),)),
+                         cargo_graph_key.key(*lockfiles, (pin,)))
+
     def test_formatting_order_and_line_endings_do_not_change_the_key(self):
         reordered = copy.deepcopy(PACKAGES[::-1])
         for package in reordered:
@@ -264,6 +274,15 @@ class CommandLineTests(unittest.TestCase):
         code, stdout, _ = self.run_main(str(agent / "Cargo.lock"), str(agent / "flake.lock"))
         self.assertEqual(code, 0)
         self.assertRegex(stdout, r"\Ahash=[0-9a-f]{64}\n\Z")
+
+    def test_a_pin_file_argument_changes_the_agent_key(self):
+        agent = ROOT / "apps/maple-agent"
+        lockfiles = (str(agent / "Cargo.lock"), str(agent / "flake.lock"))
+        _, plain, _ = self.run_main(*lockfiles)
+        code, pinned, _ = self.run_main(*lockfiles, str(ROOT / "scripts/ci/apple-toolchain.json"))
+        self.assertEqual(code, 0)
+        self.assertRegex(pinned, r"\Ahash=[0-9a-f]{64}\n\Z")
+        self.assertNotEqual(pinned, plain)
 
     def test_the_agent_lock_keeps_its_key_when_every_local_version_is_bumped(self):
         agent = ROOT / "apps/maple-agent"

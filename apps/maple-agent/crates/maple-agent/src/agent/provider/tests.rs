@@ -437,6 +437,22 @@ async fn transport_failures_become_fixed_messages_pi_classifies() {
         ),
         (
             maple_sdk::Error::Api {
+                status: 403,
+                message: r#"{"status":403,"message":"Usage limit reached","error":{"message":"Usage limit reached","code":"usage_limit_reached"}}"#.into(),
+            },
+            USAGE_LIMIT_MESSAGE,
+            false,
+        ),
+        (
+            maple_sdk::Error::Api {
+                status: 403,
+                message: r#"{"status":403,"message":"Model not available on current plan","error":{"message":"Model not available on current plan","code":"model_not_available_on_plan"}}"#.into(),
+            },
+            "Maple rejected the inference request (status 403)",
+            false,
+        ),
+        (
+            maple_sdk::Error::Api {
                 status: 429,
                 message: String::new(),
             },
@@ -479,6 +495,79 @@ async fn transport_failures_become_fixed_messages_pi_classifies() {
         assert_eq!(message.error_message.as_deref(), Some(text));
         assert_eq!(is_retryable_error(&message), retryable, "{text}");
         assert!(!is_context_overflow(&message, None), "{text}");
+    }
+}
+
+#[tokio::test]
+async fn usage_limit_reached_is_the_only_403_with_a_billing_message() {
+    const USAGE_BODY: &str = r#"{"status":403,"message":"Usage limit reached","error":{"message":"Usage limit reached","code":"usage_limit_reached"}}"#;
+    const PLAN_BODY: &str = r#"{"status":403,"message":"Model not available on current plan","error":{"message":"Model not available on current plan","code":"model_not_available_on_plan"}}"#;
+    const FREE_BODY: &str = r#"{"status":403,"message":"Free tier token limit exceeded","error":{"message":"Free tier token limit exceeded","code":"free_tier_token_limit_exceeded"}}"#;
+
+    let usage = failure(json_reply(
+        403,
+        vec![
+            ("x-opensecret-error-contract", "1"),
+            ("x-opensecret-error-code", "usage_limit_reached"),
+        ],
+        USAGE_BODY,
+    ))
+    .await;
+    let error = usage.error_message.as_deref().unwrap();
+    assert!(error.contains(USAGE_LIMIT_MESSAGE), "{error}");
+    assert!(!error.contains("Usage limit reached"), "{error}");
+    assert!(!is_retryable_error(&usage), "{error}");
+    assert!(!is_context_overflow(&usage, None), "{error}");
+
+    let without_header = failure(json_reply(403, Vec::new(), USAGE_BODY)).await;
+    assert!(
+        without_header
+            .error_message
+            .as_deref()
+            .unwrap()
+            .contains(USAGE_LIMIT_MESSAGE)
+    );
+
+    let mismatched = [
+        json_reply(
+            403,
+            vec![("x-opensecret-error-code", "model_not_available_on_plan")],
+            USAGE_BODY,
+        ),
+        json_reply(
+            403,
+            vec![
+                ("x-opensecret-error-code", "usage_limit_reached"),
+                ("x-opensecret-error-code", "usage_limit_reached"),
+            ],
+            USAGE_BODY,
+        ),
+        json_reply(
+            403,
+            vec![("x-opensecret-error-code", "usage_limit_reached")],
+            r#"{"status":403,"message":"Usage limit reached"}"#,
+        ),
+        json_reply(
+            403,
+            vec![("x-opensecret-error-code", "model_not_available_on_plan")],
+            PLAN_BODY,
+        ),
+        json_reply(
+            403,
+            vec![("x-opensecret-error-code", "free_tier_token_limit_exceeded")],
+            FREE_BODY,
+        ),
+        json_reply(403, Vec::new(), ""),
+    ];
+    for reply in mismatched {
+        let message = failure(reply).await;
+        let error = message.error_message.as_deref().unwrap();
+        assert!(
+            error.contains("Maple rejected the inference request (status 403)"),
+            "{error}"
+        );
+        assert!(!error.contains(USAGE_LIMIT_MESSAGE), "{error}");
+        assert!(!is_retryable_error(&message), "{error}");
     }
 }
 

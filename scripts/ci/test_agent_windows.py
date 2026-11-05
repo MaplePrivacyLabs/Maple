@@ -56,7 +56,7 @@ class AgentWindowsTests(unittest.TestCase):
         # startup succeed; a broken host build-script linker cannot be saved.
         self.assertFalse(self.github_env.exists())
         environment = options["env"]
-        self.assertEqual(environment[agent_windows.LINKER_ENV], str(self.linker))
+        self.assertEqual(environment[agent_windows.target_identity(environment.get("MAPLE_WINDOWS_ARCH", "x86_64"))[1]], str(self.linker))
         self.assertEqual(environment["RUSTFLAGS"], self.environment["RUSTFLAGS"])
         self.assertEqual(environment["CFLAGS"], self.environment["CFLAGS"])
         self.assertTrue(options["check"])
@@ -95,6 +95,22 @@ class AgentWindowsTests(unittest.TestCase):
         self.assertFalse(manifest.parent.exists())
         self.assertFalse((self.root / "unrelated-target").exists())
         self.assertFalse((self.root / "unrelated-build").exists())
+
+    def test_arm64_native_host_links_and_exports_only_arm64_linker(self):
+        os.environ["MAPLE_WINDOWS_ARCH"] = "aarch64"
+        self.identity = "rustc fixture\nhost: aarch64-pc-windows-msvc\n"
+        agent_windows.main()
+        linker_env = agent_windows.target_identity("aarch64")[1]
+        self.assertEqual(self.github_env.read_text(), f"{linker_env}={self.linker}\n")
+        self.assertNotIn(agent_windows.LINKER_ENV, os.environ)
+
+    def test_architecture_mismatch_and_unknown_target_fail_before_smoke(self):
+        os.environ["MAPLE_WINDOWS_ARCH"] = "aarch64"
+        with self.assertRaisesRegex(ValueError, "requires Rust host aarch64"):
+            agent_windows.main()
+        self.assertEqual(len(self.calls), 1)
+        with self.assertRaisesRegex(ValueError, "unsupported native Windows"):
+            agent_windows.target_identity("arm64ec")
 
     def test_wrong_rust_host_fails_before_linker_export_or_smoke(self):
         self.identity = "rustc fixture\nhost: aarch64-pc-windows-msvc\n"

@@ -56,19 +56,6 @@ pub(super) fn acp_config_options(
     ]
 }
 
-pub(super) fn acp_session_config_options(
-    model: &str,
-    available_models: &[String],
-    message_count: usize,
-) -> Vec<SessionConfigOption> {
-    if message_count == 0 {
-        acp_config_options(model, available_models)
-    } else {
-        let locked_models = [model.to_string()];
-        acp_config_options(model, &locked_models)
-    }
-}
-
 pub(super) fn add_thinking_option(
     options: &mut Vec<SessionConfigOption>,
     state: &crate::agent::AgentThinkingState,

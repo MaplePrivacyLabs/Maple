@@ -61,7 +61,8 @@ branches in step with the lane table.
   restores. Heavy Rust caches therefore live in Blacksmith's store. GitHub's
   holds what GitHub-hosted jobs need: the lane caches of `agent-full-windows`
   (saved only by the nightly run) and `agent-windows-updater`, the
-  `agent-package-windows` packaging cache (below), the signed Research Windows
+  `agent-package-windows` and `agent-package-windows-arm64` packaging caches
+  (below), the Agent's ARM64 release build, the signed Research Windows
   build's Bun binary, the release, the Nix installer and that EIF check.
   `test_workflow_policy.py` lists these writers.
 - The signed master builds write the keys `release.yml` restores by prefix
@@ -77,14 +78,18 @@ branches in step with the lane table.
   keys. `scripts/ci/cargo_graph_key.py` hashes the Agent's `flake.lock` and
   its `Cargo.lock` without the versions of workspace and path crates, which
   Cargo rebuilds anyway: a release version bump keeps the key, and a change
-  to any third-party package or dependency edge, or to the toolchain, makes
-  the next build cold. Pushes build only Prod; the nightly Dev and dispatched
+  to any third-party package or dependency edge, or to the toolchain (for
+  macOS also `scripts/ci/apple-toolchain.json`), makes the next build cold. Pushes build only Prod; the nightly Dev and dispatched
   builds restore the same key without saving (the profile changes only Agent
   workspace crates, which Cargo rebuilds). No `ci.yml` lane reads it. The
+  Windows ARM64 build never runs on a push, so it saves its own
+  `ci-v1-agent-arm64-release-<graph hash>` from whichever run misses. The
   Agent packaging lanes build thin LTO into their own
-  `ci-v1-agent-package-<os>-*` caches, which only the nightly master run
-  saves. The Agent's signing, attestation and verification jobs restore
-  nothing.
+  `ci-v1-agent-package-<os>-*` caches (`ci-v1-agent-package-ARM64-Windows-*`
+  for the native ARM64 lane), which only the nightly master run saves. No
+  packaging family's key or restore prefix matches another cache's keys, so
+  a target never restores another target's objects. The Agent's signing and
+  publish jobs restore nothing.
 
 ## Concurrency
 
@@ -106,16 +111,14 @@ the other side of each contract. A failure means the workflow change is wrong:
 
 1. `release.yml` and the publishers (`pages-publish`, `proxy-publish`,
    `updates-publish`, `zapstore-publish`, `sdk-publish-npm`, `sdk-publish-rust`,
-   `agent-updates-publish`, `auth-pages-publish`, `opensecret-eif-release`)
+   `auth-pages-publish`, `opensecret-eif-release`)
    change only with owner review. Exactly one workflow is named `Release`, and
    every `workflow_run` listener names its producer and checks the head
    repository, conclusion and event.
-2. `services/agent-updates/publisher/publisher.py` trusts
-   `agent-desktop-build.yml` by path, job names, artifact names and signer, and
-   its run number is the Agent build number: never rename that file. The
-   Windows packaging and verification jobs set `MAPLE_PACKAGE_BUILD_NUMBER` to
-   that run number. `scripts/ci/windows_signature_reference.py` (the manual
-   signature probe) trusts the same file's Windows Prod jobs and their runners.
+2. `agent-desktop-build.yml`'s run number is the Agent build number, baked
+   into every package and the update manifests its `publish` job writes, so
+   never rename that file; its Windows signing job sets
+   `MAPLE_PACKAGE_BUILD_NUMBER` to it.
 3. The release preflight (`.agents/skills/release-maple/scripts/ci_evidence.py`)
    needs the evidence jobs of `frontend-tests`, `rust-tests`, `web-build`,
    `desktop-build`, `android-build` and `mobile-build` on master pushes, and a
@@ -123,7 +126,8 @@ the other side of each contract. A failure means the workflow change is wrong:
    ancestor succeeded (a scan still running does not block). These run on every
    relevant master push and are never cancelled.
 4. The signed master builds write the release cache keys above (the Agent's
-   is `cargo_graph_key.py`'s hash of its lockfiles, with no fallback), and
+   is `cargo_graph_key.py`'s hash of its lockfiles, plus the Xcode pin on
+   macOS, with no fallback), and
    `ios-dev-testflight.yml`'s run number is the Maple Dev build number: never
    rename that file.
 5. Every OpenSecret EIF builder that uses FlakeHub (`ci.yml`'s `os-eif`,
@@ -161,10 +165,11 @@ scripts only `ci.yml`'s unsigned lanes run select none. Only `mobile-build` and
 `ios-dev-testflight` can also be dispatched, which always builds; desktop and
 Android release evidence comes only from master pushes. The selector routes
 proxy runtime and Rust SDK build inputs to the native builds, because the
-Research shell builds both from the tree. TypeScript SDK changes never select
-app builds: each frontend builds the SDK its own manifest selects. Agent Prod
+Research shell builds both from the tree. Research builds the in-tree TypeScript
+SDK, so its source selects the same builds as a frontend change; Auth's pin does not. Agent Prod
 desktop packages build on master pushes that change Agent inputs (`plan.py only
-agent-desktop`), Agent Dev packages nightly, and both on every manual dispatch.
+agent-desktop`), Agent Dev packages nightly, and both on every manual dispatch;
+a dispatch with `release=true` builds Prod and publishes it as the next update.
 Signing jobs keep their protected environments; approving one trusts its
 runner with that environment's secrets.
 To rehearse the signed Research release scripts outside CI, run
@@ -193,14 +198,6 @@ and recovery tests and the bootstrap integration test on GitHub's Windows
 image. Like every `windows` matrix lane it has no signing credential or
 protected environment. A pass qualifies no official signature, signed
 installed upgrade, visible GUI or paired remote upgrade.
-
-The manual `agent-windows-signature-probe.yml` takes an exact historical
-producer run, attempt and source and the artifact's ZIP and PE digests. It
-checks that the trusted-master Windows Prod build, signing and download
-verification jobs passed and that the ZIP and package identity match, then runs
-the production Authenticode verifier on the PE without launching it. It has no
-default reference and nothing depends on it; a pass proves historical signature
-interoperability only.
 
 ## OpenSecret checks
 
@@ -247,20 +244,29 @@ release workflows use:
 
 | Work | Runner |
 | --- | --- |
-| Research macOS, Linux, Android and iOS builds, which compile and sign (master and release); `rust-tests.yml`; the Agent's unsigned master builds | Blacksmith (`blacksmith-6vcpu-macos-26`, `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`) |
+| Research macOS, Linux, Android and iOS builds, which compile and sign (master and release); `rust-tests.yml`; the Agent's unsigned master builds | Blacksmith (`blacksmith-6vcpu-macos-27`, `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`) |
 | Release `build-windows` | `maple-windows-2025-16core` |
-| Signed Research Windows master build; Agent Windows signing and verification | `windows-2025` |
-| Artifact verifiers, TestFlight submission, the Agent's signing and attestation, CodeQL, web and frontend evidence | Other GitHub-hosted runners |
+| Signed Research Windows master build; Agent Windows signing | `windows-2025` |
+| Agent Windows ARM64 build | `windows-11-arm` |
+| Artifact verifiers, TestFlight submission, the Agent's signing, attestation and publishing, CodeQL, web and frontend evidence | Other GitHub-hosted runners |
 | Proxy release builds and their PR rehearsal (`proxy-rust.yml`) | GitHub-hosted Linux and Windows, Blacksmith macOS |
 | EIF builders that use FlakeHub | `blacksmith-16vcpu-ubuntu-2404-arm` |
 
+The Agent's macOS signing, both TestFlight submissions, the macOS
+release verifiers and the Metal Toolchain export need the pinned Xcode, so they
+run on GitHub's `xcode-27` label, a public-preview image without an SLA. If
+GitHub renames or retires it, move them to the label that carries Xcode 27.1,
+such as `macos-27` once that image ships it. Jobs that launch or inspect
+artifacts without selecting Xcode stay on `macos-26`, an older macOS than the
+builds link against.
+
 The Agent's signing and attestation, `windows-signing` jobs and every artifact
-verifier stay GitHub-hosted: the Agent publisher rejects self-hosted signers,
-Blacksmith counts as self-hosted, and verifiers run fresh. The Agent's
+verifier stay GitHub-hosted, so provenance never names a self-hosted runner
+(Blacksmith counts as self-hosted). The Agent's
 unsigned master Windows build compiles on Blacksmith because its fat-LTO link
 runs on one thread, so 16 cores are no faster. Blacksmith's Windows workspace
 inherits a foreign write ACE that the updater's storage validation rejects,
-so the updater tests and install smokes stay on GitHub's image. Jobs that
+so the updater tests stay on GitHub's image. Jobs that
 compile and sign install the pinned Artifact Signing module before compiling,
 so a failed module download fails early; the module's own NuGet packages and
 the Azure login still come after the compile. The installer retries the
@@ -268,19 +274,28 @@ PowerShell Gallery and its CDN and accepts only the pinned SHA-256. Rust,
 MSVC, Perl and the linker are pinned by `.github/actions/setup-agent-windows`
 for the Agent.
 
-Research desktop and iOS builds select Xcode 26.5 (`17F42`) from
+Research desktop and iOS builds select Xcode 27.1 (`27A9275`) from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
 `scripts/ci/select-xcode.py`; the root Nix shell exports the same version for
 its Apple recipes. Do not rely on a runner's default Xcode. The
 [iOS ONNX pins](../apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh)
 verify artifacts against that exact build, so an Xcode upgrade means rebuilding
-and reviewing those hashes and validating desktop and iOS packaging. A newer
+and reviewing those hashes and validating desktop and iOS packaging. The
+Agent's signed macOS build compiles gpui's Metal shaders: Blacksmith's macOS
+image has no Metal Toolchain and cannot download one, so a GitHub `xcode-27`
+job exports it as a one-day artifact that the build imports, and the build's
+release cache key hashes the Xcode pin. A newer
 CI image does not raise the shipped deployment targets: Research supports
 macOS 13.4 and iOS 16.0.
 
 Research Linux packaging builds AppImage and DEB with Tauri, then the RPM from
 the normalized DEB payload. `scripts/ci/sccache-stats.sh` reports compiler-cache
 statistics with the build's own cache configuration.
+The RPM builder preserves explicit `bundle.linux.rpm.depends` from the Tauri
+configuration. WebKitGTK (`webkit2gtk4.1`) is required on Fedora, including KDE;
+package verification rejects RPMs missing that requirement. Install a downloaded
+RPM through Discover or `sudo dnf install ./Maple-<version>-1.x86_64.rpm` so the
+package manager resolves dependencies, rather than using `rpm --nodeps`.
 
 For a side-by-side hosted Dev installation, use
 `nix run --no-update-lock-file .#research-dev-desktop`, not an ordinary Research
@@ -294,8 +309,8 @@ icon, and runtime paths. See the
 ## SDK consumption
 
 Follow the [consumer version policy](sdk-publishing.md#consumer-version-policy).
-Consumers select published SDK pins independently; local links are for
-development. SDK publication and upgrading a consumer are separate decisions.
+Client apps build the in-tree SDK; Auth pins a published version and upgrades
+alone. SDK publication serves external users and Auth, not in-repo clients.
 
 ## Maintaining guidance
 

@@ -35,8 +35,13 @@ Windows Agent v3 observations use platform `windows`. The native feed
 metadata; `/download/agent/stable/windows` is redirect intent for the NSIS
 `*-windows-x86_64-setup.exe` installer. The updater's separate
 `*-windows-x86_64.tar.gz` payload is `windows-bundle`, while the `.exe` is
-`windows-installer`. Windows-like filenames with a different profile are rejected
-by the classifier rather than falling through to Linux's historical tar suffix.
+`windows-installer`. ARM64's v4 feed
+`/agent/stable/windows-arm64/latest.json`, immutable
+`windows-arm64-manifest.json`, `/download/agent/stable/windows-arm64` alias and
+`*-windows-aarch64` payloads use those same Windows categories. Architecture is
+not stored as a separate dimension; x64 and ARM64 counts are combined, preserving
+the existing ledger schema and query semantics. Windows-like filenames with a
+different profile are rejected by the classifier rather than falling through to Linux's historical tar suffix.
 Research Windows installer redirects retain their existing product and kind.
 Tracking classifies observations only; it does not enable Windows publication or
 authorize serving an artifact.

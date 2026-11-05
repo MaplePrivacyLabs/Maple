@@ -13,6 +13,7 @@
     "update_feed_url": null,
     "linux_update_feed_url": null,
     "windows_update_feed_url": null,
+    "windows_arm64_update_feed_url": null,
     "update_public_keys": [],
     "prerelease": true
   },
@@ -30,6 +31,7 @@
     "update_feed_url": "https://updates.maple.ai/agent/stable/latest.json",
     "linux_update_feed_url": "https://updates.maple.ai/agent/stable/linux/latest.json",
     "windows_update_feed_url": "https://updates.maple.ai/agent/stable/windows/latest.json",
+    "windows_arm64_update_feed_url": "https://updates.maple.ai/agent/stable/windows-arm64/latest.json",
     "update_public_keys": [
       "RWSEawHGDqhs8hlPvW08LCDXexMVkxqCtKhorNHTVpgMmYlls07md+mc",
       "RWR3nhVL8nlVmwQBTSKl/dl6a0V3eseG260Be3/aYVb4+K8MgBfyOyN4"

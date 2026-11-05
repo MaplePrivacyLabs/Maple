@@ -25,6 +25,7 @@ import {
   utf8
 } from "../transportV2/protocol";
 import { TransportV2Session, type SerializedTransportV2Session } from "../transportV2/session";
+import { withClientAppHeader } from "../clientApp";
 
 const vectorTranscript = {
   challenge: new Uint8Array(32).fill(0x11),
@@ -217,6 +218,30 @@ describe("Transport V2 protocol engine", () => {
         headers: [{ name: "x-opensecret-routing-key", value: ROUTING_KEY }]
       })
     ).toThrow(/logical header is invalid/i);
+  });
+
+  test("application reporting stays inside encrypted headers without extending V2 metadata", async () => {
+    const session = new TransportV2Session(
+      await vectorKeys(),
+      ROUTING_KEY,
+      SESSION_LIFETIME_SECONDS
+    );
+    const request = {
+      method: "POST",
+      target: "/v1/responses",
+      headers: withClientAppHeader([{ name: "x-maple-client-app", value: "proxy" }], "chat"),
+      body: utf8("{}")
+    };
+    const envelope = encodeRequestEnvelope(request);
+    const metadataLength = new DataView(envelope.buffer).getUint32(0, false);
+    const metadata = JSON.parse(new TextDecoder().decode(envelope.subarray(4, 4 + metadataLength)));
+    expect(metadata.headers).toEqual([{ name: "x-maple-client-app", value: "chat" }]);
+    expect(metadata).not.toHaveProperty("client_app");
+    const sealed = await session.sealRequest(request);
+    expect(new Headers(sealed.init.headers).has("x-maple-client-app")).toBe(false);
+    expect(new TextDecoder().decode(sealed.init.body as Uint8Array)).not.toContain(
+      "x-maple-client-app"
+    );
   });
 
   test("strictly persists the public routing key with the attested session", async () => {

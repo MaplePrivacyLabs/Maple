@@ -70,6 +70,30 @@ agent runtime; its desktop Agent page points users to Maple Work.
   attachments (picker, paste, or drag and drop), a per-message Copy button,
   and a context-window indicator. Every tool call runs without asking for
   approval.
+- A task can switch models between messages: its model menu offers every
+  model, a pick applies from the next message, and the transcript notes the
+  switch. When the new model's context window is smaller, the model that
+  wrote the history summarizes it before the next message if it no longer
+  fits, as `crates/maple-agent/src/agent/switch_compaction.rs` describes.
+- Shell tool calls start in the task's saved folder on the execution computer.
+  A `cd` inside a command does not affect later calls. Repository searches
+  should name the intended checkout/worktree with explicit absolute paths.
+  Maple supplies a 30-minute default deadline to allow slow builds, and the
+  call can request a longer
+  `timeout` explicitly. Search guidance asks for a short timeout (normally
+  30 seconds) and a narrower scope if it expires; that shorter limit applies
+  only when the call requests it.
+  Quiet commands refresh their timeline row every five seconds with their
+  starting folder, elapsed time, time since output and deadline. Tool cards do
+  not display these details. Stop and deadlines use Pi's process-group cleanup
+  on Unix (process-tree cleanup on Windows).
+  Maple bounds the whole operation, including setup and stdin delivery, and allows
+  up to one second for cooperative cancellation before dropping a stuck operation.
+  The execution policy and progress reporting live in Maple; the Pi crates are unchanged.
+  These are execution safeguards, not a filesystem sandbox: repository searches
+  must still choose the correct folder and bounded scope, and deliberately
+  detached processes can escape a Unix process group. `head` bounds output,
+  not runtime.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. Skills and prompt templates appear in the same list.
@@ -138,7 +162,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
   and restore. Unknown or malformed View preferences fall back to defaults.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
-  speech voice and speed), Keyboard Shortcuts, System prompt, Integrations
+  speech voice and speed), Keyboard Shortcuts, Additional instructions, Integrations
   (detected built-ins and custom MCP servers), Usage (the plan meter from
   the billing API), and About.
 - Dark and light themes; the default follows the system.
@@ -158,7 +182,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
 
 ### Integrations preview
 
-On macOS and Linux, Settings > Integrations can set up computer use inside
+On macOS, Linux and Windows, Settings > Integrations can set up computer use inside
 Maple itself. The embedded CUA runtime uses the pinned Cua Driver Rust SDK; it
 does not need a separate daemon, executable, or MCP child process.
 
@@ -169,7 +193,8 @@ first time a task captures the screen or sends input. Under GNOME on Wayland
 the `winrects@cua` GNOME Shell extension that ships with the SDK is required,
 because Mutter exposes no window geometry or screen capture to an ordinary
 client; Settings reports it as an unmet requirement until it is installed and
-the session has been restarted once.
+the session has been restarted once. Windows asks for no permission at all, so
+enabling computer use in Settings is the only consent step there.
 
 A desktop task with CUA on gets its tools as `cua-driver__<tool>`, bound
 anew at each run. CUA keeps its native screenshot defaults. Every model
@@ -214,8 +239,30 @@ A stdio server runs in the task's folder with the login shell's PATH, in its
 own process group; it is stopped by closing its input, then SIGTERM, then
 SIGKILL. For an HTTP server, `$NAME` and `${NAME}` in the URL and in header
 values are filled in from the server's environment variables, and redirects
-are not followed. Sign-in to servers (OAuth), and MCP resources and prompts,
-are not supported yet.
+are not followed. Errors leave out the endpoint's query and these saved values.
+MCP resources and prompts are not supported yet.
+
+Settings > Integrations also lists well-known apps from the bundled
+`crates/maple-agent/src/agent/mcp/catalog.json`, a subset of the MCP registry's
+`server.json`, so adding an app needs no code. Connecting one, or choosing
+**Sign in with browser** for a custom HTTP server, signs in on this computer: the
+browser returns to a loopback listener, Maple registers itself with the server
+(Dynamic Client Registration), and tokens stay in this computer's store. A new
+connection is on for new tasks until someone turns it off. A server that only
+accepts registered apps cannot be signed in to yet, and neither can a paired
+computer from its controller.
+
+Some catalog apps run on this computer, such as Playwright and, on macOS, Xcode.
+An entry names a pinned package or a command, what must be installed first, and
+which platforms it runs on, so these need no code either. Connect checks the
+requirements, starts the app, lists its tools and saves it as an ordinary stdio
+server. Node.js and uv come from the login shell's PATH. If one is missing, the
+card says what is needed and links to it.
+
+HTTP servers use the stateless `2026-07-28` revision of MCP when they offer it,
+and the `initialize` handshake otherwise. Stdio servers keep the handshake, since
+an older server may only answer the revision's probe by timing out. Only stdio
+servers are offered the task's folder as a root.
 
 #### Claude Code
 
@@ -410,6 +457,8 @@ A pure Darwin package is not exposed: the pinned Nix Swift/SDK combination
 cannot build the CUA bridges with the SDK required for recording. The supported
 macOS path uses Xcode's Swift and Metal toolchains and is also used by CI.
 Linux builds use Nix-provided ALSA, font, keyboard, Wayland and Vulkan libraries.
+Release bundles link against glibc 2.31 with `cargo zigbuild` and run on the
+host's own libraries; see [desktop builds](docs/desktop-builds.md).
 
 ### Shared Rust build cache
 
@@ -493,6 +542,9 @@ Unlock through desktop or `maple-agent unlock`, then sign in through desktop or
 `maple-agent login` if needed. ACP never places an unlock prompt on its protocol
 stream.
 
+**Settings → ACP** shows the command for the running installation and examples
+for Zed, JetBrains IDEs, Paseo and T3 Code. Nothing needs enabling first.
+
 `session/new` creates a draft in the client's working directory. Account MCP
 servers use the Settings defaults with that project's saved choices applied.
 Its first accepted prompt makes it visible in desktop and ACP lists. `session/load`
@@ -518,10 +570,11 @@ compatibility](docs/local-host.md) before configuring an ACP launcher.
 
 ### `maple-agent proxy`
 
-The desktop also offers **Settings → Local API**. It starts this computer's
-loopback endpoint in the shared local host, including while a remote computer
-is selected. Create a key under API keys, enable Local API, then configure your
-client with the displayed `/v1` base URL and that key. See
+The desktop also offers this under **Settings → API**. Its Local API switch
+starts this computer's loopback endpoint in the shared local host, including
+while a remote computer is selected. Create a key on the same page, enable Local
+API, then configure your client with the displayed `/v1` base URL and that key.
+See
 [Local API ownership and lifecycle](docs/local-api.md).
 
 The command below remains an independent foreground server. It cannot share a

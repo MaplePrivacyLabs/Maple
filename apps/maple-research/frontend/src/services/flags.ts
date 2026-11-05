@@ -4,7 +4,8 @@ const DEV_FLAGS_BASE_URL = "https://flags-dev.opensecret.cloud";
 const PROD_FLAGS_BASE_URL = "https://flags.opensecret.cloud";
 
 export const FEATURE_FLAGS = {
-  AGENT_MODE: "agent_mode"
+  AGENT_MODE: "agent_mode",
+  USAGE_PAGE: "usage_page"
 } as const;
 
 export type FlagValues = Readonly<Record<string, boolean>>;

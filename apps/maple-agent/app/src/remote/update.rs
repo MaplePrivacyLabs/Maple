@@ -12,6 +12,8 @@ pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
 pub const REFRESH_CAPABILITY: &str = "remote_update_refresh_v1";
 pub const RECENT_PROJECTS_CAPABILITY: &str = "recent_projects_v1";
 pub const SCRATCH_PROJECT_CAPABILITY: &str = "scratch_project_v1";
+/// The host downloads and verifies an exact Available offer before installing.
+pub const DOWNLOAD_CAPABILITY: &str = "remote_update_download_v1";
 pub const PROJECT_FOLDERS_CAPABILITY: &str = "project_folders_v1";
 /// The host summarizes a tool call from its input as the call starts.
 pub const TOOL_SUMMARY_START_CAPABILITY: &str = "tool_summary_start_v1";
@@ -35,6 +37,7 @@ impl ProtocolInfo {
                 SCRATCH_PROJECT_CAPABILITY.into(),
                 RECENT_PROJECTS_CAPABILITY.into(),
                 TOOL_SUMMARY_START_CAPABILITY.into(),
+                DOWNLOAD_CAPABILITY.into(),
             ],
         }
     }
@@ -134,25 +137,6 @@ pub enum UpdateState {
     Unknown,
 }
 
-impl UpdateState {
-    #[cfg(feature = "desktop")]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Disabled => "Updates unavailable",
-            Self::Idle => "Not checked yet",
-            Self::Checking => "Checking for updates…",
-            Self::Current => "Up to date",
-            Self::Available => "Update available",
-            Self::Downloading => "Downloading update…",
-            Self::Ready => "Ready to update",
-            Self::Installing => "Updating remote computer…",
-            Self::RestartRequired => "Restart required",
-            Self::Error => "Update needs attention",
-            Self::Unknown => "Update status unavailable",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockedReason {
@@ -172,23 +156,15 @@ impl BlockedReason {
     #[cfg(feature = "desktop")]
     pub fn message(self) -> &'static str {
         match self {
-            Self::PasswordProtected => {
-                "Update this computer locally: its data is password protected."
-            }
-            Self::UnsupportedInstallation => {
-                "This installation must be updated on the remote computer."
-            }
-            Self::UpdatesDisabled => "Updates are unavailable for this build.",
-            Self::UpdateNotReady => "A verified update is not ready on this computer.",
-            Self::Busy => "The remote computer is busy. Try again after it finishes.",
-            Self::DesktopUnavailable => "Open Maple on the remote computer before updating it.",
-            Self::CoordinatorUnavailable => {
-                "Remote update controls need attention on this computer. Update it locally."
-            }
-            Self::PairingConfirmationRequired => {
-                "Pair this computer again before updating it remotely. Its saved pairing confirmation is unavailable."
-            }
-            Self::Unknown => "The remote computer cannot install this update remotely.",
+            Self::PasswordProtected => "Its data is password protected. Update it there.",
+            Self::UnsupportedInstallation => "This installation updates only on that computer.",
+            Self::UpdatesDisabled => "Updates are off for this build.",
+            Self::UpdateNotReady => "The update isn’t ready there yet.",
+            Self::Busy => "It’s busy. Try again shortly.",
+            Self::DesktopUnavailable => "Open Maple on that computer to update it.",
+            Self::CoordinatorUnavailable => "Update it on that computer.",
+            Self::PairingConfirmationRequired => "Pair it again to update it remotely.",
+            Self::Unknown => "It can’t be updated remotely.",
         }
     }
 }
@@ -241,6 +217,31 @@ impl PeerInfo {
 
     pub fn supports_remote_refresh(&self) -> bool {
         self.protocol.supports(REFRESH_CAPABILITY)
+    }
+
+    pub fn supports_remote_download(&self) -> bool {
+        self.protocol.supports(DOWNLOAD_CAPABILITY)
+    }
+
+    /// Whether the reported offer may be requested at all. A Ready offer is
+    /// installed as before. An Available offer is downloaded first by a host
+    /// with that capability; an older host reports it as not ready and is
+    /// still asked, so it refuses definitely before admitting any work.
+    pub fn install_requestable(&self) -> bool {
+        match self.update.state {
+            UpdateState::Ready => self.update.blocked.is_none(),
+            UpdateState::Available => match self.update.blocked {
+                None => true,
+                Some(BlockedReason::UpdateNotReady) => !self.supports_remote_download(),
+                Some(_) => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// An older host refuses an Available offer it has not downloaded.
+    pub fn needs_local_download(&self) -> bool {
+        self.update.state == UpdateState::Available && !self.supports_remote_download()
     }
 
     pub fn supports_project_folders(&self) -> bool {
@@ -383,30 +384,23 @@ pub enum InstallRefusal {
     AccountChanged,
     Busy,
     Unavailable,
+    /// An older execution host installs only an update it already downloaded.
+    DownloadRequired,
 }
 
 impl InstallRefusal {
     #[cfg(feature = "desktop")]
     pub fn message(self) -> &'static str {
         match self {
-            Self::AuthorizationChanged => {
-                "The pairing confirmation changed. Refresh this computer’s status, or pair it again before updating it."
-            }
-            Self::UpdateChanged => {
-                "The remote update changed. Refresh this computer’s status before continuing."
-            }
-            Self::NotReady => {
-                "The remote computer is not ready to install this update. Refresh its status before continuing."
-            }
-            Self::Unsupported => {
-                "This computer does not support this remote update. Update Maple directly on it."
-            }
-            Self::AccountChanged => {
-                "The signed-in account changed. Reopen Remote settings before continuing."
-            }
-            Self::Busy => "The remote computer is busy. Refresh its status after it finishes.",
-            Self::Unavailable => {
-                "The update request was not accepted. Refresh this computer’s status or check it directly."
+            Self::AuthorizationChanged => "The pairing changed. Check again, or pair it again.",
+            Self::UpdateChanged => "The update changed. Check again.",
+            Self::NotReady => "It wasn’t ready. Check again.",
+            Self::Unsupported => "This version can’t update remotely. Update it there.",
+            Self::AccountChanged => "The account changed. Reopen Settings.",
+            Self::Busy => "It was busy. Check again shortly.",
+            Self::Unavailable => "It didn’t accept the request. Check again.",
+            Self::DownloadRequired => {
+                "It must download the update first. Turn on automatic downloads there, or update it there."
             }
         }
     }
@@ -630,6 +624,65 @@ mod tests {
             .retain(|value| value != SCRATCH_PROJECT_CAPABILITY);
         assert!(!legacy.supports(SCRATCH_PROJECT_CAPABILITY));
         assert!(legacy.supports(PROJECT_FOLDERS_CAPABILITY));
+        assert!(current.supports(DOWNLOAD_CAPABILITY));
+    }
+
+    #[test]
+    fn available_offers_are_requestable_from_download_capable_and_older_hosts() {
+        use UpdateState::*;
+        let mut info = current_peer_for_compatibility();
+        info.update.operation = None;
+        for (state, blocked, requestable) in [
+            (Ready, None, true),
+            (Available, None, true),
+            (Ready, Some(BlockedReason::Busy), false),
+            (Available, Some(BlockedReason::PasswordProtected), false),
+            (
+                Available,
+                Some(BlockedReason::UnsupportedInstallation),
+                false,
+            ),
+            (Downloading, Some(BlockedReason::Busy), false),
+            (Error, Some(BlockedReason::UpdateNotReady), false),
+            (Current, None, false),
+        ] {
+            info.update.state = state;
+            info.update.blocked = blocked;
+            assert_eq!(
+                info.install_requestable(),
+                requestable,
+                "{state:?} {blocked:?}"
+            );
+            assert!(!info.needs_local_download());
+        }
+        // A download-capable host never reports an Available offer as not
+        // ready; if it does, that block is authoritative.
+        info.update.state = Available;
+        info.update.blocked = Some(BlockedReason::UpdateNotReady);
+        assert!(!info.install_requestable());
+
+        // An older host (0.0.14: management 7.1.0 without the capability)
+        // reports Available as not ready. It is still asked, and the
+        // controller knows its refusal means "download there first".
+        info.protocol
+            .capabilities
+            .retain(|value| value != DOWNLOAD_CAPABILITY);
+        assert!(info.supports_remote_updates());
+        assert!(!info.supports_remote_download());
+        assert!(info.install_requestable());
+        assert!(info.needs_local_download());
+        for blocked in [
+            BlockedReason::PasswordProtected,
+            BlockedReason::UnsupportedInstallation,
+            BlockedReason::Busy,
+        ] {
+            info.update.blocked = Some(blocked);
+            assert!(!info.install_requestable(), "{blocked:?}");
+        }
+        info.update.state = Ready;
+        info.update.blocked = None;
+        assert!(info.install_requestable());
+        assert!(!info.needs_local_download());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise RPM staging identity and packaging failures without native builds."""
+"""Exercise Debian integrity, RPM staging identity, and packaging failures."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -67,6 +68,17 @@ normalize_linux_desktop_packages
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.rpm.exists())
 
+    def use_gnu_ar_format(self):
+        # Debian packages are GNU archives. llvm-ar writes BSD ones on Darwin,
+        # padding members with bytes that GNU tar rejects after gzip.
+        ar = shutil.which("ar")
+        version = subprocess.run([ar, "--version"], capture_output=True, text=True)
+        if "LLVM" not in version.stdout:
+            return
+        tool = self.bin / "ar"
+        tool.write_text(f'#!{shutil.which("bash")}\nexec "{ar}" --format=gnu "$@"\n')
+        tool.chmod(0o755)
+
     def test_failed_extraction_is_not_hidden_by_cleanup(self):
         result = self.run_shell('''
 ar() { return 19; }
@@ -92,6 +104,55 @@ extract_appimage_tool fixture.AppImage "$TAURI_DIR/extracted"
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.tauri / "extracted/AppRun").exists())
+
+    def test_deb_normalization_refreshes_checksums_and_verifier_rejects_tampering(self):
+        self.use_gnu_ar_format()
+        self.deb.unlink()
+        payload = self.root / "deb-input"
+        (payload / "usr/bin").mkdir(parents=True)
+        (payload / "usr/share/maple").mkdir(parents=True)
+        (payload / "DEBIAN").mkdir()
+        binary = payload / "usr/bin/maple"
+        binary.write_bytes(b"before sanitization")
+        resource = payload / "usr/share/maple/resource with spaces"
+        resource.write_bytes(b"unchanged resource")
+        (payload / "usr/bin/maple-link").symlink_to("maple")
+        (payload / "DEBIAN/md5sums").write_text(
+            f"{hashlib.md5(binary.read_bytes()).hexdigest()}  usr/bin/maple\n"
+            f"{hashlib.md5(resource.read_bytes()).hexdigest()}  usr/share/maple/resource with spaces\n"
+        )
+        result = self.run_shell('''
+archive_tree_as_root_tar_gz "$FIXTURE_TAURI/../deb-input/DEBIAN" "$FIXTURE_TAURI/control.tar.gz"
+archive_tree_as_root_tar_gz "$FIXTURE_TAURI/../deb-input/usr" "$FIXTURE_TAURI/usr.tar.gz"
+mkdir -p "$FIXTURE_TAURI/data/usr"
+tar -xzf "$FIXTURE_TAURI/usr.tar.gz" -C "$FIXTURE_TAURI/data/usr"
+archive_tree_as_root_tar_gz "$FIXTURE_TAURI/data" "$FIXTURE_TAURI/data.tar.gz"
+printf '2.0\\n' > "$FIXTURE_TAURI/debian-binary"
+(cd "$FIXTURE_TAURI" && ar crD target/release/bundle/deb/Maple.deb debian-binary control.tar.gz data.tar.gz)
+sanitize_linux_deb_payload() { printf 'after sanitization' > "$1/usr/bin/maple"; }
+verify_linux_package_executable_metadata() { :; }
+python3_runner() { echo true; }
+normalize_deb_package "$FIXTURE_TAURI/target/release/bundle/deb/Maple.deb"
+verify_linux_deb_package_executable_metadata "$FIXTURE_TAURI/target/release/bundle/deb/Maple.deb"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usr/bin/maple: OK", result.stdout)
+        # coreutils 9.11+ quotes names with spaces in --check output.
+        self.assertRegex(result.stdout, r"(?m)^'?usr/share/maple/resource with spaces'?: OK$")
+        self.assertNotIn("maple-link: OK", result.stdout)
+        result = self.run_shell('''
+(cd "$FIXTURE_TAURI" && ar x target/release/bundle/deb/Maple.deb)
+mkdir "$FIXTURE_TAURI/tampered"
+tar -xzf "$FIXTURE_TAURI/data.tar.gz" -C "$FIXTURE_TAURI/tampered"
+printf tampered > "$FIXTURE_TAURI/tampered/usr/bin/maple"
+archive_tree_as_root_tar_gz "$FIXTURE_TAURI/tampered" "$FIXTURE_TAURI/data.tar.gz"
+(cd "$FIXTURE_TAURI" && ar crD target/release/bundle/deb/Maple.deb debian-binary control.tar.gz data.tar.gz)
+verify_linux_package_executable_metadata() { :; }
+python3_runner() { echo true; }
+verify_linux_deb_package_executable_metadata "$FIXTURE_TAURI/target/release/bundle/deb/Maple.deb"
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("usr/bin/maple: FAILED", result.stdout)
 
     def fake_rpmbuild(self, exit_code):
         tool = self.bin / "rpmbuild"
@@ -166,6 +227,55 @@ build_rpm_package_from_payload "$TAURI_DIR/target/release/bundle/rpm/Maple-1.2.3
         self.assertEqual(name, "maple-research-dev")
         self.assertIn("libwebkit2gtk-4.1.so.0()(64bit)", requires)
         self.assertNotIn("webkit2gtk4.1", requires)
+
+    def test_rpm_preserves_configured_runtime_dependencies(self):
+        config = json.loads((ROOT / "apps/maple-research/frontend/src-tauri/tauri.conf.json").read_text())
+        self.assertIn("libwebkit2gtk-4.1.so.0()(64bit)", config["bundle"]["linux"]["rpm"]["depends"])
+        self.assertNotIn("webkit2gtk4.1", config["bundle"]["linux"]["rpm"]["depends"])
+        (self.tauri / "tauri.conf.json").write_text(json.dumps(config))
+        self.fake_rpmbuild(0)
+        result = self.run_factory()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        spec = (self.tauri / "maple.spec").read_text()
+        self.assertIn("Requires: libwebkit2gtk-4.1.so.0()(64bit)\n", spec)
+
+    def test_rpm_dependency_verification(self):
+        for requires, expected in (
+            ("libwebkit2gtk-4.1.so.0()(64bit)", 0),
+            ("rpmlib(PayloadFilesHavePrefix) <= 4.0-1", 1),
+            ("webkit2gtk4.1", 1),
+            ("libwebkit2gtk-4_1-0", 1),
+            ("libwebkit2gtk-4.0.so.0()(64bit)", 1),
+            ("libwebkit2gtk-4.1.so.0", 1),
+        ):
+            with self.subTest(requires=requires):
+                result = self.run_shell(f'''
+rpm() {{ printf '%s\\n' '{requires}'; }}
+verify_linux_rpm_package_dependencies fixture.rpm
+''')
+                self.assertEqual(result.returncode, expected, result.stderr)
+
+    @unittest.skipUnless(shutil.which("rpmbuild") and shutil.which("rpm"), "RPM tools are unavailable")
+    def test_built_rpm_declares_webkit_dependency(self):
+        config = json.loads((ROOT / "apps/maple-research/frontend/src-tauri/tauri.conf.json").read_text())
+        config["version"] = "1.2.3"
+        (self.tauri / "tauri.conf.json").write_text(json.dumps(config))
+        result = self.run_factory()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        requires = subprocess.run(
+            ["rpm", "-qp", "--requires", str(self.rpm)],
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        self.assertIn("libwebkit2gtk-4.1.so.0()(64bit)", requires)
+        verified = self.run_shell(f'verify_linux_rpm_package_dependencies "{self.rpm}"')
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def test_rpm_query_failure_is_rejected(self):
+        result = self.run_shell('''
+rpm() { return 19; }
+verify_linux_rpm_package_dependencies fixture.rpm
+''')
+        self.assertNotEqual(result.returncode, 0)
 
     def test_failed_final_move_is_not_hidden_by_cleanup(self):
         self.fake_rpmbuild(0)

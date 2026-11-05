@@ -128,14 +128,18 @@ Blacksmith and the org's 16-core GitHub Windows runner are billed per minute.
   symlink privilege GitHub grants. 16 cores only add queueing to a short
   suite.
 - **Windows packaging (`agent-package-windows`, `research-desktop-windows`,
-  release `build-windows`) uses `maple-windows-2025-16core`.** Install smokes
-  need GitHub's image, and the bundles gain from cores.
+  release `build-windows`) uses `maple-windows-2025-16core`.** The bundles
+  gain from cores.
+- **Native Windows ARM64 (`agent-package-windows-arm64`, the Agent's
+  `windows-arm64-build`) runs on GitHub's `windows-11-arm`.** Native
+  compilation there is slow (35-50 minutes), so it runs only by label,
+  nightly, on dispatch and for releases, never on an unlabelled PR or a push.
 - **The Agent's master Windows build runs on Blacksmith Windows.** The
   fat-LTO link is single-threaded, so 16 cores are no faster.
 - **The Agent's signing and attestation, `windows-signing` jobs and artifact
-  verifiers are GitHub-hosted.** The Agent publisher verifies attestations
-  with `--deny-self-hosted-runners`, and Blacksmith counts as self-hosted.
-  `windows-signing`'s Azure trust names GitHub-hosted runners (C6).
+  verifiers are GitHub-hosted.** Provenance then never names a self-hosted
+  runner (Blacksmith counts as self-hosted), and `windows-signing`'s Azure
+  trust names GitHub-hosted runners (C6).
   Verifiers run fresh and restore no cache. Research's macOS, Linux, iOS and
   Android signed builds compile and sign on Blacksmith.
 - **Every EIF builder that uses FlakeHub runs on
@@ -176,11 +180,15 @@ and the others have no better fallback.
   prefix fallback could carry a removed crate's build output into a signed
   binary. `scripts/ci/cargo_graph_key.py` hashes the Agent's `flake.lock` and
   every third-party package and dependency edge in its `Cargo.lock`, but not
-  the versions of workspace and path crates. Cargo rebuilds those anyway, so a
+  the versions of workspace and path crates; the macOS builder also hashes
+  `scripts/ci/apple-toolchain.json`, so an Xcode pin change makes its next
+  build cold. Cargo rebuilds the local crates anyway, so a
   version bump of them, the commonest Agent lockfile change, keeps the fat-LTO
   build warm. Any other lockfile change makes it fully cold; that cost is
   known and accepted. Only Prod pushes save it; the nightly Dev and dispatch
-  builds only restore it. No `ci.yml` lane reads it.
+  builds only restore it. The Windows ARM64 builder never runs on a push, so
+  it keeps its own exact `ci-v1-agent-arm64-release-<graph hash>` and saves it
+  from whichever run misses. No `ci.yml` lane reads either.
 - **Reserved prefixes.** `release.yml` restores the families in
   `test_contracts.RESERVED_PREFIXES` by prefix. Only the signed master
   workflows write them. `ci.yml` only restores keys that master saves. No
@@ -194,18 +202,25 @@ The owner chose fat LTO with one codegen unit for Agent release builds
 measured clearly larger binaries. The consequence is a slow master Agent
 build, mostly single-threaded compile and link, which bigger runners do not
 speed up. The `ci:package` rehearsals deliberately build thin LTO
-(`FAST_RELEASE` in `lanes.py`) into their own `ci-v1-agent-package-*` caches.
-They prove the packaging, not the optimizer. Only the nightly master run
-saves those caches.
+(`FAST_RELEASE` in `lanes.py`) into their own `ci-v1-agent-package-*` caches,
+one family per target: `ci-v1-agent-package-<os>-`, and
+`ci-v1-agent-package-ARM64-Windows-` for native ARM64. The cache action
+restores by prefix, so no family's key or restore prefix may match another
+cache's keys (C4); `ARM64` leads because `<os>` would make the x64 Windows
+prefix match ARM64 keys. They prove the packaging, not the optimizer. Only the
+nightly master run saves those caches.
 
 ## Agent Dev builds run nightly
 
-`agent-desktop-build.yml` builds Prod on master pushes, Dev nightly at 10:37
-UTC, and both on dispatch. Prod no longer waits on, or gets skipped by, a
-failed Dev leg, and pushes no longer spend runner time on Dev packages. The
-nightly run can never be published, because the publisher accepts only
-`push` and `workflow_dispatch` runs. The hour avoids the other scheduled runs
-and the top of the hour. Research iOS Dev TestFlight stays on push.
+`agent-desktop-build.yml` builds Prod on master pushes, Dev nightly (cron
+10:37 UTC), and both on dispatch. Prod no longer waits on, or gets skipped by, a
+failed Dev leg, and pushes no longer spend runner time on Dev packages. Only a
+dispatch with `release=true` publishes. Windows ARM64 compiles natively on
+GitHub's slow ARM image (35-50 minutes), so it builds only nightly, on dispatch
+and for releases, never on a push. The cron sits hours after the other
+scheduled runs and off the top of the hour. GitHub starts every scheduled run
+hours late, so nothing may depend on the exact time or on the other nightly
+runs having finished. Research iOS Dev TestFlight stays on push.
 
 ## CodeQL only has to be "not red"
 
@@ -256,8 +271,8 @@ audit whenever they are selected.
 Tests that grep a script's or workflow's prose or comments break on harmless
 renames and rewording and catch no behaviour. A hand-copied list of required
 test names breaks on the next rename. Test what the planner selects, or the
-contract another file consumes: `test_contracts.py` imports `publisher.py`,
-`ci_evidence.py` and the signature probe rather than copying their rules.
+contract another file consumes: `test_contracts.py` imports `ci_evidence.py`
+rather than copying its rules.
 Where a seam depends on exact structure, a contract test asserts the parsed
 YAML fields and conditions (for example the clean step's `run` lines or the
 EIF `sign` job's `if:`). Derive any list a test needs.

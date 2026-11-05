@@ -3,7 +3,7 @@
 
 use gpui::{Context, Div, div, prelude::*};
 
-use super::{SettingsScreen, SettingsTarget, info_row, plan_card, section_title};
+use super::{SettingsScreen, SettingsTarget, plan_card, section_title};
 use crate::billing::{BillingStatus, BillingStatusExt, PlanTier, Product, price_label};
 use crate::ui::theme;
 use crate::ui::widgets;
@@ -15,6 +15,7 @@ pub(super) enum BillingTarget {
     ManageSubscription,
     /// Checkout, or the web pricing page for plans this app cannot start.
     Product(String),
+    Credits(super::api_credits::CreditsTarget),
 }
 
 pub(super) struct BillingState {
@@ -24,16 +25,26 @@ pub(super) struct BillingState {
     /// True while a portal or checkout link is being minted.
     pub(super) busy: bool,
     pub(super) notice: Option<String>,
+    pub(super) credits: super::api_credits::CreditsState,
 }
 
 impl BillingState {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(
+        application_vim_enabled: bool,
+        application_focus: gpui::FocusHandle,
+        cx: &mut gpui::Context<SettingsScreen>,
+    ) -> Self {
         Self {
             status: None,
             status_error: None,
             products: None,
             busy: false,
             notice: None,
+            credits: super::api_credits::CreditsState::new(
+                application_vim_enabled,
+                application_focus,
+                cx,
+            ),
         }
     }
 
@@ -82,6 +93,7 @@ pub(super) fn product_action(status: &BillingStatus, product: &Product) -> Produ
 
 impl SettingsScreen {
     pub(super) fn load_billing(&self, cx: &mut Context<Self>) {
+        self.load_credit_balance(cx);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -126,18 +138,21 @@ impl SettingsScreen {
 
     pub(super) fn billing_targets(&self) -> Vec<SettingsTarget> {
         let mut targets = vec![SettingsTarget::Billing(BillingTarget::Refresh)];
-        let Some(status) = self.billing.status.as_ref() else {
-            return targets;
-        };
-        if status.has_portal() {
-            targets.push(SettingsTarget::Billing(BillingTarget::ManageSubscription));
-        }
-        for product in self.billing.products.as_deref().unwrap_or_default() {
-            if product_action(status, product) != ProductAction::Current {
-                targets.push(SettingsTarget::Billing(BillingTarget::Product(
-                    product.id.clone(),
-                )));
+        if let Some(status) = self.billing.status.as_ref() {
+            if status.has_portal() {
+                targets.push(SettingsTarget::Billing(BillingTarget::ManageSubscription));
             }
+            for product in self.billing.products.as_deref().unwrap_or_default() {
+                if product_action(status, product) != ProductAction::Current {
+                    targets.push(SettingsTarget::Billing(BillingTarget::Product(
+                        product.id.clone(),
+                    )));
+                }
+            }
+        }
+        // Credits sit below Plans, which only render once status has loaded.
+        if self.api_access() == Some(true) {
+            targets.extend(self.credits_targets());
         }
         targets
     }
@@ -145,12 +160,14 @@ impl SettingsScreen {
     pub(super) fn activate_billing_target(
         &mut self,
         target: BillingTarget,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
         match target {
             BillingTarget::Refresh => self.refresh_billing(cx),
             BillingTarget::ManageSubscription => self.open_billing_portal(cx),
             BillingTarget::Product(id) => self.choose_product(&id, cx),
+            BillingTarget::Credits(target) => self.activate_credits_target(target, window, cx),
         }
     }
 
@@ -335,12 +352,6 @@ impl SettingsScreen {
         if let Some(usage) = self.plan.as_ref() {
             pane = pane.child(plan_card(usage));
         }
-        if let Some(balance) = status.api_credit_balance.filter(|balance| *balance > 0) {
-            pane = pane.child(info_row(
-                "API credits",
-                format!("{} credits", crate::billing::format_count(balance)),
-            ));
-        }
         if let Some(notice) = &self.billing.notice {
             pane = pane.child(
                 widgets::banner(theme::bg_sidebar_pill())
@@ -374,7 +385,7 @@ impl SettingsScreen {
                 );
             }
         }
-        pane.child(
+        pane = pane.child(
             div()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
@@ -382,7 +393,11 @@ impl SettingsScreen {
                     "Payments open in your browser. Bitcoin payments and team seats are \
                      set up on the web pricing page.",
                 ),
-        )
+        );
+        if self.api_access() == Some(false) {
+            return pane;
+        }
+        pane.child(self.render_credits(cx))
     }
 
     fn render_product(

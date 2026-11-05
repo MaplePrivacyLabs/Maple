@@ -640,6 +640,7 @@ fn latest_plan_is_returned_even_when_it_precedes_the_tail_page() {
                     .as_object()
                     .unwrap()
                     .clone(),
+                arguments_error: None,
                 partial_json: None,
             })],
             api: "test".into(),

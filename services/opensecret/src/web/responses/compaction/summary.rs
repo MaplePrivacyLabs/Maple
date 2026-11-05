@@ -538,6 +538,11 @@ impl SummaryStreamAccumulator {
         }
     }
 
+    /// Numeric progress only; callers never expose the private summary text.
+    pub(super) fn visible_text_bytes(&self) -> usize {
+        self.text.len()
+    }
+
     fn append_text(&mut self, text: &str) -> Result<(), SummaryError> {
         if text.len() > self.max_text_bytes.saturating_sub(self.text.len()) {
             return Err(SummaryError::ResponseTooLarge);

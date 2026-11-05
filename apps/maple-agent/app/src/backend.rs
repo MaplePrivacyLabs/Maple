@@ -112,29 +112,6 @@ impl AgentBackend {
         self.call("set_local_api_config", (user_id, config)).await
     }
 
-    #[cfg(feature = "acp")]
-    pub async fn get_acp_config(
-        &self,
-        user_id: &str,
-    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
-        if self.remote_host.is_some() {
-            return Err("ACP settings require the local desktop".into());
-        }
-        self.call("get_acp_config", (user_id,)).await
-    }
-
-    #[cfg(feature = "acp")]
-    pub async fn set_acp_config(
-        &self,
-        user_id: &str,
-        config: maple_agent::acp::AgentAcpConfig,
-    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
-        if self.remote_host.is_some() {
-            return Err("ACP settings require the local desktop".into());
-        }
-        self.call("set_acp_config", (user_id, config)).await
-    }
-
     /// Store lifecycle commands always address this computer's host. A
     /// selected remote computer cannot forward passwords or erase requests.
     pub async fn local_control<R: DeserializeOwned>(
@@ -693,6 +670,24 @@ async fn dispatch_special(
         serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
     }
     match request.method.as_str() {
+        "sign_in_mcp_server" => {
+            let (user, sign_in): (String, maple_agent::agent::McpSignIn) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.sign_in_mcp_server(&user, sign_in).await?)
+        }
+        "cancel_mcp_sign_in" => {
+            let (user, name): (String, String) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.cancel_mcp_sign_in(&user, &name).await?)
+        }
+        "connect_mcp_app" => {
+            let (user, id): (String, String) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.connect_mcp_app(&user, &id).await?)
+        }
         "save_mcp_servers" => {
             let (user, servers): (String, Vec<AgentMcpServer>) =
                 serde_json::from_value(request.params).map_err(invalid)?;
@@ -704,17 +699,6 @@ async fn dispatch_special(
                 serde_json::from_value(request.params).map_err(invalid)?;
             backend.authorize_account(&user)?;
             encode(backend.save_mcp_definition_edits(&user, edits).await?)
-        }
-        #[cfg(feature = "acp")]
-        "get_acp_config" => {
-            let (user,): (String,) = serde_json::from_value(request.params).map_err(invalid)?;
-            encode(backend.get_acp_config(&user).await?)
-        }
-        #[cfg(feature = "acp")]
-        "set_acp_config" => {
-            let (user, config): (String, maple_agent::acp::AgentAcpConfig) =
-                serde_json::from_value(request.params).map_err(invalid)?;
-            encode(backend.set_acp_config(&user, config).await?)
         }
         "send_message" => {
             let (user, message): (String, AgentSendMessageRequest) =
@@ -866,6 +850,14 @@ pub(crate) async fn dispatch_remote_inner(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    // An authenticated remote request must not open a browser on this
+    // computer, even with malformed params.
+    if matches!(
+        request.method.as_str(),
+        "sign_in_mcp_server" | "cancel_mcp_sign_in" | "connect_mcp_app"
+    ) {
+        return Err("Signing in to an MCP server requires the local desktop.".into());
+    }
     if paging::is_paging(&request.method) {
         return paging::dispatch(backend, request, maple_agent::store::PageTransport::Remote).await;
     }

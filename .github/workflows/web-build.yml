@@ -13,6 +13,14 @@ on:
       - ".github/workflows/web-build.yml"
       - "apps/maple-research/frontend/**"
       - "!apps/maple-research/frontend/src-tauri/**"
+      - "sdk/src/**"
+      - "!sdk/src/lib/test/**"
+      - "sdk/package.json"
+      - "sdk/bun.lock"
+      - "sdk/bunfig.toml"
+      - "sdk/tsconfig*.json"
+      - "sdk/vite.config.ts"
+      - "sdk/.npmrc"
       - "scripts/prepare-frontend-deps.sh"
       - "scripts/prepare-typescript-sdk.sh"
       - "scripts/ci/_common.sh"
@@ -39,6 +47,9 @@ jobs:
         with:
           source-tag: v3.23.3
           github-token: ""
+          # HTTP/2 stream resets from cache.nixos.org make Nix resume past
+          # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
+          extra-conf: http2 = false
 
       - name: Verify pinned Nix runtime
         run: bash scripts/ci/verify-nix-runtime.sh
@@ -83,6 +94,9 @@ jobs:
         with:
           source-tag: v3.23.3
           github-token: ""
+          # HTTP/2 stream resets from cache.nixos.org make Nix resume past
+          # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
+          extra-conf: http2 = false
 
       - name: Verify pinned Nix runtime
         run: bash scripts/ci/verify-nix-runtime.sh

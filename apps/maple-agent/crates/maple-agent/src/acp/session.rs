@@ -2,8 +2,7 @@
 //! session owns, and the checks a session must pass before it exists.
 
 use super::SharedRuntimeStart;
-use super::config::{AgentAcpConfig, AgentAcpStats};
-use super::convert::acp_session_config_options;
+use super::convert::acp_config_options;
 use super::observer::ObserverMailbox;
 use super::transport::AcpOutboundTracker;
 #[cfg(test)]
@@ -17,8 +16,8 @@ use agent_client_protocol::schema::v1::{McpServer, SessionConfigOption, SessionI
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use tokio::sync::{Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub(super) const ACP_SESSION_MCP_TIMEOUT_SECONDS: u64 = 30;
@@ -30,10 +29,15 @@ pub(super) fn completed_runtime_start() -> SharedRuntimeStart {
     futures_util::FutureExt::shared(Box::pin(std::future::ready(Ok(()))))
 }
 
+#[derive(Default)]
+pub(super) struct AgentAcpStats {
+    pub(super) active_sessions: AtomicUsize,
+    pub(super) active_runs: AtomicUsize,
+}
+
 pub(super) struct AcpConnectionContext {
     pub(super) agent: AgentRuntimeHandle,
     pub(super) runtime_start: SharedRuntimeStart,
-    pub(super) config: Arc<RwLock<AgentAcpConfig>>,
     pub(super) stats: Arc<AgentAcpStats>,
     pub(super) sessions: Mutex<HashMap<String, AcpSession>>,
     pub(super) session_operations: Mutex<HashMap<String, Arc<AcpSessionOperation>>>,
@@ -67,7 +71,6 @@ pub(super) struct AcpSession {
     /// The session title last advertised to the caller; semantic-title
     /// updates are only sent when the title moves past this.
     pub(super) advertised_title: Option<String>,
-    pub(super) message_count: usize,
     pub(super) created_here: bool,
     pub(super) prompted: bool,
     pub(super) project_root: PathBuf,
@@ -141,8 +144,7 @@ impl AcpSessionOperation {
 
 impl AcpSession {
     pub(super) fn config_options(&self) -> Vec<SessionConfigOption> {
-        let mut options =
-            acp_session_config_options(&self.model, &self.available_models, self.message_count);
+        let mut options = acp_config_options(&self.model, &self.available_models);
         if let Some(state) = &self.thinking {
             super::convert::add_thinking_option(&mut options, state);
         }
@@ -161,27 +163,12 @@ pub(super) enum AcpProjectTrustResolution {
     Continue,
     Cancelled,
 }
-pub(super) fn ensure_allowed_project_root(
-    cwd: &Path,
-    allowed_roots: &[String],
-) -> Result<PathBuf, String> {
+pub(super) fn resolve_project_root(cwd: &Path) -> Result<PathBuf, String> {
     if !cwd.is_absolute() {
         return Err("ACP session cwd must be an absolute path".to_string());
     }
-    let cwd = cwd
-        .canonicalize()
-        .map_err(|error| format!("Failed to resolve ACP session cwd: {error}"))?;
-    if allowed_roots.is_empty() {
-        return Ok(cwd);
-    }
-    for root in allowed_roots {
-        if let Ok(root) = Path::new(root).canonicalize()
-            && cwd.starts_with(root)
-        {
-            return Ok(cwd);
-        }
-    }
-    Err("ACP session cwd is outside the configured project roots".to_string())
+    cwd.canonicalize()
+        .map_err(|error| format!("Failed to resolve ACP session cwd: {error}"))
 }
 
 /// The caller's MCP servers for a session: HTTP servers, which run beside the

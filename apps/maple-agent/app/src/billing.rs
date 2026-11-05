@@ -61,6 +61,51 @@ impl PlanTier {
     }
 }
 
+/// What one billing reading means for Maple Work, which is not available
+/// on the Free plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanAccess {
+    /// The billing service names the Free plan.
+    Blocked,
+    /// Any other plan the billing service names, including one this build
+    /// does not know.
+    Allowed,
+    /// No reading: offline, timed out, or an error. OpenSecret enforces
+    /// access either way, so a billing outage never locks out a paid plan.
+    Unknown,
+}
+
+impl PlanAccess {
+    pub fn from_status(status: &Result<BillingStatus, String>) -> Self {
+        match status {
+            Ok(status) if names_free_plan(status) => Self::Blocked,
+            Ok(_) => Self::Allowed,
+            Err(_) => Self::Unknown,
+        }
+    }
+
+    /// Whether the plan gate is up after this reading, given whether it
+    /// was: only a Free reading raises it, and only a reading of another
+    /// plan lowers it.
+    pub fn gated(self, was_gated: bool) -> bool {
+        match self {
+            Self::Blocked => true,
+            Self::Allowed => false,
+            Self::Unknown => was_gated,
+        }
+    }
+}
+
+/// The billing service always names the Free plan "Free". Unlike
+/// [`PlanTier::from_product_name`], a missing or unknown name is not Free
+/// here: the gate needs a confirmed Free plan.
+fn names_free_plan(status: &BillingStatus) -> bool {
+    status
+        .product_name
+        .as_deref()
+        .is_some_and(|name| name.trim().eq_ignore_ascii_case("free"))
+}
+
 /// Preset credit purchases in whole dollars, as on the web.
 pub const CREDIT_PACKAGES_DOLLARS: [u64; 4] = [20, 50, 100, 500];
 
@@ -314,6 +359,53 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    fn reading(product: Option<&str>) -> Result<BillingStatus, String> {
+        Ok(BillingStatus {
+            is_subscribed: true,
+            product_name: product.map(str::to_string),
+            ..BillingStatus::default()
+        })
+    }
+
+    #[test]
+    fn only_a_free_reading_blocks_maple_work() {
+        // Guests start on Free and get the same reading as any account.
+        for name in ["Free", "free", " Free "] {
+            assert_eq!(
+                PlanAccess::from_status(&reading(Some(name))),
+                PlanAccess::Blocked,
+                "{name}"
+            );
+        }
+        for name in ["Pro", "Max", "Team", "Team Plan", "Unexpected"] {
+            assert_eq!(
+                PlanAccess::from_status(&reading(Some(name))),
+                PlanAccess::Allowed,
+                "{name}"
+            );
+        }
+        // No plan name is not a confirmed Free plan.
+        assert_eq!(PlanAccess::from_status(&reading(None)), PlanAccess::Allowed);
+        assert_eq!(
+            PlanAccess::from_status(&Err("billing request timed out".into())),
+            PlanAccess::Unknown
+        );
+    }
+
+    #[test]
+    fn the_gate_moves_only_on_a_definite_reading() {
+        let free = PlanAccess::from_status(&reading(Some("Free")));
+        let pro = PlanAccess::from_status(&reading(Some("Pro")));
+        let offline = PlanAccess::from_status(&Err("offline".into()));
+        assert!(free.gated(false));
+        assert!(free.gated(true));
+        assert!(!pro.gated(true));
+        assert!(!pro.gated(false));
+        // An error never blocks, and never reopens a gated account either.
+        assert!(!offline.gated(false));
+        assert!(offline.gated(true));
     }
 
     #[test]

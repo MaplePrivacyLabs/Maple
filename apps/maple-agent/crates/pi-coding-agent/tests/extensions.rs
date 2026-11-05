@@ -13,9 +13,9 @@ use pi_coding_agent::compaction::CompactionResult;
 use pi_coding_agent::extensions::{
     AfterProviderResponse, AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeAgentStartResult,
     BeforeCompactResult, BeforeProviderHeaders, Context, ContextWithSystem, CustomMessageDraft,
-    Input, InputAction, MessageEnd, ProviderStreamEvent, SessionBeforeCompact, SessionCompact,
-    SessionCompactFailed, SessionInfoChanged, SessionStart, SlashCommandInfo, SlashCommandSource,
-    ToolCall, ToolPrompt, ToolResult, extension,
+    Input, InputAction, MessageEnd, ProviderStreamEvent, RunTrigger, SessionBeforeCompact,
+    SessionCompact, SessionCompactFailed, SessionInfoChanged, SessionStart, SlashCommandInfo,
+    SlashCommandSource, ToolCall, ToolPrompt, ToolResult, extension,
 };
 use pi_coding_agent::session::{EntryKind, SessionManager};
 use pi_coding_agent::store::JsonlStore;
@@ -293,8 +293,9 @@ async fn before_agent_start_adds_messages_and_can_force_the_prompt_for_one_run()
                     display: false,
                     details: None,
                 }),
-                system_prompt: (event.prompt == "forced")
-                    .then(|| "You only answer in haiku.".to_string()),
+                system_prompt:
+                    matches!(&event.trigger, RunTrigger::User { prompt, .. } if prompt == "forced")
+                        .then(|| "You only answer in haiku.".to_string()),
                 options: None,
             })
         });
@@ -975,6 +976,207 @@ async fn extension_messages_queued_during_a_run_are_not_listed() {
     run.await.unwrap().unwrap();
 }
 
+fn custom_draft(custom_type: &str, text: &str) -> CustomMessageDraft {
+    CustomMessageDraft {
+        custom_type: custom_type.into(),
+        content: vec![Content::text(text)],
+        display: true,
+        details: None,
+    }
+}
+
+/// The text of every user message of request `index`, in order.
+fn user_texts(harness: &Harness, index: usize) -> Vec<String> {
+    harness.faux.requests()[index]
+        .context
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::User(user) => Some(content_text(&user.content)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_run_a_custom_message_starts_keeps_the_prompt_for_every_request() {
+    // Pi #10739: such a run skipped `before_agent_start`, so its next request patched away
+    // the sections the handlers had added.
+    let harness = Harness::new();
+    harness.faux.push_text("hi");
+    harness.faux.push_tool_call("echo", json!({ "text": "a" }));
+    harness.faux.push_text("done");
+    let triggers = Arc::new(Mutex::new(Vec::new()));
+    let seen = triggers.clone();
+    let rules = extension("rules", move |api| {
+        let seen = seen.clone();
+        api.on(move |event: BeforeAgentStart, _ctx| {
+            seen.lock().unwrap().push(event.trigger.clone());
+            async move {
+                let mut options = event.options;
+                options
+                    .sections
+                    .insert("extension_rules".into(), "Answer in one word.".into());
+                Ok(BeforeAgentStartResult {
+                    options: Some(options),
+                    ..BeforeAgentStartResult::default()
+                })
+            }
+        });
+    });
+    let session = harness
+        .session_with(|options| {
+            options.tools = vec![echo_tool(true)];
+            options.extensions = vec![rules];
+        })
+        .await;
+    session
+        .prompt("hello", PromptOptions::default())
+        .await
+        .unwrap();
+    session
+        .send_custom_message(custom_draft("task-done", "background task finished"))
+        .await
+        .unwrap();
+
+    let prompts: Vec<String> = harness
+        .faux
+        .requests()
+        .iter()
+        .map(|request| pi_ai::transcript::current_system_prompt(&request.context.messages))
+        .collect();
+    assert_eq!(prompts.len(), 3);
+    assert!(prompts[0].contains("Answer in one word."));
+    assert!(prompts.iter().all(|prompt| *prompt == prompts[0]));
+    let triggers = triggers.lock().unwrap();
+    assert!(matches!(&triggers[0], RunTrigger::User { prompt, .. } if prompt == "hello"));
+    assert!(
+        matches!(&triggers[1], RunTrigger::Custom(message) if message.custom_type == "task-done")
+    );
+}
+
+/// An extension whose `before_agent_start` handler waits for `release` when `blocks`
+/// says so, after telling `started`.
+fn blocking_start(
+    blocks: fn(&RunTrigger) -> bool,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+) -> Arc<dyn pi_coding_agent::extensions::Extension> {
+    extension("blocking", move |api| {
+        let (started, release) = (started.clone(), release.clone());
+        api.on(move |event: BeforeAgentStart, _ctx| {
+            let block = blocks(&event.trigger);
+            let (started, release) = (started.clone(), release.clone());
+            async move {
+                if block {
+                    started.notify_one();
+                    release.notified().await;
+                }
+                Ok(BeforeAgentStartResult::default())
+            }
+        });
+    })
+}
+
+#[tokio::test]
+async fn a_custom_message_sent_while_a_run_starts_joins_it() {
+    let harness = Harness::new();
+    harness.faux.push_text("handled both");
+    let (started, release) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let blocking = blocking_start(
+        |trigger| matches!(trigger, RunTrigger::Custom(message) if message.custom_type == "first"),
+        started.clone(),
+        release.clone(),
+    );
+    let session = harness.session_with_extensions(vec![blocking]).await;
+    let runner = session.clone();
+    let first = tokio::spawn(async move {
+        runner
+            .send_custom_message(custom_draft("first", "task one finished"))
+            .await
+    });
+    started.notified().await;
+    assert!(session.is_streaming());
+    assert_eq!(
+        session
+            .send_custom_message(custom_draft("second", "task two finished"))
+            .await
+            .unwrap(),
+        PromptOutcome::Queued
+    );
+    release.notify_one();
+    first.await.unwrap().unwrap();
+
+    assert_eq!(harness.faux.requests().len(), 1);
+    assert_eq!(
+        user_texts(&harness, 0),
+        ["task one finished", "task two finished"]
+    );
+}
+
+#[tokio::test]
+async fn a_message_added_while_a_run_starts_is_in_its_first_request() {
+    let harness = Harness::new();
+    harness.faux.push_text("done");
+    let note = extension("note", |api| {
+        api.on(|_event: BeforeAgentStart, ctx| {
+            ctx.send_message(
+                custom_draft("note", "context from handler"),
+                Delivery::Append,
+            );
+            async { Ok(BeforeAgentStartResult::default()) }
+        });
+    });
+    let session = harness.session_with_extensions(vec![note]).await;
+    session
+        .prompt("hello", PromptOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(harness.faux.requests().len(), 1);
+    // It goes before the prompt, as it would have while idle.
+    assert_eq!(user_texts(&harness, 0), ["context from handler", "hello"]);
+}
+
+#[tokio::test]
+async fn an_abort_while_a_run_starts_stops_it_before_its_first_request() {
+    let harness = Harness::new();
+    harness.faux.push_text("should not complete");
+    let (started, release) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let blocking = blocking_start(|_| true, started.clone(), release.clone());
+    let session = harness.session_with_extensions(vec![blocking]).await;
+    let events = record(&session);
+    let runner = session.clone();
+    let run = tokio::spawn(async move {
+        runner
+            .send_custom_message(custom_draft("task-done", "background task finished"))
+            .await
+    });
+    started.notified().await;
+    session.abort();
+    release.notify_one();
+    run.await.unwrap().unwrap();
+
+    let last = session.messages().pop().unwrap();
+    assert!(matches!(
+        last,
+        SessionMessage::Llm(Message::Assistant(reply)) if reply.stop_reason == pi_ai::StopReason::Aborted
+    ));
+    assert!(!session.is_streaming());
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"settled:aborted".to_string())
+    );
+}
+
 fn provider_extension(provider: FauxProvider) -> Arc<dyn pi_coding_agent::extensions::Extension> {
     extension("provider", move |api| {
         api.register_provider(
@@ -1029,7 +1231,8 @@ async fn prompt_options_from_before_agent_start_last_for_one_run() {
     harness.faux.push_text("two");
     let notes = extension("notes", |api| {
         api.on(|event: BeforeAgentStart, _ctx| async move {
-            if event.prompt != "with notes" {
+            if !matches!(&event.trigger, RunTrigger::User { prompt, .. } if prompt == "with notes")
+            {
                 return Ok(BeforeAgentStartResult::default());
             }
             let mut options = event.options;

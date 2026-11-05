@@ -36,6 +36,7 @@ import { Route as SettingsHistoryRouteImport } from './routes/settings.history'
 import { Route as SettingsPreferencesRouteImport } from './routes/settings.preferences'
 import { Route as SettingsSecurityRouteImport } from './routes/settings.security'
 import { Route as SettingsTeamRouteImport } from './routes/settings.team'
+import { Route as SettingsUsageRouteImport } from './routes/settings.usage'
 import { Route as VerifyCodeRouteImport } from './routes/verify.$code'
 import { Route as AuthProviderCallbackRouteImport } from './routes/auth.$provider.callback'
 import { Route as SettingsApiIndexRouteImport } from './routes/settings.api.index'
@@ -182,6 +183,11 @@ const SettingsTeamRoute = SettingsTeamRouteImport.update({
   path: '/team',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsUsageRoute = SettingsUsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const VerifyCodeRoute = VerifyCodeRouteImport.update({
   id: '/verify/$code',
   path: '/verify/$code',
@@ -260,6 +266,7 @@ export interface FileRoutesByFullPath {
   '/settings/preferences': typeof SettingsPreferencesRoute
   '/settings/security': typeof SettingsSecurityRoute
   '/settings/team': typeof SettingsTeamRouteWithChildren
+  '/settings/usage': typeof SettingsUsageRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/settings/': typeof SettingsIndexRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
@@ -296,6 +303,7 @@ export interface FileRoutesByTo {
   '/settings/history': typeof SettingsHistoryRoute
   '/settings/preferences': typeof SettingsPreferencesRoute
   '/settings/security': typeof SettingsSecurityRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/settings': typeof SettingsIndexRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
@@ -335,6 +343,7 @@ export interface FileRoutesById {
   '/settings/preferences': typeof SettingsPreferencesRoute
   '/settings/security': typeof SettingsSecurityRoute
   '/settings/team': typeof SettingsTeamRouteWithChildren
+  '/settings/usage': typeof SettingsUsageRoute
   '/verify/$code': typeof VerifyCodeRoute
   '/settings/': typeof SettingsIndexRoute
   '/auth/$provider/callback': typeof AuthProviderCallbackRoute
@@ -376,6 +385,7 @@ export interface FileRouteTypes {
     | '/settings/preferences'
     | '/settings/security'
     | '/settings/team'
+    | '/settings/usage'
     | '/verify/$code'
     | '/settings/'
     | '/auth/$provider/callback'
@@ -412,6 +422,7 @@ export interface FileRouteTypes {
     | '/settings/history'
     | '/settings/preferences'
     | '/settings/security'
+    | '/settings/usage'
     | '/verify/$code'
     | '/settings'
     | '/auth/$provider/callback'
@@ -450,6 +461,7 @@ export interface FileRouteTypes {
     | '/settings/preferences'
     | '/settings/security'
     | '/settings/team'
+    | '/settings/usage'
     | '/verify/$code'
     | '/settings/'
     | '/auth/$provider/callback'
@@ -676,6 +688,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsTeamRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/usage': {
+      id: '/settings/usage'
+      path: '/usage'
+      fullPath: '/settings/usage'
+      preLoaderRoute: typeof SettingsUsageRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/verify/$code': {
       id: '/verify/$code'
       path: '/verify/$code'
@@ -815,6 +834,7 @@ interface SettingsRouteChildren {
   SettingsPreferencesRoute: typeof SettingsPreferencesRoute
   SettingsSecurityRoute: typeof SettingsSecurityRoute
   SettingsTeamRoute: typeof SettingsTeamRouteWithChildren
+  SettingsUsageRoute: typeof SettingsUsageRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
 }
 
@@ -828,6 +848,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsPreferencesRoute: SettingsPreferencesRoute,
   SettingsSecurityRoute: SettingsSecurityRoute,
   SettingsTeamRoute: SettingsTeamRouteWithChildren,
+  SettingsUsageRoute: SettingsUsageRoute,
   SettingsIndexRoute: SettingsIndexRoute,
 }
 

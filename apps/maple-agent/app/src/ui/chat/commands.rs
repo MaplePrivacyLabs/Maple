@@ -231,6 +231,7 @@ mod tests {
     }
 
     fn screen(cx: &mut TestAppContext) -> gpui::Entity<ChatScreen> {
+        cx.executor().allow_parking();
         let backend = Arc::new(
             AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),

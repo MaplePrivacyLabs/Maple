@@ -25,6 +25,31 @@ pub fn parse_streaming_json(raw: &str) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
+/// Parse the complete argument text of a finished tool call, as Pi's
+/// `parseToolCallArguments`. Unlike [`parse_streaming_json`], text that is not a JSON
+/// object, even after its strings are repaired, is not cut back to a valid prefix: the
+/// error describes it and includes the text, so validation can show the model what it
+/// sent.
+pub fn parse_tool_call_arguments(raw: &str) -> Result<Map<String, Value>, String> {
+    if raw.trim().is_empty() {
+        return Ok(Map::new());
+    }
+    let parsed = serde_json::from_str::<Value>(raw).or_else(|error| {
+        let repaired = repair_strings(raw);
+        if repaired == raw {
+            return Err(error);
+        }
+        serde_json::from_str::<Value>(&repaired)
+    });
+    match parsed {
+        Ok(Value::Object(map)) => Ok(map),
+        Ok(_) => Err(format!(
+            "Tool arguments must be a JSON object\n\nReceived arguments:\n{raw}"
+        )),
+        Err(error) => Err(format!("{error}\n\nReceived arguments:\n{raw}")),
+    }
+}
+
 /// Escape what JSON does not allow inside strings: raw control characters, and
 /// backslashes that start no valid escape.
 fn repair_strings(json: &str) -> String {
@@ -51,7 +76,8 @@ fn repair_strings(json: &str) -> String {
                     repaired.push_str(&json[offset..offset + 6]);
                     chars.nth(4);
                 }
-                Some(next @ ('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u')) => {
+                // `\u` without four hex digits, as in `\usepackage`, is no escape either.
+                Some(next @ ('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')) => {
                     repaired.push('\\');
                     repaired.push(next);
                     chars.next();
@@ -272,6 +298,51 @@ mod tests {
         assert_eq!(
             parse("{\"a\": \"C:\\dir\", \"b\": [1"),
             json!({ "a": "C:\\dir", "b": [1] })
+        );
+    }
+
+    #[test]
+    fn a_backslash_u_without_hex_digits_stays_literal() {
+        assert_eq!(
+            parse(r#"{"text":"\url{x}"}"#),
+            json!({ "text": "\\url{x}" })
+        );
+        // The fields after it are kept.
+        assert_eq!(
+            parse(r#"{"path":"a.tex","content":"\usepackage{x}","mode":"w"}"#),
+            json!({ "path": "a.tex", "content": "\\usepackage{x}", "mode": "w" })
+        );
+        assert_eq!(
+            parse(r#"{"text":"caf\u00e9 \url"}"#),
+            json!({ "text": "caf\u{e9} \\url" })
+        );
+        assert_eq!(parse(r#"{"text":"ab\u00"#), json!({ "text": "ab" }));
+    }
+
+    #[test]
+    fn finished_arguments_are_parsed_strictly() {
+        assert_eq!(
+            parse_tool_call_arguments(r#"{"kind":"seek","note":"\url"}"#),
+            Ok(json!({ "kind": "seek", "note": "\\url" })
+                .as_object()
+                .cloned()
+                .unwrap())
+        );
+        assert_eq!(parse_tool_call_arguments(" "), Ok(Map::new()));
+        // Neither the valid prefix of malformed JSON nor cut-off JSON is kept.
+        for raw in [
+            r#"{"action":"apply","actions":[{"kind":"seek","time":.5}]}"#,
+            r#"{"kind":"seek","clipId":"clip-fl"#,
+        ] {
+            let error = parse_tool_call_arguments(raw).unwrap_err();
+            assert!(
+                error.ends_with(&format!("\n\nReceived arguments:\n{raw}")),
+                "{error}"
+            );
+        }
+        assert_eq!(
+            parse_tool_call_arguments("[1,2]"),
+            Err("Tool arguments must be a JSON object\n\nReceived arguments:\n[1,2]".into())
         );
     }
 

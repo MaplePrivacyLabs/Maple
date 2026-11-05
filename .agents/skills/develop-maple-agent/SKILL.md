@@ -101,30 +101,10 @@ account isolation, tool execution, MCP/ACP inputs, persistence, and process
 ownership at the layer implementing the effect. Never treat a passing source
 import or a native login screen as authenticated chat or containment proof.
 
-Packaged Agent Prod uses its independently signed R2 update feed with compiled
-primary and backup public-key pins. Packaged Prod checks the compiled platform
-feed; publication is a separate protected operation. Invitations require the
-platform-specific signed installed-update rehearsal. Linux uses user-owned tar
-bundles and a separate v2 wire schema, preserving the shipped macOS v1 feed;
-one release may update both platforms to the same version.
-Windows x64 Dev/Prod installers are built by the same desktop workflow, with
-master Authenticode signing through the existing `windows-signing` environment.
-Windows Prod uses its signed v3 update feed and generation tar bundle; its
-signed NSIS setup remains the manual installation download. Normal publication
-includes Windows through the same protected publisher as macOS and Linux,
-without a separate Windows activation variable. Built-in Windows CUA remains
-unsupported.
-Dev and unpackaged builds have no production updater. Empty-key profiles still
-disable update traffic. Do not substitute a test key or inherit feed/key overrides
-from the launch environment. Embedded profiles, bundle IDs and state namespaces
-remain separate; packaged profiles
-never adopt legacy Agent or Research state. See
-[`desktop builds`](../../../apps/maple-agent/docs/desktop-builds.md) for packaging
-commands and the protected-master signing/artifact contract.
-Never use repository-wide `/releases/latest` for Agent or modify Research's
-Worker/feed/publisher while working on the Agent updater. Preserve exact signed
-manifest bytes, anti-rollback, bounded downloads, staged-state revalidation and
-host/install lock ownership. Linux activation needs its own packaged update proof.
-Follow [updater development](../../../apps/maple-agent/docs/updates.md) for key
-setup and validation. Production resources, keys, routes, signing and publication
-remain separately authorized operations. Do not publish registries incidentally.
+Packaged Prod builds check a signed per-platform update feed; Dev and unpackaged
+builds have no updater. A release is one dispatch of `agent-desktop-build.yml`
+with `release=true` after a version bump: it builds, signs and publishes every
+platform ([Agent updates](../../../apps/maple-agent/docs/updates.md)). Releasing
+is a production action, so run it only when the owner asks. Installed clients
+parse the feed strictly; keep the wire contract in that doc unchanged. See
+[desktop builds](../../../apps/maple-agent/docs/desktop-builds.md) for packaging.

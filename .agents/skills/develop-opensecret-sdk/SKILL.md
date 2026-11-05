@@ -14,8 +14,9 @@ package boundaries remain independently versioned and publishable:
 
 - `src/` builds `@mapleai/sdk` for browser and React consumers.
 - `rust/` builds the `maple-sdk` crate (imported as `maple_sdk`) for native consumers.
-- `apps/maple-research/frontend/package.json` is authoritative for whether Maple's browser client
-  consumes a published TypeScript version or the in-tree `file:../../../sdk` package.
+- Maple's browser client consumes the in-tree `file:../../../sdk` package; its
+  checks run on SDK changes. Do not pin it to a published version.
+- `apps/maple-auth` pins an exact published version on purpose and upgrades alone.
 - Research native clients, Maple Agent, and `proxy/` select their Rust SDK
   through their own manifests and lockfiles. Research uses the Rust SDK for
   native OAuth on desktop and mobile; its embedded proxy is desktop-only.
@@ -23,11 +24,8 @@ package boundaries remain independently versioned and publishable:
 Follow the [consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
 To ship an SDK change to clients, follow the
 [rollout order](../../../docs/sdk-publishing.md#rolling-an-sdk-fix-out-to-clients):
-SDK PR with version bump, publish, consumer pins, isolated app bump, release.
-Prefer published pins without upgrading unrelated consumers. Local links are
-allowed during active development, including on `master`; a registry-pinned
-client build does not exercise an SDK source edit. Test an affected consumer
-with the local SDK when that integration is part of the change.
+an SDK change reaches in-repo clients when it merges, so publish only for external
+users or Auth. Test an affected consumer when that integration is part of the change.
 
 Do not commit, push, open a PR, publish, or alter Maple's application dependency
 wiring unless the user authorizes that action.

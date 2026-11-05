@@ -3505,6 +3505,19 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_a_masked_input_takes_pasted_text(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        cx.write_to_clipboard(ClipboardItem::new_string("synthetic-token".into()));
+        let window = cx.add_window(|_, cx| TextInput::new("", cx).masked());
+        window
+            .update(cx, |input, window, cx| input.paste(&Paste, window, cx))
+            .unwrap();
+        window
+            .read_with(cx, |input, _| assert_eq!(input.text(), "synthetic-token"))
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn test_an_edit_drops_the_redo_history(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let input = cx.new(|cx| TextInput::new("", cx));

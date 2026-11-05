@@ -9,6 +9,9 @@ pub(crate) enum Destination {
     /// The project selector was opened from New Task. Carry that intent across
     /// computers (and a deferred connection), whose ChatScreens are independent.
     DraftProject(String),
+    /// An explicit picker choice also records use of an already-selected root.
+    DraftRecentProject(String),
+    RecentProject(String),
     Task(String),
     NewProject,
     DraftNewProject,
@@ -32,6 +35,20 @@ pub(crate) struct ProjectRenameRequest {
     pub name: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum TaskAction {
+    Rename(String),
+    SetState(AgentTaskState),
+    Pin(bool),
+    Delete,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TaskActionRequest {
+    pub target: crate::settings::SidebarItemKey,
+    pub action: TaskAction,
+}
+
 pub(crate) struct NavigationChanged;
 
 #[derive(Clone)]
@@ -51,8 +68,7 @@ pub(crate) struct Computer {
     pub project_names: HashMap<String, String>,
     pub projects: Vec<Project>,
     pub sessions: Vec<AgentSessionSummary>,
-    pub running: HashSet<String>,
-    pub unread: HashSet<String>,
+    pub activity: TaskActivity,
     pub pinned: Vec<String>,
     pub loading: bool,
     pub error: Option<SharedString>,
@@ -67,8 +83,7 @@ impl Computer {
             project_names: HashMap::new(),
             projects: Vec::new(),
             sessions: Vec::new(),
-            running: HashSet::new(),
-            unread: HashSet::new(),
+            activity: TaskActivity::default(),
             pinned: Vec::new(),
             loading: error.is_none(),
             error: error.map(Into::into),
@@ -78,6 +93,7 @@ impl Computer {
 
 impl EventEmitter<Navigate> for ChatScreen {}
 impl EventEmitter<ProjectRenameRequest> for ChatScreen {}
+impl EventEmitter<TaskActionRequest> for ChatScreen {}
 impl EventEmitter<NavigationChanged> for ChatScreen {}
 
 impl ChatScreen {
@@ -93,6 +109,64 @@ impl ChatScreen {
         self.merge_project_metadata(roots, cx);
         cx.emit(NavigationChanged);
         cx.notify();
+    }
+
+    pub(crate) fn set_sidebar_task_pin(
+        &mut self,
+        session_id: &str,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let was_pinned = self
+            .sidebar
+            .read(cx)
+            .pinned_tasks()
+            .iter()
+            .any(|id| id == session_id);
+        if was_pinned != pinned {
+            self.toggle_task_pin(session_id, cx);
+        }
+    }
+
+    pub(crate) fn apply_sidebar_task_action(
+        &mut self,
+        session_id: &str,
+        action: &TaskAction,
+        session: Option<AgentSessionSummary>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = session {
+            let root = session.project_root.clone();
+            self.upsert_session(session, cx);
+            if matches!(action, TaskAction::SetState(AgentTaskState::Archived))
+                && self.selected_session.as_deref() == Some(session_id)
+            {
+                self.leave_selected_session(cx);
+                let next = self
+                    .sessions
+                    .iter()
+                    .find(|session| {
+                        session.state != AgentTaskState::Archived && session.project_root == root
+                    })
+                    .map(|session| session.id.clone());
+                if let Some(id) = next {
+                    self.select_session(&id, cx);
+                }
+            }
+        } else if matches!(action, TaskAction::Delete) {
+            self.remove_session(session_id, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn sidebar_task_action_notice(&mut self, message: String, cx: &mut Context<Self>) {
+        self.notice = Some(message.into());
+        cx.notify();
+    }
+
+    pub(crate) fn refresh_sidebar_task_actions(&mut self, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.refresh_computer_pages(cx));
     }
 
     #[cfg(test)]
@@ -166,8 +240,8 @@ impl ChatScreen {
     pub(crate) fn navigation_generation(&self) -> u64 {
         self.selection_generation
     }
-    /// Observe a paired computer without opening its latest conversation or
-    /// starting its runtime. The normal event stream keeps these summaries live.
+    /// Warm a paired computer without opening a conversation or running a task.
+    /// The normal event stream keeps its navigation summaries live.
     pub(crate) fn new_catalog(
         backend: Arc<AgentBackend>,
         user_id: String,
@@ -205,8 +279,8 @@ impl ChatScreen {
                 .update(cx, |sidebar, cx| sidebar.set_computers(computers, cx));
         }
         if visible
-            && let Some(id) = &self.selected_session
-            && self.completed_unread_sessions.remove(id)
+            && let Some(id) = self.selected_session.clone()
+            && self.mark_seen(&id)
         {
             self.sync_sidebar(cx);
         }
@@ -249,26 +323,28 @@ impl ChatScreen {
                         .project_is_removed(&session.project_root)
                 })
                 .collect(),
-            running: self.active_runs.keys().cloned().collect(),
-            unread: self.completed_unread_sessions.clone(),
+            activity: self.task_activity(),
             pinned: self.sidebar.read(cx).pinned_tasks().to_vec(),
-            loading: !self.navigation_ready && self.host_recovery.events.is_some(),
-            error: self.host_recovery.unavailable.then(|| {
-                if self.host_recovery.ended {
-                    if self
-                        .runtime_error
-                        .as_deref()
-                        .is_some_and(crate::remote::wire::is_protocol_incompatibility_refusal)
-                    {
-                        "Update required — select to retry after updating"
+            loading: (!self.navigation_ready && self.host_recovery.events.is_some())
+                || (self.booting && !self.host_recovery.unavailable),
+            error: (self.host_recovery.unavailable && self.host_recovery.events.is_none()).then(
+                || {
+                    if self.host_recovery.ended {
+                        if self
+                            .runtime_error
+                            .as_deref()
+                            .is_some_and(crate::remote::wire::is_protocol_incompatibility_refusal)
+                        {
+                            "Update required — select to retry after updating"
+                        } else {
+                            "Offline — select to reconnect"
+                        }
                     } else {
-                        "Offline — select to reconnect"
+                        "Connecting…"
                     }
-                } else {
-                    "Connecting…"
-                }
-                .into()
-            }),
+                    .into()
+                },
+            ),
         }
     }
 
@@ -322,24 +398,29 @@ impl ChatScreen {
         // Opening a remote computer's projects is not a request to open its
         // newest task. Establish the draft before runtime refreshes can
         // auto-select a session. Explicit task clicks still win.
-        let needs_draft = matches!(destination, Destination::DraftProject(_))
-            || (self.navigation_only && !matches!(destination, Destination::Task(_)));
+        let needs_draft = matches!(
+            destination,
+            Destination::DraftProject(_) | Destination::DraftRecentProject(_)
+        ) || (self.navigation_only
+            && !matches!(destination, Destination::Task(_)));
         if needs_draft && !self.prepare_draft_navigation(cx) {
             return;
         }
-        if self.navigation_only {
-            self.navigation_only = false;
-            self.booting = true;
-            self.refresh_slash_commands(cx);
-            self.start_runtime(cx);
-        }
+        self.leave_catalog(cx);
         match destination {
             Destination::Overview => self
                 .sidebar
                 .update(cx, |s, cx| s.set_project_filter(None, cx)),
             Destination::Task(id) => self.select_session(&id, cx),
-            Destination::Project(path) | Destination::DraftProject(path) => {
+            Destination::RecentProject(path) | Destination::DraftRecentProject(path) => {
                 self.select_project_root(path, cx);
+            }
+            Destination::Project(path) | Destination::DraftProject(path) => {
+                // The current workspace is already registered and selected.
+                // A new draft there needs no owner request or sidebar reload.
+                if !self.draft || self.project_root.as_deref() != Some(path.as_str()) {
+                    self.select_project_root(path, cx);
+                }
             }
             Destination::NewProject | Destination::DraftNewProject => self.choose_root_dialog(cx),
         }
@@ -355,12 +436,24 @@ impl ChatScreen {
         self.draft && !self.session_setup_pending && !self.root_selecting
     }
 
+    /// Stop filtering transcript events before this computer is used for work.
+    /// Recovery already warms its runtime; activation must preserve that boot
+    /// state instead of restarting setup on the first click or send.
+    pub(super) fn leave_catalog(&mut self, _cx: &mut Context<Self>) {
+        self.navigation_only = false;
+    }
+
     pub(super) fn finish_navigation_bootstrap(&mut self, cx: &mut Context<Self>) {
         self.navigation_ready = true;
-        if let Some((generation, destination)) = self.pending_navigation.take()
-            && generation == self.selection_generation
-        {
+        let Some((generation, destination)) = self.pending_navigation.take() else {
+            return;
+        };
+        if generation == self.selection_generation {
             self.navigate(destination, cx);
+        } else if self.visible {
+            // A newer choice on this screen (New Task, a reconnect) replaced
+            // the destination, but the computer was still opened for work.
+            self.leave_catalog(cx);
         }
     }
 
@@ -517,9 +610,9 @@ impl ChatScreen {
                 let request = Navigate {
                     computer: computer.key.clone(),
                     destination: if self.draft {
-                        Destination::DraftProject(project.path.clone())
+                        Destination::DraftRecentProject(project.path.clone())
                     } else {
-                        Destination::Project(project.path.clone())
+                        Destination::RecentProject(project.path.clone())
                     },
                 };
                 let mut item = MenuItem::new(

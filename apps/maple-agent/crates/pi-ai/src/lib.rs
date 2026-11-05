@@ -37,7 +37,7 @@ pub use classifier::{
     ClassifierStopReason, ClassifyFn,
 };
 pub use estimate::{estimate_message_tokens, estimate_text_tokens, estimate_tool_tokens};
-pub use json::parse_streaming_json;
+pub use json::{parse_streaming_json, parse_tool_call_arguments};
 pub use overflow::{
     is_context_overflow, is_recoverable_length, is_retryable_error, retry_delay_ms,
 };

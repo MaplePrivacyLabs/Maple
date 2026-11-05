@@ -8,7 +8,6 @@
 //! prompt; `session/load` holds an existing task and replays its history.
 //! Maple has no session modes: every tool call runs without asking.
 
-mod config;
 mod convert;
 mod handler;
 mod observer;
@@ -17,8 +16,6 @@ mod session;
 mod shared;
 mod transport;
 
-pub use config::{AgentAcpConfig, load_acp_config, save_acp_config};
-use config::{AgentAcpStats, normalize_config};
 use convert::{
     AcpProjection, COMPACTING_NOTICE, COMPACTION_COMPLETED_NOTICE, MAX_ACP_ERROR_CHARS,
     NOTHING_TO_COMPACT_NOTICE, acp_available_commands, acp_usage, bounded_chars,
@@ -32,8 +29,8 @@ use handler::MapleAcpHandler;
 use session::find_acp_session;
 use session::{
     AcpConnectionContext, AcpProjectTrustResolution, AcpPromptState, AcpSession,
-    AcpSessionOperation, UnpublishedAcpSession, canonical_session_id, canonical_session_id_text,
-    ensure_allowed_project_root, prepare_session_mcp,
+    AcpSessionOperation, AgentAcpStats, UnpublishedAcpSession, canonical_session_id,
+    canonical_session_id_text, prepare_session_mcp, resolve_project_root,
 };
 use transport::{
     AcpOutboundReservation, AcpOutboundSendError, AcpOutboundTracker, BoundedLineReader,
@@ -61,7 +58,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 
@@ -95,12 +92,10 @@ where
 /// every open session is cleaned up and the call returns.
 pub async fn serve_stdio(
     agent: AgentRuntimeHandle,
-    config: AgentAcpConfig,
     runtime_start: SharedRuntimeStart,
 ) -> Result<(), String> {
-    let config = Arc::new(RwLock::new(normalize_config(config)?));
     let stats = Arc::new(AgentAcpStats::default());
-    let context = AcpConnectionContext::new(agent, config, stats, runtime_start);
+    let context = AcpConnectionContext::new(agent, stats, runtime_start);
     serve(context, tokio::io::stdin(), tokio::io::stdout()).await
 }
 
@@ -108,7 +103,6 @@ pub async fn serve_stdio(
 /// subscriptions and temporary client resources, never the host runtime.
 pub async fn serve_connection<R, W>(
     agent: AgentRuntimeHandle,
-    config: AgentAcpConfig,
     runtime_start: SharedRuntimeStart,
     input: R,
     output: W,
@@ -117,13 +111,8 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let config = Arc::new(RwLock::new(normalize_config(config)?));
-    let context = AcpConnectionContext::new(
-        agent,
-        config,
-        Arc::new(AgentAcpStats::default()),
-        runtime_start,
-    );
+    let context =
+        AcpConnectionContext::new(agent, Arc::new(AgentAcpStats::default()), runtime_start);
     serve(context, input, output).await
 }
 
@@ -183,14 +172,12 @@ enum StreamStop {
 impl AcpConnectionContext {
     fn new(
         agent: AgentRuntimeHandle,
-        config: Arc<RwLock<AgentAcpConfig>>,
         stats: Arc<AgentAcpStats>,
         runtime_start: SharedRuntimeStart,
     ) -> Arc<Self> {
         Arc::new(Self {
             agent,
             runtime_start,
-            config,
             stats,
             sessions: Mutex::new(HashMap::new()),
             session_operations: Mutex::new(HashMap::new()),
@@ -230,8 +217,7 @@ impl AcpConnectionContext {
                 .data("ACP session cwd must be an absolute path"));
         }
         self.await_runtime_start().await?;
-        let config = self.config.read().await.clone();
-        let project_root = ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
+        let project_root = resolve_project_root(&request.cwd)
             .map_err(|error| agent_client_protocol::Error::invalid_params().data(error))?;
         let project_trust = self
             .agent
@@ -301,7 +287,6 @@ impl AcpConnectionContext {
                 thinking: None,
                 projection: AcpProjection::default(),
                 advertised_title: Some(created.detail.session.title.clone()),
-                message_count: created.detail.session.message_count,
                 created_here: true,
                 prompted: false,
                 project_root: project_root.clone(),
@@ -565,8 +550,7 @@ impl AcpConnectionContext {
                 .data("ACP session cwd must be an absolute path"));
         }
         self.await_runtime_start().await?;
-        let config = self.config.read().await.clone();
-        let project_root = ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
+        let project_root = resolve_project_root(&request.cwd)
             .map_err(|error| agent_client_protocol::Error::invalid_params().data(error))?;
         let project_root_text = project_root.to_string_lossy().into_owned();
         let project_trust = self
@@ -580,26 +564,16 @@ impl AcpConnectionContext {
             .task_summary(session_id.clone())
             .await
             .map_err(internal_acp_error)?;
-        let persisted_root = ensure_allowed_project_root(
-            Path::new(&persisted.project_root),
-            &config.allowed_project_roots,
-        )
-        .map_err(|_| {
-            agent_client_protocol::Error::invalid_request()
-                .data("The requested task is outside the configured project roots")
-        })?;
+        let persisted_root =
+            resolve_project_root(Path::new(&persisted.project_root)).map_err(|_| {
+                agent_client_protocol::Error::invalid_request()
+                    .data("The requested task's project folder is unavailable")
+            })?;
         if persisted_root != project_root {
             return Err(agent_client_protocol::Error::invalid_request()
                 .data("The requested task does not exist in the supplied project directory"));
         }
         let available_models = self.available_models().await?;
-        if let Some(model) = persisted.model.as_ref()
-            && !available_models.iter().any(|available| available == model)
-        {
-            return Err(agent_client_protocol::Error::invalid_request().data(format!(
-                "This Maple Work task uses model '{model}', which is no longer available; the task remains available in Maple Desktop"
-            )));
-        }
         let session_servers = prepare_session_mcp(&request.mcp_servers)?;
         let protocol_session_id = SessionId::new(session_id.clone());
         // Rebuilding announces HistoryReplaced. Finish before registering this
@@ -630,11 +604,14 @@ impl AcpConnectionContext {
             return Err(agent_client_protocol::Error::invalid_request()
                 .data("The task's project changed while loading"));
         }
+        // A task whose model is no longer offered opens on the default and
+        // switches with its next prompt.
         let Some(model) = attached
             .detail
             .session
             .model
             .clone()
+            .filter(|model| available_models.contains(model))
             .or_else(|| available_models.first().cloned())
         else {
             lease.release().await;
@@ -642,7 +619,6 @@ impl AcpConnectionContext {
                 .await;
             return Err(internal_acp_error("Maple returned no models".to_string()));
         };
-        let message_count = attached.detail.session.message_count;
         let finalization = self.finalization.lock().await;
         if self.closed.load(Ordering::SeqCst) || operation.cancellation.is_cancelled() {
             drop(finalization);
@@ -679,7 +655,6 @@ impl AcpConnectionContext {
                 thinking: None,
                 projection: AcpProjection::default(),
                 advertised_title: Some(persisted.title.clone()),
-                message_count,
                 created_here: false,
                 prompted: false,
                 project_root: project_root.clone(),
@@ -868,21 +843,19 @@ impl AcpConnectionContext {
         &self,
         request: ListSessionsRequest,
     ) -> Result<ListSessionsResponse, agent_client_protocol::Error> {
-        let config = self.config.read().await.clone();
-        let project_root = match request.cwd.as_deref() {
-            Some(cwd) => {
-                if !cwd.is_absolute() {
-                    return Err(agent_client_protocol::Error::invalid_params()
-                        .data("ACP session-list cwd must be an absolute path"));
+        let project_root =
+            match request.cwd.as_deref() {
+                Some(cwd) => {
+                    if !cwd.is_absolute() {
+                        return Err(agent_client_protocol::Error::invalid_params()
+                            .data("ACP session-list cwd must be an absolute path"));
+                    }
+                    Some(resolve_project_root(cwd).map_err(|error| {
+                        agent_client_protocol::Error::invalid_params().data(error)
+                    })?)
                 }
-                Some(
-                    ensure_allowed_project_root(cwd, &config.allowed_project_roots).map_err(
-                        |error| agent_client_protocol::Error::invalid_params().data(error),
-                    )?,
-                )
-            }
-            None => None,
-        };
+                None => None,
+            };
         let project = project_root
             .as_ref()
             .map(|root| root.to_string_lossy().into_owned());
@@ -911,10 +884,7 @@ impl AcpConnectionContext {
                 ));
             }
             for session in page.tasks {
-                let Ok(root) = ensure_allowed_project_root(
-                    Path::new(&session.project_root),
-                    &config.allowed_project_roots,
-                ) else {
+                let Ok(root) = resolve_project_root(Path::new(&session.project_root)) else {
                     continue;
                 };
                 let mut info = SessionInfo::new(session.uuid, root).title(session.title);
@@ -962,8 +932,6 @@ impl AcpConnectionContext {
             let session = sessions.get_mut(session_id).ok_or_else(|| {
                 agent_client_protocol::Error::resource_not_found(Some(session_id.into()))
             })?;
-            session.message_count = usize::try_from(summary.message_count)
-                .map_err(|_| paged::replay_error("Invalid Maple task message count"))?;
             if let Some(model) = summary.model
                 && session.model != model
             {
@@ -1017,10 +985,7 @@ impl AcpConnectionContext {
                         agent_client_protocol::Error::invalid_params().data("Unknown Maple model")
                     );
                 }
-                if session.message_count > 0 && session.model != model {
-                    return Err(agent_client_protocol::Error::invalid_params()
-                        .data("Maple tasks are model-locked after their first message"));
-                }
+                // A started task switches with its next prompt.
                 let model = model.to_string();
                 drop(sessions);
                 self.agent
@@ -1628,26 +1593,14 @@ impl AcpConnectionContext {
             .lock()
             .await
             .insert(session_id.to_string(), run.run_id.clone());
-        let locked_config_options = {
-            let mut sessions = self.sessions.lock().await;
-            sessions.get_mut(session_id).and_then(|session| {
-                session.prompted = true;
-                let first_message = session.message_count == 0;
-                session.message_count = session.message_count.saturating_add(1);
-                first_message.then(|| session.config_options())
-            })
-        };
+        if let Some(session) = self.sessions.lock().await.get_mut(session_id) {
+            session.prompted = true;
+        }
         self.stats.active_runs.fetch_add(1, Ordering::SeqCst);
         let mut terminal = run.terminal.clone();
         let usage = run.usage.clone();
         let result = self
-            .stream_run(
-                cx,
-                &protocol_session_id,
-                run,
-                locked_config_options,
-                cancellation,
-            )
+            .stream_run(cx, &protocol_session_id, run, cancellation)
             .await;
         let (result, stopped_early) = match result {
             Ok((response, stopped)) => (Ok(response), stopped),
@@ -1696,34 +1649,12 @@ impl AcpConnectionContext {
         cx: &ConnectionTo<Client>,
         protocol_session_id: &SessionId,
         run: crate::agent::AgentRunHandle,
-        locked_config_options: Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
         cancellation: &CancellationToken,
     ) -> Result<(PromptResponse, bool), agent_client_protocol::Error> {
         let session_id = protocol_session_id.0.to_string();
         let mut events = run.events;
         let mut terminal = run.terminal;
         let overflowed = run.event_overflowed;
-        if let Some(config_options) = locked_config_options {
-            let update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(config_options));
-            match self
-                .send_session_update(
-                    cx,
-                    SessionNotification::new(protocol_session_id.clone(), update),
-                    cancellation,
-                )
-                .await
-            {
-                Ok(()) => {}
-                Err(AcpOutboundSendError::Cancelled) => {
-                    return Ok((PromptResponse::new(StopReason::Cancelled), true));
-                }
-                Err(AcpOutboundSendError::UpdateTooLarge) => {
-                    return Err(agent_client_protocol::Error::internal_error()
-                        .data("Maple's locked model selector exceeded the ACP update limit"));
-                }
-                Err(AcpOutboundSendError::Transport(error)) => return Err(error),
-            }
-        }
         let operation = self
             .session_operations
             .lock()

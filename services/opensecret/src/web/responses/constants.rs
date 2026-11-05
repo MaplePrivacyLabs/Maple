@@ -74,3 +74,6 @@ pub const DEFAULT_TOOL_FUNCTION_NAME: &str = "function";
 /// Tool-related event types
 pub const EVENT_TOOL_CALL_CREATED: &str = "tool_call.created";
 pub const EVENT_TOOL_OUTPUT_CREATED: &str = "tool_output.created";
+
+/// Newly sampled summary progress; never includes summary content.
+pub const EVENT_RESPONSE_COMPACTION_COMPACTING: &str = "response.compaction.compacting";

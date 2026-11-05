@@ -17,14 +17,18 @@ import {
   type TransportV2AuthSnapshot
 } from "./transportV2/auth";
 import { transportV2AuthRuntime } from "./transportV2/authRuntime";
+import { snapshotClientApp, type ClientApp } from "./clientApp";
 
 let apiUrl = "";
 let apiPcrConfig: PcrConfig = snapshotPcrConfig();
+let apiClientApp: ClientApp | undefined;
 clearLegacyTransportV1Credentials();
 
-export function setApiUrl(url: string, pcrConfig?: PcrConfig) {
+export function setApiUrl(url: string, pcrConfig?: PcrConfig, clientApp?: ClientApp) {
+  const configuredClientApp = snapshotClientApp(clientApp);
   apiUrl = url;
   apiPcrConfig = snapshotPcrConfig(pcrConfig);
+  apiClientApp = configuredClientApp;
   clearLegacyTransportV1Credentials();
 }
 
@@ -34,6 +38,10 @@ export function getApiUrl(): string {
 
 export function getApiPcrConfig(): PcrConfig {
   return snapshotPcrConfig(apiPcrConfig);
+}
+
+export function getApiClientApp(): ClientApp | undefined {
+  return apiClientApp;
 }
 
 export type LoginResponse = {
@@ -1337,6 +1345,8 @@ export type ModelCatalogItem = Model &
     enabled: boolean;
     deprecated: boolean;
     sort_order?: number;
+    /** False for a model Maple Work does not offer for new tasks; absent on older servers. */
+    available_in_agent?: boolean;
   };
 
 export type ModelAlias = ModelReasoningMetadata & {
@@ -1357,6 +1367,8 @@ export type ModelCatalogResponse = {
   defaults: {
     quick: ModelAliasId;
     powerful: ModelAliasId;
+    /** Concrete model Maple Work suggests for new tasks; absent on older servers. */
+    agent?: string;
   };
   audio?: {
     transcription?: {

@@ -15,9 +15,12 @@ use crate::store::records::{
     McpTarget, SecretString,
 };
 
+pub(crate) mod apps;
+pub(crate) mod catalog;
 mod connection;
 #[cfg(test)]
 pub(super) mod fake_server;
+pub(crate) mod oauth;
 mod task;
 mod tool;
 

@@ -1,8 +1,0 @@
-diff --git a/bin/kmstool-enclave-cli/main.c b/bin/kmstool-enclave-cli/main.c
-index 513c75e..fb28f81 100644
---- a/bin/kmstool-enclave-cli/main.c
-+++ b/bin/kmstool-enclave-cli/main.c
-@@ -481 +481,2 @@ int main(int argc, char **argv) {
--    AWS_ASSERT(aws_nitro_enclaves_library_seed_entropy(1024) == AWS_OP_SUCCESS);
-+    rc = aws_nitro_enclaves_library_seed_entropy(1024);
-+    fail_on(rc != AWS_OP_SUCCESS, "Could not seed system entropy");

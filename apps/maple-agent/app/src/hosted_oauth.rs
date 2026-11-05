@@ -211,7 +211,6 @@ impl CompletionResponse {
 }
 
 fn completion_response(outcome: Result<bool, ()>) -> String {
-    // Only fixed outcome text enters the document, never request or account data.
     let (title, message) = match outcome {
         Ok(true) => ("Signed in", "You can close this tab."),
         Ok(false) => (
@@ -223,15 +222,7 @@ fn completion_response(outcome: Result<bool, ()>) -> String {
             "Return to Maple Work and start again. You can close this tab.",
         ),
     };
-    let body = include_str!("hosted_oauth_complete.html")
-        .replace("{{title}}", title)
-        .replace("{{message}}", message);
-    // Hashes authorize only the template's exact script/style contents. Update
-    // the corresponding hash when editing either inline block in the template.
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'sha256-TT2/B5X4kutghZnTdCndWuEaf6uS6wbgBxuJIAzSdos='; style-src 'sha256-bEU9dVwNDbkfogept6azK2Ull7VrNOlUgl+5AqGnEOA='; frame-ancestors 'none'; base-uri 'none'\r\n\r\n{body}",
-        body.len()
-    )
+    maple_agent::sign_in_page::sign_in_page_response("200 OK", title, message)
 }
 
 #[cfg(test)]

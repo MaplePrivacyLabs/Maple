@@ -44,6 +44,15 @@ import type {
   ZapriteUpgradeQuote,
   ZapriteUpgradeStatusResponse
 } from "./zapriteUpgrade";
+import {
+  fetchUsage,
+  fetchUsagePrices,
+  fetchUsageRequests,
+  type UsagePricesResponse,
+  type UsageQuery,
+  type UsageRequestsPage,
+  type UsageResponse
+} from "./usageApi";
 import type {
   TeamStatus,
   CreateTeamRequest,
@@ -345,6 +354,21 @@ export class BillingService {
 
   async updateApiCreditSettings(data: UpdateCreditSettingsRequest): Promise<ApiCreditSettings> {
     return this.executeWithToken((token) => updateApiCreditSettings(token, data));
+  }
+
+  // Usage history
+  async getUsage(query: UsageQuery): Promise<UsageResponse> {
+    return this.executeWithToken((token) => fetchUsage(token, query));
+  }
+
+  async getUsageRequests(
+    query: { cursor?: string; limit?: number } = {}
+  ): Promise<UsageRequestsPage> {
+    return this.executeWithToken((token) => fetchUsageRequests(token, query));
+  }
+
+  async getUsagePrices(): Promise<UsagePricesResponse> {
+    return fetchUsagePrices();
   }
 
   // Subscription Pass methods

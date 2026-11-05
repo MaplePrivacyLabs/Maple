@@ -287,6 +287,144 @@ fn published(result: CompactionPublishResult) -> CompactionCheckpoint {
     }
 }
 
+#[test]
+#[ignore = "requires explicitly selected disposable migrated database"]
+fn db_compaction_visibility_marker_pagination_is_bounded_stable_and_owner_scoped() {
+    let mut fixture = Fixture::new();
+    let item = fixture.user_item(None, at(0));
+    // Paid preparation can publish a usable checkpoint before the enclosing
+    // request is persisted. Its memory remains available to recall, but an
+    // unanchored attempt must not crowd actual history markers out of a page.
+    let source = fixture.snapshot();
+    let orphan_candidate = fixture.candidate(&source, vec![item], None);
+    let orphan = published(fixture.publish(orphan_candidate));
+    let response = fixture.response(ResponseStatus::Completed);
+    let mut published_rows = Vec::new();
+    for index in 0..3 {
+        let source = fixture.snapshot();
+        let mut candidate = fixture.candidate(&source, vec![item], Some(response.uuid));
+        candidate.after_item_uuid = (index == 1).then_some(item.uuid);
+        published_rows.push(published(fixture.publish(candidate)));
+    }
+    let ascending = CompactionCheckpoint::list_markers(
+        &mut fixture.conn,
+        fixture.conversation_id,
+        fixture.user,
+        2,
+        None,
+        "asc",
+    )
+    .unwrap();
+    assert_eq!(
+        ascending.iter().map(|row| row.uuid).collect::<Vec<_>>(),
+        vec![published_rows[0].uuid, published_rows[1].uuid]
+    );
+    assert_eq!(ascending[0].generation, 2);
+    assert!(ascending[0].after_item_uuid.is_none());
+    assert_eq!(ascending[1].after_item_uuid, Some(item.uuid));
+    let remaining = CompactionCheckpoint::list_markers(
+        &mut fixture.conn,
+        fixture.conversation_id,
+        fixture.user,
+        2,
+        Some(ascending[1].uuid),
+        "asc",
+    )
+    .unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].uuid, published_rows[2].uuid);
+    let descending = CompactionCheckpoint::list_markers(
+        &mut fixture.conn,
+        fixture.conversation_id,
+        fixture.user,
+        2,
+        None,
+        "desc",
+    )
+    .unwrap();
+    assert_eq!(
+        descending.iter().map(|row| row.uuid).collect::<Vec<_>>(),
+        vec![published_rows[2].uuid, published_rows[1].uuid]
+    );
+    let remaining = CompactionCheckpoint::list_markers(
+        &mut fixture.conn,
+        fixture.conversation_id,
+        fixture.user,
+        2,
+        Some(descending[1].uuid),
+        "desc",
+    )
+    .unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].uuid, published_rows[0].uuid);
+    assert!(matches!(
+        CompactionCheckpoint::list_markers(
+            &mut fixture.conn,
+            fixture.conversation_id,
+            fixture.user,
+            20,
+            Some(orphan.uuid),
+            "asc"
+        ),
+        Err(CompactionError::InvalidSelection)
+    ));
+    for (limit, order) in [(0, "asc"), (102, "desc"), (1, "unknown")] {
+        assert!(matches!(
+            CompactionCheckpoint::list_markers(
+                &mut fixture.conn,
+                fixture.conversation_id,
+                fixture.user,
+                limit,
+                None,
+                order
+            ),
+            Err(CompactionError::InvalidSelection)
+        ));
+    }
+    assert!(matches!(
+        CompactionCheckpoint::list_markers(
+            &mut fixture.conn,
+            fixture.conversation_id,
+            fixture.other_user,
+            20,
+            None,
+            "asc"
+        ),
+        Err(CompactionError::ConversationNotFound)
+    ));
+    assert!(matches!(
+        CompactionCheckpoint::list_markers(
+            &mut fixture.conn,
+            fixture.conversation_id,
+            fixture.user,
+            20,
+            Some(Uuid::new_v4()),
+            "asc"
+        ),
+        Err(CompactionError::InvalidSelection)
+    ));
+    let other_conversation = NewConversation {
+        uuid: Uuid::new_v4(),
+        user_id: fixture.user,
+        project_id: None,
+        is_pinned: false,
+        metadata_enc: None,
+    }
+    .insert(&mut fixture.conn)
+    .unwrap();
+    assert!(matches!(
+        CompactionCheckpoint::list_markers(
+            &mut fixture.conn,
+            other_conversation.id,
+            fixture.user,
+            20,
+            Some(published_rows[0].uuid),
+            "desc"
+        ),
+        Err(CompactionError::InvalidSelection)
+    ));
+}
+
 fn synthetic_snapshot() -> CompactionSnapshot {
     let call_uuid = Uuid::from_u128(102);
     let items = [

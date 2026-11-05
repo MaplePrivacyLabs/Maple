@@ -6,11 +6,27 @@ type SettingsPageProps = {
   description: string;
   children: ReactNode;
   actions?: ReactNode;
+  /** Wider column for pages that carry charts and tables. */
+  wide?: boolean;
+  className?: string;
 };
 
-export function SettingsPage({ title, description, children, actions }: SettingsPageProps) {
+export function SettingsPage({
+  title,
+  description,
+  children,
+  actions,
+  wide = false,
+  className
+}: SettingsPageProps) {
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-7 sm:px-8 sm:py-10 lg:px-10">
+    <div
+      className={cn(
+        "mx-auto w-full px-4 py-7 sm:px-8 sm:py-10 lg:px-10",
+        wide ? "max-w-5xl" : "max-w-4xl",
+        className
+      )}
+    >
       <header className="mb-7 flex flex-col gap-4 border-b border-border/70 pb-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
