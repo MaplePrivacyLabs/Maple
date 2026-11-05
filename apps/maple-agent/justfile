@@ -42,7 +42,7 @@ ci-lint: fmt-check git-metadata-test
       python3 scripts/verify-sqlcipher-build.py "$metadata"
 
 # The ci.yml agent-test lane; `cargo test` builds the examples, ci-lint's clippy checks the benches.
-ci-test:
+ci-test: python-test
     RUSTFLAGS="-D warnings" cargo test --workspace --locked
 
 # The ci.yml agent-full-linux lane: every target built, and the headless tests.
@@ -68,6 +68,19 @@ package-rehearsal:
 git-metadata-test:
     python3 scripts/test_git_metadata.py
 
+# Prepare the pinned CPython runtime the code-mode worker tests and debug builds use.
+python-prepare:
+    python3 scripts/prepare-python.py
+
+# Run the focused Python protocol/language suite on the prepared interpreter.
+python-test: python-prepare
+    python3 scripts/test_prepare_python.py
+    python3 scripts/test-python-worker.py
+
+# Exercise the prepared worker using the same package resolver as the app.
+code-mode-smoke: python-prepare
+    cargo run -p maple-code-mode --bin code-mode-smoke --locked
+
 # Format all code.
 fmt:
     cargo fmt --all
@@ -84,7 +97,7 @@ clippy:
     cargo clippy -p maple-agent-app --locked --no-default-features --features proxy -- -D warnings
 
 # Build and run the tests for the workspace and for the headless build.
-test:
+test: python-test
     RUSTFLAGS="-D warnings" cargo build --workspace --all-targets --locked
     RUSTFLAGS="-D warnings" cargo test --workspace --locked
     RUSTFLAGS="-D warnings" cargo test -p maple-agent-app --locked {{headless}}
