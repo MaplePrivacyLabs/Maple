@@ -1920,6 +1920,88 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn reconnecting_shows_only_the_header_spinner(cx: &mut TestAppContext) {
+        let (screen, cx) = chat_window(cx, |this, _| {
+            this.booting = false;
+        });
+        // The fixture's unreachable API leaves a notice of its own.
+        screen.update(cx, |this, cx| {
+            this.notice = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.debug_bounds("host-reconnecting"), None);
+        let title = cx.debug_bounds("header-title").unwrap();
+        let composer = cx.debug_bounds("send-message").unwrap();
+        screen.update(cx, |this, cx| {
+            assert_eq!(this.host_reconnect_status(), None);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            assert!(
+                this.host_reconnect_status()
+                    .unwrap()
+                    .contains("Reconnecting")
+            );
+            assert!(this.runtime_error.is_none());
+            // A call the drop cut off adds no row of its own.
+            this.notice = Some("The Maple host disconnected. Reconnect before retrying.".into());
+            assert!(this.render_notice(cx).is_none());
+            this.notice = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let spinner = cx.debug_bounds("host-reconnecting").expect("the spinner");
+        let header = cx.debug_bounds("chat-header").unwrap();
+        // 14 px of icon in 4 px of hover room, the icon on the row's gutter.
+        assert_eq!(spinner.size.width, px(22.));
+        assert_eq!(
+            spinner.right(),
+            header.right() - px(8.),
+            "the row's far end"
+        );
+        assert_eq!(cx.debug_bounds("header-title"), Some(title));
+        assert_eq!(cx.debug_bounds("send-message"), Some(composer));
+
+        // Hovering is how to find out what is going on, and the tooltip
+        // stays on screen although the spinner is at the window's edge.
+        cx.simulate_mouse_move(spinner.center(), None, gpui::Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        let tooltip = cx.debug_bounds("tooltip").expect("the tooltip");
+        assert!(tooltip.right() <= px(1200.), "{tooltip:?}");
+        assert!(tooltip.left() >= px(0.), "{tooltip:?}");
+
+        screen.update(cx, |this, cx| {
+            // Refused actions stay quiet too, and lose nothing.
+            this.fill_empty_composer("send this after the reconnect", cx);
+            this.send_inner(cx);
+            this.select_session("another-task", cx);
+            assert_eq!(this.notice, None);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("send this after the reconnect")
+            );
+
+            // The socket is back and history is reloading.
+            this.host_recovery.events = Some(Vec::new());
+            assert!(this.host_reconnect_status().unwrap().contains("Refreshing"));
+            this.host_recovery.events = None;
+
+            // Everything else still shows, and an outcome that needs the
+            // user stops the spinner rather than turning beside its banner.
+            this.notice = Some("Conversation compacted".into());
+            assert!(this.render_notice(cx).is_some());
+            this.runtime_error = Some("Could not reload host state".into());
+            assert_eq!(this.host_reconnect_status(), None);
+            this.runtime_error = None;
+            this.handle_service_event(AgentServiceEvent::HostDisconnected, cx);
+            assert_eq!(this.host_reconnect_status(), None);
+            assert!(this.runtime_error.is_some());
+        });
+    }
+
+    #[gpui::test]
     fn test_question_event_sets_pending_card(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);

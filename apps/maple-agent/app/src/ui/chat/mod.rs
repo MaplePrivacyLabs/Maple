@@ -851,6 +851,25 @@ impl ChatScreen {
         self.host_recovery.ended
     }
 
+    /// What the host connection is doing while it recovers by itself, for
+    /// the header spinner, or nothing when it is not. An outcome that needs
+    /// the user (the host is gone, the reload failed, local data is being
+    /// updated) sets `runtime_error` instead, so the spinner never turns
+    /// beside a banner that says to reopen Maple.
+    fn host_reconnect_status(&self) -> Option<&'static str> {
+        if !self.host_recovery.unavailable
+            || self.host_recovery.ended
+            || self.runtime_error.is_some()
+        {
+            return None;
+        }
+        Some(if self.host_recovery.events.is_some() {
+            "Reconnected. Refreshing task history. Sending and switching tasks are paused."
+        } else {
+            "Reconnecting to the Maple host. Sending and switching tasks are paused."
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_store_maintenance_for_test(
         &mut self,
@@ -2818,10 +2837,8 @@ impl ChatScreen {
     /// Load a task and make it current when its snapshot lands; its
     /// persisted root then becomes the visible project context.
     pub(crate) fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        // The header's spinner or banner already says why.
         if self.host_recovery.unavailable {
-            self.notice =
-                Some("Task history is reconnecting. Try again when it has recovered.".into());
-            cx.notify();
             return;
         }
         // The side thread belongs to the task it forked.
@@ -3979,8 +3996,14 @@ impl ChatScreen {
 
     /// The current notice as a dismissable row, or nothing. Showing it
     /// arms a timer that clears it after `NOTICE_TTL` unless it changed.
+    /// A call cut off by a dropped host connection gets no row, whichever
+    /// side of the reconnect its failure lands on: there is nothing to do
+    /// about it, and the row would outlive the reconnect it asks for.
     pub(super) fn render_notice(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let notice = self.notice.clone()?;
+        let notice = self
+            .notice
+            .clone()
+            .filter(|notice| !crate::host::is_host_disconnect(notice))?;
         self.schedule_notice_dismiss(notice.clone(), cx);
         Some(div().child(motion::fade_in(
             widgets::notice(
@@ -4430,11 +4453,9 @@ impl ChatScreen {
         if self.loading_session.is_some() {
             return;
         }
+        // The header's spinner or banner already says why, and the text
+        // stays in the composer for the user to send afterwards.
         if self.host_recovery.unavailable {
-            self.notice = Some(
-                "Wait for the host connection and task history to recover before sending.".into(),
-            );
-            cx.notify();
             return;
         }
         if self.thinking_saving {
@@ -6131,8 +6152,8 @@ impl ChatScreen {
                     self.draft_mcp_defaults = None;
                 }
                 self.begin_navigation();
-                self.runtime_error =
-                    Some("Connection lost. Reconnecting to the Maple host…".into());
+                // Recovery runs by itself: the header spinner shows it.
+                self.runtime_error = None;
                 cx.emit(NavigationChanged);
                 return true;
             }
