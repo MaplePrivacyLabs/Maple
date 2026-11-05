@@ -488,6 +488,67 @@ async fn a_server_that_exits_shows_its_error_output() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_server_that_went_away_starts_again_for_the_next_call() {
+    // Answers one call with how many times it has started, then exits, as an
+    // app does when it quits or updates while a task is open.
+    const SERVER: &str = r#"echo started >> "$1"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}}\n' "$id" ;;
+    *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"work","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+    *'"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"start %s"}]}}\n' "$id" "$(wc -l < "$1" | tr -d ' ')"; exit 0 ;;
+  esac
+done"#;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("server.sh");
+    std::fs::write(&script, SERVER).unwrap();
+    let starts = dir.path().join("starts");
+    let changes = Arc::new(AtomicUsize::new(0));
+    let tools_changed: ToolsChanged = {
+        let changes = Arc::clone(&changes);
+        Arc::new(move || {
+            changes.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    let server = McpServer::new(
+        stdio_config(&format!("sh {} {}", script.display(), starts.display())),
+        &std::env::temp_dir(),
+        None,
+        tools_changed,
+    );
+    let call = || {
+        server.call_tool(
+            "work",
+            JsonObject::new(),
+            CancellationToken::new(),
+            pi_agent_core::ToolUpdates::none(),
+        )
+    };
+    assert_eq!(text(&call().await.unwrap()), "start 1");
+    assert_eq!(changes.load(Ordering::SeqCst), 0);
+
+    for _ in 0..250 {
+        let connection = server.connection.lock().await;
+        let open = connection.as_ref().unwrap();
+        if open.service.peer().is_transport_closed() {
+            break;
+        }
+        drop(connection);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(text(&call().await.unwrap()), "start 2");
+    assert_eq!(
+        changes.load(Ordering::SeqCst),
+        1,
+        "the task reads its tools anew"
+    );
+    server.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn stopping_a_stdio_server_ends_everything_it_started() {
     // The shell starts a child, prints its pid and waits; neither reads its
     // input, so only the signal to the process group ends them.

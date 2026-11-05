@@ -357,10 +357,13 @@ impl McpServer {
             }
             _ => None,
         };
-        if connection
-            .as_ref()
-            .is_some_and(|open| !open.service.is_closed() && open.oauth_generation == generation)
-        {
+        // `is_closed` only sees a close from this side. A server that exited
+        // shows as a closed transport.
+        if connection.as_ref().is_some_and(|open| {
+            !open.service.is_closed()
+                && !open.service.peer().is_transport_closed()
+                && open.oauth_generation == generation
+        }) {
             return Ok(());
         }
         let dropped = connection.take();

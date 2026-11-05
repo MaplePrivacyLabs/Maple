@@ -350,7 +350,7 @@
   {
     "id": "xcode",
     "name": "Xcode",
-    "summary": "Build, test and work with your open Xcode projects",
+    "summary": "Build and test your Xcode projects",
     "category": "developer",
     "connect": {
       "type": "command",
@@ -385,6 +385,6 @@
       }
     ],
     "connectSeconds": 30,
-    "help": "Open Xcode, then turn on Model Context Protocol in Settings > Intelligence."
+    "help": "Open Xcode, then allow external agents in Settings > Intelligence."
   }
 ]
