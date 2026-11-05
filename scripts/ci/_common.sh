@@ -3521,7 +3521,10 @@ EOF
   "${compiler}" -x c -O2 -Wall -Wextra "${source}" -o "${patcher}"
   rm -f "${source}"
   chmod 0755 "${patcher}"
-  sanitize_linux_package_executable "${patcher}"
+  # Build-time users need the Nix interpreter until their rewrites finish.
+  if [ "${2:-portable}" = portable ]; then
+    sanitize_linux_package_executable "${patcher}"
+  fi
 }
 
 write_linux_appimage_webkit_hook() {
@@ -3817,7 +3820,7 @@ stage_linux_appdir_webkit_runtime() {
   sanitize_linux_appdir_executables_under "${appdir}/usr/libexec/webkit2gtk-4.1"
   sanitize_linux_appdir_executables_under "${runtime_dir}/bin"
   set_linux_appdir_rpath_under "${appdir}/usr/lib/webkit2gtk-4.1" '$ORIGIN/../..'
-  install_linux_appimage_string_patcher "${appdir}"
+  install_linux_appimage_string_patcher "${appdir}" build
 
   for exe in "${runtime_dir}/bin/bwrap" "${runtime_dir}/bin/xdg-dbus-proxy"; do
     touch -h -d "@${SOURCE_DATE_EPOCH}" "${exe}"
@@ -3940,6 +3943,15 @@ verify_linux_appdir_runtime_closure() {
     fi
   done < <(find "${libdir}" -maxdepth 1 \( -type f -o -type l \) -print0 2>/dev/null)
 
+  if [ -f "${libdir}/libepoxy.so.0" ]; then
+    for soname in libGLESv2.so.2 libGL.so.1; do
+      if ! linux_appdir_library_is_self_contained "${appdir}" "${libdir}/${soname}"; then
+        echo "AppImage is missing bundled libepoxy dlopen library ${soname}." >&2
+        status=1
+      fi
+    done
+  fi
+
   while IFS= read -r -d '' elf; do
     while IFS= read -r needed; do
       [ -n "${needed}" ] || continue
@@ -3981,12 +3993,61 @@ verify_linux_appdir_runtime_closure() {
   return "${status}"
 }
 
+# Inspect runtime constants, not .dynstr: patchelf can leave obsolete absolute
+# DT_NEEDED strings there after replacing the live entry with a soname.
+linux_appimage_runtime_library_paths() {
+  readelf --string-dump=.rodata "$1" 2>/dev/null |
+    sed -nE 's@^.*\]  (/nix/store/[^[:space:]]+).*$@\1@p' |
+    grep -E '/lib(64)?/[^/*%]+\.so(\.[0-9]+)*$|/[^/]*libglvnd[^/]*/lib$' |
+    LC_ALL=C sort -u || true
+}
+
+repair_linux_appdir_runtime_library_paths() {
+  local appdir="$1"
+  local elf path soname source
+  local patcher="${appdir}/usr/libexec/maple-webkit-runtime/maple-replace-strings"
+
+  # libepoxy dlopens these dispatch libraries; vendor drivers stay on the host.
+  for soname in libGLESv2.so.2 libGL.so.1; do
+    source="$(linux_runtime_closure_library_for_soname "${soname}")"
+    copy_linux_runtime_library_to_appdir "${appdir}" "${source}" "${soname}"
+  done
+
+  while IFS= read -r -d '' elf; do
+    while IFS= read -r path; do
+      case "${path}" in
+        *-libglvnd-*/lib)
+          # dlopen expands $ORIGIN relative to the calling libepoxy.
+          # shellcheck disable=SC2016
+          "${patcher}" "${elf}" "${path}" '$ORIGIN'
+          ;;
+        *)
+          soname="$(basename "${path}")"
+          # Host-supplied libraries resolve by soname from the host.
+          if ! linux_appimage_ignored_needed_library "${soname}"; then
+            source="$(linux_runtime_closure_library_for_soname "${soname}")"
+            copy_linux_runtime_library_to_appdir "${appdir}" "${source}" "${soname}"
+          fi
+          "${patcher}" "${elf}" "${path}" "${soname}"
+          ;;
+      esac
+      touch -h -d "@${SOURCE_DATE_EPOCH}" "${elf}"
+    done < <(linux_appimage_runtime_library_paths "${elf}")
+  done < <(find "${appdir}" -type f -print0)
+}
+
 verify_linux_appdir_portable_runtime_paths() {
   local appdir="$1"
   local status=0
-  local path rpath target
+  local path rpath target runtime_path
 
   while IFS= read -r -d '' path; do
+    while IFS= read -r runtime_path; do
+      echo "AppImage ELF contains a Nix runtime library path." >&2
+      echo "runtime_path=${runtime_path}" >&2
+      echo "file=${path}" >&2
+      status=1
+    done < <(linux_appimage_runtime_library_paths "${path}")
     rpath="$(patchelf --print-rpath "${path}" 2>/dev/null || true)"
     case "${rpath}" in
       *"/nix/store/"* | *"/home/runner/work/"* | *"/Users/runner/work/"* | *"/Users/tony/"*)
@@ -4119,6 +4180,8 @@ prepare_linux_appdir_for_appimage() {
 
   stage_linux_appdir_webkit_runtime "${appdir}"
   stage_linux_appdir_gio_runtime "${appdir}"
+  repair_linux_appdir_runtime_library_paths "${appdir}"
+  sanitize_linux_package_executable "${appdir}/usr/libexec/maple-webkit-runtime/maple-replace-strings"
   repair_linux_appdir_runtime_closure "${appdir}"
   sanitize_linux_appdir_library_rpaths "${appdir}"
   remove_linux_appdir_nix_xdg_wrappers "${appdir}"
