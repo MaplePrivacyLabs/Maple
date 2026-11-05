@@ -59,14 +59,16 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   ../../.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh
 ```
 
-When the diff adds a new, unreleased latest reversible migration, use
-`--redo-latest` instead. It includes the same validation and also exercises the
-latest down/up cycle inside that disposable lifecycle:
+When the diff adds new, unreleased latest reversible migrations, use
+`--redo-latest COUNT` instead, where COUNT is the number of trailing migrations
+the cycle must walk (at least the number the diff adds). It includes the same
+validation and also exercises those down/up cycles inside that disposable
+lifecycle, newest first:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   nix develop --no-write-lock-file '.?submodules=1' -c bash \
-  ../../.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh --redo-latest
+  ../../.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh --redo-latest 2
 ```
 
 The helper proves an empty-database migration and the selected local synthetic
@@ -75,6 +77,9 @@ and Google/GitHub callback completion through the real V1 encryption
 middleware and V2 gateway. Completion tests exchange synthetic credentials
 only with local mock token/user-info endpoints, verify the originally selected
 callback after settings change, and reject replay without another exchange.
+The recovery subset covers recovery-wrap lifecycle, management and V2
+password-reset routes, and a recovery flow through the real V1 middleware and
+V2 gateway; its reset rows use a known code MAC instead of email delivery.
 The `os-sdk-e2e` lane in `ci.yml` runs this helper too. These fixtures do not
 prove a live OAuth provider flow, a released SDK or application, or a data
 conversion from representative old rows.

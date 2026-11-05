@@ -4,19 +4,36 @@ umask 077
 export LC_ALL=C
 
 usage() {
-  printf 'usage: %s [--redo-latest]\n' "${0##*/}" >&2
+  printf 'usage: %s [--redo-latest [COUNT]]\n' "${0##*/}" >&2
 }
 
+# COUNT is how many trailing migrations the redo cycle walks, newest first. A
+# diff that adds more than one migration needs COUNT >= its migration count,
+# otherwise the older ones are never exercised down/up.
 redo_latest=0
+redo_count=1
 case "${1:-}" in
   "") ;;
-  --redo-latest) redo_latest=1 ;;
+  --redo-latest)
+    redo_latest=1
+    if [ "$#" -gt 1 ]; then
+      case "$2" in
+        '' | *[!0-9]*) usage; exit 2 ;;
+      esac
+      redo_count="$2"
+      shift
+    fi
+    ;;
   *)
     usage
     exit 2
     ;;
 esac
 if [ "$#" -gt 1 ]; then
+  usage
+  exit 2
+fi
+if [ "$redo_count" -lt 1 ]; then
   usage
   exit 2
 fi
@@ -95,8 +112,8 @@ cleanup() {
   rm -rf -- "$workdir"
 
   if [ "$status" -eq 0 ] && [ "$tests_passed" -eq 1 ]; then
-    printf 'Disposable-DB evidence: %s AEAD/database tests, %s OAuth database tests, %s callback settings/transport tests, and %s Responses compaction persistence tests passed; no tests skipped; temporary cluster removed.\n' \
-      "$aead_count" "$oauth_count" "$callback_count" "$compaction_count"
+    printf 'Disposable-DB evidence: %s AEAD/database tests, %s OAuth database tests, %s callback settings/transport tests, %s Responses compaction persistence tests, and %s recovery tests passed; no tests skipped; temporary cluster removed.\n' \
+      "$aead_count" "$oauth_count" "$callback_count" "$compaction_count" "$recovery_count"
   fi
   exit "$status"
 }
@@ -128,6 +145,7 @@ createdb -h "$pgsockets" -p "$pgport" -U "$admin_user" \
 
 export DATABASE_URL="postgres://opensecret_user:password@127.0.0.1:${pgport}/${test_database}"
 export AEAD_TAMPER_TEST_DATABASE_URL="$DATABASE_URL"
+export RECOVERY_TEST_DATABASE_URL="$DATABASE_URL"
 
 assert_database_identity() {
   local db_identity
@@ -165,9 +183,11 @@ test "$expected_migrations" -gt 0
 assert_migration_count
 
 if [ "$redo_latest" -eq 1 ]; then
-  diesel migration redo --locked-schema \
-    --database-url "$AEAD_TAMPER_TEST_DATABASE_URL"
-  assert_migration_count
+  for ((redo = 0; redo < redo_count; redo++)); do
+    diesel migration redo --locked-schema \
+      --database-url "$AEAD_TAMPER_TEST_DATABASE_URL"
+    assert_migration_count
+  done
 fi
 
 cargo test --locked --all-features aead_db_tamper_tests \
@@ -188,6 +208,7 @@ compaction_count="$(awk '/^models::response_compaction::tests::db_.*: test$/ { c
   END { print count + 0 }' "$workdir/compaction-tests.list")"
 # Keep the selected persistence contract explicit: a missing ignored test is a failure.
 test "$compaction_count" -eq 21
+
 
 cargo test --locked --all-features aead_db_tamper_tests \
   -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/aead-tests.log"
@@ -241,6 +262,33 @@ for callback_filter in \
   grep -Eq "test result: ok\\. ${selected_count} passed; 0 failed; 0 ignored;" \
     "$workdir/callback-tests.log"
   callback_count=$((callback_count + selected_count))
+done
+
+# Exact prefixes keep unrelated ignored tests out; pinned counts make a
+# renamed or un-ignored recovery test a failure instead of a silent drop.
+recovery_count=0
+for recovery_suite in \
+  recovery_db_tests::=12 \
+  recovery_route_tests::=29 \
+  transport_v2::gateway::tests::db_recovery_=1; do
+  recovery_filter="${recovery_suite%=*}"
+  expected_count="${recovery_suite##*=}"
+  cargo test --locked --all-features "$recovery_filter" \
+    -- --ignored --list >"$workdir/recovery-tests.list"
+  selected_count="$(awk -v prefix="$recovery_filter" \
+    'index($0, prefix) == 1 && /: test$/ { count++ }
+     END { print count + 0 }' "$workdir/recovery-tests.list")"
+  test "$selected_count" -eq "$expected_count"
+
+  cargo test --locked --all-features "$recovery_filter" \
+    -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/recovery-tests.log"
+  if grep -qi 'skipping:' "$workdir/recovery-tests.log"; then
+    printf 'Recovery database test output contained a skip marker\n' >&2
+    exit 1
+  fi
+  grep -Eq "test result: ok\\. ${selected_count} passed; 0 failed; 0 ignored;" \
+    "$workdir/recovery-tests.log"
+  recovery_count=$((recovery_count + selected_count))
 done
 
 assert_database_identity
