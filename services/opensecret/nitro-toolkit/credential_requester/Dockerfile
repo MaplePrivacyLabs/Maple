@@ -1,17 +1,22 @@
 FROM docker.io/library/python:3.13.16-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed
 
 # The pinned base predates Bookworm's CVE-2026-103111 (libpcre2),
-# CVE-2026-13221 et al. (perl-base) and CVE-2026-84782 (libssl3) fixes.
-# Keep the digest stable while requiring the fixed packages from
-# bookworm-security.
+# CVE-2026-13221 et al. (perl-base), CVE-2026-84782 (libssl3) and
+# CVE-2026-109518 (apt) fixes. Keep the digest stable while requiring the
+# fixed packages from bookworm-security. The base's vulnerable apt runs this
+# install, so disable the download retries CVE-2026-109518 depends on.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends --only-upgrade \
+    && apt-get install -y -o Acquire::Retries=0 --no-install-recommends --only-upgrade \
         libpcre2-8-0=10.42-1+deb12u2 \
         perl-base=5.36.0-7+deb12u4 \
         libssl3=3.0.22-1~deb12u2 \
+        apt=2.6.2 \
+        libapt-pkg6.0=2.6.2 \
     && test "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" = '10.42-1+deb12u2' \
     && test "$(dpkg-query -W -f='${Version}' perl-base)" = '5.36.0-7+deb12u4' \
     && test "$(dpkg-query -W -f='${Version}' libssl3)" = '3.0.22-1~deb12u2' \
+    && test "$(dpkg-query -W -f='${Version}' apt)" = '2.6.2' \
+    && test "$(dpkg-query -W -f='${Version}' libapt-pkg6.0)" = '2.6.2' \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
