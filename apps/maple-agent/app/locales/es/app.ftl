@@ -1846,3 +1846,9 @@ runtime-error-oauth-url = Pega la URL completa a la que se te redirigió (contie
 runtime-error-sign-in-publication = Falló el inicio de sesión. Vuelve a intentarlo.
 runtime-error-account-already-signed-in = Ya hay una sesión iniciada en Maple. Cierra sesión antes de cambiar de cuenta.
 runtime-error-account-owner-read = No se pudo leer el propietario de la sesión guardada. Vuelve a intentarlo.
+
+## Native desktop operation feedback
+native-project-unavailable = Esta computadora no está disponible. Vuelve a conectarla antes de cambiar el nombre del proyecto.
+native-project-connection-changed = La conexión con la computadora cambió. Revisa el nombre actual del proyecto antes de volver a intentarlo.
+native-task-unavailable = Esta computadora no está disponible. Vuelve a conectarla antes de modificar la tarea.
+native-task-connection-changed = La conexión con la computadora cambió. Revisa la tarea antes de volver a intentarlo.

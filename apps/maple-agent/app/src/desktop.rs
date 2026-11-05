@@ -170,7 +170,7 @@ struct MapleApp {
     store_load_epoch: u64,
     store_ready: bool,
     store_id: Option<String>,
-    store_notice: Option<String>,
+    store_notice: Option<UiText>,
     store_notice_is_error: bool,
     seen_store_notice_operation: Option<String>,
     inline_password_completion: Option<String>,
@@ -269,12 +269,7 @@ impl MapleApp {
             self.inline_password_completion.as_deref(),
         ) {
             if let Some(message) = self.store_notice.clone() {
-                self.present_store_attention(
-                    message.into(),
-                    StoreAttentionKind::Operation,
-                    false,
-                    cx,
-                );
+                self.present_store_attention(message, StoreAttentionKind::Operation, false, cx);
             }
             cx.notify();
         }
@@ -1712,10 +1707,7 @@ impl MapleApp {
             source.update(cx, |chat, cx| {
                 chat.finish_project_rename(
                     request.target,
-                    Err(
-                        "This computer is unavailable. Reconnect it before renaming the project."
-                            .into(),
-                    ),
+                    Err(UiText::key("native-project-unavailable")),
                     cx,
                 );
             });
@@ -1760,19 +1752,19 @@ impl MapleApp {
                 && !chat.read(cx).connection_ended()
         });
         let result = match owner {
-            Some((owner, _)) => result.map(|root| {
+            Some((owner, _)) => result.map_err(UiText::Raw).map(|root| {
                 owner.update(cx, |chat, cx| chat.apply_project_names(vec![root], cx));
                 // Publish the accepted name before removing the source's
                 // optimistic label, so it never flashes back to the old name.
                 self.sync_computers(cx);
             }),
-            None => Err("The computer connection changed. Check its current project name before trying again.".into()),
+            None => Err(UiText::key("native-project-connection-changed")),
         };
         if let Some(source) = pending.source.upgrade()
             && self.has_chat(source.entity_id())
         {
             source.update(cx, |chat, cx| {
-                chat.finish_project_rename(pending.target, result.map_err(Into::into), cx)
+                chat.finish_project_rename(pending.target, result, cx)
             });
         }
     }
@@ -1795,10 +1787,7 @@ impl MapleApp {
             .filter(|(chat, _)| chat.read(cx).project_names_available())
         else {
             source.update(cx, |chat, cx| {
-                chat.sidebar_task_action_notice(
-                    "This computer is unavailable. Reconnect it before changing the task.".into(),
-                    cx,
-                );
+                chat.sidebar_task_action_notice(UiText::key("native-task-unavailable"), cx);
             });
             return;
         };
@@ -1863,7 +1852,7 @@ impl MapleApp {
                     && !chat.read(cx).connection_ended()
             });
         let result = match owner {
-            Some((owner, _)) => result.map(|session| {
+            Some((owner, _)) => result.map_err(UiText::Raw).map(|session| {
                 owner.update(cx, |chat, cx| {
                     chat.apply_sidebar_task_action(
                         &pending.request.target.id,
@@ -1874,16 +1863,14 @@ impl MapleApp {
                 });
                 self.sync_computers(cx);
             }),
-            None => {
-                Err("The computer connection changed. Check the task before trying again.".into())
-            }
+            None => Err(UiText::key("native-task-connection-changed")),
         };
         if let Some(source) = pending.source.upgrade()
             && self.has_chat(source.entity_id())
         {
             source.update(cx, |chat, cx| match result {
                 Ok(()) => chat.refresh_sidebar_task_actions(cx),
-                Err(message) => chat.sidebar_task_action_notice(message.into(), cx),
+                Err(message) => chat.sidebar_task_action_notice(message, cx),
             });
         }
     }
@@ -2464,11 +2451,8 @@ struct DesktopStoreStatus {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct StoreCompletionNotice {
-    operation_id: String,
-    message: String,
-    is_error: bool,
-    #[serde(default)]
-    requires_attention: bool,
+    #[serde(flatten)]
+    operation: ui::store_gate::StoreOperationNotice,
     #[serde(default)]
     inline_password_success: bool,
     #[serde(default)]
@@ -2487,7 +2471,7 @@ impl DesktopStoreStatus {
     fn reconcile_password_completion_notice(
         &self,
         seen_operation: &mut Option<String>,
-        visible: &mut Option<String>,
+        visible: &mut Option<UiText>,
         visible_is_error: &mut bool,
         busy_recipient: bool,
         handled_operation: Option<&str>,
@@ -2495,14 +2479,14 @@ impl DesktopStoreStatus {
         if let Some(notice) = &self.completion_notice
             && notice.inline_password_success
         {
-            if handled_operation == Some(notice.operation_id.as_str()) {
-                if seen_operation.as_deref() == Some(notice.operation_id.as_str()) {
+            if handled_operation == Some(notice.operation.operation_id.as_str()) {
+                if seen_operation.as_deref() == Some(notice.operation.operation_id.as_str()) {
                     let changed = visible.take().is_some() || *visible_is_error;
                     *visible_is_error = false;
                     return changed;
                 }
                 if visible.is_none() {
-                    *seen_operation = Some(notice.operation_id.clone());
+                    *seen_operation = Some(notice.operation.operation_id.clone());
                 }
                 // A delayed status for our success cannot clear a different
                 // operation's current error or synchronization warning.
@@ -2519,7 +2503,7 @@ impl DesktopStoreStatus {
     fn reconcile_completion_notice(
         &self,
         seen_operation: &mut Option<String>,
-        visible: &mut Option<String>,
+        visible: &mut Option<UiText>,
         visible_is_error: &mut bool,
     ) -> bool {
         if let Some(message) = self.fresh_completion_notice(seen_operation) {
@@ -2527,7 +2511,7 @@ impl DesktopStoreStatus {
             *visible_is_error = self
                 .completion_notice
                 .as_ref()
-                .is_some_and(|notice| notice.is_error);
+                .is_some_and(|notice| notice.operation.is_error);
             return true;
         }
         // Successful unlock intentionally has no completion notice. Clear only
@@ -2552,13 +2536,14 @@ impl DesktopStoreStatus {
         })
     }
 
-    fn fresh_completion_notice(&self, seen_operation: &mut Option<String>) -> Option<String> {
+    fn fresh_completion_notice(&self, seen_operation: &mut Option<String>) -> Option<UiText> {
         let notice = self.completion_notice.as_ref()?;
-        if seen_operation.as_deref() == Some(notice.operation_id.as_str()) {
+        if seen_operation.as_deref() == Some(notice.operation.operation_id.as_str()) {
             return None;
         }
-        *seen_operation = Some(notice.operation_id.clone());
-        (notice.is_error || notice.requires_attention).then(|| notice.message.clone())
+        *seen_operation = Some(notice.operation.operation_id.clone());
+        (notice.operation.is_error || notice.operation.requires_attention)
+            .then(|| notice.operation.presentation())
     }
 
     fn keeps_resident(&self) -> bool {
@@ -4345,7 +4330,10 @@ mod tests {
         .unwrap();
         let mut seen = None;
         assert_eq!(
-            status.fresh_completion_notice(&mut seen).as_deref(),
+            status
+                .fresh_completion_notice(&mut seen)
+                .map(|text| text.resolve())
+                .as_deref(),
             Some("Keep both passwords until synchronization finishes.")
         );
         // Dismissing the visible string must not make the host's next poll
@@ -4354,18 +4342,133 @@ mod tests {
         status.completion_notice = None;
         assert!(status.fresh_completion_notice(&mut seen).is_none());
         status.completion_notice = Some(super::StoreCompletionNotice {
-            operation_id: "second-operation".into(),
-            message: "The operation could not finish.".into(),
-            is_error: true,
+            operation: ui::store_gate::StoreOperationNotice {
+                label: None,
+                pending: false,
+                failure: None,
+                operation_id: "second-operation".into(),
+                message: "The operation could not finish.".into(),
+                is_error: true,
+                requires_attention: true,
+            },
             inline_password_success: false,
-            requires_attention: true,
             ui_operation_id: None,
             mode_notice_id: None,
         });
         assert_eq!(
-            status.fresh_completion_notice(&mut seen).as_deref(),
+            status
+                .fresh_completion_notice(&mut seen)
+                .map(|text| text.resolve())
+                .as_deref(),
             Some("The operation could not finish.")
         );
+    }
+
+    #[test]
+    fn retained_desktop_completion_reformats_without_consuming_a_deferred_notice() {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        let status: DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+            "state": {"state": "open"}, "mode": "password", "store_id": "current",
+            "completion_notice": {
+                "operation_id": "password-change", "message": "Original host fallback",
+                "label": "change_store_password", "pending": true,
+                "is_error": false, "requires_attention": true,
+                "inline_password_success": true, "ui_operation_id": "form-operation"
+            }
+        }))
+        .unwrap();
+        let (mut seen, mut visible, mut is_error) = (None, None, false);
+        assert!(status.matches_pending_password_operation(Some("form-operation")));
+        assert!(!status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut is_error,
+            true,
+            None,
+        ));
+        assert!(seen.is_none());
+        assert!(visible.is_none());
+        assert!(status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut is_error,
+            false,
+            None,
+        ));
+        for (locale, expected) in [
+            ("en", "Your unlock password changed on this computer."),
+            (
+                "es",
+                "Tu contraseña de desbloqueo cambió en esta computadora.",
+            ),
+            ("en", "Your unlock password changed on this computer."),
+        ] {
+            ui::i18n::apply_preference(Some(locale));
+            assert!(visible.as_ref().unwrap().resolve().starts_with(expected));
+            assert!(!status.reconcile_password_completion_notice(
+                &mut seen,
+                &mut visible,
+                &mut is_error,
+                false,
+                None,
+            ));
+            assert_eq!(seen.as_deref(), Some("password-change"));
+            assert!(!is_error);
+            assert_eq!(
+                status.completion_notice.as_ref().unwrap().operation.message,
+                "Original host fallback"
+            );
+        }
+        // Handling this exact inline success clears only its own fallback.
+        assert!(status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut is_error,
+            false,
+            Some("password-change"),
+        ));
+        assert!(visible.is_none());
+    }
+
+    #[test]
+    fn desktop_completion_preserves_legacy_and_unknown_failure_fallbacks() {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        for metadata in [
+            serde_json::json!({}),
+            serde_json::json!({"label": "future-operation", "pending": true}),
+            // Unknown failure takes precedence over an otherwise known label.
+            serde_json::json!({"label": "unlock", "failure": {
+                "code": "future-failure", "message": "Opaque diagnostic"
+            }}),
+        ] {
+            let mut notice = serde_json::json!({
+                "operation_id": "legacy", "message": "Opaque diagnostic",
+                "is_error": true, "requires_attention": true
+            });
+            notice
+                .as_object_mut()
+                .unwrap()
+                .extend(metadata.as_object().unwrap().clone());
+            let status: DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+                "state": {"state": "open"}, "mode": "plain", "completion_notice": notice
+            }))
+            .unwrap();
+            let (mut seen, mut visible, mut is_error) = (None, None, false);
+            assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
+            for locale in ["en", "es", "en"] {
+                ui::i18n::apply_preference(Some(locale));
+                assert_eq!(
+                    visible.as_ref().unwrap().resolve().as_ref(),
+                    "Opaque diagnostic"
+                );
+                assert!(!status.reconcile_completion_notice(
+                    &mut seen,
+                    &mut visible,
+                    &mut is_error
+                ));
+                assert!(is_error);
+            }
+        }
     }
 
     #[test]
@@ -4416,7 +4519,10 @@ mod tests {
             false,
             Some("completed")
         ));
-        assert_eq!(visible.as_deref(), Some("Saving still needs attention."));
+        assert_eq!(
+            visible.as_ref().map(UiText::resolve).as_deref(),
+            Some("Saving still needs attention.")
+        );
         assert!(error);
     }
 
@@ -4457,7 +4563,7 @@ mod tests {
         let mut is_error = false;
         assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
         assert_eq!(
-            visible.as_deref(),
+            visible.as_ref().map(UiText::resolve).as_deref(),
             Some("That password didn't unlock Maple.")
         );
         assert!(is_error);
@@ -4477,18 +4583,23 @@ mod tests {
         // Failure of a later operation while already Open remains visible as
         // long as that actual failed result remains the host's current latch.
         status.completion_notice = Some(super::StoreCompletionNotice {
-            operation_id: "failed-remove".into(),
-            message: "The current password was incorrect.".into(),
-            is_error: true,
+            operation: ui::store_gate::StoreOperationNotice {
+                label: None,
+                pending: false,
+                failure: None,
+                operation_id: "failed-remove".into(),
+                message: "The current password was incorrect.".into(),
+                is_error: true,
+                requires_attention: true,
+            },
             inline_password_success: false,
-            requires_attention: true,
             ui_operation_id: None,
             mode_notice_id: None,
         });
         assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
         assert!(!status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
         assert_eq!(
-            visible.as_deref(),
+            visible.as_ref().map(UiText::resolve).as_deref(),
             Some("The current password was incorrect.")
         );
         assert!(is_error);
@@ -4496,11 +4607,16 @@ mod tests {
         // A committed operation's synchronization warning is not an obsolete
         // unlock error and must survive a status with no volatile result.
         status.completion_notice = Some(super::StoreCompletionNotice {
-            operation_id: "committed-with-warning".into(),
-            message: "Keep both passwords until synchronization finishes.".into(),
-            is_error: false,
+            operation: ui::store_gate::StoreOperationNotice {
+                label: None,
+                pending: false,
+                failure: None,
+                operation_id: "committed-with-warning".into(),
+                message: "Keep both passwords until synchronization finishes.".into(),
+                is_error: false,
+                requires_attention: true,
+            },
             inline_password_success: false,
-            requires_attention: true,
             ui_operation_id: None,
             mode_notice_id: None,
         });
@@ -4508,7 +4624,7 @@ mod tests {
         status.completion_notice = None;
         assert!(!status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
         assert_eq!(
-            visible.as_deref(),
+            visible.as_ref().map(UiText::resolve).as_deref(),
             Some("Keep both passwords until synchronization finishes.")
         );
     }
