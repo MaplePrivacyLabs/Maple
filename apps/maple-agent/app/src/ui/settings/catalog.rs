@@ -5,7 +5,8 @@
 
 use gpui::{App, Context, Div, Entity, div, prelude::*, px};
 use maple_agent::agent::{
-    AgentMcpServer, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, McpSignIn, mcp_catalog,
+    AgentMcpServer, McpAppConnection, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry,
+    McpSignIn, mcp_catalog,
 };
 use maple_agent::store::records::{
     McpDefinition, McpSecretEdit, McpSecretUpdate, McpTarget, SecretString,
@@ -57,12 +58,14 @@ pub(super) fn section_heading(heading: Div) -> Div {
 /// Whether a saved server is this entry: by name, or by address under another.
 fn is_connected(entry: &McpCatalogEntry, servers: &[McpDefinition]) -> bool {
     let key = AgentMcpServer::key_for_name(&entry.name);
-    let address = entry.remote.url.trim_end_matches('/');
+    let address = entry
+        .remote()
+        .map(|remote| remote.url.trim_end_matches('/'));
     servers.iter().any(|server| {
         server.key == key
             || matches!(
                 &server.target,
-                McpTarget::StreamableHttp { url } if url.trim_end_matches('/') == address
+                McpTarget::StreamableHttp { url } if Some(url.trim_end_matches('/')) == address
             )
     })
 }
@@ -102,6 +105,7 @@ impl SettingsScreen {
         let name = request.name.clone();
         self.mcp_signing_in = Some(name.clone());
         self.mcp_sign_in_error = None;
+        self.mcp_app_missing = None;
         self.mcp_notice = None;
         cx.notify();
         let backend = self.integrations_backend.clone();
@@ -124,6 +128,47 @@ impl SettingsScreen {
                                 this.mcp_editor = None;
                             }
                             this.refresh_catalog();
+                        }
+                        Err(message) => this.mcp_sign_in_error = Some((name, message)),
+                    }
+                    if this.settings.application_vim_enabled {
+                        this.reconcile_application_vim_target();
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Connect an app that runs on this computer, with the same button states
+    /// as a sign-in. The host checks what it needs before anything starts.
+    fn start_mcp_app(&mut self, entry: &'static McpCatalogEntry, cx: &mut Context<Self>) {
+        if self.mcp_signing_in.is_some() {
+            return;
+        }
+        let name = entry.name.clone();
+        self.mcp_signing_in = Some(name.clone());
+        self.mcp_sign_in_error = None;
+        self.mcp_app_missing = None;
+        self.mcp_notice = None;
+        cx.notify();
+        let backend = self.integrations_backend.clone();
+        let user_id = self.user_id.clone();
+        let id = entry.id.clone();
+        self.call(
+            async move { backend.connect_mcp_app(&user_id, &id).await },
+            cx,
+            move |this, result, cx| {
+                // A connection the person stopped has nothing left to report.
+                if this.mcp_signing_in.as_deref() == Some(name.as_str()) {
+                    this.mcp_signing_in = None;
+                    match result {
+                        Ok(McpAppConnection::Connected(servers)) => {
+                            this.mcp_servers = Some(servers);
+                            this.refresh_catalog();
+                        }
+                        Ok(McpAppConnection::Missing(missing)) => {
+                            this.mcp_app_missing = Some((name, missing));
                         }
                         Err(message) => this.mcp_sign_in_error = Some((name, message)),
                     }
@@ -191,10 +236,15 @@ impl SettingsScreen {
             return;
         };
         match &entry.auth {
-            McpCatalogAuth::Oauth => self.start_mcp_sign_in(entry.sign_in(), cx),
+            McpCatalogAuth::Oauth => {
+                if let Some(request) = entry.sign_in() {
+                    self.start_mcp_sign_in(request, cx);
+                }
+            }
             McpCatalogAuth::Token { get_key_url } => {
                 self.open_token_form(entry, get_key_url.clone(), cx)
             }
+            McpCatalogAuth::None => self.start_mcp_app(entry, cx),
         }
     }
 
@@ -205,7 +255,7 @@ impl SettingsScreen {
         key_url: String,
         cx: &mut Context<Self>,
     ) {
-        let Some(header) = entry.remote.headers.first() else {
+        let Some(header) = entry.remote().and_then(|remote| remote.headers.first()) else {
             return;
         };
         self.open_mcp_editor(None, cx);
@@ -232,7 +282,10 @@ impl SettingsScreen {
         for (input, text) in [
             (&editor.name, entry.name.as_str()),
             (&editor.description, entry.summary.as_str()),
-            (&editor.target, entry.remote.url.as_str()),
+            (
+                &editor.target,
+                entry.remote().map_or("", |remote| remote.url.as_str()),
+            ),
         ] {
             input.update(cx, |input, cx| input.set_text(text, cx));
         }
@@ -257,7 +310,21 @@ impl SettingsScreen {
         let waiting = self.mcp_signing_in.as_deref() == Some(entry.name.as_str());
         let busy = self.mcp_signing_in.is_some() && !waiting;
         let button_id = gpui::SharedString::from(format!("catalog-connect-{}", entry.id));
-        let button = if waiting {
+        let missing = self
+            .mcp_app_missing
+            .as_ref()
+            .filter(|(name, _)| *name == entry.name)
+            .map(|(_, missing)| missing);
+        let button = if let Some(missing) = missing {
+            let url = missing.get_url.clone();
+            widgets::secondary_button(button_id)
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    cx.open_url(&url);
+                    this.mcp_app_missing = None;
+                    cx.notify();
+                }))
+                .child(missing.action())
+        } else if waiting {
             widgets::ghost_button(button_id)
                 .on_click(cx.listener(|this, _event, _window, cx| this.cancel_mcp_sign_in(cx)))
                 .child(spinner(
@@ -274,9 +341,10 @@ impl SettingsScreen {
                 }))
                 .child("Connect")
         };
-        let (detail, detail_color) = match self.sign_in_error_for(&entry.name) {
-            Some(error) => (error.to_string(), theme::status_error()),
-            None => (entry.summary.clone(), theme::text_secondary()),
+        let (detail, detail_color) = match (missing, self.sign_in_error_for(&entry.name)) {
+            (Some(missing), _) => (missing.message(), theme::status_error()),
+            (None, Some(error)) => (error.to_string(), theme::status_error()),
+            (None, None) => (entry.summary.clone(), theme::text_secondary()),
         };
         let card = widgets::card_row()
             .flex()
@@ -496,7 +564,14 @@ mod tests {
             screen
         });
         drop(screen);
-        cx.run_until_parked();
+        // Loads started with the screen may hold it a moment longer.
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if released.get() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(released.get());
     }
 

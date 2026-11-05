@@ -53,7 +53,7 @@ const NOT_APPROVED: &str = "Access was not approved.";
 const NEEDS_REGISTERED_APP: &str =
     "This server only accepts apps registered with it, so Maple cannot sign in to it yet.";
 const CLIENT_REFUSED: &str = "This server did not accept Maple as an app.";
-const SIGN_IN_CANCELLED: &str = "Sign-in was cancelled.";
+pub(super) const SIGN_IN_CANCELLED: &str = "Sign-in was cancelled.";
 /// How Maple names itself when it registers with a server.
 const CLIENT_NAME: &str = "Maple";
 
@@ -358,10 +358,10 @@ fn sign_ins() -> std::sync::MutexGuard<'static, HashMap<String, CancellationToke
 }
 
 /// One sign-in in progress, forgotten when it ends, however it ends.
-struct RunningSignIn(String);
+pub(super) struct RunningSignIn(String);
 
 impl RunningSignIn {
-    fn start(key: String) -> (Self, CancellationToken) {
+    pub(super) fn start(key: String) -> (Self, CancellationToken) {
         let cancel = CancellationToken::new();
         sign_ins().insert(key.clone(), cancel.clone());
         (Self(key), cancel)
@@ -1215,7 +1215,7 @@ impl AgentRuntimeHandle {
         }
     }
 
-    fn sign_in_key(&self, key: &str) -> String {
+    pub(super) fn sign_in_key(&self, key: &str) -> String {
         let root = self.paths().generated_resource_root.display();
         format!("{root}:{}:{key}", self.user_id)
     }

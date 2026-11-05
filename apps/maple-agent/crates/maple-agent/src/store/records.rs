@@ -854,6 +854,36 @@ impl Store {
         })
     }
 
+    /// Add one server with no secrets, leaving the others as they are. A server
+    /// already saved under this key is a conflict and is never replaced.
+    pub fn add_mcp_definition(&self, account: AccountId, edit: &McpServerEdit) -> StoreResult<()> {
+        if !edit.environment.is_empty() || !edit.headers.is_empty() {
+            return Err(StoreError::InvalidInput);
+        }
+        let json =
+            serde_json::to_string(&mcp_definition(edit)?).map_err(|_| StoreError::InvalidInput)?;
+        self.write(Durability::Durable, |tx| {
+            tasks::writable_account(tx, account)?;
+            if mcp_server_tx(tx, account, &edit.key)?.is_some() {
+                return Err(StoreError::Conflict);
+            }
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM mcp_servers WHERE account_id=?1",
+                [account.0],
+                |row| row.get(0),
+            )?;
+            if count >= MAX_MCP_SERVERS as i64 {
+                return Err(StoreError::InvalidInput);
+            }
+            tx.execute(
+                "INSERT INTO mcp_servers(account_id,key,position,definition) \
+                 SELECT ?1,?2,coalesce(max(position),-1)+1,?3 FROM mcp_servers WHERE account_id=?1",
+                params![account.0, edit.key, json],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Safe for settings/remote responses: a value can never be serialized here.
     pub fn mcp_definitions(&self, account: AccountId) -> StoreResult<Vec<McpDefinition>> {
         self.read(|tx| {

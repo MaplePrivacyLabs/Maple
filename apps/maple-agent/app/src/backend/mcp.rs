@@ -44,6 +44,19 @@ impl super::AgentBackend {
     pub async fn cancel_mcp_sign_in(&self, user_id: &str, name: &str) -> Result<(), String> {
         self.call("cancel_mcp_sign_in", (user_id, name)).await
     }
+
+    /// Connect a catalog app that runs on this computer. A paired computer's
+    /// own apps are not reachable from here yet.
+    pub async fn connect_mcp_app(
+        &self,
+        user_id: &str,
+        id: &str,
+    ) -> Result<maple_agent::agent::McpAppConnection, String> {
+        if self.remote_host.is_some() {
+            return Err("Connect from This Computer. Paired computers cannot do this yet.".into());
+        }
+        self.call("connect_mcp_app", (user_id, id)).await
+    }
 }
 
 struct EditsInput<'a>(&'a [McpServerEdit]);

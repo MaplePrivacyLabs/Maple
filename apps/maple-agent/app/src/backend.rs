@@ -680,6 +680,12 @@ async fn dispatch_special(
             backend.authorize_account(&user)?;
             encode(backend.cancel_mcp_sign_in(&user, &name).await?)
         }
+        "connect_mcp_app" => {
+            let (user, id): (String, String) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.connect_mcp_app(&user, &id).await?)
+        }
         "save_mcp_servers" => {
             let (user, servers): (String, Vec<AgentMcpServer>) =
                 serde_json::from_value(request.params).map_err(invalid)?;
@@ -846,7 +852,7 @@ pub(crate) async fn dispatch_remote_inner(
     // computer, even with malformed params.
     if matches!(
         request.method.as_str(),
-        "sign_in_mcp_server" | "cancel_mcp_sign_in"
+        "sign_in_mcp_server" | "cancel_mcp_sign_in" | "connect_mcp_app"
     ) {
         return Err("Signing in to an MCP server requires the local desktop.".into());
     }

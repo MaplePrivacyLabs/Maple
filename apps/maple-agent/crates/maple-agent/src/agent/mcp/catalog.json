@@ -5,7 +5,7 @@
     "name": "Notion",
     "summary": "Search and update your pages and databases",
     "category": "productivity",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.notion.com/mcp"
     },
@@ -19,7 +19,7 @@
     "name": "Todoist",
     "summary": "Manage your tasks and projects",
     "category": "productivity",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://ai.todoist.net/mcp"
     },
@@ -32,7 +32,7 @@
     "name": "Dropbox",
     "summary": "Find and read your files",
     "category": "productivity",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.dropbox.com/mcp"
     },
@@ -46,7 +46,7 @@
     "name": "Airtable",
     "summary": "Work with your bases and records",
     "category": "productivity",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.airtable.com/mcp"
     },
@@ -59,7 +59,7 @@
     "name": "Evernote",
     "summary": "Search, write and organize your notes",
     "category": "productivity",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.evernote.com/mcp"
     },
@@ -72,7 +72,7 @@
     "name": "Miro",
     "summary": "Read and add to your boards",
     "category": "productivity",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.miro.com"
     },
@@ -85,7 +85,7 @@
     "name": "Zapier",
     "summary": "Run your Zaps and connected apps",
     "category": "productivity",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.zapier.com/api/v1/connect"
     },
@@ -99,7 +99,7 @@
     "name": "Jira and Confluence",
     "summary": "Work with your issues and pages",
     "category": "teams",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.atlassian.com/v2/mcp"
     },
@@ -113,7 +113,7 @@
     "name": "Linear",
     "summary": "Plan and track issues and projects",
     "category": "teams",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.linear.app/mcp"
     },
@@ -127,7 +127,7 @@
     "name": "monday.com",
     "summary": "Manage your boards and work",
     "category": "teams",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.monday.com/mcp"
     },
@@ -140,7 +140,7 @@
     "name": "ClickUp",
     "summary": "Manage your tasks and docs",
     "category": "teams",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.clickup.com/mcp"
     },
@@ -154,7 +154,7 @@
     "name": "Stripe",
     "summary": "Look up customers, payments and invoices",
     "category": "business",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.stripe.com"
     },
@@ -168,7 +168,7 @@
     "name": "PayPal",
     "summary": "Work with your invoices and payments",
     "category": "business",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.paypal.com/mcp"
     },
@@ -181,7 +181,7 @@
     "name": "Square",
     "summary": "Work with your orders, items and customers",
     "category": "business",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.squareup.com/mcp"
     },
@@ -194,7 +194,7 @@
     "name": "Intercom",
     "summary": "Search your conversations and contacts",
     "category": "business",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.intercom.com/mcp"
     },
@@ -207,7 +207,7 @@
     "name": "Wix",
     "summary": "Manage your sites and business",
     "category": "business",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.wix.com/mcp"
     },
@@ -220,7 +220,7 @@
     "name": "WordPress.com",
     "summary": "Manage your sites and posts",
     "category": "business",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://public-api.wordpress.com/wpcom/v2/mcp/v1"
     },
@@ -233,7 +233,7 @@
     "name": "GitHub",
     "summary": "Read your repositories, issues and pull requests",
     "category": "developer",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://api.githubcopilot.com/mcp/readonly",
       "headers": [
@@ -254,7 +254,7 @@
     "name": "GitLab",
     "summary": "Work with your projects, issues and merge requests",
     "category": "developer",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://gitlab.com/api/v4/mcp"
     },
@@ -267,7 +267,7 @@
     "name": "Vercel",
     "summary": "Check your projects and deployments",
     "category": "developer",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.vercel.com"
     },
@@ -280,7 +280,7 @@
     "name": "Cloudflare",
     "summary": "Work with your Cloudflare account",
     "category": "developer",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.cloudflare.com/mcp"
     },
@@ -293,7 +293,7 @@
     "name": "Supabase",
     "summary": "Manage your databases and projects",
     "category": "developer",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.supabase.com/mcp"
     },
@@ -306,12 +306,85 @@
     "name": "Sentry",
     "summary": "Look into your errors and issues",
     "category": "developer",
-    "remote": {
+    "connect": {
       "type": "streamable-http",
       "url": "https://mcp.sentry.dev/mcp"
     },
     "auth": {
       "kind": "oauth"
     }
+  },
+  {
+    "id": "playwright",
+    "registry": "com.microsoft/playwright-mcp",
+    "name": "Playwright",
+    "summary": "Browse websites, click through pages and fill in forms",
+    "category": "developer",
+    "connect": {
+      "type": "package",
+      "registryType": "npm",
+      "identifier": "@playwright/mcp",
+      "version": "0.0.83",
+      "arguments": [
+        "--isolated",
+        "--output-dir",
+        "~/.cache/maple/playwright"
+      ]
+    },
+    "auth": {
+      "kind": "none"
+    },
+    "requires": [
+      {
+        "name": "Node.js",
+        "check": [
+          "node",
+          "--version"
+        ],
+        "minVersion": "18",
+        "getUrl": "https://nodejs.org/en/download"
+      }
+    ],
+    "help": "Playwright could not start. Check that Chrome is installed, then try again."
+  },
+  {
+    "id": "xcode",
+    "name": "Xcode",
+    "summary": "Build, test and work with your open Xcode projects",
+    "category": "developer",
+    "connect": {
+      "type": "command",
+      "command": "xcrun",
+      "arguments": [
+        "mcpbridge"
+      ]
+    },
+    "auth": {
+      "kind": "none"
+    },
+    "platforms": [
+      "macos"
+    ],
+    "requires": [
+      {
+        "name": "Xcode",
+        "check": [
+          "xcode-select",
+          "-p"
+        ],
+        "getUrl": "https://apps.apple.com/app/xcode/id497799835"
+      },
+      {
+        "name": "a newer Xcode",
+        "check": [
+          "xcrun",
+          "--find",
+          "mcpbridge"
+        ],
+        "getUrl": "https://apps.apple.com/app/xcode/id497799835"
+      }
+    ],
+    "connectSeconds": 30,
+    "help": "Open Xcode, then turn on Model Context Protocol in Settings > Intelligence."
   }
 ]
