@@ -246,9 +246,10 @@ Settings > Integrations also lists well-known apps from the bundled
 `server.json`, so adding an app needs no code. Connecting one, or choosing
 **Sign in with browser** for a custom HTTP server, signs in on this computer: the
 browser returns to a loopback listener, Maple registers itself with the server
-(Dynamic Client Registration), and tokens stay in this computer's store. A server
-that only accepts registered apps cannot be signed in to yet, and neither can a
-paired computer from its controller.
+(Dynamic Client Registration), and tokens stay in this computer's store. A new
+connection is on for new tasks until someone turns it off. A server that only
+accepts registered apps cannot be signed in to yet, and neither can a paired
+computer from its controller.
 
 HTTP servers use the stateless `2026-07-28` revision of MCP when they offer it,
 and the `initialize` handshake otherwise. Stdio servers keep the handshake, since

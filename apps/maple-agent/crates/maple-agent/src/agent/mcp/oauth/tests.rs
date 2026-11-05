@@ -435,6 +435,72 @@ fn sign_in(server: &Server) -> McpSignIn {
 }
 
 #[tokio::test]
+async fn signing_in_again_leaves_an_app_off_if_it_was_turned_off() {
+    let harness = crate::agent::tests::Harness::new().await;
+    let server = Server::start().await;
+    let definitions = harness
+        .handle
+        .sign_in_mcp_server(sign_in(&server), server.browser())
+        .await
+        .unwrap();
+    let saved = &definitions[0];
+    assert!(saved.enabled);
+    harness
+        .handle
+        .save_mcp_definition_edits(vec![McpServerEdit {
+            key: saved.key.clone(),
+            name: saved.name.clone(),
+            description: saved.description.clone(),
+            enabled: false,
+            timeout_seconds: saved.timeout_seconds,
+            target: saved.target.clone(),
+            environment: Vec::new(),
+            headers: Vec::new(),
+        }])
+        .await
+        .unwrap();
+    let definitions = harness
+        .handle
+        .sign_in_mcp_server(sign_in(&server), server.browser())
+        .await
+        .unwrap();
+    assert!(!definitions[0].enabled);
+}
+
+#[tokio::test]
+async fn the_browser_lands_on_maples_page_without_the_code_in_it() {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let callback =
+        reqwest::Url::parse(&format!("http://127.0.0.1:{port}/oauth/callback/x")).unwrap();
+    let waiting =
+        tokio::spawn(async move { receive_callback(listener, &callback, "expected").await });
+    let visit = |state: &'static str| async move {
+        let mut browser = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let request = format!(
+            "GET /oauth/callback/x?code=synthetic-code&state={state} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+        );
+        browser.write_all(request.as_bytes()).await.unwrap();
+        let mut page = String::new();
+        browser.read_to_string(&mut page).await.unwrap();
+        page
+    };
+
+    let rejected = visit("wrong").await;
+    assert!(rejected.starts_with("HTTP/1.1 400"));
+    assert!(rejected.contains("<h1 id=\"auth-title\">Sign-in could not finish</h1>"));
+
+    let page = visit("expected").await;
+    assert!(page.starts_with("HTTP/1.1 200"));
+    assert!(page.contains("Content-Type: text/html"));
+    assert!(page.contains("<h1 id=\"auth-title\">Return to Maple Work</h1>"));
+    assert!(!page.contains("synthetic-code"));
+    assert_eq!(waiting.await.unwrap().unwrap().code, "synthetic-code");
+}
+
+#[tokio::test]
 async fn native_pkce_callback_persists_refreshes_and_revocation_requires_reconnect() {
     let harness = crate::agent::tests::Harness::new().await;
     let server = Server::start().await;
@@ -445,7 +511,7 @@ async fn native_pkce_callback_persists_refreshes_and_revocation_requires_reconne
         .unwrap();
     assert_eq!(definitions.len(), 1);
     assert_eq!(definitions[0].name, "vana");
-    assert!(!definitions[0].enabled);
+    assert!(definitions[0].enabled);
     assert!(definitions[0].headers.is_empty());
     assert!(definitions[0].environment.is_empty());
     assert_eq!(server.state.exchanges.load(Ordering::SeqCst), 1);

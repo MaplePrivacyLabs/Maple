@@ -17,7 +17,7 @@ use maple_agent::agent::{
 use maple_agent::store::records::{McpDefinition, McpServerEdit, McpTarget};
 use zeroize::Zeroizing;
 
-use crate::ui::icons::icon;
+use crate::ui::icons::{icon, spinner};
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 
@@ -176,6 +176,8 @@ pub struct SettingsScreen {
     mcp_saving: bool,
     /// The server whose browser sign-in is in progress.
     mcp_signing_in: Option<String>,
+    /// The server whose sign-in last failed, and why.
+    mcp_sign_in_error: Option<(String, String)>,
     catalog_search: Entity<TextInput>,
     catalog_query: String,
     catalog_category: Option<maple_agent::agent::McpCatalogCategory>,
@@ -492,6 +494,7 @@ impl SettingsScreen {
             mcp_notice: None,
             mcp_saving: false,
             mcp_signing_in: None,
+            mcp_sign_in_error: None,
             catalog_search,
             catalog_query: String::new(),
             catalog_category: None,
@@ -2900,6 +2903,10 @@ impl SettingsScreen {
     }
 
     fn render_mcp_editor(&self, editor: &McpEditor, cx: &mut Context<Self>) -> Div {
+        let signing_in = self.mcp_editor_signing_in(cx);
+        let sign_in_error = self
+            .sign_in_error_for(editor.name.read(cx).text().trim())
+            .map(str::to_string);
         let field = |label: &'static str, hint: &'static str, input: Entity<TextInput>| {
             div()
                 .flex()
@@ -3086,19 +3093,33 @@ impl SettingsScreen {
                     .when(
                         editor.http && editor.original.is_none() && editor.token.is_none(),
                         |row| {
-                            row.child(
+                            row.child(if signing_in {
+                                widgets::ghost_button("mcp-sign-in")
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.cancel_mcp_sign_in(cx);
+                                    }))
+                                    .child(spinner(
+                                        "mcp-sign-in",
+                                        widgets::ROW_ICON,
+                                        theme::text_secondary(),
+                                    ))
+                                    .child("Stop signing in")
+                            } else {
                                 widgets::ghost_button("mcp-sign-in")
                                     .when(self.mcp_signing_in.is_some(), |el| el.opacity(0.5))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.sign_in_mcp_editor(cx);
                                     }))
-                                    .child("Sign in with browser"),
-                            )
+                                    .child("Sign in with browser")
+                            })
                         },
                     )
                     .child(
                         widgets::ghost_button("mcp-cancel")
                             .on_click(cx.listener(|this, _event, _window, cx| {
+                                if this.mcp_editor_signing_in(cx) {
+                                    this.cancel_mcp_sign_in(cx);
+                                }
                                 this.mcp_editor = None;
                                 this.mcp_notice = None;
                                 cx.notify();
@@ -3106,6 +3127,14 @@ impl SettingsScreen {
                             .child("Cancel"),
                     ),
             )
+            .when_some(sign_in_error, |form, message| {
+                form.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::status_error()))
+                        .child(message),
+                )
+            })
     }
 }
 

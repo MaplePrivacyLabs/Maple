@@ -33,6 +33,7 @@ use tracing::instrument::WithSubscriber;
 
 use super::super::AgentRuntimeHandle;
 use super::super::config::account_store;
+use crate::sign_in_page::sign_in_page_response;
 use crate::store::records::{
     McpDefinition, McpOAuthCredentials, McpServerEdit, McpTarget, SecretString,
 };
@@ -977,20 +978,19 @@ async fn receive_callback(
             read_callback(&mut stream, callback, state),
         )
         .await;
-        let (status, text) = match &parsed {
-            Ok(Ok(_)) => (
+        // The code is not redeemed yet, so this cannot promise a connection.
+        let reply = match &parsed {
+            Ok(Ok(_)) => sign_in_page_response(
                 "200 OK",
-                "Sign-in response received. You can return to Maple.",
+                "Return to Maple Work",
+                "Maple Work is finishing the connection. You can close this tab.",
             ),
-            _ => (
+            _ => sign_in_page_response(
                 "400 Bad Request",
-                "This sign-in response was not accepted. Return to Maple and try again.",
+                "Sign-in could not finish",
+                "Return to Maple Work and try again. You can close this tab.",
             ),
         };
-        let reply = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{text}",
-            text.len()
-        );
         let _ =
             tokio::time::timeout(Duration::from_secs(1), stream.write_all(reply.as_bytes())).await;
         match parsed {
@@ -1027,9 +1027,9 @@ async fn read_callback(
 
 impl AgentRuntimeHandle {
     /// Sign in to an HTTP MCP server in the browser, confirm the server takes
-    /// the result, and save it, off for new tasks. Signing in to a server
-    /// already signed in replaces its sign-in. Only public configuration and
-    /// presence DTOs return to the desktop.
+    /// the result, and save it, on for new tasks. Signing in to a server
+    /// already signed in replaces its sign-in and leaves it on or off as it
+    /// was. Only public configuration and presence DTOs return to the desktop.
     pub async fn sign_in_mcp_server(
         &self,
         request: McpSignIn,
@@ -1038,11 +1038,11 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let endpoint = sign_in_endpoint(&request.url)?;
-        let edit = McpServerEdit {
+        let mut edit = McpServerEdit {
             key: super::name_to_key(request.name.trim()),
             name: request.name.trim().to_string(),
             description: request.description.trim().to_string(),
-            enabled: false,
+            enabled: true,
             timeout_seconds: super::super::types::default_mcp_timeout_seconds(),
             target: McpTarget::StreamableHttp {
                 url: endpoint.to_string(),
@@ -1059,6 +1059,7 @@ impl AgentRuntimeHandle {
             .map_err(|_| STORAGE_FAILURE.to_string())?
             .into_iter()
             .find(|definition| definition.key == edit.key);
+        edit.enabled = previous.as_ref().is_none_or(|previous| previous.enabled);
         if let Some(previous) = &previous
             && !store
                 .mcp_oauth_managed(account, &edit.key, &previous.target)

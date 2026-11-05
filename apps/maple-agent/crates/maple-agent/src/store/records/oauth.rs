@@ -113,8 +113,7 @@ impl Store {
     ) -> StoreResult<McpOAuthCredentials> {
         check_payload(&payload)?;
         let definition = mcp_definition(edit)?;
-        if definition.enabled
-            || !definition.environment.is_empty()
+        if !definition.environment.is_empty()
             || !definition.headers.is_empty()
             || !matches!(definition.target, McpTarget::StreamableHttp { .. })
         {

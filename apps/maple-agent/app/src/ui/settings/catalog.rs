@@ -3,7 +3,7 @@
 //! sign-in goes straight to the host; one that uses a token opens the server
 //! form filled in, so saving it takes the same path as any other server.
 
-use gpui::{Context, Div, Entity, div, prelude::*, px};
+use gpui::{App, Context, Div, Entity, div, prelude::*, px};
 use maple_agent::agent::{
     AgentMcpServer, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, McpSignIn, mcp_catalog,
 };
@@ -13,7 +13,8 @@ use maple_agent::store::records::{
 use zeroize::Zeroizing;
 
 use super::{
-    SettingsScreen, SettingsTarget, TextInput, icon, pill_button, subsection_title, theme, widgets,
+    SettingsScreen, SettingsTarget, TextInput, icon, pill_button, spinner, subsection_title, theme,
+    widgets,
 };
 
 /// A catalog app's token, entered masked and put into its header on save.
@@ -100,6 +101,7 @@ impl SettingsScreen {
         }
         let name = request.name.clone();
         self.mcp_signing_in = Some(name.clone());
+        self.mcp_sign_in_error = None;
         self.mcp_notice = None;
         cx.notify();
         let backend = self.integrations_backend.clone();
@@ -123,7 +125,7 @@ impl SettingsScreen {
                             }
                             this.refresh_catalog();
                         }
-                        Err(message) => this.mcp_notice = Some(message),
+                        Err(message) => this.mcp_sign_in_error = Some((name, message)),
                     }
                     if this.settings.application_vim_enabled {
                         this.reconcile_application_vim_target();
@@ -148,23 +150,40 @@ impl SettingsScreen {
         );
     }
 
-    fn cancel_mcp_sign_in(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn cancel_mcp_sign_in(&mut self, cx: &mut Context<Self>) {
         let Some(name) = self.mcp_signing_in.take() else {
             return;
         };
         cx.notify();
         let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
+        let stopping = name.clone();
         self.call(
-            async move { backend.cancel_mcp_sign_in(&user_id, &name).await },
+            async move { backend.cancel_mcp_sign_in(&user_id, &stopping).await },
             cx,
-            |this, result, cx| {
+            move |this, result, cx| {
                 if let Err(message) = result {
-                    this.mcp_notice = Some(message);
+                    this.mcp_sign_in_error = Some((name, message));
                     cx.notify();
                 }
             },
         );
+    }
+
+    /// Whether the sign-in in progress is the one the server form started.
+    pub(super) fn mcp_editor_signing_in(&self, cx: &App) -> bool {
+        self.mcp_editor
+            .as_ref()
+            .zip(self.mcp_signing_in.as_deref())
+            .is_some_and(|(editor, name)| editor.name.read(cx).text().trim() == name)
+    }
+
+    /// Why the last sign-in to this server failed, shown where it started.
+    pub(super) fn sign_in_error_for(&self, name: &str) -> Option<&str> {
+        self.mcp_sign_in_error
+            .as_ref()
+            .filter(|(failed, _)| failed == name)
+            .map(|(_, message)| message.as_str())
     }
 
     pub(super) fn connect_catalog_entry(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -241,6 +260,11 @@ impl SettingsScreen {
         let button = if waiting {
             widgets::ghost_button(button_id)
                 .on_click(cx.listener(|this, _event, _window, cx| this.cancel_mcp_sign_in(cx)))
+                .child(spinner(
+                    &entry.id,
+                    widgets::ROW_ICON,
+                    theme::text_secondary(),
+                ))
                 .child("Cancel")
         } else {
             widgets::secondary_button(button_id)
@@ -249,6 +273,10 @@ impl SettingsScreen {
                     this.connect_catalog_entry(&entry.id, cx);
                 }))
                 .child("Connect")
+        };
+        let (detail, detail_color) = match self.sign_in_error_for(&entry.name) {
+            Some(error) => (error.to_string(), theme::status_error()),
+            None => (entry.summary.clone(), theme::text_secondary()),
         };
         let card = widgets::card_row()
             .flex()
@@ -289,9 +317,9 @@ impl SettingsScreen {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::text_secondary()))
-                            .line_clamp(2)
-                            .child(entry.summary.clone()),
+                            .text_color(gpui::rgb(detail_color))
+                            .line_clamp(3)
+                            .child(detail),
                     ),
             )
             .child(div().flex_none().child(button));
@@ -322,15 +350,10 @@ impl SettingsScreen {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child("Connect the apps you use, then choose them for each task. Your sign-ins stay on this computer."),
+                .child(
+                    "New tasks can use the apps you connect. Your sign-ins stay on this computer.",
+                ),
         );
-        if let Some(name) = &self.mcp_signing_in {
-            section = section.child(widgets::notice(
-                "mcp-sign-in-notice",
-                gpui::SharedString::from(format!("Finish signing in to {name} in your browser.")),
-                cx.listener(|this, _event, _window, cx| this.cancel_mcp_sign_in(cx)),
-            ));
-        }
         if let Some(notice) = &self.mcp_notice {
             section = section.child(widgets::banner(theme::status_warning()).child(notice.clone()));
         }
@@ -418,29 +441,54 @@ mod tests {
         assert!(!is_connected(notion(), &[saved("other", "https://other")]));
     }
 
-    #[gpui::test]
-    fn closing_settings_ends_a_sign_in_in_progress(cx: &mut gpui::TestAppContext) {
-        cx.executor().allow_parking();
+    fn screen(cx: &mut Context<SettingsScreen>) -> SettingsScreen {
         let backend = std::sync::Arc::new(
             crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
                 .expect("test backend"),
         );
+        SettingsScreen::new(
+            backend.clone(),
+            backend,
+            "user".into(),
+            crate::settings::AppSettings::default(),
+            crate::shortcuts::ShortcutSnapshot {
+                generation: 1,
+                rows: Vec::new(),
+                last_error: None,
+                compatibility_warning: None,
+            },
+            super::super::Section::Integrations,
+            cx,
+        )
+    }
+
+    #[gpui::test]
+    fn a_sign_in_belongs_to_where_it_started(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = cx.new(screen);
+        screen.update(cx, |screen, cx| {
+            screen.open_mcp_editor(None, cx);
+            let name = screen.mcp_editor.as_ref().unwrap().name.clone();
+            name.update(cx, |input, cx| input.set_text("Custom", cx));
+
+            screen.mcp_signing_in = Some("Notion".into());
+            assert!(!screen.mcp_editor_signing_in(cx));
+            screen.mcp_signing_in = Some("Custom".into());
+            assert!(screen.mcp_editor_signing_in(cx));
+            screen.mcp_signing_in = None;
+
+            screen.mcp_sign_in_error = Some(("Custom".into(), "Not approved".into()));
+            assert_eq!(screen.sign_in_error_for("Custom"), Some("Not approved"));
+            assert_eq!(screen.sign_in_error_for("Notion"), None);
+        });
+    }
+
+    #[gpui::test]
+    fn closing_settings_ends_a_sign_in_in_progress(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
         let released = std::rc::Rc::new(std::cell::Cell::new(false));
         let screen = cx.new(|cx| {
-            let mut screen = SettingsScreen::new(
-                backend.clone(),
-                backend,
-                "user".into(),
-                crate::settings::AppSettings::default(),
-                crate::shortcuts::ShortcutSnapshot {
-                    generation: 1,
-                    rows: Vec::new(),
-                    last_error: None,
-                    compatibility_warning: None,
-                },
-                super::super::Section::Integrations,
-                cx,
-            );
+            let mut screen = screen(cx);
             screen.mcp_signing_in = Some("Vercel".into());
             let released = released.clone();
             cx.on_release(move |screen, _| released.set(screen.mcp_signing_in.is_none()))
