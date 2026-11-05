@@ -2226,6 +2226,12 @@ impl OpenSecretClient {
 
     /// Confirms a password reset with the code from email
     /// Note: This does not require authentication but still uses encryption
+    ///
+    /// This legacy reset is always destructive: the account receives a fresh
+    /// seed and loses its encrypted data. Use
+    /// [`get_password_reset_options`](Self::get_password_reset_options) and
+    /// [`complete_password_reset`](Self::complete_password_reset) to offer a
+    /// seed-preserving reset when a recovery code is enrolled.
     pub async fn confirm_password_reset(
         &self,
         email: String,
@@ -2243,6 +2249,122 @@ impl OpenSecretClient {
         };
         let _: serde_json::Value = self
             .encrypted_api_call("/password-reset/confirm", "POST", Some(request))
+            .await?;
+        Ok(())
+    }
+
+    /// Reports which completions a pending password reset supports.
+    ///
+    /// The server verifies the emailed code and client secret before revealing
+    /// whether the account has an enrolled recovery code, and does not consume
+    /// the reset request. Every proof failure returns the same generic error.
+    pub async fn get_password_reset_options(
+        &self,
+        email: String,
+        alphanumeric_code: String,
+        plaintext_secret: String,
+        client_id: Uuid,
+    ) -> Result<PasswordResetOptions> {
+        let request = PasswordResetOptionsRequest {
+            proof: PasswordResetProof {
+                email,
+                alphanumeric_code,
+                plaintext_secret,
+                client_id,
+            },
+        };
+        self.encrypted_api_call("/password-reset/v2/options", "POST", Some(request))
+            .await
+    }
+
+    /// Completes a password reset and signs in with the new password.
+    ///
+    /// A [`PasswordResetCompletion::Preserve`] completion with a well-formed
+    /// but wrong recovery code consumes the reset request, so the user must
+    /// request a new reset email before trying again. A malformed code leaves
+    /// the request active. The server returns the same generic error for every
+    /// rejection.
+    pub async fn complete_password_reset(
+        &self,
+        email: String,
+        alphanumeric_code: String,
+        plaintext_secret: String,
+        new_password: String,
+        client_id: Uuid,
+        mode: PasswordResetCompletion,
+    ) -> Result<CompletePasswordResetResponse> {
+        let request = CompletePasswordResetRequest {
+            proof: PasswordResetProof {
+                email,
+                alphanumeric_code,
+                plaintext_secret,
+                client_id,
+            },
+            new_password,
+            mode,
+        };
+        // A sign-in or sign-out while the reset is in flight supersedes it.
+        // Install the reset account's tokens only into the token state this
+        // request started from.
+        let token_generation = self
+            .session_manager
+            .get_credential_snapshot()?
+            .token_generation;
+        let mut response: CompletePasswordResetResponse = self
+            .encrypted_api_call("/password-reset/v2/complete", "POST", Some(request))
+            .await?;
+
+        if !self.session_manager.set_tokens_if_generation(
+            token_generation,
+            response.access_token.clone(),
+            Some(response.refresh_token.clone()),
+        )? {
+            response.access_token.zeroize();
+            response.refresh_token.zeroize();
+            return Err(Error::Authentication(
+                "Authentication changed during password reset; the new password is set".to_string(),
+            ));
+        }
+
+        Ok(response)
+    }
+
+    /// Fetches the recovery-code enrollment status for the signed-in user.
+    pub async fn get_recovery_code_status(&self) -> Result<RecoveryCodeStatus> {
+        self.authenticated_api_call("/protected/recovery-code", "GET", None::<()>)
+            .await
+    }
+
+    /// Enrolls a recovery code that can preserve encrypted data across a
+    /// password reset. Only email-and-password accounts can enroll, and the
+    /// server returns the code only once. Fails with status 409 when a code is
+    /// already enrolled.
+    pub async fn enroll_recovery_code(
+        &self,
+        current_password: String,
+    ) -> Result<RecoveryCodeResponse> {
+        let request = RecoveryCodePasswordRequest { current_password };
+        self.authenticated_api_call("/protected/recovery-code/enroll", "POST", Some(request))
+            .await
+    }
+
+    /// Replaces the enrolled recovery code; the previous code stops working.
+    /// The server returns the replacement code only once.
+    pub async fn rotate_recovery_code(
+        &self,
+        current_password: String,
+    ) -> Result<RecoveryCodeResponse> {
+        let request = RecoveryCodePasswordRequest { current_password };
+        self.authenticated_api_call("/protected/recovery-code/rotate", "POST", Some(request))
+            .await
+    }
+
+    /// Removes the enrolled recovery code, so later password resets are
+    /// destructive. Succeeds when no code is enrolled.
+    pub async fn disable_recovery_code(&self, current_password: String) -> Result<()> {
+        let request = RecoveryCodePasswordRequest { current_password };
+        let _: serde_json::Value = self
+            .authenticated_api_call("/protected/recovery-code", "DELETE", Some(request))
             .await?;
         Ok(())
     }
@@ -3202,6 +3324,109 @@ mod tests {
         assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
         assert!(client.current_transport_session().unwrap().is_none());
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    /// Completes a V2 password reset whose response is delayed, running
+    /// `in_flight` once the request reaches the server.
+    async fn complete_password_reset_with_in_flight_change(
+        in_flight: impl FnOnce(&OpenSecretClient),
+    ) -> (Arc<OpenSecretClient>, Result<CompletePasswordResetResponse>) {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        state.queue_delayed_json_response(
+            200,
+            serde_json::json!({
+                "message": "Password reset successful.",
+                "access_token": "reset-access",
+                "refresh_token": "reset-refresh",
+            }),
+            std::time::Duration::from_millis(500),
+        );
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x9a; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(OpenSecretClient::new(server.uri()).unwrap());
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .complete_password_reset(
+                        "user@example.test".to_string(),
+                        "ABCD1234".to_string(),
+                        "client-reset-secret".to_string(),
+                        "new-password".to_string(),
+                        Uuid::nil(),
+                        PasswordResetCompletion::Destructive {
+                            acknowledge_data_loss: true,
+                        },
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.captured_requests().len() == 1 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("password reset request was not observed");
+        in_flight(&client);
+
+        let result = pending.await.unwrap();
+        (client, result)
+    }
+
+    #[tokio::test]
+    async fn password_reset_installs_tokens_when_credentials_are_unchanged() {
+        let (client, result) = complete_password_reset_with_in_flight_change(|_| {}).await;
+
+        assert_eq!(result.unwrap().access_token, "reset-access");
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "reset-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("reset-refresh"));
+    }
+
+    #[tokio::test]
+    async fn password_reset_response_cannot_overwrite_a_newer_sign_in() {
+        let (client, result) = complete_password_reset_with_in_flight_change(|client| {
+            client
+                .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+                .unwrap();
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Authentication(_))));
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "new-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+    }
+
+    #[tokio::test]
+    async fn password_reset_response_cannot_undo_a_sign_out() {
+        let (client, result) = complete_password_reset_with_in_flight_change(|client| {
+            client.session_manager.clear_tokens().unwrap();
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Authentication(_))));
+        assert!(client.get_tokens().unwrap().is_none());
     }
 
     #[tokio::test]
