@@ -1,13 +1,10 @@
 # Agent localization
 
-The localization foundation uses embedded Fluent catalogs.
-It covers all Settings pages, their local password/encryption forms, shortcut names
-and search, the unified API page, editor setup, remote-computer controls, and the
-update confirmation dialog. General
-includes dropdown choices, the chat preview and test notification. English and
-Spanish are enabled.
-Most of the app is still English; this is infrastructure for incremental
-extraction, not a claim of complete localization.
+The app uses embedded Fluent catalogs for Settings, sign-in, plan and local-store
+flows, recovery, chat, the composer and sidebar, project dialogs, and native
+menus, tray items and desktop prompts. English is the source of truth. The `es`
+catalog targets Mexican Spanish; it does not register a separate `es-MX` catalog.
+User content, provider diagnostics and machine-facing text remain unchanged.
 
 ## Locale and live switching
 
@@ -29,10 +26,16 @@ semantic status text so cached host snapshots also follow language changes.
 
 Locale state currently belongs to the GPUI thread. Call presentation helpers on
 that thread; background workers should return semantic data for the UI to format.
-Tests use isolated thread-local state and default to English. Pages outside Settings and
-native/tray menus remain English until extracted. Future translated cached views
-must invalidate formatted text on locale changes; refreshing windows alone does
+Tests use isolated thread-local state and default to English. Chat and sidebar
+invalidate translated labels, attachment previews and slash descriptions, then
+remeasure virtualized rows while preserving task selection, drafts, filters and
+the scroll anchor. Native menus and tray items relabel on locale changes. Cached
+views must invalidate formatted text explicitly; refreshing windows alone does
 not rebuild their stored strings.
+
+Before the local store opens, setup, unlock and recovery views use the OS locale.
+The saved preference lives inside the store and becomes available after unlock;
+there is no separate plaintext preference.
 
 ## Adding UI text
 
@@ -52,7 +55,13 @@ including additions/removals. `fluent-bundle` supplies typed argument values.
   labels. Each message retains at most 512 argument sets; a locale change clears
   the cache, and dropping the view releases it. `UiText` retains semantic keys
   and arguments for notices, resolving them again after a language change. Raw
-  host errors are explicitly separate from these localized notices.
+  unknown host errors remain raw, while recognized semantic host failures use
+  catalog-backed notices. Keep semantic errors intact through asynchronous
+  callbacks; resolving them before the UI receives them freezes their language.
+  Use `UiText::context` or `context_args` for a localized wrapper around another
+  semantic notice; both layers resolve for the current locale. Worker-side
+  `ui::task::Failure` carries sendable keys, arguments and original diagnostics;
+  convert it to `UiText` only on the UI thread.
 - Translate accessibility labels too. Keep element IDs, keymap slots, commands,
   protocol values and other machine-readable identifiers stable.
 - Keep complete sentences together. Add translator comments explaining args.
@@ -81,28 +90,39 @@ shipped until completeness checks pass. To add a language, add its complete
 catalog and native `language-name`, then register it in `i18n::LANGUAGES`.
 Validate layout, font fallback, bidi marks, and platform-native language
 metadata before production enablement. Spanish currently has Linux preview
-evidence only; macOS/Windows runtime and Spanish native language metadata remain
-follow-ups. The current macOS bundle declares English only, so native OS dialogs
-are outside this preview's Spanish coverage.
+evidence only; macOS/Windows runtime checks remain separate. The macOS bundle
+declares English and Spanish, and the existing debug/release bundle generators
+include Spanish permission-description resources. Generator tests do not prove
+native permission-dialog behavior on macOS.
 
-## Explicit follow-ups
+## Compatibility and remaining coverage
 
-Extraction is substantially larger than just `child(...)` calls. Settings now
+Extraction is substantially larger than just `child(...)` calls. Settings
 includes an adapter for the built-in shortcut catalog, with coverage tests for
-new catalog entries. Desktop code, login, backend/host errors and other non-UI
-files still contain display text.
+new catalog entries. Background operations carry presentation data to the UI;
+they do not read the GPUI thread's active locale.
 
-- Host/ACP/backend errors and host-owned integration detection details remain
-  English strings. Typed remote update outcomes and credit validation errors
-  are formatted in the UI. Localizing the remaining host strings needs typed
-  semantic errors plus arguments across the process boundary, formatted by the
-  consuming UI; it is not a reason to translate shared host strings in place.
-- Persisted timeline labels remain unchanged. Their future migration requires
-  semantic kinds, a `TIMELINE_FORMAT` bump and plain/keyed projection tests.
+- `HostFailure` adds source-owned codes and arguments beside the original
+  diagnostic. Ordinary local and remote response paths preserve this metadata;
+  the UI accepts known codes and validates their arguments. Unknown codes,
+  malformed arguments and legacy responses display the original diagnostic.
+  A typed producer alone does not translate a caller that still consumes its
+  legacy String adapter. Do not infer codes by matching English error text.
+- Initial remote-upload admission, persisted send-receipt outcomes and
+  string-only error events retain their legacy contracts. Recovery decisions
+  must continue to use original diagnostics and receipt authority, never
+  translated display text. Provider diagnostics remain raw.
+- Timeline projections add optional semantic label metadata. `TIMELINE_FORMAT`
+  3 rebuilds derived projections, with plain/keyed parity tests; original
+  stored text remains unchanged. Known metadata supplies translated titles and
+  bodies. Missing or unknown metadata falls back to original text without
+  classifying English strings. Partial updates preserve existing tool detail.
 - Model-facing tool descriptions, system prompts, notices sent to models, user
   content and generated content are never translated by UI extraction.
-- Native/tray menus, OS dialogs and the standalone OAuth completion HTML are
-  outside this first milestone. Each has its own lifecycle/packaging contract.
+- Local hosted-OAuth completion captures a supported locale per attempt and
+  escapes localized HTML. Remote legacy OAuth and headless builds retain an
+  English fallback. The standalone Windows NSIS installer remains English;
+  installer localization is separate from in-app text.
 - Settings dates use translated month names and date patterns. The plan-usage
   DTO includes optional raw product/reset inputs so the UI can format them;
   older hosts remain readable. Numeric separators and money still use the
