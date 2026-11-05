@@ -1800,7 +1800,7 @@ mod merged_prefix_tests {
             assert_eq!(shown(sidebar), ["settled"]);
             sidebar.pages.next.remove(&PageKind::Active);
             sidebar.rebuild_sections();
-            assert_eq!(shown(sidebar), ["settled", "a", "z"]);
+            assert_eq!(shown(sidebar), ["a", "z", "settled"]);
             // A selected/running task remains reachable outside the prefix.
             sidebar.pages.next.insert(PageKind::Settled, "more".into());
             sidebar.selected = Some("a".into());
