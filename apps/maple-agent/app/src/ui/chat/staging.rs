@@ -28,6 +28,7 @@ pub(super) enum Failure {
     RetainedFileLimit,
     RetainedByteLimit,
     UnsafeDirectory,
+    #[cfg(unix)]
     NonPrivateDirectory,
     NotAFile,
     FileTooLarge,

@@ -55,6 +55,7 @@ impl PreparationError {
                 staging::Failure::RetainedFileLimit => UiText::key("chat-staging-file-limit"),
                 staging::Failure::RetainedByteLimit => UiText::key("chat-staging-byte-limit"),
                 staging::Failure::UnsafeDirectory => UiText::key("chat-staging-unsafe-directory"),
+                #[cfg(unix)]
                 staging::Failure::NonPrivateDirectory => {
                     UiText::key("chat-staging-private-directory")
                 }
