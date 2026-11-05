@@ -6425,6 +6425,39 @@ mod state_tests {
         });
     }
 
+    /// The clicked row lights up at once, before its snapshot lands, and gives
+    /// the highlight back if that open fails or is superseded.
+    #[gpui::test]
+    fn test_opening_a_task_moves_the_sidebar_highlight_at_once(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.selected_session = Some("s1".to_string());
+            this.sync_sidebar(cx);
+            let highlighted = |this: &ChatScreen, cx: &gpui::App| {
+                this.sidebar.read(cx).selected_for_test().map(str::to_owned)
+            };
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
+
+            this.select_session("s2", cx);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s2"));
+            // An unrelated sidebar update while it opens keeps the highlight.
+            this.sync_sidebar(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s2"));
+
+            this.begin_navigation();
+            this.sync_sidebar(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
+
+            this.select_session("s2", cx);
+            this.finish_loading("s2");
+            this.sync_sidebar_selection(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
+        });
+    }
+
     /// A run on a settled task shows it active from the start: the
     /// running set covers the first frame, the runtime's record keeps it
     /// there, and finishing leaves it active with its unread marker.
