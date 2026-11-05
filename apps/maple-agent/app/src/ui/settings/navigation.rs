@@ -111,7 +111,6 @@ impl SettingsScreen {
                 editor.environment.clone(),
                 editor.headers.clone(),
             ]);
-            inputs.extend(editor.token.as_ref().map(|token| token.input.clone()));
         }
         for input in inputs {
             input.update(cx, |input, cx| {
@@ -471,7 +470,6 @@ impl SettingsScreen {
                 &editor.environment,
                 &editor.headers,
             ]);
-            inputs.extend(editor.token.as_ref().map(|token| &token.input));
         }
         inputs
             .into_iter()

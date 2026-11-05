@@ -1,49 +1,16 @@
 //! The Apps section of Integrations: the bundled catalog, by search and
-//! category, one click from connecting. Connecting an app that uses browser
-//! sign-in goes straight to the host; one that uses a token opens the server
-//! form filled in, so saving it takes the same path as any other server.
+//! category, one click from connecting.
 
-use gpui::{App, Context, Div, Entity, div, prelude::*, px};
+use gpui::{App, Context, Div, div, prelude::*, px};
 use maple_agent::agent::{
     AgentMcpServer, McpAppConnection, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry,
     McpSignIn, mcp_catalog,
 };
-use maple_agent::store::records::{
-    McpDefinition, McpSecretEdit, McpSecretUpdate, McpTarget, SecretString,
-};
-use zeroize::Zeroizing;
+use maple_agent::store::records::{McpDefinition, McpTarget};
 
 use super::{
-    SettingsScreen, SettingsTarget, TextInput, icon, pill_button, spinner, subsection_title, theme,
-    widgets,
+    SettingsScreen, SettingsTarget, icon, pill_button, spinner, subsection_title, theme, widgets,
 };
-
-/// A catalog app's token, entered masked and put into its header on save.
-pub(super) struct McpTokenField {
-    pub label: &'static str,
-    header: &'static str,
-    template: &'static str,
-    pub input: Entity<TextInput>,
-}
-
-impl McpTokenField {
-    pub(super) fn edit(&self, cx: &Context<SettingsScreen>) -> Result<McpSecretEdit, String> {
-        let token = Zeroizing::new(self.input.read(cx).text());
-        Ok(McpSecretEdit {
-            name: self.header.to_string(),
-            update: McpSecretUpdate::Set(token_value(self.template, &token)?),
-        })
-    }
-}
-
-/// The header's value with the token in it. The error never quotes the token.
-fn token_value(template: &str, token: &str) -> Result<SecretString, String> {
-    let token = token.trim();
-    if token.is_empty() {
-        return Err("Paste your token first.".to_string());
-    }
-    Ok(SecretString::new(template.replace("{token}", token)))
-}
 
 /// A heading that starts a new part of the page.
 pub(super) fn section_heading(heading: Div) -> Div {
@@ -241,55 +208,8 @@ impl SettingsScreen {
                     self.start_mcp_sign_in(request, cx);
                 }
             }
-            McpCatalogAuth::Token { get_key_url } => {
-                self.open_token_form(entry, get_key_url.clone(), cx)
-            }
             McpCatalogAuth::None => self.start_mcp_app(entry, cx),
         }
-    }
-
-    /// The server form filled in, waiting only for the token.
-    fn open_token_form(
-        &mut self,
-        entry: &'static McpCatalogEntry,
-        key_url: String,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(header) = entry.remote().and_then(|remote| remote.headers.first()) else {
-            return;
-        };
-        self.open_mcp_editor(None, cx);
-        let application_focus = self.application_focus.clone();
-        let application_vim = self.settings.application_vim_enabled;
-        let input = cx.new(move |cx| {
-            TextInput::new("Paste your token", cx)
-                .with_tab_index(6)
-                .masked()
-                .application_vim(application_vim)
-                .on_application_escape(move |window, cx| window.focus(&application_focus, cx))
-        });
-        let Some(editor) = self.mcp_editor.as_mut() else {
-            return;
-        };
-        editor.http = true;
-        editor.key_url = Some(key_url);
-        editor.token = Some(McpTokenField {
-            label: &header.description,
-            header: &header.name,
-            template: &header.value,
-            input,
-        });
-        for (input, text) in [
-            (&editor.name, entry.name.as_str()),
-            (&editor.description, entry.summary.as_str()),
-            (
-                &editor.target,
-                entry.remote().map_or("", |remote| remote.url.as_str()),
-            ),
-        ] {
-            input.update(cx, |input, cx| input.set_text(text, cx));
-        }
-        cx.notify();
     }
 
     fn set_catalog_category(
@@ -586,16 +506,6 @@ mod tests {
                 entry.name
             );
         }
-    }
-
-    #[test]
-    fn a_token_goes_into_its_header_and_is_never_quoted() {
-        let value = token_value("Bearer {token}", "  synthetic-token\n").unwrap();
-        assert_eq!(value.expose(), "Bearer synthetic-token");
-        assert_eq!(
-            token_value("Bearer {token}", " \n").unwrap_err(),
-            "Paste your token first."
-        );
     }
 
     #[test]

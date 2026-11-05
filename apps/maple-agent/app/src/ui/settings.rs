@@ -47,7 +47,6 @@ use self::account::AccountState;
 use self::acp::AcpUiState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
-use self::catalog::McpTokenField;
 #[cfg(feature = "proxy")]
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
@@ -273,10 +272,6 @@ struct McpEditor {
     headers: Entity<TextInput>,
     saved_environment: Vec<McpSecretField>,
     saved_headers: Vec<McpSecretField>,
-    /// Where a catalog app's token comes from.
-    key_url: Option<String>,
-    /// A catalog app's token, which replaces the free-form values.
-    token: Option<McpTokenField>,
 }
 
 /// What the target field of the server form asks for.
@@ -848,8 +843,6 @@ impl SettingsScreen {
             headers: field("Authorization=Bearer …; X-Api-Key=…", "", 5, false),
             saved_environment,
             saved_headers,
-            key_url: None,
-            token: None,
         });
         self.mcp_notice = None;
         cx.notify();
@@ -926,9 +919,6 @@ impl SettingsScreen {
             server.headers.extend(mcp::new_value_edits(&Zeroizing::new(
                 editor.headers.read(cx).text(),
             ))?);
-            if let Some(token) = &editor.token {
-                server.headers.push(token.edit(cx)?);
-            }
             mcp::require_target_choice(editor.original.as_ref(), &server)?;
             if !editor.http
                 && server.headers.iter().any(|entry| {
@@ -3051,33 +3041,17 @@ impl SettingsScreen {
                 col.child(subsection_title("Header values"))
                     .child(self.render_mcp_secret_fields(&editor.saved_headers, true, cx))
             })
-            .when(editor.token.is_none(), |col| {
-                col.child(field(
-                    "New environment values",
-                    "KEY=value pairs separated by semicolons. Existing values use the choices above.",
-                    editor.environment.clone(),
-                ))
-            })
-            .when_some(editor.token.as_ref(), |col, token| {
-                col.child(field(token.label, "", token.input.clone()))
-            })
-            .when(editor.http && editor.token.is_none(), |col| {
+            .child(field(
+                "New environment values",
+                "KEY=value pairs separated by semicolons. Existing values use the choices above.",
+                editor.environment.clone(),
+            ))
+            .when(editor.http, |col| {
                 col.child(field(
                     "New headers",
                     "Name=value pairs separated by semicolons.",
                     editor.headers.clone(),
                 ))
-            })
-            .when_some(editor.key_url.clone(), |col, url| {
-                col.child(
-                    div()
-                        .id("mcp-get-token")
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::link()))
-                        .hover(|style| style.underline().cursor_pointer())
-                        .on_click(move |_, _, _| crate::ui::rich_text::open_link(&url))
-                        .child("Get a token"),
-                )
             })
             .child(
                 div()
@@ -3093,30 +3067,27 @@ impl SettingsScreen {
                             }))
                             .child("Save"),
                     )
-                    .when(
-                        editor.http && editor.original.is_none() && editor.token.is_none(),
-                        |row| {
-                            row.child(if signing_in {
-                                widgets::ghost_button("mcp-sign-in")
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.cancel_mcp_sign_in(cx);
-                                    }))
-                                    .child(spinner(
-                                        "mcp-sign-in",
-                                        widgets::ROW_ICON,
-                                        theme::text_secondary(),
-                                    ))
-                                    .child("Stop signing in")
-                            } else {
-                                widgets::ghost_button("mcp-sign-in")
-                                    .when(self.mcp_signing_in.is_some(), |el| el.opacity(0.5))
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.sign_in_mcp_editor(cx);
-                                    }))
-                                    .child("Sign in with browser")
-                            })
-                        },
-                    )
+                    .when(editor.http && editor.original.is_none(), |row| {
+                        row.child(if signing_in {
+                            widgets::ghost_button("mcp-sign-in")
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.cancel_mcp_sign_in(cx);
+                                }))
+                                .child(spinner(
+                                    "mcp-sign-in",
+                                    widgets::ROW_ICON,
+                                    theme::text_secondary(),
+                                ))
+                                .child("Stop signing in")
+                        } else {
+                            widgets::ghost_button("mcp-sign-in")
+                                .when(self.mcp_signing_in.is_some(), |el| el.opacity(0.5))
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.sign_in_mcp_editor(cx);
+                                }))
+                                .child("Sign in with browser")
+                        })
+                    })
                     .child(
                         widgets::ghost_button("mcp-cancel")
                             .on_click(cx.listener(|this, _event, _window, cx| {

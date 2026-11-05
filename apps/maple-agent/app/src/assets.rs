@@ -21,7 +21,6 @@ assets!(
     "icons/apps/cloudflare.png",
     "icons/apps/dropbox.png",
     "icons/apps/evernote.png",
-    "icons/apps/github.png",
     "icons/apps/gitlab.png",
     "icons/apps/intercom.png",
     "icons/apps/linear.png",
