@@ -204,6 +204,8 @@ impl ChatScreen {
                     self.popup.is_open(&ChatPopup::Project),
                     false,
                 )
+                // Outside the composer box, so the standalone radius.
+                .rounded(theme::RADIUS_SM)
                 // The header is a window drag region; a press here is the
                 // chip's.
                 .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
@@ -371,6 +373,7 @@ impl ChatScreen {
                     theme::text_secondary(),
                 )
                 .size_8()
+                .rounded(theme::RADIUS_LG)
                 .debug_selector(|| "thinking-picker".to_string())
                 .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
                     button.bg(gpui::rgb(theme::bg_sidebar_pill()))
@@ -419,7 +422,7 @@ impl ChatScreen {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(theme::RADIUS_SM)
+                    .rounded(theme::RADIUS_LG)
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::accent_container()))
@@ -443,7 +446,7 @@ impl ChatScreen {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(theme::RADIUS_SM)
+                        .rounded(theme::RADIUS_LG)
                         .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
                         .hover(|style| {
                             style
@@ -1215,7 +1218,7 @@ impl ChatScreen {
                             .relative()
                             .max_w(px(260.))
                             .h_16()
-                            .rounded(theme::RADIUS_LG)
+                            .rounded(theme::RADIUS_SM)
                             .border_1()
                             .border_color(gpui::rgb(theme::border()))
                             .bg(gpui::rgb(theme::bg_elevated()))
@@ -1227,7 +1230,7 @@ impl ChatScreen {
                                 Some(thumbnail) => div().size_16().flex_none().child(
                                     gpui::img(gpui::ImageSource::Image(Arc::clone(thumbnail)))
                                         .size_full()
-                                        .rounded(theme::RADIUS_LG),
+                                        .rounded(theme::RADIUS_SM),
                                 ),
                                 None => div()
                                     .size_12()
@@ -1517,7 +1520,8 @@ fn chip(
         .items_center()
         .gap_1()
         .px_2()
-        .rounded(theme::RADIUS_SM)
+        // Concentric with the composer box: 24px radius minus the 8px inset.
+        .rounded(theme::RADIUS_LG)
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))
