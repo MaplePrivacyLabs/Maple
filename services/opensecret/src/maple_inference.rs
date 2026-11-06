@@ -115,14 +115,15 @@ struct ReleasePin {
 // artifact. A staged i02 update must never broaden i01's attestation policy.
 // These identify the published artifact and full multiplatform measurement,
 // not a cached live quote. Remove retired entries after rollout completes.
+// Prepared for the next uncensored guest; it has no customer route yet.
 const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
-    repo: "MaplePrivacyLabs/inference-deepseek",
-    tag: "v0.1.1",
-    digest: "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be",
+    repo: "MaplePrivacyLabs/inference-deepseek-uncensored",
+    tag: "v0.1.0+b300",
+    digest: "6a8e906bc31caaccf5b6bbe84dec99c7213ec1d77aa360df464d531744590ac2",
     registers: &[
-        "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365",
-        "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
-        "4dac875226df9a0a2dcc8e2c535ebf4ed26398dd3581ab62eba5580a5d155a8c62b66c8f073884c6b3b9a03b34e7bf94",
+        "9e01436661dff4702b622a51a7bbcb83ce0a61d0c2bdc2de5a2492fc1dec70bb1997df829147a154e11fdfc6dbe044fe",
+        "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
+        "898884507ffe6bb1d51aa3bf548d8748043aa8e2018d545424c312e7a39109d75f30760f0d4124ae2cf5c89cf07db8dd",
     ],
 };
 
@@ -401,12 +402,45 @@ mod tests {
             "a47f4e2707c76f799513b5ca277982d1988891bf486867ad1de56ef028e29a8e54f37c4bbf9fa70cab6ca9f1683acef7",
         ]);
         assert!(approved.iter().all(|release| {
-            release.release.repo != I01_CURRENT_RELEASE.repo
+            release.release.tag != I01_CURRENT_RELEASE.tag
                 && release.release.digest != I01_CURRENT_RELEASE.digest
                 && release.measurement.registers[0] != I01_CURRENT_RELEASE.registers[0]
         }));
         assert!(direct_policy(MapleInstanceId::I02).unwrap().is_some());
         assert!(direct_policy(MapleInstanceId::I01).unwrap().is_some());
+    }
+
+    #[test]
+    fn prepared_i01_policy_is_new_uncensored_only_and_never_authorizes_stock() {
+        let prepared = approved_releases(endpoint(MapleInstanceId::I01));
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(
+            prepared[0].release.repo,
+            "MaplePrivacyLabs/inference-deepseek-uncensored"
+        );
+        assert_eq!(prepared[0].release.tag, "v0.1.0+b300");
+        assert_eq!(
+            prepared[0].measurement.type_,
+            PredicateType::SnpTdxMultiPlatformV1
+        );
+        assert_eq!(prepared[0].measurement.registers.len(), 3);
+        // Neither the existing old uncensored guest nor the former stock guest
+        // can satisfy this endpoint's new, exclusive release policy.
+        assert_ne!(prepared[0].release.digest, I02_CURRENT_RELEASE.digest);
+        assert_ne!(
+            prepared[0].measurement.registers[0],
+            I02_CURRENT_RELEASE.registers[0]
+        );
+        for instance in MapleInstanceId::ALL {
+            for approved in approved_releases(endpoint(instance)) {
+                assert_ne!(approved.release.repo, "MaplePrivacyLabs/inference-deepseek");
+                assert_ne!(
+                    approved.release.digest,
+                    "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be"
+                );
+                assert_ne!(approved.measurement.registers[0], "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365");
+            }
+        }
     }
 
     #[test]
