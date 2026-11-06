@@ -8,7 +8,7 @@
 
 use super::{
     compaction::{self, PreparedPrompt},
-    constants::{ROLE_ASSISTANT, ROLE_SYSTEM, ROLE_USER},
+    constants::{ROLE_ASSISTANT, ROLE_SYSTEM, ROLE_USER, TRUNCATION_MARKER},
     context_builder::{
         format_chat_messages, load_instruction_messages, normalize_tool_call_ids_for_model,
         prompt_token_budget, user_message_prompt_token_count, ChatMsg,
@@ -29,7 +29,6 @@ use uuid::Uuid;
 
 const MAX_BATCH_ROWS: usize = 128;
 const SOURCE_BATCH_BYTES_TARGET: usize = 8 * 1024 * 1024;
-const TRUNCATION_MARKER: &str = "[Previous messages truncated due to context limits]";
 
 type MessageKey = (String, i64);
 
@@ -677,7 +676,7 @@ fn determine_needed_message_ids(
 
     let head_tokens: usize = needed_entries.iter().map(|entry| entry.tok).sum();
 
-    let truncation_msg_tokens = count_tokens("[Previous messages truncated due to context limits]");
+    let truncation_msg_tokens = count_tokens(TRUNCATION_MARKER);
 
     // Calculate how many tokens we have left for the tail
     let available_for_tail =

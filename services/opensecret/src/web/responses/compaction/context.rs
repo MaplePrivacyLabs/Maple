@@ -1,11 +1,15 @@
 //! Read-only context planning and checkpoint projection.
 //!
-//! No source item disappears merely because a suffix advances. An item is either
-//! replayed verbatim or explicitly covered by a successfully published summary.
+//! For one request, every canonical source item is replayed verbatim, covered by
+//! a published summary, or archived outside the active window. The active window
+//! is the scope the sliding-window strategy would show this model: compaction
+//! never widens it. Summary input comes only from that window, so an archived
+//! item stays available in canonical storage but never returns to model context.
 //! This module performs no persistence, inference, billing, or tool execution.
 
-use super::policy::{CompactionPolicy, MAX_SOURCE_BATCH_BYTES};
+use super::{policy::CompactionPolicy, summary};
 use crate::tokens::count_tokens;
+use crate::web::responses::constants::{ACTIVE_WINDOW_ROWS, TRUNCATION_MARKER};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -104,6 +108,11 @@ pub struct CheckpointPayload {
     pub version: u32,
     pub history: Option<CheckpointSection>,
     pub active: Option<CheckpointSection>,
+    /// A summary frees budget, so a recomputed window would otherwise walk back
+    /// into source it already excluded. Uncovered items before this covered key
+    /// stay archived; deleting it invalidates the checkpoint, so it cannot dangle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_start: Option<ContextItemKey>,
 }
 
 impl Default for CheckpointPayload {
@@ -112,6 +121,7 @@ impl Default for CheckpointPayload {
             version: CHECKPOINT_VERSION,
             history: None,
             active: None,
+            active_start: None,
         }
     }
 }
@@ -133,6 +143,12 @@ pub struct SummaryWork {
     /// Complete eventual coverage, including a previous checkpoint's coverage.
     pub covered: Vec<ContextItemKey>,
     pub folds_previous_active: bool,
+    /// The previous active section's anchor left the window: its coverage is
+    /// retained, but its memory is not carried forward.
+    pub drops_previous_active: bool,
+    /// Set when this work skips source outside the window. The first item after
+    /// that gap becomes the checkpoint's durable active start.
+    pub active_start: Option<ContextItemKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +178,256 @@ impl std::fmt::Display for ContextError {
 }
 
 impl std::error::Error for ContextError {}
+
+/// The model-visible scope of one request. Selection reads only metadata and the
+/// estimates already on the snapshot; it performs no inference or decryption.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActiveContext {
+    archived: HashSet<ContextItemKey>,
+    head: Option<ContextItemKey>,
+    truncated: bool,
+}
+
+impl ActiveContext {
+    /// Apply the sliding-window boundary. `input_budget` is `None` only when the
+    /// caller explicitly disabled compaction, which reports an overflow rather
+    /// than windowing; a published `active_start` still applies.
+    pub fn select(
+        snapshot: &ContextSnapshot,
+        checkpoint: &Option<CheckpointPayload>,
+        input_budget: Option<usize>,
+    ) -> Result<Self, ContextError> {
+        Self::fit(snapshot, checkpoint, input_budget, None)
+    }
+
+    /// Fit again with hydrated estimates, like the sliding window's second pass.
+    /// This can only narrow: a lower estimate never admits an unloaded item.
+    pub fn refit(
+        &self,
+        snapshot: &ContextSnapshot,
+        checkpoint: &Option<CheckpointPayload>,
+        input_budget: Option<usize>,
+    ) -> Result<Self, ContextError> {
+        Self::fit(snapshot, checkpoint, input_budget, Some(self))
+    }
+
+    pub fn is_archived(&self, key: &ContextItemKey) -> bool {
+        self.archived.contains(key)
+    }
+
+    pub fn archived_items(&self) -> usize {
+        self.archived.len()
+    }
+
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn fit(
+        snapshot: &ContextSnapshot,
+        checkpoint: &Option<CheckpointPayload>,
+        input_budget: Option<usize>,
+        previous: Option<&Self>,
+    ) -> Result<Self, ContextError> {
+        let covered = validated_coverage(snapshot, checkpoint)?;
+        let items = &snapshot.items;
+        let current = item_position(snapshot, &snapshot.current_user)?;
+        let archive = |range: std::ops::Range<usize>, archived: &mut HashSet<_>| {
+            archived.extend(
+                items[range]
+                    .iter()
+                    .map(|item| item.key)
+                    .filter(|key| !covered.contains(key)),
+            );
+        };
+        let mut result = previous.cloned().unwrap_or_default();
+        if let Some(start) = checkpoint.as_ref().and_then(|value| value.active_start) {
+            archive(0..item_position(snapshot, &start)?, &mut result.archived);
+        }
+        let Some(budget) = input_budget else {
+            return Ok(result);
+        };
+        // The sliding window reads only these rows, so its first user message and
+        // its budget are measured within them. Current-turn rows are not history.
+        archive(
+            0..current.saturating_sub(ACTIVE_WINDOW_ROWS),
+            &mut result.archived,
+        );
+
+        let groups = atomic_groups(snapshot);
+        let history = checkpoint.as_ref().and_then(|value| value.history.as_ref());
+        let old_active = previous_active(snapshot, checkpoint);
+        let units = window_units(snapshot, checkpoint, &groups, current);
+        let tokens_of = |unit: &WindowUnit, archived: &HashSet<ContextItemKey>| {
+            let raw = items[unit.start..=unit.end]
+                .iter()
+                .filter(|item| !covered.contains(&item.key) && !archived.contains(&item.key))
+                .map(|item| item.estimated_tokens)
+                .fold(0usize, usize::saturating_add);
+            match (unit.carries_active_memory, old_active) {
+                (true, Some(section)) if raw > 0 => raw.saturating_add(section_tokens(section)),
+                _ => raw,
+            }
+        };
+        let required_from = units.last().map_or(0, |unit| unit.end + 1);
+        let mut required = items[required_from..]
+            .iter()
+            .filter(|item| !covered.contains(&item.key))
+            .map(|item| item.estimated_tokens)
+            .fold(snapshot.instruction_tokens, usize::saturating_add);
+        for section in history.into_iter().chain(
+            checkpoint
+                .as_ref()
+                .and_then(|value| value.active.as_ref())
+                .filter(|_| old_active.is_none()),
+        ) {
+            required = required.saturating_add(section_tokens(section));
+        }
+        let visible: Vec<_> = units
+            .iter()
+            .map(|unit| (unit, tokens_of(unit, &result.archived)))
+            .filter(|(_, tokens)| *tokens > 0)
+            .collect();
+        let marker = count_tokens(TRUNCATION_MARKER);
+        let total = visible
+            .iter()
+            .map(|(_, tokens)| *tokens)
+            .fold(required, usize::saturating_add);
+        if total.saturating_add(if result.truncated { marker } else { 0 }) <= budget {
+            return Ok(result);
+        }
+
+        let mut available = budget.saturating_sub(required.saturating_add(marker));
+        // A summary already stands in for the conversation's opening.
+        let head = visible
+            .iter()
+            .find(|(unit, _)| match previous {
+                Some(previous) => previous.head == Some(items[unit.start].key),
+                None => unit.starts_with_user,
+            })
+            .filter(|(_, tokens)| history.is_none() && *tokens <= available);
+        if let Some((_, tokens)) = head {
+            available -= *tokens;
+        }
+        let head_start = head.map(|(unit, _)| unit.start);
+        let mut tail = Vec::new();
+        let mut tail_tokens = 0usize;
+        for (unit, tokens) in visible.iter().rev() {
+            if Some(unit.start) == head_start {
+                continue;
+            }
+            if tail_tokens.saturating_add(*tokens) > available {
+                break;
+            }
+            tail_tokens = tail_tokens.saturating_add(*tokens);
+            tail.push(*unit);
+        }
+        tail.reverse();
+        // The window opens on a user message, so it never begins mid-exchange.
+        let opening = tail
+            .iter()
+            .find(|unit| unit.starts_with_user)
+            .map_or(required_from, |unit| unit.start);
+        for unit in units.iter().take_while(|unit| unit.start < opening) {
+            if Some(unit.start) != head_start {
+                archive(unit.start..unit.end + 1, &mut result.archived);
+            }
+        }
+        result.head = head.map(|(unit, _)| items[unit.start].key);
+        result.truncated = true;
+        Ok(result)
+    }
+}
+
+fn item_position(snapshot: &ContextSnapshot, key: &ContextItemKey) -> Result<usize, ContextError> {
+    snapshot
+        .items
+        .iter()
+        .position(|item| item.key == *key)
+        .ok_or(ContextError::Snapshot("source item is absent"))
+}
+
+/// An active section anchored to an earlier Response, which must become history.
+fn previous_active<'a>(
+    snapshot: &ContextSnapshot,
+    checkpoint: &'a Option<CheckpointPayload>,
+) -> Option<&'a CheckpointSection> {
+    checkpoint
+        .as_ref()
+        .and_then(|value| value.active.as_ref())
+        .filter(|section| section.anchor != Some(snapshot.current_user))
+}
+
+/// The older active section and its anchor are one indivisible unit, as groups.
+fn previous_active_span(
+    snapshot: &ContextSnapshot,
+    section: &CheckpointSection,
+    groups: &[AtomicGroup],
+    current: usize,
+) -> Option<(usize, usize)> {
+    let end = section
+        .covered
+        .iter()
+        .copied()
+        .chain(section.anchor)
+        .filter_map(|key| snapshot.items.iter().position(|item| item.key == key))
+        .max()?;
+    let start = section
+        .anchor
+        .and_then(|anchor| snapshot.items.iter().position(|item| item.key == anchor))?;
+    if end >= current {
+        return None;
+    }
+    let first = groups
+        .iter()
+        .position(|group| group.start <= start && start <= group.end)?;
+    let last = groups
+        .iter()
+        .position(|group| group.start <= end && end <= group.end)?;
+    Some((first, last))
+}
+
+/// One indivisible run of history before the current user. A window either keeps
+/// all of it or none of it, so no tool or reasoning relationship can be bisected.
+#[derive(Debug, Clone, Copy)]
+struct WindowUnit {
+    start: usize,
+    end: usize,
+    first_group: usize,
+    last_group: usize,
+    starts_with_user: bool,
+    carries_active_memory: bool,
+}
+
+fn window_units(
+    snapshot: &ContextSnapshot,
+    checkpoint: &Option<CheckpointPayload>,
+    groups: &[AtomicGroup],
+    current: usize,
+) -> Vec<WindowUnit> {
+    let fold_span = previous_active(snapshot, checkpoint)
+        .and_then(|section| previous_active_span(snapshot, section, groups, current));
+    let mut units = Vec::new();
+    let mut index = 0;
+    while let Some(group) = groups.get(index) {
+        if group.end >= current {
+            break;
+        }
+        let last = fold_span
+            .filter(|(first, _)| *first == index)
+            .map_or(index, |(_, last)| last);
+        units.push(WindowUnit {
+            start: group.start,
+            end: groups[last].end,
+            first_group: index,
+            last_group: last,
+            starts_with_user: snapshot.items[group.start].key.kind == ContextItemKind::User,
+            carries_active_memory: fold_span.is_some_and(|(first, _)| first == index),
+        });
+        index = last + 1;
+    }
+    units
+}
 
 #[derive(Debug)]
 struct AtomicGroup {
@@ -324,6 +590,14 @@ fn validated_coverage(
         }) {
             return Err(ContextError::Checkpoint("active anchor is covered"));
         }
+        if checkpoint.active_start.is_some_and(|start| {
+            !checkpoint
+                .history
+                .as_ref()
+                .is_some_and(|section| section.covered.contains(&start))
+        }) {
+            return Err(ContextError::Checkpoint("active start is not covered"));
+        }
     }
     for group in atomic_groups(snapshot) {
         let count = snapshot.items[group.start..=group.end]
@@ -345,6 +619,14 @@ fn summary_message(section: &CheckpointSection) -> Value {
         "role": "assistant",
         "content": format!("[Conversation memory: summarized earlier context]\n{}", section.summary)
     })
+}
+
+fn section_tokens(section: &CheckpointSection) -> usize {
+    count_tokens(&summary_message(section).to_string())
+}
+
+fn truncation_message() -> Value {
+    json!({ "role": "assistant", "content": TRUNCATION_MARKER })
 }
 
 fn active_memory_after(
@@ -370,28 +652,32 @@ fn active_memory_after(
 pub fn project(
     snapshot: &ContextSnapshot,
     checkpoint: &Option<CheckpointPayload>,
+    active: &ActiveContext,
 ) -> Result<(Vec<Value>, usize), ContextError> {
     let covered = validated_coverage(snapshot, checkpoint)?;
-    if snapshot
-        .items
-        .iter()
-        .any(|item| !covered.contains(&item.key) && !item.payload_loaded)
-    {
+    if snapshot.items.iter().any(|item| {
+        !covered.contains(&item.key) && !active.is_archived(&item.key) && !item.payload_loaded
+    }) {
         return Err(ContextError::Snapshot("uncovered payload is not loaded"));
     }
     let mut messages = snapshot.instructions.clone();
-    let active_after = checkpoint
-        .as_ref()
-        .and_then(|value| value.active.as_ref())
-        .and_then(|section| active_memory_after(snapshot, section));
-    if let Some(section) = checkpoint.as_ref().and_then(|value| value.history.as_ref()) {
+    let active_section = visible_active_section(checkpoint, active);
+    let active_after = active_section.and_then(|section| active_memory_after(snapshot, section));
+    let history = checkpoint.as_ref().and_then(|value| value.history.as_ref());
+    if let Some(section) = history {
         messages.push(summary_message(section));
     }
+    if active.truncated && active.head.is_none() {
+        messages.push(truncation_message());
+    }
     for item in &snapshot.items {
-        if !covered.contains(&item.key) {
+        if !covered.contains(&item.key) && !active.is_archived(&item.key) {
             messages.extend(item.prompt_messages.iter().cloned());
         }
-        if let Some(section) = checkpoint.as_ref().and_then(|value| value.active.as_ref()) {
+        if active.truncated && active.head == Some(item.key) {
+            messages.push(truncation_message());
+        }
+        if let Some(section) = active_section {
             if active_after == Some(item.key) {
                 messages.push(summary_message(section));
             }
@@ -399,8 +685,19 @@ pub fn project(
     }
     Ok((
         messages,
-        projected_token_estimate(snapshot, checkpoint, &covered),
+        projected_token_estimate(snapshot, checkpoint, &covered, active),
     ))
+}
+
+/// Active memory follows its anchor, so it leaves the prompt with that anchor.
+fn visible_active_section<'a>(
+    checkpoint: &'a Option<CheckpointPayload>,
+    active: &ActiveContext,
+) -> Option<&'a CheckpointSection> {
+    checkpoint
+        .as_ref()
+        .and_then(|value| value.active.as_ref())
+        .filter(|section| !section.anchor.is_some_and(|key| active.is_archived(&key)))
 }
 
 /// Estimate a complete projection from metadata without constructing messages.
@@ -408,9 +705,12 @@ pub fn project(
 pub fn estimate_tokens(
     snapshot: &ContextSnapshot,
     checkpoint: &Option<CheckpointPayload>,
+    active: &ActiveContext,
 ) -> Result<usize, ContextError> {
     let covered = validated_coverage(snapshot, checkpoint)?;
-    Ok(projected_token_estimate(snapshot, checkpoint, &covered))
+    Ok(projected_token_estimate(
+        snapshot, checkpoint, &covered, active,
+    ))
 }
 
 /// Hydrate only the planned helper input. Pure planning may have inserted an
@@ -454,54 +754,55 @@ fn projected_token_estimate(
     snapshot: &ContextSnapshot,
     checkpoint: &Option<CheckpointPayload>,
     covered: &HashSet<ContextItemKey>,
+    active: &ActiveContext,
 ) -> usize {
     let raw_tokens = snapshot
         .items
         .iter()
-        .filter(|item| !covered.contains(&item.key))
+        .filter(|item| !covered.contains(&item.key) && !active.is_archived(&item.key))
         .map(|item| item.estimated_tokens)
         .fold(snapshot.instruction_tokens, usize::saturating_add);
+    let marker = if active.truncated {
+        count_tokens(TRUNCATION_MARKER)
+    } else {
+        0
+    };
     checkpoint
         .iter()
-        .flat_map(|checkpoint| checkpoint.history.iter().chain(checkpoint.active.iter()))
-        .map(|section| count_tokens(&summary_message(section).to_string()))
-        .fold(raw_tokens, usize::saturating_add)
+        .flat_map(|checkpoint| checkpoint.history.iter())
+        .chain(visible_active_section(checkpoint, active))
+        .map(section_tokens)
+        .fold(raw_tokens.saturating_add(marker), usize::saturating_add)
 }
 
-#[cfg(test)]
+/// Helper input for one source item: its content plus its JSON transcript line.
+fn summary_input_tokens(item: &ContextItem) -> usize {
+    const TRANSCRIPT_LINE_TOKENS: usize = 24;
+    item.estimated_tokens.saturating_add(TRANSCRIPT_LINE_TOKENS)
+}
+
+/// Plan the summary of the active window's older portion. One history section
+/// updates any previous summary in a single helper operation; the recent tail
+/// stays verbatim. An older active section and its anchor are one unit.
 pub fn plan(
     snapshot: &ContextSnapshot,
     checkpoint: &Option<CheckpointPayload>,
+    active: &ActiveContext,
     policy: &CompactionPolicy,
     force: bool,
-) -> Result<ContextPlan, ContextError> {
-    plan_batch(snapshot, checkpoint, policy, force, usize::MAX)
-}
-
-/// Plan one item-aligned history batch. A single atomic tool/reasoning group may
-/// exceed the target; its complete transcript must still be summarized before
-/// publication. An older active section and its anchor are one indivisible unit.
-pub fn plan_batch(
-    snapshot: &ContextSnapshot,
-    checkpoint: &Option<CheckpointPayload>,
-    policy: &CompactionPolicy,
-    force: bool,
-    max_history_batch_tokens: usize,
 ) -> Result<ContextPlan, ContextError> {
     let covered = validated_coverage(snapshot, checkpoint)?;
-    let estimated_tokens = projected_token_estimate(snapshot, checkpoint, &covered);
+    let estimated_tokens = projected_token_estimate(snapshot, checkpoint, &covered, active);
     let groups = atomic_groups(snapshot);
-    let current = snapshot
-        .items
-        .iter()
-        .position(|item| item.key == snapshot.current_user)
-        .ok_or(ContextError::Snapshot("current user is absent"))?;
+    let current = item_position(snapshot, &snapshot.current_user)?;
+    let replayed =
+        |item: &&ContextItem| !covered.contains(&item.key) && !active.is_archived(&item.key);
     let mut retained = HashSet::new();
     let mut recent_tokens = 0usize;
     for (index, group) in groups.iter().enumerate().rev() {
         let raw_tokens = snapshot.items[group.start..=group.end]
             .iter()
-            .filter(|item| !covered.contains(&item.key))
+            .filter(replayed)
             .map(|item| item.estimated_tokens)
             .fold(0usize, usize::saturating_add);
         if raw_tokens > 0 && recent_tokens < policy.keep_recent_tokens {
@@ -516,86 +817,92 @@ pub fn plan_batch(
         return Ok(result);
     }
 
-    let old_active = checkpoint
-        .as_ref()
-        .and_then(|value| value.active.as_ref())
-        .filter(|section| section.anchor != Some(snapshot.current_user));
+    let old_active = previous_active(snapshot, checkpoint);
     let fold_through = old_active
         .into_iter()
         .flat_map(|section| section.covered.iter().copied().chain(section.anchor))
         .filter_map(|key| snapshot.items.iter().position(|item| item.key == key))
         .max();
-    let fold_span = old_active
-        .and_then(|section| section.anchor)
-        .and_then(|anchor| snapshot.items.iter().position(|item| item.key == anchor))
-        .zip(fold_through)
-        .filter(|(_, end)| *end < current)
-        .and_then(|(start, end)| {
-            let first = groups
-                .iter()
-                .position(|group| group.start <= start && start <= group.end)?;
-            let last = groups
-                .iter()
-                .position(|group| group.start <= end && end <= group.end)?;
-            Some((first, last))
-        });
-    let mut history = Vec::new();
-    let mut active = Vec::new();
-    let mut history_tokens = 0usize;
-    let mut active_tokens = 0usize;
-    let mut history_bytes = 0usize;
-    let mut active_bytes = 0usize;
-    let mut group_index = 0usize;
-    while let Some(group) = groups.get(group_index) {
-        if group.end >= current {
-            break;
-        }
-        let last = fold_span
-            .filter(|(first, _)| *first == group_index)
-            .map_or(group_index, |(_, last)| last);
-        let batch_groups = &groups[group_index..=last];
-        let items = &snapshot.items[group.start..=groups[last].end];
-        if items.iter().all(|item| covered.contains(&item.key)) {
-            group_index = last + 1;
+    let units = window_units(snapshot, checkpoint, &groups, current);
+    let mut older = Vec::new();
+    for unit in &units {
+        let items = &snapshot.items[unit.start..=unit.end];
+        if !items.iter().any(|item| replayed(&item)) {
             continue;
         }
-        let eligible = batch_groups.iter().all(|group| group.complete)
+        let eligible = groups[unit.first_group..=unit.last_group]
+            .iter()
+            .all(|group| group.complete)
             && items.iter().all(|item| {
                 item.settled
                     && !(item.protected_input
                         && item.response_uuid == Some(snapshot.current_response))
             });
-        let must_fold = fold_through.is_some_and(|end| group.start <= end);
-        let keep_raw = (group_index..=last).any(|index| retained.contains(&index));
+        let must_fold = fold_through.is_some_and(|end| unit.start <= end);
+        let keep_raw = (unit.first_group..=unit.last_group).any(|index| retained.contains(&index));
         if !eligible || (keep_raw && !must_fold) {
             break;
         }
-        let tokens = items
+        older.push(unit);
+    }
+
+    let previous_history = checkpoint.as_ref().and_then(|value| value.history.as_ref());
+    let helper_budget =
+        policy
+            .summary_input_budget
+            .saturating_sub(summary::request_overhead_tokens(
+                previous_history.map(|section| section.summary.as_str()),
+            ));
+    let unit_input = |unit: &WindowUnit| {
+        let source = snapshot.items[unit.start..=unit.end]
             .iter()
-            .filter(|item| !covered.contains(&item.key))
-            .map(|item| item.estimated_tokens)
+            .filter(replayed)
+            .map(summary_input_tokens)
             .fold(0usize, usize::saturating_add);
-        let bytes = items
-            .iter()
-            .filter(|item| !covered.contains(&item.key))
-            .map(|item| item.source_bytes)
-            .fold(0usize, usize::saturating_add);
-        if !history.is_empty()
-            && (history_tokens.saturating_add(tokens) > max_history_batch_tokens
-                || history_bytes.saturating_add(bytes) > MAX_SOURCE_BATCH_BYTES)
-        {
+        match (unit.carries_active_memory, old_active) {
+            (true, Some(section)) => source.saturating_add(section_tokens(section)),
+            _ => source,
+        }
+    };
+    // The window guarantees the main prompt fits, not that a helper still has
+    // room to generate. Narrow from the old end, keeping the first user message
+    // like the window does, rather than split the remainder into another call.
+    let head = older.first().copied().filter(|unit| {
+        active.head == Some(snapshot.items[unit.start].key) && unit_input(unit) <= helper_budget
+    });
+    let mut input = head.map_or(0, unit_input);
+    let mut selected = Vec::new();
+    for unit in older.iter().rev() {
+        if head.is_some_and(|head| head.start == unit.start) {
+            continue;
+        }
+        input = input.saturating_add(unit_input(unit));
+        if input > helper_budget {
             break;
         }
-        history.extend(
-            items
-                .iter()
-                .filter(|item| !covered.contains(&item.key))
-                .cloned(),
-        );
-        history_tokens = history_tokens.saturating_add(tokens);
-        history_bytes = history_bytes.saturating_add(bytes);
-        group_index = last + 1;
+        selected.push(*unit);
     }
+    selected.extend(head);
+    selected.reverse();
+    let history: Vec<_> = selected
+        .iter()
+        .flat_map(|unit| snapshot.items[unit.start..=unit.end].iter())
+        .filter(|item| replayed(item))
+        .cloned()
+        .collect();
+
+    let mut active_items = Vec::new();
+    let mut active_input = 0usize;
+    let active_previous = checkpoint
+        .as_ref()
+        .and_then(|value| value.active.as_ref())
+        .filter(|section| section.anchor == Some(snapshot.current_user));
+    let active_budget =
+        policy
+            .summary_input_budget
+            .saturating_sub(summary::request_overhead_tokens(
+                active_previous.map(|section| section.summary.as_str()),
+            ));
     for (index, group) in groups.iter().enumerate() {
         if group.start <= current {
             continue;
@@ -624,27 +931,18 @@ pub fn plan_batch(
         let tokens = items
             .iter()
             .filter(|item| !covered.contains(&item.key))
-            .map(|item| item.estimated_tokens)
+            .map(summary_input_tokens)
             .fold(0usize, usize::saturating_add);
-        let bytes = items
-            .iter()
-            .filter(|item| !covered.contains(&item.key))
-            .map(|item| item.source_bytes)
-            .fold(0usize, usize::saturating_add);
-        if !active.is_empty()
-            && (active_tokens.saturating_add(tokens) > max_history_batch_tokens
-                || active_bytes.saturating_add(bytes) > MAX_SOURCE_BATCH_BYTES)
-        {
+        if !active_items.is_empty() && active_input.saturating_add(tokens) > active_budget {
             break;
         }
-        active.extend(
+        active_items.extend(
             items
                 .iter()
                 .filter(|item| !covered.contains(&item.key))
                 .cloned(),
         );
-        active_tokens = active_tokens.saturating_add(tokens);
-        active_bytes = active_bytes.saturating_add(bytes);
+        active_input = active_input.saturating_add(tokens);
     }
     let folds_previous_active = old_active.is_some_and(|section| {
         section
@@ -660,24 +958,39 @@ pub fn plan_batch(
                     })
             })
     });
+    let new_start = history_active_start(snapshot, checkpoint, &covered, &history)?;
+    let drops_previous_active = !history.is_empty()
+        && !folds_previous_active
+        && old_active
+            .and_then(|section| section.anchor)
+            .is_some_and(|anchor| {
+                active.is_archived(&anchor)
+                    || new_start.is_some_and(|start| {
+                        snapshot.items.iter().position(|item| item.key == anchor)
+                            < snapshot.items.iter().position(|item| item.key == start)
+                    })
+            });
+    let closes_previous_active = folds_previous_active || drops_previous_active;
     if !history.is_empty() {
-        let previous_history = checkpoint.as_ref().and_then(|value| value.history.as_ref());
+        let mut history = history;
         let mut keys = previous_history
             .map(|section| section.covered.clone())
             .unwrap_or_default();
-        if folds_previous_active {
+        if closes_previous_active {
             if let Some(section) = old_active {
-                // This memory describes work after its triggering user input.
-                // Supply it there, rather than presenting it as older memory
-                // before the user's request to the incremental summarizer.
-                let after = active_memory_after(snapshot, section);
-                let anchor = history
-                    .iter_mut()
-                    .find(|item| Some(item.key) == after)
-                    .ok_or(ContextError::Checkpoint(
-                        "active memory insertion source is absent",
-                    ))?;
-                anchor.summary_messages.push(summary_message(section));
+                if folds_previous_active {
+                    // This memory describes work after its triggering user input.
+                    // Supply it there, rather than presenting it as older memory
+                    // before the user's request to the incremental summarizer.
+                    let after = active_memory_after(snapshot, section);
+                    let anchor = history
+                        .iter_mut()
+                        .find(|item| Some(item.key) == after)
+                        .ok_or(ContextError::Checkpoint(
+                            "active memory insertion source is absent",
+                        ))?;
+                    anchor.summary_messages.push(summary_message(section));
+                }
                 keys.extend(section.covered.iter().copied());
             }
         }
@@ -690,30 +1003,61 @@ pub fn plan_batch(
             items: history,
             covered: keys,
             folds_previous_active,
+            drops_previous_active,
+            active_start: new_start,
         });
     }
     // There is one anchored active section. Never overwrite an older anchored
     // section until it has been incorporated into history successfully.
-    if !active.is_empty() && (old_active.is_none() || folds_previous_active) {
-        let previous = checkpoint
-            .as_ref()
-            .and_then(|value| value.active.as_ref())
-            .filter(|section| section.anchor == Some(snapshot.current_user));
-        let mut keys = previous
+    if !active_items.is_empty() && (old_active.is_none() || closes_previous_active) {
+        let mut keys = active_previous
             .map(|section| section.covered.clone())
             .unwrap_or_default();
-        keys.extend(active.iter().map(|item| item.key));
+        keys.extend(active_items.iter().map(|item| item.key));
         order_coverage(&mut keys, snapshot);
         result.summary_work.push(SummaryWork {
             kind: SectionKind::Active,
             anchor: Some(snapshot.current_user),
-            previous_summary: previous.map(|section| section.summary.clone()),
-            items: active,
+            previous_summary: active_previous.map(|section| section.summary.clone()),
+            items: active_items,
             covered: keys,
             folds_previous_active: false,
+            drops_previous_active: false,
+            active_start: None,
         });
     }
     Ok(result)
+}
+
+/// The first selected item after the latest source this summary skips. Skipped
+/// source already behind a published start needs no new boundary.
+fn history_active_start(
+    snapshot: &ContextSnapshot,
+    checkpoint: &Option<CheckpointPayload>,
+    covered: &HashSet<ContextItemKey>,
+    history: &[ContextItem],
+) -> Result<Option<ContextItemKey>, ContextError> {
+    let Some(last) = history.last() else {
+        return Ok(None);
+    };
+    let selected: HashSet<_> = history.iter().map(|item| item.key).collect();
+    let published = checkpoint
+        .as_ref()
+        .and_then(|value| value.active_start)
+        .map(|start| item_position(snapshot, &start))
+        .transpose()?
+        .unwrap_or(0);
+    let last = item_position(snapshot, &last.key)?;
+    let gap = (published..last).rev().find(|index| {
+        let key = snapshot.items[*index].key;
+        !covered.contains(&key) && !selected.contains(&key)
+    });
+    Ok(gap.and_then(|gap| {
+        snapshot.items[gap + 1..=last]
+            .iter()
+            .find(|item| selected.contains(&item.key))
+            .map(|item| item.key)
+    }))
 }
 
 fn order_coverage(keys: &mut Vec<ContextItemKey>, snapshot: &ContextSnapshot) {
@@ -750,9 +1094,10 @@ pub fn complete_plan(
         match work.kind {
             SectionKind::History => {
                 next.history = section;
-                if work.folds_previous_active {
+                if work.folds_previous_active || work.drops_previous_active {
                     next.active = None;
                 }
+                next.active_start = work.active_start.or(next.active_start);
             }
             SectionKind::Active => next.active = section,
         }
@@ -763,6 +1108,24 @@ pub fn complete_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan(
+        snapshot: &ContextSnapshot,
+        checkpoint: &Option<CheckpointPayload>,
+        policy: &CompactionPolicy,
+        force: bool,
+    ) -> Result<ContextPlan, ContextError> {
+        let active = ActiveContext::select(snapshot, checkpoint, None)?;
+        super::plan(snapshot, checkpoint, &active, policy, force)
+    }
+
+    fn project(
+        snapshot: &ContextSnapshot,
+        checkpoint: &Option<CheckpointPayload>,
+    ) -> Result<(Vec<Value>, usize), ContextError> {
+        let active = ActiveContext::select(snapshot, checkpoint, None)?;
+        super::project(snapshot, checkpoint, &active)
+    }
 
     fn key(kind: ContextItemKind, id: u128) -> ContextItemKey {
         ContextItemKey {
@@ -802,7 +1165,7 @@ mod tests {
             input_budget: 1_000,
             trigger_tokens: 800,
             keep_recent_tokens: 200,
-            summary_input_budget: 800,
+            summary_input_budget: 10_000,
         }
     }
 
@@ -861,14 +1224,7 @@ mod tests {
                 ],
                 3,
             );
-            let planned = plan_batch(
-                &snapshot,
-                &None,
-                &policy,
-                false,
-                policy.summary_input_budget,
-            )
-            .unwrap();
+            let planned = plan(&snapshot, &None, &policy, false).unwrap();
             assert_eq!(
                 !planned.summary_work.is_empty(),
                 should_compact,
@@ -879,7 +1235,10 @@ mod tests {
                 assert_eq!(planned.summary_work[0].kind, SectionKind::History);
                 assert_eq!(
                     planned.summary_work[0].covered,
-                    vec![key(ContextItemKind::User, 1)],
+                    vec![
+                        key(ContextItemKind::User, 1),
+                        key(ContextItemKind::Assistant, 2),
+                    ],
                 );
                 assert!(!planned.summary_work[0]
                     .covered
@@ -1094,6 +1453,7 @@ mod tests {
                 ],
                 anchor: Some(key(ContextItemKind::User, 3)),
             }),
+            active_start: None,
         });
         let plan = plan(&snapshot, &checkpoint, &policy(), true).unwrap();
         assert_eq!(plan.summary_work.len(), 2);
@@ -1369,7 +1729,7 @@ mod tests {
     }
 
     #[test]
-    fn huge_unicode_tool_source_is_chunked_completely_without_private_reasoning() {
+    fn huge_unicode_tool_source_reaches_the_helper_whole_without_private_reasoning() {
         let mut pair = tool_pair(2, 3, 20_000);
         let text = format!(
             "{} end citation https://example.test/reference",
@@ -1393,6 +1753,8 @@ mod tests {
             covered: pair.iter().map(|item| item.key).collect(),
             items: pair,
             folds_previous_active: false,
+            drops_previous_active: false,
+            active_start: None,
         };
         let messages: Vec<_> = work
             .items
@@ -1400,15 +1762,12 @@ mod tests {
             .flat_map(|item| item.summary_messages.iter().cloned())
             .collect();
         let transcript = super::super::summary::serialize_transcript(&messages).unwrap();
-        let chunks = super::super::summary::split_transcript(&transcript, 2_000).unwrap();
-        assert!(chunks.len() > 2);
-        assert!(chunks.iter().all(|chunk| chunk.len() <= 2_000));
-        let full = chunks.concat();
+        assert_eq!(transcript.len(), work.items.len() - 1);
+        let full = Value::Array(transcript).to_string();
         assert!(full.contains(&text));
         assert!(!full.contains("private secret"));
         assert!(!full.contains("private thinking"));
         assert!(full.contains("https://example.test/reference"));
-        assert!(super::super::summary::split_transcript(&transcript, 0).is_err());
     }
 
     #[test]
@@ -1434,11 +1793,11 @@ mod tests {
             .flat_map(|item| item.summary_messages.iter().cloned())
             .collect();
         let transcript = super::super::summary::serialize_transcript(&messages).unwrap();
-        assert!(!transcript.contains("item-2"));
+        assert!(!Value::Array(transcript).to_string().contains("item-2"));
     }
 
     #[test]
-    fn bounded_history_batches_make_progress_without_splitting_tool_pairs() {
+    fn one_history_selection_covers_the_older_portion_without_splitting_tool_pairs() {
         let mut items = vec![item(ContextItemKind::User, 1, 100)];
         items.extend(tool_pair(2, 3, 300));
         items.push(item(ContextItemKind::Assistant, 4, 100));
@@ -1446,108 +1805,60 @@ mod tests {
         let snapshot = snapshot(items, 5);
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        let first = plan_batch(&snapshot, &None, &policy, true, 500).unwrap();
+        let planned = plan(&snapshot, &None, &policy, true).unwrap();
+        assert_eq!(planned.summary_work.len(), 1);
         assert_eq!(
-            first.summary_work[0].covered,
-            vec![key(ContextItemKind::User, 1)]
-        );
-        let checkpoint = Some(complete_plan(&None, &first, &["first memory".into()]).unwrap());
-        let second = plan_batch(&snapshot, &checkpoint, &policy, true, 500).unwrap();
-        assert_eq!(
-            second.summary_work[0]
-                .items
-                .iter()
-                .map(|item| item.key)
-                .collect::<Vec<_>>(),
+            planned.summary_work[0].covered,
             vec![
+                key(ContextItemKind::User, 1),
                 key(ContextItemKind::ToolCall, 2),
-                key(ContextItemKind::ToolOutput, 3)
+                key(ContextItemKind::ToolOutput, 3),
+                key(ContextItemKind::Assistant, 4),
             ]
         );
-        let checkpoint =
-            Some(complete_plan(&checkpoint, &second, &["pair memory".into()]).unwrap());
-        let third = plan_batch(&snapshot, &checkpoint, &policy, true, 500).unwrap();
-        assert_eq!(
-            third.summary_work[0].items[0].key,
-            key(ContextItemKind::Assistant, 4)
-        );
-        assert!(!third.summary_work[0]
-            .covered
-            .contains(&snapshot.current_user));
     }
 
     #[test]
-    fn bounded_active_batches_advance_one_complete_tool_prefix_at_a_time() {
+    fn one_active_selection_covers_every_completed_tool_step() {
         let mut items = vec![item(ContextItemKind::User, 1, 100)];
-        items.extend(tool_pair(2, 3, 300));
-        items.extend(tool_pair(4, 5, 300));
-        items.extend(tool_pair(6, 7, 300));
+        items.extend(tool_pair(2, 3, 100));
+        items.extend(tool_pair(4, 5, 100));
+        items.extend(tool_pair(6, 7, 100));
         let snapshot = snapshot(items, 1);
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        let mut checkpoint = None;
-        for (call, output) in [(2, 3), (4, 5), (6, 7)] {
-            // An atomic pair exceeds this budget, but it remains indivisible.
-            let plan = plan_batch(&snapshot, &checkpoint, &policy, true, 500).unwrap();
-            assert_eq!(plan.summary_work.len(), 1);
-            let work = &plan.summary_work[0];
-            assert_eq!(work.kind, SectionKind::Active);
-            assert_eq!(
-                work.items.iter().map(|item| item.key).collect::<Vec<_>>(),
-                vec![
-                    key(ContextItemKind::ToolCall, call),
-                    key(ContextItemKind::ToolOutput, output)
-                ],
-            );
-            checkpoint =
-                Some(complete_plan(&checkpoint, &plan, &["completed lookup".into()]).unwrap());
-        }
-        assert!(plan_batch(&snapshot, &checkpoint, &policy, true, 500)
+        let planned = plan(&snapshot, &None, &policy, true).unwrap();
+        assert_eq!(planned.summary_work.len(), 1);
+        assert_eq!(planned.summary_work[0].kind, SectionKind::Active);
+        assert_eq!(planned.summary_work[0].items.len(), 6);
+        let payload = complete_plan(&None, &planned, &["completed lookups".into()]).unwrap();
+        assert_eq!(payload.active.as_ref().unwrap().covered.len(), 6);
+        let checkpoint = Some(payload);
+        assert!(plan(&snapshot, &checkpoint, &policy, true)
             .unwrap()
             .summary_work
             .is_empty());
         let projected = project(&snapshot, &checkpoint).unwrap().0;
         assert_eq!(projected[1], snapshot.items[0].prompt_messages[0]);
-        assert_eq!(checkpoint.unwrap().active.unwrap().covered.len(), 6);
     }
 
     #[test]
-    fn ciphertext_byte_budget_bounds_low_token_history_and_active_batches() {
-        let mut first = item(ContextItemKind::User, 1, 100);
-        let mut second = item(ContextItemKind::User, 2, 100);
-        first.source_bytes = 6 * 1024 * 1024;
-        second.source_bytes = 6 * 1024 * 1024;
-        let history = snapshot(vec![first, second, item(ContextItemKind::User, 3, 100)], 3);
+    fn helper_room_keeps_active_tool_steps_from_the_oldest_so_coverage_has_no_hole() {
+        let mut items = vec![item(ContextItemKind::User, 1, 100)];
+        items.extend(tool_pair(2, 3, 300));
+        items.extend(tool_pair(4, 5, 300));
+        let snapshot = snapshot(items, 1);
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        let first = plan_batch(&history, &None, &policy, true, 64_000).unwrap();
-        assert_eq!(first.summary_work[0].items.len(), 1);
+        policy.summary_input_budget =
+            super::summary::request_overhead_tokens(None).saturating_add(800);
+        let planned = plan(&snapshot, &None, &policy, true).unwrap();
         assert_eq!(
-            first.summary_work[0].items[0].key,
-            key(ContextItemKind::User, 1)
-        );
-        let checkpoint =
-            Some(complete_plan(&None, &first, &["first image history".into()]).unwrap());
-        let second = plan_batch(&history, &checkpoint, &policy, true, 64_000).unwrap();
-        assert_eq!(second.summary_work[0].items.len(), 1);
-        assert_eq!(
-            second.summary_work[0].items[0].key,
-            key(ContextItemKind::User, 2)
-        );
-
-        let mut items = vec![item(ContextItemKind::User, 1, 100)];
-        for (call, output) in [(2, 3), (4, 5)] {
-            let mut pair = tool_pair(call, output, 100);
-            pair[0].source_bytes = 0;
-            pair[1].source_bytes = 6 * 1024 * 1024;
-            items.extend(pair);
-        }
-        let active = snapshot(items, 1);
-        let plan = plan_batch(&active, &None, &policy, true, 64_000).unwrap();
-        assert_eq!(plan.summary_work[0].items.len(), 2);
-        assert_eq!(
-            plan.summary_work[0].items[1].key,
-            key(ContextItemKind::ToolOutput, 3)
+            planned.summary_work[0].covered,
+            vec![
+                key(ContextItemKind::ToolCall, 2),
+                key(ContextItemKind::ToolOutput, 3),
+            ]
         );
     }
 
@@ -1576,7 +1887,7 @@ mod tests {
         }
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        let plan = plan_batch(&metadata, &checkpoint, &policy, true, 50).unwrap();
+        let plan = plan(&metadata, &checkpoint, &policy, true).unwrap();
         assert!(plan.summary_work[0].folds_previous_active);
         assert_eq!(plan.summary_work[0].items[0].summary_messages.len(), 1);
         let work = hydrate_plan(&plan, &hydrated).unwrap();
@@ -1617,7 +1928,7 @@ mod tests {
         }
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        let plan = plan_batch(&metadata, &None, &policy, true, 1_000).unwrap();
+        let plan = plan(&metadata, &None, &policy, true).unwrap();
         let work = hydrate_plan(&plan, &hydrated).unwrap();
         assert!(work.summary_work[0]
             .items
@@ -1629,8 +1940,7 @@ mod tests {
         assert!(project(&hydrated, &None).is_err());
     }
 
-    #[test]
-    fn batch_boundary_never_covers_active_anchor_without_its_complete_memory() {
+    fn active_memory_fixture() -> (ContextSnapshot, Option<CheckpointPayload>) {
         let mut items = vec![
             item(ContextItemKind::User, 1, 100),
             item(ContextItemKind::User, 2, 100),
@@ -1650,33 +1960,70 @@ mod tests {
             }),
             ..CheckpointPayload::default()
         });
+        (snapshot, checkpoint)
+    }
+
+    #[test]
+    fn history_selection_folds_an_older_active_anchor_with_its_complete_memory() {
+        let (snapshot, checkpoint) = active_memory_fixture();
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        let first = plan_batch(&snapshot, &checkpoint, &policy, true, 150).unwrap();
-        assert_eq!(
-            first.summary_work[0].covered,
-            vec![key(ContextItemKind::User, 1)]
-        );
-        assert!(!first.summary_work[0].folds_previous_active);
-        let checkpoint =
-            Some(complete_plan(&checkpoint, &first, &["older memory".into()]).unwrap());
-        let second = plan_batch(&snapshot, &checkpoint, &policy, true, 50).unwrap();
-        let work = &second.summary_work[0];
+        let planned = plan(&snapshot, &checkpoint, &policy, true).unwrap();
+        let work = &planned.summary_work[0];
         assert!(work.folds_previous_active);
-        assert_eq!(work.previous_summary.as_deref(), Some("older memory"));
-        assert_eq!(work.items[0].key, key(ContextItemKind::User, 2));
-        assert_eq!(work.items[0].summary_messages[0]["content"], "item-2");
-        assert!(work.items[0].summary_messages[1]["content"]
+        assert_eq!(work.items[0].key, key(ContextItemKind::User, 1));
+        assert_eq!(work.items[1].key, key(ContextItemKind::User, 2));
+        assert_eq!(work.items[1].summary_messages[0]["content"], "item-2");
+        assert!(work.items[1].summary_messages[1]["content"]
             .as_str()
             .unwrap()
             .contains("lookup after question two"));
         assert!(work.covered.contains(&key(ContextItemKind::ToolCall, 3)));
         assert!(work.covered.contains(&key(ContextItemKind::ToolOutput, 4)));
-        assert!(!work.covered.contains(&key(ContextItemKind::Assistant, 5)));
+        assert!(work.covered.contains(&key(ContextItemKind::Assistant, 5)));
+        assert!(complete_plan(&checkpoint, &planned, &["memory".into()])
+            .unwrap()
+            .active
+            .is_none());
     }
 
     #[test]
-    fn blocked_active_fold_keeps_anchor_and_memory_out_of_a_partial_batch() {
+    fn narrowing_past_an_older_active_anchor_closes_that_section_with_its_coverage() {
+        let (snapshot, checkpoint) = active_memory_fixture();
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        policy.summary_input_budget =
+            super::summary::request_overhead_tokens(None).saturating_add(130);
+        let planned = plan(&snapshot, &checkpoint, &policy, true).unwrap();
+        let work = &planned.summary_work[0];
+        assert!(!work.folds_previous_active);
+        assert!(work.drops_previous_active);
+        assert_eq!(
+            work.items.iter().map(|item| item.key).collect::<Vec<_>>(),
+            vec![key(ContextItemKind::Assistant, 5)]
+        );
+        assert_eq!(work.active_start, Some(key(ContextItemKind::Assistant, 5)));
+        // Publication requires the new coverage to contain the previous one.
+        assert!(work.covered.contains(&key(ContextItemKind::ToolCall, 3)));
+        assert!(work.covered.contains(&key(ContextItemKind::ToolOutput, 4)));
+        let next = complete_plan(&checkpoint, &planned, &["memory".into()]).unwrap();
+        assert!(next.active.is_none());
+        let next = Some(next);
+        let (messages, _) = super::project(
+            &snapshot,
+            &next,
+            &ActiveContext::select(&snapshot, &next, Some(2_000)).unwrap(),
+        )
+        .unwrap();
+        let text = Value::Array(messages).to_string();
+        assert!(!text.contains("lookup after question two"));
+        assert!(!text.contains("item-1"));
+        assert!(!text.contains("item-2"));
+        assert!(text.contains("item-6"));
+    }
+
+    #[test]
+    fn blocked_active_fold_keeps_anchor_and_memory_out_of_the_selection() {
         let mut items = vec![item(ContextItemKind::User, 1, 100)];
         let mut intervening = item(ContextItemKind::Assistant, 2, 100);
         intervening.settled = false;
@@ -1697,7 +2044,7 @@ mod tests {
         });
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        assert!(plan_batch(&snapshot, &checkpoint, &policy, true, 100)
+        assert!(plan(&snapshot, &checkpoint, &policy, true)
             .unwrap()
             .summary_work
             .is_empty());
@@ -1715,7 +2062,7 @@ mod tests {
         let mut snapshot = snapshot(items, 1);
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        let first = plan_batch(&snapshot, &None, &policy, true, 1_000).unwrap();
+        let first = plan(&snapshot, &None, &policy, true).unwrap();
         assert_eq!(
             first.summary_work[0].covered,
             vec![
@@ -1737,7 +2084,7 @@ mod tests {
         snapshot.current_response = Uuid::from_u128(2_000);
         let reloaded = project(&snapshot, &checkpoint).unwrap().0;
         assert_eq!(&reloaded[1..5], &messages[1..5]);
-        let next = plan_batch(&snapshot, &checkpoint, &policy, true, 100).unwrap();
+        let next = plan(&snapshot, &checkpoint, &policy, true).unwrap();
         let work = &next.summary_work[0];
         assert!(work.folds_previous_active);
         assert!(work.covered.contains(&key(ContextItemKind::ToolCall, 2)));
@@ -1769,7 +2116,7 @@ mod tests {
         );
         let mut policy = policy();
         policy.keep_recent_tokens = 0;
-        let plan = plan_batch(&snapshot, &None, &policy, true, 1_000).unwrap();
+        let plan = plan(&snapshot, &None, &policy, true).unwrap();
         assert_eq!(
             plan.summary_work[0].covered,
             vec![
@@ -1781,5 +2128,442 @@ mod tests {
         let messages = project(&snapshot, &checkpoint).unwrap().0;
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["content"], "item-4");
+    }
+
+    const WINDOW: usize = 262_144;
+    const ARCHIVED_SENTINEL: &str = "ARCHIVED-SENTINEL";
+    const ACTIVE_FACT: &str = "ACTIVE-FACT";
+
+    /// A stored conversation about twelve times the model window, in real turns
+    /// of user, a completed tool exchange, and an answer.
+    fn over_window_snapshot(turns: u128, tokens_per_item: usize) -> ContextSnapshot {
+        let mut items = Vec::new();
+        let archive_end = turns - turns / 8;
+        for turn in 0..turns {
+            let label = if turn >= archive_end {
+                ACTIVE_FACT
+            } else {
+                ARCHIVED_SENTINEL
+            };
+            let base = 10 + turn * 10;
+            let text =
+                |role: &str, id: u128| json!({"role": role, "content": format!("{label}-{id}")});
+            let mut user = item(ContextItemKind::User, base, tokens_per_item);
+            user.prompt_messages = vec![text("user", base)];
+            user.summary_messages = user.prompt_messages.clone();
+            items.push(user);
+            let mut pair = tool_pair(base + 1, base + 2, tokens_per_item / 2);
+            pair[1].prompt_messages[0]["content"] = json!(format!("{label}-{}", base + 2));
+            pair[1].summary_messages = pair[1].prompt_messages.clone();
+            items.extend(pair);
+            let mut answer = item(ContextItemKind::Assistant, base + 3, tokens_per_item);
+            answer.prompt_messages = vec![text("assistant", base + 3)];
+            answer.summary_messages = answer.prompt_messages.clone();
+            items.push(answer);
+        }
+        let mut current = item(ContextItemKind::User, 5, 40);
+        current.prompt_messages = vec![json!({"role":"user","content":"CURRENT-QUESTION"})];
+        current.settled = false;
+        current.response_uuid = Some(Uuid::from_u128(1_000));
+        items.push(current);
+        let mut snapshot = snapshot(items, 5);
+        snapshot.instruction_tokens = 500;
+        for item in &mut snapshot.items {
+            if item.key.kind != ContextItemKind::User || item.key.uuid != Uuid::from_u128(5) {
+                item.response_uuid = Some(Uuid::from_u128(2_000));
+            }
+        }
+        snapshot
+    }
+
+    fn helper_prompt(work: &SummaryWork) -> String {
+        let messages: Vec<_> = work
+            .items
+            .iter()
+            .flat_map(|item| item.summary_messages.iter().cloned())
+            .collect();
+        let transcript = super::summary::serialize_transcript(&messages).unwrap();
+        Value::Array(super::summary::summary_messages(
+            transcript,
+            work.previous_summary.as_deref(),
+        ))
+        .to_string()
+    }
+
+    fn assert_tool_relationships_intact(items: &[ContextItem]) {
+        let calls: HashSet<_> = items
+            .iter()
+            .filter(|item| item.key.kind == ContextItemKind::ToolCall)
+            .filter_map(|item| item.tool_call_id)
+            .collect();
+        let outputs: HashSet<_> = items
+            .iter()
+            .filter(|item| item.key.kind == ContextItemKind::ToolOutput)
+            .filter_map(|item| item.tool_call_id)
+            .collect();
+        assert_eq!(calls, outputs);
+    }
+
+    fn real_policy(window: usize, output: usize) -> CompactionPolicy {
+        CompactionPolicy::from_context_window(window, output, 2_048.min(window / 16))
+    }
+
+    #[test]
+    fn stored_history_far_past_the_window_never_reaches_the_helper_or_returns_later() {
+        let policy = real_policy(WINDOW, 0);
+        let budget = Some(policy.input_budget);
+        // 200 turns of 10k+5k+5k+10k: 6M tokens against a 262k window, in few
+        // enough rows that the token budget is what bounds this window.
+        let snapshot = over_window_snapshot(200, 10_000);
+        let stored: usize = snapshot
+            .items
+            .iter()
+            .map(|item| item.estimated_tokens)
+            .sum();
+        assert!(stored > 20 * WINDOW);
+
+        let first_active = ActiveContext::select(&snapshot, &None, budget).unwrap();
+        assert!(first_active.is_truncated());
+        let (fallback, fallback_tokens) = super::project(&snapshot, &None, &first_active).unwrap();
+        assert!(fallback_tokens <= policy.input_budget);
+        assert_eq!(fallback[0], snapshot.instructions[0]);
+        assert_eq!(fallback[2]["content"], TRUNCATION_MARKER);
+
+        let planned = super::plan(&snapshot, &None, &first_active, &policy, false).unwrap();
+        assert_eq!(planned.summary_work.len(), 1);
+        let work = &planned.summary_work[0];
+        assert_eq!(work.kind, SectionKind::History);
+        assert_tool_relationships_intact(&work.items);
+        let prompt = helper_prompt(work);
+        // Only the conversation's opening is kept from the archive region, like
+        // the sliding window keeps its first user message.
+        assert_eq!(prompt.matches(ARCHIVED_SENTINEL).count(), 1);
+        assert!(prompt.contains(&format!("{ARCHIVED_SENTINEL}-10")));
+        assert!(prompt.contains(ACTIVE_FACT));
+        assert!(!prompt.contains("CURRENT-QUESTION"));
+        assert!(!work.covered.contains(&snapshot.current_user));
+        let input: usize = work.items.iter().map(summary_input_tokens).sum();
+        assert!(
+            input + super::summary::request_overhead_tokens(None) <= policy.summary_input_budget
+        );
+        assert!(work.items.len() < snapshot.items.len() / 8);
+        assert!(work.active_start.is_some());
+
+        let first =
+            Some(complete_plan(&None, &planned, &["## Goal\nACTIVE-SUMMARY".into()]).unwrap());
+        // The summary freed nearly the whole budget. Archived source must not
+        // slide back in even though much of it would now fit.
+        let reloaded = ActiveContext::select(&snapshot, &first, budget).unwrap();
+        assert!(!reloaded.is_truncated());
+        let (messages, tokens) = super::project(&snapshot, &first, &reloaded).unwrap();
+        let text = Value::Array(messages.clone()).to_string();
+        assert!(!text.contains(ARCHIVED_SENTINEL));
+        assert!(text.contains("ACTIVE-SUMMARY"));
+        assert!(text.contains(ACTIVE_FACT));
+        assert_eq!(messages.last().unwrap()["content"], "CURRENT-QUESTION");
+        assert!(tokens <= policy.trigger_tokens);
+        assert!(tokens < fallback_tokens);
+
+        // A later compaction updates the summary from the recent tail alone.
+        let everything = CompactionPolicy {
+            keep_recent_tokens: 0,
+            ..policy
+        };
+        let forced = super::plan(&snapshot, &first, &reloaded, &everything, true).unwrap();
+        assert_eq!(forced.summary_work.len(), 1);
+        let later = &forced.summary_work[0];
+        assert!(later.previous_summary.is_some());
+        assert!(later.active_start.is_none());
+        let prompt = helper_prompt(later);
+        assert!(!prompt.contains(ARCHIVED_SENTINEL));
+        assert!(prompt.contains("ACTIVE-SUMMARY"));
+        let second = complete_plan(&first, &forced, &["## Goal\nUPDATED".into()]).unwrap();
+        assert_eq!(second.active_start, first.as_ref().unwrap().active_start);
+    }
+
+    #[test]
+    fn summary_and_retained_tail_fit_every_window_and_caller_output_reservation() {
+        for window in [131_072, WINDOW, 1_048_576] {
+            for output in [0, 8_192, 32_000] {
+                let policy = real_policy(window, output);
+                let budget = Some(policy.input_budget);
+                let snapshot = over_window_snapshot(800, 8_000);
+                let active = ActiveContext::select(&snapshot, &None, budget).unwrap();
+                let (_, windowed) = super::project(&snapshot, &None, &active).unwrap();
+                assert!(windowed <= policy.input_budget, "{window}/{output}");
+                let planned = super::plan(&snapshot, &None, &active, &policy, false).unwrap();
+                let summary = "A checkpoint section. ".repeat(4_000);
+                let next = Some(complete_plan(&None, &planned, &[summary]).unwrap());
+                let next_active = ActiveContext::select(&snapshot, &next, budget).unwrap();
+                let (_, compacted) = super::project(&snapshot, &next, &next_active).unwrap();
+                assert!(compacted < policy.trigger_tokens, "{window}/{output}");
+                let input: usize = planned.summary_work[0]
+                    .items
+                    .iter()
+                    .map(summary_input_tokens)
+                    .sum();
+                // The helper leaves generation room inside the model's own window.
+                assert!(input <= policy.summary_input_budget, "{window}/{output}");
+                assert!(window - policy.summary_input_budget >= 16_384);
+            }
+        }
+    }
+
+    #[test]
+    fn newest_rows_bound_the_window_and_the_first_user_message_inside_them() {
+        let mut items = Vec::new();
+        for id in 0..1_500 {
+            items.push(item(
+                if id % 2 == 0 {
+                    ContextItemKind::User
+                } else {
+                    ContextItemKind::Assistant
+                },
+                id + 10,
+                100,
+            ));
+        }
+        items.push(item(ContextItemKind::User, 5, 100));
+        let snapshot = snapshot(items, 5);
+        // 150k tokens fit this budget, so only the row limit applies. It leaves
+        // no marker, like the sliding window, which simply never read older rows.
+        let active = ActiveContext::select(&snapshot, &None, Some(1_000_000)).unwrap();
+        assert_eq!(active.archived_items(), 500);
+        assert!(!active.is_truncated());
+        assert!(active.is_archived(&snapshot.items[499].key));
+        assert!(!active.is_archived(&snapshot.items[500].key));
+        // An over-budget window opens its head inside those rows.
+        let active = ActiveContext::select(&snapshot, &None, Some(20_000)).unwrap();
+        assert!(active.is_truncated());
+        assert_eq!(active.head, Some(snapshot.items[500].key));
+    }
+
+    #[test]
+    fn checkpoint_summary_replaces_the_head_and_a_new_gap_moves_the_start_forward() {
+        let mut items = Vec::new();
+        for id in 1..=12 {
+            items.push(item(
+                if id % 2 == 1 {
+                    ContextItemKind::User
+                } else {
+                    ContextItemKind::Assistant
+                },
+                id,
+                100,
+            ));
+        }
+        items.push(item(ContextItemKind::User, 13, 10));
+        let snapshot = snapshot(items, 13);
+        let checkpoint = Some(CheckpointPayload {
+            history: Some(CheckpointSection {
+                summary: "first".into(),
+                covered: vec![key(ContextItemKind::User, 1)],
+                anchor: None,
+            }),
+            ..CheckpointPayload::default()
+        });
+        let budget = 10 + count_tokens("first") + 400;
+        let active = ActiveContext::select(&snapshot, &checkpoint, Some(budget)).unwrap();
+        assert!(active.is_truncated());
+        assert_eq!(active.head, None);
+        assert!(active.is_archived(&key(ContextItemKind::Assistant, 2)));
+        let mut policy = policy();
+        policy.keep_recent_tokens = 100;
+        let planned = super::plan(&snapshot, &checkpoint, &active, &policy, true).unwrap();
+        let work = &planned.summary_work[0];
+        assert_eq!(work.active_start, Some(work.items[0].key));
+        let next = Some(complete_plan(&checkpoint, &planned, &["second".into()]).unwrap());
+        assert_eq!(next.as_ref().unwrap().active_start, Some(work.items[0].key));
+        let reloaded = ActiveContext::select(&snapshot, &next, Some(1_000_000)).unwrap();
+        assert!(reloaded.is_archived(&key(ContextItemKind::Assistant, 2)));
+        assert!(!reloaded.is_truncated());
+    }
+
+    #[test]
+    fn helper_room_keeps_the_newest_older_source_and_the_opening_message() {
+        let mut items = Vec::new();
+        for id in 1..=20 {
+            items.push(item(
+                if id % 2 == 1 {
+                    ContextItemKind::User
+                } else {
+                    ContextItemKind::Assistant
+                },
+                id,
+                100,
+            ));
+        }
+        items.push(item(ContextItemKind::User, 21, 10));
+        let snapshot = snapshot(items, 21);
+        let budget = 1_700;
+        let active = ActiveContext::select(&snapshot, &None, Some(budget)).unwrap();
+        let mut policy = policy();
+        policy.input_budget = budget;
+        policy.trigger_tokens = 1;
+        policy.keep_recent_tokens = 100;
+        policy.summary_input_budget =
+            super::summary::request_overhead_tokens(None).saturating_add(620);
+        let planned = super::plan(&snapshot, &None, &active, &policy, false).unwrap();
+        let work = &planned.summary_work[0];
+        let first = work.items[0].key;
+        assert_eq!(first, key(ContextItemKind::User, 1));
+        assert_eq!(work.items.len(), 5);
+        assert_eq!(work.active_start, Some(work.items[1].key));
+        assert_eq!(
+            work.items.last().unwrap().key,
+            key(ContextItemKind::User, 19)
+        );
+    }
+
+    #[test]
+    fn explicit_opt_out_reports_overflow_instead_of_windowing_but_keeps_a_published_start() {
+        let items = vec![
+            item(ContextItemKind::User, 1, 900),
+            item(ContextItemKind::Assistant, 2, 900),
+            item(ContextItemKind::User, 3, 900),
+            item(ContextItemKind::Assistant, 4, 900),
+            item(ContextItemKind::User, 5, 10),
+        ];
+        let snapshot = snapshot(items, 5);
+        let active = ActiveContext::select(&snapshot, &None, None).unwrap();
+        assert_eq!(active.archived_items(), 0);
+        assert_eq!(super::project(&snapshot, &None, &active).unwrap().1, 3_620);
+
+        let checkpoint = Some(CheckpointPayload {
+            history: Some(CheckpointSection {
+                summary: "memory".into(),
+                covered: vec![key(ContextItemKind::User, 3)],
+                anchor: None,
+            }),
+            active_start: Some(key(ContextItemKind::User, 3)),
+            ..CheckpointPayload::default()
+        });
+        let active = ActiveContext::select(&snapshot, &checkpoint, None).unwrap();
+        assert_eq!(active.archived_items(), 2);
+        assert!(!active.is_truncated());
+    }
+
+    #[test]
+    fn refit_with_hydrated_estimates_only_narrows_and_keeps_the_head() {
+        let mut items = Vec::new();
+        for id in 1..=8 {
+            items.push(item(
+                if id % 2 == 1 {
+                    ContextItemKind::User
+                } else {
+                    ContextItemKind::Assistant
+                },
+                id,
+                100,
+            ));
+        }
+        items.push(item(ContextItemKind::User, 9, 10));
+        let mut snapshot = snapshot(items, 9);
+        let budget = Some(500);
+        let selected = ActiveContext::select(&snapshot, &None, budget).unwrap();
+        assert!(selected.is_truncated());
+        // A lower real estimate must never admit an unloaded archived item.
+        for item in &mut snapshot.items {
+            item.estimated_tokens = 1;
+        }
+        let same = selected.refit(&snapshot, &None, budget).unwrap();
+        assert_eq!(same, selected);
+        // A higher one narrows further, like the sliding window's second pass.
+        for item in &mut snapshot.items {
+            item.estimated_tokens = 300;
+        }
+        snapshot.items.last_mut().unwrap().estimated_tokens = 10;
+        let narrowed = selected.refit(&snapshot, &None, budget).unwrap();
+        assert!(narrowed.archived_items() > selected.archived_items());
+        assert_eq!(narrowed.head, selected.head);
+        assert!(selected
+            .archived
+            .iter()
+            .all(|key| narrowed.is_archived(key)));
+    }
+
+    #[test]
+    fn active_start_must_be_covered_history_and_older_payloads_still_decode() {
+        let items = vec![
+            item(ContextItemKind::User, 1, 100),
+            item(ContextItemKind::User, 2, 100),
+        ];
+        let snapshot = snapshot(items, 2);
+        let checkpoint = Some(CheckpointPayload {
+            active_start: Some(key(ContextItemKind::User, 1)),
+            ..CheckpointPayload::default()
+        });
+        assert_eq!(
+            ActiveContext::select(&snapshot, &checkpoint, None),
+            Err(ContextError::Checkpoint("active start is not covered"))
+        );
+
+        let published = json!({"version": 1, "history": null, "active": null});
+        let decoded: CheckpointPayload = serde_json::from_value(published.clone()).unwrap();
+        assert_eq!(decoded.active_start, None);
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), published);
+    }
+
+    #[test]
+    fn window_never_bisects_a_tool_exchange_or_opens_on_an_assistant_message() {
+        let mut items = vec![item(ContextItemKind::User, 1, 100)];
+        items.push(item(ContextItemKind::Assistant, 2, 100));
+        items.push(item(ContextItemKind::User, 3, 100));
+        items.extend(tool_pair(4, 5, 200));
+        items.push(item(ContextItemKind::Assistant, 6, 100));
+        items.push(item(ContextItemKind::User, 7, 100));
+        items.extend(tool_pair(8, 9, 200));
+        items.push(item(ContextItemKind::Assistant, 10, 100));
+        items.push(item(ContextItemKind::User, 11, 10));
+        let snapshot = snapshot(items, 11);
+        // Budget reaches into the middle of the first tool turn.
+        let active = ActiveContext::select(&snapshot, &None, Some(900)).unwrap();
+        for key in [
+            key(ContextItemKind::User, 3),
+            key(ContextItemKind::ToolCall, 4),
+            key(ContextItemKind::ToolOutput, 5),
+            key(ContextItemKind::Assistant, 6),
+        ] {
+            assert!(active.is_archived(&key));
+        }
+        assert!(!active.is_archived(&key(ContextItemKind::User, 7)));
+        assert!(!active.is_archived(&key(ContextItemKind::ToolCall, 8)));
+        assert!(!active.is_archived(&key(ContextItemKind::ToolOutput, 9)));
+    }
+
+    #[test]
+    fn empty_rows_outside_the_window_are_archived_so_their_payloads_are_never_read() {
+        let mut empty = item(ContextItemKind::Assistant, 3, 0);
+        empty.prompt_messages.clear();
+        empty.summary_messages.clear();
+        empty.payload_loaded = false;
+        let items = vec![
+            item(ContextItemKind::User, 1, 100),
+            item(ContextItemKind::Assistant, 2, 900),
+            empty,
+            item(ContextItemKind::User, 4, 100),
+            item(ContextItemKind::Assistant, 5, 100),
+            item(ContextItemKind::User, 6, 10),
+        ];
+        let snapshot = snapshot(items, 6);
+        let active = ActiveContext::select(&snapshot, &None, Some(500)).unwrap();
+        assert!(active.is_archived(&key(ContextItemKind::Assistant, 3)));
+        assert!(super::project(&snapshot, &None, &active).is_ok());
+    }
+
+    #[test]
+    fn required_current_turn_is_never_windowed_out() {
+        let mut items = vec![
+            item(ContextItemKind::User, 1, 100),
+            item(ContextItemKind::Assistant, 2, 100),
+            item(ContextItemKind::User, 3, 50),
+        ];
+        items.extend(tool_pair(4, 5, 300));
+        let snapshot = snapshot(items, 3);
+        let active = ActiveContext::select(&snapshot, &None, Some(200)).unwrap();
+        assert!(!active.is_archived(&snapshot.current_user));
+        assert!(!active.is_archived(&key(ContextItemKind::ToolCall, 4)));
+        assert!(!active.is_archived(&key(ContextItemKind::ToolOutput, 5)));
+        assert!(active.is_archived(&key(ContextItemKind::User, 1)));
     }
 }
