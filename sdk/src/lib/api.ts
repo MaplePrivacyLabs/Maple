@@ -18,6 +18,7 @@ import {
 } from "./transportV2/auth";
 import { transportV2AuthRuntime } from "./transportV2/authRuntime";
 import { snapshotClientApp, type ClientApp } from "./clientApp";
+import { normalizeRecoveryCode } from "./recoveryCode";
 
 let apiUrl = "";
 let apiPcrConfig: PcrConfig = snapshotPcrConfig();
@@ -362,7 +363,7 @@ function passwordResetCompletionWire(
 ): PasswordResetCompletionWire {
   switch (completion.mode) {
     case "preserve":
-      return { preserve: { recovery_code: completion.recoveryCode } };
+      return { preserve: { recovery_code: normalizeRecoveryCode(completion.recoveryCode) } };
     case "destructive":
       return { destructive: { acknowledge_data_loss: completion.acknowledgeDataLoss } };
   }
@@ -405,6 +406,10 @@ export async function fetchPasswordResetOptions(
  * request, so the user must request a new reset email before trying again.
  * A malformed code leaves the request active. The server returns the same
  * generic error for every rejection.
+ *
+ * Preserving codes are normalized and syntax-checked before sending. Invalid
+ * syntax throws RecoveryCodeFormatError locally. Applications must extract
+ * codes from file contents themselves; the SDK accepts standalone codes only.
  */
 export async function completePasswordReset(
   email: string,

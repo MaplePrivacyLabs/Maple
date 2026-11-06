@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import type { PasswordResetCompletion } from "@mapleai/sdk";
+import { RecoveryCodeFormatError, type PasswordResetCompletion } from "@mapleai/sdk";
 import { PasswordResetFlow } from "./PasswordResetFlow";
 import { useState } from "react";
 import { RootRuntimeLayout } from "./RootRuntimeLayout";
@@ -26,6 +26,8 @@ function service(enrolled = true, destructive = true) {
   };
 }
 let view: ReactTestRenderer;
+const RECOVERY_CODE =
+  "MPLRC1-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-39YZ-VTQZ";
 const props = {
   email: "reset@example.test",
   secret: "proof-fixture",
@@ -73,19 +75,85 @@ describe("PasswordResetFlow", () => {
     expect(api.getPasswordResetOptions).toHaveBeenCalledWith(props.email, "ABCD1234", props.secret);
     expect(view.root.findByProps({ value: "preserve" }).props.checked).toBe(true);
     await passwords();
-    await input("reset-recovery-code", " saved-code-fixture ");
+    await input("reset-recovery-code", ` ${RECOVERY_CODE} `);
     await submit();
     expect(api.completePasswordReset).toHaveBeenCalledWith(
       props.email,
       "ABCD1234",
       props.secret,
       "new-password-fixture",
-      { mode: "preserve", recoveryCode: "saved-code-fixture" }
+      { mode: "preserve", recoveryCode: RECOVERY_CODE }
     );
     expect(text(view.root)).toContain("you are signed in");
     expect(text(view.root)).not.toContain("log in with your new password");
     expect(view.root.findAllByType("input")).toHaveLength(0);
   });
+
+  test("extracts and normalizes the code from the complete downloaded text file", async () => {
+    const api = await mount();
+    await verify();
+    await passwords();
+    const savedCode = RECOVERY_CODE.toLowerCase().replace(/0/g, "o");
+    await input(
+      "reset-recovery-code",
+      `Maple recovery code\r\n\r\n${savedCode}\r\n\r\nKeep this code private. Replacing or disabling it makes this copy invalid.\r\n`
+    );
+    await submit();
+    expect(api.completePasswordReset).toHaveBeenCalledWith(
+      props.email,
+      "ABCD1234",
+      props.secret,
+      "new-password-fixture",
+      { mode: "preserve", recoveryCode: RECOVERY_CODE }
+    );
+    expect(text(view.root)).toContain("Password reset successful");
+  });
+
+  for (const pasted of ["garbage", RECOVERY_CODE.replace("39YZ", "39Yſ")]) {
+    test("invalid pasted format preserves the verified options and entered text", async () => {
+      const api = await mount();
+      await verify();
+      await passwords();
+      await input("reset-recovery-code", pasted);
+      await submit();
+      expect(text(view.root)).toContain("Enter a valid Maple recovery code");
+      expect(view.root.findByProps({ id: "reset-recovery-code" }).props.value).toBe(pasted);
+      expect(view.root.findByProps({ id: "reset-new-password" }).props.value).toBe(
+        "new-password-fixture"
+      );
+      expect(view.root.findByProps({ value: "preserve" }).props.checked).toBe(true);
+      expect(api.getPasswordResetOptions).toHaveBeenCalledTimes(1);
+      expect(api.completePasswordReset).not.toHaveBeenCalled();
+      // Correcting the code reuses the verified proof rather than requesting it again.
+      await input("reset-recovery-code", RECOVERY_CODE);
+      await submit();
+      expect(api.getPasswordResetOptions).toHaveBeenCalledTimes(1);
+      expect(text(view.root)).toContain("Password reset successful");
+    });
+  }
+
+  for (const failure of [
+    new RecoveryCodeFormatError(),
+    new Error("network"),
+    { status: 503 },
+    { status: 401 }
+  ]) {
+    test("SDK format and non-400 failures retain proof and inputs without a destructive fallback", async () => {
+      const api = await mount();
+      api.completePasswordReset.mockRejectedValue(failure);
+      await verify();
+      await passwords();
+      await input("reset-recovery-code", RECOVERY_CODE);
+      await submit();
+      expect(view.root.findByProps({ id: "reset-recovery-code" }).props.value).toBe(RECOVERY_CODE);
+      expect(view.root.findByProps({ id: "reset-new-password" }).props.value).toBe(
+        "new-password-fixture"
+      );
+      expect(view.root.findByProps({ value: "preserve" }).props.checked).toBe(true);
+      expect(api.completePasswordReset).toHaveBeenCalledTimes(1);
+      expect(api.completePasswordReset.mock.calls[0][4].mode).toBe("preserve");
+    });
+  }
 
   test("requires explicit loss acknowledgment even when no recovery code is enrolled", async () => {
     const api = await mount(service(false));
@@ -141,10 +209,10 @@ describe("PasswordResetFlow", () => {
 
   test("a failed recovery reset scrubs secrets, invalidates options, and never falls back to destruction", async () => {
     const api = await mount();
-    api.completePasswordReset.mockRejectedValue(new Error("rejected"));
+    api.completePasswordReset.mockRejectedValue({ status: 400 });
     await verify();
     await passwords();
-    await input("reset-recovery-code", "wrong-code-fixture");
+    await input("reset-recovery-code", RECOVERY_CODE);
     await submit();
     expect(text(view.root)).toContain("request a new reset email before trying again");
     expect(view.root.findAllByProps({ id: "reset-recovery-code" })).toHaveLength(0);
@@ -158,7 +226,7 @@ describe("PasswordResetFlow", () => {
     const api = await mount(service(true, false));
     await verify();
     expect(view.root.findAllByProps({ value: "destructive" })).toHaveLength(0);
-    await input("reset-recovery-code", "saved-code-fixture");
+    await input("reset-recovery-code", RECOVERY_CODE);
     await passwords();
     await input("reset-confirm-password", "different-password");
     await submit();
@@ -228,7 +296,7 @@ for (const pathname of ["/password-reset", "/password-reset/confirm"]) {
     });
     await verify();
     await passwords();
-    await input("reset-recovery-code", "saved-code-fixture");
+    await input("reset-recovery-code", RECOVERY_CODE);
     await submit();
     expect(text(view.root)).toContain("Password reset successful");
     expect(view.root.findAllByType("input")).toHaveLength(0);

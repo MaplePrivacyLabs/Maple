@@ -716,6 +716,24 @@ async fn encrypted_account_flow() {
     );
     println!("PASS proof permutations, malformed/checksum/Unicode codes, explicit modes, legacy guard, preserving reset and token lifecycle");
 
+    // A trailing newline is character noise, not a file-body extraction request.
+    let newline_proof = fixture.proof(&client).await;
+    let newline_reset = client
+        .call(
+            "POST",
+            completion,
+            Some(complete(
+                &newline_proof,
+                &next_password,
+                &format!("{code}\n"),
+            )),
+            None,
+            200,
+        )
+        .await;
+    fixture.remember(&newline_reset);
+    println!("PASS trailing-newline recovery completion");
+
     // A new HTTP session proves re-entry and that no client-local continuation is required.
     let client = Client::connect(client.url.clone()).await;
     let proof = fixture.proof(&client).await;
