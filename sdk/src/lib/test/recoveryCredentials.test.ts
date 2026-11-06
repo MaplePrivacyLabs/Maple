@@ -175,6 +175,8 @@ describe("V2 password reset", () => {
   test("rejects non-code strings before transport and credential installation", async () => {
     for (const recoveryCode of [
       "not a code",
+      RECOVERY_CODE.slice(0, -1) + "0",
+      RECOVERY_CODE.replace("MPLRC1-0000", "MPLRC1-0001"),
       `Maple recovery code\n\n${RECOVERY_CODE}\n\nKeep this code private.`,
       `${RECOVERY_CODE}\nKeep this code private.`
     ]) {
@@ -226,7 +228,7 @@ describe("recovery code management", () => {
   test("status is an authenticated GET without a body", async () => {
     const status = {
       enrolled: true,
-      enrolled_at: "2026-11-01T00:00:00Z",
+      issued_at: "2026-11-01T00:00:00Z",
       last_used_at: null,
       use_count: 0
     };

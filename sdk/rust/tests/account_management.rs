@@ -112,7 +112,7 @@ async fn test_recovery_code_lifecycle() -> Result<()> {
 
     let status = client.get_recovery_code_status().await?;
     assert!(!status.enrolled);
-    assert!(status.enrolled_at.is_none());
+    assert!(status.issued_at.is_none());
     assert!(status.last_used_at.is_none());
     assert_eq!(status.use_count, 0);
 
@@ -129,7 +129,7 @@ async fn test_recovery_code_lifecycle() -> Result<()> {
     assert!(enrolled.recovery_code.starts_with("MPLRC1-"));
     let status = client.get_recovery_code_status().await?;
     assert!(status.enrolled);
-    assert!(status.enrolled_at.is_some());
+    assert!(status.issued_at.is_some());
     assert_eq!(status.use_count, 0);
 
     assert_api_status(client.enroll_recovery_code(password.clone()).await, 409);

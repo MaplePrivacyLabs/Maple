@@ -198,10 +198,17 @@ pub enum PasswordResetRecovery {
 }
 
 impl PasswordResetRecovery {
+    fn follow_up(self) -> &'static str {
+        match self {
+            Self::Used => "Reset your password using your recovery code and access to your account email, then replace the recovery code. Contact support if you cannot regain access.",
+            Self::Removed => "Change your password again if you suspect any unauthorized access.",
+        }
+    }
+
     fn details(self) -> &'static str {
         match self {
             Self::Removed => "This reset deleted your encrypted data and removed any recovery code on your account. Any previous recovery code no longer works. Create a new recovery code if you want to use recovery again.",
-            Self::Used => "Your recovery code was used to reset your password. Your encrypted data was preserved, and the same recovery code still works. If you did not do this, change your password and replace or disable your recovery code, then contact support right away.",
+            Self::Used => "Your recovery code was used to reset your password. Your encrypted data was preserved, and the same recovery code still works.",
         }
     }
 }
@@ -401,7 +408,7 @@ fn legacy_password_reset_confirmation_html(
                 <p>If you did not initiate this password reset, please contact us immediately at <a href="mailto:{}">{}</a>.</p>
                 <p>For security reasons, we recommend that you:</p>
                 <ul>
-                    <li>Change your password again if you suspect any unauthorized access.</li>
+                    <li>{}</li>
                     <li>Review your account activity for any suspicious actions.</li>
                 </ul>
                 <p>If you have any questions or concerns, please don't hesitate to reach out to our support team.</p>
@@ -414,6 +421,7 @@ fn legacy_password_reset_confirmation_html(
         recovery.details(),
         support_email,
         support_email,
+        recovery.follow_up(),
         team_name
     )
 }
@@ -1253,6 +1261,15 @@ mod tests {
             assert!(used.html.contains("recovery code was used"));
             assert!(used.html.contains("encrypted data was preserved"));
             assert!(used.html.contains("same recovery code still works"));
+            assert!(used
+                .html
+                .contains("Reset your password using your recovery code"));
+            assert!(used.html.contains("access to your account email"));
+            assert!(used
+                .html
+                .contains("Contact support if you cannot regain access"));
+            assert!(!used.html.contains("Change your password again"));
+            assert!(!used.html.contains("changing your password again"));
             assert!(!used.html.contains("This reset deleted"));
             let removed = render(PasswordResetRecovery::Removed);
             if project == "Maple" {

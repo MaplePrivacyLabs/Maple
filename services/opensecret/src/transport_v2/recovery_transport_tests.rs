@@ -289,7 +289,7 @@ async fn db_recovery_flow_v1_rejected_v2_completes() {
         body,
         serde_json::json!({
             "enrolled": false,
-            "enrolled_at": null,
+            "issued_at": null,
             "last_used_at": null,
             "use_count": 0
         })

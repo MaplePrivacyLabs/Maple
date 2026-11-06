@@ -32,16 +32,14 @@ pub struct RecoveryCode {
 }
 
 impl RecoveryCode {
-    pub async fn generate(
-        credentials: Option<Arc<RwLock<Option<AwsCredentialManager>>>>,
-    ) -> Result<Self, RecoveryCodeError> {
+    pub async fn generate(credentials: Option<Arc<RwLock<Option<AwsCredentialManager>>>>) -> Self {
         let secret = match credentials {
             Some(creds) => generate_random_enclave::<32>(creds).await,
             None => generate_random::<32>(),
         };
-        Ok(Self {
+        Self {
             secret: Zeroizing::new(secret),
-        })
+        }
     }
 
     /// Parses a user-submitted code, rejecting malformed input before any
@@ -283,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn recovery_code_generate_roundtrip() {
-        let code = RecoveryCode::generate(None).await.unwrap();
+        let code = RecoveryCode::generate(None).await;
         let displayed = code.display();
         let parsed = RecoveryCode::parse(&displayed).unwrap();
         assert_eq!(*code.secret_bytes(), *parsed.secret_bytes());
