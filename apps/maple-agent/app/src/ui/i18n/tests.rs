@@ -226,6 +226,39 @@ struct UiStrings {
 }
 
 impl<'ast> Visit<'ast> for UiStrings {
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        if node
+            .path
+            .segments
+            .last()
+            .is_some_and(|part| part.ident == "text")
+        {
+            use syn::parse::Parser;
+            let args = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated
+                .parse2(node.tokens.clone())
+                .expect("parse accessible text arguments for localization checks");
+            // The optional first argument assigns an element id, not visible text.
+            for expr in &args {
+                if let syn::Expr::Assign(assign) = expr
+                    && matches!(&*assign.left, syn::Expr::Path(path) if path.path.is_ident("id"))
+                {
+                    continue;
+                }
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(text),
+                    ..
+                }) = expr
+                    && text.value().chars().any(char::is_alphabetic)
+                {
+                    self.literals.push(text.value());
+                }
+                self.visit_expr(expr);
+            }
+        } else {
+            syn::visit::visit_macro(self, node);
+        }
+    }
+
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         if node.ident != "tests" {
             syn::visit::visit_item_mod(self, node);
@@ -295,6 +328,36 @@ impl<'ast> Visit<'ast> for UiStrings {
         }
         syn::visit::visit_expr_method_call(self, node);
     }
+}
+
+#[test]
+fn accessible_text_is_checked_for_raw_labels_and_translation_keys() {
+    let source = syn::parse_file(r#"
+        fn view() {
+            gpui::text!("Untranslated label");
+            text!(id = "stable-element-id", "Another label",);
+            gpui::text!(tr("settings-missing-key"));
+            text!(id = ("row", 1), tr("chat-answer"));
+            gpui::text!(if busy { tr("flows-login-completing") } else { tr("flows-login-complete") });
+        }
+    "#).unwrap();
+    let mut visitor = UiStrings::default();
+    visitor.visit_file(&source);
+    assert_eq!(visitor.literals, ["Untranslated label", "Another label"]);
+    assert_eq!(
+        visitor.keys,
+        [
+            "settings-missing-key",
+            "chat-answer",
+            "flows-login-completing",
+            "flows-login-complete"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    );
+    let keys = catalog_keys(include_str!("../../../locales/en/app.ftl"));
+    assert!(!keys.contains("settings-missing-key"));
 }
 
 fn visit_ui(path: &Path, visitor: &mut UiStrings) {
@@ -391,7 +454,8 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../settings/billing.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/local_api.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/mcp.rs")).unwrap());
-    visitor.visit_file(&syn::parse_file(include_str!("../settings/editors.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/catalog.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/acp.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../remote.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../login.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../plan_gate.rs")).unwrap());

@@ -755,33 +755,35 @@ impl Render for StoreGate {
                     ),
                 StoreState::Damaged { .. } => body
                     .when(accepts_unlock(&self.state), |body| {
-                        body.child(div().text_sm().child(gpui::text!(tr("flows-store-verify-body"))))
-                            .child(password_field(
-                                "settings-password-unlock-password",
-                                self.password.clone(),
-                            ))
-                            .child(
-                                widgets::primary_button("store-generation-unlock")
-                                    .debug_selector(|| "store-generation-unlock".into())
-                                    .tab_index(2)
-                                    .on_key_down(cx.listener(
-                                        |this, event: &gpui::KeyDownEvent, window, cx| {
-                                            if password_action_key(event, window, cx) {
-                                                this.unlock(cx);
-                                                cx.stop_propagation();
-                                            }
-                                        },
-                                    ))
-                                    .when(self.busy, |button| button.opacity(0.5))
-                                    .on_click(
-                                        cx.listener(|this, _event, _window, cx| this.unlock(cx)),
-                                    )
-                                    .child(gpui::text!(if self.busy {
-                                        tr("flows-store-verifying")
-                                    } else {
-                                        tr("flows-store-verify")
-                                    })),
-                            )
+                        body.child(
+                            div()
+                                .text_sm()
+                                .child(gpui::text!(tr("flows-store-verify-body"))),
+                        )
+                        .child(password_field(
+                            "settings-password-unlock-password",
+                            self.password.clone(),
+                        ))
+                        .child(
+                            widgets::primary_button("store-generation-unlock")
+                                .debug_selector(|| "store-generation-unlock".into())
+                                .tab_index(2)
+                                .on_key_down(cx.listener(
+                                    |this, event: &gpui::KeyDownEvent, window, cx| {
+                                        if password_action_key(event, window, cx) {
+                                            this.unlock(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
+                                .when(self.busy, |button| button.opacity(0.5))
+                                .on_click(cx.listener(|this, _event, _window, cx| this.unlock(cx)))
+                                .child(gpui::text!(if self.busy {
+                                    tr("flows-store-verifying")
+                                } else {
+                                    tr("flows-store-verify")
+                                })),
+                        )
                     })
                     .when_some(self.repair.clone(), |body, repair| body.child(repair))
                     .child(
@@ -1649,7 +1651,9 @@ impl Render for PasswordForm {
                                             }
                                         },
                                     ))
-                                    .child(gpui::text!(tr("settings-password-generate-passphrase"))),
+                                    .child(gpui::text!(tr(
+                                        "settings-password-generate-passphrase"
+                                    ))),
                             )
                         }),
                 );

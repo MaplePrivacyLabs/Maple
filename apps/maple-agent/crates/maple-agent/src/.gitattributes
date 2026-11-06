@@ -1,2 +1,0 @@
-# The embedded inline script/style bytes must match the pinned CSP hashes.
-sign_in_page.html text eol=lf

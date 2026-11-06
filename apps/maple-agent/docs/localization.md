@@ -2,7 +2,10 @@
 
 The app uses embedded Fluent catalogs for Settings, sign-in, plan and local-store
 flows, recovery, chat, the composer and sidebar, project dialogs, and native
-menus, tray items and desktop prompts. English is the source of truth. The `es`
+menus, tray items and desktop prompts. The integration app catalog and ACP
+setup instructions are included. Catalog search follows translated summaries and
+categories; generated client configuration and external app menu names stay exact.
+English is the source of truth. The `es`
 catalog targets Mexican Spanish; it does not register a separate `es-MX` catalog.
 User content, provider diagnostics and machine-facing text remain unchanged.
 

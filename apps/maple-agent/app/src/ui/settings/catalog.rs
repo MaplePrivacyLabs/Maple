@@ -1,6 +1,7 @@
 //! The Apps section of Integrations: the bundled catalog, by search and
 //! category, one click from connecting.
 
+use crate::ui::i18n::tr;
 use gpui::{App, Context, Div, div, prelude::*, px};
 use maple_agent::agent::{
     AgentMcpServer, McpAppConnection, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry,
@@ -42,11 +43,51 @@ fn logo_path(entry: &McpCatalogEntry) -> String {
     format!("icons/apps/{}.png", entry.id)
 }
 
+fn category_label(category: McpCatalogCategory) -> gpui::SharedString {
+    tr(match category {
+        McpCatalogCategory::Productivity => "settings-catalog-productivity",
+        McpCatalogCategory::Teams => "settings-catalog-teams",
+        McpCatalogCategory::Business => "settings-catalog-business",
+        McpCatalogCategory::Developer => "settings-catalog-developer",
+    })
+}
+fn summary(entry: &McpCatalogEntry) -> gpui::SharedString {
+    match entry.id.as_str() {
+        "notion" => tr("settings-catalog-summary-notion"),
+        "todoist" => tr("settings-catalog-summary-todoist"),
+        "dropbox" => tr("settings-catalog-summary-dropbox"),
+        "airtable" => tr("settings-catalog-summary-airtable"),
+        "evernote" => tr("settings-catalog-summary-evernote"),
+        "miro" => tr("settings-catalog-summary-miro"),
+        "zapier" => tr("settings-catalog-summary-zapier"),
+        "atlassian" => tr("settings-catalog-summary-atlassian"),
+        "linear" => tr("settings-catalog-summary-linear"),
+        "monday" => tr("settings-catalog-summary-monday"),
+        "clickup" => tr("settings-catalog-summary-clickup"),
+        "stripe" => tr("settings-catalog-summary-stripe"),
+        "paypal" => tr("settings-catalog-summary-paypal"),
+        "square" => tr("settings-catalog-summary-square"),
+        "intercom" => tr("settings-catalog-summary-intercom"),
+        "wix" => tr("settings-catalog-summary-wix"),
+        "wordpress" => tr("settings-catalog-summary-wordpress"),
+        "gitlab" => tr("settings-catalog-summary-gitlab"),
+        "vercel" => tr("settings-catalog-summary-vercel"),
+        "cloudflare" => tr("settings-catalog-summary-cloudflare"),
+        "supabase" => tr("settings-catalog-summary-supabase"),
+        "sentry" => tr("settings-catalog-summary-sentry"),
+        "playwright" => tr("settings-catalog-summary-playwright"),
+        "xcode" => tr("settings-catalog-summary-xcode"),
+        _ => entry.summary.clone().into(),
+    }
+}
+
 fn matches_search(entry: &McpCatalogEntry, query: &str) -> bool {
     query.is_empty()
         || entry.name.to_lowercase().contains(query)
-        || entry.summary.to_lowercase().contains(query)
-        || entry.category.label().to_lowercase().contains(query)
+        || summary(entry).to_lowercase().contains(query)
+        || category_label(entry.category)
+            .to_lowercase()
+            .contains(query)
 }
 
 impl SettingsScreen {
@@ -243,7 +284,10 @@ impl SettingsScreen {
                     this.mcp_app_missing = None;
                     cx.notify();
                 }))
-                .child(missing.action())
+                .child(self.messages.get(
+                    "settings-catalog-get-app",
+                    [("name", missing.name.clone().into())],
+                ))
         } else if waiting {
             widgets::ghost_button(button_id)
                 .on_click(cx.listener(|this, _event, _window, cx| this.cancel_mcp_sign_in(cx)))
@@ -252,19 +296,34 @@ impl SettingsScreen {
                     widgets::ROW_ICON,
                     theme::text_secondary(),
                 ))
-                .child("Cancel")
+                .child(tr("settings-catalog-cancel"))
         } else {
             widgets::secondary_button(button_id)
                 .when(busy, |button| button.opacity(0.5))
                 .on_click(cx.listener(move |this, _event, _window, cx| {
                     this.connect_catalog_entry(&entry.id, cx);
                 }))
-                .child("Connect")
+                .child(tr("settings-catalog-connect"))
         };
         let (detail, detail_color) = match (missing, self.sign_in_error_for(&entry.name)) {
-            (Some(missing), _) => (missing.message(), theme::status_error()),
+            (Some(missing), _) => {
+                let text = match &missing.min_version {
+                    Some(version) => self.messages.get(
+                        "settings-catalog-needs-version",
+                        [
+                            ("name", missing.name.clone().into()),
+                            ("version", version.clone().into()),
+                        ],
+                    ),
+                    None => self.messages.get(
+                        "settings-catalog-needs-app",
+                        [("name", missing.name.clone().into())],
+                    ),
+                };
+                (text.to_string(), theme::status_error())
+            }
             (None, Some(error)) => (error.to_string(), theme::status_error()),
-            (None, None) => (entry.summary.clone(), theme::text_secondary()),
+            (None, None) => (summary(entry).to_string(), theme::text_secondary()),
         };
         let card = widgets::card_row()
             .flex()
@@ -321,7 +380,7 @@ impl SettingsScreen {
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(subsection_title("Apps"))
+                .child(subsection_title(&tr("settings-catalog-apps")))
                 .child(
                     self.application_target(
                         || SettingsTarget::McpAdd,
@@ -330,7 +389,7 @@ impl SettingsScreen {
                                 this.open_mcp_editor(None, cx);
                             }))
                             .child(icon("plus", widgets::ROW_ICON, theme::text_secondary()))
-                            .child("Custom server"),
+                            .child(tr("settings-catalog-custom")),
                     ),
                 ),
         ));
@@ -338,9 +397,7 @@ impl SettingsScreen {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child(
-                    "New tasks can use the apps you connect. Your sign-ins stay on this computer.",
-                ),
+                .child(tr("settings-catalog-intro")),
         );
         if let Some(notice) = &self.mcp_notice {
             section = section.child(widgets::banner(theme::status_warning()).child(notice.clone()));
@@ -361,7 +418,7 @@ impl SettingsScreen {
                     .gap_2()
                     .child(pill_button(
                         "catalog-category-all".to_string(),
-                        "All",
+                        tr("settings-catalog-all"),
                         self.catalog_category.is_none(),
                         cx.listener(|this, _event, _window, cx| {
                             this.set_catalog_category(None, cx);
@@ -370,7 +427,7 @@ impl SettingsScreen {
                     .children(McpCatalogCategory::ALL.into_iter().map(|category| {
                         pill_button(
                             format!("catalog-category-{}", category.label()),
-                            category.label(),
+                            category_label(category),
                             self.catalog_category == Some(category),
                             cx.listener(move |this, _event, _window, cx| {
                                 this.set_catalog_category(Some(category), cx);
@@ -383,7 +440,7 @@ impl SettingsScreen {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child("No apps match."),
+                    .child(tr("settings-catalog-empty")),
             );
         }
         let cards: Vec<_> = self
@@ -398,6 +455,32 @@ impl SettingsScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translated_catalog_search_follows_locale() {
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        for locale in ["en", "es", "en"] {
+            apply_preference(Some(locale));
+            assert!(matches_search(notion(), "notion"));
+            assert!(matches_search(
+                notion(),
+                if locale == "es" {
+                    "bases de datos"
+                } else {
+                    "databases"
+                }
+            ));
+            assert!(matches_search(
+                notion(),
+                if locale == "es" {
+                    "productividad"
+                } else {
+                    "productivity"
+                }
+            ));
+        }
+    }
 
     fn saved(key: &str, url: &str) -> McpDefinition {
         McpDefinition {

@@ -559,7 +559,8 @@ impl MapleApp {
     fn verify_current_store_state(&mut self, cx: &mut Context<Self>) {
         crate::settings::clear_decrypted_cache();
         ui::spell::clear_user_words();
-        ui::i18n::clear_saved_preference();
+        // Verification may resume the same open store without rehydrating its
+        // locale. Clear it only when retiring the store or changing identity.
         self.password_settings_refresh_pending = true;
         let epoch = self.store_load_epoch;
         let backend = self.backend.clone();
@@ -2978,7 +2979,10 @@ impl Render for QuitPrompt {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.closing {
             window.on_next_frame(|window, _| window.remove_window());
-            return div().size_full().bg(gpui::rgb(ui::theme::bg_app())).into_any_element();
+            return div()
+                .size_full()
+                .bg(gpui::rgb(ui::theme::bg_app()))
+                .into_any_element();
         }
         let (title, message, retry) = self.presentation();
         div()
@@ -5271,8 +5275,12 @@ mod tests {
     fn replacement_generation_retires_busy_settings_and_parked_account_state(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        ui::i18n::apply_preference(None);
+        let system_locale = ui::i18n::current_locale();
         let settings = crate::settings::SETTINGS_IO_LOCK.lock();
         let app = password_settings_shell_locked(cx, true, &settings);
+        ui::i18n::apply_preference(Some(if system_locale == "es" { "en" } else { "es" }));
         app.update(cx, |app, cx| {
             let epoch = app.store_load_epoch;
             let status = serde_json::from_value(serde_json::json!({"state":{"state":"locked"},"mode":"password","store_id":"replacement"})).unwrap();
@@ -5281,6 +5289,10 @@ mod tests {
             assert!(app.store_load_epoch > epoch);
             assert!(app.user_id.is_none());
             assert!(app.parked_chat.is_none());
+            assert_eq!(ui::i18n::current_locale(), system_locale);
+            // A replacement store can now hydrate its own saved preference.
+            ui::i18n::initialize_saved_preference(Some("es"));
+            assert_eq!(ui::i18n::current_locale(), "es");
             let replacement_epoch = app.store_load_epoch;
             app.apply_store_completion_notice(&status, cx);
             assert_eq!(app.store_load_epoch, replacement_epoch);
