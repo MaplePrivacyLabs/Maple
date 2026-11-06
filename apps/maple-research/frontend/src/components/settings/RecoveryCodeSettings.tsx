@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SettingsSection } from "./SettingsPage";
+import { saveRecoveryCode } from "@/services/recoveryCodeExport";
 
 type RecoveryApi = {
   getRecoveryCodeStatus: () => Promise<RecoveryCodeStatus>;
@@ -17,10 +18,12 @@ type Action = "enable" | "replace" | "disable";
 /** Mount with an account-specific key: secrets and late responses belong to that account only. */
 export function RecoveryCodeSettings({
   api,
-  onLockChange
+  onLockChange,
+  saveCode = saveRecoveryCode
 }: {
   api: RecoveryApi;
   onLockChange: (locked: boolean) => void;
+  saveCode?: typeof saveRecoveryCode;
 }) {
   const [status, setStatus] = useState<RecoveryCodeStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -31,6 +34,8 @@ export function RecoveryCodeSettings({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
   const alive = useRef(true);
   const inFlight = useRef(false);
   const statusRevision = useRef(0);
@@ -146,26 +151,23 @@ export function RecoveryCodeSettings({
     }
   }
 
-  function downloadCode() {
-    if (!code) return;
-    let url: string | undefined;
+  async function downloadCode() {
+    if (!code || saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
     try {
-      url = URL.createObjectURL(
-        new Blob(
-          [
-            `Maple recovery code\n\n${code}\n\nKeep this code private. Replacing or disabling it makes this copy invalid.\n`
-          ],
-          { type: "text/plain" }
-        )
-      );
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "maple-recovery-code.txt";
-      link.click();
+      const result = await saveCode(code);
+      if (!alive.current) return;
+      if (result === "saved") setNotice("Recovery code file saved. Store it somewhere safe.");
+      if (result === "downloaded") setNotice("Download started. Check that the file was saved.");
     } catch {
-      setError("Couldn't save a file. Copy the code and store it somewhere safe instead.");
+      if (alive.current)
+        setError("Couldn't save a file. Copy the code and store it somewhere safe instead.");
     } finally {
-      if (url) URL.revokeObjectURL(url);
+      saveInFlight.current = false;
+      if (alive.current) setSaving(false);
     }
   }
 
@@ -209,8 +211,8 @@ export function RecoveryCodeSettings({
               <Button variant="outline" onClick={() => void copyCode()}>
                 Copy code
               </Button>
-              <Button variant="outline" onClick={downloadCode}>
-                Save text file
+              <Button variant="outline" onClick={() => downloadCode()} disabled={saving}>
+                {saving ? "Saving…" : "Save text file"}
               </Button>
             </div>
             <label className="flex items-start gap-2 text-sm">
@@ -224,8 +226,9 @@ export function RecoveryCodeSettings({
             </label>
             <div className="flex justify-end">
               <Button
-                disabled={!saved}
+                disabled={!saved || saving}
                 onClick={() => {
+                  if (saveInFlight.current) return;
                   setCode(null);
                   setSaved(false);
                   setNotice("Recovery is enabled. Keep your saved code private.");
