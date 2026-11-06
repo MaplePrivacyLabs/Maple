@@ -1206,3 +1206,6 @@ mod cache_tests;
 
 #[cfg(test)]
 mod shutdown_tests;
+
+#[cfg(all(test, unix))]
+mod test_executable;
