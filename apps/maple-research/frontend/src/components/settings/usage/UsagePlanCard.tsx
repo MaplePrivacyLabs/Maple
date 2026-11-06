@@ -110,7 +110,7 @@ export function CreditPlanCard({
                 <>
                   Plan credits ran out.{" "}
                   {balance > 0
-                    ? `Extra credits cover usage until the reset on ${resetDay}.`
+                    ? `Extra credits cover usage while your balance lasts. Plan credits reset on ${resetDay}.`
                     : `Add Extra credits to keep going before the reset on ${resetDay}.`}
                 </>
               ) : progress.runOutDate ? (
@@ -142,7 +142,7 @@ export function CreditPlanCard({
             <>
               <CumulativeChart
                 actual={progress.actual}
-                projected={progress.projected}
+                projected={progress.projectedTotal}
                 totalDays={progress.dates.length}
                 allowance={allowance}
                 allowanceLabel="Plan"

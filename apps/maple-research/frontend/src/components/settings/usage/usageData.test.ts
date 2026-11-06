@@ -509,6 +509,43 @@ describe("buildPeriodProgress", () => {
     expect(Math.max(...(ahead?.actual ?? []))).toBe(900);
   });
 
+  test("Extra credits carry the line past the allowance", () => {
+    const progress = buildPeriodProgress({
+      window,
+      days: [
+        { date: "2026-10-14", plan_credits: 20_000, extra_credits: 0 },
+        { date: "2026-10-20", plan_credits: 152, extra_credits: 4_000 },
+        { date: "2026-10-28", plan_credits: 0, extra_credits: 5_848 }
+      ],
+      used: 20_152,
+      allowance: 20_000,
+      tz: "UTC",
+      now
+    });
+    expect(progress?.exhausted).toBe(true);
+    expect(progress?.actual[0]).toBe(20_000);
+    expect(progress?.actual[6]).toBe(24_152);
+    expect(progress?.actual[13]).toBe(24_152);
+    expect(progress?.actual.at(-1)).toBe(30_000);
+    // Plan figures stay plan-only; the chart's projection covers both pools.
+    expect(progress?.used).toBe(20_152);
+    expect(progress?.projected).toBe(20_152 + (20_152 / 15) * 17);
+    expect(progress?.projectedTotal).toBe(30_000 + 2_000 * 17);
+  });
+
+  test("a billing response without Extra credits charts the plan pool alone", () => {
+    const progress = buildPeriodProgress({
+      window,
+      days: [{ date: "2026-10-14", plan_credits: 1_500 }],
+      used: 1_500,
+      allowance: 20_000,
+      tz: "UTC",
+      now
+    });
+    expect(progress?.actual.at(-1)).toBe(1_500);
+    expect(progress?.projectedTotal).toBe(progress?.projected);
+  });
+
   test("a projection under the allowance has no run-out date", () => {
     const progress = buildPeriodProgress({
       window,

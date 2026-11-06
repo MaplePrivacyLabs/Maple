@@ -475,7 +475,7 @@ export function CumulativeChart({
   return (
     <div ref={ref} className="relative w-full" style={{ height }}>
       {width > 0 && (
-        <svg width={width} height={height} role="img" aria-label="Plan credits used this period">
+        <svg width={width} height={height} role="img" aria-label="Credits used this period">
           {gridTicks.map((t) => (
             <g key={t}>
               <line
