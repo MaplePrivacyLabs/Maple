@@ -26,6 +26,7 @@ import {
   completePasswordReset
 } from "../../api";
 import { readTransportV2Credentials } from "../../transportV2/auth";
+import { RecoveryCodeFormatError } from "../../recoveryCode";
 
 const TEST_EMAIL = process.env.VITE_TEST_EMAIL;
 const TEST_PASSWORD = process.env.VITE_TEST_PASSWORD;
@@ -501,7 +502,11 @@ test("V2 password reset rejects an invalid proof", async () => {
     400
   );
   for (const completion of [
-    { mode: "preserve", recoveryCode: "MPLRC1-0000" },
+    {
+      mode: "preserve",
+      recoveryCode:
+        "MPLRC1-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-39YZ-VTQZ"
+    },
     { mode: "destructive", acknowledgeDataLoss: true }
   ] as const) {
     await expectStatus(
@@ -517,5 +522,20 @@ test("V2 password reset rejects an invalid proof", async () => {
     );
   }
   // A rejected completion leaves the stored credentials unchanged.
+  expect(readTransportV2Credentials(API_URL!, "user")).toEqual(before);
+});
+
+test("V2 password reset rejects a malformed recovery code locally", async () => {
+  const before = readTransportV2Credentials(API_URL!, "user");
+  await expect(
+    completePasswordReset(
+      `recovery-reset-${crypto.randomUUID()}@local.test`,
+      "ABCD1234",
+      "not-a-reset-secret",
+      "New-password-1234",
+      TEST_CLIENT_ID!,
+      { mode: "preserve", recoveryCode: "MPLRC1-0000" }
+    )
+  ).rejects.toBeInstanceOf(RecoveryCodeFormatError);
   expect(readTransportV2Credentials(API_URL!, "user")).toEqual(before);
 });
