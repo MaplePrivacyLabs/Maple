@@ -521,8 +521,7 @@ mod tests {
         GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
     };
     use crate::provider_registry::{
-        MapleInstanceId, DUAL_INSTANCE_TEST_REGISTRY, ROLE_SWAP_TEST_REGISTRY,
-        STOCK_REPLICA_TEST_REGISTRY,
+        MapleInstanceId, DUAL_INSTANCE_TEST_REGISTRY, STOCK_REPLICA_TEST_REGISTRY,
     };
     use std::time::Duration;
 
@@ -728,14 +727,14 @@ mod tests {
 
         let cases = [
             Case {
-                name: "free auto quick stock maintenance",
+                name: "free auto quick Maple bucket",
                 selector: AUTO_QUICK_MODEL_ID,
                 plan: ModelPlan::Free,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: true,
                 expected_public_model: QUICK_MODEL_ID,
-                expected_provider: "tinfoil",
+                expected_provider: "maple-i02",
                 expected_provider_model: QUICK_MODEL_ID,
                 expected_source: RouteSelectionSource::StaticSplit,
             },
@@ -752,14 +751,14 @@ mod tests {
                 expected_source: RouteSelectionSource::StaticSplit,
             },
             Case {
-                name: "paid auto quick stock maintenance",
+                name: "paid auto quick Maple bucket",
                 selector: AUTO_QUICK_MODEL_ID,
                 plan: ModelPlan::Paid,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: true,
                 expected_public_model: QUICK_MODEL_ID,
-                expected_provider: "tinfoil",
+                expected_provider: "maple-i02",
                 expected_provider_model: QUICK_MODEL_ID,
                 expected_source: RouteSelectionSource::StaticSplit,
             },
@@ -894,7 +893,8 @@ mod tests {
                 "{}",
                 case.name
             );
-            let weighted_model = case.expected_public_model == GLM_5_3_MODEL_ID;
+            let weighted_model = case.expected_public_model == GLM_5_3_MODEL_ID
+                || case.expected_public_model == QUICK_MODEL_ID;
             let expected_bucket = if weighted_model && case.continuum_available {
                 Some(case.bucket)
             } else {
@@ -2301,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn stock_deepseek_ignores_stale_i02_sticky_even_while_i02_is_ready() {
+    fn stock_deepseek_ignores_stale_i01_sticky_even_while_i01_is_ready() {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_maple();
         let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -2312,7 +2312,7 @@ mod tests {
             &request.requested_model_id,
             StickyRoute {
                 public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_owned(),
-                provider: ProviderId::Maple(MapleInstanceId::I02),
+                provider: ProviderId::Maple(MapleInstanceId::I01),
                 provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_owned(),
             },
         );
@@ -2320,42 +2320,49 @@ mod tests {
         let selected = router
             .select_active_completion_route(&proxies, &request)
             .expect("stock DeepSeek remains available");
-        assert_eq!(selected.provider, ProviderId::Tinfoil);
+        assert_eq!(selected.provider, ProviderId::Maple(MapleInstanceId::I02));
         assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
         let shadow = router.shadow_completion_plan(&proxies, &request).unwrap();
-        assert_eq!(shadow.eligible_routes.len(), 1);
+        assert_eq!(shadow.eligible_routes.len(), 2);
         assert!(shadow
             .eligible_routes
             .iter()
-            .all(|route| route.provider != ProviderId::Maple(MapleInstanceId::I02)));
+            .all(|route| route.provider != ProviderId::Maple(MapleInstanceId::I01)));
     }
 
     #[test]
-    fn maintenance_excludes_i01_for_stock_and_uncensored_despite_ready_sticky_state() {
+    fn role_swap_excludes_each_models_previous_guest_despite_ready_sticky_state() {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_maple();
         for surface in [
             InferenceSurface::ChatCompletions,
             InferenceSurface::Responses,
         ] {
-            for (selector, model, expected) in [
+            for (selector, model, previous, expected, route_count) in [
                 (
                     AUTO_QUICK_MODEL_ID,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                    ProviderId::Tinfoil,
+                    MapleInstanceId::I01,
+                    MapleInstanceId::I02,
+                    2,
                 ),
                 (
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                    ProviderId::Tinfoil,
+                    MapleInstanceId::I01,
+                    MapleInstanceId::I02,
+                    2,
                 ),
                 (
                     DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
                     DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
-                    ProviderId::Maple(MapleInstanceId::I02),
+                    MapleInstanceId::I02,
+                    MapleInstanceId::I01,
+                    1,
                 ),
             ] {
                 let mut request = intent(selector, model);
+                request.account_uuid = uuid_for_bucket(75);
                 request.surface = surface;
                 router.sticky_routes().record(
                     request.account_uuid,
@@ -2363,37 +2370,35 @@ mod tests {
                     selector,
                     StickyRoute {
                         public_model_id: model.to_owned(),
-                        provider: ProviderId::Maple(MapleInstanceId::I01),
+                        provider: ProviderId::Maple(previous),
                         provider_model_id: model.to_owned(),
                     },
                 );
                 let selected = router
                     .select_active_completion_route(&proxies, &request)
                     .unwrap();
-                assert_eq!(selected.provider, expected);
+                assert_eq!(selected.provider, ProviderId::Maple(expected));
                 assert_eq!(selected.public_model_id, model);
                 assert_eq!(selected.provider_model_id, model);
                 assert_eq!(selected.response_model_id, model);
                 assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
-                assert_eq!(
-                    router
-                        .shadow_completion_plan(&proxies, &request)
-                        .unwrap()
-                        .eligible_routes
-                        .len(),
-                    1
-                );
+                let plan = router.shadow_completion_plan(&proxies, &request).unwrap();
+                assert_eq!(plan.eligible_routes.len(), route_count);
+                assert!(plan
+                    .eligible_routes
+                    .iter()
+                    .all(|route| route.provider != ProviderId::Maple(previous)));
             }
         }
     }
 
     #[test]
-    fn role_swap_final_routes_exclude_old_uncensored_guest_and_admit_verified_stock() {
+    fn stock_i02_waits_for_verified_readiness_while_uncensored_i01_stays_eligible() {
         for surface in [
             InferenceSurface::ChatCompletions,
             InferenceSurface::Responses,
         ] {
-            let router = ProviderRouter::with_test_registry(&ROLE_SWAP_TEST_REGISTRY);
+            let router = ProviderRouter::default();
             // i01 is qualified; i02 still runs a release rejected by its new
             // stock-only policy. Readiness is independently tested by transport.
             let waiting = proxy_router_with_maple().with_maple_readiness(
@@ -2474,6 +2479,28 @@ mod tests {
                 );
             }
             assert_eq!(counts, [1, 99]);
+
+            open_route_with_capacity_failure(
+                &router,
+                ProviderId::Maple(MapleInstanceId::I02),
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                503,
+                60,
+            );
+            let fallback = router
+                .select_active_completion_route(&ready, &fresh_stock)
+                .unwrap();
+            assert_eq!(fallback.provider, ProviderId::Tinfoil);
+            assert_eq!(fallback.selection_source, RouteSelectionSource::Fallback);
+            assert_eq!(
+                router
+                    .select_active_completion_route(&ready, &uncensored)
+                    .unwrap()
+                    .provider,
+                ProviderId::Maple(MapleInstanceId::I01),
+                "stock i02 capacity must not affect uncensored i01",
+            );
         }
     }
 
