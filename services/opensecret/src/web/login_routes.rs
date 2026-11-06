@@ -813,6 +813,9 @@ pub async fn password_reset_v2_complete(
     // self-sufficient if it is ever reachable from a mis-wired router.
     require_v2_transport_session(&transport_session)?;
 
+    // Reject invalid new passwords before verifying or consuming the reset proof.
+    validate_password(&request.new_password)?;
+
     // Destructive reset must be an explicit, informed choice before any
     // proof verification or account lookup.
     if matches!(
