@@ -204,4 +204,16 @@ export { Pcr0ValidationError } from "./pcr";
 // TODO: these can actually just be used internally by the password reset function
 export { generateSecureSecret, hashSecret } from "./crypto";
 
+export {
+  RECOVERY_CODE_PREFIX,
+  RECOVERY_CODE_ALPHABET,
+  RECOVERY_CODE_GROUP_SIZE,
+  RECOVERY_CODE_PAYLOAD_LENGTH,
+  RECOVERY_CODE_NORMALIZED_LENGTH,
+  RECOVERY_CODE_MAX_INPUT_LENGTH,
+  RecoveryCodeFormatError,
+  normalizeRecoveryCode,
+  stripRecoveryCodeSeparators
+} from "./recoveryCode";
+
 export { getAuthenticatedUserId, ACCOUNT_CREDENTIAL_MISMATCH_CODE } from "./credentialIdentity";

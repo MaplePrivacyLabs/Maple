@@ -14,6 +14,7 @@ import {
 import type { PcrConfig } from "../pcr";
 import { installTransportV2Credentials, readTransportV2Credentials } from "../transportV2/auth";
 import { transportV2Runtime, type TransportV2RuntimeRequest } from "../transportV2/runtime";
+import { RecoveryCodeFormatError } from "../recoveryCode";
 
 const API_URL = "https://recovery.example.test/backend";
 const CLIENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -151,6 +152,41 @@ describe("V2 password reset", () => {
       new_password: "new-password",
       mode: { destructive: { acknowledge_data_loss: true } }
     });
+  });
+
+  test("normalizes a standalone recovery code before sending", async () => {
+    respond = () =>
+      jsonResponse({
+        message: "Password reset successful.",
+        access_token: userToken("access", "user-1"),
+        refresh_token: userToken("refresh", "user-1")
+      });
+    await completePasswordReset(EMAIL, RESET_CODE, RESET_SECRET, "new-password", CLIENT_ID, {
+      mode: "preserve",
+      recoveryCode: `${RECOVERY_CODE.toLowerCase().replace(/0/g, "o")}\r\n\t`
+    });
+    expect(seen[0].body).toEqual({
+      proof: PROOF,
+      new_password: "new-password",
+      mode: { preserve: { recovery_code: RECOVERY_CODE } }
+    });
+  });
+
+  test("rejects non-code strings before transport and credential installation", async () => {
+    for (const recoveryCode of [
+      "not a code",
+      `Maple recovery code\n\n${RECOVERY_CODE}\n\nKeep this code private.`,
+      `${RECOVERY_CODE}\nKeep this code private.`
+    ]) {
+      await expect(
+        completePasswordReset(EMAIL, RESET_CODE, RESET_SECRET, "new-password", CLIENT_ID, {
+          mode: "preserve",
+          recoveryCode
+        })
+      ).rejects.toBeInstanceOf(RecoveryCodeFormatError);
+    }
+    expect(seen).toHaveLength(0);
+    expect(readTransportV2Credentials(API_URL, "user")).toBeNull();
   });
 
   test("a rejected completion keeps its status and installs no credentials", async () => {

@@ -58,7 +58,7 @@ impl RecoveryCode {
         let normalized_upper = Zeroizing::new(
             input
                 .chars()
-                .filter(|c| *c != ' ' && *c != '-')
+                .filter(|c| !matches!(*c, '\t'..='\r' | ' ' | '-'))
                 .map(|c| c.to_ascii_uppercase())
                 .collect::<String>(),
         );
@@ -264,8 +264,20 @@ mod tests {
             RecoveryCode::parse(&compact),
             Err(RecoveryCodeError::InvalidPadding)
         ));
-        for invalid in ["\t", "\n", "\r", "\0"] {
-            assert!(RecoveryCode::parse(&format!("{}{invalid}", displayed.as_str())).is_err());
+        for suffix in ["\n", "\r\n", "\t", "\u{000b}", "\u{000c}", " \t\r\n"] {
+            let parsed = RecoveryCode::parse(&format!("{}{suffix}", displayed.as_str())).unwrap();
+            assert_eq!(parsed.secret_bytes(), code.secret_bytes());
+        }
+        assert!(RecoveryCode::parse(&format!("{}\0", displayed.as_str())).is_err());
+        for input in [
+            format!("Maple recovery code\n\n{}", displayed.as_str()),
+            format!("{}\n\nKeep this code private.", displayed.as_str()),
+            format!(
+                "Maple recovery code\n\n{}\n\nKeep this code private. Replacing or disabling it makes this copy invalid.\n",
+                displayed.as_str()
+            ),
+        ] {
+            assert!(RecoveryCode::parse(&input).is_err());
         }
     }
 
