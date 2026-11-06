@@ -1203,7 +1203,7 @@ impl ChatScreen {
                         .child(
                             widgets::secondary_button("cancel-attachment-upload")
                                 .text_xs()
-                                .child("Cancel")
+                                .child(gpui::text!("Cancel"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.cancel_attachment_send(&id, cx)
                                 })),

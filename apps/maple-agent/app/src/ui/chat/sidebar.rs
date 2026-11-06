@@ -3281,7 +3281,7 @@ impl Sidebar {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.clear_search(cx);
                         }))
-                        .child("Clear search"),
+                        .child(gpui::text!("Clear search")),
                 )
                 .into_any_element(),
             Some(SidebarEntry::ArchivedHeader) => {

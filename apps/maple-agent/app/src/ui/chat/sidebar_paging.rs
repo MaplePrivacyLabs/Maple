@@ -1133,13 +1133,13 @@ impl Sidebar {
             .my_1()
             .text_xs()
             .on_click(cx.listener(move |this, _event, _window, cx| this.load_page(kind, cx)))
-            .child(if loading {
+            .child(gpui::text!(if loading {
                 format!("Loading {}…", kind.label())
             } else if self.pages.failed.contains(&kind) {
                 format!("Retry {}", kind.label())
             } else {
                 format!("Load more {}", kind.label())
-            })
+            }))
             .into_any_element()
     }
 

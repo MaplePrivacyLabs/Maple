@@ -111,6 +111,21 @@ popup before a nested one). The popup handles the rest:
 A text field inside a menu that goes away calls `Popup::refocus`, so the
 menu keeps the keyboard. Menu keys live in the keymap's `Menu` context.
 
+## Accessibility
+
+GPUI only reports elements with both an id and a role, and it builds the tree
+during prepaint and paint. Screen readers and Cua read the same tree.
+
+- Plain text children (`.child("Save")`) are invisible to accessibility. Use
+  `gpui::text!` for text that carries meaning. A button takes its name from a
+  `text!` child, or from `.aria_label(...)` when it has only an icon. `text!`
+  derives its id from the call site, so give it one with
+  `text!(id = ..., text)` when a call repeats under a parent with no id.
+- Embed cached views with `embed_cached_view`. A cached view that reuses its
+  last frame adds nothing to the tree update, so its nodes would disappear on
+  the next repaint elsewhere in the window.
+- A masked `TextInput` and `SecretInput` never expose their value.
+
 ## Ordinary forms and application Vim
 
 Ordinary `TextInput` fields use `.application_vim(enabled)` and an

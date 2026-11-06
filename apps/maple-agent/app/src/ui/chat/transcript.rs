@@ -95,7 +95,7 @@ impl ChatScreen {
                             )))
                             .text_xs()
                             .mt_2()
-                            .child("Show full output")
+                            .child(gpui::text!("Show full output"))
                             .on_click(move |_, _, cx| {
                                 if let Some(chat) = target.upgrade() {
                                     chat.update(cx, |chat, cx| chat.expand_paged_row(&id, cx));
@@ -191,11 +191,11 @@ impl ChatScreen {
                         .mx_6()
                         .my_1()
                         .text_xs()
-                        .child(if self.pages.loading {
+                        .child(gpui::text!(if self.pages.loading {
                             "Loading history…"
                         } else {
                             "Load older messages"
-                        })
+                        }))
                         .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(true, cx))),
                 )
             })
@@ -232,7 +232,7 @@ impl ChatScreen {
                         .mx_6()
                         .my_1()
                         .text_xs()
-                        .child("Load newer messages")
+                        .child(gpui::text!("Load newer messages"))
                         .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(false, cx))),
                 )
             })
@@ -253,7 +253,7 @@ impl ChatScreen {
                         .child(
                             widgets::secondary_button("live-reload-latest")
                                 .text_xs()
-                                .child("Reload latest")
+                                .child(gpui::text!("Reload latest"))
                                 .on_click(
                                     cx.listener(|chat, _, _, cx| chat.reload_paged_latest(cx)),
                                 ),
@@ -337,7 +337,7 @@ impl ChatScreen {
                         cx.notify();
                     }))
                     .child(icon("chevron-down", px(12.), theme::text_secondary()))
-                    .child("Jump to latest"),
+                    .child(gpui::text!("Jump to latest")),
                 "jump-to-latest-reveal",
             ))
     }
@@ -1326,7 +1326,10 @@ fn render_tool(
                 .text_color(gpui::rgb(theme::text_muted()))
                 .font_family(crate::assets::FONT_MONO)
                 .overflow_x_hidden()
-                .child(input.clone()),
+                .child(gpui::text!(
+                    id = SharedString::from(format!("tool-input-{}", item.id)),
+                    input.clone()
+                )),
         );
     }
     if let Some(output) = &derived.output_text {
@@ -1335,15 +1338,28 @@ fn render_tool(
                 .mt_1()
                 .w_full()
                 .text_color(gpui::rgb(theme::text_secondary()))
-                .child(markdown::render(&transcript.markdown_cache.get(
-                    &item.id,
-                    MarkdownKind::ToolOutput,
-                    revision,
-                    output,
-                ))),
+                .child(markdown::render_with(
+                    &transcript.markdown_cache.get(
+                        &item.id,
+                        MarkdownKind::ToolOutput,
+                        revision,
+                        output,
+                    ),
+                    &readable_ctx(transcript.render),
+                )),
         );
     }
     div().child(card.child(payload))
+}
+
+/// Keep a card's output out of the shared selection, which would treat its
+/// clicks as a text drag, but give it the ordinals that put it in the
+/// accessibility tree.
+fn readable_ctx(ctx: &RenderCtx) -> RenderCtx {
+    RenderCtx {
+        base_ordinal: ctx.base_ordinal,
+        ..RenderCtx::default()
+    }
 }
 
 /// Readable form of the call arguments: one `key: value` line per
@@ -1403,18 +1419,17 @@ fn render_external_agent_activity(
     }
     body = body.child(div().text_xs().text_color(muted).child(meta));
     if !activity.text.trim().is_empty() {
-        body = body.child(
-            div()
-                .w_full()
-                .text_sm()
-                .text_color(secondary)
-                .child(markdown::render(&transcript.markdown_cache.get(
+        body = body.child(div().w_full().text_sm().text_color(secondary).child(
+            markdown::render_with(
+                &transcript.markdown_cache.get(
                     &item.id,
                     MarkdownKind::ToolOutput,
                     revision,
                     &activity.text,
-                ))),
-        );
+                ),
+                &readable_ctx(transcript.render),
+            ),
+        ));
     }
     if !activity.commands.is_empty() {
         let mut list = div().flex().flex_col().gap_0p5();
@@ -1534,7 +1549,7 @@ fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
         return div();
     }
     if !text.contains(USAGE_LIMIT_MESSAGE) {
-        return widgets::banner(theme::status_error()).child(text);
+        return widgets::banner(theme::status_error()).child(gpui::text!(text));
     }
     let chat = transcript.chat.clone();
     let button_id = format!("open-billing-{}", item.id);
@@ -1543,14 +1558,14 @@ fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
         .flex_col()
         .items_start()
         .gap_2()
-        .child(USAGE_LIMIT_MESSAGE)
+        .child(gpui::text!(USAGE_LIMIT_MESSAGE))
         .child(
             widgets::secondary_button(button_id.clone())
                 .debug_selector({
                     let button_id = button_id.clone();
                     move || button_id.clone()
                 })
-                .child("Open Billing")
+                .child(gpui::text!("Open Billing"))
                 .on_click(move |_event, _window, cx| {
                     cx.stop_propagation();
                     let Some(chat) = chat.upgrade() else {
@@ -1589,13 +1604,19 @@ fn render_permission_row(item: &AgentTimelineItem) -> Div {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_primary()))
-                .child(title),
+                .child(gpui::text!(
+                    id = SharedString::from(format!("permission-title-{}", item.id)),
+                    title
+                )),
         )
         .child(
             div()
                 .text_xs()
                 .text_color(gpui::rgb(status.1))
-                .child(status.0),
+                .child(gpui::text!(
+                    id = SharedString::from(format!("permission-status-{}", item.id)),
+                    status.0
+                )),
         )
 }
 
@@ -1611,7 +1632,10 @@ fn render_system(item: &AgentTimelineItem) -> Div {
     div()
         .text_sm()
         .text_color(gpui::rgb(theme::text_muted()))
-        .child(text)
+        .child(gpui::text!(
+            id = SharedString::from(format!("system-text-{}", item.id)),
+            text
+        ))
 }
 
 pub(super) fn render_question_card(
@@ -1835,7 +1859,7 @@ pub(super) fn render_question_card(
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.submit_question(cx);
                         }))
-                        .child(if has_more { "Next" } else { "Answer" }),
+                        .child(gpui::text!(if has_more { "Next" } else { "Answer" })),
                 ),
         );
     }
