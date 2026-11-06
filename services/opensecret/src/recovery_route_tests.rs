@@ -1541,6 +1541,135 @@ fn open_recovery_wrap_with_code(
 
 #[tokio::test]
 #[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_rejects_invalid_passwords_without_consuming_proof_or_mutating_credentials(
+) {
+    for preserving in [true, false] {
+        let fixture = authenticated_password_fixture("v2-password-policy").await;
+        let app_state = &fixture.app_state;
+        let project = first_active_project(app_state);
+        let app = login_router(app_state.clone());
+        let seed_before = app_state
+            .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
+            .unwrap();
+        let marker = insert_kv_marker(app_state, &fixture.user);
+        let code = enroll_recovery_over_authenticated_seed(
+            app_state,
+            &fixture.user,
+            &fixture.auth_context,
+        )
+        .await;
+        let wrap_before = app_state
+            .db
+            .get_recovery_wrap(fixture.user.uuid)
+            .unwrap()
+            .unwrap();
+        let secret = "password-policy-reset-secret";
+        let selected = insert_reset_request_fixture(
+            app_state,
+            &project,
+            &fixture.user,
+            "POLICY12",
+            secret,
+            24,
+        );
+        let proof = proof_fixture(&fixture.email, "POLICY12", secret, project.client_id);
+        let mode = if preserving {
+            preserve_mode(&code)
+        } else {
+            destructive_mode(true)
+        };
+
+        for (password, message) in [
+            (String::new(), "Password must be at least 8 characters"),
+            ("x".repeat(7), "Password must be at least 8 characters"),
+            ("é".repeat(7), "Password must be at least 8 characters"),
+            ("x".repeat(65), "Password must not exceed 64 characters"),
+            ("é".repeat(65), "Password must not exceed 64 characters"),
+        ] {
+            let response =
+                complete_request(app.clone(), complete_body(&proof, &password, mode.clone())).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                response_json(response).await,
+                json!({"status": 400, "message": message})
+            );
+            assert!(
+                !reset_request_by_id(app_state, selected.id).is_reset,
+                "a password-policy rejection must leave the proof active"
+            );
+            let user_after = app_state.db.get_user_by_uuid(fixture.user.uuid).unwrap();
+            assert!(
+                user_after.password_enc == fixture.user.password_enc,
+                "a rejected reset must not change the password credential"
+            );
+            assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+            let wrap_after = app_state
+                .db
+                .get_recovery_wrap(fixture.user.uuid)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                wrap_after.recovery_use_count,
+                wrap_before.recovery_use_count
+            );
+            assert_eq!(
+                wrap_after.recovery_last_used_at,
+                wrap_before.recovery_last_used_at
+            );
+            assert!(kv_marker_exists(app_state, fixture.user.uuid, marker));
+        }
+
+        assert!(app_state
+            .authenticate_user(
+                Some(fixture.email.clone()),
+                None,
+                fixture.password.to_string(),
+                project.id,
+            )
+            .await
+            .unwrap()
+            .is_some());
+
+        // Exercise both inclusive limits using multi-byte Unicode characters.
+        let valid_password = "🔒".repeat(if preserving { 8 } else { 64 });
+        let response = complete_request(app, complete_body(&proof, &valid_password, mode)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(reset_request_by_id(app_state, selected.id).is_reset);
+        let authenticated = app_state
+            .authenticate_user(
+                Some(fixture.email.clone()),
+                None,
+                valid_password,
+                project.id,
+            )
+            .await
+            .unwrap()
+            .expect("the same reset proof must still accept a policy-compliant password");
+        let seed_after = app_state
+            .decrypt_seed_for_auth_context(&authenticated.user, &authenticated.auth_context)
+            .unwrap();
+        assert!(
+            (seed_before == seed_after) == preserving,
+            "the chosen reset mode must retain its seed-preservation semantics"
+        );
+        assert_eq!(
+            kv_marker_exists(app_state, fixture.user.uuid, marker),
+            preserving
+        );
+        assert_eq!(
+            app_state
+                .db
+                .get_recovery_wrap(fixture.user.uuid)
+                .unwrap()
+                .is_some(),
+            preserving
+        );
+        app_state.db.delete_user(&authenticated.user).unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
 async fn password_reset_v2_preserving_completion_preserves_seed_wrap_and_encrypted_data() {
     let fixture = authenticated_password_fixture("v2-complete").await;
     let app_state = &fixture.app_state;

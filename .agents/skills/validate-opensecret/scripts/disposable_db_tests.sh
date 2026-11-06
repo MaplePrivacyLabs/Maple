@@ -269,7 +269,7 @@ done
 recovery_count=0
 for recovery_suite in \
   recovery_db_tests::=12 \
-  recovery_route_tests::=29 \
+  recovery_route_tests::=30 \
   transport_v2::gateway::tests::db_recovery_=1; do
   recovery_filter="${recovery_suite%=*}"
   expected_count="${recovery_suite##*=}"
