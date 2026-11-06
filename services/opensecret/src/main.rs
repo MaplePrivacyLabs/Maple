@@ -144,12 +144,11 @@ mod web;
 #[cfg(test)]
 mod aead_db_tamper_tests;
 #[cfg(test)]
-#[path = "recovery_smoke.rs"]
-mod local_flow_smoke;
-#[cfg(test)]
 mod recovery_db_tests;
 #[cfg(test)]
 mod recovery_route_tests;
+#[cfg(test)]
+mod recovery_smoke;
 
 use apple_signin::AppleJwtVerifier;
 use oauth::{AppleProvider, GithubProvider, GoogleProvider, OAuthManager};

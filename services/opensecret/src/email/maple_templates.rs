@@ -60,7 +60,7 @@ const _: () = {
     assert!(
         placeholders_are_known(
             PASSWORD_RESET_CONFIRMATION,
-            &[BODY_FIELDS, &["RECOVERY_DETAILS"]]
+            &[BODY_FIELDS, &["RECOVERY_DETAILS", "RECOVERY_FOLLOW_UP"]]
         ),
         "password-reset-confirmation.html has an unknown or unclosed placeholder"
     );
@@ -238,7 +238,10 @@ pub(super) fn render(
         AccountEmail::PasswordReset { code } => vec![("RESET_CODE", escape_html(code))],
         AccountEmail::AccountDeletion { code } => vec![("DELETION_CODE", escape_html(code))],
         AccountEmail::PasswordResetConfirmation { recovery } => {
-            vec![("RECOVERY_DETAILS", escape_html(recovery.details()))]
+            vec![
+                ("RECOVERY_DETAILS", escape_html(recovery.details())),
+                ("RECOVERY_FOLLOW_UP", escape_html(recovery.follow_up())),
+            ]
         }
         AccountEmail::RecoveryCodeChange { event } => vec![
             ("RECOVERY_TITLE", escape_html(event.title())),

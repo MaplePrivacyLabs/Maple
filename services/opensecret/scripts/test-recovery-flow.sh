@@ -27,7 +27,7 @@ case "${1:-}" in
   --existing)
     : "${RECOVERY_SMOKE_URL:?required}" "${RECOVERY_SMOKE_DATABASE_URL:?required}" "${ENCLAVE_SECRET_MOCK:?required}"
     [[ $# == 1 ]]
-    exec cargo test --locked --all-features local_flow_smoke::encrypted_account_flow -- --ignored --exact --nocapture ;;
+    exec cargo test --locked --all-features recovery_smoke::encrypted_account_flow -- --ignored --exact --nocapture ;;
   '') [[ $# == 0 ]] ;;
   *) printf 'Unknown argument; use --help\n' >&2; exit 2 ;;
 esac
@@ -37,7 +37,7 @@ for cmd in initdb pg_ctl psql createdb diesel cargo python3 curl openssl; do
 done
 # Compile before owning processes, so no test cluster sits idle during a build.
 cargo build --locked
-cargo test --locked --all-features local_flow_smoke::encrypted_account_flow --no-run
+cargo test --locked --all-features recovery_smoke::encrypted_account_flow --no-run
 binary="$(cargo metadata --locked --no-deps --format-version=1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/opensecret")')"
 parent="${TMPDIR:-/tmp}"
 work="$(mktemp -d "$parent/opensecret-recovery.XXXXXXXX")"
@@ -108,4 +108,4 @@ for ((attempt=0; attempt<90; attempt++)); do
   sleep 1
 done
 [[ $ready == 1 ]] || { printf 'Backend readiness timed out\n' >&2; exit 1; }
-cargo test --locked --all-features local_flow_smoke::encrypted_account_flow -- --ignored --exact --nocapture
+cargo test --locked --all-features recovery_smoke::encrypted_account_flow -- --ignored --exact --nocapture

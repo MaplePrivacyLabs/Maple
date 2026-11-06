@@ -26,7 +26,7 @@ import {
   completePasswordReset
 } from "../../api";
 import { readTransportV2Credentials } from "../../transportV2/auth";
-import { RecoveryCodeFormatError } from "../../recoveryCode";
+import { RecoveryCodeFormatError, validateRecoveryCode } from "../../recoveryCode";
 
 const TEST_EMAIL = process.env.VITE_TEST_EMAIL;
 const TEST_PASSWORD = process.env.VITE_TEST_PASSWORD;
@@ -457,7 +457,7 @@ test("Recovery code enroll, rotate, and disable", async () => {
 
   expect(await fetchRecoveryCodeStatus()).toEqual({
     enrolled: false,
-    enrolled_at: null,
+    issued_at: null,
     last_used_at: null,
     use_count: 0
   });
@@ -468,15 +468,17 @@ test("Recovery code enroll, rotate, and disable", async () => {
 
   const enrolled = await enrollRecoveryCode(password);
   expect(enrolled.recovery_code).toStartWith("MPLRC1-");
+  expect(await validateRecoveryCode(enrolled.recovery_code)).toBe(enrolled.recovery_code);
   const status = await fetchRecoveryCodeStatus();
   expect(status.enrolled).toBe(true);
-  expect(status.enrolled_at).toBeString();
+  expect(status.issued_at).toBeString();
   expect(status.use_count).toBe(0);
 
   await expectStatus(enrollRecoveryCode(password), 409);
 
   const rotated = await rotateRecoveryCode(password);
   expect(rotated.recovery_code).toStartWith("MPLRC1-");
+  expect(await validateRecoveryCode(rotated.recovery_code)).toBe(rotated.recovery_code);
   expect(rotated.recovery_code).not.toBe(enrolled.recovery_code);
 
   await expectStatus(disableRecoveryCode("not-the-password"), 401);

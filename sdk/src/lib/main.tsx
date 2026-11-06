@@ -952,7 +952,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   completePasswordReset: async () => {},
   getRecoveryCodeStatus: async () => ({
     enrolled: false,
-    enrolled_at: null,
+    issued_at: null,
     last_used_at: null,
     use_count: 0
   }),

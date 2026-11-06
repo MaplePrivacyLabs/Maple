@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
-import { RecoveryCodeSettings } from "./RecoveryCodeSettings";
+import { RecoverySettings } from "./RecoverySettings";
 
 export function SecuritySettings() {
   const os = useOpenSecret();
@@ -146,13 +146,13 @@ export function SecuritySettings() {
         )}
       </SettingsSection>
       {loginMethod === "email" && os.auth.user?.user.id && (
-        <fieldset disabled={isLoading} className="min-w-0">
-          <RecoveryCodeSettings
-            key={os.auth.user.user.id}
-            api={os}
-            onLockChange={setRecoveryLocked}
-          />
-        </fieldset>
+        <RecoverySettings
+          key={os.auth.user.user.id}
+          userId={os.auth.user.user.id}
+          disabled={isLoading}
+          api={os}
+          onLockChange={setRecoveryLocked}
+        />
       )}
     </SettingsPage>
   );

@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RecoveryCodeResponse, RecoveryCodeStatus } from "@mapleai/sdk";
+import { normalizeRecoveryCode } from "@mapleai/sdk";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SettingsSection } from "./SettingsPage";
 import { saveRecoveryCode } from "@/services/recoveryCodeExport";
+import { extractRecoveryCode } from "@/services/recoveryCodeInput";
+import { isTauriMobile } from "@/utils/platform";
 
 type RecoveryApi = {
   getRecoveryCodeStatus: () => Promise<RecoveryCodeStatus>;
@@ -19,18 +22,23 @@ type Action = "enable" | "replace" | "disable";
 export function RecoveryCodeSettings({
   api,
   onLockChange,
-  saveCode = saveRecoveryCode
+  saveCode = saveRecoveryCode,
+  mobile = isTauriMobile()
 }: {
   api: RecoveryApi;
   onLockChange: (locked: boolean) => void;
   saveCode?: typeof saveRecoveryCode;
+  mobile?: boolean;
 }) {
   const [status, setStatus] = useState<RecoveryCodeStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<Action | null>(null);
   const [password, setPassword] = useState("");
   const [code, setCode] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [confirmation, setConfirmation] = useState("");
+  const [showConfirmation, setShowConfirmation] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const confirmInFlight = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -100,7 +108,7 @@ export function RecoveryCodeSettings({
         await api.disableRecoveryCode(password);
         if (!alive.current) return;
         ++statusRevision.current;
-        setStatus({ enrolled: false, enrolled_at: null, last_used_at: null, use_count: 0 });
+        setStatus({ enrolled: false, issued_at: null, last_used_at: null, use_count: 0 });
         setNotice("Recovery code disabled. Your previous code no longer works.");
       } else {
         const result = await (action === "enable"
@@ -109,8 +117,9 @@ export function RecoveryCodeSettings({
         if (!alive.current) return;
         ++statusRevision.current;
         setCode(result.recovery_code);
-        setSaved(false);
-        setStatus({ enrolled: true, enrolled_at: null, last_used_at: null, use_count: 0 });
+        setConfirmation("");
+        setShowConfirmation(false);
+        setStatus({ enrolled: true, issued_at: null, last_used_at: null, use_count: 0 });
       }
       setAction(null);
     } catch (failure) {
@@ -147,7 +156,9 @@ export function RecoveryCodeSettings({
       }
     } catch {
       if (alive.current)
-        setError("Couldn't copy the code. Select it and copy it manually, or save a text file.");
+        setError(
+          "Couldn't copy the code. Select it and copy it manually, then store it somewhere safe."
+        );
     }
   }
 
@@ -171,10 +182,36 @@ export function RecoveryCodeSettings({
     }
   }
 
+  async function confirmSavedCode() {
+    if (!code || !confirmation.trim() || saveInFlight.current || confirmInFlight.current) return;
+    confirmInFlight.current = true;
+    setConfirming(true);
+    setError(null);
+    try {
+      const savedCode = await extractRecoveryCode(confirmation);
+      if (!alive.current) return;
+      if (savedCode !== normalizeRecoveryCode(code)) {
+        setError("That code doesn't match. Paste the recovery code you just saved and try again.");
+        return;
+      }
+      setCode(null);
+      setConfirmation("");
+      setShowConfirmation(false);
+      setNotice("Recovery is enabled. Keep your saved code private.");
+      void refresh();
+    } catch {
+      if (alive.current)
+        setError("That code doesn't match. Paste the recovery code you just saved and try again.");
+    } finally {
+      confirmInFlight.current = false;
+      if (alive.current) setConfirming(false);
+    }
+  }
+
   return (
     <SettingsSection
       title={code ? "Save your recovery code" : "Recovery code"}
-      description="Reset your password without losing your encrypted data. Keep your recovery code somewhere safe, such as a password manager."
+      description="Reset your password without losing your encrypted data. Recovery requires your code and access to your account email. Keep the code somewhere safe, such as a password manager."
     >
       <div className="space-y-4">
         {error && (
@@ -211,31 +248,51 @@ export function RecoveryCodeSettings({
               <Button variant="outline" onClick={() => void copyCode()}>
                 Copy code
               </Button>
-              <Button variant="outline" onClick={() => downloadCode()} disabled={saving}>
-                {saving ? "Saving…" : "Save text file"}
+              {!mobile && (
+                <Button
+                  variant="outline"
+                  onClick={() => downloadCode()}
+                  disabled={saving || confirming}
+                >
+                  {saving ? "Saving…" : "Save text file"}
+                </Button>
+              )}
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="recovery-confirmation">Confirm your saved recovery code</Label>
+              <Input
+                id="recovery-confirmation"
+                type={showConfirmation ? "text" : "password"}
+                value={confirmation}
+                disabled={confirming}
+                onChange={(event) => {
+                  setConfirmation(event.target.value);
+                  setError(null);
+                }}
+                autoComplete="off"
+                spellCheck={false}
+                aria-describedby="recovery-confirmation-help"
+              />
+              <p id="recovery-confirmation-help" className="text-sm text-muted-foreground">
+                Paste the code from where you saved it. You can also paste the saved text file's
+                contents.
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                aria-controls="recovery-confirmation"
+                aria-pressed={showConfirmation}
+                onClick={() => setShowConfirmation((value) => !value)}
+              >
+                {showConfirmation ? "Hide saved code" : "Show saved code"}
               </Button>
             </div>
-            <label className="flex items-start gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={saved}
-                onChange={(event) => setSaved(event.target.checked)}
-                className="mt-0.5"
-              />
-              I've saved this recovery code somewhere safe.
-            </label>
             <div className="flex justify-end">
               <Button
-                disabled={!saved || saving}
-                onClick={() => {
-                  if (saveInFlight.current) return;
-                  setCode(null);
-                  setSaved(false);
-                  setNotice("Recovery is enabled. Keep your saved code private.");
-                  void refresh();
-                }}
+                disabled={!confirmation.trim() || saving || confirming}
+                onClick={() => confirmSavedCode()}
               >
-                Done
+                {confirming ? "Checking…" : "Done"}
               </Button>
             </div>
           </>

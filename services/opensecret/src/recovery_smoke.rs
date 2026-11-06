@@ -321,9 +321,7 @@ async fn encrypted_account_flow() {
     let options = "/password-reset/v2/options";
     let completion = "/password-reset/v2/complete";
     let status = client.call("GET", base, None, Some(old_token), 200).await;
-    assert!(
-        status == json!({"enrolled":false,"enrolled_at":null,"last_used_at":null,"use_count":0})
-    );
+    assert!(status == json!({"enrolled":false,"issued_at":null,"last_used_at":null,"use_count":0}));
     for (method, path, body) in [
         ("GET", base, None),
         (

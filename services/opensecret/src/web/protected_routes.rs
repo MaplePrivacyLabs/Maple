@@ -142,7 +142,7 @@ pub struct DisableRecoveryRequest {
 #[derive(Debug, Serialize)]
 pub struct RecoveryStatusResponse {
     pub enrolled: bool,
-    pub enrolled_at: Option<DateTime<Utc>>,
+    pub issued_at: Option<DateTime<Utc>>,
     /// Last successful preserving reset that used the enrolled code. Lets the
     /// owner notice silent use of a long-lived recovery credential.
     pub last_used_at: Option<DateTime<Utc>>,
@@ -1482,7 +1482,7 @@ pub async fn recovery_status(
     })?;
     let response = RecoveryStatusResponse {
         enrolled: status.is_some(),
-        enrolled_at: status.as_ref().map(|wrap| wrap.created_at),
+        issued_at: status.as_ref().map(|wrap| wrap.created_at),
         last_used_at: status.as_ref().and_then(|wrap| wrap.recovery_last_used_at),
         use_count: status.as_ref().map_or(0, |wrap| wrap.recovery_use_count),
     };
@@ -1517,12 +1517,7 @@ pub async fn enroll_recovery(
         return Err(ApiError::Conflict);
     }
 
-    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone()))
-        .await
-        .map_err(|e| {
-            error!("Failed to generate recovery code: {:?}", e);
-            ApiError::InternalServerError
-        })?;
+    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone())).await;
 
     // Seals the wrap over the enrolled seed and verifies it byte-for-byte
     // before any database work. A sealing failure is an enclave-internal
@@ -1576,12 +1571,7 @@ pub async fn rotate_recovery(
         })?
         .ok_or(ApiError::BadRequest)?;
 
-    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone()))
-        .await
-        .map_err(|e| {
-            error!("Failed to generate replacement recovery code: {:?}", e);
-            ApiError::InternalServerError
-        })?;
+    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone())).await;
 
     // Seals and verifies the replacement wrap byte-for-byte before any
     // database work.
