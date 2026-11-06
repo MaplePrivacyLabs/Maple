@@ -41,6 +41,69 @@ async function submit() {
 }
 
 describe("RecoveryCodeSettings", () => {
+  test("waits for a confirmed file save and keeps the code until explicitly acknowledged", async () => {
+    let resolve!: (result: "saved") => void;
+    const saveCode = mock(
+      () =>
+        new Promise<"saved">((done) => {
+          resolve = done;
+        })
+    );
+    await act(async () => {
+      view = create(
+        <RecoveryCodeSettings api={api()} onLockChange={() => {}} saveCode={saveCode} />
+      );
+    });
+    await click("Enable recovery");
+    await enterPassword();
+    await submit();
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = button("Save text file").props.onClick();
+    });
+    expect(saveCode).toHaveBeenCalledWith(code);
+    expect(button("Saving…").props.disabled).toBe(true);
+    expect(text(view.root)).not.toContain("file saved");
+    await act(async () => {
+      view.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } });
+    });
+    expect(button("Done").props.disabled).toBe(true);
+    await act(async () => {
+      resolve("saved");
+      await pending;
+    });
+    expect(text(view.root)).toContain("Recovery code file saved");
+    expect(view.root.findByProps({ id: "recovery-code" }).props.value).toBe(code);
+    expect(button("Done").props.disabled).toBe(false);
+  });
+
+  test("cancel and failed saves retain the code and allow another attempt", async () => {
+    const saveCode = mock(async (): Promise<"cancelled" | "saved"> => "cancelled");
+    await act(async () => {
+      view = create(
+        <RecoveryCodeSettings api={api()} onLockChange={() => {}} saveCode={saveCode} />
+      );
+    });
+    await click("Enable recovery");
+    await enterPassword();
+    await submit();
+    await click("Save text file");
+    expect(text(view.root)).not.toContain("file saved");
+    expect(text(view.root)).not.toContain("Couldn't save a file");
+    expect(button("Done").props.disabled).toBe(true);
+    saveCode.mockImplementation(async () => {
+      throw new Error("private native detail");
+    });
+    await click("Save text file");
+    expect(text(view.root)).toContain("Couldn't save a file");
+    expect(text(view.root)).not.toContain("private native detail");
+    expect(view.root.findByProps({ id: "recovery-code" }).props.value).toBe(code);
+    saveCode.mockImplementation(async () => "saved");
+    await click("Save text file");
+    expect(text(view.root)).toContain("Recovery code file saved");
+    expect(button("Done").props.disabled).toBe(true);
+  });
+
   test("enrolls with password step-up and locks until the code is saved, then forgets it", async () => {
     const service = api();
     const lock = mock<(locked: boolean) => void>(() => {});
