@@ -307,6 +307,13 @@ of failing in the dynamic loader. Package verification scans every ELF file in
 the AppImage and fails when the bundle needs more or less than the declared
 floor, so a nixpkgs bump that moves it must change the constant in the same
 change. Raising it drops the distributions below it for AppImage users.
+The AppImage also bundles what its libraries find only at runtime, which the
+`DT_NEEDED` closure cannot see: `glib-networking`'s TLS module, without which
+every webview HTTPS request fails, and GTK3's compiled GSettings schemas, without
+which a file dialog aborts the process. `AppRun` sets `GIO_MODULE_DIR` to the
+bundled module. The dev shell sets its own, so only package verification can catch
+a gap: `scripts/ci/appimage_gio_runtime.py` loads the extracted AppImage's libraries
+and fails unless they have a TLS backend and the file chooser's schema and template.
 The RPM builder preserves explicit `bundle.linux.rpm.depends` from the Tauri
 configuration. WebKitGTK (`webkit2gtk4.1`) is required on Fedora, including KDE;
 package verification rejects RPMs missing that requirement. Install a downloaded

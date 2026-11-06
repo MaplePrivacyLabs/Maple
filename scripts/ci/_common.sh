@@ -3265,6 +3265,37 @@ linux_runtime_closure_webkitgtk_store_path() {
   return 1
 }
 
+linux_runtime_closure_gio_tls_module() {
+  local store_paths root
+
+  store_paths="$(linux_runtime_closure_store_paths_file)"
+  while IFS= read -r root; do
+    if [ -f "${root}/lib/gio/modules/libgiognutls.so" ]; then
+      printf '%s\n' "${root}/lib/gio/modules/libgiognutls.so"
+      return 0
+    fi
+  done < "${store_paths}"
+
+  return 1
+}
+
+linux_runtime_closure_gtk3_compiled_schemas() {
+  local store_paths root schemas
+
+  store_paths="$(linux_runtime_closure_store_paths_file)"
+  while IFS= read -r root; do
+    [ -e "${root}/lib/libgtk-3.so.0" ] || continue
+    for schemas in "${root}"/share/gsettings-schemas/*/glib-2.0/schemas/gschemas.compiled; do
+      if [ -f "${schemas}" ]; then
+        printf '%s\n' "${schemas}"
+        return 0
+      fi
+    done
+  done < "${store_paths}"
+
+  return 1
+}
+
 linux_runtime_closure_executable_named() {
   local name="$1"
   local store_paths root candidate
@@ -3736,6 +3767,7 @@ export PATH="$this_dir/usr/bin:$this_dir/usr/sbin:$this_dir/usr/games:$this_dir/
 export LD_LIBRARY_PATH="${MAPLE_WEBKIT_LIBRARY_PATH:+${MAPLE_WEBKIT_LIBRARY_PATH}:}$this_dir/usr/lib:$this_dir/usr/lib/i386-linux-gnu:$this_dir/usr/lib/x86_64-linux-gnu:$this_dir/usr/lib32:$this_dir/usr/lib64:$this_dir/lib:$this_dir/lib/i386-linux-gnu:$this_dir/lib/x86_64-linux-gnu:$this_dir/lib32:$this_dir/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="$this_dir/usr/share:${XDG_DATA_DIRS:-/usr/local/share/:/usr/share/}"
 export GSETTINGS_SCHEMA_DIR="$this_dir/usr/share/glib-2.0/schemas${GSETTINGS_SCHEMA_DIR:+:$GSETTINGS_SCHEMA_DIR}"
+export GIO_MODULE_DIR="$this_dir/usr/lib/gio/modules"
 export PYTHONPATH="$this_dir/usr/share/pyshared${PYTHONPATH:+:$PYTHONPATH}"
 export PERLLIB="$this_dir/usr/share/perl5:$this_dir/usr/lib/perl5${PERLLIB:+:$PERLLIB}"
 export QT_PLUGIN_PATH="$this_dir/usr/lib/qt4/plugins:$this_dir/usr/lib/i386-linux-gnu/qt4/plugins:$this_dir/usr/lib/x86_64-linux-gnu/qt4/plugins:$this_dir/usr/lib32/qt4/plugins:$this_dir/usr/lib64/qt4/plugins:$this_dir/usr/lib/qt5/plugins:$this_dir/usr/lib/i386-linux-gnu/qt5/plugins:$this_dir/usr/lib/x86_64-linux-gnu/qt5/plugins:$this_dir/usr/lib32/qt5/plugins:$this_dir/usr/lib64/qt5/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
@@ -3794,6 +3826,36 @@ stage_linux_appdir_webkit_runtime() {
   write_linux_appimage_maple_apprun "${appdir}"
 
   printf 'staged-linux-appimage-webkit-runtime  %s\n' "${webkit_store}"
+}
+
+# GIO loads its TLS backend and GTK reads its file chooser settings at runtime,
+# so nothing in the DT_NEEDED closure pulls either into the AppDir. Stage them
+# before the closure repair, which then bundles the module's own libraries.
+stage_linux_appdir_gio_runtime() {
+  local appdir="$1"
+  local tls_module schemas module_dir schema_dir
+
+  if [ ! -e "${appdir}/usr/lib/libwebkit2gtk-4.1.so.0" ]; then
+    return 0
+  fi
+
+  if ! tls_module="$(linux_runtime_closure_gio_tls_module)"; then
+    echo "AppImage runtime closure has no GIO TLS module (glib-networking)." >&2
+    return 1
+  fi
+  if ! schemas="$(linux_runtime_closure_gtk3_compiled_schemas)"; then
+    echo "AppImage runtime closure has no compiled GTK3 GSettings schemas." >&2
+    return 1
+  fi
+
+  module_dir="${appdir}/usr/lib/gio/modules"
+  schema_dir="${appdir}/usr/share/glib-2.0/schemas"
+  mkdir -p "${module_dir}" "${schema_dir}"
+  cp -L --preserve=mode,timestamps "${tls_module}" "${module_dir}/libgiognutls.so"
+  cp -L --preserve=mode,timestamps "${schemas}" "${schema_dir}/gschemas.compiled"
+  chmod u+w "${module_dir}/libgiognutls.so" "${schema_dir}/gschemas.compiled"
+
+  printf 'staged-linux-appimage-gio-runtime  %s  %s\n' "${tls_module}" "${schemas}"
 }
 
 repair_linux_appdir_runtime_closure() {
@@ -4016,6 +4078,23 @@ verify_linux_appdir_webkit_runtime() {
   return "${status}"
 }
 
+# Load the AppDir's own libraries with AppRun's settings and nothing from the
+# host. Needs the bundle's glibc, which the desktop-linux shell's Python has.
+verify_linux_appdir_gio_runtime() {
+  local appdir="$1"
+
+  if [ ! -e "${appdir}/usr/lib/libwebkit2gtk-4.1.so.0" ]; then
+    return 0
+  fi
+
+  env -u DISPLAY -u WAYLAND_DISPLAY -u GIO_EXTRA_MODULES \
+    LD_LIBRARY_PATH="${appdir}/usr/lib" \
+    GIO_MODULE_DIR="${appdir}/usr/lib/gio/modules" \
+    GSETTINGS_SCHEMA_DIR="${appdir}/usr/share/glib-2.0/schemas" \
+    XDG_DATA_DIRS="${appdir}/usr/share" \
+    "$(python3_runner)" -I "${SCRIPT_DIR}/appimage_gio_runtime.py" "${appdir}"
+}
+
 prepare_linux_appdir_for_appimage() {
   local appdir="$1"
   local exe="${appdir}/usr/bin/maple"
@@ -4026,6 +4105,7 @@ prepare_linux_appdir_for_appimage() {
   fi
 
   stage_linux_appdir_webkit_runtime "${appdir}"
+  stage_linux_appdir_gio_runtime "${appdir}"
   repair_linux_appdir_runtime_closure "${appdir}"
   sanitize_linux_appdir_library_rpaths "${appdir}"
   remove_linux_appdir_nix_xdg_wrappers "${appdir}"
@@ -4158,6 +4238,7 @@ verify_linux_appimage_executable_metadata() {
     verify_linux_appdir_runtime_closure "${tmp}/AppDir" &&
     verify_linux_appdir_portable_runtime_paths "${tmp}/AppDir" &&
     verify_linux_appdir_webkit_runtime "${tmp}/AppDir" &&
+    verify_linux_appdir_gio_runtime "${tmp}/AppDir" &&
     verify_linux_appdir_glibc_floor "${tmp}/AppDir"
   ) || status=$?
   rm -rf "${tmp}"
