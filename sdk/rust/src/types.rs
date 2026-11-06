@@ -605,7 +605,8 @@ impl std::fmt::Debug for RecoveryCodePasswordRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryCodeStatus {
     pub enrolled: bool,
-    pub enrolled_at: Option<DateTime<Utc>>,
+    /// When the current code was issued; replacement starts a new issuance.
+    pub issued_at: Option<DateTime<Utc>>,
     /// Last seed-preserving password reset that used the enrolled code.
     pub last_used_at: Option<DateTime<Utc>>,
     pub use_count: i32,
@@ -1657,17 +1658,17 @@ mod tests {
     fn recovery_status_accepts_unenrolled_and_enrolled_responses() {
         let unenrolled: RecoveryCodeStatus = serde_json::from_value(json!({
             "enrolled": false,
-            "enrolled_at": null,
+            "issued_at": null,
             "last_used_at": null,
             "use_count": 0,
         }))
         .unwrap();
         assert!(!unenrolled.enrolled);
-        assert!(unenrolled.enrolled_at.is_none());
+        assert!(unenrolled.issued_at.is_none());
 
         let enrolled: RecoveryCodeStatus = serde_json::from_value(json!({
             "enrolled": true,
-            "enrolled_at": "2026-11-01T12:00:00Z",
+            "issued_at": "2026-11-01T12:00:00Z",
             "last_used_at": "2026-11-02T08:30:00.123456Z",
             "use_count": 1,
         }))

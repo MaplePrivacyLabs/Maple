@@ -2,8 +2,8 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { RecoveryCodeSettings } from "./RecoveryCodeSettings";
 
-const code = "RECOVERY-CODE-FIXTURE";
-const disabled = { enrolled: false, enrolled_at: null, last_used_at: null, use_count: 0 };
+const code = "MPLRC1-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-39YZ-VTQZ";
+const disabled = { enrolled: false, issued_at: null, last_used_at: null, use_count: 0 };
 function api(enrolled = false) {
   return {
     getRecoveryCodeStatus: mock(async () => ({ ...disabled, enrolled })),
@@ -65,7 +65,9 @@ describe("RecoveryCodeSettings", () => {
     expect(button("Saving…").props.disabled).toBe(true);
     expect(text(view.root)).not.toContain("file saved");
     await act(async () => {
-      view.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } });
+      view.root
+        .findByProps({ id: "recovery-confirmation" })
+        .props.onChange({ target: { value: code } });
     });
     expect(button("Done").props.disabled).toBe(true);
     await act(async () => {
@@ -119,7 +121,9 @@ describe("RecoveryCodeSettings", () => {
     expect(lock.mock.calls.at(-1)).toEqual([true]);
     expect(button("Done").props.disabled).toBe(true);
     await act(async () => {
-      view.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } });
+      view.root
+        .findByProps({ id: "recovery-confirmation" })
+        .props.onChange({ target: { value: code } });
     });
     await click("Done");
     expect(view.root.findAllByProps({ id: "recovery-code" })).toHaveLength(0);
@@ -226,4 +230,58 @@ describe("RecoveryCodeSettings", () => {
     expect(text(view.root)).not.toContain(code);
     expect(lock.mock.calls.at(-1)).toEqual([false]);
   });
+});
+
+test("saved-code confirmation rejects typos and a different valid code without forgetting the issued code", async () => {
+  const lock = mock<(locked: boolean) => void>(() => {});
+  await act(async () => {
+    view = create(<RecoveryCodeSettings api={api()} onLockChange={lock} />);
+  });
+  await click("Enable recovery");
+  await enterPassword();
+  await submit();
+  for (const pasted of [
+    code.slice(0, -1) + "0",
+    "MPLRC1-000G-40R4-0M30-E209-185G-R38E-1W81-24GK-2GAH-C5RR-34D1-P70X-3RFG-948Q-DC7M"
+  ]) {
+    await act(async () => {
+      view.root
+        .findByProps({ id: "recovery-confirmation" })
+        .props.onChange({ target: { value: pasted } });
+    });
+    await click("Done");
+    expect(text(view.root)).toContain("That code doesn't match");
+    expect(view.root.findByProps({ id: "recovery-code" }).props.value).toBe(code);
+    expect(view.root.findByProps({ id: "recovery-confirmation" }).props.value).toBe(pasted);
+    expect(lock.mock.calls.at(-1)).toEqual([true]);
+  }
+  await act(async () => {
+    view.root.findByProps({ id: "recovery-confirmation" }).props.onChange({
+      target: {
+        value: `Maple recovery code\n\n${code.toLowerCase().replace(/0/g, "o")}\n\nKeep this code private.`
+      }
+    });
+  });
+  await click("Show saved code");
+  expect(view.root.findByProps({ id: "recovery-confirmation" }).props.type).toBe("text");
+  await click("Hide saved code");
+  expect(view.root.findByProps({ id: "recovery-confirmation" }).props.type).toBe("password");
+  await click("Done");
+  expect(view.root.findAllByProps({ id: "recovery-code" })).toHaveLength(0);
+  expect(lock.mock.calls.at(-1)).toEqual([false]);
+});
+
+test("mobile apps offer copy and confirmation without the unsupported file-save button", async () => {
+  await act(async () => {
+    view = create(<RecoveryCodeSettings api={api()} onLockChange={() => {}} mobile />);
+  });
+  await click("Enable recovery");
+  await enterPassword();
+  await submit();
+  expect(button("Copy code")).toBeDefined();
+  expect(view.root.findAllByType("button").some((node) => text(node) === "Save text file")).toBe(
+    false
+  );
+  expect(view.root.findByProps({ id: "recovery-confirmation" })).toBeDefined();
+  expect(text(view.root)).toContain("access to your account email");
 });

@@ -857,7 +857,6 @@ pub async fn password_reset_v2_complete(
         CompletePasswordResetMode::Destructive {
             acknowledge_data_loss: false,
         } => {
-            debug_assert!(false, "checked before the proof verification");
             return Err(ApiError::BadRequest);
         }
     };

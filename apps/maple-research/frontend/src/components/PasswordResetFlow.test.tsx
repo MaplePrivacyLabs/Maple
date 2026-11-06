@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { RecoveryCodeFormatError, type PasswordResetCompletion } from "@mapleai/sdk";
 import { PasswordResetFlow } from "./PasswordResetFlow";
@@ -109,7 +109,12 @@ describe("PasswordResetFlow", () => {
     expect(text(view.root)).toContain("Password reset successful");
   });
 
-  for (const pasted of ["garbage", RECOVERY_CODE.replace("39YZ", "39Yſ")]) {
+  for (const pasted of [
+    "garbage",
+    RECOVERY_CODE.replace("39YZ", "39Yſ"),
+    RECOVERY_CODE.slice(0, -1) + "0",
+    RECOVERY_CODE.replace("MPLRC1-0000", "MPLRC1-0001")
+  ]) {
     test("invalid pasted format preserves the verified options and entered text", async () => {
       const api = await mount();
       await verify();
@@ -230,7 +235,7 @@ describe("PasswordResetFlow", () => {
     await passwords();
     await input("reset-confirm-password", "different-password");
     await submit();
-    expect(text(view.root)).toContain("make sure both passwords match");
+    expect(text(view.root)).toContain("Make sure both passwords match");
     expect(api.completePasswordReset).not.toHaveBeenCalled();
   });
 
@@ -302,3 +307,87 @@ for (const pathname of ["/password-reset", "/password-reset/confirm"]) {
     expect(view.root.findAllByType("input")).toHaveLength(0);
   });
 }
+
+test("the recovery code can be shown and hidden without changing the typed value", async () => {
+  await mount();
+  await verify();
+  await input("reset-recovery-code", RECOVERY_CODE);
+  const toggle = (label: string) =>
+    view.root.findAllByType("button").find((node) => text(node) === label)!;
+  expect(view.root.findByProps({ id: "reset-recovery-code" }).props.type).toBe("password");
+  await act(async () => {
+    toggle("Show recovery code").props.onClick();
+  });
+  expect(view.root.findByProps({ id: "reset-recovery-code" }).props.type).toBe("text");
+  expect(view.root.findByProps({ id: "reset-recovery-code" }).props.value).toBe(RECOVERY_CODE);
+  await act(async () => {
+    toggle("Hide recovery code").props.onClick();
+  });
+  expect(view.root.findByProps({ id: "reset-recovery-code" }).props.type).toBe("password");
+});
+
+for (const password of ["a".repeat(7), "é".repeat(65), "😀".repeat(7), "😀".repeat(65)]) {
+  test("out-of-policy passwords keep the verified proof and all inputs for correction", async () => {
+    const api = await mount();
+    await verify();
+    await input("reset-recovery-code", RECOVERY_CODE);
+    await input("reset-new-password", password);
+    await input("reset-confirm-password", password);
+    await submit();
+    expect(text(view.root)).toContain("between 8 and 64 characters");
+    expect(api.completePasswordReset).not.toHaveBeenCalled();
+    expect(view.root.findByProps({ value: "preserve" }).props.checked).toBe(true);
+    expect(view.root.findByProps({ id: "reset-new-password" }).props.value).toBe(password);
+    await passwords();
+    await submit();
+    expect(api.getPasswordResetOptions).toHaveBeenCalledTimes(1);
+    expect(api.completePasswordReset).toHaveBeenCalledTimes(1);
+  });
+}
+for (const password of ["😀".repeat(8), "😀".repeat(64)]) {
+  test("accepts Unicode passwords at the same boundaries as the backend", async () => {
+    const api = await mount();
+    await verify();
+    await input("reset-recovery-code", RECOVERY_CODE);
+    await input("reset-new-password", password);
+    await input("reset-confirm-password", password);
+    await submit();
+    expect(api.completePasswordReset).toHaveBeenCalledTimes(1);
+    expect(text(view.root)).toContain("Password reset successful");
+  });
+}
+
+test("changing the reset request while checksum validation is pending prevents a stale completion", async () => {
+  const checksum = await crypto.subtle.digest(
+    "SHA-256",
+    new Uint8Array([1, ...new Uint8Array(32)])
+  );
+  let resolve!: (value: ArrayBuffer) => void;
+  const digest = spyOn(crypto.subtle, "digest").mockImplementation(
+    () =>
+      new Promise<ArrayBuffer>((done) => {
+        resolve = done;
+      })
+  );
+  try {
+    const api = await mount();
+    await verify();
+    await passwords();
+    await input("reset-recovery-code", RECOVERY_CODE);
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = view.root.findByType("form").props.onSubmit({ preventDefault() {} });
+    });
+    await act(async () => {
+      view.update(<PasswordResetFlow {...props} secret="another-proof-fixture" api={api} />);
+    });
+    await act(async () => {
+      resolve(checksum);
+      await pending;
+    });
+    expect(api.completePasswordReset).not.toHaveBeenCalled();
+    expect(view.root.findByProps({ id: "reset-email-code" }).props.value).toBe("");
+  } finally {
+    digest.mockRestore();
+  }
+});

@@ -1,12 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PasswordResetCompletion, PasswordResetOptions } from "@mapleai/sdk";
-import {
-  RECOVERY_CODE_PREFIX,
-  RECOVERY_CODE_NORMALIZED_LENGTH,
-  RecoveryCodeFormatError,
-  normalizeRecoveryCode,
-  stripRecoveryCodeSeparators
-} from "@mapleai/sdk";
+import { RecoveryCodeFormatError } from "@mapleai/sdk";
+import { extractRecoveryCode } from "@/services/recoveryCodeInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,13 +23,6 @@ type ResetApi = {
   ) => Promise<void>;
 };
 
-function extractRecoveryCode(pasted: string): string {
-  const compact = stripRecoveryCodeSeparators(pasted);
-  const start = compact.search(new RegExp(RECOVERY_CODE_PREFIX, "i"));
-  if (start < 0) throw new RecoveryCodeFormatError();
-  return normalizeRecoveryCode(compact.slice(start, start + RECOVERY_CODE_NORMALIZED_LENGTH));
-}
-
 export function PasswordResetFlow({
   email,
   secret,
@@ -54,6 +42,7 @@ export function PasswordResetFlow({
   const [options, setOptions] = useState<PasswordResetOptions | null>(null);
   const [mode, setMode] = useState<"preserve" | "destructive">("preserve");
   const [recoveryCode, setRecoveryCode] = useState("");
+  const [showRecoveryCode, setShowRecoveryCode] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
@@ -71,6 +60,7 @@ export function PasswordResetFlow({
     setCode("");
     setOptions(null);
     setRecoveryCode("");
+    setShowRecoveryCode(false);
     setNewPassword("");
     setConfirmation("");
     setAcknowledged(false);
@@ -94,8 +84,12 @@ export function PasswordResetFlow({
       setError("Enter the 8-character reset code from your email.");
       return;
     }
-    if (options && (newPassword.length < 8 || newPassword !== confirmation)) {
-      setError("Use at least eight characters and make sure both passwords match.");
+    if (options && ([...newPassword].length < 8 || [...newPassword].length > 64)) {
+      setError("Use between 8 and 64 characters for your new password.");
+      return;
+    }
+    if (options && newPassword !== confirmation) {
+      setError("Make sure both passwords match.");
       return;
     }
     if (
@@ -118,18 +112,16 @@ export function PasswordResetFlow({
         setMode(next.recovery_enrolled ? "preserve" : "destructive");
         setAcknowledged(false);
       } else {
-        await api.completePasswordReset(
-          email,
-          code,
-          secret,
-          newPassword,
+        const completion: PasswordResetCompletion =
           mode === "preserve"
-            ? { mode: "preserve", recoveryCode: extractRecoveryCode(recoveryCode) }
-            : { mode: "destructive", acknowledgeDataLoss: true }
-        );
+            ? { mode: "preserve", recoveryCode: await extractRecoveryCode(recoveryCode) }
+            : { mode: "destructive", acknowledgeDataLoss: true };
+        if (!current()) return;
+        await api.completePasswordReset(email, code, secret, newPassword, completion);
         if (!current()) return;
         setCode("");
         setRecoveryCode("");
+        setShowRecoveryCode(false);
         setNewPassword("");
         setConfirmation("");
         setOptions(null);
@@ -153,6 +145,7 @@ export function PasswordResetFlow({
         setOptions(null);
         setCode("");
         setRecoveryCode("");
+        setShowRecoveryCode(false);
         setNewPassword("");
         setConfirmation("");
         setAcknowledged(false);
@@ -264,6 +257,7 @@ export function PasswordResetFlow({
                         onChange={() => {
                           setMode("destructive");
                           setRecoveryCode("");
+                          setShowRecoveryCode(false);
                           setAcknowledged(false);
                         }}
                         className="mt-1"
@@ -296,13 +290,22 @@ export function PasswordResetFlow({
                         <Label htmlFor="reset-recovery-code">Recovery code</Label>
                         <Input
                           id="reset-recovery-code"
-                          type="password"
+                          type={showRecoveryCode ? "text" : "password"}
                           autoComplete="off"
                           spellCheck={false}
                           value={recoveryCode}
                           onChange={(event) => setRecoveryCode(event.target.value)}
                           required
                         />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          aria-controls="reset-recovery-code"
+                          aria-pressed={showRecoveryCode}
+                          onClick={() => setShowRecoveryCode((value) => !value)}
+                        >
+                          {showRecoveryCode ? "Hide recovery code" : "Show recovery code"}
+                        </Button>
                         <p className="text-sm text-muted-foreground">
                           Use the code you saved in Security settings. An incorrect code can use up
                           this email reset request.
@@ -340,8 +343,11 @@ export function PasswordResetFlow({
                         value={newPassword}
                         onChange={(event) => setNewPassword(event.target.value)}
                         required
-                        minLength={8}
+                        aria-describedby="reset-password-policy"
                       />
+                      <p id="reset-password-policy" className="text-sm text-muted-foreground">
+                        Use 8–64 characters.
+                      </p>
                     </div>
                     <div className="grid gap-2">
                       <Label htmlFor="reset-confirm-password">Confirm new password</Label>
@@ -352,7 +358,6 @@ export function PasswordResetFlow({
                         value={confirmation}
                         onChange={(event) => setConfirmation(event.target.value)}
                         required
-                        minLength={8}
                       />
                     </div>
                   </>

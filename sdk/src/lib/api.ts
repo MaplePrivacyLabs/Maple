@@ -18,7 +18,7 @@ import {
 } from "./transportV2/auth";
 import { transportV2AuthRuntime } from "./transportV2/authRuntime";
 import { snapshotClientApp, type ClientApp } from "./clientApp";
-import { normalizeRecoveryCode } from "./recoveryCode";
+import { validateRecoveryCode } from "./recoveryCode";
 
 let apiUrl = "";
 let apiPcrConfig: PcrConfig = snapshotPcrConfig();
@@ -358,12 +358,12 @@ type PasswordResetProof = {
 type PasswordResetCompletionWire =
   { preserve: { recovery_code: string } } | { destructive: { acknowledge_data_loss: boolean } };
 
-function passwordResetCompletionWire(
+async function passwordResetCompletionWire(
   completion: PasswordResetCompletion
-): PasswordResetCompletionWire {
+): Promise<PasswordResetCompletionWire> {
   switch (completion.mode) {
     case "preserve":
-      return { preserve: { recovery_code: normalizeRecoveryCode(completion.recoveryCode) } };
+      return { preserve: { recovery_code: await validateRecoveryCode(completion.recoveryCode) } };
     case "destructive":
       return { destructive: { acknowledge_data_loss: completion.acknowledgeDataLoss } };
   }
@@ -407,8 +407,8 @@ export async function fetchPasswordResetOptions(
  * A malformed code leaves the request active. The server returns the same
  * generic error for every rejection.
  *
- * Preserving codes are normalized and syntax-checked before sending. Invalid
- * syntax throws RecoveryCodeFormatError locally. Applications must extract
+ * Preserving codes are normalized and checked for syntax, padding and checksum
+ * before sending. Invalid codes throw RecoveryCodeFormatError locally. Applications must extract
  * codes from file contents themselves; the SDK accepts standalone codes only.
  */
 export async function completePasswordReset(
@@ -433,7 +433,7 @@ export async function completePasswordReset(
       client_id
     },
     new_password: newPassword,
-    mode: passwordResetCompletionWire(completion)
+    mode: await passwordResetCompletionWire(completion)
   };
   const response = await encryptedApiCall<typeof completeData, CompletePasswordResetResponse>(
     `${targetApiUrl}/password-reset/v2/complete`,
@@ -454,7 +454,8 @@ export async function completePasswordReset(
 
 export type RecoveryCodeStatus = {
   enrolled: boolean;
-  enrolled_at: string | null;
+  /** When the current code was issued; replacement starts a new issuance. */
+  issued_at: string | null;
   /** Last seed-preserving password reset that used the enrolled code. */
   last_used_at: string | null;
   use_count: number;

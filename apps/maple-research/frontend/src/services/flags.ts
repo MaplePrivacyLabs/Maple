@@ -4,6 +4,7 @@ const DEV_FLAGS_BASE_URL = "https://flags-dev.opensecret.cloud";
 const PROD_FLAGS_BASE_URL = "https://flags.opensecret.cloud";
 
 export const FEATURE_FLAGS = {
+  RECOVERY: "recovery",
   AGENT_MODE: "agent_mode",
   USAGE_PAGE: "usage_page"
 } as const;

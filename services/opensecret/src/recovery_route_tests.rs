@@ -36,6 +36,38 @@ use zeroize::Zeroizing;
 
 const TEST_ROOT_KEY: [u8; 32] = [42u8; 32];
 
+/// Drive each request on its own OS thread: synchronous Diesel calls must be
+/// able to overlap instead of blocking both branches of a single Tokio task.
+fn race<A, B>(first: A, second: B) -> (A::Output, B::Output)
+where
+    A: std::future::Future + Send,
+    B: std::future::Future + Send,
+    A::Output: Send,
+    B::Output: Send,
+{
+    fn run<F: std::future::Future>(
+        future: F,
+        barrier: std::sync::Arc<std::sync::Barrier>,
+    ) -> F::Output {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("race worker runtime should start");
+        barrier.wait();
+        runtime.block_on(future)
+    }
+    std::thread::scope(|scope| {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let first_barrier = barrier.clone();
+        let first = scope.spawn(move || run(first, first_barrier));
+        let second = scope.spawn(move || run(second, barrier));
+        (
+            first.join().expect("first race worker should finish"),
+            second.join().expect("second race worker should finish"),
+        )
+    })
+}
+
 fn test_credential(label: &str) -> &'static str {
     Box::leak(format!("recovery-route-test-{label}").into_boxed_str())
 }
@@ -216,7 +248,7 @@ async fn recovery_status_reports_enrollment_state_for_a_password_user() {
     let body = response_json(before).await;
     assert_eq!(
         body,
-        json!({ "enrolled": false, "enrolled_at": null, "last_used_at": null, "use_count": 0 })
+        json!({ "enrolled": false, "issued_at": null, "last_used_at": null, "use_count": 0 })
     );
 
     let enroll = enroll_request(app.clone(), fixture.password, token.clone()).await;
@@ -230,7 +262,7 @@ async fn recovery_status_reports_enrollment_state_for_a_password_user() {
     assert_eq!(after.status(), StatusCode::OK);
     let body = response_json(after).await;
     assert_eq!(body["enrolled"], json!(true));
-    assert!(body["enrolled_at"].as_str().is_some());
+    assert!(body["issued_at"].as_str().is_some());
 
     let _ = app_state.db.delete_user(&fixture.user);
 }
@@ -1407,9 +1439,7 @@ async fn enroll_recovery_over_authenticated_seed(
     let seed = app_state
         .decrypt_seed_for_auth_context(user, auth_context)
         .expect("authenticated seed should open before enrollment");
-    let code = RecoveryCode::generate(None)
-        .await
-        .expect("recovery code should generate");
+    let code = RecoveryCode::generate(None).await;
     let wrapping = new_recovery_seed_wrapping(&TEST_ROOT_KEY, user, &code, &seed)
         .expect("enrollment wrap should seal");
     app_state
@@ -1903,11 +1933,7 @@ async fn password_reset_v2_well_formed_wrong_code_consumes_only_the_selected_req
 
     // A well-formed code with a valid checksum that is simply wrong fails
     // AEAD and consumes exactly the selected request.
-    let wrong_code = RecoveryCode::generate(None)
-        .await
-        .expect("a well-formed but wrong code should generate")
-        .display()
-        .to_string();
+    let wrong_code = RecoveryCode::generate(None).await.display().to_string();
     let wrong = complete_request(
         app,
         complete_body(&proof, new_password, preserve_mode(&wrong_code)),
@@ -1966,19 +1992,15 @@ async fn password_reset_v2_correct_completion_racing_a_failed_attempt_has_one_wi
     let proof = proof_fixture(&fixture.email, "PEEEEEE1", secret, project.client_id);
     let new_password = "recovery-race-attempt-password";
 
-    let wrong_code = RecoveryCode::generate(None)
-        .await
-        .expect("a well-formed but wrong code should generate")
-        .display()
-        .to_string();
-    let (correct, wrong) = tokio::join!(
+    let wrong_code = RecoveryCode::generate(None).await.display().to_string();
+    let (correct, wrong) = race(
         complete_request(
             app.clone(),
-            complete_body(&proof, new_password, preserve_mode(&code_display))
+            complete_body(&proof, new_password, preserve_mode(&code_display)),
         ),
         complete_request(
             app,
-            complete_body(&proof, new_password, preserve_mode(&wrong_code))
+            complete_body(&proof, new_password, preserve_mode(&wrong_code)),
         ),
     );
 
@@ -2146,14 +2168,14 @@ async fn password_reset_v2_concurrent_destructive_completions_have_exactly_one_w
     let proof = proof_fixture(&fixture.email, "PIIIIII1", secret, project.client_id);
     let new_password = "recovery-destructive-race-password";
 
-    let (first, second) = tokio::join!(
+    let (first, second) = race(
         complete_request(
             app.clone(),
-            complete_body(&proof, new_password, destructive_mode(true))
+            complete_body(&proof, new_password, destructive_mode(true)),
         ),
         complete_request(
             app,
-            complete_body(&proof, new_password, destructive_mode(true))
+            complete_body(&proof, new_password, destructive_mode(true)),
         ),
     );
 
@@ -2265,10 +2287,10 @@ async fn password_reset_v2_preserving_reset_races_safely_with_password_change() 
     let proof = proof_fixture(&fixture.email, "PKKKKKK1", secret, project.client_id);
     let new_password = "recovery-race-change-password";
 
-    let (complete_res, change_res) = tokio::join!(
+    let (complete_res, change_res) = race(
         complete_request(
             app,
-            complete_body(&proof, new_password, preserve_mode(&code_display))
+            complete_body(&proof, new_password, preserve_mode(&code_display)),
         ),
         app_state.update_user_password_and_seed_wrap(
             &fixture.user,
@@ -2372,10 +2394,10 @@ async fn password_reset_v2_preserving_reset_races_safely_with_rotation() {
     let proof = proof_fixture(&fixture.email, "PLLLLLL1", secret, project.client_id);
     let new_password = "recovery-race-rotate-password";
 
-    let (complete_res, rotate_res) = tokio::join!(
+    let (complete_res, rotate_res) = race(
         complete_request(
             app,
-            complete_body(&proof, new_password, preserve_mode(&code_display))
+            complete_body(&proof, new_password, preserve_mode(&code_display)),
         ),
         send(
             recovery_app,
@@ -2471,10 +2493,10 @@ async fn password_reset_v2_preserving_reset_races_safely_with_disablement() {
     let proof = proof_fixture(&fixture.email, "PMMMMMM1", secret, project.client_id);
     let new_password = "recovery-race-disable-password";
 
-    let (complete_res, disable_res) = tokio::join!(
+    let (complete_res, disable_res) = race(
         complete_request(
             app,
-            complete_body(&proof, new_password, preserve_mode(&code_display))
+            complete_body(&proof, new_password, preserve_mode(&code_display)),
         ),
         send(
             recovery_app,
