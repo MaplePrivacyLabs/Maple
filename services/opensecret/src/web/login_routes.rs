@@ -1,4 +1,5 @@
 use crate::transport_v2::envelope::{Credential, CredentialKind};
+use crate::web::password_policy::validate_password;
 use crate::User;
 use crate::{
     db::DBError,
@@ -301,6 +302,10 @@ pub async fn register(
     Decrypted(creds): Decrypted<RegisterCredentials>,
     Extension(session_id): Extension<TransportSession>,
 ) -> Result<Response, ApiError> {
+    // Reject policy-violating passwords before any database or seed-wrap
+    // effect; registration is otherwise one-shot per email.
+    validate_password(&creds.password)?;
+
     let user = match data.register_user(creds.clone()).await {
         Ok(user) => user,
         Err(Error::UserAlreadyExists) => {
@@ -519,6 +524,10 @@ pub async fn password_reset_confirm(
     Decrypted(payload): Decrypted<PasswordResetConfirmPayload>,
     Extension(session_id): Extension<TransportSession>,
 ) -> Result<Response, ApiError> {
+    // Reject policy-violating passwords before any project, user, or
+    // reset-request lookup or the destructive one-shot reset effect.
+    validate_password(&payload.new_password)?;
+
     // Get project by client_id
     let project = data
         .db

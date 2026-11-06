@@ -115,6 +115,8 @@ mod model_config;
 mod models;
 mod oauth;
 mod os_flags;
+#[cfg(test)]
+mod password_policy_route_tests;
 mod private_key;
 #[allow(dead_code)] // Used by the dormant Transport V2 core in this stack layer.
 mod provider_cache;
@@ -474,6 +476,18 @@ pub enum ApiError {
 
     #[error("This environment is limited to internal accounts")]
     InternalAccountRequired,
+
+    #[error(
+        "Password must be at least {} characters",
+        web::password_policy::MIN_PASSWORD_CHARS
+    )]
+    PasswordTooShort,
+
+    #[error(
+        "Password must not exceed {} characters",
+        web::password_policy::MAX_PASSWORD_CHARS
+    )]
+    PasswordTooLong,
 }
 
 impl ApiError {
@@ -506,6 +520,8 @@ impl IntoResponse for ApiError {
             ApiError::SystemOneRequest(error) => error.status(),
             ApiError::UnsupportedReasoningEffort(_) => StatusCode::BAD_REQUEST,
             ApiError::BadRequest => StatusCode::BAD_REQUEST,
+            ApiError::PasswordTooShort => StatusCode::BAD_REQUEST,
+            ApiError::PasswordTooLong => StatusCode::BAD_REQUEST,
             ApiError::SessionNotFound => StatusCode::BAD_REQUEST,
             ApiError::Conflict => StatusCode::CONFLICT,
             ApiError::InvalidInviteCode => StatusCode::UNAUTHORIZED,

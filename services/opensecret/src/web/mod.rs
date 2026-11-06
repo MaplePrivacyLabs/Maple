@@ -9,6 +9,7 @@ mod native_handoff_routes;
 mod oauth_routes;
 mod openai;
 pub mod openai_auth;
+pub(crate) mod password_policy;
 pub mod platform;
 pub mod protected_routes;
 pub mod provider_error;
