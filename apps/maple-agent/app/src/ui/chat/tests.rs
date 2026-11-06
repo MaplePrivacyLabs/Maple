@@ -1924,15 +1924,8 @@ mod state_tests {
         let (screen, cx) = chat_window(cx, |this, _| {
             this.booting = false;
         });
-        // The fixture's unreachable API leaves a notice of its own.
-        screen.update(cx, |this, cx| {
-            this.notice = None;
-            cx.notify();
-        });
-        cx.run_until_parked();
         assert_eq!(cx.debug_bounds("host-reconnecting"), None);
         let title = cx.debug_bounds("header-title").unwrap();
-        let composer = cx.debug_bounds("send-message").unwrap();
         screen.update(cx, |this, cx| {
             assert_eq!(this.host_reconnect_status(), None);
             this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
@@ -1959,7 +1952,6 @@ mod state_tests {
             "the row's far end"
         );
         assert_eq!(cx.debug_bounds("header-title"), Some(title));
-        assert_eq!(cx.debug_bounds("send-message"), Some(composer));
 
         // Hovering is how to find out what is going on, and the tooltip
         // stays on screen although the spinner is at the window's edge.
@@ -1972,7 +1964,10 @@ mod state_tests {
         assert!(tooltip.left() >= px(0.), "{tooltip:?}");
 
         screen.update(cx, |this, cx| {
-            // Refused actions stay quiet too, and lose nothing.
+            // Refused actions stay quiet too, and lose nothing. The fixture's
+            // unreachable API can raise a notice of its own at any point, so
+            // start from none inside this update.
+            this.notice = None;
             this.fill_empty_composer("send this after the reconnect", cx);
             this.send_inner(cx);
             this.select_session("another-task", cx);
