@@ -247,17 +247,28 @@ impl ActiveContext {
         let Some(budget) = input_budget else {
             return Ok(result);
         };
-        // The sliding window reads only these rows, so its first user message and
-        // its budget are measured within them. Current-turn rows are not history.
-        archive(
-            0..current.saturating_sub(ACTIVE_WINDOW_ROWS),
-            &mut result.archived,
-        );
-
         let groups = atomic_groups(snapshot);
         let history = checkpoint.as_ref().and_then(|value| value.history.as_ref());
         let old_active = previous_active(snapshot, checkpoint);
         let units = window_units(snapshot, checkpoint, &groups, current);
+        let required_from = units.last().map_or(0, |unit| unit.end + 1);
+        // The sliding window reads only these rows, so its first user message and
+        // its budget are measured within them. Current-turn rows are not history.
+        // Cut between units: half an exchange can neither be sent nor covered.
+        let first_row = current.saturating_sub(ACTIVE_WINDOW_ROWS);
+        let window_start =
+            units
+                .iter()
+                .find(|unit| unit.end >= first_row)
+                .map_or(required_from, |unit| {
+                    if unit.start < first_row {
+                        unit.end + 1
+                    } else {
+                        unit.start
+                    }
+                });
+        archive(0..window_start, &mut result.archived);
+
         let tokens_of = |unit: &WindowUnit, archived: &HashSet<ContextItemKey>| {
             let raw = items[unit.start..=unit.end]
                 .iter()
@@ -269,7 +280,6 @@ impl ActiveContext {
                 _ => raw,
             }
         };
-        let required_from = units.last().map_or(0, |unit| unit.end + 1);
         let mut required = items[required_from..]
             .iter()
             .filter(|item| !covered.contains(&item.key))
@@ -2549,6 +2559,88 @@ mod tests {
         let active = ActiveContext::select(&snapshot, &None, Some(500)).unwrap();
         assert!(active.is_archived(&key(ContextItemKind::Assistant, 3)));
         assert!(super::project(&snapshot, &None, &active).is_ok());
+    }
+
+    /// Rows of ordinary turns, so the 1,000-row cut lands where a test places it.
+    fn filler_rows(first_id: u128, rows: u128) -> Vec<ContextItem> {
+        (0..rows)
+            .map(|index| {
+                let kind = if index % 2 == 0 {
+                    ContextItemKind::User
+                } else {
+                    ContextItemKind::Assistant
+                };
+                item(kind, first_id + index, 10)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn row_cutoff_keeps_a_tool_exchange_whole_rather_than_orphan_its_result() {
+        let mut items = vec![item(ContextItemKind::User, 10, 10)];
+        items.extend(tool_pair(11, 12, 10));
+        items.extend(filler_rows(100, 999));
+        items.push(item(ContextItemKind::User, 5, 10));
+        let snapshot = snapshot(items, 5);
+        // 1,002 history rows put the cut between the call and its result, and
+        // the budget fits, so nothing but the row limit acts on this window.
+        let active = ActiveContext::select(&snapshot, &None, Some(100_000)).unwrap();
+        assert!(!active.is_truncated());
+        assert!(active.is_archived(&key(ContextItemKind::ToolCall, 11)));
+        assert!(active.is_archived(&key(ContextItemKind::ToolOutput, 12)));
+        assert_eq!(active.archived_items(), 3);
+
+        let (messages, _) = super::project(&snapshot, &None, &active).unwrap();
+        let mut calls = HashSet::new();
+        for message in &messages {
+            for call in message["tool_calls"].as_array().into_iter().flatten() {
+                calls.insert(call["id"].as_str().unwrap().to_owned());
+            }
+            if message["role"] == "tool" {
+                assert!(calls.contains(message["tool_call_id"].as_str().unwrap()));
+            }
+        }
+    }
+
+    #[test]
+    fn row_cutoff_between_reasoning_and_its_answer_leaves_a_publishable_checkpoint() {
+        let mut items = vec![
+            item(ContextItemKind::User, 10, 10),
+            item(ContextItemKind::Reasoning, 11, 0),
+            item(ContextItemKind::Assistant, 12, 10),
+        ];
+        items.extend(filler_rows(100, 999));
+        items.push(item(ContextItemKind::User, 5, 10));
+        let snapshot = snapshot(items, 5);
+        let budget = Some(100_000);
+        let active = ActiveContext::select(&snapshot, &None, budget).unwrap();
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        policy.summary_input_budget = 1_000_000;
+        let planned = super::plan(&snapshot, &None, &active, &policy, true).unwrap();
+        let next = Some(complete_plan(&None, &planned, &["memory".into()]).unwrap());
+        // A checkpoint covering half of this group would be rejected here, on
+        // the path that runs after the helper has already been paid for.
+        let reloaded = ActiveContext::select(&snapshot, &next, budget).unwrap();
+        assert!(super::estimate_tokens(&snapshot, &next, &reloaded).is_ok());
+        assert!(reloaded.is_archived(&key(ContextItemKind::Reasoning, 11)));
+        assert!(reloaded.is_archived(&key(ContextItemKind::Assistant, 12)));
+    }
+
+    #[test]
+    fn row_cutoff_never_reaches_into_a_pending_exchange_around_the_current_input() {
+        let mut items = vec![item(ContextItemKind::User, 10, 10)];
+        let mut pair = tool_pair(11, 12, 10);
+        let output = pair.pop().unwrap();
+        items.append(&mut pair);
+        items.extend(filler_rows(100, 1_000));
+        items.push(item(ContextItemKind::User, 5, 10));
+        items.push(output);
+        let snapshot = snapshot(items, 5);
+        let active = ActiveContext::select(&snapshot, &None, Some(100_000)).unwrap();
+        assert!(!active.is_archived(&snapshot.current_user));
+        assert!(!active.is_archived(&key(ContextItemKind::ToolCall, 11)));
+        assert!(!active.is_archived(&key(ContextItemKind::ToolOutput, 12)));
     }
 
     #[test]
