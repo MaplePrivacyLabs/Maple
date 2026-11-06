@@ -288,7 +288,9 @@ mod tests {
         ModelPlan, AUTO_POWERFUL_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
         GLM_5_3_MODEL_ID,
     };
-    use crate::provider_registry::{ProviderId, DUAL_INSTANCE_TEST_REGISTRY, PROVIDER_REGISTRY};
+    use crate::provider_registry::{
+        ProviderId, DUAL_INSTANCE_TEST_REGISTRY, PROVIDER_REGISTRY, STOCK_REPLICA_TEST_REGISTRY,
+    };
     use uuid::Uuid;
 
     fn intent(requested_model: &str, public_model: &str) -> InferenceIntent {
@@ -640,7 +642,7 @@ mod tests {
                 workload,
             );
             let weighted = plan_completion_route(
-                &PROVIDER_REGISTRY,
+                &STOCK_REPLICA_TEST_REGISTRY,
                 RoutePlanningInput {
                     intent: &intent,
                     configured_providers: ConfiguredProviders::all(),
@@ -668,7 +670,7 @@ mod tests {
             assert_eq!(weighted.policy_version, MAPLE_ROUTING_POLICY_VERSION);
 
             let remembered_shared = plan_completion_route(
-                &PROVIDER_REGISTRY,
+                &STOCK_REPLICA_TEST_REGISTRY,
                 RoutePlanningInput {
                     intent: &intent,
                     configured_providers: ConfiguredProviders::all(),
@@ -696,10 +698,10 @@ mod tests {
                 configured_providers: ConfiguredProviders::all(),
                 remembered_provider: None,
             };
-            let plan = plan_completion_route(&PROVIDER_REGISTRY, input).unwrap();
+            let plan = plan_completion_route(&STOCK_REPLICA_TEST_REGISTRY, input).unwrap();
             assert_eq!(
                 plan,
-                plan_completion_route(&PROVIDER_REGISTRY, input).unwrap()
+                plan_completion_route(&STOCK_REPLICA_TEST_REGISTRY, input).unwrap()
             );
             let index = usize::from(bucket >= 1);
             counts[index] += 1;
@@ -714,7 +716,6 @@ mod tests {
     #[test]
     fn drained_i02_cannot_be_restored_by_configuration_or_sticky_memory() {
         let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        let i01 = ProviderId::Maple(MapleInstanceId::I01);
         let i02 = ProviderId::Maple(MapleInstanceId::I02);
         let configured = ConfiguredProviders::all();
         let plan = plan_completion_route(
@@ -726,7 +727,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(plan.selected.provider, i01);
+        assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
         assert_eq!(
             plan.selected.selection_source,
             RouteSelectionSource::StaticSplit
@@ -785,7 +786,7 @@ mod tests {
     fn unavailable_maple_routes_leave_the_same_shared_model_eligible() {
         let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let plan = plan_completion_route(
-            &PROVIDER_REGISTRY,
+            &STOCK_REPLICA_TEST_REGISTRY,
             RoutePlanningInput {
                 intent: &request,
                 configured_providers: ConfiguredProviders::none()

@@ -11,7 +11,7 @@ use crate::model_config::{
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v7";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v8";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
 /// routing; customer pricing and accounting continue to use the Maple family.
@@ -236,13 +236,22 @@ const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-// Provider multipliers allocate 1% of fresh stock DeepSeek account buckets to
-// shared Tinfoil and 99% to dedicated i01: 70 * 10 : 100 * 693. The Tinfoil
-// share keeps live traffic and probes on that route so its health and circuit
-// state stay current for fallback. i02 remains reserved for its distinct
-// model. Eligible sticky routes and health gates retain their normal
-// precedence over this initial allocation.
-const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
+// Stock remains on the same public model while i01 is prepared for a different
+// measured model. Removing its route excludes even a healthy remembered i01;
+// client readiness alone never authorizes a guest for this model.
+const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Tinfoil,
+    provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    weight: 10,
+    enabled: true,
+}];
+
+// Preserve coverage of the normal shared/dedicated split independently of the
+// production maintenance topology. Provider multipliers allocate 1% shared and
+// 99% dedicated: 70 * 10 : 100 * 693.
+#[cfg(test)]
+const STOCK_REPLICA_TEST_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Tinfoil,
         provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -259,6 +268,16 @@ const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
     },
 ];
 
+#[cfg(test)]
+pub(crate) static STOCK_REPLICA_TEST_REGISTRY: ProviderRegistry = ProviderRegistry {
+    providers: PROVIDERS,
+    completion_models: &[
+        completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, STOCK_REPLICA_TEST_ROUTES),
+        completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
+    ],
+    decision_models: &[],
+};
+
 // A distinct checkpoint has a distinct identity at every boundary. Stock
 // DeepSeek providers are not fallbacks for the uncensored model.
 const DEEPSEEK_V4_1_FLASH_UNCENSORED_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
@@ -268,6 +287,35 @@ const DEEPSEEK_V4_1_FLASH_UNCENSORED_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpe
     weight: 100,
     enabled: true,
 }];
+
+// Exercise the next model-to-guest mapping without activating it. The backend
+// can install its final routes while the stock guest's verifier is still
+// unready; its existing readiness gate controls subsequent admission.
+#[cfg(test)]
+const ROLE_SWAP_TEST_STOCK_ROUTES: &[ModelRouteSpec] = &[
+    STOCK_REPLICA_TEST_ROUTES[0],
+    ModelRouteSpec {
+        provider: ProviderId::Maple(MapleInstanceId::I02),
+        ..STOCK_REPLICA_TEST_ROUTES[1]
+    },
+];
+#[cfg(test)]
+const ROLE_SWAP_TEST_UNCENSORED_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Maple(MapleInstanceId::I01),
+    ..DEEPSEEK_V4_1_FLASH_UNCENSORED_ROUTES[0]
+}];
+#[cfg(test)]
+pub(crate) static ROLE_SWAP_TEST_REGISTRY: ProviderRegistry = ProviderRegistry {
+    providers: PROVIDERS,
+    completion_models: &[
+        completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, ROLE_SWAP_TEST_STOCK_ROUTES),
+        completion_model(
+            DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+            ROLE_SWAP_TEST_UNCENSORED_ROUTES,
+        ),
+    ],
+    decision_models: &[],
+};
 
 // A test-only route table proves that Router V2 still supports two independent
 // Maple replicas of the same public model after i02 leaves the production route.
@@ -578,12 +626,6 @@ mod tests {
                     DEEPSEEK_V4_1_FLASH_MODEL_ID
                 ),
                 (
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                    ProviderId::Maple(MapleInstanceId::I01),
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID
-                ),
-                (
                     DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
                     ProviderId::Maple(MapleInstanceId::I02),
                     DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
@@ -617,18 +659,18 @@ mod tests {
     }
 
     #[test]
-    fn stock_deepseek_has_shared_and_i01_routes_under_one_public_identity() {
+    fn stock_deepseek_has_only_shared_route_while_i01_changes_models() {
         let model = PROVIDER_REGISTRY
             .completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID)
             .expect("canonical DeepSeek model");
-        assert_eq!(model.routes.len(), 2);
+        assert_eq!(model.routes.len(), 1);
         assert_eq!(
             model
                 .routes
                 .iter()
                 .map(|route| route.provider)
                 .collect::<Vec<_>>(),
-            [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)]
+            [ProviderId::Tinfoil]
         );
         assert_eq!(
             model
@@ -636,7 +678,7 @@ mod tests {
                 .iter()
                 .map(|route| route.weight)
                 .collect::<Vec<_>>(),
-            [10, 693]
+            [10]
         );
         for route in model.routes {
             assert_eq!(route.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
