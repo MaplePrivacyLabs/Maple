@@ -687,8 +687,8 @@ mod tests {
     }
 
     #[test]
-    fn stock_deepseek_allocates_one_shared_and_ninety_nine_i01_account_buckets() {
-        let providers = [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)];
+    fn stock_deepseek_allocates_one_shared_and_ninety_nine_i02_account_buckets() {
+        let providers = [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I02)];
         let mut counts = [0; 2];
         for bucket in 0..100u8 {
             let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -698,10 +698,10 @@ mod tests {
                 configured_providers: ConfiguredProviders::all(),
                 remembered_provider: None,
             };
-            let plan = plan_completion_route(&STOCK_REPLICA_TEST_REGISTRY, input).unwrap();
+            let plan = plan_completion_route(&PROVIDER_REGISTRY, input).unwrap();
             assert_eq!(
                 plan,
-                plan_completion_route(&STOCK_REPLICA_TEST_REGISTRY, input).unwrap()
+                plan_completion_route(&PROVIDER_REGISTRY, input).unwrap()
             );
             let index = usize::from(bucket >= 1);
             counts[index] += 1;
@@ -714,20 +714,23 @@ mod tests {
     }
 
     #[test]
-    fn drained_i02_cannot_be_restored_by_configuration_or_sticky_memory() {
+    fn drained_i01_cannot_be_restored_by_configuration_or_sticky_memory() {
         let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        let i02 = ProviderId::Maple(MapleInstanceId::I02);
+        let i01 = ProviderId::Maple(MapleInstanceId::I01);
         let configured = ConfiguredProviders::all();
         let plan = plan_completion_route(
             &PROVIDER_REGISTRY,
             RoutePlanningInput {
                 intent: &request,
                 configured_providers: configured,
-                remembered_provider: Some(i02),
+                remembered_provider: Some(i01),
             },
         )
         .unwrap();
-        assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
+        assert_eq!(
+            plan.selected.provider,
+            ProviderId::Maple(MapleInstanceId::I02)
+        );
         assert_eq!(
             plan.selected.selection_source,
             RouteSelectionSource::StaticSplit
@@ -735,16 +738,16 @@ mod tests {
         assert!(plan
             .eligible_routes
             .iter()
-            .all(|route| route.provider != i02));
+            .all(|route| route.provider != i01));
 
-        let only_i02 = ConfiguredProviders::none().with_provider(i02);
+        let only_i01 = ConfiguredProviders::none().with_provider(i01);
         assert_eq!(
             plan_completion_route(
                 &PROVIDER_REGISTRY,
                 RoutePlanningInput {
                     intent: &request,
-                    configured_providers: only_i02,
-                    remembered_provider: Some(i02),
+                    configured_providers: only_i01,
+                    remembered_provider: Some(i01),
                 }
             )
             .unwrap_err(),

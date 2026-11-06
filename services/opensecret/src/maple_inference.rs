@@ -115,7 +115,7 @@ struct ReleasePin {
 // artifact. A staged i02 update must never broaden i01's attestation policy.
 // These identify the published artifact and full multiplatform measurement,
 // not a cached live quote. Remove retired entries after rollout completes.
-// Prepared for the next uncensored guest; it has no customer route yet.
+// i01 serves the uncensored model; i02 independently serves stock DeepSeek.
 const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
     repo: "MaplePrivacyLabs/inference-deepseek-uncensored",
     tag: "v0.1.0+b300",
@@ -127,16 +127,16 @@ const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
     ],
 };
 
-// Qualified independently through the official CLI and the pinned Rust SDK.
-// Stock i02 measurements are deliberately absent from this model's policy.
+// Only the new stock release is approved. The former uncensored i02 release
+// must not become eligible through this guest's stock route.
 const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
-    repo: "MaplePrivacyLabs/inference-deepseek-uncensored",
-    tag: "v0.1.0-rc.1+b300",
-    digest: "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4",
+    repo: "MaplePrivacyLabs/inference-deepseek",
+    tag: "v0.1.2",
+    digest: "4bc5f2119cb55e125c9cc5c57e3fe120df98f8145dc675c8d201ac01882989ec",
     registers: &[
-        "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
-        "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
-        "a47f4e2707c76f799513b5ca277982d1988891bf486867ad1de56ef028e29a8e54f37c4bbf9fa70cab6ca9f1683acef7",
+        "3f35fb1e92c599564e85e2b9adae8778bf8a9f553a8c936132301f09d4aa31a4a505b1c8f96cef407c53f4df67d23030",
+        "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
+        "ce37a33da28a5dd43d0d1469903adf8e2589d4ff61f3277ff5796bb5485ba413eac27aee572e0973bde858621a71783b",
     ],
 };
 
@@ -379,30 +379,27 @@ mod tests {
     }
 
     #[test]
-    fn uncensored_guest_approves_only_its_qualified_release() {
+    fn stock_i02_approves_only_its_new_release() {
         let approved = approved_releases(endpoint(MapleInstanceId::I02));
         assert_eq!(approved.len(), 1);
         let release = &approved[0];
-        assert_eq!(
-            release.release.repo,
-            "MaplePrivacyLabs/inference-deepseek-uncensored"
-        );
-        assert_eq!(release.release.tag, "v0.1.0-rc.1+b300");
+        assert_eq!(release.release.repo, "MaplePrivacyLabs/inference-deepseek");
+        assert_eq!(release.release.tag, "v0.1.2");
         assert_eq!(
             release.release.digest,
-            "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4"
+            "4bc5f2119cb55e125c9cc5c57e3fe120df98f8145dc675c8d201ac01882989ec"
         );
         assert_eq!(
             release.measurement.type_,
             PredicateType::SnpTdxMultiPlatformV1
         );
         assert_eq!(release.measurement.registers, [
-            "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
-            "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
-            "a47f4e2707c76f799513b5ca277982d1988891bf486867ad1de56ef028e29a8e54f37c4bbf9fa70cab6ca9f1683acef7",
+            "3f35fb1e92c599564e85e2b9adae8778bf8a9f553a8c936132301f09d4aa31a4a505b1c8f96cef407c53f4df67d23030",
+            "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
+            "ce37a33da28a5dd43d0d1469903adf8e2589d4ff61f3277ff5796bb5485ba413eac27aee572e0973bde858621a71783b",
         ]);
         assert!(approved.iter().all(|release| {
-            release.release.tag != I01_CURRENT_RELEASE.tag
+            release.release.repo != I01_CURRENT_RELEASE.repo
                 && release.release.digest != I01_CURRENT_RELEASE.digest
                 && release.measurement.registers[0] != I01_CURRENT_RELEASE.registers[0]
         }));
@@ -411,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_i01_policy_is_new_uncensored_only_and_never_authorizes_stock() {
+    fn uncensored_i01_approves_only_its_new_release() {
         let prepared = approved_releases(endpoint(MapleInstanceId::I01));
         assert_eq!(prepared.len(), 1);
         assert_eq!(
@@ -420,25 +417,44 @@ mod tests {
         );
         assert_eq!(prepared[0].release.tag, "v0.1.0+b300");
         assert_eq!(
+            prepared[0].release.digest,
+            "6a8e906bc31caaccf5b6bbe84dec99c7213ec1d77aa360df464d531744590ac2"
+        );
+        assert_eq!(
             prepared[0].measurement.type_,
             PredicateType::SnpTdxMultiPlatformV1
         );
-        assert_eq!(prepared[0].measurement.registers.len(), 3);
-        // Neither the existing old uncensored guest nor the former stock guest
-        // can satisfy this endpoint's new, exclusive release policy.
+        assert_eq!(prepared[0].measurement.registers, [
+            "9e01436661dff4702b622a51a7bbcb83ce0a61d0c2bdc2de5a2492fc1dec70bb1997df829147a154e11fdfc6dbe044fe",
+            "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
+            "898884507ffe6bb1d51aa3bf548d8748043aa8e2018d545424c312e7a39109d75f30760f0d4124ae2cf5c89cf07db8dd",
+        ]);
+        assert_ne!(prepared[0].release.repo, I02_CURRENT_RELEASE.repo);
         assert_ne!(prepared[0].release.digest, I02_CURRENT_RELEASE.digest);
         assert_ne!(
             prepared[0].measurement.registers[0],
             I02_CURRENT_RELEASE.registers[0]
         );
+    }
+
+    #[test]
+    fn retired_guest_roles_are_not_approved_on_either_endpoint() {
         for instance in MapleInstanceId::ALL {
+            assert!(endpoint(instance).staged_releases.is_empty());
             for approved in approved_releases(endpoint(instance)) {
-                assert_ne!(approved.release.repo, "MaplePrivacyLabs/inference-deepseek");
-                assert_ne!(
-                    approved.release.digest,
-                    "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be"
-                );
-                assert_ne!(approved.measurement.registers[0], "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365");
+                for (retired_digest, retired_snp) in [
+                    (
+                        "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be",
+                        "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365",
+                    ),
+                    (
+                        "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4",
+                        "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
+                    ),
+                ] {
+                    assert_ne!(approved.release.digest, retired_digest);
+                    assert_ne!(approved.measurement.registers[0], retired_snp);
+                }
             }
         }
     }
