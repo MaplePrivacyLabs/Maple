@@ -1,5 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PasswordResetCompletion, PasswordResetOptions } from "@mapleai/sdk";
+import {
+  RECOVERY_CODE_PREFIX,
+  RECOVERY_CODE_NORMALIZED_LENGTH,
+  RecoveryCodeFormatError,
+  normalizeRecoveryCode,
+  stripRecoveryCodeSeparators
+} from "@mapleai/sdk";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +27,13 @@ type ResetApi = {
     completion: PasswordResetCompletion
   ) => Promise<void>;
 };
+
+function extractRecoveryCode(pasted: string): string {
+  const compact = stripRecoveryCodeSeparators(pasted);
+  const start = compact.search(new RegExp(RECOVERY_CODE_PREFIX, "i"));
+  if (start < 0) throw new RecoveryCodeFormatError();
+  return normalizeRecoveryCode(compact.slice(start, start + RECOVERY_CODE_NORMALIZED_LENGTH));
+}
 
 export function PasswordResetFlow({
   email,
@@ -110,7 +124,7 @@ export function PasswordResetFlow({
           secret,
           newPassword,
           mode === "preserve"
-            ? { mode: "preserve", recoveryCode: recoveryCode.trim() }
+            ? { mode: "preserve", recoveryCode: extractRecoveryCode(recoveryCode) }
             : { mode: "destructive", acknowledgeDataLoss: true }
         );
         if (!current()) return;
@@ -122,19 +136,27 @@ export function PasswordResetFlow({
         setAcknowledged(false);
         setSuccess(true);
       }
-    } catch {
+    } catch (failure) {
       if (!current()) return;
+      if (failure instanceof RecoveryCodeFormatError) {
+        setError(
+          "Enter a valid Maple recovery code. You can paste the code or the saved text file's contents."
+        );
+        return;
+      }
       setError(
         options
           ? "We couldn't confirm the reset. If it completed, sign in with your new password. Otherwise, request a new reset email before trying again; an incorrect recovery code can use up the reset request."
           : "Couldn't verify this reset request. Check the email code or request a new email."
       );
-      setOptions(null);
-      setCode("");
-      setRecoveryCode("");
-      setNewPassword("");
-      setConfirmation("");
-      setAcknowledged(false);
+      if ((failure as { status?: number } | null)?.status === 400) {
+        setOptions(null);
+        setCode("");
+        setRecoveryCode("");
+        setNewPassword("");
+        setConfirmation("");
+        setAcknowledged(false);
+      }
     } finally {
       if (current()) {
         inFlight.current = false;
