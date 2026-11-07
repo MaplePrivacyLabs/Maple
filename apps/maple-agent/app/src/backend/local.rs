@@ -3220,6 +3220,23 @@ impl LocalBackend {
             .await
     }
 
+    /// Set what a session may do without asking, from its next tool call.
+    pub async fn set_session_permission_mode(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        mode: maple_agent::agent::AgentPermissionMode,
+    ) -> Result<AgentSessionSummary, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_session_permission_mode(maple_agent::agent::AgentSetSessionPermissionModeRequest {
+                session_id: session_id.to_string(),
+                mode,
+            })
+            .await
+    }
+
     /// Compact a session's history now; reload the session afterwards.
     pub async fn compact_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
         self.service

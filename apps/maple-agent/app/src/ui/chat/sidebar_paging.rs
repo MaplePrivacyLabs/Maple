@@ -33,6 +33,7 @@ mod tests {
             message_count: 1,
             model: None,
             web_enabled: true,
+            permission_mode: Default::default(),
             state,
             acp: false,
         }
@@ -49,6 +50,7 @@ mod tests {
             kind: "desktop".into(),
             pinned_ms: None,
             web_enabled: summary.web_enabled,
+            permission_mode: None,
             model: summary.model,
             message_count: summary.message_count as u64,
             created_ms: summary.created_ms,
@@ -1700,6 +1702,7 @@ mod merged_prefix_tests {
             kind: "desktop".into(),
             pinned_ms: None,
             web_enabled: false,
+            permission_mode: None,
             model: None,
             message_count: 1,
             created_ms: updated,

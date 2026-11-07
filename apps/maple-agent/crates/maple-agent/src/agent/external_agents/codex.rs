@@ -414,6 +414,7 @@ pub(super) fn async_question_prompts(questions: &[AsyncQuestion]) -> Vec<AgentQu
                     description: String::new(),
                 })
                 .collect(),
+            permission: None,
         })
         .collect()
 }

@@ -16,6 +16,7 @@ use pi_coding_agent::settings::{RetrySettings, Settings};
 use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
 
+use super::AgentPermissionMode;
 use super::config::path_string;
 use super::cua::{self, TaskCua};
 use super::external_agents::{
@@ -26,6 +27,7 @@ use super::integrations::{CUA_NAME, external_agents_on};
 use super::mcp::{
     MAX_IDLE_TASKS_WITH_SERVERS, STARTUP_WAIT, TaskMcp, read_saved_servers, task_servers,
 };
+use super::permissions::{PermissionGate, TaskPermissions, permission_extension};
 use super::provider::{CatalogEntry, catalog_entry, maple_model, maple_model_registry};
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
@@ -87,6 +89,7 @@ struct LoadedTask {
     mcp: Arc<TaskMcp>,
     cua: Arc<TaskCua>,
     agents: TaskProviders,
+    permissions: TaskPermissions,
     last_used: Instant,
     unloading: Arc<AtomicBool>,
 }
@@ -311,6 +314,13 @@ impl AgentRuntime {
     }
 
     /// A loaded session, if it is available and not being evicted.
+    /// Apply a task's new mode from its next tool call, if it is loaded.
+    pub(super) async fn set_permission_mode(&self, session_id: &str, mode: AgentPermissionMode) {
+        if let Some(task) = self.sessions.lock().await.get(session_id) {
+            task.permissions.set(mode);
+        }
+    }
+
     pub(super) async fn loaded_session(&self, session_id: &str) -> Option<AgentSession> {
         let mut sessions = self.sessions.lock().await;
         let task = sessions.get_mut(session_id)?;
@@ -675,6 +685,7 @@ impl AgentRuntime {
         if let Some(LoadedTask {
             session,
             agents,
+            permissions,
             last_used,
             unloading,
             ..
@@ -694,6 +705,7 @@ impl AgentRuntime {
             // The web switch and the external agents may have changed since
             // the last run.
             tools::sync_web_tools(session, row.web_enabled);
+            permissions.set(row.permission_mode());
             sync_external_agent_tools(session, agents, providers);
             if let Some(resources) = resources {
                 session.set_resources(resources);
@@ -775,6 +787,15 @@ impl AgentRuntime {
         options.extensions.push(mcp.extension());
         let task_cua = TaskCua::new(&self.account_scope, &row.id, self.models.clone());
         options.extensions.push(task_cua.extension());
+        let permissions = TaskPermissions::new(row.permission_mode());
+        options
+            .extensions
+            .push(permission_extension(PermissionGate {
+                session_id: row.id.clone(),
+                mode: permissions.clone(),
+                models: self.models.clone(),
+                questions: self.questions.clone(),
+            }));
         // After a switch to a smaller window, the previous model summarizes.
         options
             .extensions
@@ -794,6 +815,7 @@ impl AgentRuntime {
                 mcp,
                 cua: task_cua,
                 agents,
+                permissions,
                 last_used: Instant::now(),
                 unloading: Arc::new(AtomicBool::new(false)),
             },
@@ -953,6 +975,13 @@ impl AgentRuntime {
 
     /// Serve Maple's models with `stream` instead of the account's
     /// transport, for tests with a scripted provider.
+    /// Answer permission checks with `classifier`, in place of System One.
+    #[cfg(test)]
+    pub(super) fn use_classifier(&self, classifier: Arc<dyn pi_ai::ClassifyFn>) {
+        self.models
+            .register_classifier_api(pi_ai::system_one::API, classifier);
+    }
+
     #[cfg(test)]
     pub(super) fn use_stream_fn(&self, stream: Arc<dyn pi_ai::StreamFn>) {
         self.models.register_api(super::provider::MAPLE_API, stream);
