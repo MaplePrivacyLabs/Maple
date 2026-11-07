@@ -1199,6 +1199,16 @@ chat-new-task = New task
 chat-integrations = Integrations
 chat-web = Web
 chat-web-off = Web off
+chat-mode = Permissions
+chat-mode-read-only = Read only
+chat-mode-read-only-note = Reads and builds run. Maple asks before anything else.
+chat-mode-auto = Auto
+chat-mode-auto-note = Most work runs. Maple asks before anything risky.
+chat-mode-full-access = Full access
+chat-mode-full-access-note = Everything runs without asking.
+chat-mode-read-only-chip = Permissions: Read only
+chat-mode-auto-chip = Permissions: Auto
+chat-mode-full-access-chip = Permissions: Full access
 chat-attach = Attach files or images
 chat-stop-recording = Stop recording
 chat-dictate = Dictate
@@ -1271,6 +1281,22 @@ chat-background = background
 chat-stop = Stop
 chat-billing-open = Open Billing
 chat-question-label = Question from Maple
+chat-permission-label = Allow this action?
+chat-permission-allow = Allow once
+chat-permission-deny = Deny
+chat-permission-reason-secrets = This reads secrets or credentials.
+chat-permission-reason-secrets-leaving = This could send secrets off this computer.
+chat-permission-reason-sends-out = This sends or publishes something outside this computer.
+chat-permission-reason-remote-code = This runs code from the network.
+chat-permission-reason-rewrites-history = This rewrites shared version-control history.
+chat-permission-reason-discards-work = This throws away uncommitted work.
+chat-permission-reason-disables-safeguards = This turns off a safety check.
+chat-permission-reason-destructive = This could destroy data that can't be recovered.
+chat-permission-reason-changes-project = This changes files in the project.
+chat-permission-reason-changes-outside-project = This changes something outside the project.
+chat-permission-reason-uncertain = Maple isn't sure this is safe to run.
+chat-permission-reason-unavailable = Maple couldn't check this action.
+chat-permission-reason-too-long = This action is too long for Maple to check.
 chat-thinking-label = Maple is thinking
 chat-settings = Settings
 chat-usage = Usage
@@ -1366,6 +1392,8 @@ chat-no-model-match = No model matches “{ $query }”
 chat-answer-failed = Could not deliver the answer: { $message }
 # $message is the underlying error, which may be untranslated.
 chat-web-failed = Could not change web access: { $message }
+# $message is the underlying error, which may be untranslated.
+chat-mode-failed = Could not change the mode: { $message }
 chat-copy-link = Copy Link
 chat-copy = Copy
 chat-select-all = Select all
@@ -1505,6 +1533,7 @@ chat-output-unsaved = Full output is available after this message is saved.
 chat-output-changed = The output changed; reopen it.
 chat-output-budget = Full output exceeds the current 32 MiB view budget.
 chat-notification-question = Maple has a question
+chat-notification-permission = Maple needs your OK
 chat-notification-respond = Open Maple to respond.
 chat-notification-finished = A task finished. Open Maple to view it.
 # $title is the unmodified task title.
@@ -1906,6 +1935,8 @@ chat-staging-open-failed = Could not open the attachment: { $error }
 chat-subscribe-history-failed = Could not subscribe to task history: { $error }
 # $error is an untranslated diagnostic.
 chat-web-change-error = Could not change web access: { $error }
+# $error is an untranslated diagnostic.
+chat-mode-change-error = Could not change the mode: { $error }
 # $name is an integration name; $error is an untranslated diagnostic.
 chat-integration-change-error = Could not change { $name }: { $error }
 # $error is an untranslated diagnostic.

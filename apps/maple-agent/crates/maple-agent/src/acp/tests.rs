@@ -1170,6 +1170,7 @@ fn session_summary(id: &str) -> AgentSessionSummary {
         message_count: 0,
         model: Some("model".to_string()),
         web_enabled: false,
+        permission_mode: Default::default(),
         state: AgentTaskState::Active,
         acp: false,
     }

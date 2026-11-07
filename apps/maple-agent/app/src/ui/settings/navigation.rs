@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     /// The General pane starts at the web toggle: there is no "Default
-    /// permission mode" row because every tool call runs without asking.
+    /// permission mode" row because the composer's chip remembers the mode.
     #[gpui::test]
     fn general_settings_have_no_permission_row(cx: &mut TestAppContext) {
         let (settings, cx) = dropdown_window(cx, true);

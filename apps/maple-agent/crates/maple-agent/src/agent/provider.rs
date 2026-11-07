@@ -41,7 +41,7 @@ pub(crate) const MAPLE_API: &str = "maple";
 const MAPLE_BASE_URL: &str = "/v1";
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 /// Where Pi's System One classifier posts: `{base_url}/systemone`.
-const SYSTEM_ONE_PATH: &str = "/v1/systemone";
+pub(super) const SYSTEM_ONE_PATH: &str = "/v1/systemone";
 /// The model System One answers with by default.
 pub(crate) const SYSTEM_ONE_MODEL_ID: &str = "glm-5-3-flash";
 /// The decision models Maple's System One API also serves (Tinfoil's), with
@@ -183,7 +183,7 @@ pub(crate) fn system_one_model() -> ClassifierModel {
 }
 
 /// The decision models as Pi classifier models: they judge text only.
-fn system_one_decision_models() -> impl Iterator<Item = ClassifierModel> {
+pub(super) fn system_one_decision_models() -> impl Iterator<Item = ClassifierModel> {
     SYSTEM_ONE_DECISION_MODELS
         .into_iter()
         .map(|(id, name)| ClassifierModel {
@@ -200,7 +200,7 @@ fn system_one_decision_models() -> impl Iterator<Item = ClassifierModel> {
 }
 
 /// OpenSecret authenticates the account itself; Pi passes no key.
-struct NoKeys;
+pub(super) struct NoKeys;
 
 #[async_trait]
 impl ApiKeySource for NoKeys {
@@ -611,7 +611,11 @@ impl HttpTransport for MapleTransport {
     }
 }
 
-fn inference_request(path: &'static str, accept: &'static str, body: Vec<u8>) -> InferenceRequest {
+pub(super) fn inference_request(
+    path: &'static str,
+    accept: &'static str,
+    body: Vec<u8>,
+) -> InferenceRequest {
     let mut request = InferenceRequest::new(body.into());
     *request.method_mut() = http::Method::POST;
     *request.uri_mut() = http::Uri::from_static(path);
@@ -627,7 +631,7 @@ fn inference_request(path: &'static str, accept: &'static str, body: Vec<u8>) ->
 
 /// A successful response streams on; a failed one becomes its fixed Maple
 /// message, which Pi reports after the status.
-async fn into_http_response(
+pub(super) async fn into_http_response(
     response: InferenceResponse,
     cancel: CancellationToken,
 ) -> Result<HttpResponse, String> {

@@ -306,6 +306,7 @@ operations! {
     set_integration_enabled(user_id: (&str), id: (&str), enabled: (bool)) -> Vec<AgentIntegration>;
     setup_integration(user_id: (&str), id: (&str), permissions: (AgentIntegrationPermissions)) -> Vec<AgentIntegration>;
     [dispatch_only] set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
+    [dispatch_only] set_session_permission_mode(user_id: (&str), session_id: (&str), mode: (maple_agent::agent::AgentPermissionMode)) -> AgentSessionSummary;
     [dispatch_only] compact_session(user_id: (&str), session_id: (&str)) -> ();
     session_subagents(user_id: (&str), session_id: (&str)) -> Vec<AgentSubagent>;
     [dispatch_only] cancel_external_agent(user_id: (&str), session_id: (&str), agent_id: (&str)) -> ();

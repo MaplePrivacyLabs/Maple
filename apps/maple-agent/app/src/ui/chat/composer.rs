@@ -7,7 +7,7 @@ use std::sync::Arc;
 const BTW_COMMAND: &str = "btw";
 
 use gpui::{Context, Div, IntoElement, SharedString, Window, div, prelude::*, px};
-use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
+use maple_agent::agent::{AgentPermissionMode, AgentSlashCommand, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
@@ -34,20 +34,59 @@ pub(super) enum ComposerControl {
     Model,
     Thinking,
     Integrations,
+    Mode,
     Web,
     Attachments,
     Dictate,
 }
 
 impl ComposerControl {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Model,
         Self::Thinking,
         Self::Integrations,
+        Self::Mode,
         Self::Web,
         Self::Attachments,
         Self::Dictate,
     ];
+}
+
+fn mode_item_id(mode: AgentPermissionMode) -> SharedString {
+    SharedString::from(format!("mode-{}", mode.as_str()))
+}
+
+fn mode_icon(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "lock",
+        AgentPermissionMode::Auto => "shield-check",
+        AgentPermissionMode::FullAccess => "zap",
+    }
+}
+
+fn mode_label(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "chat-mode-read-only",
+        AgentPermissionMode::Auto => "chat-mode-auto",
+        AgentPermissionMode::FullAccess => "chat-mode-full-access",
+    }
+}
+
+/// The chip's accessible name: its mode alone does not say what it sets.
+fn mode_chip_label(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "chat-mode-read-only-chip",
+        AgentPermissionMode::Auto => "chat-mode-auto-chip",
+        AgentPermissionMode::FullAccess => "chat-mode-full-access-chip",
+    }
+}
+
+fn mode_note(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "chat-mode-read-only-note",
+        AgentPermissionMode::Auto => "chat-mode-auto-note",
+        AgentPermissionMode::FullAccess => "chat-mode-full-access-note",
+    }
 }
 
 impl ChatScreen {
@@ -325,6 +364,10 @@ impl ChatScreen {
                 self.popup.open(ChatPopup::Integrations, cx);
                 self.refresh_session_mcp(cx);
             }
+            ComposerControl::Mode => {
+                self.popup
+                    .open_highlighted(ChatPopup::Mode, mode_item_id(self.permission_mode), cx)
+            }
             ComposerControl::Web => {
                 let next = !self.web_enabled;
                 self.set_web_enabled(next, cx);
@@ -408,6 +451,22 @@ impl ChatScreen {
                 window,
                 cx,
                 |this, _| this.integrations_menu(),
+            ),
+            ComposerControl::Mode => self.with_menu(
+                ChatPopup::Mode,
+                chip(
+                    "permission-mode-menu",
+                    Some(mode_icon(self.permission_mode)),
+                    tr(mode_label(self.permission_mode)).to_string(),
+                    true,
+                    self.popup.is_open(&ChatPopup::Mode),
+                    false,
+                )
+                .aria_label(tr(mode_chip_label(self.permission_mode))),
+                Placement::AboveStart,
+                window,
+                cx,
+                |this, _| this.mode_menu(),
             ),
             ComposerControl::Web => div().child(
                 chip(
@@ -572,6 +631,32 @@ impl ChatScreen {
                 )
                 .current(selected == Some(model.as_str()))
             }))
+    }
+
+    /// What the task may do without asking.
+    fn mode_menu(&self) -> Menu<Self> {
+        Menu::new("mode-menu", px(320.))
+            .label(tr("chat-mode"))
+            .application_vim(self.application_vim_enabled)
+            .items(
+                [
+                    AgentPermissionMode::ReadOnly,
+                    AgentPermissionMode::Auto,
+                    AgentPermissionMode::FullAccess,
+                ]
+                .map(|mode| {
+                    MenuItem::new(
+                        mode_item_id(mode),
+                        tr(mode_label(mode)),
+                        move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                            this.set_permission_mode(mode, cx);
+                        },
+                    )
+                    .icon(mode_icon(mode))
+                    .note(tr(mode_note(mode)))
+                    .current(self.permission_mode == mode)
+                }),
+            )
     }
 
     /// The task's integrations, each with a switch. A server that still
