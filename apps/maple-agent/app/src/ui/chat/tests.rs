@@ -2141,6 +2141,50 @@ mod state_tests {
         });
     }
 
+    /// A permission card and its notification are worded in the interface's
+    /// language, and the answer stays the runtime's label in any language.
+    #[gpui::test]
+    fn test_a_permission_card_and_its_notification_follow_the_language(_cx: &mut TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let AgentServiceEvent::Question { questions, .. } = permission_event("p3") else {
+            unreachable!()
+        };
+        let entry = &questions[0];
+        let prompt = entry.permission.as_ref().unwrap();
+        for (locale, allow, deny, body) in [
+            (
+                "es",
+                "Permitir una vez",
+                "Rechazar",
+                "Esto envía o publica algo fuera de esta computadora.\ngit push",
+            ),
+            (
+                "en",
+                "Allow once",
+                "Deny",
+                "This sends or publishes something outside this computer.\ngit push",
+            ),
+        ] {
+            crate::ui::i18n::apply_preference(Some(locale));
+            assert_eq!(
+                crate::ui::chat::transcript::question_option_label(entry, 0).as_ref(),
+                allow
+            );
+            assert_eq!(
+                crate::ui::chat::transcript::question_option_label(entry, 1).as_ref(),
+                deny
+            );
+            assert_eq!(
+                crate::ui::chat::transcript::permission_notification_body(prompt),
+                body
+            );
+            assert_eq!(
+                entry.options[0].label, "Allow once",
+                "the answer never changes"
+            );
+        }
+    }
+
     /// The answer stays the label the runtime gave, whatever language the
     /// card shows it in.
     #[gpui::test]

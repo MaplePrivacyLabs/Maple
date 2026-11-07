@@ -1206,6 +1206,9 @@ chat-mode-auto = Auto
 chat-mode-auto-note = Most work runs. Maple asks before anything risky.
 chat-mode-full-access = Full access
 chat-mode-full-access-note = Everything runs without asking.
+chat-mode-read-only-chip = Permissions: Read only
+chat-mode-auto-chip = Permissions: Auto
+chat-mode-full-access-chip = Permissions: Full access
 chat-attach = Attach files or images
 chat-stop-recording = Stop recording
 chat-dictate = Dictate
@@ -1530,6 +1533,7 @@ chat-output-unsaved = Full output is available after this message is saved.
 chat-output-changed = The output changed; reopen it.
 chat-output-budget = Full output exceeds the current 32 MiB view budget.
 chat-notification-question = Maple has a question
+chat-notification-permission = Maple needs your OK
 chat-notification-respond = Open Maple to respond.
 chat-notification-finished = A task finished. Open Maple to view it.
 # $title is the unmodified task title.

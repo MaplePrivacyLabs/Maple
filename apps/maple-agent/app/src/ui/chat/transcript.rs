@@ -1726,7 +1726,40 @@ fn render_system(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
         ))
 }
 
-fn permission_reason_key(reason: AgentPermissionReason) -> &'static str {
+/// What an option shows. The answer stays the option's own label: a
+/// permission card shows its two options in the interface's language.
+pub(super) fn question_option_label(
+    entry: &maple_agent::agent::AgentQuestion,
+    index: usize,
+) -> SharedString {
+    match (&entry.permission, index) {
+        (Some(_), 0) => tr("chat-permission-allow"),
+        (Some(_), _) => tr("chat-permission-deny"),
+        (None, _) => entry
+            .options
+            .get(index)
+            .map(|option| SharedString::from(option.label.clone()))
+            .unwrap_or_default(),
+    }
+}
+
+/// A permission request's desktop notification text, in the interface's
+/// language: the reason, then the call as the card shows it.
+pub(super) fn permission_notification_body(
+    prompt: &maple_agent::agent::AgentPermissionPrompt,
+) -> String {
+    format!(
+        "{}\n{}",
+        tr(permission_reason_key(prompt.reason)),
+        prompt.action
+    )
+    .chars()
+    .take(140)
+    .collect()
+}
+
+/// The catalog key that words why a tool call needs the user.
+pub(super) fn permission_reason_key(reason: AgentPermissionReason) -> &'static str {
     match reason {
         AgentPermissionReason::Secrets => "chat-permission-reason-secrets",
         AgentPermissionReason::SecretsLeaving => "chat-permission-reason-secrets-leaving",
@@ -1929,13 +1962,7 @@ pub(super) fn render_question_card(
                     theme::border()
                 }))
                 .when(is_picked, |dot| dot.bg(gpui::rgb(theme::accent())));
-            // The answer stays the option's own label; only what shows is
-            // translated.
-            let label = match (&entry.permission, option_index) {
-                (Some(_), 0) => tr("chat-permission-allow").to_string(),
-                (Some(_), _) => tr("chat-permission-deny").to_string(),
-                (None, _) => option.label.clone(),
-            };
+            let label = question_option_label(entry, option_index);
             // flex_1 is load-bearing: without it the row squeezes this
             // block to a character wide and the label wraps vertically.
             let label_element = if option.description.is_empty() {
@@ -1944,7 +1971,7 @@ pub(super) fn render_question_card(
                     .min_w_0()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child(label)
+                    .child(gpui::text!(label))
             } else {
                 div()
                     .flex_1()
@@ -1955,7 +1982,7 @@ pub(super) fn render_question_card(
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child(option.label.clone()),
+                            .child(gpui::text!(label)),
                     )
                     .child(
                         div()

@@ -72,6 +72,15 @@ fn mode_label(mode: AgentPermissionMode) -> &'static str {
     }
 }
 
+/// The chip's accessible name: its mode alone does not say what it sets.
+fn mode_chip_label(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "chat-mode-read-only-chip",
+        AgentPermissionMode::Auto => "chat-mode-auto-chip",
+        AgentPermissionMode::FullAccess => "chat-mode-full-access-chip",
+    }
+}
+
 fn mode_note(mode: AgentPermissionMode) -> &'static str {
     match mode {
         AgentPermissionMode::ReadOnly => "chat-mode-read-only-note",
@@ -452,7 +461,8 @@ impl ChatScreen {
                     true,
                     self.popup.is_open(&ChatPopup::Mode),
                     false,
-                ),
+                )
+                .aria_label(tr(mode_chip_label(self.permission_mode))),
                 Placement::AboveStart,
                 window,
                 cx,

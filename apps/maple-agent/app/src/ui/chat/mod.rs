@@ -6624,15 +6624,25 @@ impl ChatScreen {
                 {
                     return false;
                 }
+                // A permission request is worded here, not by the runtime's
+                // English fallback in `question`.
+                let permission = questions
+                    .first()
+                    .and_then(|question| question.permission.as_ref());
                 self.notify_desktop(
                     &session_id,
-                    &tr("chat-notification-question"),
+                    &tr(if permission.is_some() {
+                        "chat-notification-permission"
+                    } else {
+                        "chat-notification-question"
+                    }),
                     &tr("chat-notification-respond"),
-                    || {
-                        questions
+                    || match permission {
+                        Some(prompt) => transcript::permission_notification_body(prompt),
+                        None => questions
                             .first()
                             .map(|question| question.question.chars().take(140).collect())
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
                     },
                     cx,
                 );
