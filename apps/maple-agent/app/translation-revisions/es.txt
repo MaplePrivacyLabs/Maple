@@ -633,6 +633,11 @@ native-settings 332a31de2373e9b2
 native-show-all f08151ffd94cf925
 native-show-archived 1ae72f8cd2fbc159
 native-signing-in ce7730ad9f301afd
+native-startup-copy-details 02a4d281b24b823b
+native-startup-details 05c2b1cdf71b260e
+native-startup-details-copied a4c8b9ab0e005829
+native-startup-log-file d3733b03f65070bf
+native-startup-show-log 8c3bdc092aea302b
 native-startup-title 83dcbcacdd2edc3b
 native-still-open 6db9b5a5d75a0866
 native-stop-complete a91d816053f90684

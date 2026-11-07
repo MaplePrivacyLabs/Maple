@@ -90,6 +90,11 @@ impl StorePaths {
         self.root.join("logs")
     }
 
+    /// The diagnostic log that [`Self::open_log`] appends to.
+    pub fn log_file(&self) -> PathBuf {
+        self.logs().join("maple-agent.log")
+    }
+
     /// Open only this store's diagnostic log. Existing files are checked, never
     /// chmodded or truncated, and no bytes may be appended before descriptor
     /// ownership, permissions, file type and link count have been verified.
@@ -97,7 +102,7 @@ impl StorePaths {
         verify_private_path(&self.root, true)?;
         let directory = self.logs();
         private_directory(&directory)?;
-        let path = directory.join("maple-agent.log");
+        let path = self.log_file();
         let (file, created) = match open_append_file(&path, true) {
             Ok(file) => (file, true),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
