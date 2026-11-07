@@ -25,6 +25,7 @@ pub use mcp::catalog::{
     McpCatalogAddress, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, mcp_catalog,
 };
 pub use mcp::oauth::{McpBrowser, McpSignIn, McpSignInError};
+mod permissions;
 mod persistence;
 mod projects;
 pub(crate) mod provider;

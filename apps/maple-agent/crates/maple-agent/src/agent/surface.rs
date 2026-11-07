@@ -351,6 +351,10 @@ impl AgentRuntimeHandle {
                         .map_err(|_| "Invalid task message count")?,
                     model: summary.model,
                     web_enabled: summary.web_enabled,
+
+                    permission_mode: super::AgentPermissionMode::from_saved(
+                        summary.permission_mode.as_deref(),
+                    ),
                     state,
                     acp: summary.kind == "acp",
                 },

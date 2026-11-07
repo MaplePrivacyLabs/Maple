@@ -12,15 +12,16 @@ use base64::Engine;
 use pi_ai::Message;
 use pi_coding_agent::SessionMessage;
 use pi_coding_agent::session::{EntryKind, SessionManager};
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use super::types::{AgentSessionSummary, AgentTaskState, AgentTimelineItem};
+use super::types::{AgentPermissionMode, AgentSessionSummary, AgentTaskState, AgentTimelineItem};
 use crate::store::{
     AccountId, NewTask, SourceReceipts, Store, StoreError, TaskPatch, TaskRecord,
     WeakSourceReceipts,
 };
 
 const PROVISIONAL: &str = "surfaceProvisional";
+pub(crate) const PERMISSION_MODE: &str = "permissionMode";
 const PAGE_SIZE: u16 = 200;
 
 /// Which surface created a task.
@@ -61,7 +62,7 @@ impl TaskRow {
         model: Option<String>,
         now_ms: i64,
     ) -> Self {
-        Self {
+        let mut row = Self {
             id,
             title,
             title_user_set: false,
@@ -74,7 +75,27 @@ impl TaskRow {
             created_ms: now_ms,
             updated_ms: now_ms,
             settings: Value::Object(Default::default()),
+        };
+        // ACP callers run their tasks with no way to answer a prompt yet.
+        if kind == TaskKind::Desktop {
+            row.set_permission_mode(AgentPermissionMode::default());
         }
+        row
+    }
+
+    /// What the task may do without asking.
+    pub(crate) fn permission_mode(&self) -> AgentPermissionMode {
+        AgentPermissionMode::from_saved(self.settings.get(PERMISSION_MODE).map(|mode| {
+            // Anything but text is as unknown as an unknown mode.
+            mode.as_str().unwrap_or_default()
+        }))
+    }
+
+    pub(crate) fn set_permission_mode(&mut self, mode: AgentPermissionMode) {
+        if !self.settings.is_object() {
+            self.settings = Value::Object(Default::default());
+        }
+        self.settings[PERMISSION_MODE] = json!(mode.as_str());
     }
 
     pub(crate) fn summary(&self) -> AgentSessionSummary {
@@ -87,6 +108,7 @@ impl TaskRow {
             message_count: self.message_count,
             model: self.model.clone(),
             web_enabled: self.web_enabled,
+            permission_mode: self.permission_mode(),
             state: self.state,
             acp: self.kind == TaskKind::Acp,
         }

@@ -139,6 +139,9 @@ pub(super) fn session_from_summary(
         message_count: usize::try_from(summary.message_count).unwrap_or(usize::MAX),
         model: summary.model.clone(),
         web_enabled: summary.web_enabled,
+        permission_mode: maple_agent::agent::AgentPermissionMode::from_saved(
+            summary.permission_mode.as_deref(),
+        ),
         state: match summary.state.as_str() {
             "settled" => AgentTaskState::Settled,
             "archived" => AgentTaskState::Archived,
@@ -4711,6 +4714,7 @@ pub(super) fn session_summary_eq(a: &AgentSessionSummary, b: &AgentSessionSummar
         && a.message_count == b.message_count
         && a.model == b.model
         && a.web_enabled == b.web_enabled
+        && a.permission_mode == b.permission_mode
         && a.state == b.state
 }
 
@@ -4782,6 +4786,7 @@ mod tests {
                     message_count: 1,
                     model: None,
                     web_enabled: true,
+                    permission_mode: Default::default(),
                     state: AgentTaskState::Active,
                     acp: false,
                 })
@@ -4883,6 +4888,7 @@ mod tests {
                     message_count: 1,
                     model: None,
                     web_enabled: true,
+                    permission_mode: Default::default(),
                     state: if ix == 101 {
                         AgentTaskState::Settled
                     } else {

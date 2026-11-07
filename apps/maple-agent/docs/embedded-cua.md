@@ -32,8 +32,8 @@ in-process network protocol.
 
 The tools join the task's Pi session as `cua-driver__<tool>`, and the
 instructions below join its system prompt, while the task is bound. Every CUA
-call runs without asking for approval, like every other tool call in a Maple
-task; CUA's published schemas and descriptions reach the model unaltered. A
+call goes through the task's [permission mode](permissions.md), like every other
+tool call in a Maple task; CUA's published schemas and descriptions reach the model unaltered. A
 binding that fails is named in the run's notice beside the MCP servers', as
 `Computer use: <reason>`, and the run goes on without the tools.
 
