@@ -326,13 +326,25 @@ fn trusted_storage_sid(sid: PSID, user: PSID, system: PSID, admins: PSID) -> boo
 }
 
 fn validate_private_handle(file: &File) -> io::Result<()> {
+    validate_storage_handle(file, false)
+}
+
+fn validate_storage_handle(file: &File, installation_parent: bool) -> io::Result<()> {
     let info = information(file)?;
     // FILE_DELETE_CHILD is meaningful only for a directory. NSIS can leave
     // that bit in an inherited read ACE on a regular file; it grants no file
     // mutation authority. Classify the same opened handle, retaining every
     // other mutating right and the full directory mask.
     let write_rights = if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-        WRITE_RIGHTS
+        if installation_parent {
+            // On a directory this bit is FILE_ADD_SUBDIRECTORY. Another user
+            // creating a sibling does not grant authority over a protected
+            // app child. Keep deletion, redirection and permission changes
+            // forbidden; the new child is exclusively created and validated.
+            WRITE_RIGHTS & !FILE_APPEND_DATA
+        } else {
+            WRITE_RIGHTS
+        }
     } else {
         WRITE_RIGHTS & !FILE_DELETE_CHILD
     };
@@ -482,6 +494,16 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
             }
         }
     }
+    validate_directory(path, false)
+}
+
+/// Read-only admission for a pre-existing ancestor of a NEW destination.
+/// Never apply this policy to an existing app root or installed file.
+pub(super) fn installation_parent(path: &Path) -> io::Result<()> {
+    validate_directory(path, true)
+}
+
+fn validate_directory(path: &Path, parent: bool) -> io::Result<()> {
     let _parents = ancestors(path, false)?;
     let directory = open_raw(
         path,
@@ -492,7 +514,7 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
     if information(&directory)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
         return Err(invalid());
     }
-    validate_private_handle(&directory)?;
+    validate_storage_handle(&directory, parent)?;
     validate_path_binding(path, &directory)
 }
 
@@ -754,6 +776,61 @@ mod tests {
             }
         }
         assert_eq!(matches, 1, "fixture must retain the exact effective ACE");
+    }
+
+    #[test]
+    fn new_destination_parent_allows_siblings_but_protects_app_owned_objects() {
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().join("parent");
+        directory_with_inheritable_everyone_access(&parent, 0x0012_00a9 | FILE_APPEND_DATA);
+        installation_parent(&parent).unwrap();
+        assert!(
+            private_directory(&parent).is_err(),
+            "owned directories retain their strict policy"
+        );
+        let child = parent.join("app");
+        private_directory(&child).unwrap();
+        private_directory(&child).unwrap();
+        let owned = child.join("state");
+        drop(create_private(&owned).unwrap());
+        drop(open_readonly(&owned).unwrap());
+        let inherited = parent.join("foreign-append-file");
+        fs::write(&inherited, b"preserve").unwrap();
+        assert!(
+            open_readonly(&inherited).is_err(),
+            "the same bit is append authority on a file"
+        );
+        assert_eq!(fs::read(inherited).unwrap(), b"preserve");
+        // A foreign process winning the name first cannot become app storage.
+        let claimed = parent.join("claimed");
+        directory_with_inheritable_everyone_access(&claimed, GENERIC_ALL);
+        assert!(private_directory(&claimed).is_err());
+    }
+
+    #[test]
+    fn destination_parents_still_refuse_mutation_and_do_not_repair_permissions() {
+        let temporary = tempfile::tempdir().unwrap();
+        for (index, access) in [
+            GENERIC_ALL,
+            GENERIC_WRITE,
+            DELETE,
+            WRITE_DAC,
+            WRITE_OWNER,
+            FILE_WRITE_DATA,
+            FILE_WRITE_EA,
+            FILE_WRITE_ATTRIBUTES,
+            FILE_DELETE_CHILD,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let parent = temporary.path().join(format!("parent-{index}"));
+            directory_with_inheritable_everyone_access(&parent, FILE_APPEND_DATA | access);
+            let error = installation_parent(&parent).unwrap_err();
+            assert!(error.to_string().contains("foreign-write-ace"));
+            // Repeat sees the same refusal: admission must not alter the ACL.
+            assert!(installation_parent(&parent).is_err());
+        }
     }
 
     #[test]

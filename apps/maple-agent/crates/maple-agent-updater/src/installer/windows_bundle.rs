@@ -1712,8 +1712,14 @@ pub fn preflight_windows_installation(checker: &Path, root: &Path, profile: &str
                     .parent()
                     .ok_or(InstallError::Invalid("Windows installer parent"))?;
             }
-            // Existing destinations are never taken over by changing their ACL.
-            windows_fs::private_directory(existing)?;
+            // Existing destinations retain strict installed-storage admission.
+            // A parent of a new root may allow creation of sibling directories;
+            // the new app root itself receives an explicit protected ACL.
+            if existing == root {
+                windows_fs::private_directory(existing)?;
+            } else {
+                windows_fs::installation_parent(existing)?;
+            }
             operation = WindowsInstallOperation::ExistingInstallation;
             if root.try_exists()? {
                 let root = root.canonicalize()?;
