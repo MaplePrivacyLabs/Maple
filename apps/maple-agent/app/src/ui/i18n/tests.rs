@@ -1,9 +1,14 @@
 use super::*;
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
-use fluent_syntax::{ast::Entry, parser};
+use fluent_syntax::{ast, ast::Entry, parser, serializer};
 use fluent_templates::Loader;
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 use syn::visit::Visit;
+
+const ENGLISH_CATALOG: &str = include_str!("../../../locales/en/app.ftl");
 
 #[test]
 fn locale_resolution_accepts_os_spellings_and_falls_back_safely() {
@@ -620,6 +625,314 @@ fn parameterized_catalogs_format_all_messages_without_missing_arguments() {
             }
         }
     }
+}
+
+/// String literals in production code, including those inside macro bodies.
+#[derive(Default)]
+struct ProductionStrings(BTreeSet<String>);
+
+fn test_only(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("test")
+            || (attribute.path().is_ident("cfg")
+                && attribute
+                    .parse_args::<syn::Ident>()
+                    .is_ok_and(|predicate| predicate == "test"))
+    })
+}
+
+fn macro_strings(mut cursor: syn::buffer::Cursor<'_>, strings: &mut BTreeSet<String>) {
+    while !cursor.eof() {
+        if let Some((inside, _, _, next)) = cursor.any_group() {
+            macro_strings(inside, strings);
+            cursor = next;
+        } else if let Some((literal, next)) = cursor.literal() {
+            if let Ok(text) = syn::parse_str::<syn::LitStr>(&literal.to_string()) {
+                strings.insert(text.value());
+            }
+            cursor = next;
+        } else if let Some((_, next)) = cursor.token_tree() {
+            cursor = next;
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ProductionStrings {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if !test_only(&node.attrs) {
+            syn::visit::visit_item_mod(self, node);
+        }
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if !test_only(&node.attrs) {
+            syn::visit::visit_item_fn(self, node);
+        }
+    }
+
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        self.0.insert(node.value());
+    }
+
+    // syn does not parse macro bodies, and `text!` and `vec!` hold many keys.
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        let tokens = syn::buffer::TokenBuffer::new2(node.tokens.clone());
+        macro_strings(tokens.begin(), &mut self.0);
+    }
+}
+
+fn visit_production_source(path: &Path, visitor: &mut ProductionStrings) {
+    for entry in std::fs::read_dir(path).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            visit_production_source(&path, visitor);
+        } else if path.extension().is_some_and(|extension| extension == "rs")
+            && !path.to_string_lossy().ends_with("tests.rs")
+        {
+            visitor.visit_file(&syn::parse_file(&std::fs::read_to_string(path).unwrap()).unwrap());
+        }
+    }
+}
+
+#[test]
+fn production_strings_read_macros_and_skip_tests() {
+    let source = syn::parse_file(
+        r#"
+        fn view() {
+            tr("settings-direct");
+            text!(tr("settings-in-macro"));
+        }
+        #[test]
+        fn lookup() {
+            tr("settings-test-function");
+        }
+        #[cfg(test)]
+        mod checks {
+            fn helper() {
+                tr("settings-test-module");
+            }
+        }
+        "#,
+    )
+    .unwrap();
+    let mut strings = ProductionStrings::default();
+    strings.visit_file(&source);
+    assert_eq!(
+        strings.0,
+        ["settings-direct", "settings-in-macro"]
+            .map(String::from)
+            .into()
+    );
+}
+
+// Lookups take `&'static str`, so a key built at runtime cannot reach the
+// catalog and every used message appears as a literal somewhere in the source.
+#[test]
+fn every_source_message_is_used_by_production_code() {
+    let mut strings = ProductionStrings::default();
+    visit_production_source(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut strings,
+    );
+    let unused: Vec<_> = catalog_keys(ENGLISH_CATALOG)
+        .into_iter()
+        .filter(|key| !strings.0.contains(key))
+        .collect();
+    assert!(unused.is_empty(), "unused catalog messages: {unused:?}");
+}
+
+fn inline_variables<'s>(
+    expression: &ast::InlineExpression<&'s str>,
+    variables: &mut BTreeSet<&'s str>,
+) {
+    match expression {
+        ast::InlineExpression::VariableReference { id } => {
+            variables.insert(id.name);
+        }
+        ast::InlineExpression::Placeable { expression } => {
+            expression_variables(expression, variables);
+        }
+        _ => {}
+    }
+}
+
+fn expression_variables<'s>(
+    expression: &ast::Expression<&'s str>,
+    variables: &mut BTreeSet<&'s str>,
+) {
+    match expression {
+        ast::Expression::Inline(inline) => inline_variables(inline, variables),
+        ast::Expression::Select { selector, variants } => {
+            inline_variables(selector, variables);
+            for variant in variants {
+                pattern_variables(&variant.value, variables);
+            }
+        }
+    }
+}
+
+fn pattern_variables<'s>(pattern: &ast::Pattern<&'s str>, variables: &mut BTreeSet<&'s str>) {
+    for element in &pattern.elements {
+        if let ast::PatternElement::Placeable { expression } = element {
+            expression_variables(expression, variables);
+        }
+    }
+}
+
+fn names_variable(comment: &str, variable: &str) -> bool {
+    let name = format!("${variable}");
+    comment.match_indices(&name).any(|(start, _)| {
+        !comment[start + name.len()..]
+            .starts_with(|next: char| next.is_alphanumeric() || matches!(next, '-' | '_'))
+    })
+}
+
+#[test]
+fn source_messages_explain_their_variables_to_translators() {
+    let resource = parser::parse(ENGLISH_CATALOG).expect("valid Fluent syntax");
+    let mut undocumented = Vec::new();
+    for entry in &resource.body {
+        let Entry::Message(message) = entry else {
+            continue;
+        };
+        let mut variables = BTreeSet::new();
+        if let Some(value) = &message.value {
+            pattern_variables(value, &mut variables);
+        }
+        let comment = message
+            .comment
+            .as_ref()
+            .map(|comment| comment.content.join(" "))
+            .unwrap_or_default();
+        for variable in variables {
+            let positional = variable
+                .strip_prefix("arg")
+                .is_some_and(|rest| rest.chars().all(|ch| ch.is_ascii_digit()));
+            if positional || !names_variable(&comment, variable) {
+                undocumented.push(format!("{}: ${variable}", message.id.name));
+            }
+        }
+    }
+    assert!(
+        undocumented.is_empty(),
+        "give these variables descriptive names and a translator comment: {undocumented:?}"
+    );
+}
+
+const REVISIONS_HEADER: &str = "# English each translation was last reviewed against. Written by `just translations-reviewed`.";
+
+fn revisions_path(locale: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("translation-revisions")
+        .join(format!("{locale}.txt"))
+}
+
+fn fingerprint(text: &str) -> u64 {
+    // FNV-1a keeps these stable across Rust releases, unlike `DefaultHasher`.
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// One line per English message. Comments are left out, so improving a
+/// translator note never marks its translations out of date.
+fn translation_revisions(source: &str) -> String {
+    // Windows checkouts can turn the catalog's line endings into CRLF.
+    let source = source.replace("\r\n", "\n");
+    let resource = parser::parse(source.as_str()).expect("valid Fluent syntax");
+    let mut lines: Vec<_> = resource
+        .body
+        .into_iter()
+        .filter_map(|entry| {
+            let (key, entry) = match entry {
+                Entry::Message(message) => (
+                    message.id.name.to_owned(),
+                    Entry::Message(ast::Message {
+                        comment: None,
+                        ..message
+                    }),
+                ),
+                Entry::Term(term) => (
+                    format!("-{}", term.id.name),
+                    Entry::Term(ast::Term {
+                        comment: None,
+                        ..term
+                    }),
+                ),
+                _ => return None,
+            };
+            let message = serializer::serialize(&ast::Resource { body: vec![entry] });
+            Some(format!("{key} {:016x}", fingerprint(&message)))
+        })
+        .collect();
+    lines.sort();
+    format!("{REVISIONS_HEADER}\n{}\n", lines.join("\n"))
+}
+
+/// Messages added, removed or reworded since the recorded review.
+fn stale_translations(source: &str, recorded: &str) -> BTreeSet<String> {
+    let lines = |text: &str| -> BTreeSet<String> {
+        text.lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect()
+    };
+    lines(&translation_revisions(source))
+        .symmetric_difference(&lines(recorded))
+        .filter_map(|line| line.split(' ').next().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn translations_were_reviewed_against_the_current_english() {
+    for locale in LANGUAGES.iter().flatten().filter(|locale| **locale != "en") {
+        let recorded = std::fs::read_to_string(revisions_path(locale)).unwrap_or_default();
+        let stale = stale_translations(ENGLISH_CATALOG, &recorded);
+        assert!(
+            stale.is_empty(),
+            "English changed for {stale:?}. Update these in app/locales/{locale}/app.ftl, \
+             then run `just translations-reviewed {locale}`."
+        );
+    }
+}
+
+#[test]
+fn translation_revisions_follow_english_text_only() {
+    let reviewed = translation_revisions("kept = Same\n# Note\nchanged = Old\nremoved = Gone\n");
+    assert_eq!(
+        stale_translations(
+            "# A better note\nkept = Same\nchanged = New\nadded = Fresh\n",
+            &reviewed
+        ),
+        ["added", "changed", "removed"].map(String::from).into()
+    );
+
+    let plural =
+        "files = { $count ->\n    [one] { $count } file\n   *[other] { $count } files\n}\n";
+    let reviewed = translation_revisions(plural);
+    assert_eq!(
+        stale_translations(
+            &plural.replace("[one] { $count } file", "[one] One file"),
+            &reviewed
+        ),
+        ["files"].map(String::from).into()
+    );
+    assert!(stale_translations(&plural.replace('\n', "\r\n"), &reviewed).is_empty());
+}
+
+#[test]
+#[ignore = "rewrites a revision file; run it through `just translations-reviewed`"]
+fn record_reviewed_translations() {
+    let locale = std::env::var("MAPLE_TRANSLATION_LOCALE").expect("locale to record");
+    assert!(
+        locale != "en" && LANGUAGES.contains(&Some(locale.as_str())),
+        "{locale} is not an enabled translation"
+    );
+    std::fs::write(
+        revisions_path(&locale),
+        translation_revisions(ENGLISH_CATALOG),
+    )
+    .unwrap();
 }
 
 #[test]

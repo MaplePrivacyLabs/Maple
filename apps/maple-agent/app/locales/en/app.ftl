@@ -48,12 +48,11 @@ settings-preview-text = Clear, comfortable text makes longer conversations easie
 settings-preview-bold = Bold should look crisp, not blurry.
 settings-preview-reply = This size feels just right.
 settings-notification-test-title = Desktop notifications on
+# $time is the local time as HH:MM.
 settings-notification-test-body = You will see alerts like this at { $time }.
 settings-section-general = General
 settings-section-account = Account
 settings-section-billing = Billing
-settings-section-api-keys = API keys
-settings-section-local-api = Local API
 settings-section-shortcuts = Keyboard Shortcuts
 settings-section-prompt = Additional instructions
 settings-section-integrations = Integrations
@@ -121,13 +120,10 @@ settings-settings-version = Version
 settings-settings-update = Update
 settings-settings-automatically-download-updates = Automatically download updates
 settings-settings-download-verified-updates-in-the-background-installation-always-w = Download verified updates in the background. Installation always waits for Restart to Update.
-settings-settings-checking-updating = Checking / updating…
 settings-settings-retry = Retry
 settings-settings-check-for-updates = Check for Updates
 settings-settings-download-manually = Download manually
 settings-settings-later = Later
-settings-settings-backend = Backend
-settings-settings-instruction-directory = Instruction directory
 settings-settings-keyboard-shortcuts = Keyboard Shortcuts
 settings-settings-reset-all = Reset all
 settings-settings-customize-the-shortcuts-maple-already-ships-this-page-does-not-ad = Customize the shortcuts Maple already ships. This page does not add commands or change what an action can do.
@@ -153,11 +149,6 @@ settings-settings-execution-computer-this-computer = Execution computer: This co
 settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa = Manage integrations here. Enable coding agents to make them available in the composer, then select them for each task.
 settings-settings-detecting-integrations = Detecting integrations…
 settings-settings-no-supported-integrations-detected-on-this-device = No supported integrations detected on this device.
-settings-settings-custom-mcp-servers = Custom MCP servers
-settings-settings-add-server = Add server
-settings-settings-connect-additional-tools-over-mcp = Connect additional tools over MCP.
-settings-settings-loading-custom-mcp-servers = Loading custom MCP servers…
-settings-settings-no-custom-mcp-servers-configured = No custom MCP servers configured.
 settings-settings-enabled = Enabled
 settings-settings-disabled = Disabled
 settings-settings-edit = Edit
@@ -242,19 +233,6 @@ settings-account-enter-your-current-password = Enter your current password
 settings-account-the-new-passwords-do-not-match = The new passwords do not match
 settings-account-the-new-password-must-differ-from-the-current-one = The new password must differ from the current one
 settings-advanced-type-erase = Type ERASE
-settings-advanced-one-absolute-folder-path-per-line = One absolute folder path per line
-settings-advanced-acp-preferences-saved-they-apply-to-new-connections = ACP preferences saved. They apply to new connections.
-settings-advanced-default-values-are-ready-save-to-apply-them = Default values are ready. Save to apply them.
-settings-advanced-agent-client-protocol-acp = Agent Client Protocol (ACP)
-settings-advanced-choose-which-folders-local-acp-clients-can-open-and-how-many-conn = Choose which folders local ACP clients can open and how many connections can run at once. These preferences apply to this account on this computer.
-settings-advanced-saving-acp-preferences = Saving ACP preferences…
-settings-advanced-allowed-project-folders = Allowed project folders
-settings-advanced-enter-one-absolute-folder-path-per-line-leave-the-list-empty-to-a = Enter one absolute folder path per line. Leave the list empty to allow any folder.
-settings-advanced-maximum-connections = Maximum connections
-settings-advanced-save-acp-preferences = Save ACP preferences
-settings-advanced-use-defaults = Use defaults
-settings-advanced-retry = Retry
-settings-advanced-loading-acp-preferences = Loading ACP preferences…
 settings-advanced-type-erase-exactly-to-continue = Type ERASE exactly to continue.
 settings-advanced-this-notice-could-not-be-dismissed-try-again = This notice could not be dismissed. Try again.
 settings-advanced-changes-need-saving = Changes need saving
@@ -280,7 +258,6 @@ settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own
 settings-advanced-encryption-enabled-on-this-computer = Encryption enabled on this computer.
 settings-advanced-your-unlock-password-was-changed = Your unlock password was changed.
 settings-advanced-your-unlock-password-was-removed = Your unlock password was removed.
-settings-advanced-allowed-acp-folders-must-use-absolute-paths = Allowed ACP folders must use absolute paths.
 settings-api-credits-loading-balance = Loading balance…
 settings-api-credits-balance-unavailable = Balance unavailable
 settings-api-credits-enter-an-amount = Enter an amount
@@ -313,8 +290,6 @@ settings-api-keys-copy-the-key-now-for-your-privacy-it-is-not-stored-anywhere-yo
 settings-api-keys-done = Done
 settings-api-keys-deleting = Deleting…
 settings-api-keys-confirm-delete = Confirm delete
-settings-api-keys-delete = Delete
-settings-api-keys-cancel = Cancel
 settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki = Opened the subscription portal in your browser. Refresh after making changes.
 settings-billing-opened-the-pricing-page-in-your-browser = Opened the pricing page in your browser.
 settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Opened checkout in your browser. Refresh after paying to see the new plan.
@@ -340,38 +315,17 @@ settings-billing-activated-with-a-subscription-pass-it-ends-on-the-date-above-wi
 settings-local-api-port-1-65535 = Port (1–65535)
 settings-local-api-could-not-read-the-local-api-status-reconnect-to-this-computer-an = Could not read the local API status. Reconnect to this computer and try again.
 settings-local-api-could-not-update-the-local-api-refresh-its-status-and-try-again = Could not update the local API. Refresh its status and try again.
-settings-local-api-checking-status = Checking status…
-settings-local-api-status-unavailable = Status unavailable
 settings-local-api-local-api = Local API
-settings-local-api-connect-ai-applications-on-this-computer = Connect AI applications on this computer
-settings-local-api-expose-maple-s-inference-apis-at-a-local-address-requests-use-map = Expose Maple's inference APIs at a local address. Requests use Maple's secure backend and your API credits.
-settings-local-api-learn-more-about-the-local-api = Learn more about the local API
 settings-local-api-learn-more = Learn more
-settings-local-api-enable-local-api = Enable local API
-settings-local-api-applies-to-this-computer-including-while-you-work-with-a-remote-a = Applies to this computer, including while you work with a remote agent.
 settings-local-api-enable-local-api-on-this-computer = Enable local API on this computer
 settings-local-api-unavailable-while-local-api-settings-are-loading-or-being-updated = Unavailable while local API settings are loading or being updated.
 settings-local-api-updating-local-api-settings = Updating local API settings…
-settings-local-api-the-local-api-is-enabled-but-paused-select-resume-to-accept-reque = The local API is enabled but paused. Select Resume to accept requests on this computer.
 settings-local-api-port = Port
-settings-local-api-the-local-address-always-uses-127-0-0-1-stop-the-api-to-change-it = The local address always uses 127.0.0.1. Stop the API to change its port.
-settings-local-api-save-port = Save port
-settings-local-api-save-and-resume = Save and resume
-settings-local-api-save-and-retry = Save and retry
-settings-local-api-openai-compatible-base-url = OpenAI-compatible base URL
-settings-local-api-paste-this-address-into-your-ai-application-s-provider-settings = Paste this address into your AI application's provider settings.
 settings-local-api-copy-local-api-base-url = Copy local API base URL
-settings-local-api-when-enabled-the-api-resumes-when-this-computer-s-maple-host-star = When enabled, the API resumes when this computer's Maple host starts and its store is unlocked. Signing out, locking, or quitting the host stops the listener.
-settings-local-api-create-a-dedicated-maple-api-key-copy-it-once-and-enter-it-in-you = Create a dedicated Maple API key, copy it once, and enter it in your AI application's API key field. Every request must supply that key as Authorization: Bearer <key>.
-settings-local-api-manage-api-keys = Manage API keys
-settings-local-api-available-endpoints = Available endpoints
-settings-local-api-browser-origin-requests-are-blocked-use-a-desktop-application-cli = Browser-origin requests are blocked. Use a desktop application, CLI, or server client.
 settings-local-api-refresh-status = Refresh status
 settings-local-api-enter-a-port-between-1-and-65535 = Enter a port between 1 and 65535.
 settings-local-api-paused = Paused
-settings-local-api-stopped = Stopped
 settings-local-api-starting = Starting…
-settings-local-api-running-on-this-computer = Running on this computer
 settings-local-api-stopping = Stopping…
 settings-local-api-could-not-start = Could not start
 settings-local-api-resume = Resume
@@ -386,7 +340,6 @@ settings-mcp-clear = Clear
 settings-mcp-enter-new-values-as-name-value-separated-by-semicolons = Enter new values as NAME=value, separated by semicolons.
 settings-mcp-each-new-entry-needs-a-name-and-value = Each new entry needs a name and value.
 settings-mcp-the-server-target-or-name-changed-replace-or-clear-each-saved-val = The server target or name changed. Replace or clear each saved value before saving.
-settings-remote-could-not-read-remote-update-status = Could not read remote update status
 settings-remote-not-confirmed-don-t-resend-check-again-first = Not confirmed. Don’t resend; check again first.
 settings-remote-update-maple-on-both-computers-to-reconnect = Update Maple on both computers to reconnect.
 settings-remote-this-version-can-t-be-updated-remotely = This version can’t be updated remotely.
@@ -479,54 +432,91 @@ settings-remote-experimental = Experimental
 settings-remote-updating = Updating
 settings-remote-updater-needs-attention = Updater needs attention
 
-# Parameterized Settings messages
+## Parameterized Settings messages
+# $name is an MCP server name typed by the user.
 settings-server-exists = A server named { $name } already exists
+# $message is an untranslated diagnostic.
 settings-shortcut-change-failed = Shortcut change failed: { $message }
+# $message is an untranslated diagnostic.
 settings-shortcut-invalid = Cannot use that shortcut: { $message }
-settings-shortcut-counts = { $arg1 } bindings · { $modified-count } modified
+# $binding-count is the number of shortcuts; $modified-count is how many were changed.
+settings-shortcut-counts = { $binding-count } bindings · { $modified-count } modified
+# $error is an untranslated diagnostic.
 settings-shortcut-overrides-invalid = Saved shortcut overrides were not applied; Maple kept the complete default map. { $error }
+# $modified-count is the number of changed shortcuts.
 settings-shortcut-reset-confirm = Reset all { $modified-count } shortcut changes?
+# $label is the translated name of the shortcut being recorded.
 settings-shortcut-recording = Recording: { $label }
-settings-shortcut-collision = { $arg1 } with { $arg2 } ({ $arg3 })
-settings-shortcut-conflicts = Shortcut conflicts: { $arg1 }
-settings-shortcut-default = Default: { $arg1 }
-settings-execution-computer = Execution computer: { $arg1 }. Native setup and permissions must be completed there.
+# $conflict is a translated description of the conflict; $other is the translated name of the other shortcut; $slot-id is its internal ID, not translated.
+settings-shortcut-collision = { $conflict } with { $other } ({ $slot-id })
+# $count is the number of conflicts.
+settings-shortcut-conflicts = Shortcut conflicts: { $count }
+# $shortcut is a key sequence, not translated.
+settings-shortcut-default = Default: { $shortcut }
+# $computer is the start of a computer ID, not translated.
+settings-execution-computer = Execution computer: { $computer }. Native setup and permissions must be completed there.
+# $version is a version number.
 settings-integration-version = Version { $version }
-settings-usage-percent = { $arg1 }% used
-settings-usage-resets = · Resets { $arg1 }
+# $percent is a number from 0 to 100.
+settings-usage-percent = { $percent }% used
+# $reset is a formatted date or a phrase such as "in 3 days".
+settings-usage-resets = · Resets { $reset }
+# $delete-acknowledgement is the exact text to type, not translated.
 settings-delete-confirmation = Type { $delete-acknowledgement } to confirm
-settings-acp-default = Default ({ $arg1 })
-settings-acp-limit-help = Choose 1–{ $arg1 } simultaneous connections. Leave blank for the default ({ $arg2 }).
-settings-acp-limit-invalid = Choose a connection limit from 1 to { $arg1 }.
-settings-credits-amount-placeholder = Amount in dollars, ${ $min-credit-purchase-dollars } to ${ $arg1 }
-settings-credits-balance = { $arg1 } credits
-settings-credits-cost = { $arg1 } credits for ${ $arg2 }
-settings-api-key-help = Keys work with any OpenAI-compatible client at { $arg1 }/v1 and with `maple-agent proxy --api-key`. A key is shown once, when created.
-settings-api-key-ready = “{ $arg1 }” is ready
-settings-api-key-created = Created { $arg1 }
+# $min-credit-purchase-dollars and $max-credit-purchase-dollars are whole dollar amounts.
+settings-credits-amount-placeholder = Amount in dollars, ${ $min-credit-purchase-dollars } to ${ $max-credit-purchase-dollars }
+# $credits is a formatted number.
+settings-credits-balance = { $credits } credits
+# $credits is a formatted number; $dollars is a whole dollar amount.
+settings-credits-cost = { $credits } credits for ${ $dollars }
+# $name is an API key name typed by the user.
+settings-api-key-ready = “{ $name }” is ready
+# $date is a formatted date.
+settings-api-key-created = Created { $date }
+# $count is the number of requests in progress.
 settings-local-api-requests = { $count ->
     [one] { $count } active request
    *[other] { $count } active requests
     }
-settings-mcp-secret-required = Enter a new value for { $arg1 } or choose Clear.
-settings-computer-name = Computer { $arg1 }
+# $name is an MCP setting name, not translated.
+settings-mcp-secret-required = Enter a new value for { $name } or choose Clear.
+# $id is the first eight characters of a computer ID, not translated.
+settings-computer-name = Computer { $id }
+# $client is a version number.
 settings-remote-client-version = This computer runs v{ $client }.
-settings-remote-checking = { $running } · { $arg1 }
+# $running is the formatted version that computer runs; $activity is a translated status.
+settings-remote-checking = { $running } · { $activity }
+# $running is the formatted version that computer runs.
 settings-remote-last-seen = { $running } when last seen
+# $running is the formatted version that computer runs; $target is the version on offer.
 settings-remote-update-available = { $running } · { $target } available
+# $running is the formatted version that computer runs; $target is the version being downloaded.
 settings-remote-downloading-version = { $running } · downloading { $target }…
+# $running is the formatted version that computer runs.
 settings-remote-downloading = { $running } · downloading…
+# $running is the formatted version that computer runs.
 settings-remote-checking-updates = { $running } · checking for updates…
+# $running is the formatted version that computer runs.
 settings-remote-updating-status = { $running } · updating…
+# $running is the formatted version that computer runs.
 settings-remote-restart-needed-status = { $running } · restart needed there
+# $running is the formatted version that computer runs.
 settings-remote-sending-update = { $running } · sending update…
+# $running is the formatted version that computer runs; $target is the version being installed.
 settings-remote-updating-version = { $running } · updating to { $target }…
+# $target is the installed version.
 settings-remote-updated = Updated to { $target }.
+# $target is the version that did not finish installing.
 settings-remote-update-incomplete = The update to { $target } didn’t finish.
+# $name is a computer name; $version is the target version.
 settings-remote-update-confirm-title = Update { $name } to { $version }?
+# $name is a computer name.
 settings-remote-update-action = Update { $name }
+# $name is a computer name; $version is the target version; $client-version is the version on this computer.
 settings-remote-update-confirm-detail = { $name } stops its running tasks, installs { $version } and restarts. Remote access may not return; if it doesn’t, open Maple on { $name } directly. This computer stays on v{ $client-version } and won’t restart.
-settings-pairing-expiry = One attempt · expires in { $arg1 }:{ $arg2 }
+# $minutes and $seconds are the time left, shown as M:SS.
+settings-pairing-expiry = One attempt · expires in { $minutes }:{ $seconds }
+# $name is a computer name.
 settings-computer-options = { $name } options
 
 # Local encryption settings
@@ -585,6 +575,7 @@ settings-password-updating-your-unlock-password = Updating your unlock password
 settings-password-encrypting-your-local-data = Encrypting your local data
 settings-password-updating-your-local-store = Updating your local store
 settings-password-unlock-password = Unlock password
+# $strength is a translated strength label.
 settings-password-strength = Password strength: { $strength }
 
 # Built-in keyboard shortcut names and categories
@@ -799,6 +790,7 @@ settings-update-downloading = Downloading update…
 settings-update-ready = Ready to update
 settings-update-installing = Installing update…
 settings-update-restart-required = Restart required
+# $status is a translated update status; $version is a version number.
 settings-update-version-status = { $status } · v{ $version }
 settings-update-download = Download update
 settings-update-restart = Restart to Update
@@ -807,18 +799,23 @@ settings-account-anonymous = Anonymous
 settings-permission-accessibility = Accessibility
 settings-permission-screen-recording = Screen Recording
 settings-permission-desktop-helper = GNOME helper extension
+# $permission is a translated permission name.
 settings-permission-granted = { $permission }: on
+# $permission is a translated permission name.
 settings-permission-needed = { $permission }: needed
 settings-integration-cua-name = Computer use
 settings-integration-cua-description = Let Maple see your screen and use apps on this computer for you: clicking, typing and scrolling.
 settings-integration-codex-description = Let a task hand work to the Codex CLI installed on this computer, with its own account.
 settings-integration-claude-description = Let a task hand work to the Claude Code CLI installed on this computer, with its own account.
+# $date is a formatted date.
 settings-billing-renews = Renews { $date }
+# $date is a formatted date.
 settings-billing-expires = Expires { $date }
 settings-billing-month = month
 settings-billing-year = year
 settings-billing-week = week
 settings-billing-day = day
+# $amount is a formatted price; $period is a translated billing period.
 settings-billing-price-period = { $amount }/{ $period }
 settings-navigation-no-region = There is no Settings region in that direction
 settings-navigation-unavailable = That application Vim command is not available on this Settings target
@@ -835,15 +832,19 @@ settings-month-september = September
 settings-month-october = October
 settings-month-november = November
 settings-month-december = December
+# $month is a translated month name; $day and $year are numbers.
 settings-date = { $month } { $day }, { $year }
+# $name is a product name such as Pro, not translated.
 settings-plan-name = { $name } Plan
 settings-reset-monthly = Monthly
 settings-reset-soon = in less than 1 hour
 settings-reset-tomorrow = Tomorrow
+# $count is a number of hours.
 settings-reset-hours = { $count ->
     [one] in { $count } hour
    *[other] in { $count } hours
     }
+# $count is a number of days.
 settings-reset-days = { $count ->
     [one] in { $count } day
    *[other] in { $count } days
@@ -868,15 +869,19 @@ settings-remote-refused-download-required = Not updated. It must download the up
 settings-permission-guidance-accessibility = Accessibility: Grant Maple this access in System Settings, then fully quit and reopen Maple.
 settings-permission-guidance-screen-recording = Screen Recording: Grant Maple this access in System Settings, then fully quit and reopen Maple.
 settings-credits-whole-dollars = Enter a whole-dollar amount
+# $amount is a whole dollar amount.
 settings-credits-minimum = The minimum is ${ $amount }
+# $amount is a whole dollar amount.
 settings-credits-maximum = The maximum is ${ $amount }
+# $count is a number of minutes.
 settings-password-progress-estimate = { $count ->
     [one] About { $count } minute left.
    *[other] About { $count } minutes left.
     }
+# $done and $total are formatted sizes such as 2.1 GB.
 settings-password-progress-bytes = Copied about { $done } of { $total }.
 settings-password-progress-committing = Finishing the change. Keep Maple open.
-settings-account-password-minimum = Use at least { $count } characters for the new password
+# $message is the sentence shown first, which may be untranslated.
 settings-password-unconfirmed-attempt = { $message } Keep this passphrase. Maple could not confirm the previous attempt. Reopen Maple to check the store before trying again.
 
 # Shared clipboard controls used by Settings
@@ -885,7 +890,6 @@ common-copied = Copied
 
 # Settings layouts merged from master
 settings-section-api = API
-settings-section-editors = Editors
 settings-api-intro = Connect AI apps and tools to Maple with an OpenAI-compatible API.
 settings-api-learn-more = Learn more about the API
 settings-api-key-per-app-help = Give each app its own key. You can copy a key only once, when you create it.
@@ -905,23 +909,8 @@ settings-local-api-ready-help = Ready for requests from apps on this computer.
 settings-local-api-resume-help = Select Resume to accept requests on this computer.
 settings-local-api-failed-help = Check the port, then try again.
 settings-advanced-no-attention = Your local Maple data doesn't need attention.
-settings-editors-copy-zed = Copy Zed configuration
-settings-editors-copy-jetbrains = Copy JetBrains configuration
-settings-editors-copy-command = Copy command
-settings-editors-title = Use Maple in your editor
-settings-editors-description = Editors that support the Agent Client Protocol (ACP) can run Maple as their AI agent. They use this computer's sign-in, tasks and history, and start Maple themselves, so this window doesn't need to be open.
-settings-editors-jetbrains = JetBrains IDEs
-settings-editors-other = Other editors
-settings-editors-command-help = Point any other ACP client at this command. It talks to the editor over standard input and output.
-settings-editors-trust = Maple works in the folder your editor has open. The first time you use a folder, your editor asks whether to trust it.
-settings-editors-tools = As in this app, Maple runs tools without asking each time.
-settings-editors-app-only = Computer use and handing work to Codex or Claude Code only work in this app.
-settings-editors-sign-in = If your editor can't start Maple, open this app and check that you're signed in.
+# $name is an API key name typed by the user.
 settings-api-delete-key-name = Delete key { $name }
-settings-editors-zed = Zed
-settings-editors-temporary = { $name } is running from a temporary location. Move it to your Applications folder and reopen it before setting up an editor.
-settings-editors-zed-help = Open Agent Settings, go to External Agents, click Add Agent and choose Add Custom Agent. In the file Zed opens, replace the example under agent_servers with this, then start a new thread with { $name }.
-settings-editors-jetbrains-help = In the AI Chat tool window, open the … menu and choose Add Custom Agent. Add this under agent_servers in the file that opens, then select { $name } in AI Chat.
 settings-local-api-checking = Checking…
 settings-local-api-unavailable = Unavailable
 
@@ -1018,12 +1007,13 @@ flows-repair-next = Review next dropped rows
 flows-repair-save-body = Saving readable data permanently deletes the original damaged store after its verified replacement is installed. The listed unreadable data will be lost. Type SAVE READABLE DATA to confirm.
 flows-repair-save = Save readable data and replace original
 flows-repair-cancel = Cancel
-# Counts from the recovery preview; $rebuild counts retained tasks whose timelines need rebuilding.
+# $tasks, $rows, $droppedTasks and $droppedRows are counts from the recovery preview; $rebuild counts retained tasks whose timelines need rebuilding.
 flows-repair-preview-counts = { $tasks } tasks and { $rows } readable source rows can be kept. { $droppedTasks } tasks and { $droppedRows } rows will be dropped. { $rebuild } retained tasks need their timelines rebuilt.
+# $phase is the translated recovery phase.
 flows-repair-progress = Local recovery: { $phase }.
 # $phase is the recovery phase; $completed and $total count bytes.
 flows-repair-progress-bytes = Local recovery: { $phase }. { $completed } of { $total } bytes.
-# Only redacted status, completion flag and finding count; never task content.
+# $status is a redacted status; $complete is a translated yes or no; $findings is a count. Never task content.
 flows-repair-diagnostic = Integrity check: { $status }. Complete: { $complete }. Findings: { $findings }. The diagnostic report contains no task content.
 flows-repair-yes = yes
 flows-repair-no = no
@@ -1133,7 +1123,7 @@ native-stop-unavailable = Maple cannot retry stopping its host. Keep this proces
 native-stop-failed = Maple could not finish stopping its host: { $error }. Keep this window open and retry stopping the host before relaunching Maple.
 # $error is an external diagnostic, preserved verbatim.
 native-restart-failed = Could not restart Maple: { $error }
-# Counts of tasks, attached editors, remote controllers, background jobs, and API requests.
+# Counts of $tasks running tasks, $editors attached editors, $controllers remote controllers, $jobs background jobs and $requests API requests.
 native-quit-activity = Quitting stops running tasks ({ $tasks }), attached editors ({ $editors }), remote controllers ({ $controllers }) and background jobs ({ $jobs }). It also stops this computer's local API and its active requests ({ $requests }). Maple waits for them to drain before closing.
 # $version is the app version; $status is the localized updater status.
 native-about-details = Version { $version }
@@ -1146,8 +1136,11 @@ native-remote-update-required = Update required — select to retry after updati
 ## Flows: retained store-mode notices
 # $date preserves the recorded UTC date and time (YYYY-MM-DD HH:MM UTC).
 flows-mode-notice-set = An unlock password was set on this computer at { $date }.
+# $date preserves the recorded UTC date and time (YYYY-MM-DD HH:MM UTC).
 flows-mode-notice-changed = Your unlock password was changed on this computer at { $date }.
+# $date preserves the recorded UTC date and time (YYYY-MM-DD HH:MM UTC).
 flows-mode-notice-rotated = Your unlock password was changed and your local data was re-encrypted on this computer at { $date }.
+# $date preserves the recorded UTC date and time (YYYY-MM-DD HH:MM UTC).
 flows-mode-notice-removed = Your unlock password was removed on this computer at { $date }.
 
 ## Chat surface
@@ -1175,6 +1168,7 @@ chat-feedback-privacy = Sent anonymously with app version, platform and build pr
 chat-feedback-bug = Bug
 chat-feedback-idea = Idea
 chat-feedback-other = Other
+# $length is the number of characters typed.
 chat-feedback-length = { $length } / 5,000 · Shift+Enter for a new line
 chat-thinking-max = Maximum
 chat-wait-new-task = Wait for the new task to be created, then switch projects
@@ -1195,7 +1189,6 @@ chat-skill-loading = Loading skill…
 chat-skill-removed = That skill is no longer installed
 chat-host-received = The host received your message. Nothing was resent.
 chat-no-longer-waiting = The task was no longer waiting for that answer
-chat-history-reconnecting = Task history is reconnecting. Try again when it has recovered.
 chat-wait-answer = Wait for the current answer first
 chat-feedback-thanks = Thanks for your feedback!
 chat-no-speech = No speech was recognized
@@ -1229,10 +1222,12 @@ chat-stop-run = Stop the run
 chat-queue-next-turn = Queue for next turn
 chat-send = Send
 chat-model = Model
+# $count is the number of integrations.
 chat-integration-count = { $count ->
     [one] 1 integration
    *[other] { $count } integrations
 }
+# $count is the number of running agents.
 chat-agents-running = { $count } running
 chat-folder-choose = Choose a project folder
 chat-folder-parent = Back to parent folder
@@ -1253,11 +1248,15 @@ chat-folder-new = New folder
 chat-folder-use = Use folder
 chat-folder-path-required = Enter a folder path, or choose Home.
 chat-folder-name-required = Enter a name for the new folder.
+# $error is an untranslated diagnostic.
 chat-folder-open-error = Could not open folder: { $error }
+# $error is an untranslated diagnostic.
 chat-folder-create-error = Could not create folder: { $error }
+# $error is an untranslated diagnostic.
 chat-folder-use-error = Could not use folder: { $error }
 chat-folder-name = Folder name
 chat-folder-path = Folder path
+# $path is a folder path.
 chat-folder-shown = Folders shown: { $path }
 chat-full-output = Show full output
 chat-conversation = Conversation
@@ -1283,7 +1282,9 @@ chat-empty-title = Work on anything...
 chat-empty-private = Encrypted and private at every step
 chat-transcript = Transcript
 chat-answer-placeholder = Type your answer…
+# $name is a project folder name.
 chat-trust-title = Trust { $name }?
+# $name is a project folder name.
 chat-remove-title = Remove { $name }?
 chat-trust-keep = Keep untrusted
 chat-trust-allow = Trust project
@@ -1333,6 +1334,7 @@ chat-settled = Settled
 chat-tasks = Tasks
 chat-search-tasks = Search tasks
 chat-name = Name
+# $name is a project folder name.
 chat-new-task-in = New task in { $name }
 chat-slash-btw = Ask a side question; the task does not see it
 chat-slash-compact = Summarize the conversation to free context
@@ -1346,7 +1348,6 @@ chat-choose-folder = Choose folder
 chat-feedback-invalid-length = Please enter between 1 and 5,000 characters.
 chat-send-switched-recall = Message not sent: another task was opened first. Press Up in the composer to recall it
 chat-send-switched-restored = Message not sent: another task was opened first. It is back in the composer
-chat-wait-recovery = Wait for the host connection and task history to recover before sending.
 chat-commands-help = Type / to list commands. Built-ins: /btw, /compact, /new, /pin, /web, /model, /help. Skills appear as /name.
 chat-skill-send-restored = Skill not sent while the previous send is settling. The command is restored; send it again when ready.
 chat-skill-send-retained = Skill not sent while the previous send is settling. The command is retained; press Up in an empty composer to recall it.
@@ -1357,9 +1358,13 @@ chat-send-failed-restored = The send did not complete successfully. Your draft i
 chat-send-interrupted-retained = The host restarted before recording this send’s result; it may have taken effect. You can continue. The original draft is retained; open its task with an empty composer to recover it.
 chat-send-failed-retained = The failed draft is retained. You can continue; open its task with an empty composer to recover it.
 chat-send-unknown = Send outcome is still unknown. Your message and files are retained; Maple will check again after reconnecting.
+# $message is the underlying error, which may be untranslated.
 chat-compaction-failed = Compaction failed: { $message }
+# $query is the text the user typed.
 chat-no-model-match = No model matches “{ $query }”
+# $message is the underlying error, which may be untranslated.
 chat-answer-failed = Could not deliver the answer: { $message }
+# $message is the underlying error, which may be untranslated.
 chat-web-failed = Could not change web access: { $message }
 chat-copy-link = Copy Link
 chat-copy = Copy
@@ -1373,10 +1378,12 @@ chat-update-error = Update failed
 chat-update-restart = Restart to finish update
 chat-update-available = Update available
 chat-store-updating = Updating local data…
-chat-host-reconnecting = Connection lost. Reconnecting to the Maple host…
 chat-host-unavailable = The Maple host is unavailable. Reopen Maple to reload your tasks. No message was resent.
+# $message is the underlying error, which may be untranslated.
 chat-runtime-start-failed = Runtime failed to start: { $message }
+# $error is an untranslated diagnostic.
 chat-host-reload-failed = Could not reload host state: { $error }. Reopen Maple before sending.
+# $error is an untranslated diagnostic.
 chat-thinking-save-failed = Could not save the thinking level: { $error }
 chat-composer-placeholder = Ask Maple to work in this folder…
 chat-side-thread-placeholder = Ask a side question (Esc to leave the thread)…
@@ -1399,13 +1406,10 @@ chat-next = Next
 chat-answer = Answer
 chat-skip = Skip (Esc)
 chat-you = You
-# count is a completed/total ratio, for example 2/5.
+# $count is a completed/total ratio, for example 2/5.
 chat-plan-done = Plan, { $count } done
+# $position is the current question number; $count is the total.
 chat-question-position = Question { $position } of { $count }
-chat-shell-no-deadline = no deadline
-chat-shell-deadline = deadline { $seconds }s
-chat-shell-status = Started in { $cwd }
-    Running { $elapsed }s · no output for { $idle }s · { $deadline } · Stop cancels command
 chat-preparing = Preparing…
 chat-speak = Speak
 chat-attachment-file = File
@@ -1421,9 +1425,11 @@ chat-no-copy-text = The selected item has no visible text to copy
 chat-no-assistant-item = No assistant item is available
 chat-queue-changed = The queued message changed; try again
 chat-queue-editing = Editing in the composer…
+# $count is the number of queued messages.
 chat-queue-count = { $count } queued for after this turn
 chat-upload-wait-recovery = Files ready · waiting for the host to recover
 chat-upload-wait-send = Files ready · waiting for the previous send
+# $completed is the number of files uploaded; $count is the total.
 chat-upload-progress = Uploading files · { $completed } of { $count }
 chat-upload-cancelling = Cancelling upload…
 chat-send-uncertain = Delivery is uncertain. Your message and files are retained while Maple checks the host; nothing will be resent.
@@ -1431,6 +1437,7 @@ chat-sending-message = Sending message
 chat-waiting-response = Waiting for response
 chat-waiting-response-progress = Waiting for response…
 
+# $count is the maximum number of files.
 chat-attachment-limit = Attach at most { $count } files at a time
 chat-image-plan = Image attachments need a Pro, Max, or Team plan
 
@@ -1443,6 +1450,7 @@ chat-group-list = In one list
 chat-sort-updated = Last updated
 chat-sort-manual = Manual order
 chat-new-project-button = New project
+# $count is the number of archived tasks.
 chat-archived-count = Archived tasks { $count }
 chat-page-pinned-loading = Loading pinned tasks…
 chat-page-pinned-retry = Retry pinned tasks
@@ -1465,8 +1473,11 @@ chat-page-projects-more = Load more projects
 
 # Usage footer; plan and reset are localized display values.
 chat-usage-unavailable-label = Usage unavailable. Open Usage settings
+# Screen reader label. $percent is a number from 0 to 100. $plan is the plan name. $reset is a formatted date or a phrase such as "in 3 days".
 chat-usage-label = Usage, { $percent } percent used. { $plan }, resets { $reset }. Open Usage settings
+# $percent is a number from 0 to 100.
 chat-usage-percent = { $percent }% used
+# $reset is a formatted date or a phrase such as "in 3 days".
 chat-usage-reset = Resets { $reset }
 
 # Shared with native desktop computer presentation.
@@ -1478,12 +1489,17 @@ chat-loading-tasks = Loading tasks…
 chat-loading-archived = Loading archived tasks…
 chat-no-projects = No projects yet
 chat-more-tasks = more tasks
+# $name is a computer name.
 chat-more-from = more from { $name }
+# $name is a computer name.
 chat-archive-count-from = archived task count from { $name }
+# $name is a computer name.
 chat-more-archived-from = more archived tasks from { $name }
+# $label is a translated paging action.
 chat-load-tasks-retry = Could not load tasks — retry { $label }
 
-# Transcript chrome and notifications. Title/name/action are unmodified user or provider text.
+## Transcript chrome and notifications. Title/name/action are unmodified user or provider text.
+# $name is a computer name.
 chat-new-project-on-computer = New project on { $name }
 chat-output-unsaved = Full output is available after this message is saved.
 chat-output-changed = The output changed; reopen it.
@@ -1491,6 +1507,7 @@ chat-output-budget = Full output exceeds the current 32 MiB view budget.
 chat-notification-question = Maple has a question
 chat-notification-respond = Open Maple to respond.
 chat-notification-finished = A task finished. Open Maple to view it.
+# $title is the unmodified task title.
 chat-notification-task-finished = “{ $title }” finished
 chat-task = Task
 chat-month-1 = Jan
@@ -1505,20 +1522,28 @@ chat-month-9 = Sep
 chat-month-10 = Oct
 chat-month-11 = Nov
 chat-month-12 = Dec
+# $action is unmodified provider text describing the request.
 chat-external-permission = waiting for you to { $action }
+# $code is a process exit code. Keep the leading space.
 chat-command-exit = { " " }(exit { $code })
+# $month is a translated month name; $day is a number; $time is the time as HH:MM.
 chat-message-date = { $month } { $day }, { $time }
 
-# Local operation errors; error is an unmodified underlying diagnostic.
+## Local operation errors; error is an unmodified underlying diagnostic.
+# $name is an integration name; $project is a project name; $error is an untranslated diagnostic.
 chat-project-integration-save-failed = Could not save { $name } for { $project }: { $error }
+# $error is an untranslated diagnostic.
 chat-file-dialog-failed = Could not open the file dialog: { $error }
 chat-sidebar-order-too-large = This sidebar order is too large to save
 
 # Attachment preparation; name is the original filename, error is an external diagnostic.
 chat-attachment-stopped = Attachment preparation stopped
+# $error is an untranslated diagnostic.
 chat-attachment-failed = Attachment preparation failed: { $error }
 chat-image-too-large = Images must be 10 MiB or smaller
+# $name is a file name.
 chat-image-name-too-large = { $name } is larger than 10 MiB
+# $name is a file name.
 chat-image-unsupported = { $name } is not a PNG, JPEG, or WebP image
 
 # Computer connection presentation.
@@ -1542,6 +1567,7 @@ chat-remote-computer-settings = Remote computer settings…
 # Speech and file-manager operation failures.
 chat-transcription-cancelled = Transcription was cancelled
 chat-speech-cancelled = Text-to-speech was cancelled
+# $error is an untranslated diagnostic.
 chat-open-folder-failed = Could not open the folder: { $error }
 
 ## Runtime timeline presentation
@@ -1552,9 +1578,13 @@ runtime-timeline-compacted = Context compacted
 runtime-timeline-branch-summary = Branch summary
 runtime-timeline-stopped = Stopped by user
 runtime-timeline-compacted-body = Earlier messages were summarized to make room in the context.
+# $name is a skill name, not translated.
 runtime-timeline-skill-loading = Loading skill: { $name }
+# $name is a skill name, not translated.
 runtime-timeline-skill-loaded = Loaded skill: { $name }
+# $name is a skill name, not translated.
 runtime-timeline-skill-failed = Couldn’t load skill: { $name }
+# $name is a tool name; $detail is unmodified tool input.
 runtime-timeline-tool-detail = { $name }: { $detail }
 runtime-timeline-terminal = Terminal
 runtime-timeline-editor = Editor
@@ -1574,7 +1604,7 @@ runtime-error-host-disconnected = Host disconnected
 runtime-error-host-updated = Maple has been updated. Quit and reopen Maple to continue.
 runtime-error-local-desktop = Store lifecycle commands require the local desktop
 
-# Model catalog names remain unchanged.
+# $name is a model name, not translated.
 runtime-timeline-model-switched = Switched to { $name }
 runtime-error-email-required = Enter an email address
 runtime-error-password-required = Enter a password
@@ -1590,8 +1620,11 @@ runtime-timeline-agent-providers = External agent: providers
 
 # External-agent identifiers and provider names remain unchanged.
 runtime-timeline-external-undelivered = The task could not be resumed. Send a message to read the agent's result.
+# $name is the external agent name and $provider is its provider. Neither is translated.
 runtime-timeline-external-completed = External agent { $name } ({ $provider }) finished.
+# $name is the external agent name and $provider is its provider. Neither is translated.
 runtime-timeline-external-failed = External agent { $name } ({ $provider }) failed.
+# $name is the external agent name and $provider is its provider. Neither is translated.
 runtime-timeline-external-cancelled = External agent { $name } ({ $provider }) was interrupted.
 
 runtime-error-host-disconnected-current = The Maple host disconnected
@@ -1690,6 +1723,7 @@ runtime-error-repair-operation = Unknown local recovery operation
 runtime-error-repair-worker = The local recovery worker did not finish
 runtime-error-repair-page = Invalid recovery loss report page.
 runtime-error-repair-confirmation = Type SAVE READABLE DATA exactly to save readable data.
+# $required_mib is a number of mebibytes.
 runtime-error-key-memory = This computer doesn't have enough free memory to unlock Maple (it needs { $required_mib } MiB).
 
 ## Runtime folders, attachments, and paging
@@ -1814,9 +1848,13 @@ runtime-error-browser-checkout-link = Could not open checkout: unexpected link
 runtime-error-browser-checkout-open = Could not open checkout in your browser
 runtime-error-billing-timeout = billing request timed out
 runtime-error-key-name-required = Give the key a name
+# $count is a number of characters.
 runtime-error-key-name-length = Use at most { $count } characters for the key name
+# $count is a number of characters.
 runtime-error-account-password-length = Use at least { $count } characters for the new password
+# $amount is a whole dollar amount.
 runtime-error-credit-minimum = The minimum is ${ $amount }
+# $amount is a whole dollar amount.
 runtime-error-credit-maximum = The maximum is ${ $amount }
 runtime-error-credit-whole = Enter a whole-dollar amount
 
@@ -1860,11 +1898,17 @@ chat-staging-private-directory = Attachment staging directory is not private
 chat-staging-not-file = Choose a file, not a folder
 chat-staging-file-too-large = Files must be 30 MiB or smaller
 chat-staging-file-grew = The file grew while it was being attached. Please attach it again.
+# $error is an untranslated diagnostic.
 chat-staging-prepare-failed = Could not prepare attachment staging: { $error }
+# $error is an untranslated diagnostic.
 chat-staging-open-failed = Could not open the attachment: { $error }
+# $error is an untranslated diagnostic.
 chat-subscribe-history-failed = Could not subscribe to task history: { $error }
+# $error is an untranslated diagnostic.
 chat-web-change-error = Could not change web access: { $error }
+# $name is an integration name; $error is an untranslated diagnostic.
 chat-integration-change-error = Could not change { $name }: { $error }
+# $error is an untranslated diagnostic.
 chat-project-integrations-load-failed = Could not load project integrations: { $error }
 chat-output-full-budget = Full output exceeds the 32 MiB view budget.
 chat-output-range-invalid = Invalid output range
@@ -1884,6 +1928,7 @@ chat-upload-retained-unconfirmed = Could not confirm the retained file upload. Y
 chat-upload-receipt-cancelled = The file upload was cancelled. Your draft is retained.
 chat-upload-retained-pending = The retained file upload is still in progress. Your draft is retained; try again when it completes.
 chat-upload-preparing = Attachment is still being prepared
+# $error is an untranslated diagnostic.
 chat-upload-confirm-failed = File upload could not be confirmed: { $error }. Your draft is retained; try again when the connection recovers.
 chat-settings-sync-unavailable = Maple host is unavailable; settings edits remain pending
 chat-settings-sync-timeout = Maple settings synchronization timed out
@@ -1916,8 +1961,11 @@ settings-catalog-productivity = Productivity
 settings-catalog-teams = Teams
 settings-catalog-business = Business
 settings-catalog-developer = Developer
+# $name is an app name, not translated.
 settings-catalog-get-app = Get { $name }
+# $name is an app name, not translated.
 settings-catalog-needs-app = Needs { $name }.
+# $name is an app name, not translated; $version is a version number.
 settings-catalog-needs-version = Needs { $name } { $version } or newer.
 settings-catalog-summary-notion = Search and update your pages and databases
 settings-catalog-summary-todoist = Manage your tasks and projects
@@ -1959,18 +2007,23 @@ settings-acp-folder = Maple works in the folder the client has open. The first t
 settings-acp-tools = As in this app, Maple runs tools without asking each time.
 settings-acp-desktop-only = Computer use and handing work to Codex or Claude Code only work in this app.
 settings-acp-troubleshoot = If a client can't start Maple, open this app and check that you're signed in.
+# $name is the app display name.
 settings-acp-temporary = { $name } is running from a temporary location. Move it to your Applications folder and reopen it before connecting an ACP client.
 settings-acp-zed-open = Open Agent Settings, go to External Agents, click Add Agent and choose Add Custom Agent.
 settings-acp-zed-config = In the file Zed opens, replace the example under agent_servers with the entry below.
+# $name is the agent name shown in that editor, not translated.
 settings-acp-zed-start = Start a new thread with { $name }.
 settings-acp-jb-open = In the AI Chat tool window, open the … menu and choose Add Custom Agent.
 settings-acp-jb-config = Add the entry below under agent_servers in the file that opens.
+# $name is the agent name shown in that editor, not translated.
 settings-acp-jb-select = Select { $name } in AI Chat.
 settings-acp-paseo-open = Open ~/.paseo/config.json.
 settings-acp-paseo-config = Add the entry below under agents.providers.
+# $name is the agent name shown in that editor, not translated.
 settings-acp-paseo-start = Run paseo reload, then start an agent with { $name }.
 settings-acp-t3-open = Open Settings → Providers → Add provider, then choose Show more and Local ACP command.
 settings-acp-t3-config = Paste the path below as the executable and add acp as its only argument.
+# $name is the agent name shown in that editor, not translated.
 settings-acp-t3-start = Name it { $name }, then select it in a new thread.
 
 # Maple inference failures; raw diagnostics remain unchanged.

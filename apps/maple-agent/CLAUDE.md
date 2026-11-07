@@ -190,3 +190,5 @@ text unchanged. Language changes apply live; invalidate cached translated text
 when the locale changes. Extend the converted-module guard as each module is
 extracted. Keep host error codes source-owned and format
 them in the UI; preserve raw diagnostics for unknown codes and recovery logic.
+When English changes, update each translation, then run
+`just translations-reviewed <locale>`.

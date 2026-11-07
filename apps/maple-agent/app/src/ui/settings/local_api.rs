@@ -858,7 +858,7 @@ mod tests {
             ("en", "Ready for requests from apps on this computer."),
             (
                 "es",
-                "Lista para recibir solicitudes de las aplicaciones de este equipo.",
+                "Lista para recibir solicitudes de las aplicaciones de esta computadora.",
             ),
             ("en", "Ready for requests from apps on this computer."),
         ] {

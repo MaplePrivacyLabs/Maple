@@ -67,7 +67,8 @@ including additions/removals. `fluent-bundle` supplies typed argument values.
   convert it to `UiText` only on the UI thread.
 - Translate accessibility labels too. Keep element IDs, keymap slots, commands,
   protocol values and other machine-readable identifiers stable.
-- Keep complete sentences together. Add translator comments explaining args.
+- Keep complete sentences together. Give every variable a descriptive name and
+  explain it in a translator comment on the English message.
   Fluent bidi isolation is disabled for the supported left-to-right languages,
   so native controls and editable fallback names do not acquire invisible marks. GPUI shaping/fallback-font checks are required before enabling scripts
   that need them.
@@ -81,16 +82,26 @@ log a fallback once per first resolution rather than on every frame.
 
 The existing `agent-test` cargo suite checks catalog syntax, duplicate IDs,
 identical shipped key sets, enabled/catalog parity, literal UI lookup keys,
-fallback behavior, argument formatting and numeric plurals. The converted-module
+fallback behavior, argument formatting, numeric plurals, unused messages and
+undocumented variables. The converted-module
 check rejects direct literals in common label methods; expand its module list
 as extraction proceeds. It is deliberately a narrow heuristic, not proof that
 all user-facing text has been found. Existing unconverted modules remain debt;
 new user-facing text should use the catalog rather than increasing that debt.
 No new workflow or CI lane is needed.
 
+`app/translation-revisions/{locale}.txt` records the English each translation was
+last reviewed against. When English is added, removed or reworded, the catalog
+test fails and names those messages. Update them in the translated catalog, then
+run `just translations-reviewed <locale>` and commit the result. Comment changes
+do not count. The record cannot tell whether anyone translated anything, so
+reviewers should expect each changed revision line to come with a changed
+translation.
+
 A partial catalog can fall back safely at runtime, but it is not enabled or
 shipped until completeness checks pass. To add a language, add its complete
-catalog and native `language-name`, then register it in `i18n::LANGUAGES`.
+catalog and native `language-name`, register it in `i18n::LANGUAGES`, then run
+`just translations-reviewed <locale>`.
 Validate layout, font fallback, bidi marks, and platform-native language
 metadata before production enablement. Spanish currently has Linux preview
 evidence only; macOS/Windows runtime checks remain separate. The macOS bundle
@@ -153,7 +164,7 @@ text, while response identity, authoritative results, and row identity still
 use strict decoding. Provider diagnostics remain untouched for Pi retry and
 context-overflow decisions; their presentation codes select translated bodies.
 
-The nonblocking dispatch-macro consolidation, global locale observers, and a
-catalog translation-revision/dead-key audit remain follow-up maintenance work.
+The nonblocking dispatch-macro consolidation and global locale observers remain
+follow-up maintenance work.
 These changes do not establish Windows runtime evidence: exercise live language
 switching, native prompts/menus and DirectWrite on Windows before release.

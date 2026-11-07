@@ -65,7 +65,7 @@ impl CreditsState {
                             (MIN_CREDIT_PURCHASE_DOLLARS).to_string().into(),
                         ),
                         (
-                            "arg1",
+                            "max-credit-purchase-dollars",
                             (format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64))
                                 .to_string()
                                 .into(),
@@ -117,7 +117,7 @@ fn balance_label(
         (Some(balance), _) => messages
             .get(
                 "settings-credits-balance",
-                [("arg1", (format_count(balance)).to_string().into())],
+                [("credits", (format_count(balance)).to_string().into())],
             )
             .to_string(),
         (None, false) => tr("settings-api-credits-loading-balance").to_string(),
@@ -166,7 +166,7 @@ impl SettingsScreen {
                     MIN_CREDIT_PURCHASE_DOLLARS.to_string().into(),
                 ),
                 (
-                    "arg1",
+                    "max-credit-purchase-dollars",
                     format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64).into(),
                 ),
             ],
@@ -334,7 +334,7 @@ impl SettingsScreen {
                 self.messages
                     .get(
                         "settings-credits-balance",
-                        [("arg1", (format_count(balance)).to_string().into())],
+                        [("credits", (format_count(balance)).to_string().into())],
                     )
                     .to_string(),
             ),
@@ -390,7 +390,7 @@ impl SettingsScreen {
                             .get(
                                 "settings-credits-balance",
                                 [(
-                                    "arg1",
+                                    "credits",
                                     (format_count((dollars * CREDITS_PER_DOLLAR) as i64))
                                         .to_string()
                                         .into(),
@@ -435,8 +435,8 @@ impl SettingsScreen {
                         .get(
                             "settings-credits-cost",
                             [
-                                ("arg1", (format_count(*amount as i64)).to_string().into()),
-                                ("arg2", (amount / CREDITS_PER_DOLLAR).to_string().into()),
+                                ("credits", (format_count(*amount as i64)).to_string().into()),
+                                ("dollars", (amount / CREDITS_PER_DOLLAR).to_string().into()),
                             ],
                         )
                         .to_string(),

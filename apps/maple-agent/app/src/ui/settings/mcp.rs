@@ -139,7 +139,7 @@ pub(super) fn field_edits(
                     if value.is_empty() {
                         return Err(tr_args(
                             "settings-mcp-secret-required",
-                            [("arg1", (field.name).to_string().into())],
+                            [("name", (field.name).to_string().into())],
                         )
                         .to_string());
                     }
