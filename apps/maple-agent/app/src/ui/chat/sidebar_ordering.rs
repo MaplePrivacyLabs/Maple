@@ -40,13 +40,15 @@ impl Sidebar {
         self.order_loading = true;
         let backend = self.backend.clone();
         let user = self.user_id.clone();
-        self.call_semantic(
+        let request = crate::ui::task::call_semantic(
+            &self.backend,
             async move {
                 backend
                     .call_presented::<crate::settings::SidebarOrder>("get_sidebar_order", (&user,))
                     .await
                     .map_err(UiFailure::from)
             },
+            "chat-task-cancelled",
             cx,
             |this, result, cx| {
                 this.order_loading = false;
@@ -64,6 +66,8 @@ impl Sidebar {
                 cx.notify();
             },
         );
+        // At most one is in flight: `order_loading` guards the next call.
+        self.order_request = Some(request);
     }
 
     pub(super) fn save_order(&self, cx: &mut Context<Self>) {

@@ -1271,6 +1271,19 @@ mod state_tests {
         (chat, cx)
     }
 
+    /// The sidebar asks for its saved order as it is built, and the fixture's
+    /// backend refuses on a real thread. A late refusal raised a notice that
+    /// moved the layout under tests that had already measured it.
+    #[gpui::test]
+    fn fixture_leaves_no_saved_order_request_to_raise_a_late_notice(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        // The refusal takes about a millisecond; give a late one ample time.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cx.run_until_parked();
+        let notice = chat.read_with(cx, |this, _| this.notice.clone());
+        assert!(notice.is_none(), "unexpected notice: {notice:?}");
+    }
+
     fn todo_item(id: &str, todos: serde_json::Value) -> AgentTimelineItem {
         AgentTimelineItem {
             status: Some("completed".to_string()),

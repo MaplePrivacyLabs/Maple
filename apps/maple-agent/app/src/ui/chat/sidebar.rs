@@ -683,6 +683,9 @@ pub(super) struct Sidebar {
     order: SidebarOrder,
     order_loaded: bool,
     order_loading: bool,
+    /// The saved-order request, kept apart from `bridged_tasks` so a test
+    /// fixture can cancel it alone.
+    order_request: Option<Task<()>>,
     manual_catalog: catalog::Catalog,
     task_ranks: HashMap<Option<String>, HashMap<String, usize>>,
     pinned_task_ranks: HashMap<Option<String>, HashMap<String, usize>>,
@@ -1011,6 +1014,7 @@ impl Sidebar {
             order: SidebarOrder::default(),
             order_loaded: false,
             order_loading: false,
+            order_request: None,
             manual_catalog: catalog::Catalog::default(),
             task_ranks: HashMap::new(),
             pinned_task_ranks: HashMap::new(),
@@ -1505,6 +1509,18 @@ impl Sidebar {
         self.rebuild_sections();
     }
 
+    /// `new` asks the backend for the saved order on a real thread. Under
+    /// test its answer arrives at a moment set by the OS, not the test: it
+    /// can replace the fixture's order, raise a notice that moves the
+    /// layout after a test measured it, or wake a task from a foreign
+    /// thread, which gpui's test scheduler rejects. Drop it before its
+    /// first poll, while it has no waker for that thread to call.
+    #[cfg(test)]
+    pub(super) fn cancel_order_request_for_test(&mut self) {
+        self.order_request = None;
+        self.order_loading = false;
+    }
+
     /// Other tests persist their fixture ids into the settings file this
     /// process reads; a fixture starts from nothing persisted.
     #[cfg(test)]
@@ -1518,7 +1534,7 @@ impl Sidebar {
         self.pinned_tasks.clear();
         self.order = SidebarOrder::default();
         self.order_loaded = true;
-        self.order_loading = false;
+        self.cancel_order_request_for_test();
         self.task_ranks.clear();
         self.pinned_task_ranks.clear();
         self.project_ranks.clear();

@@ -946,13 +946,18 @@ impl ChatScreen {
         this
     }
 
+    /// Construction sends the sidebar's saved-order request to the backend.
+    /// Tests cancel it, so its answer cannot land partway through one.
     #[cfg(test)]
     pub(crate) fn new_without_start(
         backend: Arc<AgentBackend>,
         user_id: String,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_mounted(backend, user_id, cx)
+        let this = Self::new_mounted(backend, user_id, cx);
+        this.sidebar
+            .update(cx, |sidebar, _| sidebar.cancel_order_request_for_test());
+        this
     }
 
     /// What the sidebar asked for. Events arrive after the sidebar's own
