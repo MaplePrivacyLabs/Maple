@@ -3332,11 +3332,47 @@ fn main_window_options(
 }
 
 struct StartupError {
+    /// The original diagnostic. It stays on screen and in copied details
+    /// after `localized_message` replaces it as the window's status.
     message: String,
     localized_message: Option<UiText>,
     stopping: bool,
     retry_backend: Option<Arc<AgentBackend>>,
     requires_completed_stop: bool,
+    diagnostics: StartupDiagnostics,
+    details_copied: bool,
+}
+
+/// What support needs beside the error, gathered once when the window opens.
+struct StartupDiagnostics {
+    os: String,
+    log_file: PathBuf,
+    /// The log path with the home folder written as `~` (or `%USERPROFILE%`
+    /// on Windows), so copied details do not carry the account name and the
+    /// path still pastes into Finder's or Explorer's Go to Folder.
+    log_display: String,
+    log_exists: bool,
+}
+
+impl StartupDiagnostics {
+    fn collect() -> Self {
+        let log_file = crate::backend::store_paths().log_file();
+        let log_exists = log_file.is_file();
+        Self {
+            os: crate::system_info::os_description(),
+            log_display: home_relative_path(&log_file, dirs::home_dir().as_deref()),
+            log_file,
+            log_exists,
+        }
+    }
+}
+
+fn home_relative_path(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    let Some(relative) = home.and_then(|home| path.strip_prefix(home).ok()) else {
+        return path.display().to_string();
+    };
+    let home = if cfg!(windows) { "%USERPROFILE%" } else { "~" };
+    format!("{home}{}{}", std::path::MAIN_SEPARATOR, relative.display())
 }
 
 /// A native-hook startup failure must keep its newly owned host's stop proof
@@ -3355,18 +3391,47 @@ impl StartupError {
             stopping: false,
             retry_backend: None,
             requires_completed_stop: false,
+            diagnostics: StartupDiagnostics::collect(),
+            details_copied: false,
         }
     }
 
     #[cfg(target_os = "macos")]
     fn requiring_host_stop(message: String, backend: Arc<AgentBackend>) -> Self {
         Self {
-            message,
-            localized_message: None,
-            stopping: false,
             retry_backend: Some(backend),
             requires_completed_stop: true,
+            ..Self::new(message)
         }
+    }
+
+    /// Plain text for a support reply. Labels stay English for support;
+    /// the status is whatever the window currently shows.
+    fn details_report(&self) -> String {
+        let source = env!("MAPLE_GIT_SOURCE_SHA");
+        let mut report = format!(
+            "{} {} ({})\n{}\nStartup error: {}\n",
+            crate::profile::DISPLAY_NAME,
+            env!("CARGO_PKG_VERSION"),
+            source.get(..12).unwrap_or(source),
+            self.diagnostics.os,
+            self.message,
+        );
+        if let Some(status) = &self.localized_message {
+            report.push_str(&format!("Status: {}\n", status.resolve()));
+        }
+        report.push_str(&format!("Log file: {}\n", self.diagnostics.log_display));
+        report
+    }
+
+    fn copy_details(&mut self, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(self.details_report()));
+        self.details_copied = true;
+        cx.notify();
+    }
+
+    fn show_log(&mut self, cx: &mut Context<Self>) {
+        cx.reveal_path(&self.diagnostics.log_file);
     }
 
     fn request_close(&mut self, cx: &mut Context<Self>) {
@@ -3495,13 +3560,44 @@ impl Render for StartupError {
             .p_6()
             .bg(gpui::rgb(ui::theme::bg_app()))
             .text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child(tr("native-startup-title")))
             .child(
+                div()
+                    .text_lg()
+                    .child(gpui::text!(tr("native-startup-title"))),
+            )
+            .child(gpui::text!(
                 self.localized_message
                     .as_ref()
                     .map(UiText::resolve)
-                    .unwrap_or_else(|| self.message.clone().into()),
-            )
+                    .unwrap_or_else(|| self.message.clone().into())
+            ))
+            // Once a status replaces the original error, keep the error as
+            // details: it is the only evidence of why startup failed.
+            .when(self.localized_message.is_some(), |view| {
+                view.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .text_sm()
+                        .child(
+                            div()
+                                .text_color(gpui::rgb(ui::theme::text_secondary()))
+                                .child(gpui::text!(tr("native-startup-details"))),
+                        )
+                        .child(
+                            div()
+                                .id("startup-error-details")
+                                .max_h(px(120.))
+                                .overflow_y_scroll()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .bg(gpui::rgb(ui::theme::bg_elevated()))
+                                .child(gpui::text!(self.message.clone())),
+                        ),
+                )
+            })
             .when(
                 !self.requires_completed_stop
                     && self.message.contains("Incompatible Maple host or profile"),
@@ -3534,6 +3630,42 @@ impl Render for StartupError {
                             ),
                     )
             })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_sm()
+                    .child(
+                        div()
+                            .text_color(gpui::rgb(ui::theme::text_secondary()))
+                            .child(gpui::text!(tr("native-startup-log-file"))),
+                    )
+                    .child(gpui::text!(self.diagnostics.log_display.clone())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        ui::widgets::secondary_button("copy-startup-details")
+                            .child(gpui::text!(if self.details_copied {
+                                tr("native-startup-details-copied")
+                            } else {
+                                tr("native-startup-copy-details")
+                            }))
+                            .on_click(cx.listener(|this, _, _, cx| this.copy_details(cx))),
+                    )
+                    .when(self.diagnostics.log_exists, |row| {
+                        row.child(
+                            ui::widgets::secondary_button("show-startup-log")
+                                .child(gpui::text!(tr("native-startup-show-log")))
+                                .on_click(cx.listener(|this, _, _, cx| this.show_log(cx))),
+                        )
+                    }),
+            )
             .when(self.close_is_allowed(), |view| {
                 view.child(
                     div()
@@ -3561,7 +3693,7 @@ fn show_startup_error(error: String) {
         }
         cx.on_action(|_: &QuitApp, cx| quit_app(cx));
         ui::menus::install(cx);
-        let bounds = Bounds::centered(None, size(px(560.), px(260.)), cx);
+        let bounds = Bounds::centered(None, size(px(600.), px(440.)), cx);
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -3753,7 +3885,7 @@ pub fn run() {
                 let startup = cx.new(|_| StartupError::requiring_host_stop(error, backend.clone()));
                 cx.set_global(GuardedStartupFailure(startup.clone()));
                 let view = startup.clone();
-                let bounds = Bounds::centered(None, size(px(620.), px(320.)), cx);
+                let bounds = Bounds::centered(None, size(px(640.), px(520.)), cx);
                 let opened = cx.open_window(
                     main_window_options((WindowBounds::Windowed(bounds), None)),
                     move |window, cx| {
@@ -4722,6 +4854,85 @@ mod tests {
         let startup = super::StartupError::new("Incompatible Maple host or profile".into());
         assert!(startup.close_is_allowed());
         assert!(startup.retry_backend.is_none());
+    }
+
+    #[gpui::test]
+    fn completed_startup_stop_keeps_the_original_error_for_support(cx: &mut gpui::TestAppContext) {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        let original = "Maple's active native application delegate is FixtureDelegate, \
+                        not derived from the reviewed GPUIApplicationDelegate";
+        let startup = cx.new(|_| {
+            let mut startup = super::StartupError::new(original.into());
+            startup.requires_completed_stop = true;
+            startup.diagnostics.log_display = "~/fixture/logs/maple-agent.log".into();
+            startup
+        });
+        startup.update(cx, |startup, cx| {
+            assert!(startup.finish_required_stop(Ok(())));
+            assert_eq!(startup.message, original);
+            startup.copy_details(cx);
+            assert!(startup.details_copied);
+        });
+        let report = cx.read_from_clipboard().unwrap().text().unwrap();
+        let lines = report.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            format!(
+                "{} {} ({})",
+                crate::profile::DISPLAY_NAME,
+                env!("CARGO_PKG_VERSION"),
+                env!("MAPLE_GIT_SOURCE_SHA")
+                    .get(..12)
+                    .unwrap_or(env!("MAPLE_GIT_SOURCE_SHA"))
+            )
+        );
+        assert_eq!(lines[1], crate::system_info::os_description());
+        assert_eq!(lines[2], format!("Startup error: {original}"));
+        assert_eq!(
+            lines[3],
+            "Status: The Maple host has stopped. You can close Maple and try starting it again."
+        );
+        assert_eq!(lines[4], "Log file: ~/fixture/logs/maple-agent.log");
+        assert_eq!(lines.len(), 5);
+
+        // Support labels stay English; only the shown status follows the locale.
+        ui::i18n::apply_preference(Some("es"));
+        let spanish = startup.read_with(cx, |startup, _| startup.details_report());
+        assert!(spanish.contains(&format!("Startup error: {original}")));
+        assert!(!spanish.contains("The Maple host has stopped"));
+        ui::i18n::apply_preference(Some("en"));
+    }
+
+    #[test]
+    fn startup_error_without_a_status_reports_only_the_error() {
+        let mut startup = super::StartupError::new("Could not open the store".into());
+        startup.diagnostics.log_display = "~/logs/maple-agent.log".into();
+        let report = startup.details_report();
+        assert!(report.contains("\nStartup error: Could not open the store\n"));
+        assert!(!report.contains("Status:"));
+        assert!(report.ends_with("Log file: ~/logs/maple-agent.log\n"));
+    }
+
+    #[test]
+    fn startup_log_path_hides_the_home_folder() {
+        let separator = std::path::MAIN_SEPARATOR;
+        let home = std::path::PathBuf::from(format!("{separator}home{separator}person"));
+        let log = home.join("store-v1").join("logs").join("maple-agent.log");
+        let shown = super::home_relative_path(&log, Some(&home));
+        let prefix = if cfg!(windows) { "%USERPROFILE%" } else { "~" };
+        assert_eq!(
+            shown,
+            format!("{prefix}{separator}store-v1{separator}logs{separator}maple-agent.log")
+        );
+        let elsewhere = std::path::PathBuf::from(format!("{separator}srv{separator}maple.log"));
+        assert_eq!(
+            super::home_relative_path(&elsewhere, Some(&home)),
+            elsewhere.display().to_string()
+        );
+        assert_eq!(
+            super::home_relative_path(&log, None),
+            log.display().to_string()
+        );
     }
 
     use super::*;

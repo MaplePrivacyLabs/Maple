@@ -31,6 +31,7 @@ mod self_launch;
 mod settings;
 #[cfg(feature = "desktop")]
 mod shortcuts;
+mod system_info;
 #[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
 mod tray;
 #[cfg(feature = "desktop")]
@@ -778,7 +779,7 @@ enum LogOutput {
 
 fn init_logging(output: LogOutput) {
     let paths = backend::store_paths();
-    let log_dir = paths.logs();
+    let log_file = paths.log_file();
     let file = paths
         .prepare_control_root()
         .and_then(|paths| paths.open_log())
@@ -809,9 +810,10 @@ fn init_logging(output: LogOutput) {
         default_hook(info);
     }));
     log::info!(
-        "maple-agent {} starting; log file: {}",
+        "maple-agent {} starting on {}; log file: {}",
         env!("CARGO_PKG_VERSION"),
-        log_dir.join("maple-agent.log").display()
+        system_info::os_description(),
+        log_file.display()
     );
 }
 
