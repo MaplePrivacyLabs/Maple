@@ -47,6 +47,7 @@ mod mcp;
 mod navigation;
 pub(crate) mod presentation;
 mod shortcut_labels;
+
 use self::account::AccountState;
 #[cfg(feature = "acp")]
 use self::acp::AcpUiState;
@@ -56,6 +57,7 @@ use self::billing::BillingState;
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
+pub(crate) use catalog::saved_description;
 
 /// Emitted when the user leaves settings.
 pub struct SettingsClosed(pub AppSettings);
@@ -206,7 +208,7 @@ pub struct SettingsScreen {
     /// The server whose browser sign-in is in progress.
     mcp_signing_in: Option<String>,
     /// The server whose sign-in last failed, and why.
-    mcp_sign_in_error: Option<(String, String)>,
+    mcp_sign_in_error: Option<(String, UiText)>,
     /// The app that needs something first, and what.
     mcp_app_missing: Option<(String, maple_agent::agent::McpAppMissing)>,
     catalog_search: Entity<TextInput>,
@@ -2571,7 +2573,10 @@ impl SettingsScreen {
                                         div()
                                             .text_xs()
                                             .text_color(gpui::rgb(theme::text_secondary()))
-                                            .child(server.description.clone()),
+                                            .child(catalog::saved_description(
+                                                &server.name,
+                                                &server.description,
+                                            )),
                                     )
                                 })
                                 .child(
@@ -2827,9 +2832,7 @@ impl SettingsScreen {
 
     fn render_mcp_editor(&self, editor: &McpEditor, cx: &mut Context<Self>) -> Div {
         let signing_in = self.mcp_editor_signing_in(cx);
-        let sign_in_error = self
-            .sign_in_error_for(editor.name.read(cx).text().trim())
-            .map(str::to_string);
+        let sign_in_error = self.sign_in_error_for(editor.name.read(cx).text().trim());
         let field = |label: &str, hint: &str, input: Entity<TextInput>| {
             div()
                 .flex()

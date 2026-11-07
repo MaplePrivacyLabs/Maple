@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use super::oauth::{McpSignIn, sign_in_endpoint};
+use super::oauth::{McpSignIn, McpSignInError, sign_in_endpoint};
 use crate::store::records::McpTarget;
 
 /// How long a new app gets to start and list its tools, unless it says.
@@ -110,10 +110,10 @@ pub struct McpCatalogAddress {
 
 impl McpCatalogAddress {
     /// The server's address from what the person gave.
-    fn server_url(&self, given: &str) -> Result<String, String> {
+    fn server_url(&self, given: &str) -> Result<String, McpSignInError> {
         let given = given.trim();
         if given.is_empty() {
-            return Err(format!("Enter the {} first.", self.label));
+            return Err(McpSignInError::NoAddress);
         }
         let given = if given.contains("://") {
             given.to_string()
@@ -207,10 +207,8 @@ impl McpCatalogEntry {
     }
 
     /// The browser sign-in for an app at the address the person gave.
-    pub fn sign_in_at(&self, given: &str) -> Result<McpSignIn, String> {
-        let address = self
-            .address()
-            .ok_or_else(|| "This app has no address to give.".to_string())?;
+    pub fn sign_in_at(&self, given: &str) -> Result<McpSignIn, McpSignInError> {
+        let address = self.address().ok_or(McpSignInError::InvalidAddress)?;
         Ok(McpSignIn {
             name: self.name.clone(),
             description: self.summary.clone(),
@@ -422,10 +420,7 @@ mod tests {
             url("http://192.168.1.20:8123/api/mcp/assist").unwrap(),
             "http://192.168.1.20:8123/api/mcp/assist"
         );
-        assert_eq!(
-            url("  ").unwrap_err(),
-            "Enter the Home Assistant address first."
-        );
+        assert_eq!(url("  ").unwrap_err(), McpSignInError::NoAddress);
         assert_eq!(
             url("100.64.0.1:8123").unwrap(),
             "http://100.64.0.1:8123/api/mcp"
@@ -434,7 +429,10 @@ mod tests {
             url("http://home.example.com:8123").unwrap(),
             "http://home.example.com:8123/api/mcp"
         );
-        assert!(url("ftp://home.example.com").is_err());
+        assert_eq!(
+            url("ftp://home.example.com").unwrap_err(),
+            McpSignInError::InvalidAddress
+        );
     }
 
     #[test]

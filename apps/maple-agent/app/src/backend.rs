@@ -721,12 +721,6 @@ async fn dispatch_special(
         serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
     }
     match request.method.as_str() {
-        "sign_in_mcp_server" => {
-            let (user, sign_in): (String, maple_agent::agent::McpSignIn) =
-                serde_json::from_value(request.params).map_err(invalid)?;
-            backend.authorize_account(&user)?;
-            encode(backend.sign_in_mcp_server(&user, sign_in).await?)
-        }
         "cancel_mcp_sign_in" => {
             let (user, name): (String, String) =
                 serde_json::from_value(request.params).map_err(invalid)?;
@@ -1082,6 +1076,15 @@ async fn dispatch_inner_presented(
             .create_project_folder_presented(&user, path, name)
             .await?;
         return serde_json::to_value(result)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    if request.method == "sign_in_mcp_server" {
+        let (user, sign_in): (String, maple_agent::agent::McpSignIn) =
+            serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+        backend.authorize_account_presented(&user)?;
+        return serde_json::to_value(backend.sign_in_mcp_server_presented(&user, sign_in).await?)
             .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
     }
     if matches!(request.method.as_str(), "login" | "login_guest") {

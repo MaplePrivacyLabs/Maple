@@ -835,7 +835,7 @@ async fn a_server_that_says_nothing_about_addresses_still_needs_a_registered_app
         .sign_in_mcp_server(sign_in(&server), server.browser())
         .await
         .unwrap_err();
-    assert_eq!(error, NEEDS_REGISTERED_APP);
+    assert_eq!(error.to_string(), NEEDS_REGISTERED_APP);
     assert!(server.state.browser_client.lock().unwrap().is_none());
 }
 
@@ -849,7 +849,7 @@ async fn nobody_is_sent_to_sign_in_for_a_server_that_is_not_there() {
         .sign_in_mcp_server(sign_in(&server), server.browser())
         .await
         .unwrap_err();
-    assert_eq!(error, NO_SERVER_HERE);
+    assert_eq!(error, McpSignInError::NoServerHere);
     assert!(server.state.browser_client.lock().unwrap().is_none());
 
     let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -862,7 +862,7 @@ async fn nobody_is_sent_to_sign_in_for_a_server_that_is_not_there() {
         .sign_in_mcp_server(unreachable, server.browser())
         .await
         .unwrap_err();
-    assert_eq!(error, UNREACHABLE);
+    assert_eq!(error, McpSignInError::Unreachable);
 }
 
 #[tokio::test]
@@ -1021,7 +1021,7 @@ async fn a_sign_in_can_be_stopped_and_tried_again() {
             harness.handle.cancel_mcp_sign_in("vana");
         }
     );
-    assert_eq!(stopped.unwrap_err(), SIGN_IN_CANCELLED);
+    assert_eq!(stopped.unwrap_err().to_string(), SIGN_IN_CANCELLED);
     assert!(
         harness
             .handle

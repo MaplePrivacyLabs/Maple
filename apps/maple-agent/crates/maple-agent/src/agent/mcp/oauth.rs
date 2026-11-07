@@ -53,8 +53,6 @@ const NOT_APPROVED: &str = "Access was not approved.";
 const NEEDS_REGISTERED_APP: &str =
     "This server only accepts apps registered with it, so Maple cannot sign in to it yet.";
 const CLIENT_REFUSED: &str = "This server did not accept Maple as an app.";
-const UNREACHABLE: &str = "Maple could not reach this address. Check it and try again.";
-const NO_SERVER_HERE: &str = "Maple reached this address, but found no MCP server there.";
 /// How long a plain HTTP server gets to answer. These are usually close by, and
 /// someone waits on this when an app's usual address is tried for them.
 const PLAIN_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -62,10 +60,46 @@ pub(super) const SIGN_IN_CANCELLED: &str = "Sign-in was cancelled.";
 /// How Maple names itself when it registers with a server.
 const CLIENT_NAME: &str = "Maple";
 
-/// Whether a sign-in failed because nothing useful is at its address, so a
-/// different address might work.
-pub fn is_address_failure(message: &str) -> bool {
-    matches!(message, UNREACHABLE | NO_SERVER_HERE)
+/// Why a sign-in stopped. The reasons that change what happens next stay typed
+/// on the way to the UI, which also words them in the person's language.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum McpSignInError {
+    /// No address was given.
+    NoAddress,
+    /// The address is not one a sign-in can use.
+    InvalidAddress,
+    /// Nothing answered at the address, so a different one might work.
+    Unreachable,
+    /// Something answered, but not an MCP server, so a different one might work.
+    NoServerHere,
+    /// Anything else, in words for the person.
+    Other(String),
+}
+
+impl std::fmt::Display for McpSignInError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoAddress => "Enter an address first.",
+            Self::InvalidAddress => "Sign-in needs an http:// or https:// address.",
+            Self::Unreachable => "Maple could not reach this address. Check it and try again.",
+            Self::NoServerHere => "Maple reached this address, but found no MCP server there.",
+            Self::Other(message) => message,
+        })
+    }
+}
+
+impl std::error::Error for McpSignInError {}
+
+impl From<String> for McpSignInError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for McpSignInError {
+    fn from(message: &str) -> Self {
+        Self::Other(message.into())
+    }
 }
 
 /// The browser launcher is injected by the local host, never by MCP output.
@@ -87,25 +121,21 @@ pub struct McpSignIn {
 /// An address a sign-in may use, HTTP or HTTPS. A token sent over plain HTTP
 /// can be read on the way, so [`PlainOAuthHttp`] at least holds the sign-in to
 /// the address the person gave.
-pub(crate) fn sign_in_endpoint(value: &str) -> Result<reqwest::Url, String> {
-    let url = reqwest::Url::parse(value.trim()).map_err(|_| endpoint_error())?;
+pub(crate) fn sign_in_endpoint(value: &str) -> Result<reqwest::Url, McpSignInError> {
+    let url = reqwest::Url::parse(value.trim()).map_err(|_| McpSignInError::InvalidAddress)?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
     {
-        return Err(endpoint_error());
+        return Err(McpSignInError::InvalidAddress);
     }
     Ok(url)
 }
 
 fn is_plain_http(endpoint: &reqwest::Url) -> bool {
     endpoint.scheme() == "http"
-}
-
-fn endpoint_error() -> String {
-    "Sign-in needs an http:// or https:// address.".into()
 }
 
 fn auth_error(_: impl std::fmt::Debug) -> String {
@@ -295,7 +325,7 @@ async fn discover_metadata(
 /// Whether an MCP server answers here, before asking the person to sign in.
 /// Sign-in metadata alone does not show that: Home Assistant publishes it
 /// whether or not its MCP integration is added.
-async fn check_server_answers(endpoint: &reqwest::Url) -> Result<(), String> {
+async fn check_server_answers(endpoint: &reqwest::Url) -> Result<(), McpSignInError> {
     let response = mcp_client(endpoint)?
         .post(endpoint.clone())
         .header(http::header::CONTENT_TYPE, "application/json")
@@ -307,9 +337,9 @@ async fn check_server_answers(endpoint: &reqwest::Url) -> Result<(), String> {
         })
         .send()
         .await
-        .map_err(|_| UNREACHABLE.to_string())?;
+        .map_err(|_| McpSignInError::Unreachable)?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(NO_SERVER_HERE.into());
+        return Err(McpSignInError::NoServerHere);
     }
     Ok(())
 }
@@ -950,7 +980,7 @@ pub(crate) async fn runtime_client(
         return Ok(None);
     };
     let saved = decode_saved(&record).map_err(auth_error)?;
-    let endpoint = sign_in_endpoint(value)?;
+    let endpoint = sign_in_endpoint(value).map_err(|error| error.to_string())?;
     let mut manager = oauth_manager(&endpoint).await?;
     manager.set_metadata(saved.metadata);
     let generation = Some(record.generation.clone());
@@ -1125,7 +1155,7 @@ impl AgentRuntimeHandle {
         &self,
         request: McpSignIn,
         open_browser: McpBrowser,
-    ) -> Result<Vec<McpDefinition>, String> {
+    ) -> Result<Vec<McpDefinition>, McpSignInError> {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let endpoint = sign_in_endpoint(&request.url)?;
@@ -1159,7 +1189,8 @@ impl AgentRuntimeHandle {
             return Err(format!(
                 "A server named {} already exists. Remove or rename it before signing in.",
                 previous.name
-            ));
+            )
+            .into());
         }
         let lock = refresh_lock(format!("setup:{:p}:{account:?}:{}", store, edit.key));
         let _guard = lock
@@ -1295,7 +1326,7 @@ impl AgentRuntimeHandle {
                 .map_err(|_| STORAGE_FAILURE.to_string())?;
             store
                 .mcp_definitions(account)
-                .map_err(|_| STORAGE_FAILURE.to_string())
+                .map_err(|_| McpSignInError::from(STORAGE_FAILURE))
         });
         tokio::select! {
             result = attempt => result.map_err(|_| "Sign-in timed out. Try again.".to_string())?,

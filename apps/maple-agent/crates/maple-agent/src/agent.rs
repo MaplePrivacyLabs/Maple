@@ -21,8 +21,10 @@ mod login_path;
 mod maintenance;
 mod mcp;
 pub use mcp::apps::{McpAppConnection, McpAppMissing};
-pub use mcp::catalog::{McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, mcp_catalog};
-pub use mcp::oauth::{McpBrowser, McpSignIn, is_address_failure};
+pub use mcp::catalog::{
+    McpCatalogAddress, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, mcp_catalog,
+};
+pub use mcp::oauth::{McpBrowser, McpSignIn, McpSignInError};
 mod persistence;
 mod projects;
 pub(crate) mod provider;
