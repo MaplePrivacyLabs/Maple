@@ -67,7 +67,7 @@ fn version_string() -> &'static str {
 
 #[derive(Debug, Parser)]
 #[command(name = "maple-agent", version = version_string(), about, disable_help_subcommand = true, args_conflicts_with_subcommands = true)]
-#[cfg_attr(all(feature = "desktop", target_os = "windows"), command(group(clap::ArgGroup::new("windows_installer").args(["internal_windows_installer_preflight", "internal_windows_installer_prepare", "internal_windows_installer_activate"]))))]
+#[cfg_attr(all(feature = "desktop", target_os = "windows"), command(group(clap::ArgGroup::new("windows_installer").args(["internal_windows_installer_preflight", "internal_windows_installer_prepare", "internal_windows_installer_activate", "internal_windows_installer_install"]))))]
 struct Cli {
     /// Print the immutable build profile as JSON and exit without opening state.
     #[arg(long, conflicts_with = "desktop_args")]
@@ -103,6 +103,9 @@ struct Cli {
     #[cfg(all(feature = "desktop", target_os = "windows"))]
     #[arg(long, hide = true, requires = "windows_installer")]
     internal_windows_installer_report: Option<std::path::PathBuf>,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    internal_windows_installer_install: Vec<std::ffi::OsString>,
     #[command(subcommand)]
     mode: Option<Mode>,
     /// Arguments a desktop launcher may append (file paths, `%u` expansions).
@@ -291,10 +294,70 @@ fn main() {
         // The stable launcher and installer modes never open application data,
         // credentials or a host. Their paths and code identities are checked
         // by the updater's native installer before mutation or delegation.
-        let report_started = std::time::Instant::now();
+        let phase = if !cli.internal_windows_installer_install.is_empty() {
+            Some("installation")
+        } else if cli.internal_windows_installer_preflight.is_some() {
+            Some("preflight")
+        } else if !cli.internal_windows_installer_prepare.is_empty() {
+            Some("preparation")
+        } else if cli.internal_windows_installer_activate.is_some() {
+            Some("activation")
+        } else {
+            None
+        };
+        let mut build = profile::build_info();
+        let generation = cli
+            .internal_windows_installer_install
+            .get(1)
+            .or_else(|| cli.internal_windows_installer_prepare.get(1))
+            .and_then(|s| s.to_str())
+            .or(cli.internal_windows_installer_activate.as_deref());
+        if let Some(number) = generation
+            .and_then(|s| s.rsplit_once('-'))
+            .map(|(_, number)| number)
+            .filter(|s| s.len() <= 18 && s.bytes().all(|b| b.is_ascii_digit()))
+        {
+            build["build"] = serde_json::json!(number);
+        }
+        let mut trace = phase.map(|phase| {
+            maple_agent_updater::installer::WindowsInstallerTrace::begin(
+                phase,
+                &build,
+                cli.internal_windows_installer_report.as_deref(),
+            )
+        });
+
         let mut installer_diagnostic = None;
         let mut internal_exit_code = 1;
-        let internal = if let Some(root) = &cli.internal_windows_installer_preflight {
+        let internal = if !cli.internal_windows_installer_install.is_empty() {
+            Some(
+                std::env::current_exe()
+                    .map_err(|_| "Could not locate the Windows installer".to_owned())
+                    .and_then(|exe| {
+                        let root =
+                            std::path::PathBuf::from(&cli.internal_windows_installer_install[0]);
+                        let generation = cli.internal_windows_installer_install[1]
+                            .to_str()
+                            .ok_or_else(|| "Invalid Windows generation".to_owned())?;
+                        maple_agent_updater::installer::install_windows_bundle_with_progress(
+                            &exe,
+                            &root,
+                            profile::PROFILE,
+                            generation,
+                            &mut |operation, changed| {
+                                if let Some(trace) = &mut trace {
+                                    trace.record(operation, changed);
+                                }
+                            },
+                        )
+                        .map_err(|error| {
+                            installer_diagnostic = Some(error.windows_installer_diagnostic());
+                            internal_exit_code = error.windows_installer_exit_code();
+                            error.to_string()
+                        })
+                    }),
+            )
+        } else if let Some(root) = &cli.internal_windows_installer_preflight {
             Some(
                 std::env::current_exe()
                     .map_err(|_| "Could not locate the Windows installer checker".to_owned())
@@ -370,31 +433,16 @@ fn main() {
                 .map(|identity| windows_bootstrap::run_restart(identity, profile::PROFILE))
         };
         if let Some(result) = internal {
-            let phase = if cli.internal_windows_installer_preflight.is_some() {
-                Some("preflight")
-            } else if !cli.internal_windows_installer_prepare.is_empty() {
-                Some("preparation")
-            } else if cli.internal_windows_installer_activate.is_some() {
-                Some("activation")
-            } else {
-                None
-            };
-            if let Some(phase) = phase {
+            if phase.is_some() {
                 if result.is_err() && installer_diagnostic.is_none() {
-                    installer_diagnostic =
-                        Some(maple_agent_updater::installer::WindowsInstallerDiagnostic {
-                            operation: None,
-                            reason: "checker-unavailable".into(),
-                            native_error: None,
-                        });
+                    installer_diagnostic = Some(
+                        maple_agent_updater::installer::WindowsInstallerDiagnostic::unavailable(),
+                    );
                 }
-                let report = maple_agent_updater::installer::report_windows_installation(
-                    phase,
-                    &profile::build_info(),
-                    installer_diagnostic.as_ref(),
-                    report_started.elapsed(),
-                    cli.internal_windows_installer_report.as_deref(),
-                );
+                let report = trace
+                    .take()
+                    .expect("installer phase has a trace")
+                    .finish(installer_diagnostic.as_ref());
                 eprintln!("{report}");
             }
             if let Err(error) = result {

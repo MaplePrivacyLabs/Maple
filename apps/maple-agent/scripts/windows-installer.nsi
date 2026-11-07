@@ -70,143 +70,44 @@ unsupported:
 supported:
 FunctionEnd
 
-Var PreviousInstallLocation
-Var PreviousDisplayVersion
-Var HadRegistration
-
 Section "Install"
   StrCpy $NativeStatus 0
   StrCpy $NativeStatusAvailable 0
   StrCpy $NativeActivationStage 0
-  ; The temporary copy is the same verified signed application PE. Its private
-  ; early command performs no GUI, account, store or backend initialization.
-  ; All destination/DACL/reparse checks happen before any installed file or
-  ; registry changes. Unsigned Prod previews deliberately stop here.
   StrCpy $FailureCode 20
-  StrCpy $FailureStage "extracting the installation checker"
-  SetErrorLevel 20
+  StrCpy $FailureStage "extracting the installer payload"
   ClearErrors
   InitPluginsDir
-  SetOutPath "$PLUGINSDIR"
-  File /oname=maple-installer-check.exe "${PAYLOAD}\maple-agent.exe"
+  SetOutPath "$PLUGINSDIR\payload"
+  File "${PAYLOAD}\maple-agent.exe"
+  File "${PAYLOAD}\LICENSE.txt"
+  File "${PAYLOAD}\build-info.json"
+  File "${PAYLOAD}\bundle-info.json"
+  WriteUninstaller "$PLUGINSDIR\payload\uninstall.exe"
   IfErrors refused
-  StrCpy $FailureCode 21
-  StrCpy $FailureStage "starting installation checks"
-  StrCpy $NativeStatusAvailable 0
-  ClearErrors
-  StrCpy $ReportPath "$PLUGINSDIR\preflight-report.txt"
-  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-preflight "$INSTDIR" --internal-windows-installer-report "$ReportPath"' $NativeStatus
-  IfErrors refused
-  Call ReadInstallerReport
-  StrCpy $NativeStatusAvailable 1
-  StrCpy $FailureCode 22
-  StrCpy $FailureStage "checking the installation"
-  StrCmp $NativeStatus 0 0 refused
-  ; The signed helper durably records the manual operation, creates a private
-  ; root, bootstraps only a fresh install and repairs incomplete non-current
-  ; generation files. A retry must never overwrite a live or valid rollback
-  ; generation, nor remain stuck with an interrupted NSIS file copy.
+  ; The native child owns admission, locks, copying, registration, shortcuts
+  ; and activation. NSIS never mutates the installed root between phases.
   StrCpy $FailureCode 23
-  StrCpy $FailureStage "starting installation preparation"
-  StrCpy $NativeStatusAvailable 0
+  StrCpy $FailureStage "starting the native installer"
+  StrCpy $ReportPath "$PLUGINSDIR\install-report.txt"
   ClearErrors
-  StrCpy $ReportPath "$PLUGINSDIR\prepare-report.txt"
-  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-prepare "$INSTDIR" ${GENERATION} --internal-windows-installer-report "$ReportPath"' $NativeStatus
+  ExecWait '"$PLUGINSDIR\payload\maple-agent.exe" --internal-windows-installer-install "$INSTDIR" ${GENERATION} --internal-windows-installer-report "$ReportPath"' $NativeStatus
   IfErrors refused
   Call ReadInstallerReport
   StrCpy $NativeStatusAvailable 1
   StrCpy $FailureCode 24
-  StrCpy $FailureStage "preparing the installation"
-  StrCmp $NativeStatus 0 0 refused
-
-  StrCpy $FailureCode 31
-  StrCpy $FailureStage "checking installation registration"
-  StrCpy $NativeStatusAvailable 0
-  StrCpy $HadRegistration 0
-  ClearErrors
-  ReadRegStr $PreviousInstallLocation HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation"
-  IfErrors unregistered
-  StrCmp $PreviousInstallLocation "$INSTDIR" 0 refused
-  StrCpy $HadRegistration 1
-  ReadRegStr $PreviousDisplayVersion HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayVersion"
-unregistered:
-  ; Never overwrite the stable bootstrap or an existing generation. All new
-  ; generation bytes arrive before the native helper commits current.json.
-  StrCpy $FailureCode 30
-  StrCpy $FailureStage "copying application files"
-  SetOutPath "$INSTDIR"
-  IfFileExists "$INSTDIR\maple-agent.exe" bootstrap_ready
-  ClearErrors
-  File "${PAYLOAD}\maple-agent.exe"
-  IfErrors failed
-bootstrap_ready:
-  SetOutPath "$INSTDIR\versions\${GENERATION}"
-  SetOverwrite off
-  ClearErrors
-  File "${PAYLOAD}\maple-agent.exe"
-  File "${PAYLOAD}\LICENSE.txt"
-  File "${PAYLOAD}\build-info.json"
-  SetOutPath "$INSTDIR\versions\${GENERATION}"
-  File "${PAYLOAD}\bundle-info.json"
-  IfErrors failed
-  SetOverwrite on
-  SetOutPath "$INSTDIR"
-  IfFileExists "$INSTDIR\uninstall.exe" uninstaller_ready
-  WriteUninstaller "$INSTDIR\uninstall.exe"
-  IfErrors failed
-uninstaller_ready:
-  StrCpy $FailureCode 31
-  StrCpy $FailureStage "registering the application"
-  CreateDirectory "$SMPROGRAMS\${DISPLAY_NAME}"
-  CreateShortcut "$SMPROGRAMS\${DISPLAY_NAME}\${DISPLAY_NAME}.lnk" "$INSTDIR\maple-agent.exe"
-  CreateShortcut "$SMPROGRAMS\${DISPLAY_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayName" "${DISPLAY_NAME}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "Publisher" "Maple Privacy Labs"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "UninstallString" '$\"$INSTDIR\uninstall.exe$\"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "QuietUninstallString" '$\"$INSTDIR\uninstall.exe$\" /S'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayIcon" '$\"$INSTDIR\maple-agent.exe$\",0'
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "NoModify" 1
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "NoRepair" 1
-  IfErrors failed
-  StrCpy $FailureCode 40
-  StrCpy $FailureStage "starting installation activation"
-  StrCpy $NativeStatusAvailable 0
-  ClearErrors
-  ; Stable bootstraps from older installs do not understand new report flags.
-  StrCpy $InstallerReport ""
-  ExecWait '"$INSTDIR\maple-agent.exe" --internal-windows-installer-activate ${GENERATION}' $NativeStatus
-  IfErrors failed
-  StrCpy $NativeStatusAvailable 1
-  StrCpy $FailureCode 41
-  StrCpy $FailureStage "activating the installation"
-  StrCmp $NativeStatus 0 0 failed
-  SetErrorLevel 0
-  Goto done
-failed:
-  ; Native activation diagnostics come from this exact ExecWait child. Keep
-  ; ordinary failures at 41; only the fixed marker and stages 1..10 can carry
-  ; an activation stage plus its bounded Win32 error to an unattended caller.
-  StrCmp $FailureCode 41 0 activation_diagnostic_done
+  StrCpy $FailureStage "installing the application"
+  StrCmp $NativeStatus 0 done
+  ; Keep legacy activation status decoding for unattended installer callers.
   IntOp $1 $NativeStatus & 0xFF000000
-  IntCmp $1 0x4D000000 0 activation_diagnostic_done activation_diagnostic_done
+  IntCmp $1 0x4D000000 0 refused refused
   IntOp $1 $NativeStatus >> 16
   IntOp $1 $1 & 0xFF
-  IntCmp $1 1 0 activation_diagnostic_done 0
-  IntCmp $1 10 0 0 activation_diagnostic_done
+  IntCmp $1 1 0 refused 0
+  IntCmp $1 10 0 0 refused
   StrCpy $NativeActivationStage $1
   IntOp $NativeWin32Error $NativeStatus & 0xFFFF
   StrCpy $FailureCode $NativeStatus
-activation_diagnostic_done:
-  ; The native activation failure leaves the old pointer unchanged. Restore
-  ; registration truth; user data and an earlier generation remain untouched.
-  StrCmp $HadRegistration 1 restore_registration
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}"
-  Goto refused
-restore_registration:
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "InstallLocation" "$PreviousInstallLocation"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}" "DisplayVersion" "$PreviousDisplayVersion"
 refused:
   StrCpy $1 "Installation stopped while $FailureStage.$\r$\n$\r$\nInstaller stage: $FailureCode"
   StrCmp $NativeStatusAvailable 1 0 show_error
@@ -228,6 +129,7 @@ no_report:
   SetErrorLevel $FailureCode
   Abort
 done:
+  SetErrorLevel 0
 SectionEnd
 
 ; This file is diagnostic text only; it never authorizes a successful install.
@@ -293,7 +195,7 @@ manual:
   StrCpy $FailureAdvice "Maple could not safely replace this installation. Contact Maple support with these details."
   Goto done
 storage:
-  StrCpy $FailureAdvice "Windows could not read or write installation files. Contact Maple support with these details."
+  StrCpy $FailureAdvice "Maple could not validate installation storage. Copy these details for Maple support."
   Goto done
 access:
   StrCpy $FailureAdvice "Windows denied access to the installation folder. Choose a folder owned by your user account, or contact Maple support."

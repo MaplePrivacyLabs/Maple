@@ -31,18 +31,20 @@ use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt};
 mod linux_bundle;
 mod windows_bundle;
 mod windows_diagnostics;
-#[cfg(windows)]
-pub use windows_diagnostics::report_windows_installation;
 pub use windows_diagnostics::{
     WindowsInstallOperation, WindowsInstallerDiagnostic, WindowsStorageGuard,
 };
-
 #[cfg(windows)]
-pub use windows_bundle::refresh_windows_shell_integration;
+pub use windows_diagnostics::{WindowsInstallerTrace, report_windows_installation};
+
 pub use windows_bundle::{
     activate_windows_installation, cleanup_current_windows_bundle, cleanup_windows_installation,
     discover_windows_installation, preflight_windows_installation, prepare_windows_installation,
     resolve_windows_launcher, validate_windows_bundle_archive,
+};
+#[cfg(windows)]
+pub use windows_bundle::{
+    install_windows_bundle, install_windows_bundle_with_progress, refresh_windows_shell_integration,
 };
 #[cfg(windows)]
 pub(crate) use windows_bundle::{
@@ -120,6 +122,7 @@ pub enum InstallError {
         operation: WindowsInstallOperation,
         #[source]
         source: Box<InstallError>,
+        mutations_started: Option<bool>,
     },
     #[error("Windows activation failed during {stage}: {source}")]
     WindowsActivation {
@@ -138,8 +141,20 @@ impl InstallError {
             Self::WindowsOperation {
                 operation,
                 source: Box::new(self),
+                mutations_started: None,
             }
         }
+    }
+
+    #[cfg(windows)]
+    fn with_mutations_started(mut self, started: bool) -> Self {
+        if let Self::WindowsOperation {
+            mutations_started, ..
+        } = &mut self
+        {
+            *mutations_started = Some(started);
+        }
+        self
     }
 
     /// These failures describe an installation this account cannot replace.

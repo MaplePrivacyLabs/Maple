@@ -11,7 +11,11 @@ use std::io::{Seek, SeekFrom};
 #[cfg(windows)]
 mod authenticode;
 #[cfg(windows)]
+mod manual_install;
+#[cfg(windows)]
 mod shell_integration;
+#[cfg(windows)]
+pub use manual_install::{install_windows_bundle, install_windows_bundle_with_progress};
 #[cfg(windows)]
 mod windows_fs;
 #[cfg(windows)]
@@ -1696,40 +1700,7 @@ fn inspect_manual_root(root: &Path, profile: &str) -> Result<()> {
 pub fn preflight_windows_installation(checker: &Path, root: &Path, profile: &str) -> Result<()> {
     #[cfg(windows)]
     {
-        let mut operation = WindowsInstallOperation::Checker;
-        let result = (|| -> Result<()> {
-            let checker = checker.canonicalize()?;
-            let _ = trusted_installer(&checker, profile)?;
-            operation = WindowsInstallOperation::Destination;
-            windows_fs::validate_path_syntax(root)?;
-            if root.file_name().is_none() {
-                return Err(InstallError::Invalid("Windows installer destination"));
-            }
-            operation = WindowsInstallOperation::Parent;
-            let mut existing = root;
-            while !existing.try_exists()? {
-                existing = existing
-                    .parent()
-                    .ok_or(InstallError::Invalid("Windows installer parent"))?;
-            }
-            // Existing destinations retain strict installed-storage admission.
-            // A parent of a new root may allow creation of sibling directories;
-            // the new app root itself receives an explicit protected ACL.
-            if existing == root {
-                windows_fs::private_directory(existing)?;
-            } else {
-                windows_fs::installation_parent(existing)?;
-            }
-            operation = WindowsInstallOperation::ExistingInstallation;
-            if root.try_exists()? {
-                let root = root.canonicalize()?;
-                if fs::read_dir(&root)?.next().is_some() {
-                    inspect_manual_root(&root, profile)?;
-                }
-            }
-            Ok(())
-        })();
-        result.map_err(|error| error.during(operation))
+        admit_windows_installation(checker, root, profile).map(|_| ())
     }
     #[cfg(not(windows))]
     {
@@ -1738,6 +1709,48 @@ pub fn preflight_windows_installation(checker: &Path, root: &Path, profile: &str
             "Windows installer requires native Windows",
         ))
     }
+}
+
+#[cfg(windows)]
+fn admit_windows_installation(
+    checker: &Path,
+    root: &Path,
+    profile: &str,
+) -> Result<serde_json::Value> {
+    let mut operation = WindowsInstallOperation::Checker;
+    let result = (|| -> Result<serde_json::Value> {
+        let checker = checker.canonicalize()?;
+        let info = trusted_installer(&checker, profile)?;
+        operation = WindowsInstallOperation::Destination;
+        windows_fs::validate_path_syntax(root)?;
+        if root.file_name().is_none() {
+            return Err(InstallError::Invalid("Windows installer destination"));
+        }
+        operation = WindowsInstallOperation::Parent;
+        let mut existing = root;
+        while !existing.try_exists()? {
+            existing = existing
+                .parent()
+                .ok_or(InstallError::Invalid("Windows installer parent"))?;
+        }
+        // Existing destinations retain strict installed-storage admission.
+        // A parent of a new root may allow creation of sibling directories;
+        // the new app root itself receives an explicit protected ACL.
+        if existing == root {
+            windows_fs::private_directory(existing)?;
+        } else {
+            windows_fs::installation_parent(existing)?;
+        }
+        operation = WindowsInstallOperation::ExistingInstallation;
+        if root.try_exists()? {
+            let root = root.canonicalize()?;
+            if fs::read_dir(&root)?.next().is_some() {
+                inspect_manual_root(&root, profile)?;
+            }
+        }
+        Ok(info)
+    })();
+    result.map_err(|error| error.during(operation))
 }
 
 /// Start/resume the explicit signed manual-install transaction. The durable
@@ -1752,160 +1765,10 @@ pub fn prepare_windows_installation(
 ) -> Result<()> {
     #[cfg(windows)]
     {
-        preflight_windows_installation(checker, root, profile)?;
-        if !valid_generation(generation_name) {
-            return Err(InstallError::Invalid("Windows manual generation"));
-        }
         let checker = checker.canonicalize()?;
-        let info = trusted_installer(&checker, profile)?;
-        if generation_name.rsplit_once('-').unwrap().0 != info["version"].as_str().unwrap() {
-            return Err(InstallError::Invalid(
-                "Windows installer generation identity",
-            ));
-        }
-        windows_fs::private_directory(root)?;
-        let root = root.canonicalize()?;
-        let lock = open_install_lock(&root)?;
-        lock.try_lock_exclusive().map_err(|error| {
-            if error.kind() == io::ErrorKind::WouldBlock
-                || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
-            {
-                InstallError::Busy
-            } else {
-                error.into()
-            }
-        })?;
-        // Recheck after acquiring the lock: an updater may have committed while
-        // this installer was performing its read-only admission checks.
-        if root.join(POINTER).try_exists()? || root.join(MANUAL_INTENT).try_exists()? {
-            inspect_manual_root(&root, profile)?;
-        }
-        if root.join(MANUAL_INTENT).try_exists()? {
-            let previous: ManualIntent =
-                serde_json::from_slice(&read_bounded(&root.join(MANUAL_INTENT), DESCRIPTOR_LIMIT)?)
-                    .map_err(|_| InstallError::Invalid("Windows installer recovery intent"))?;
-            if process_created(previous.owner_pid)?
-                .is_some_and(|created| created == previous.owner_created)
-            {
-                return Err(InstallError::Busy);
-            }
-            if previous.format != "maple-agent-windows-installer-intent-v1"
-                || previous.profile != profile
-                || !valid_generation(&previous.generation)
-            {
-                return Err(InstallError::Invalid("Windows prior installer intent"));
-            }
-            let current = if root.join(POINTER).try_exists()? {
-                Some(Current::parse(&read_bounded(&root.join(POINTER), 1024)?)?)
-            } else {
-                None
-            };
-            let prior_path = root.join("versions").join(&previous.generation);
-            if prior_path.try_exists()?
-                && !current
-                    .as_ref()
-                    .is_some_and(|pointer| pointer.generation == previous.generation)
-                && structurally_complete_generation(&prior_path, profile, &previous.generation)
-                    .is_err()
-            {
-                let guard = incomplete_generation_guard(&prior_path)?;
-                remove_generation_files(&prior_path, guard)?;
-            }
-        }
-        if let Some(intent) = abandoned_uninstall(&root, profile)? {
-            validate_uninstall_repair(&root, profile, &intent)?;
-            let current = if root.join(POINTER).try_exists()? {
-                Some(Current::parse(&read_bounded(&root.join(POINTER), 1024)?)?)
-            } else {
-                None
-            };
-            for name in &intent.generations {
-                if current
-                    .as_ref()
-                    .is_some_and(|pointer| pointer.generation == *name)
-                {
-                    continue;
-                }
-                let path = root.join("versions").join(name);
-                if path.try_exists()?
-                    && structurally_complete_generation(&path, profile, name).is_err()
-                {
-                    let guard = incomplete_generation_guard(&path)?;
-                    remove_generation_files(&path, guard)?;
-                }
-            }
-        }
-        let owner = installer_owner()?;
-        windows_fs::private_directory(&root.join("versions"))?;
-        let current = if root.join(POINTER).try_exists()? {
-            Some(Current::parse(&read_bounded(&root.join(POINTER), 1024)?)?)
-        } else {
-            None
-        };
-        // Manual repair never modifies a mapped generation, even a rollback.
-        for entry in fs::read_dir(root.join("versions"))?.take(4096) {
-            let entry = entry?;
-            if !entry.file_name().to_str().is_some_and(valid_generation) {
-                return Err(InstallError::Invalid("unknown Windows generation"));
-            }
-            known_partial_generation(&entry.path())?;
-            if entry.path().join("maple-agent.exe").try_exists()? {
-                let probe = OpenOptions::new()
-                    .append(true)
-                    .open(entry.path().join("maple-agent.exe"))?;
-                drop(probe);
-            }
-        }
-        let intent = ManualIntent {
-            format: "maple-agent-windows-installer-intent-v1".into(),
-            profile: profile.into(),
-            generation: generation_name.into(),
-            version: info["version"].as_str().unwrap().into(),
-            source_sha: info["source_sha"].as_str().unwrap().into(),
-            executable_sha256: exact_file_digest(&checker)?,
-            owner_pid: owner.0,
-            owner_created: owner.1,
-        };
-        // Publish admission intent before copying any owned installation file.
-        write_private_json(&root.join(MANUAL_INTENT), &intent)?;
-        let target = root.join("versions").join(generation_name);
-        if target.try_exists()? {
-            let complete = descriptor(&target, profile)
-                .and_then(|bundle| {
-                    if bundle.generation() != generation_name {
-                        return Err(InstallError::Invalid("Windows repair identity"));
-                    }
-                    let _ = scan_generation(&target)?;
-                    verify_identity(&target, &bundle)
-                })
-                .is_ok();
-            if !complete {
-                if current
-                    .as_ref()
-                    .is_some_and(|pointer| pointer.generation == generation_name)
-                {
-                    return Err(InstallError::Invalid(
-                        "cannot repair active Windows generation in place",
-                    ));
-                }
-                let guard = incomplete_generation_guard(&target)?;
-                remove_generation_files(&target, guard)?;
-            }
-        }
-        if !root.join("maple-agent.exe").try_exists()? {
-            let temporary = tempfile::Builder::new()
-                .prefix(TRANSACTION_TEMP_PREFIX)
-                .rand_bytes(STAGING_RANDOM_LENGTH)
-                .tempfile_in(&root)?
-                .into_temp_path();
-            fs::copy(&checker, &temporary)?;
-            if exact_file_digest(&temporary)? != intent.executable_sha256 {
-                return Err(InstallError::CodeSignature);
-            }
-            authenticode::verify_or_unsigned_detailed(&temporary, profile == "dev")?;
-            windows_atomic_replace(&temporary, &root.join("maple-agent.exe"))?;
-        }
-        windows_sync_directory(&root)?;
+        let info = admit_windows_installation(&checker, root, profile)?;
+        let _lock =
+            prepare_admitted_windows_installation(&checker, root, profile, generation_name, &info)?;
         Ok(())
     }
     #[cfg(not(windows))]
@@ -1915,6 +1778,166 @@ pub fn prepare_windows_installation(
             "Windows installer preparation requires native Windows",
         ))
     }
+}
+
+#[cfg(windows)]
+fn prepare_admitted_windows_installation(
+    checker: &Path,
+    root: &Path,
+    profile: &str,
+    generation_name: &str,
+    info: &serde_json::Value,
+) -> Result<File> {
+    if !valid_generation(generation_name) {
+        return Err(InstallError::Invalid("Windows manual generation"));
+    }
+    if generation_name.rsplit_once('-').unwrap().0 != info["version"].as_str().unwrap() {
+        return Err(InstallError::Invalid(
+            "Windows installer generation identity",
+        ));
+    }
+    windows_fs::private_directory(root)?;
+    let root = root.canonicalize()?;
+    let lock = open_install_lock(&root)?;
+    lock.try_lock_exclusive().map_err(|error| {
+        if error.kind() == io::ErrorKind::WouldBlock
+            || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+        {
+            InstallError::Busy
+        } else {
+            error.into()
+        }
+    })?;
+    // Recheck after acquiring the lock: an updater may have committed while
+    // this installer was performing its read-only admission checks.
+    if root.join(POINTER).try_exists()? || root.join(MANUAL_INTENT).try_exists()? {
+        inspect_manual_root(&root, profile)?;
+    }
+    if root.join(MANUAL_INTENT).try_exists()? {
+        let previous: ManualIntent =
+            serde_json::from_slice(&read_bounded(&root.join(MANUAL_INTENT), DESCRIPTOR_LIMIT)?)
+                .map_err(|_| InstallError::Invalid("Windows installer recovery intent"))?;
+        if process_created(previous.owner_pid)?
+            .is_some_and(|created| created == previous.owner_created)
+        {
+            return Err(InstallError::Busy);
+        }
+        if previous.format != "maple-agent-windows-installer-intent-v1"
+            || previous.profile != profile
+            || !valid_generation(&previous.generation)
+        {
+            return Err(InstallError::Invalid("Windows prior installer intent"));
+        }
+        let current = if root.join(POINTER).try_exists()? {
+            Some(Current::parse(&read_bounded(&root.join(POINTER), 1024)?)?)
+        } else {
+            None
+        };
+        let prior_path = root.join("versions").join(&previous.generation);
+        if prior_path.try_exists()?
+            && !current
+                .as_ref()
+                .is_some_and(|pointer| pointer.generation == previous.generation)
+            && structurally_complete_generation(&prior_path, profile, &previous.generation).is_err()
+        {
+            let guard = incomplete_generation_guard(&prior_path)?;
+            remove_generation_files(&prior_path, guard)?;
+        }
+    }
+    if let Some(intent) = abandoned_uninstall(&root, profile)? {
+        validate_uninstall_repair(&root, profile, &intent)?;
+        let current = if root.join(POINTER).try_exists()? {
+            Some(Current::parse(&read_bounded(&root.join(POINTER), 1024)?)?)
+        } else {
+            None
+        };
+        for name in &intent.generations {
+            if current
+                .as_ref()
+                .is_some_and(|pointer| pointer.generation == *name)
+            {
+                continue;
+            }
+            let path = root.join("versions").join(name);
+            if path.try_exists()? && structurally_complete_generation(&path, profile, name).is_err()
+            {
+                let guard = incomplete_generation_guard(&path)?;
+                remove_generation_files(&path, guard)?;
+            }
+        }
+    }
+    let owner = installer_owner()?;
+    windows_fs::private_directory(&root.join("versions"))?;
+    let current = if root.join(POINTER).try_exists()? {
+        Some(Current::parse(&read_bounded(&root.join(POINTER), 1024)?)?)
+    } else {
+        None
+    };
+    // Manual repair never modifies a mapped generation, even a rollback.
+    for entry in fs::read_dir(root.join("versions"))?.take(4096) {
+        let entry = entry?;
+        if !entry.file_name().to_str().is_some_and(valid_generation) {
+            return Err(InstallError::Invalid("unknown Windows generation"));
+        }
+        known_partial_generation(&entry.path())?;
+        if entry.path().join("maple-agent.exe").try_exists()? {
+            let probe = OpenOptions::new()
+                .append(true)
+                .open(entry.path().join("maple-agent.exe"))?;
+            drop(probe);
+        }
+    }
+    let intent = ManualIntent {
+        format: "maple-agent-windows-installer-intent-v1".into(),
+        profile: profile.into(),
+        generation: generation_name.into(),
+        version: info["version"].as_str().unwrap().into(),
+        source_sha: info["source_sha"].as_str().unwrap().into(),
+        executable_sha256: exact_file_digest(checker)?,
+        owner_pid: owner.0,
+        owner_created: owner.1,
+    };
+    // Publish admission intent before copying any owned installation file.
+    write_private_json(&root.join(MANUAL_INTENT), &intent)?;
+    let target = root.join("versions").join(generation_name);
+    if target.try_exists()? {
+        let complete = descriptor(&target, profile)
+            .and_then(|bundle| {
+                if bundle.generation() != generation_name {
+                    return Err(InstallError::Invalid("Windows repair identity"));
+                }
+                let _ = scan_generation(&target)?;
+                verify_identity(&target, &bundle)
+            })
+            .is_ok();
+        if !complete {
+            if current
+                .as_ref()
+                .is_some_and(|pointer| pointer.generation == generation_name)
+            {
+                return Err(InstallError::Invalid(
+                    "cannot repair active Windows generation in place",
+                ));
+            }
+            let guard = incomplete_generation_guard(&target)?;
+            remove_generation_files(&target, guard)?;
+        }
+    }
+    if !root.join("maple-agent.exe").try_exists()? {
+        let temporary = tempfile::Builder::new()
+            .prefix(TRANSACTION_TEMP_PREFIX)
+            .rand_bytes(STAGING_RANDOM_LENGTH)
+            .tempfile_in(&root)?
+            .into_temp_path();
+        fs::copy(checker, &temporary)?;
+        if exact_file_digest(&temporary)? != intent.executable_sha256 {
+            return Err(InstallError::CodeSignature);
+        }
+        authenticode::verify_or_unsigned_detailed(&temporary, profile == "dev")?;
+        windows_atomic_replace(&temporary, &root.join("maple-agent.exe"))?;
+    }
+    windows_sync_directory(&root)?;
+    Ok(lock)
 }
 
 #[cfg(windows)]
@@ -1966,28 +1989,50 @@ pub fn activate_windows_installation(
 ) -> Result<()> {
     #[cfg(windows)]
     {
-        let mut stage = WindowsActivationStage::Input;
-        let result = (|| -> Result<()> {
-            if !valid_generation(generation_name) {
-                return Err(InstallError::Invalid("Windows activation generation"));
-            }
-            let executable = executable.canonicalize()?;
-            let root = executable
-                .parent()
-                .ok_or(InstallError::Invalid("Windows activation root"))?;
-            if executable
-                .file_name()
-                .is_none_or(|x| x != "maple-agent.exe")
-            {
-                return Err(InstallError::Invalid("Windows activation executable"));
-            }
-            stage = WindowsActivationStage::RootStorage;
-            windows_fs::private_directory(root)?;
-            stage = WindowsActivationStage::Registration;
-            registered_root(root, profile)?;
-            stage = WindowsActivationStage::BootstrapIdentity;
-            let _ = trusted_installer(&executable, profile)?;
-            stage = WindowsActivationStage::InstallLock;
+        activate_windows_installation_with_lock(executable, profile, generation_name, None)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (executable, profile, generation_name);
+        Err(InstallError::NotifyOnly(
+            "Windows activation requires native Windows",
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn activate_windows_installation_with_lock(
+    executable: &Path,
+    profile: &str,
+    generation_name: &str,
+    held_lock: Option<&File>,
+) -> Result<()> {
+    let mut stage = WindowsActivationStage::Input;
+    let result = (|| -> Result<()> {
+        if !valid_generation(generation_name) {
+            return Err(InstallError::Invalid("Windows activation generation"));
+        }
+        let executable = executable.canonicalize()?;
+        let root = executable
+            .parent()
+            .ok_or(InstallError::Invalid("Windows activation root"))?;
+        if executable
+            .file_name()
+            .is_none_or(|x| x != "maple-agent.exe")
+        {
+            return Err(InstallError::Invalid("Windows activation executable"));
+        }
+        stage = WindowsActivationStage::RootStorage;
+        windows_fs::private_directory(root)?;
+        stage = WindowsActivationStage::Registration;
+        registered_root(root, profile)?;
+        stage = WindowsActivationStage::BootstrapIdentity;
+        let _ = trusted_installer(&executable, profile)?;
+        stage = WindowsActivationStage::InstallLock;
+        let _lock = if let Some(lock) = held_lock {
+            windows_fs::validate_path_binding(&root.join(".install.lock"), lock)?;
+            None
+        } else {
             let lock = open_install_lock(root)?;
             lock.try_lock_exclusive().map_err(|error| {
                 if error.kind() == io::ErrorKind::WouldBlock
@@ -1998,68 +2043,61 @@ pub fn activate_windows_installation(
                     error.into()
                 }
             })?;
+            Some(lock)
+        };
+        stage = WindowsActivationStage::IntentIdentity;
+        let intent = manual_activation_intent(root, profile, generation_name)?;
+        stage = WindowsActivationStage::GenerationIdentity;
+        let (path, bundle) = manual_activation_bundle(root, profile, generation_name, &intent)?;
+        stage = WindowsActivationStage::GenerationVerification;
+        let _ = scan_generation(&path)?;
+        verify_identity(&path, &bundle)?;
+        stage = WindowsActivationStage::GenerationGuards;
+        let generation_guards = ManualActivationGuards::acquire(root, Current::new(&bundle))?;
+        if generation_guards.repeat {
+            // A same-current retry publishes nothing. Authenticate again
+            // while the pointer and every current payload file are pinned
+            // read-only; a mapped host can safely keep using those bytes.
+            stage = WindowsActivationStage::Registration;
+            registered_root(root, profile)?;
+            stage = WindowsActivationStage::BootstrapIdentity;
+            let _ = trusted_installer(&executable, profile)?;
             stage = WindowsActivationStage::IntentIdentity;
-            let intent = manual_activation_intent(root, profile, generation_name)?;
+            if manual_activation_intent(root, profile, generation_name)? != intent {
+                return Err(InstallError::Invalid("Windows installer intent changed"));
+            }
             stage = WindowsActivationStage::GenerationIdentity;
             let (path, bundle) = manual_activation_bundle(root, profile, generation_name, &intent)?;
             stage = WindowsActivationStage::GenerationVerification;
             let _ = scan_generation(&path)?;
             verify_identity(&path, &bundle)?;
-            stage = WindowsActivationStage::GenerationGuards;
-            let generation_guards = ManualActivationGuards::acquire(root, Current::new(&bundle))?;
-            if generation_guards.repeat {
-                // A same-current retry publishes nothing. Authenticate again
-                // while the pointer and every current payload file are pinned
-                // read-only; a mapped host can safely keep using those bytes.
-                stage = WindowsActivationStage::Registration;
-                registered_root(root, profile)?;
-                stage = WindowsActivationStage::BootstrapIdentity;
-                let _ = trusted_installer(&executable, profile)?;
-                stage = WindowsActivationStage::IntentIdentity;
-                if manual_activation_intent(root, profile, generation_name)? != intent {
-                    return Err(InstallError::Invalid("Windows installer intent changed"));
-                }
-                stage = WindowsActivationStage::GenerationIdentity;
-                let (path, bundle) =
-                    manual_activation_bundle(root, profile, generation_name, &intent)?;
-                stage = WindowsActivationStage::GenerationVerification;
-                let _ = scan_generation(&path)?;
-                verify_identity(&path, &bundle)?;
-                if root.join(UNINSTALL_INTENT).try_exists()? {
-                    return Err(InstallError::Busy);
-                }
-                stage = WindowsActivationStage::PointerCommit;
-                generation_guards.commit()?;
-                // The already-committed pointer stays untouched. Complete only
-                // this matching live-owner intent, never old payload cleanup.
-                let _ = fs::remove_file(root.join(MANUAL_INTENT));
-                let _ = windows_sync_directory(root);
-                return Ok(());
+            if root.join(UNINSTALL_INTENT).try_exists()? {
+                return Err(InstallError::Busy);
             }
             stage = WindowsActivationStage::PointerCommit;
             generation_guards.commit()?;
-            drop(generation_guards);
-            // Publication committed. Cleanup cannot report an uncommitted failure
-            // to NSIS, which would otherwise roll back valid registration. Startup
-            // authenticates this exact generation and retries retained intent.
-            if retire_abandoned_uninstall(root, profile, &bundle.generation()).is_ok() {
-                let _ = fs::remove_file(root.join(MANUAL_INTENT));
-            }
+            // The already-committed pointer stays untouched. Complete only
+            // this matching live-owner intent, never old payload cleanup.
+            let _ = fs::remove_file(root.join(MANUAL_INTENT));
             let _ = windows_sync_directory(root);
-            Ok(())
-        })();
-        result.map_err(|source| InstallError::WindowsActivation {
-            stage,
-            source: Box::new(source),
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (executable, profile, generation_name);
-        Err(InstallError::NotifyOnly(
-            "Windows activation requires native Windows",
-        ))
-    }
+            return Ok(());
+        }
+        stage = WindowsActivationStage::PointerCommit;
+        generation_guards.commit()?;
+        drop(generation_guards);
+        // Publication committed. Cleanup cannot report an uncommitted failure
+        // to NSIS, which would otherwise roll back valid registration. Startup
+        // authenticates this exact generation and retries retained intent.
+        if retire_abandoned_uninstall(root, profile, &bundle.generation()).is_ok() {
+            let _ = fs::remove_file(root.join(MANUAL_INTENT));
+        }
+        let _ = windows_sync_directory(root);
+        Ok(())
+    })();
+    result.map_err(|source| InstallError::WindowsActivation {
+        stage,
+        source: Box::new(source),
+    })
 }
 
 /// Uninstaller entry derives authority from its own registered bootstrap path.

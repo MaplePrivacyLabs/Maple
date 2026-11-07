@@ -11,6 +11,7 @@ pub enum WindowsInstallOperation {
     Parent,
     ExistingInstallation,
     Preparation,
+    InstallLock,
     Registration,
     Payload,
     Activation,
@@ -24,6 +25,7 @@ impl fmt::Display for WindowsInstallOperation {
             Self::Parent => "validate-installation-parent",
             Self::ExistingInstallation => "inspect-existing-installation",
             Self::Preparation => "prepare-installation",
+            Self::InstallLock => "acquire-installation-lock",
             Self::Registration => "register-installation",
             Self::Payload => "copy-verified-payload",
             Self::Activation => "activate-installation",
@@ -85,17 +87,36 @@ impl std::error::Error for WindowsStorageGuard {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowsInstallerDiagnostic {
     pub operation: Option<WindowsInstallOperation>,
-    pub reason: String,
+    reason: String,
     pub native_error: Option<u32>,
+    pub mutations_started: Option<bool>,
+}
+
+impl WindowsInstallerDiagnostic {
+    pub fn unavailable() -> Self {
+        Self {
+            operation: None,
+            reason: "checker-unavailable".into(),
+            native_error: None,
+            mutations_started: None,
+        }
+    }
 }
 
 impl InstallError {
     pub fn windows_installer_diagnostic(&self) -> WindowsInstallerDiagnostic {
         let mut result = match self {
-            Self::WindowsOperation { operation, source } => {
+            Self::WindowsOperation {
+                operation,
+                source,
+                mutations_started,
+            } => {
                 let mut result = source.windows_installer_diagnostic();
                 if result.operation.is_none() {
                     result.operation = Some(*operation);
+                }
+                if mutations_started.is_some() {
+                    result.mutations_started = *mutations_started;
                 }
                 return result;
             }
@@ -107,6 +128,7 @@ impl InstallError {
             }
             Self::Io(error) => WindowsInstallerDiagnostic {
                 operation: None,
+                mutations_started: None,
                 reason: error
                     .get_ref()
                     .and_then(|e| e.downcast_ref::<WindowsStorageGuard>())
@@ -119,26 +141,31 @@ impl InstallError {
             },
             Self::WindowsCodeSignature { status } => WindowsInstallerDiagnostic {
                 operation: None,
+                mutations_started: None,
                 reason: "code-trust".into(),
                 native_error: Some(*status),
             },
             Self::CodeSignature => WindowsInstallerDiagnostic {
                 operation: None,
+                mutations_started: None,
                 reason: "code-identity".into(),
                 native_error: None,
             },
             Self::Busy => WindowsInstallerDiagnostic {
                 operation: None,
+                mutations_started: None,
                 reason: "installation-busy".into(),
                 native_error: None,
             },
             Self::Invalid(_) => WindowsInstallerDiagnostic {
                 operation: None,
+                mutations_started: None,
                 reason: "invalid-installation".into(),
                 native_error: None,
             },
             Self::NotifyOnly(_) => WindowsInstallerDiagnostic {
                 operation: None,
+                mutations_started: None,
                 reason: "manual-installation-required".into(),
                 native_error: None,
             },
@@ -147,6 +174,27 @@ impl InstallError {
         result.reason.truncate(128);
         result
     }
+}
+
+#[cfg(any(windows, test))]
+fn report_header(build: &serde_json::Value, system: &str) -> String {
+    let mut text = String::from("Maple Windows installer report v1\r\n");
+    for key in ["version", "build", "git_revision", "source_sha", "profile"] {
+        let value = build[key]
+            .as_str()
+            .filter(|v| {
+                v.len() <= 64
+                    && v.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
+            })
+            .unwrap_or("unknown");
+        text.push_str(&format!("{key}: {value}\r\n"));
+    }
+    text.push_str(&format!(
+        "architecture: {}\r\n{system}\r\n",
+        std::env::consts::ARCH
+    ));
+    text
 }
 
 #[cfg(any(windows, test))]
@@ -166,19 +214,8 @@ fn render_report(
         .and_then(|f| f.native_error)
         .map(|code| format!("0x{code:08X}"))
         .unwrap_or_else(|| "none".into());
-    let mut text = String::from("Maple Windows installer report v1\r\n");
-    for key in ["version", "build", "git_revision", "source_sha", "profile"] {
-        let value = build[key]
-            .as_str()
-            .filter(|v| {
-                v.len() <= 64
-                    && v.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
-            })
-            .unwrap_or("unknown");
-        text.push_str(&format!("{key}: {value}\r\n"));
-    }
-    text.push_str(&format!("architecture: {}\r\n{system}\r\nphase: {phase}\r\noperation: {operation}\r\nreason: {reason}\r\nWindows error: {native}\r\nsupport code: MWI/{phase}/{operation}/{reason}\r\nelapsed ms: {}\r\ninstallation changes: {}\r\n", std::env::consts::ARCH, elapsed.as_millis(), if phase == "preflight" { "none" } else if failure.is_none() { "phase completed" } else { "may be partial; retained for safe retry" }));
+    let mut text = report_header(build, system);
+    text.push_str(&format!("phase: {phase}\r\noperation: {operation}\r\nreason: {reason}\r\nWindows error: {native}\r\nsupport code: MWI/{phase}/{operation}/{reason}\r\nelapsed ms: {}\r\ninstallation changes: {}\r\n", elapsed.as_millis(), if phase == "preflight" || failure.is_some_and(|f| f.mutations_started == Some(false)) { "none" } else if failure.is_none() { "phase completed" } else { "may be partial; retained for safe retry" }));
     text
 }
 
@@ -318,20 +355,7 @@ fn save_report(
                 saved = true;
             }
         }
-        if let Ok(entries) = fs::read_dir(directory) {
-            let mut logs: Vec<_> = entries
-                .take(1024)
-                .filter_map(|e| e.ok())
-                .filter(|e| owned_log_name(&e.file_name().to_string_lossy()))
-                .collect();
-            logs.sort_by_key(|e| e.file_name());
-            let remove = logs.len().saturating_sub(10);
-            for entry in logs.into_iter().take(remove) {
-                if windows_bundle::windows_open_readonly(&entry.path()).is_ok() {
-                    let _ = fs::remove_file(entry.path());
-                }
-            }
-        }
+        prune_logs(directory);
     }
     if !saved {
         report.push_str("support log: unavailable; copy this report instead\r\n");
@@ -344,6 +368,134 @@ fn save_report(
         let _ = file.write_all(report.as_bytes());
     }
     report
+}
+
+#[cfg(windows)]
+fn prune_logs(directory: &Path) {
+    if let Ok(entries) = fs::read_dir(directory) {
+        let mut logs: Vec<_> = entries
+            .take(1024)
+            .filter_map(|e| e.ok())
+            .filter(|e| owned_log_name(&e.file_name().to_string_lossy()))
+            .collect();
+        logs.sort_by_key(|e| e.file_name());
+        let remove = logs.len().saturating_sub(10);
+        for entry in logs.into_iter().take(remove) {
+            if windows_bundle::windows_open_readonly(&entry.path()).is_ok() {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// Started before any install mutation; checkpoints survive a crashing child.
+#[cfg(windows)]
+pub struct WindowsInstallerTrace {
+    file: Option<File>,
+    export: Option<File>,
+    alias: Option<String>,
+    phase: &'static str,
+    build: serde_json::Value,
+    system: String,
+    started: std::time::Instant,
+    written: usize,
+}
+#[cfg(windows)]
+impl WindowsInstallerTrace {
+    pub fn begin(
+        phase: &'static str,
+        build: &serde_json::Value,
+        report_path: Option<&Path>,
+    ) -> Self {
+        let phase = match phase {
+            "preflight" | "preparation" | "activation" | "installation" => phase,
+            _ => "unknown",
+        };
+        let mut trace = Self {
+            file: None,
+            export: report_path
+                .and_then(|p| OpenOptions::new().write(true).create_new(true).open(p).ok()),
+            alias: None,
+            phase,
+            build: build.clone(),
+            system: system_details(),
+            started: std::time::Instant::now(),
+            written: 0,
+        };
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let directory = PathBuf::from(local).join("Maple Work Installer Logs");
+            if windows_bundle::windows_private_directory(&directory).is_ok() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let name = format!("install-{now}-{}-{phase}.txt", std::process::id());
+                trace.file = windows_bundle::windows_create_private(&directory.join(&name)).ok();
+                if trace.file.is_some() {
+                    trace.alias =
+                        Some(format!("%LOCALAPPDATA%\\Maple Work Installer Logs\\{name}"));
+                }
+                prune_logs(&directory);
+            }
+        }
+        let header = format!(
+            "{}phase: {phase}\r\nstate: running; checkpoints are not a final result\r\nsupport log: {}\r\n",
+            report_header(build, &trace.system),
+            trace.alias.as_deref().unwrap_or("unavailable")
+        );
+        trace.write_checkpoint(&header);
+        trace
+    }
+    fn write_checkpoint(&mut self, text: &str) {
+        if self.written + text.len() > 2048 {
+            return;
+        }
+        self.written += text.len();
+        for file in [&mut self.file, &mut self.export].into_iter().flatten() {
+            let _ = file
+                .write_all(text.as_bytes())
+                .and_then(|_| file.sync_all());
+        }
+    }
+    pub fn record(&mut self, operation: WindowsInstallOperation, mutations_started: bool) {
+        self.write_checkpoint(&format!(
+            "checkpoint: {operation}; mutations started: {mutations_started}; elapsed ms: {}\r\n",
+            self.started.elapsed().as_millis()
+        ));
+    }
+    pub fn finish(mut self, failure: Option<&WindowsInstallerDiagnostic>) -> String {
+        let mut report = render_report(
+            self.phase,
+            &self.build,
+            failure,
+            self.started.elapsed(),
+            &self.system,
+        );
+        if let (Some(file), Some(alias)) = (&mut self.file, &self.alias) {
+            let text = format!("{report}support log: {alias}\r\n");
+            if file
+                .write_all(text.as_bytes())
+                .and_then(|_| file.sync_all())
+                .is_ok()
+            {
+                report = text;
+            } else {
+                report.push_str("support log: unavailable; copy this report instead\r\n");
+            }
+        } else {
+            report.push_str("support log: unavailable; copy this report instead\r\n");
+        }
+        // Rewrite only our exclusively created, still-held export handle. On a
+        // crash it contains checkpoints; normal exit leaves a compact dialog.
+        if let Some(file) = &mut self.export {
+            use std::io::{Seek, SeekFrom};
+            let _ = file
+                .set_len(0)
+                .and_then(|_| file.seek(SeekFrom::Start(0)))
+                .and_then(|_| file.write_all(report.as_bytes()));
+        }
+        report
+    }
 }
 
 #[cfg(windows)]

@@ -172,7 +172,7 @@ fn open_raw_shared(
     Ok(unsafe { File::from_raw_handle(handle.cast()) })
 }
 
-fn validate_path_binding(path: &Path, file: &File) -> io::Result<()> {
+pub(super) fn validate_path_binding(path: &Path, file: &File) -> io::Result<()> {
     let first = information(file)?;
     let current = open_raw(path, FILE_READ_ATTRIBUTES, OPEN_EXISTING, null())?;
     let second = information(&current)?;
@@ -221,6 +221,17 @@ fn ancestors(path: &Path, include_leaf: bool) -> io::Result<Vec<File>> {
         guards.push(file);
     }
     Ok(guards)
+}
+
+/// Keep the complete namespace stable through a native installation transaction.
+pub(super) fn pin_directory(path: &Path) -> io::Result<Vec<File>> {
+    let handles = ancestors(path, true)?;
+    if information(handles.last().ok_or_else(invalid)?)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY
+        == 0
+    {
+        return Err(invalid());
+    }
+    Ok(handles)
 }
 
 pub(super) fn validate_path_syntax(path: &Path) -> io::Result<()> {
@@ -520,6 +531,26 @@ fn validate_directory(path: &Path, parent: bool) -> io::Result<()> {
 
 pub(super) fn create_private(path: &Path) -> io::Result<File> {
     open_private_with(path, false, CREATE_NEW)
+}
+
+/// Publish a newly created fixed file without replacing a raced-in name.
+pub(super) fn publish_new(source: &Path, destination: &Path) -> io::Result<()> {
+    let _source_parents = ancestors(source, false)?;
+    let _destination_parents = ancestors(destination, false)?;
+    drop(open_readonly(source)?);
+    let source = wide(source.as_os_str())?;
+    let destination = wide(destination.as_os_str())?;
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 pub(super) fn open_private(path: &Path, truncate: bool) -> io::Result<File> {
