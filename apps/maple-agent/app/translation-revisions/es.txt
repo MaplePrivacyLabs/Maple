@@ -744,6 +744,10 @@ runtime-error-lifecycle-space df293fc72dd1f6fe
 runtime-error-lifecycle-verification 8f846132c4db2aa0
 runtime-error-local-desktop 6378bb7e6cc81b0c
 runtime-error-login 9f862253c0b4569d
+runtime-error-mcp-invalid-address 4769abaa52438e5e
+runtime-error-mcp-no-address 5d7ec8a9f53c171c
+runtime-error-mcp-no-server 9883455360636a76
+runtime-error-mcp-unreachable d59b6a5fcdb18062
 runtime-error-oauth-browser 2e835af2bb3b47db
 runtime-error-oauth-callback 0b70812f19d40fe3
 runtime-error-oauth-cancelled 3518e36497aba369
@@ -1079,6 +1083,12 @@ settings-billing-trial 2701250015fde84a
 settings-billing-week 4226c1722e65fa58
 settings-billing-year 1d3c7336330bf222
 settings-built-in 23253224b0d8a85b
+settings-catalog-address 279d73e30a613a92
+settings-catalog-address-help-home-assistant a28e84b13dc572d8
+settings-catalog-address-help-vana 5600286138ae8b0f
+settings-catalog-address-label-home-assistant e8f3e8c252d28fb9
+settings-catalog-address-label-vana caac565c15d2de86
+settings-catalog-address-title ea58494f7afdfd9a
 settings-catalog-all afbd753639e3faf6
 settings-catalog-apps ebf1a443c7c198e4
 settings-catalog-browser-sign-in ba71db9877de0ec4
@@ -1103,6 +1113,7 @@ settings-catalog-summary-cloudflare 513989afce30869e
 settings-catalog-summary-dropbox ba87106ede17b4f3
 settings-catalog-summary-evernote f66412c0aedf90d4
 settings-catalog-summary-gitlab aace73da5f6bada7
+settings-catalog-summary-home-assistant b95f18a4c92cfb31
 settings-catalog-summary-intercom fa8e67f648d36bdd
 settings-catalog-summary-linear bc96e059534712ca
 settings-catalog-summary-miro c2e92e166030744b
@@ -1115,6 +1126,7 @@ settings-catalog-summary-square 637a467c43d8132f
 settings-catalog-summary-stripe b24c394fccc2a665
 settings-catalog-summary-supabase a5d4cd444d234c5a
 settings-catalog-summary-todoist 0ba14f1615b32d84
+settings-catalog-summary-vana c005d4d066b6b827
 settings-catalog-summary-vercel 88bbed401e626b82
 settings-catalog-summary-wix 18fbeb60ef920e82
 settings-catalog-summary-wordpress 06b4a0b060a38638
