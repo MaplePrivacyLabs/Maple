@@ -155,10 +155,22 @@ impl QuestionBroker {
         session_id: &str,
         questions: Vec<crate::agent::AgentQuestion>,
     ) -> String {
+        match self.try_ask(session_id, questions).await {
+            Ok(answer) | Err(answer) => answer,
+        }
+    }
+
+    /// As [`Self::ask`], with a question nobody can be shown as an error: the
+    /// text the asker can pass on, never an answer.
+    pub(crate) async fn try_ask(
+        &self,
+        session_id: &str,
+        questions: Vec<crate::agent::AgentQuestion>,
+    ) -> Result<String, String> {
         if self.managed.load(std::sync::atomic::Ordering::SeqCst)
             && self.responders.load(std::sync::atomic::Ordering::SeqCst) == 0
         {
-            return "No connected interface can show questions. Ask in plain text, or have the user open Maple desktop or an ACP client with form elicitation.".into();
+            return Err("No connected interface can show questions. Ask in plain text, or have the user open Maple desktop or an ACP client with form elicitation.".into());
         }
         let request_id = format!(
             "question_{}_{}",
@@ -180,13 +192,13 @@ impl QuestionBroker {
         let mut pending = self.pending.lock().await;
         pending.retain(|_, question| !question.sender.is_closed());
         if pending.len() >= MAX_PENDING_QUESTIONS {
-            return TOO_MANY_QUESTIONS.into();
+            return Err(TOO_MANY_QUESTIONS.into());
         }
         let mut budget = QuestionBudget {
             remaining: MAX_QUESTION_EVENT_BYTES,
         };
         if serde_json::to_writer(&mut budget, &event).is_err() {
-            return QUESTION_TOO_LARGE.into();
+            return Err(QUESTION_TOO_LARGE.into());
         }
         let (tx, rx) = oneshot::channel();
         pending.insert(
@@ -207,7 +219,7 @@ impl QuestionBroker {
         let answer = rx.await.unwrap_or_default();
         self.pending.lock().await.remove(&request_id);
         guard.armed = false;
-        answer
+        Ok(answer)
     }
 
     /// True when both handles share one pending map.
@@ -284,6 +296,7 @@ mod tests {
             header: "Synthetic".into(),
             question: text,
             options: Vec::new(),
+            permission: None,
         }
     }
 

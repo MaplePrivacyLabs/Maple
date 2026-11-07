@@ -24,6 +24,7 @@ mod state_tests {
     fn summary_at(id: &str, title: &str, project_root: &str) -> AgentSessionSummary {
         AgentSessionSummary {
             web_enabled: true,
+            permission_mode: Default::default(),
             state: AgentTaskState::Active,
             acp: false,
             id: id.to_string(),
@@ -707,6 +708,7 @@ mod state_tests {
                 kind: "desktop".into(),
                 pinned_ms: None,
                 web_enabled: false,
+                permission_mode: None,
                 model: None,
                 message_count: 1,
                 created_ms: 0,
@@ -795,6 +797,7 @@ mod state_tests {
                 kind: "desktop".into(),
                 pinned_ms: None,
                 web_enabled: false,
+                permission_mode: None,
                 model: None,
                 message_count: 1,
                 created_ms: 0,
@@ -1196,6 +1199,8 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.sidebar
                 .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+            this.permission_mode = Default::default();
+            this.new_task_permission_mode = Default::default();
         });
         screen
     }
@@ -1812,6 +1817,7 @@ mod state_tests {
                 header: "Question".to_string(),
                 question: text.to_string(),
                 options: Vec::new(),
+                permission: None,
             }],
         }
     }
@@ -2091,6 +2097,145 @@ mod state_tests {
         });
     }
 
+    fn permission_event(request_id: &str) -> AgentServiceEvent {
+        AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: request_id.to_string(),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
+                id: "permission".to_string(),
+                header: "Allow this action?".to_string(),
+                question: "This pushes.\n\ngit push".to_string(),
+                options: ["Allow once", "Deny"]
+                    .map(|label| maple_agent::agent::AgentQuestionOption {
+                        label: label.to_string(),
+                        description: String::new(),
+                    })
+                    .to_vec(),
+                permission: Some(maple_agent::agent::AgentPermissionPrompt {
+                    reason: maple_agent::agent::AgentPermissionReason::SendsOut,
+                    tool: "bash".to_string(),
+                    action: "git push".to_string(),
+                }),
+            }],
+        }
+    }
+
+    /// A click answers a permission card at once. Moving the keyboard
+    /// selection does not: walking past Allow must not allow anything.
+    #[gpui::test]
+    fn test_only_a_click_answers_a_permission_card(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            this.handle_service_event(permission_event("p1"), cx);
+            this.focus_question_option(0, 0, cx);
+            this.focus_question_option(0, 1, cx);
+            assert_eq!(this.pending_questions.len(), 1, "moving answers nothing");
+            this.toggle_question_option(0, 0, cx);
+            assert!(
+                this.pending_questions.is_empty(),
+                "a click on an option answers the card"
+            );
+        });
+    }
+
+    /// A permission card and its notification are worded in the interface's
+    /// language, and the answer stays the runtime's label in any language.
+    #[gpui::test]
+    fn test_a_permission_card_and_its_notification_follow_the_language(_cx: &mut TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let AgentServiceEvent::Question { questions, .. } = permission_event("p3") else {
+            unreachable!()
+        };
+        let entry = &questions[0];
+        let prompt = entry.permission.as_ref().unwrap();
+        for (locale, allow, deny, body) in [
+            (
+                "es",
+                "Permitir una vez",
+                "Rechazar",
+                "Esto envía o publica algo fuera de esta computadora.\ngit push",
+            ),
+            (
+                "en",
+                "Allow once",
+                "Deny",
+                "This sends or publishes something outside this computer.\ngit push",
+            ),
+        ] {
+            crate::ui::i18n::apply_preference(Some(locale));
+            assert_eq!(
+                crate::ui::chat::transcript::question_option_label(entry, 0).as_ref(),
+                allow
+            );
+            assert_eq!(
+                crate::ui::chat::transcript::question_option_label(entry, 1).as_ref(),
+                deny
+            );
+            assert_eq!(
+                crate::ui::chat::transcript::permission_notification_body(prompt),
+                body
+            );
+            assert_eq!(
+                entry.options[0].label, "Allow once",
+                "the answer never changes"
+            );
+        }
+    }
+
+    /// The answer stays the label the runtime gave, whatever language the
+    /// card shows it in.
+    #[gpui::test]
+    fn test_a_permission_answer_keeps_the_runtime_label(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            this.handle_service_event(permission_event("p2"), cx);
+            this.select_question_option(0, 0, cx);
+            let answer = this.composed_question_answer(cx);
+            let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
+            assert_eq!(parsed["answers"]["permission"]["answers"][0], "Allow once");
+        });
+    }
+
+    /// Clicking a new task's mode chip keeps the pick for the task and for
+    /// the next new task; a task's own chip changes only that task.
+    #[gpui::test]
+    fn test_a_new_task_starts_in_the_mode_last_picked_for_one(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentPermissionMode;
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.draft = true;
+            this.permission_mode = AgentPermissionMode::default();
+            this.new_task_permission_mode = AgentPermissionMode::default();
+            assert_eq!(this.permission_mode, AgentPermissionMode::Auto);
+
+            this.set_permission_mode(AgentPermissionMode::ReadOnly, cx);
+            assert_eq!(this.permission_mode, AgentPermissionMode::ReadOnly);
+            assert_eq!(this.new_task_permission_mode, AgentPermissionMode::ReadOnly);
+            let created = summary("new", "New");
+            assert_eq!(
+                this.new_session_changes(&created, &[]).mode,
+                Some(AgentPermissionMode::ReadOnly),
+                "the new task is told the chip's mode"
+            );
+
+            this.selected_session = Some("task".to_string());
+            this.set_permission_mode(AgentPermissionMode::FullAccess, cx);
+            assert_eq!(this.permission_mode, AgentPermissionMode::FullAccess);
+            assert_eq!(
+                this.new_task_permission_mode,
+                AgentPermissionMode::ReadOnly,
+                "an existing task's chip leaves the default alone"
+            );
+        });
+    }
+
     #[gpui::test]
     fn test_question_options_select_and_compose(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -2113,6 +2258,7 @@ mod state_tests {
                         description: "Second".to_string(),
                     },
                 ],
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -2145,6 +2291,7 @@ mod state_tests {
                             description: String::new(),
                         })
                         .collect(),
+                    permission: None,
                 }],
             };
             this.handle_service_event(question("first"), cx);
@@ -2183,6 +2330,7 @@ mod state_tests {
                         description: String::new(),
                     })
                     .collect(),
+                permission: None,
             };
             this.handle_service_event(
                 AgentServiceEvent::Question {
@@ -2312,6 +2460,7 @@ mod state_tests {
                                                     }
                                                 })
                                                 .collect(),
+                                                permission: None,
                                             }
                                         })
                                         .collect(),
@@ -2349,6 +2498,7 @@ mod state_tests {
                     label: "A".to_string(),
                     description: "First".to_string(),
                 }],
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -2381,6 +2531,7 @@ mod state_tests {
                     label: "A".to_string(),
                     description: "First".to_string(),
                 }],
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -2525,6 +2676,7 @@ mod state_tests {
                         label: "Yes".to_string(),
                         description: String::new(),
                     }],
+                    permission: None,
                 },
                 maple_agent::agent::AgentQuestion {
                     multi_select: false,
@@ -2535,6 +2687,7 @@ mod state_tests {
                         label: "No".to_string(),
                         description: String::new(),
                     }],
+                    permission: None,
                 },
             ],
         };
@@ -2568,6 +2721,7 @@ mod state_tests {
                 header: "Question".to_string(),
                 question: format!("Question {id}"),
                 options: Vec::new(),
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -2642,6 +2796,7 @@ mod state_tests {
                         header: "Question".to_string(),
                         question: "What should Maple do?".to_string(),
                         options: Vec::new(),
+                        permission: None,
                     }],
                 },
                 cx,
@@ -2695,6 +2850,7 @@ mod state_tests {
                     header: "Question".to_string(),
                     question: "Paused?".to_string(),
                     options: Vec::new(),
+                    permission: None,
                 }],
             }];
             this.send_text("a stray reply".to_string(), cx);
@@ -3168,6 +3324,7 @@ mod state_tests {
                 header: "Question".to_string(),
                 question: "From another task".to_string(),
                 options: Vec::new(),
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -3695,6 +3852,7 @@ mod state_tests {
             assert_eq!(
                 this.new_session_changes(&created, &task_mcp),
                 NewSessionChanges {
+                    mode: None,
                     web: Some(false),
                     mcp: vec![
                         DraftMcpChange {
@@ -10801,6 +10959,7 @@ mod state_tests {
                     header: "Question".to_string(),
                     question: "Which one?".to_string(),
                     options: Vec::new(),
+                    permission: None,
                 }],
             }];
         });
@@ -11423,12 +11582,12 @@ mod state_tests {
 
         // A counted `l` walks right; Enter presses the web toggle.
         let web = cx.update(|_window, app| chat.read(app).web_enabled);
-        cx.simulate_keystrokes("3 l");
+        cx.simulate_keystrokes("4 l");
         assert_eq!(row(cx).1, Some(ComposerControl::Web));
         cx.simulate_keystrokes("enter");
         assert_eq!(cx.update(|_window, app| chat.read(app).web_enabled), !web);
         cx.simulate_keystrokes("h");
-        assert_eq!(row(cx).1, Some(ComposerControl::Integrations));
+        assert_eq!(row(cx).1, Some(ComposerControl::Mode));
 
         // Enter opens a menu on the current choice; closing it returns to
         // the row on the same control.

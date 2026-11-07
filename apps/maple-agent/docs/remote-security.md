@@ -81,7 +81,8 @@ Sources: [1Password source](https://github.com/1Password/cpace),
 ## Exposure and validation limits
 
 A paired controller has the ordinary host agent's tool authority, including shell
-and computer use. No additional remote tool-approval system is introduced. Remote
+and computer use. Each task's [permission mode](permissions.md) applies as it does
+locally, and a controller can answer its prompts and change the mode. Remote
 API account/auth/billing/API-key/host-stop commands are excluded. Protocol versions,
 identity scope, grant checks and account fences are checked before dispatch;
 account-local receipt lookup cannot expose another account's outcome.

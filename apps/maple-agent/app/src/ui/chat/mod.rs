@@ -12,11 +12,11 @@ use gpui::{
 };
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentIntegration, AgentIntegrationAvailability,
-    AgentIntegrationBackend, AgentMcpServer, AgentMcpTransport, AgentProjectTrustStatus,
-    AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent, AgentSessionIntegrationKind,
-    AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentSubagent, AgentTaskState,
-    AgentThinkingState, AgentTimelineItem, CatalogEntry, RecentProjectRoot, SideQuestionEvent,
-    ThinkingLevel,
+    AgentIntegrationBackend, AgentMcpServer, AgentMcpTransport, AgentPermissionMode,
+    AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent,
+    AgentSessionIntegrationKind, AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand,
+    AgentSubagent, AgentTaskState, AgentThinkingState, AgentTimelineItem, CatalogEntry,
+    RecentProjectRoot, SideQuestionEvent, ThinkingLevel,
 };
 
 use crate::backend::{AgentBackend, PendingQuestion};
@@ -261,6 +261,8 @@ pub(super) enum ChatPopup {
     Model,
     Thinking,
     Integrations,
+    /// The composer chip's permission modes.
+    Mode,
     Settings,
     /// The transcript's right-click menu, at a window position.
     Transcript(gpui::Point<gpui::Pixels>),
@@ -312,12 +314,13 @@ struct ProjectMcpSave {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NewSessionChanges {
     web: Option<bool>,
+    mode: Option<AgentPermissionMode>,
     mcp: Vec<DraftMcpChange>,
 }
 
 impl NewSessionChanges {
     fn is_empty(&self) -> bool {
-        self.web.is_none() && self.mcp.is_empty()
+        self.web.is_none() && self.mode.is_none() && self.mcp.is_empty()
     }
 }
 
@@ -695,6 +698,10 @@ pub struct ChatScreen {
     web_enabled: bool,
     /// Settings default applied to newly created tasks.
     default_web_enabled: bool,
+    /// What the selected task may do without asking (mirrors its record).
+    permission_mode: AgentPermissionMode,
+    /// The mode a new task starts in: the last one picked for a new task.
+    new_task_permission_mode: AgentPermissionMode,
     /// Parsed markdown per timeline item (keyed by item id and revision),
     /// so visible messages are parsed once, not every frame.
     markdown_cache: MarkdownCache,
@@ -1495,6 +1502,8 @@ impl ChatScreen {
             composer_expanded: false,
             web_enabled: true,
             default_web_enabled: settings.default_web_enabled,
+            permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
+            new_task_permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             markdown_cache: MarkdownCache::default(),
             notice_dismiss_pending: std::cell::Cell::new(false),
             derived: DerivedCache::default(),
@@ -2453,6 +2462,7 @@ impl ChatScreen {
         self.draft = true;
         // The draft starts from this project's defaults.
         self.web_enabled = self.default_web_enabled;
+        self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
         self.refresh_selected_title();
         cx.notify();
@@ -2696,6 +2706,7 @@ impl ChatScreen {
     ) -> NewSessionChanges {
         NewSessionChanges {
             web: (self.web_enabled != session.web_enabled).then_some(self.web_enabled),
+            mode: (self.permission_mode != session.permission_mode).then_some(self.permission_mode),
             mcp: self
                 .session_mcp
                 .iter()
@@ -2760,6 +2771,21 @@ impl ChatScreen {
                                 .raw_message()
                                 .map(|raw| format!("Could not change web access: {raw}"));
                             failure.with_context("chat-web-change-error", vec![], fallback)
+                        })?;
+                }
+                if let Some(mode) = changes.mode {
+                    session = backend
+                        .call_presented::<maple_agent::agent::AgentSessionSummary>(
+                            "set_session_permission_mode",
+                            (&user_id, &session.id, mode),
+                        )
+                        .await
+                        .map_err(UiFailure::from)
+                        .map_err(|failure| {
+                            let fallback = failure
+                                .raw_message()
+                                .map(|raw| format!("Could not change the mode: {raw}"));
+                            failure.with_context("chat-mode-change-error", vec![], fallback)
                         })?;
                 }
                 for change in &changes.mcp {
@@ -3511,6 +3537,7 @@ impl ChatScreen {
         self.refresh_selected_title();
         self.set_queue(Vec::new());
         self.web_enabled = session.web_enabled;
+        self.permission_mode = session.permission_mode;
         self.apply_session_model(&session, cx);
         self.replace_timeline(timeline);
         self.load_attachment_images(cx);
@@ -3949,6 +3976,61 @@ impl ChatScreen {
                         }
                         this.notice = Some(UiText::context(
                             "chat-web-failed",
+                            "message",
+                            message.into(),
+                        ));
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Persist the mode for the selected task; it applies from the task's
+    /// next tool call. On the draft it is screen state, applied when the
+    /// task is created, and the next new task starts from it.
+    pub(super) fn set_permission_mode(
+        &mut self,
+        mode: AgentPermissionMode,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session_id) = self.selected_session.clone() else {
+            self.permission_mode = mode;
+            self.new_task_permission_mode = mode;
+            crate::settings::update_settings_in_background(move |settings| {
+                settings.new_task_permission_mode = Some(mode);
+            });
+            cx.notify();
+            return;
+        };
+        let previous = self.permission_mode;
+        self.permission_mode = mode;
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let target = session_id.clone();
+        self.call_semantic(
+            async move {
+                backend
+                    .call_presented::<maple_agent::agent::AgentSessionSummary>(
+                        "set_session_permission_mode",
+                        (&user_id, &target, mode),
+                    )
+                    .await
+                    .map_err(UiFailure::from)
+            },
+            cx,
+            move |this, result, cx| {
+                match result {
+                    Ok(session) => {
+                        this.upsert_session(session, cx);
+                    }
+                    Err(message) => {
+                        if this.selected_session.as_deref() == Some(session_id.as_str()) {
+                            this.permission_mode = previous;
+                        }
+                        this.notice = Some(UiText::context(
+                            "chat-mode-failed",
                             "message",
                             message.into(),
                         ));
@@ -5624,6 +5706,15 @@ impl ChatScreen {
             cx.notify();
         } else {
             self.select_question_option(question_index, option_index, cx);
+            // A click is the whole decision on a permission card. Moving
+            // the keyboard selection never is: Enter still confirms it.
+            let permission = self
+                .current_question()
+                .and_then(|question| question.questions.get(question_index))
+                .is_some_and(|question| question.permission.is_some());
+            if permission {
+                self.submit_question(cx);
+            }
         }
     }
 
@@ -5956,6 +6047,7 @@ impl ChatScreen {
             let mut switched = None;
             if self.selected_session.as_deref() == Some(session.id.as_str()) {
                 self.web_enabled = session.web_enabled;
+                self.permission_mode = session.permission_mode;
                 // Follow a switch the task made, here or on another surface;
                 // a pick waiting for the next message stays.
                 if existing.model != session.model {
@@ -6532,15 +6624,25 @@ impl ChatScreen {
                 {
                     return false;
                 }
+                // A permission request is worded here, not by the runtime's
+                // English fallback in `question`.
+                let permission = questions
+                    .first()
+                    .and_then(|question| question.permission.as_ref());
                 self.notify_desktop(
                     &session_id,
-                    &tr("chat-notification-question"),
+                    &tr(if permission.is_some() {
+                        "chat-notification-permission"
+                    } else {
+                        "chat-notification-question"
+                    }),
                     &tr("chat-notification-respond"),
-                    || {
-                        questions
+                    || match permission {
+                        Some(prompt) => transcript::permission_notification_body(prompt),
+                        None => questions
                             .first()
                             .map(|question| question.question.chars().take(140).collect())
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
                     },
                     cx,
                 );

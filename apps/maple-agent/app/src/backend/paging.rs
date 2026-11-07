@@ -128,6 +128,9 @@ pub fn summary_to_session(summary: TaskSummary) -> AgentSessionSummary {
         message_count: usize::try_from(summary.message_count).unwrap_or(usize::MAX),
         model: summary.model,
         web_enabled: summary.web_enabled,
+        permission_mode: maple_agent::agent::AgentPermissionMode::from_saved(
+            summary.permission_mode.as_deref(),
+        ),
         state: match summary.state.as_str() {
             "settled" => AgentTaskState::Settled,
             "archived" => AgentTaskState::Archived,
@@ -903,6 +906,7 @@ mod tests {
                     header: "Question".into(),
                     question: "x".repeat(15 * 1024),
                     options: Vec::new(),
+                    permission: None,
                 }],
             })
             .collect::<Vec<_>>();

@@ -297,6 +297,7 @@ pub(in crate::agent) fn parse_user_questions(entries: &[Value]) -> Vec<AgentQues
             header,
             question,
             options,
+            permission: None,
         });
     }
     questions
