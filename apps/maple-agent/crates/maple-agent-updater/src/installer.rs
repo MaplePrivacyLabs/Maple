@@ -30,6 +30,12 @@ use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt};
 
 mod linux_bundle;
 mod windows_bundle;
+mod windows_diagnostics;
+#[cfg(windows)]
+pub use windows_diagnostics::report_windows_installation;
+pub use windows_diagnostics::{
+    WindowsInstallOperation, WindowsInstallerDiagnostic, WindowsStorageGuard,
+};
 
 #[cfg(windows)]
 pub use windows_bundle::refresh_windows_shell_integration;
@@ -109,6 +115,12 @@ pub enum InstallError {
     WindowsCodeSignature { status: u32 },
     #[error("The update could not be installed: {0}")]
     Io(#[from] io::Error),
+    #[error("Windows installation failed during {operation}: {source}")]
+    WindowsOperation {
+        operation: WindowsInstallOperation,
+        #[source]
+        source: Box<InstallError>,
+    },
     #[error("Windows activation failed during {stage}: {source}")]
     WindowsActivation {
         stage: WindowsActivationStage,
@@ -118,6 +130,18 @@ pub enum InstallError {
 }
 
 impl InstallError {
+    #[cfg(any(windows, test))]
+    pub(crate) fn during(self, operation: WindowsInstallOperation) -> Self {
+        if matches!(self, Self::WindowsOperation { .. }) {
+            self
+        } else {
+            Self::WindowsOperation {
+                operation,
+                source: Box::new(self),
+            }
+        }
+    }
+
     /// These failures describe an installation this account cannot replace.
     /// Keep them typed until the controller offers a verified manual download.
     pub fn requires_manual_installation(&self) -> bool {
@@ -125,6 +149,7 @@ impl InstallError {
             Self::NotifyOnly(_) => true,
             Self::Io(error) => permission_error(error),
             Self::WindowsActivation { source, .. } => source.requires_manual_installation(),
+            Self::WindowsOperation { source, .. } => source.requires_manual_installation(),
             _ => false,
         }
     }
@@ -146,12 +171,16 @@ impl InstallError {
             Self::WindowsActivation { .. } => {
                 self.windows_activation_exit_code().unwrap_or(0x4E00_0003)
             }
+            Self::WindowsOperation { source, .. } => source.windows_installer_exit_code(),
         }
     }
 
     /// Encode only an activation failure, without paths, SIDs or error text.
     /// The original typed source remains available to direct callers.
     pub fn windows_activation_exit_code(&self) -> Option<i32> {
+        if let Self::WindowsOperation { source, .. } = self {
+            return source.windows_activation_exit_code();
+        }
         let Self::WindowsActivation { stage, source } = self else {
             return None;
         };

@@ -67,6 +67,7 @@ fn version_string() -> &'static str {
 
 #[derive(Debug, Parser)]
 #[command(name = "maple-agent", version = version_string(), about, disable_help_subcommand = true, args_conflicts_with_subcommands = true)]
+#[cfg_attr(all(feature = "desktop", target_os = "windows"), command(group(clap::ArgGroup::new("windows_installer").args(["internal_windows_installer_preflight", "internal_windows_installer_prepare", "internal_windows_installer_activate"]))))]
 struct Cli {
     /// Print the immutable build profile as JSON and exit without opening state.
     #[arg(long, conflicts_with = "desktop_args")]
@@ -99,6 +100,9 @@ struct Cli {
     #[cfg(all(feature = "desktop", target_os = "windows"))]
     #[arg(long, hide = true, value_name = "PROCESS_IDENTITY", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args"])]
     internal_windows_restart: Option<String>,
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[arg(long, hide = true, requires = "windows_installer")]
+    internal_windows_installer_report: Option<std::path::PathBuf>,
     #[command(subcommand)]
     mode: Option<Mode>,
     /// Arguments a desktop launcher may append (file paths, `%u` expansions).
@@ -287,6 +291,8 @@ fn main() {
         // The stable launcher and installer modes never open application data,
         // credentials or a host. Their paths and code identities are checked
         // by the updater's native installer before mutation or delegation.
+        let report_started = std::time::Instant::now();
+        let mut installer_diagnostic = None;
         let mut internal_exit_code = 1;
         let internal = if let Some(root) = &cli.internal_windows_installer_preflight {
             Some(
@@ -299,6 +305,7 @@ fn main() {
                             profile::PROFILE,
                         )
                         .map_err(|error| {
+                            installer_diagnostic = Some(error.windows_installer_diagnostic());
                             internal_exit_code = error.windows_installer_exit_code();
                             error.to_string()
                         })
@@ -321,6 +328,7 @@ fn main() {
                             generation,
                         )
                         .map_err(|error| {
+                            installer_diagnostic = Some(error.windows_installer_diagnostic());
                             internal_exit_code = error.windows_installer_exit_code();
                             error.to_string()
                         })
@@ -337,6 +345,7 @@ fn main() {
                             generation,
                         )
                         .map_err(|error| {
+                            installer_diagnostic = Some(error.windows_installer_diagnostic());
                             internal_exit_code = error.windows_activation_exit_code().unwrap_or(1);
                             error.to_string()
                         })
@@ -361,8 +370,37 @@ fn main() {
                 .map(|identity| windows_bootstrap::run_restart(identity, profile::PROFILE))
         };
         if let Some(result) = internal {
+            let phase = if cli.internal_windows_installer_preflight.is_some() {
+                Some("preflight")
+            } else if !cli.internal_windows_installer_prepare.is_empty() {
+                Some("preparation")
+            } else if cli.internal_windows_installer_activate.is_some() {
+                Some("activation")
+            } else {
+                None
+            };
+            if let Some(phase) = phase {
+                if result.is_err() && installer_diagnostic.is_none() {
+                    installer_diagnostic =
+                        Some(maple_agent_updater::installer::WindowsInstallerDiagnostic {
+                            operation: None,
+                            reason: "checker-unavailable".into(),
+                            native_error: None,
+                        });
+                }
+                let report = maple_agent_updater::installer::report_windows_installation(
+                    phase,
+                    &profile::build_info(),
+                    installer_diagnostic.as_ref(),
+                    report_started.elapsed(),
+                    cli.internal_windows_installer_report.as_deref(),
+                );
+                eprintln!("{report}");
+            }
             if let Err(error) = result {
-                eprintln!("{error}");
+                if phase.is_none() {
+                    eprintln!("{error}");
+                }
                 std::process::exit(internal_exit_code);
             }
             return;

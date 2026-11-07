@@ -1696,27 +1696,34 @@ fn inspect_manual_root(root: &Path, profile: &str) -> Result<()> {
 pub fn preflight_windows_installation(checker: &Path, root: &Path, profile: &str) -> Result<()> {
     #[cfg(windows)]
     {
-        let checker = checker.canonicalize()?;
-        let _ = trusted_installer(&checker, profile)?;
-        windows_fs::validate_path_syntax(root)?;
-        if root.file_name().is_none() {
-            return Err(InstallError::Invalid("Windows installer destination"));
-        }
-        let mut existing = root;
-        while !existing.try_exists()? {
-            existing = existing
-                .parent()
-                .ok_or(InstallError::Invalid("Windows installer parent"))?;
-        }
-        // Existing destinations are never taken over by changing their ACL.
-        windows_fs::private_directory(existing)?;
-        if root.try_exists()? {
-            let root = root.canonicalize()?;
-            if fs::read_dir(&root)?.next().is_some() {
-                inspect_manual_root(&root, profile)?;
+        let mut operation = WindowsInstallOperation::Checker;
+        let result = (|| -> Result<()> {
+            let checker = checker.canonicalize()?;
+            let _ = trusted_installer(&checker, profile)?;
+            operation = WindowsInstallOperation::Destination;
+            windows_fs::validate_path_syntax(root)?;
+            if root.file_name().is_none() {
+                return Err(InstallError::Invalid("Windows installer destination"));
             }
-        }
-        Ok(())
+            operation = WindowsInstallOperation::Parent;
+            let mut existing = root;
+            while !existing.try_exists()? {
+                existing = existing
+                    .parent()
+                    .ok_or(InstallError::Invalid("Windows installer parent"))?;
+            }
+            // Existing destinations are never taken over by changing their ACL.
+            windows_fs::private_directory(existing)?;
+            operation = WindowsInstallOperation::ExistingInstallation;
+            if root.try_exists()? {
+                let root = root.canonicalize()?;
+                if fs::read_dir(&root)?.next().is_some() {
+                    inspect_manual_root(&root, profile)?;
+                }
+            }
+            Ok(())
+        })();
+        result.map_err(|error| error.during(operation))
     }
     #[cfg(not(windows))]
     {
@@ -2169,6 +2176,10 @@ pub fn cleanup_windows_installation(executable: &Path, profile: &str) -> Result<
 #[cfg(windows)]
 pub(crate) fn windows_private_directory(path: &Path) -> Result<()> {
     Ok(windows_fs::private_directory(path)?)
+}
+#[cfg(windows)]
+pub(crate) fn windows_create_private(path: &Path) -> Result<File> {
+    Ok(windows_fs::create_private(path)?)
 }
 #[cfg(windows)]
 pub(crate) fn windows_open_private(path: &Path, truncate: bool) -> Result<File> {

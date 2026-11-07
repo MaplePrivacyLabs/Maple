@@ -2,6 +2,7 @@
 //! junction/reparse point and existing ACLs are never repaired by taking over
 //! a directory. Pointer publication uses a same-directory write-through move.
 
+use super::super::WindowsStorageGuard;
 use std::{
     ffi::{OsStr, c_void},
     fs::{self, File},
@@ -32,13 +33,13 @@ use windows_sys::Win32::{
         WinBuiltinAdministratorsSid, WinCreatorOwnerRightsSid, WinLocalSystemSid,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE, FILE_APPEND_DATA,
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
-        FILE_WRITE_DATA, FILE_WRITE_EA, GetFileInformationByHandle, MOVEFILE_REPLACE_EXISTING,
-        MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
-        WRITE_OWNER,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
+        FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetFileInformationByHandle,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING,
+        READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     },
     System::{
         SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
@@ -58,22 +59,19 @@ const WRITE_RIGHTS: u32 = GENERIC_ALL
     | FILE_DELETE_CHILD;
 
 fn invalid() -> io::Error {
-    invalid_at("unspecified-guard")
+    invalid_at(WindowsStorageGuard::Unspecified)
 }
 
 // Fixed operation labels make native qualification failures actionable without
 // exposing filesystem paths, user names, SIDs, ACL contents or other state.
-fn invalid_at(stage: &'static str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::PermissionDenied,
-        format!("unsafe Windows updater storage ({stage})"),
-    )
+fn invalid_at(stage: WindowsStorageGuard) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, stage)
 }
 
 fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut result: Vec<u16> = value.encode_wide().collect();
     if result.contains(&0) || result.len() > 32_000 {
-        return Err(invalid_at("path-encoding-or-length"));
+        return Err(invalid_at(WindowsStorageGuard::PathEncoding));
     }
     result.push(0);
     Ok(result)
@@ -87,14 +85,14 @@ fn checked_components(path: &Path) -> io::Result<Vec<PathBuf>> {
     if !matches!(prefix, Component::Prefix(p) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
         || !matches!(components.next(), Some(Component::RootDir))
     {
-        return Err(invalid_at("nonlocal-or-relative-path"));
+        return Err(invalid_at(WindowsStorageGuard::NonlocalPath));
     }
     let mut current = PathBuf::from(prefix.as_os_str());
     current.push("\\");
     let mut paths = vec![current.clone()];
     for part in components {
         let Component::Normal(name) = part else {
-            return Err(invalid_at("nonnormal-path-component"));
+            return Err(invalid_at(WindowsStorageGuard::NonnormalComponent));
         };
         let name = name.to_str().ok_or_else(invalid)?;
         // Windows aliases (trailing space/dot), ADS and reserved device names
@@ -124,7 +122,7 @@ fn checked_components(path: &Path) -> io::Result<Vec<PathBuf>> {
                 })
             })
         {
-            return Err(invalid_at("ambiguous-path-component"));
+            return Err(invalid_at(WindowsStorageGuard::AmbiguousComponent));
         }
         current.push(name);
         paths.push(current.clone());
@@ -187,7 +185,7 @@ fn validate_path_binding(path: &Path, file: &File) -> io::Result<()> {
         second.nFileIndexHigh,
         second.nFileIndexLow,
     ) {
-        return Err(invalid_at("opened-path-identity-mismatch"));
+        return Err(invalid_at(WindowsStorageGuard::PathIdentity));
     }
     Ok(())
 }
@@ -198,10 +196,10 @@ fn information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
         return Err(io::Error::last_os_error());
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(invalid_at("reparse-point"));
+        return Err(invalid_at(WindowsStorageGuard::ReparsePoint));
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 && info.nNumberOfLinks != 1 {
-        return Err(invalid_at("file-hardlink-count"));
+        return Err(invalid_at(WindowsStorageGuard::HardLinks));
     }
     Ok(info)
 }
@@ -218,7 +216,7 @@ fn ancestors(path: &Path, include_leaf: bool) -> io::Result<Vec<File>> {
         if (path != paths.last().unwrap() || !include_leaf)
             && info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
         {
-            return Err(invalid_at("ancestor-not-directory"));
+            return Err(invalid_at(WindowsStorageGuard::AncestorType));
         }
         guards.push(file);
     }
@@ -370,17 +368,17 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
         system.as_ptr().cast_mut().cast(),
         admins.as_ptr().cast_mut().cast(),
     ) {
-        return Err(invalid_at("owner-outside-trusted-set"));
+        return Err(invalid_at(WindowsStorageGuard::Owner));
     }
     // OWNER RIGHTS (S-1-3-4) grants rights only to this object's current owner.
     // Resolve its authority only after the actual handle owner passed the
     // fixed owner allowlist above; it is never itself an allowed owner SID.
     let owner_rights = known_sid(WinCreatorOwnerRightsSid)?;
     if dacl.is_null() {
-        return Err(invalid_at("null-dacl"));
+        return Err(invalid_at(WindowsStorageGuard::NullDacl));
     }
     if unsafe { IsValidAcl(dacl) } == 0 {
-        return Err(invalid_at("invalid-dacl"));
+        return Err(invalid_at(WindowsStorageGuard::InvalidDacl));
     }
     let mut size = ACL_SIZE_INFORMATION::default();
     if unsafe {
@@ -393,12 +391,12 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
     } == 0
         || size.AceCount > 1024
     {
-        return Err(invalid_at("dacl-information-or-count"));
+        return Err(invalid_at(WindowsStorageGuard::DaclInformation));
     }
     for index in 0..size.AceCount {
         let mut raw = null_mut();
         if unsafe { GetAce(dacl, index, &mut raw) } == 0 || raw.is_null() {
-            return Err(invalid_at("dacl-ace-read"));
+            return Err(invalid_at(WindowsStorageGuard::AceRead));
         }
         let header = unsafe { &*raw.cast::<ACE_HEADER>() };
         if header.AceFlags as u32 & INHERIT_ONLY_ACE != 0 {
@@ -408,10 +406,10 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
             continue;
         }
         if header.AceType as u32 != ACCESS_ALLOWED_ACE_TYPE {
-            return Err(invalid_at("unsupported-effective-ace-type"));
+            return Err(invalid_at(WindowsStorageGuard::AceType));
         }
         if (header.AceSize as usize) < size_of::<ACCESS_ALLOWED_ACE>() + 4 {
-            return Err(invalid_at("short-allowed-ace"));
+            return Err(invalid_at(WindowsStorageGuard::AceSize));
         }
         let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
         let sid = (&ace.SidStart as *const u32).cast_mut().cast::<c_void>();
@@ -421,7 +419,7 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
             || 8 + 8 + subauthorities * 4 > header.AceSize as usize
             || unsafe { IsValidSid(sid) } == 0
         {
-            return Err(invalid_at("ace-sid-bounds-or-validity"));
+            return Err(invalid_at(WindowsStorageGuard::SidBounds));
         }
         if ace.Mask & write_rights != 0
             && !trusted_storage_sid(
@@ -432,7 +430,7 @@ fn validate_private_handle(file: &File) -> io::Result<()> {
             )
             && !same_sid(sid, owner_rights.as_ptr().cast_mut().cast())
         {
-            return Err(invalid_at("foreign-write-ace"));
+            return Err(invalid_at(WindowsStorageGuard::ForeignWriter));
         }
     }
     Ok(())
@@ -498,14 +496,22 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
     validate_path_binding(path, &directory)
 }
 
+pub(super) fn create_private(path: &Path) -> io::Result<File> {
+    open_private_with(path, false, CREATE_NEW)
+}
+
 pub(super) fn open_private(path: &Path, truncate: bool) -> io::Result<File> {
+    open_private_with(path, truncate, OPEN_ALWAYS)
+}
+
+fn open_private_with(path: &Path, truncate: bool, disposition: u32) -> io::Result<File> {
     let _parents = ancestors(path, false)?;
     let descriptor = private_security()?;
     let attributes = security_attributes(&descriptor);
     let file = open_raw(
         path,
         GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
-        OPEN_ALWAYS,
+        disposition,
         &attributes,
     )?;
     if information(&file)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {

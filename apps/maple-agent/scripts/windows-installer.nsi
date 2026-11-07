@@ -35,6 +35,8 @@ Var NativeStatus
 Var NativeStatusAvailable
 Var NativeActivationStage
 Var NativeWin32Error
+Var InstallerReport
+Var ReportPath
 Var FailureAdvice
 
 Function .onInit
@@ -92,8 +94,10 @@ Section "Install"
   StrCpy $FailureStage "starting installation checks"
   StrCpy $NativeStatusAvailable 0
   ClearErrors
-  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-preflight "$INSTDIR"' $NativeStatus
+  StrCpy $ReportPath "$PLUGINSDIR\preflight-report.txt"
+  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-preflight "$INSTDIR" --internal-windows-installer-report "$ReportPath"' $NativeStatus
   IfErrors refused
+  Call ReadInstallerReport
   StrCpy $NativeStatusAvailable 1
   StrCpy $FailureCode 22
   StrCpy $FailureStage "checking the installation"
@@ -106,8 +110,10 @@ Section "Install"
   StrCpy $FailureStage "starting installation preparation"
   StrCpy $NativeStatusAvailable 0
   ClearErrors
-  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-prepare "$INSTDIR" ${GENERATION}' $NativeStatus
+  StrCpy $ReportPath "$PLUGINSDIR\prepare-report.txt"
+  ExecWait '"$PLUGINSDIR\maple-installer-check.exe" --internal-windows-installer-prepare "$INSTDIR" ${GENERATION} --internal-windows-installer-report "$ReportPath"' $NativeStatus
   IfErrors refused
+  Call ReadInstallerReport
   StrCpy $NativeStatusAvailable 1
   StrCpy $FailureCode 24
   StrCpy $FailureStage "preparing the installation"
@@ -168,6 +174,8 @@ uninstaller_ready:
   StrCpy $FailureStage "starting installation activation"
   StrCpy $NativeStatusAvailable 0
   ClearErrors
+  ; Stable bootstraps from older installs do not understand new report flags.
+  StrCpy $InstallerReport ""
   ExecWait '"$INSTDIR\maple-agent.exe" --internal-windows-installer-activate ${GENERATION}' $NativeStatus
   IfErrors failed
   StrCpy $NativeStatusAvailable 1
@@ -212,11 +220,33 @@ describe_error:
   Call DescribeInstallerError
   StrCpy $1 "$1$\r$\n$\r$\n$FailureAdvice"
 show_error:
-  MessageBox MB_OK|MB_ICONSTOP "$1$\r$\n$\r$\nPlease include these details when contacting Maple support." /SD IDOK
+  StrCmp $InstallerReport "" no_report
+  IntFmt $4 "0x%08X" $NativeStatus
+  StrCpy $1 "${DISPLAY_NAME} ${VERSION}, build ${BUILD}.$\r$\nInstallation stopped while $FailureStage.$\r$\nStage: $FailureCode; status: $4$\r$\n$\r$\n$InstallerReport"
+no_report:
+  MessageBox MB_OK|MB_ICONSTOP "$1$\r$\n$\r$\nPress Ctrl+C to copy this message for Maple support." /SD IDOK
   SetErrorLevel $FailureCode
   Abort
 done:
 SectionEnd
+
+; This file is diagnostic text only; it never authorizes a successful install.
+Function ReadInstallerReport
+  StrCpy $InstallerReport ""
+  ClearErrors
+  FileOpen $0 "$ReportPath" r
+  IfErrors done
+loop:
+  ClearErrors
+  FileRead $0 $3
+  IfErrors close
+  DetailPrint "$3"
+  StrCpy $InstallerReport "$InstallerReport$3"
+  Goto loop
+close:
+  FileClose $0
+done:
+FunctionEnd
 
 Function DescribeInstallerError
   StrCpy $FailureAdvice "Windows could not complete this installation."
