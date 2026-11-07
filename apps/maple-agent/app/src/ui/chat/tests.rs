@@ -5948,6 +5948,74 @@ mod state_tests {
         });
     }
 
+    /// Project view has no Settled heading, so finished work sinks to the
+    /// bottom of its own project while each half keeps Last updated order.
+    /// Manual order is the user's own arrangement and is left alone.
+    #[gpui::test]
+    fn test_project_grouping_sinks_settled_tasks_without_a_heading(cx: &mut TestAppContext) {
+        use crate::settings::{SidebarGroup, SidebarSort, SidebarView};
+        use crate::ui::chat::sidebar::{SidebarEntry, SidebarSection};
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let at = |id, root, created_ms, updated_ms| AgentSessionSummary {
+                created_ms,
+                updated_ms,
+                ..summary_at(id, id, root)
+            };
+            let settled = |id, root, created_ms, updated_ms| AgentSessionSummary {
+                state: AgentTaskState::Settled,
+                ..at(id, root, created_ms, updated_ms)
+            };
+            this.sessions = vec![
+                at("a1", "/a", 1, 10),
+                settled("a2", "/a", 2, 50),
+                at("a3", "/a", 3, 30),
+                settled("a4", "/a", 4, 40),
+                at("b1", "/b", 5, 20),
+                settled("b2", "/b", 6, 60),
+            ];
+            this.sync_sidebar(cx);
+            let manual = this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_view(
+                    SidebarView {
+                        group: SidebarGroup::Project,
+                        sort: SidebarSort::Updated,
+                    },
+                    cx,
+                );
+                assert_eq!(sidebar.grouped_project_names(), ["a", "b"]);
+                assert_eq!(
+                    sidebar.section_rows(SidebarSection::Project(0)),
+                    [2, 0, 1, 3]
+                );
+                assert_eq!(sidebar.section_rows(SidebarSection::Project(1)), [4, 5]);
+                // The old Status sections do not appear in this grouping.
+                assert!(!sidebar.entries().iter().any(|entry| matches!(
+                    entry,
+                    SidebarEntry::SectionLabel(SidebarSection::Active | SidebarSection::Settled)
+                )));
+                sidebar.set_view(
+                    SidebarView {
+                        group: SidebarGroup::Project,
+                        sort: SidebarSort::Manual,
+                    },
+                    cx,
+                );
+                sidebar.section_rows(SidebarSection::Project(0)).to_vec()
+            });
+            this.sessions[0].state = AgentTaskState::Settled;
+            this.sync_sidebar(cx);
+            this.sidebar.update(cx, |sidebar, _| {
+                assert_eq!(
+                    sidebar.section_rows(SidebarSection::Project(0)),
+                    manual,
+                    "manual order is not re-partitioned when a task settles"
+                );
+            });
+        });
+    }
+
     /// A folder folds its tasks and stays folded when the list rebuilds;
     /// the Projects header folds every group, never the pinned ones.
     #[gpui::test]

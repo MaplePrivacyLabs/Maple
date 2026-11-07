@@ -349,6 +349,13 @@ const FOLDER_HEADER_GAP: gpui::Rems = gpui::rems(0.5);
 const FOLDER_ICON_SIZE: gpui::Pixels = px(16.);
 
 /// Task titles share the project-name column, regardless of their computer or state.
+/// Finished work goes after unfinished work while each half keeps the
+/// order it arrived in. Used by a grouping that has no Settled heading.
+fn settled_last(rows: Vec<usize>, active: impl Fn(usize) -> bool) -> Vec<usize> {
+    let (active, settled): (Vec<_>, Vec<_>) = rows.into_iter().partition(|&ix| active(ix));
+    active.into_iter().chain(settled).collect()
+}
+
 fn task_row_padding(window: &Window) -> gpui::Pixels {
     (FOLDER_HEADER_PADDING + FOLDER_HEADER_GAP - gpui::rems(0.5)).to_pixels(window.rem_size())
         + FOLDER_ICON_SIZE
@@ -1806,11 +1813,22 @@ impl Sidebar {
                 groups.sort_by_key(|(index, _)| {
                     self.project_order_rank(&self.project_roots[*index].target)
                 });
-                sections.extend(
-                    groups
-                        .into_iter()
-                        .map(|(index, rows)| (SidebarSection::Project(index), rows)),
-                );
+                // Project and Connection views have no Settled heading.
+                // Finished work sinks to the bottom of its own group instead,
+                // and each half keeps the chosen order. Manual order is the
+                // user's arrangement, so it is never re-partitioned.
+                let sink_settled = matches!(
+                    self.view.group,
+                    SidebarGroup::Project | SidebarGroup::Connection
+                ) && self.view.sort == SidebarSort::Updated;
+                sections.extend(groups.into_iter().map(|(index, rows)| {
+                    let rows = if sink_settled {
+                        settled_last(rows, |ix| self.session_is_active(&self.sessions[ix]))
+                    } else {
+                        rows
+                    };
+                    (SidebarSection::Project(index), rows)
+                }));
             }
         }
         self.pinned_rows = pinned;
