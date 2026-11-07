@@ -66,6 +66,21 @@ coexist with Maple Research.
 Windows 10 version 1703 or later; ARM64 needs Windows 11. Dev and Prod install
 separately, per user. Uninstalling keeps account, settings and task data.
 
+If a Windows installation fails, press **Ctrl+C** in its error dialog to copy
+the support report. Native installer checks record the operation, fixed guard
+category, Windows build and native error without application data or account
+identifiers. The last ten installer logs are kept in
+`%LOCALAPPDATA%\Maple Work Installer Logs`; logging failure does not change the
+installation result. Early NSIS extraction/launch failures still show their
+installer stage and process status. Legacy helper commands and activation exit
+codes remain compatible. New installers extract a payload and call one native
+transaction, which owns copying, registration, shortcuts and pointer activation.
+It records durable checkpoints before major operations so a crashed helper
+still leaves its last operation in the support log.
+Interrupted attempts retain recoverable state; failures before activation restore
+registration and remove only newly created, unchanged shortcuts. The immutable
+launcher/uninstaller and previous generation remain available for rollback.
+
 **Linux:** extract the whole archive, then run the installer from a terminal:
 
 ```sh
