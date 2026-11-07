@@ -390,7 +390,7 @@ mod tests {
             crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
                 .expect("backend"),
         );
-        let chat = cx.new(|cx| ChatScreen::new_inner(backend, "user".into(), cx));
+        let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
         chat.update(cx, |this, cx| {
             this.selected_model = Some("model-a".into());
             this.thinking_cache

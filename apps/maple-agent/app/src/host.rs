@@ -163,6 +163,16 @@ impl RemoteClient {
         Self::attach(endpoint, connection, welcome)
     }
 
+    #[cfg(all(test, feature = "desktop"))]
+    pub(crate) fn calls_in_flight_for_test(&self) -> usize {
+        self.state
+            .pending
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, HashMap::len)
+    }
+
     fn attach(endpoint: ipc::Endpoint, connection: ipc::Connection, welcome: Welcome) -> Self {
         let state = Arc::new(ClientState {
             pending: Mutex::new(Some(HashMap::new())),
@@ -2977,7 +2987,7 @@ mod update_install_tests {
                 1,
                 "remote stop must never retry through ordinary Stop"
             );
-            endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+            crate::host::ipc::lock_after_release(&endpoint.lock("startup.lock").unwrap());
         }
         let owner = endpoint.ownership_lock().unwrap();
         owner.lock().unwrap();
@@ -2991,7 +3001,7 @@ mod update_install_tests {
             !error.host_unchanged,
             "ownership failure after accepted stop is uncertain"
         );
-        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&endpoint.lock("startup.lock").unwrap());
     }
 
     #[test]
@@ -3013,7 +3023,7 @@ mod update_install_tests {
         assert!(error.host_unchanged);
         assert!(!sent.load(Ordering::SeqCst));
         drop(starting);
-        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&endpoint.lock("startup.lock").unwrap());
     }
 
     #[tokio::test]
@@ -3071,7 +3081,7 @@ mod update_install_tests {
                             Err(std::fs::TryLockError::WouldBlock)
                         ));
                         // The previous inode is no longer the authoritative fence.
-                        endpoint.lock("host.lock").unwrap().try_lock().unwrap();
+                        crate::host::ipc::lock_after_release(&endpoint.lock("host.lock").unwrap());
                         replaced.store(true, Ordering::SeqCst);
                         Ok(())
                     },
@@ -3089,7 +3099,7 @@ mod update_install_tests {
             store.app_setting("update-sentinel").unwrap(),
             Some(serde_json::json!(true))
         );
-        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&endpoint.lock("startup.lock").unwrap());
 
         std::fs::remove_file(spills.path()).unwrap();
         attempt().await.unwrap().unwrap();
@@ -3164,7 +3174,7 @@ mod update_install_tests {
         // Simulate the old desktop exiting after a failed relaunch handoff.
         drop(fence);
         admission.recv_timeout(Duration::from_secs(1)).unwrap();
-        direct.try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&direct);
         client.join().unwrap();
     }
 
@@ -3201,8 +3211,8 @@ mod update_install_tests {
         )
         .unwrap();
         assert_eq!(result, 42);
-        queued_start.try_lock().unwrap();
-        direct_start.try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&queued_start);
+        crate::host::ipc::lock_after_release(&direct_start);
     }
 
     #[test]
@@ -3221,7 +3231,7 @@ mod update_install_tests {
         );
         assert_eq!(result.unwrap_err(), "stop failed");
         assert!(!replaced.load(Ordering::SeqCst));
-        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&endpoint.lock("startup.lock").unwrap());
     }
 
     #[test]
@@ -3242,7 +3252,7 @@ mod update_install_tests {
         );
         assert!(result.unwrap_err().contains("shutting down"));
         assert!(!replaced.load(Ordering::SeqCst));
-        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&endpoint.lock("startup.lock").unwrap());
     }
 
     #[test]
@@ -3256,8 +3266,8 @@ mod update_install_tests {
             || Err("replacement failed".into()),
         );
         assert_eq!(result.unwrap_err(), "replacement failed");
-        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
-        endpoint.ownership_lock().unwrap().try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&endpoint.lock("startup.lock").unwrap());
+        crate::host::ipc::lock_after_release(&endpoint.ownership_lock().unwrap());
     }
 }
 
@@ -3558,7 +3568,7 @@ mod tests {
         assert!(owner_is_free(&endpoint).await.is_err());
         assert!(!paths.owner_lock().exists());
         let owner = endpoint.ownership_lock().unwrap();
-        owner.try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&owner);
         assert!(!owner_is_free(&endpoint).await.unwrap());
         // No listener exists: an unavailable endpoint is insufficient while
         // the authoritative host still holds this exact lock.
@@ -3950,7 +3960,7 @@ mod tests {
         owner.shutdown(&backend, &remote, &events).await.unwrap();
         assert!(!remote.stays_running());
         drop(ownership);
-        contender.try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&contender);
     }
 
     #[tokio::test]

@@ -960,6 +960,19 @@ impl ChatScreen {
         this
     }
 
+    /// `new_inner` with the same cancellation, for tests of an unmounted screen.
+    #[cfg(test)]
+    pub(crate) fn new_inner_for_test(
+        backend: Arc<AgentBackend>,
+        user_id: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let this = Self::new_inner(backend, user_id, cx);
+        this.sidebar
+            .update(cx, |sidebar, _| sidebar.cancel_order_request_for_test());
+        this
+    }
+
     /// What the sidebar asked for. Events arrive after the sidebar's own
     /// update finished, so answering them may update it again.
     fn on_sidebar_event(

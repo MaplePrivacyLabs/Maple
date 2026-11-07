@@ -266,6 +266,23 @@ fn open_lock(path: &std::path::Path, create: bool) -> Result<File, String> {
         .map_err(|e| format!("Cannot open host control lock: {e}"))
 }
 
+/// Take a lock the test just released. A process that another test forks
+/// at that moment shares every open descriptor until it execs, so for a
+/// short time it still holds the lock. Wait that out, but not a real holder.
+#[cfg(test)]
+pub(crate) fn lock_after_release(lock: &File) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return,
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(error) => panic!("the released lock is still held: {error:?}"),
+        }
+    }
+}
+
 // Resolve an instruction-root identity without creating or reading app files.
 fn canonical_identity_path(path: &std::path::Path) -> Result<PathBuf, String> {
     let mut existing = path;
@@ -594,7 +611,7 @@ mod namespace_tests {
         let endpoint =
             Endpoint::from_roots("http://127.0.0.1:1", config.clone(), data.clone()).unwrap();
         let ownership = endpoint.ownership_lock().unwrap();
-        ownership.try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&ownership);
         let store = Store::open(StorePaths::new(&data)).unwrap();
         let paths = store.paths().clone();
         let generation = store.store_id().unwrap();
@@ -669,7 +686,7 @@ mod namespace_tests {
         let mut endpoint = Endpoint::for_test(fixture.path().to_path_buf());
         endpoint.previous_directory = Some(old_controls.clone());
         let owner = open_lock(&old_controls.join("host.lock"), true).unwrap();
-        owner.try_lock().unwrap();
+        crate::host::ipc::lock_after_release(&owner);
         assert!(endpoint.previous_owner_guard().is_err());
         drop(owner);
         let guard = endpoint.previous_owner_guard().unwrap().unwrap();

@@ -457,7 +457,7 @@ async fn explicit_stop_survives_a_client_that_leaves_before_the_acknowledgement(
 async fn quit_accepts_a_missing_owner_but_not_an_unreachable_live_owner() {
     let (_root, endpoint) = endpoint();
     let owner = endpoint.ownership_lock().unwrap();
-    owner.try_lock().unwrap();
+    crate::host::ipc::lock_after_release(&owner);
     assert!(request_stop_endpoint(&endpoint).await.is_err());
     drop(owner);
     assert!(request_stop_endpoint(&endpoint).await.is_ok());
@@ -469,7 +469,7 @@ async fn accepted_stop_waits_for_connection_close_and_authoritative_ownership_re
     let (_root, endpoint) = endpoint();
     let mut listener = endpoint.bind().unwrap();
     let owner = endpoint.ownership_lock().unwrap();
-    owner.try_lock().unwrap();
+    crate::host::ipc::lock_after_release(&owner);
     let request_endpoint = endpoint.clone();
     let request = tokio::spawn(async move { request_stop_endpoint(&request_endpoint).await });
     let mut connection = listener.accept().await.unwrap();
