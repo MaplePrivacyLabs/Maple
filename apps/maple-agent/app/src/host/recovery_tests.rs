@@ -65,6 +65,7 @@ async fn response(connection: &mut ipc::Connection, expected: &str, value: serde
     protocol::write(
         connection,
         &Message::Response {
+            failure: None,
             id: request.id,
             result: Ok(value),
         },
@@ -209,6 +210,7 @@ async fn a_lost_send_response_queries_the_receipt_without_resending() {
                         protocol::write(
                             &mut connection,
                             &Message::Response {
+                                failure: None,
                                 id: request.id,
                                 result: Ok(serde_json::to_value(receipts::Outcome::Finished(Ok(
                                     serde_json::json!("accepted-run"),
@@ -222,6 +224,7 @@ async fn a_lost_send_response_queries_the_receipt_without_resending() {
                     "detach" => protocol::write(
                         &mut connection,
                         &Message::Response {
+                            failure: None,
                             id: request.id,
                             result: Ok(serde_json::Value::Null),
                         },
@@ -540,4 +543,49 @@ async fn maintenance_client_gets_its_state_without_waiting_for_open_or_sign_in()
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn presented_calls_preserve_legacy_unknown_and_typed_failures_over_ipc() {
+    let (_root, endpoint) = endpoint();
+    let mut listener = endpoint.bind().unwrap();
+    let (client, mut server) = client(&endpoint, &mut listener).await;
+    for code in [None, Some("future-code"), Some("store-locked")] {
+        let call = client.call_presented::<()>("login", ("synthetic", "synthetic"));
+        let respond = async {
+            let request: Request = protocol::read(&mut server).await.unwrap();
+            let message = Message::Response {
+                failure: None,
+                id: request.id,
+                result: Err("unchanged diagnostic".into()),
+            };
+            let failure = code.map(|code| HostFailure::new(code, "unchanged diagnostic"));
+            write_presented_message(&mut server, &message, failure.as_ref())
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(call, respond);
+        let failure = result.unwrap_err();
+        assert_eq!(failure.code, code.unwrap_or("unknown"));
+        assert_eq!(failure.message, "unchanged diagnostic");
+    }
+    // Old clients consume the unchanged result field and ignore presentation metadata.
+    let failure = HostFailure::new("store-locked", "original fallback");
+    let encoded = serde_json::to_value(PresentedMessage::Response {
+        id: 1,
+        result: &Err("original fallback".into()),
+        failure: &failure,
+    })
+    .unwrap();
+    assert_eq!(encoded["Response"]["failure"]["code"], "store-locked");
+    #[derive(serde::Deserialize)]
+    enum LegacyMessage {
+        Response {
+            id: u64,
+            result: Result<serde_json::Value, String>,
+        },
+    }
+    let LegacyMessage::Response { id, result } = serde_json::from_value(encoded).unwrap();
+    assert_eq!(id, 1);
+    assert_eq!(result.unwrap_err(), "original fallback");
 }

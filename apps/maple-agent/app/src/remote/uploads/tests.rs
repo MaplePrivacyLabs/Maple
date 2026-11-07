@@ -105,6 +105,7 @@ async fn binary_file_larger_than_a_control_frame_round_trips_and_reuses_operatio
                     streams::reply(
                         &mut tx,
                         &Message::Response {
+                            failure: None,
                             id: header.id,
                             result: Ok(serde_json::to_value(attachment).unwrap()),
                         },
@@ -203,6 +204,7 @@ async fn stalled_raw_upload_does_not_delay_stop_or_question_answer() {
             streams::reply(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id,
                     result: Ok(serde_json::Value::Null),
                 },
@@ -326,6 +328,7 @@ async fn lost_final_ack_is_resolved_by_the_upload_receipt_without_prompt_replay(
         streams::reply(
             &mut tx,
             &Message::Response {
+                failure: None,
                 id: command.id,
                 result,
             },
@@ -682,6 +685,7 @@ async fn production_receiver_publication_keeps_control_authorization_responsive(
                 streams::reply(
                     &mut tx,
                     &Message::Response {
+                        failure: None,
                         id: request.id,
                         result,
                     },

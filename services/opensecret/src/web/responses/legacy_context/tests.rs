@@ -725,3 +725,162 @@ fn second_pass_preserves_required_system_when_stored_estimates_understate_payloa
         Err(ApiError::MessageExceedsContextLimit)
     ));
 }
+
+/// The compaction boundary must be the sliding window's own: every row this
+/// strategy would not send stays outside it, and nothing outside it is selected.
+#[test]
+fn compaction_active_boundary_selects_the_sliding_window_exactly() {
+    use crate::models::responses::RawThreadMessageMetadata;
+    use crate::web::responses::compaction::context::{
+        ActiveContext, ContextItem, ContextItemKey, ContextItemKind, ContextSnapshot,
+    };
+    use serde_json::json;
+
+    #[derive(Clone, Copy)]
+    enum Row {
+        User(i32),
+        Assistant(i32),
+        Tool(i32, i32),
+    }
+
+    let response = Uuid::from_u128(9_000);
+    let cases: Vec<(&str, Vec<Row>, usize, usize)> = vec![
+        ("fits", vec![Row::User(100), Row::Assistant(100)], 500, 0),
+        (
+            "exact fit",
+            vec![Row::User(200), Row::Assistant(200)],
+            500,
+            0,
+        ),
+        (
+            "head and tail",
+            (0..40)
+                .flat_map(|_| [Row::User(50), Row::Assistant(50)])
+                .collect(),
+            900,
+            0,
+        ),
+        (
+            "tool exchanges",
+            (0..30)
+                .flat_map(|_| [Row::User(40), Row::Tool(30, 60), Row::Assistant(70)])
+                .collect(),
+            1_000,
+            0,
+        ),
+        (
+            "tail opens on a user message",
+            (0..12)
+                .flat_map(|_| [Row::User(10), Row::Assistant(300)])
+                .collect(),
+            1_000,
+            0,
+        ),
+        (
+            "large tail entry stops the walk",
+            vec![
+                Row::User(10),
+                Row::Assistant(10),
+                Row::User(10),
+                Row::Assistant(900),
+                Row::User(10),
+                Row::Assistant(10),
+            ],
+            600,
+            0,
+        ),
+        (
+            "caller output reservation",
+            (0..20)
+                .flat_map(|_| [Row::User(100), Row::Assistant(100)])
+                .collect(),
+            2_000,
+            512,
+        ),
+    ];
+    for (name, rows, budget, output) in cases {
+        let mut metadata = Vec::new();
+        let mut items = Vec::new();
+        let mut next = 1i64;
+        let mut push = |kind: &str, tokens: i32, call: Option<Uuid>| {
+            let id = next;
+            next += 1;
+            metadata.push(RawThreadMessageMetadata {
+                message_type: kind.to_owned(),
+                id,
+                uuid: Uuid::from_u128(id as u128),
+                created_at: Utc.timestamp_opt(id, 0).unwrap(),
+                token_count: Some(tokens),
+                tool_call_id: call,
+                encrypted_bytes: 16,
+            });
+            items.push(ContextItem::from_prompt(
+                ContextItemKey {
+                    kind: ContextItemKind::from_db_type(kind).unwrap(),
+                    uuid: Uuid::from_u128(id as u128),
+                },
+                Some(response),
+                vec![json!({ "role": if kind == "user" { "user" } else { "assistant" }, "content": "x" })],
+                tokens as usize,
+                true,
+                call,
+            ));
+        };
+        for row in rows {
+            match row {
+                Row::User(tokens) => push("user", tokens, None),
+                Row::Assistant(tokens) => push("assistant", tokens, None),
+                Row::Tool(call, output) => {
+                    let id = Uuid::new_v4();
+                    push("tool_call", call, Some(id));
+                    push("tool_output", output, Some(id));
+                }
+            }
+        }
+        let current = ContextItemKey {
+            kind: ContextItemKind::User,
+            uuid: Uuid::from_u128(5_000),
+        };
+        items.push(ContextItem::from_prompt(
+            current,
+            Some(Uuid::from_u128(9_001)),
+            vec![json!({ "role": "user", "content": "current" })],
+            20,
+            false,
+            None,
+        ));
+        let snapshot = ContextSnapshot {
+            instructions: vec![json!({ "role": "system", "content": "instructions" })],
+            instruction_tokens: 30,
+            items,
+            current_user: current,
+            current_response: Uuid::from_u128(9_001),
+        };
+
+        // The model-window budget is the same number on both sides: the legacy
+        // selection is measured against a catalog model, so scale the reserve.
+        let window = prompt_token_budget("gpt-oss-120b");
+        let (selected, truncated) = determine_needed_message_ids(
+            &metadata,
+            "gpt-oss-120b",
+            30,
+            (window - budget) + 20 + output,
+            ReasoningReplay::None,
+        )
+        .unwrap();
+        let active = ActiveContext::select(&snapshot, &None, Some(budget - output)).unwrap();
+        let legacy: HashSet<_> = selected.into_iter().map(|(_, id)| id).collect();
+        let boundary: HashSet<_> = metadata
+            .iter()
+            .filter(|row| {
+                !active.is_archived(&ContextItemKey {
+                    kind: ContextItemKind::from_db_type(&row.message_type).unwrap(),
+                    uuid: row.uuid,
+                })
+            })
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(boundary, legacy, "{name}");
+        assert_eq!(active.is_truncated(), truncated, "{name}");
+    }
+}

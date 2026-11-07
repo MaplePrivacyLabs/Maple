@@ -5,6 +5,7 @@
 //! Selecting a row is side-effect free; Enter delegates to the same existing
 //! method as its pointer control.
 
+use crate::ui::i18n::UiText;
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
 use super::account::AccountTarget;
@@ -30,6 +31,7 @@ pub(super) enum SettingsRegion {
 pub(super) enum GeneralTarget {
     Web,
     Appearance,
+    Language,
     ChatFont,
     ChatSize,
     ToolDetails,
@@ -146,6 +148,7 @@ impl SettingsScreen {
             Section::General => [
                 GeneralTarget::Web,
                 GeneralTarget::Appearance,
+                GeneralTarget::Language,
                 GeneralTarget::ChatFont,
                 GeneralTarget::ChatSize,
                 GeneralTarget::ToolDetails,
@@ -353,8 +356,7 @@ impl SettingsScreen {
                 self.application_vim.section = self.section;
             }
             _ => {
-                self.shortcut_notice =
-                    Some("There is no Settings region in that direction".to_string());
+                self.shortcut_notice = Some(UiText::key("settings-navigation-no-region"));
                 cx.notify();
                 return false;
             }
@@ -408,6 +410,7 @@ impl SettingsScreen {
     fn activate_general_target(&mut self, target: GeneralTarget, cx: &mut Context<Self>) {
         match target {
             GeneralTarget::Web => self.toggle_web_default(cx),
+            GeneralTarget::Language => self.toggle_setting_menu(SettingMenu::Language, cx),
             GeneralTarget::Appearance => self.toggle_setting_menu(SettingMenu::Appearance, cx),
             GeneralTarget::ChatFont => self.toggle_setting_menu(SettingMenu::ChatFont, cx),
             GeneralTarget::ChatSize => self.toggle_setting_menu(SettingMenu::ChatSize, cx),
@@ -534,10 +537,7 @@ impl SettingsScreen {
             }
             SettingsApplicationCommand::Unavailable => {
                 self.application_vim.count.clear();
-                self.shortcut_notice = Some(
-                    "That application Vim command is not available on this Settings target"
-                        .to_string(),
-                );
+                self.shortcut_notice = Some(UiText::key("settings-navigation-unavailable"));
                 cx.notify();
             }
         }
@@ -553,7 +553,7 @@ impl SettingsScreen {
             self.application_vim.count.push(action.digit),
             CountOutcome::Capped(_)
         ) {
-            self.shortcut_notice = Some("Application Vim count capped at 999999".to_string());
+            self.shortcut_notice = Some(UiText::key("settings-navigation-count-limit"));
         }
         cx.notify();
     }
@@ -1096,6 +1096,87 @@ mod tests {
     }
 
     #[gpui::test]
+    fn spanish_general_preserves_controls_and_saved_values(cx: &mut TestAppContext) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::initialize_saved_preference(Some("es"));
+        let (settings, cx) = dropdown_window(cx, true);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("setting-value-appearance").is_some());
+        assert!(cx.debug_bounds("setting-value-text-size").is_some());
+        settings.update(cx, |this, cx| {
+            assert_eq!(this.menu_value(SettingMenu::Appearance), "Sistema");
+            assert_eq!(this.menu_value(SettingMenu::ChatFont), "Sistema");
+            let voices = this.menu_options(SettingMenu::Voice);
+            assert_eq!(voices.len(), crate::settings::TTS_VOICES.len());
+            assert_eq!(voices[8].label, "Con acento español — Femenina");
+            this.pick_setting_option(SettingMenu::Voice, 8, cx);
+            assert_eq!(this.settings.tts_voice, "es_female");
+            assert_eq!(this.menu_value(SettingMenu::Voice), voices[8].label);
+            this.pick_setting_option(SettingMenu::Appearance, 1, cx);
+            assert_eq!(this.settings.theme, "dark");
+            assert_eq!(this.menu_value(SettingMenu::Appearance), "Oscuro");
+            assert_eq!(Section::General.id(), "General");
+            assert_eq!(Section::Advanced.label().as_ref(), "Privacidad y seguridad");
+        });
+    }
+
+    #[gpui::test]
+    fn live_language_switch_preserves_forms_and_rebuilds_spanish_shortcut_search(
+        cx: &mut TestAppContext,
+    ) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::apply_preference(Some("en"));
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            this.prompt_editor
+                .update(cx, |input, cx| input.set_text("Keep my instructions", cx));
+            this.api_keys
+                .name
+                .update(cx, |input, cx| input.set_text("My editor", cx));
+            this.prompt_notice = Some(UiText::key(
+                "settings-settings-saved-new-tasks-use-these-instructions",
+            ));
+            this.shortcut_snapshot.rows = vec![crate::shortcuts::ShortcutRow {
+                slot_id: "chat.new_task".into(),
+                label: "New task".into(),
+                category: "Chat".into(),
+                context: Some("Chat".into()),
+                default_sequence: "secondary-n".into(),
+                current_sequence: Some("secondary-n".into()),
+                modified: false,
+                conflicts: vec![],
+            }];
+            this.shortcut_search
+                .update(cx, |input, cx| input.set_text("nueva", cx));
+        });
+        cx.run_until_parked();
+        for (locale, visible) in [("es", 1), ("en", 0), ("es", 1)] {
+            cx.update(|_, cx| {
+                crate::ui::i18n::apply_preference(Some(locale));
+                cx.refresh_windows();
+            });
+            cx.run_until_parked();
+            settings.update(cx, |this, cx| {
+                assert_eq!(this.prompt_editor.read(cx).text(), "Keep my instructions");
+                assert_eq!(this.api_keys.name.read(cx).text(), "My editor");
+                assert_eq!(this.shortcut_list_cache.visible_indices.len(), visible);
+                assert_eq!(this.shortcut_snapshot.rows[0].slot_id, "chat.new_task");
+                assert_eq!(
+                    this.shortcut_snapshot.rows[0].current_sequence.as_deref(),
+                    Some("secondary-n")
+                );
+                assert!(
+                    this.prompt_notice
+                        .as_ref()
+                        .unwrap()
+                        .resolve()
+                        .starts_with(if locale == "es" { "Guardado" } else { "Saved" })
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
     fn dropdown_rows_select_highlight_and_close(cx: &mut TestAppContext) {
         let (settings, cx) = dropdown_window(cx, false);
         // Opening highlights the saved voice.
@@ -1213,7 +1294,36 @@ mod tests {
     }
 
     #[gpui::test]
+    fn language_dropdown_supports_pointer_and_keyboard_selection(cx: &mut TestAppContext) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+        let (settings, cx) = dropdown_window(cx, false);
+        for expected in [Some("en"), Some("es"), None] {
+            let button = cx
+                .debug_bounds("setting-value-language")
+                .expect("language selector");
+            cx.simulate_click(button.center(), gpui::Modifiers::default());
+            cx.simulate_keystrokes("down enter");
+            settings.update(cx, |this, _| {
+                assert_eq!(this.settings.locale.as_deref(), expected);
+                assert_eq!(
+                    crate::ui::i18n::tr("settings-language").as_ref(),
+                    if expected == Some("es") {
+                        "Idioma"
+                    } else {
+                        "Language"
+                    }
+                );
+                assert_eq!(this.popup.open_key(), None);
+            });
+        }
+        crate::settings::discard_decrypted_cache();
+    }
+
+    #[gpui::test]
     fn picking_from_the_dropdown_persists_in_reopened_store(cx: &mut TestAppContext) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         let root = tempfile::tempdir().unwrap();
         let paths = maple_agent::store::StorePaths::new(root.path());
@@ -1228,6 +1338,8 @@ mod tests {
         settings.update(cx, |this, cx| {
             this.toggle_setting_menu(SettingMenu::Appearance, cx);
             this.pick_setting_option(SettingMenu::Appearance, 2, cx);
+            this.toggle_setting_menu(SettingMenu::Language, cx);
+            this.pick_setting_option(SettingMenu::Language, 2, cx);
         });
         crate::settings::update_settings_and_wait(|_| {});
         // Detach the writer's Arc and discard its cached value before closing
@@ -1246,6 +1358,10 @@ mod tests {
             saved.get("theme").and_then(serde_json::Value::as_str),
             Some("light"),
             "a dropdown pick must reach the authoritative store"
+        );
+        assert_eq!(
+            saved.get("locale").and_then(serde_json::Value::as_str),
+            Some("es")
         );
         reopened.close().unwrap();
         cx.run_until_parked();

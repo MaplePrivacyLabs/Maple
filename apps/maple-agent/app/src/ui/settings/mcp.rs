@@ -1,6 +1,7 @@
 //! MCP editor state contains names and presence only until the user enters a
 //! replacement. Keep, Set and Clear remain distinct at the request boundary.
 
+use crate::ui::i18n::{tr, tr_args};
 use gpui::{Context, Div, Entity, div, prelude::*};
 use maple_agent::store::records::{
     McpDefinition, McpSecretEdit, McpSecretUpdate, McpServerEdit, SecretString,
@@ -46,25 +47,27 @@ impl SettingsScreen {
                                 .text_xs()
                                 .text_color(gpui::rgb(theme::text_muted()))
                                 .child(match field.action {
-                                    McpSecretAction::Keep if field.has_value => "Saved value",
-                                    McpSecretAction::Keep => "No saved value",
-                                    McpSecretAction::Set => "New value",
-                                    McpSecretAction::Clear => "Will clear",
+                                    McpSecretAction::Keep if field.has_value => {
+                                        tr("settings-mcp-saved-value")
+                                    }
+                                    McpSecretAction::Keep => tr("settings-mcp-no-saved-value"),
+                                    McpSecretAction::Set => tr("settings-mcp-new-value"),
+                                    McpSecretAction::Clear => tr("settings-mcp-will-clear"),
                                 }),
                         ),
                 );
                 row = row.child(
                     div().flex().gap_2().children(
                         [
-                            (McpSecretAction::Keep, "Keep"),
-                            (McpSecretAction::Set, "Replace"),
-                            (McpSecretAction::Clear, "Clear"),
+                            (McpSecretAction::Keep, "Keep", tr("settings-mcp-keep")),
+                            (McpSecretAction::Set, "Replace", tr("settings-mcp-replace")),
+                            (McpSecretAction::Clear, "Clear", tr("settings-mcp-clear")),
                         ]
                         .into_iter()
-                        .map(|(action, label)| {
+                        .map(|(action, id, label)| {
                             pill_button(
                                 format!(
-                                    "mcp-secret-{}-{index}-{label}",
+                                    "mcp-secret-{}-{index}-{id}",
                                     if headers { "header" } else { "env" }
                                 ),
                                 label,
@@ -134,10 +137,11 @@ pub(super) fn field_edits(
                 McpSecretAction::Set => {
                     let value = Zeroizing::new(field.input.read(cx).text());
                     if value.is_empty() {
-                        return Err(format!(
-                            "Enter a new value for {} or choose Clear.",
-                            field.name
-                        ));
+                        return Err(tr_args(
+                            "settings-mcp-secret-required",
+                            [("arg1", (field.name).to_string().into())],
+                        )
+                        .to_string());
                     }
                     McpSecretUpdate::Set(SecretString::new(value.to_string()))
                 }
@@ -160,10 +164,11 @@ pub(super) fn new_value_edits(text: &str) -> Result<Vec<McpSecretEdit>, String> 
         .filter(|entry| !entry.trim().is_empty())
         .map(|entry| {
             let (name, value) = entry.trim().split_once('=').ok_or_else(|| {
-                "Enter new values as NAME=value, separated by semicolons.".to_string()
+                tr("settings-mcp-enter-new-values-as-name-value-separated-by-semicolons")
+                    .to_string()
             })?;
             if name.trim().is_empty() || value.is_empty() {
-                return Err("Each new entry needs a name and value.".into());
+                return Err(tr("settings-mcp-each-new-entry-needs-a-name-and-value").into());
             }
             Ok(McpSecretEdit {
                 name: name.trim().to_string(),
@@ -197,7 +202,10 @@ pub(super) fn require_target_choice(
                     .is_some_and(|entry| matches!(entry.update, McpSecretUpdate::Keep))
             })
         {
-            return Err("The server target or name changed. Replace or clear each saved value before saving.".into());
+            return Err(tr(
+                "settings-mcp-the-server-target-or-name-changed-replace-or-clear-each-saved-val",
+            )
+            .into());
         }
     }
     Ok(())

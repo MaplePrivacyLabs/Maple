@@ -2,6 +2,7 @@
 //! Copies and image decoding stay off the UI thread; only metadata reaches it.
 
 use super::{ChatScreen, staging};
+use crate::ui::i18n::{MessageCache, UiText, tr};
 use gpui::{Context, SharedString};
 use std::{path::Path, sync::Arc};
 
@@ -13,7 +14,6 @@ pub(super) struct DraftAttachment {
     pub id: u64,
     pub name: String,
     pub mime_type: String,
-    pub detail: SharedString,
     pub size: u64,
     pub staged: Option<Arc<staging::StagedFile>>,
     pub operation_id: String,
@@ -24,13 +24,73 @@ pub(super) struct DraftAttachment {
     pub thumbnail: Option<Arc<gpui::Image>>,
 }
 
+#[derive(Debug)]
+enum PreparationError {
+    Raw(String),
+    Staging(staging::Failure),
+    Stopped,
+    Failed(String),
+    ImageTooLarge,
+    NamedImageTooLarge(String),
+    UnsupportedImage(String),
+}
+
+impl From<String> for PreparationError {
+    fn from(error: String) -> Self {
+        Self::Raw(error)
+    }
+}
+
+impl From<staging::Failure> for PreparationError {
+    fn from(error: staging::Failure) -> Self {
+        Self::Staging(error)
+    }
+}
+
+impl PreparationError {
+    fn into_text(self) -> UiText {
+        match self {
+            Self::Raw(error) => error.into(),
+            Self::Staging(error) => match error {
+                staging::Failure::RetainedFileLimit => UiText::key("chat-staging-file-limit"),
+                staging::Failure::RetainedByteLimit => UiText::key("chat-staging-byte-limit"),
+                staging::Failure::UnsafeDirectory => UiText::key("chat-staging-unsafe-directory"),
+                #[cfg(unix)]
+                staging::Failure::NonPrivateDirectory => {
+                    UiText::key("chat-staging-private-directory")
+                }
+                staging::Failure::NotAFile => UiText::key("chat-staging-not-file"),
+                staging::Failure::FileTooLarge => UiText::key("chat-staging-file-too-large"),
+                staging::Failure::FileGrew => UiText::key("chat-staging-file-grew"),
+                staging::Failure::PrepareDirectory(error) => {
+                    UiText::context("chat-staging-prepare-failed", "error", error.into())
+                }
+                staging::Failure::OpenAttachment(error) => {
+                    UiText::context("chat-staging-open-failed", "error", error.into())
+                }
+                staging::Failure::Raw(error) => error.into(),
+            },
+            Self::Stopped => UiText::key("chat-attachment-stopped"),
+            Self::Failed(error) => {
+                UiText::message("chat-attachment-failed", [("error", error.into())])
+            }
+            Self::ImageTooLarge => UiText::key("chat-image-too-large"),
+            Self::NamedImageTooLarge(name) => {
+                UiText::message("chat-image-name-too-large", [("name", name.into())])
+            }
+            Self::UnsupportedImage(name) => {
+                UiText::message("chat-image-unsupported", [("name", name.into())])
+            }
+        }
+    }
+}
+
 impl DraftAttachment {
     pub(super) fn preparing(id: u64, name: String) -> Self {
         Self {
             id,
             name,
             mime_type: String::new(),
-            detail: "Preparing…".into(),
             size: 0,
             staged: None,
             operation_id: uuid::Uuid::new_v4().to_string(),
@@ -39,6 +99,14 @@ impl DraftAttachment {
             thumbnail: None,
         }
     }
+    pub(super) fn detail(&self, messages: &MessageCache) -> SharedString {
+        if self.ready() {
+            cached_attachment_detail(&self.mime_type, self.size, messages)
+        } else {
+            tr("chat-preparing")
+        }
+    }
+
     pub(super) fn reset_upload(&mut self) {
         self.operation_id = uuid::Uuid::new_v4().to_string();
         self.committed = None;
@@ -66,7 +134,6 @@ impl DraftAttachment {
             draft.staged = Some(staging::copy_bytes(&staging::root(), b"test attachment").unwrap());
             draft.mime_type = "application/octet-stream".into();
             draft.size = 15;
-            draft.detail = attachment_detail(&draft.mime_type, draft.size).into();
         }
         draft
     }
@@ -76,8 +143,10 @@ impl ChatScreen {
     fn remaining_attachment_slots(&mut self, cx: &mut Context<Self>) -> Option<usize> {
         let remaining = MAX_DRAFT_ATTACHMENTS.saturating_sub(self.draft_attachments.len());
         if remaining == 0 {
-            self.notice =
-                Some(format!("Attach at most {MAX_DRAFT_ATTACHMENTS} files at a time").into());
+            self.notice = Some(UiText::message(
+                "chat-attachment-limit",
+                [("count", MAX_DRAFT_ATTACHMENTS.into())],
+            ));
             cx.notify();
             return None;
         }
@@ -96,7 +165,7 @@ impl ChatScreen {
             return;
         }
         if !self.image_plan_available() {
-            self.notice = Some("Image attachments need a Pro, Max, or Team plan".into());
+            self.notice = Some(UiText::key("chat-image-plan"));
             cx.notify();
             return;
         }
@@ -107,7 +176,7 @@ impl ChatScreen {
         };
         let name = format!("pasted-{}.{extension}", self.draft_attachments.len() + 1);
         if let Err(message) = draft_image_mime(&name, &image.bytes) {
-            self.notice = Some(message.into());
+            self.notice = Some(message.into_text());
             cx.notify();
             return;
         }
@@ -115,30 +184,43 @@ impl ChatScreen {
         self.draft_attachments
             .push(DraftAttachment::preparing(id, name.clone()));
         self.notice = None;
-        self.call(
+        self.call_semantic(
             async move {
-                let permit = preparation_slots()
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| "Attachment preparation stopped")?;
-                tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    let mime = draft_image_mime(&name, &image.bytes)?;
-                    let staged = staging::copy_bytes(&staging::root(), &image.bytes)?;
-                    let thumbnail = square_thumbnail(&image.bytes).ok().map(Arc::new);
-                    Ok((
-                        staged,
-                        mime.to_string(),
-                        image.bytes.len() as u64,
-                        thumbnail,
-                    ))
-                })
-                .await
-                .map_err(|e| format!("Attachment preparation failed: {e}"))?
+                Ok::<_, String>(
+                    async move {
+                        let permit = preparation_slots()
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .map_err(|_| PreparationError::Stopped)?;
+                        tokio::task::spawn_blocking(move || {
+                            let _permit = permit;
+                            let mime = draft_image_mime(&name, &image.bytes)?;
+                            let staged = staging::copy_bytes(&staging::root(), &image.bytes)?;
+                            let thumbnail = square_thumbnail(&image.bytes).ok().map(Arc::new);
+                            Ok((
+                                staged,
+                                mime.to_string(),
+                                image.bytes.len() as u64,
+                                thumbnail,
+                            ))
+                        })
+                        .await
+                        .map_err(|e| PreparationError::Failed(e.to_string()))?
+                    }
+                    .await,
+                )
             },
             cx,
-            move |this, result, cx| this.finish_attachment_preparation(id, result, cx),
+            move |this, result, cx| {
+                this.finish_attachment_preparation(
+                    id,
+                    result
+                        .map_err(UiText::from)
+                        .and_then(|prepared| prepared.map_err(PreparationError::into_text)),
+                    cx,
+                )
+            },
         );
         cx.notify();
     }
@@ -151,7 +233,7 @@ impl ChatScreen {
     pub(super) fn finish_attachment_preparation(
         &mut self,
         id: u64,
-        result: Result<PreparedAttachment, String>,
+        result: Result<PreparedAttachment, UiText>,
         cx: &mut Context<Self>,
     ) {
         let images_allowed = self.image_plan_available();
@@ -166,7 +248,6 @@ impl ChatScreen {
             Ok((staged, mime_type, size, thumbnail))
                 if !mime_type.starts_with("image/") || images_allowed =>
             {
-                draft.detail = attachment_detail(&mime_type, size).into();
                 draft.staged = Some(staged);
                 draft.mime_type = mime_type;
                 draft.size = size;
@@ -175,9 +256,9 @@ impl ChatScreen {
             result => {
                 let message = result
                     .err()
-                    .unwrap_or_else(|| "Image attachments need a Pro, Max, or Team plan".into());
+                    .unwrap_or_else(|| UiText::key("chat-image-plan"));
                 self.draft_attachments.retain(|draft| draft.id != id);
-                self.notice = Some(message.into());
+                self.notice = Some(message);
             }
         }
         cx.notify();
@@ -199,7 +280,7 @@ impl ChatScreen {
             // A restored draft can still have a pending/ready upload. Removing
             // its chip explicitly cancels that operation; accepted-message
             // references remain protected by the execution store.
-            self.call(
+            self.call_semantic(
                 async move {
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(3),
@@ -212,7 +293,7 @@ impl ChatScreen {
                         ),
                     )
                     .await;
-                    Ok(())
+                    Ok::<_, String>(())
                 },
                 cx,
                 |_, _, _| {},
@@ -242,8 +323,10 @@ impl ChatScreen {
                     Ok(Ok(Some(paths))) => this.add_attachment_paths(paths, cx),
                     Ok(Ok(None)) | Err(_) => {}
                     Ok(Err(error)) => {
-                        this.notice =
-                            Some(format!("Could not open the file dialog: {error}").into())
+                        this.notice = Some(UiText::message(
+                            "chat-file-dialog-failed",
+                            [("error", error.to_string().into())],
+                        ))
                     }
                 }
                 cx.notify();
@@ -262,7 +345,10 @@ impl ChatScreen {
             return;
         };
         self.notice = if paths.len() > remaining {
-            Some(format!("Attach at most {MAX_DRAFT_ATTACHMENTS} files at a time").into())
+            Some(UiText::message(
+                "chat-attachment-limit",
+                [("count", MAX_DRAFT_ATTACHMENTS.into())],
+            ))
         } else {
             None
         };
@@ -283,22 +369,35 @@ impl ChatScreen {
             })
             .collect();
         for (id, path) in work {
-            self.call(
+            self.call_semantic(
                 async move {
-                    let permit = preparation_slots()
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| "Attachment preparation stopped")?;
-                    tokio::task::spawn_blocking(move || {
-                        let _permit = permit;
-                        prepare_file(&path)
-                    })
-                    .await
-                    .map_err(|e| format!("Attachment preparation failed: {e}"))?
+                    Ok::<_, String>(
+                        async move {
+                            let permit = preparation_slots()
+                                .clone()
+                                .acquire_owned()
+                                .await
+                                .map_err(|_| PreparationError::Stopped)?;
+                            tokio::task::spawn_blocking(move || {
+                                let _permit = permit;
+                                prepare_file(&path)
+                            })
+                            .await
+                            .map_err(|e| PreparationError::Failed(e.to_string()))?
+                        }
+                        .await,
+                    )
                 },
                 cx,
-                move |this, result, cx| this.finish_attachment_preparation(id, result, cx),
+                move |this, result, cx| {
+                    this.finish_attachment_preparation(
+                        id,
+                        result
+                            .map_err(UiText::from)
+                            .and_then(|prepared| prepared.map_err(PreparationError::into_text)),
+                        cx,
+                    )
+                },
             );
         }
         cx.notify();
@@ -317,7 +416,7 @@ type PreparedAttachment = (
     Option<Arc<gpui::Image>>,
 );
 
-fn prepare_file(path: &Path) -> Result<PreparedAttachment, String> {
+fn prepare_file(path: &Path) -> Result<PreparedAttachment, PreparationError> {
     use std::io::Read;
     let (staged, size) = staging::copy_file(&staging::root(), path)?;
     let mut signature = [0; 16];
@@ -326,7 +425,7 @@ fn prepare_file(path: &Path) -> Result<PreparedAttachment, String> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     if image_format_from_bytes(&signature[..read]).is_some() {
         if size > MAX_DRAFT_IMAGE_BYTES {
-            return Err("Images must be 10 MiB or smaller".into());
+            return Err(PreparationError::ImageTooLarge);
         }
         let bytes = std::fs::read(&staged.path).map_err(|e| e.to_string())?;
         let mime = draft_image_mime(&name, &bytes)?.to_string();
@@ -355,14 +454,24 @@ fn prepare_file(path: &Path) -> Result<PreparedAttachment, String> {
     }
 }
 
+pub(super) fn cached_attachment_detail(
+    mime: &str,
+    size: u64,
+    messages: &MessageCache,
+) -> SharedString {
+    messages.computed("chat-attachment-detail", &format!("{mime}:{size}"), || {
+        attachment_detail(mime, size).into()
+    })
+}
+
 pub(super) fn attachment_detail(mime: &str, size: u64) -> String {
     let kind = match mime {
-        "application/zip" => "ZIP",
-        "application/pdf" => "PDF",
-        "application/octet-stream" => "File",
-        mime if mime.starts_with("image/") => "Image",
-        mime if mime.starts_with("text/") => "Text",
-        _ => "File",
+        "application/zip" => "ZIP".into(),
+        "application/pdf" => "PDF".into(),
+        "application/octet-stream" => tr("chat-attachment-file"),
+        mime if mime.starts_with("image/") => tr("chat-attachment-image"),
+        mime if mime.starts_with("text/") => tr("chat-attachment-text"),
+        _ => tr("chat-attachment-file"),
     };
     let size = if size >= 1024 * 1024 {
         format!("{:.1} MiB", size as f64 / (1024. * 1024.))
@@ -374,15 +483,15 @@ pub(super) fn attachment_detail(mime: &str, size: u64) -> String {
     format!("{kind} · {size}")
 }
 
-fn draft_image_mime(name: &str, bytes: &[u8]) -> Result<&'static str, String> {
+fn draft_image_mime(name: &str, bytes: &[u8]) -> Result<&'static str, PreparationError> {
     if bytes.len() as u64 > MAX_DRAFT_IMAGE_BYTES {
-        return Err(format!("{name} is larger than 10 MiB"));
+        return Err(PreparationError::NamedImageTooLarge(name.to_string()));
     }
     match image_format_from_bytes(bytes) {
         Some(gpui::ImageFormat::Png) => Ok("image/png"),
         Some(gpui::ImageFormat::Jpeg) => Ok("image/jpeg"),
         Some(gpui::ImageFormat::Webp) => Ok("image/webp"),
-        _ => Err(format!("{name} is not a PNG, JPEG, or WebP image")),
+        _ => Err(PreparationError::UnsupportedImage(name.to_string())),
     }
 }
 
@@ -445,6 +554,31 @@ pub(super) fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_failure_reformats_after_returning_from_worker() {
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        let failure = std::thread::spawn(|| {
+            PreparationError::from(staging::Failure::OpenAttachment(
+                "OS detail /tmp/raw".into(),
+            ))
+        })
+        .join()
+        .unwrap();
+        let notice = failure.into_text();
+        for (locale, prefix) in [
+            ("en", "Could not open the attachment:"),
+            ("es", "No se pudo abrir el archivo adjunto:"),
+            ("en", "Could not open the attachment:"),
+        ] {
+            apply_preference(Some(locale));
+            let text = notice.resolve();
+            assert!(text.starts_with(prefix));
+            assert!(text.contains("OS detail /tmp/raw"));
+        }
+    }
+
     #[test]
     fn changing_the_draft_task_uses_a_new_upload_operation() {
         let mut draft = DraftAttachment::preparing(1, "report.zip".into());
@@ -481,6 +615,9 @@ mod tests {
         let mut bytes = vec![0; MAX_DRAFT_IMAGE_BYTES as usize + 1];
         bytes[..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 13, 10, 26, 10]);
         std::fs::write(&original, bytes).unwrap();
-        assert!(prepare_file(&original).err().unwrap().contains("10 MiB"));
+        assert!(matches!(
+            prepare_file(&original),
+            Err(PreparationError::ImageTooLarge)
+        ));
     }
 }

@@ -480,7 +480,7 @@ impl Manager {
                                 send_id: None,
                                 params: serde_json::json!({}),
                             }).await.map_err(|_| "The remote update check could not be completed")?;
-                            let protocol::Message::Response { id: 3, result } = response else {
+                            let protocol::Message::Response { id: 3, result, .. } = response else {
                                 return Err("The remote update check returned an invalid response".into());
                             };
                             let value = result.map_err(|error| remote_refresh_failure(&error))?;

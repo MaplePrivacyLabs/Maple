@@ -1403,7 +1403,7 @@ mod tests {
         assert_eq!(policy.input_budget, 131_072);
         assert_eq!(policy.trigger_tokens, 103_219);
         assert_eq!(policy.keep_recent_tokens, 20_000);
-        assert_eq!(policy.summary_input_budget, 64_000);
+        assert_eq!(policy.summary_input_budget, 114_688);
         assert!(body.context_management.is_none());
         assert!(body.max_output_tokens.is_none());
     }

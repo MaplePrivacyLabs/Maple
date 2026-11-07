@@ -1,4 +1,5 @@
 //! Host-only password decoding and serialized blocking key work.
+use super::HostFailure;
 use maple_agent::store::{
     Store,
     keys::{self, GeneratedPassphrase, KdfParams, KeyError, Password},
@@ -60,7 +61,7 @@ pub(super) fn changes_store(method: &str) -> bool {
 /// Key-only rewraps keep the database, runtime and every attached transport.
 /// Decode the full request so malformed/default flags cannot choose a lane
 /// that disagrees with the eventual password operation.
-pub(super) fn requires_drain(method: &str, input: &Value) -> Result<bool, String> {
+pub(super) fn requires_drain(method: &str, input: &Value) -> Result<bool, HostFailure> {
     if method == "change_store_password" {
         let input: ChangePassword<'_> = decode(input)?;
         return Ok(input.reencrypt);
@@ -74,18 +75,26 @@ pub(super) async fn validate_before_drain(
     store: Arc<Store>,
     method: &str,
     input: &Value,
-) -> Result<(), String> {
+) -> Result<(), HostFailure> {
     match method {
         "unlock" => {
             let input: NewPassword<'_> = decode(input)?;
             let _password = normalize(input.password)?;
             if store.state() == maple_agent::store::StoreState::Open {
-                return Err("Maple local data is already unlocked.".into());
+                return Err(HostFailure::new(
+                    "passwords-already-unlocked",
+                    "Maple local data is already unlocked.",
+                ));
             }
             tokio::task::spawn_blocking(move || store.validate_unlock_slot())
                 .await
-                .map_err(|_| "Unlock validation did not finish")?
-                .map_err(|error| error.to_string())
+                .map_err(|_| {
+                    HostFailure::new(
+                        "passwords-unlock-validation",
+                        "Unlock validation did not finish",
+                    )
+                })?
+                .map_err(HostFailure::from)
         }
         "erase_local_data" | "start_fresh" => {
             let input: Confirmation<'_> = decode(input)?;
@@ -95,7 +104,7 @@ pub(super) async fn validate_before_drain(
                 maple_agent::store::lifecycle::START_FRESH_CONFIRMATION
             };
             if input.confirmation != expected {
-                return Err(LifecycleError::Confirmation.to_string());
+                return Err(HostFailure::from(LifecycleError::Confirmation));
             }
             if method == "start_fresh"
                 && !matches!(
@@ -103,7 +112,7 @@ pub(super) async fn validate_before_drain(
                     maple_agent::store::StoreState::Damaged { .. }
                 )
             {
-                return Err(maple_agent::store::StoreError::Conflict.to_string());
+                return Err(HostFailure::from(maple_agent::store::StoreError::Conflict));
             }
             Ok(())
         }
@@ -118,13 +127,18 @@ pub(super) async fn reset_store(
     store: Arc<Store>,
     method: &str,
     input: &Value,
-) -> Result<LifecycleResult<LockStatus>, String> {
+) -> Result<LifecycleResult<LockStatus>, HostFailure> {
     let input: Confirmation<'_> = decode(input)?;
     let confirmation = input.confirmation.to_owned();
     let erase = match method {
         "erase_local_data" => true,
         "start_fresh" => false,
-        _ => return Err("Unknown local store reset".into()),
+        _ => {
+            return Err(HostFailure::new(
+                "passwords-reset-unknown",
+                "Unknown local store reset",
+            ));
+        }
     };
     tokio::task::spawn_blocking(move || {
         if erase {
@@ -134,7 +148,7 @@ pub(super) async fn reset_store(
         }
     })
     .await
-    .map_err(|_| "Local store reset did not finish".into())
+    .map_err(|_| HostFailure::new("passwords-reset-worker", "Local store reset did not finish"))
 }
 
 #[derive(Deserialize)]
@@ -180,22 +194,28 @@ struct Confirmation<'a> {
     confirmation: &'a str,
 }
 
-fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, String> {
-    T::deserialize(value).map_err(|_| "Invalid local store request".to_owned())
+fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, HostFailure> {
+    T::deserialize(value)
+        .map_err(|_| HostFailure::new("passwords-request", "Invalid local store request"))
 }
-fn encode<T: serde::Serialize>(value: T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|_| "Could not encode local store response".to_owned())
+fn encode<T: serde::Serialize>(value: T) -> Result<Value, HostFailure> {
+    serde_json::to_value(value).map_err(|_| {
+        HostFailure::new(
+            "passwords-response",
+            "Could not encode local store response",
+        )
+    })
 }
-fn normalize(value: &str) -> Result<Password, String> {
-    Password::normalize(value).map_err(|error| error.to_string())
+fn normalize(value: &str) -> Result<Password, HostFailure> {
+    Password::normalize(value).map_err(HostFailure::from)
 }
 
-pub(super) fn is_setup_acknowledgement(store: &Store, input: &Value) -> Result<bool, String> {
+pub(super) fn is_setup_acknowledgement(store: &Store, input: &Value) -> Result<bool, HostFailure> {
     let input: Setup<'_> = decode(input)?;
     if store.state() != maple_agent::store::StoreState::Open {
         return Ok(false);
     }
-    let mode = store.lock_status().map_err(|error| error.to_string())?.mode;
+    let mode = store.lock_status().map_err(HostFailure::from)?.mode;
     Ok(matches!(
         (mode, input.password.is_some()),
         (maple_agent::store::lifecycle::StoreMode::Password, true)
@@ -203,15 +223,23 @@ pub(super) fn is_setup_acknowledgement(store: &Store, input: &Value) -> Result<b
     ))
 }
 
-pub(super) async fn acknowledge_setup(store: Arc<Store>, input: &Value) -> Result<Value, String> {
+pub(super) async fn acknowledge_setup(
+    store: Arc<Store>,
+    input: &Value,
+) -> Result<Value, HostFailure> {
     let input: Setup<'_> = decode(input)?;
     let password = input.password.map(normalize).transpose()?;
     // The core rechecks Open and the installed generation under its lifecycle
     // gate. This entrypoint cannot fall through to creating or changing data.
     tokio::task::spawn_blocking(move || store.acknowledge_completed_setup(password.as_ref()))
         .await
-        .map_err(|_| "Local store setup acknowledgement did not finish")?
-        .map_err(|error| error.to_string())
+        .map_err(|_| {
+            HostFailure::new(
+                "passwords-setup-ack",
+                "Local store setup acknowledgement did not finish",
+            )
+        })?
+        .map_err(HostFailure::from)
         .and_then(encode)
 }
 
@@ -221,57 +249,73 @@ impl PasswordHost {
         *self.calibrated.lock().await = Some(KdfParams::floor());
     }
 
-    async fn parameters(&self) -> Result<KdfParams, String> {
+    async fn parameters(&self) -> Result<KdfParams, HostFailure> {
         let mut cached = self.calibrated.lock().await;
         if let Some(params) = *cached {
             return Ok(params);
         }
         let params = tokio::task::spawn_blocking(|| KdfParams::calibrate(total_memory()))
             .await
-            .map_err(|_| "Password calibration did not finish")?
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| {
+                HostFailure::new(
+                    "passwords-calibration",
+                    "Password calibration did not finish",
+                )
+            })?
+            .map_err(HostFailure::from)?;
         *cached = Some(params);
         Ok(params)
     }
 
-    fn check_generated(&self, id: Option<&str>, password: &Password) -> Result<(), String> {
+    fn check_generated(&self, id: Option<&str>, password: &Password) -> Result<(), HostFailure> {
         let Some(id) = id else {
             return Ok(());
         };
-        let generated = self
-            .generated
-            .lock()
-            .map_err(|_| "Passphrase generator is unavailable")?;
+        let generated = self.generated.lock().map_err(|_| {
+            HostFailure::new("passwords-generator", "Passphrase generator is unavailable")
+        })?;
         if !generated.as_ref().is_some_and(|(receipt, issued, phrase)| {
             receipt == id
                 && issued.elapsed() < Duration::from_secs(600)
                 && phrase.password().as_str() == password.as_str()
         }) {
-            return Err("Generate a new passphrase or choose your own password.".into());
+            return Err(HostFailure::new(
+                "passwords-expired",
+                "Generate a new passphrase or choose your own password.",
+            ));
         }
         Ok(())
     }
 
-    fn select(&self, id: Option<&str>, password: Password) -> Result<SelectedPassword, String> {
+    fn select(
+        &self,
+        id: Option<&str>,
+        password: Password,
+    ) -> Result<SelectedPassword, HostFailure> {
         let Some(id) = id else {
             return Ok(SelectedPassword::Typed(password));
         };
         // Validate and take the same receipt under one lock. A concurrent new
         // suggestion must never substitute a different phrase after validation.
-        let mut generated = self
-            .generated
-            .lock()
-            .map_err(|_| "Passphrase generator is unavailable")?;
+        let mut generated = self.generated.lock().map_err(|_| {
+            HostFailure::new("passwords-generator", "Passphrase generator is unavailable")
+        })?;
         if !generated.as_ref().is_some_and(|(receipt, issued, phrase)| {
             receipt == id
                 && issued.elapsed() < Duration::from_secs(600)
                 && phrase.password().as_str() == password.as_str()
         }) {
-            return Err("Generate a new passphrase or choose your own password.".into());
+            return Err(HostFailure::new(
+                "passwords-expired",
+                "Generate a new passphrase or choose your own password.",
+            ));
         }
-        let (id, issued, phrase) = generated
-            .take()
-            .ok_or("Generate a new passphrase or choose your own password.")?;
+        let (id, issued, phrase) = generated.take().ok_or_else(|| {
+            HostFailure::new(
+                "passwords-expired",
+                "Generate a new passphrase or choose your own password.",
+            )
+        })?;
         Ok(SelectedPassword::Suggested { id, issued, phrase })
     }
 
@@ -304,17 +348,15 @@ impl PasswordHost {
         method: &str,
         input: &Value,
         context: Vec<String>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, HostFailure> {
         match method {
             "generate_store_passphrase" => {
-                let phrase = keys::generate_passphrase().map_err(|error| error.to_string())?;
+                let phrase = keys::generate_passphrase().map_err(HostFailure::from)?;
                 let id = uuid::Uuid::new_v4().to_string();
                 let result = serde_json::json!({"id": id, "passphrase": phrase.password().as_str(), "assessment": phrase.assessment()});
-                *self
-                    .generated
-                    .lock()
-                    .map_err(|_| "Passphrase generator is unavailable")? =
-                    Some((id, Instant::now(), phrase));
+                *self.generated.lock().map_err(|_| {
+                    HostFailure::new("passwords-generator", "Passphrase generator is unavailable")
+                })? = Some((id, Instant::now(), phrase));
                 Ok(result)
             }
             "assess_store_password" => {
@@ -323,14 +365,21 @@ impl PasswordHost {
                 self.check_generated(input.generated_id, &password)?;
                 let context = context.iter().map(String::as_str).collect::<Vec<_>>();
                 if input.generated_id.is_some() {
-                    let generated = self
-                        .generated
-                        .lock()
-                        .map_err(|_| "Passphrase generator is unavailable")?;
+                    let generated = self.generated.lock().map_err(|_| {
+                        HostFailure::new(
+                            "passwords-generator",
+                            "Passphrase generator is unavailable",
+                        )
+                    })?;
                     encode(
                         generated
                             .as_ref()
-                            .ok_or("Generate a new passphrase.")?
+                            .ok_or_else(|| {
+                                HostFailure::new(
+                                    "passwords-generate-new",
+                                    "Generate a new passphrase.",
+                                )
+                            })?
                             .2
                             .assessment(),
                     )
@@ -344,8 +393,13 @@ impl PasswordHost {
                 let validating = store.clone();
                 tokio::task::spawn_blocking(move || validating.validate_unlock_slot())
                     .await
-                    .map_err(|_| "Unlock validation did not finish")?
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|_| {
+                        HostFailure::new(
+                            "passwords-unlock-validation",
+                            "Unlock validation did not finish",
+                        )
+                    })?
+                    .map_err(HostFailure::from)?;
                 let params = self.parameters().await?;
                 tokio::task::spawn_blocking(move || {
                     let result = store.unlock_store(&password, Some(params));
@@ -355,8 +409,8 @@ impl PasswordHost {
                     result
                 })
                 .await
-                .map_err(|_| "Unlock did not finish")?
-                .map_err(|error| error.to_string())
+                .map_err(|_| HostFailure::new("passwords-unlock-worker", "Unlock did not finish"))?
+                .map_err(HostFailure::from)
                 .and_then(encode)
             }
             "set_store_password" => {
@@ -372,9 +426,11 @@ impl PasswordHost {
                     (password, result)
                 })
                 .await
-                .map_err(|_| "Password change did not finish")?;
+                .map_err(|_| {
+                    HostFailure::new("passwords-change-worker", "Password change did not finish")
+                })?;
                 self.finish_selection(password, &result);
-                result.map_err(|error| error.to_string()).and_then(encode)
+                result.map_err(HostFailure::from).and_then(encode)
             }
             "change_store_password" => {
                 let input: ChangePassword<'_> = decode(input)?;
@@ -396,17 +452,24 @@ impl PasswordHost {
                     (password, result)
                 })
                 .await
-                .map_err(|_| "Password change did not finish")?;
+                .map_err(|_| {
+                    HostFailure::new("passwords-change-worker", "Password change did not finish")
+                })?;
                 self.finish_selection(password, &result);
-                result.map_err(|error| error.to_string()).and_then(encode)
+                result.map_err(HostFailure::from).and_then(encode)
             }
             "remove_store_password" => {
                 let input: CurrentPassword<'_> = decode(input)?;
                 let current = normalize(input.current_password)?;
                 tokio::task::spawn_blocking(move || store.remove_store_password(&current))
                     .await
-                    .map_err(|_| "Password removal did not finish")?
-                    .map_err(|error| error.to_string())
+                    .map_err(|_| {
+                        HostFailure::new(
+                            "passwords-remove-worker",
+                            "Password removal did not finish",
+                        )
+                    })?
+                    .map_err(HostFailure::from)
                     .and_then(encode)
             }
             "setup_store" => {
@@ -442,17 +505,22 @@ impl PasswordHost {
                     (password, result)
                 })
                 .await
-                .map_err(|_| "Local store setup did not finish")?;
+                .map_err(|_| {
+                    HostFailure::new("passwords-setup-worker", "Local store setup did not finish")
+                })?;
                 if let Some(password) = password {
                     self.finish_selection(password, &result);
                 }
-                result.map_err(|error| error.to_string()).and_then(encode)
+                result.map_err(HostFailure::from).and_then(encode)
             }
             "erase_local_data" | "start_fresh" => reset_store(store, method, input)
                 .await?
-                .map_err(|error| error.to_string())
+                .map_err(HostFailure::from)
                 .and_then(encode),
-            _ => Err("Unknown local store operation".into()),
+            _ => Err(HostFailure::new(
+                "passwords-operation",
+                "Unknown local store operation",
+            )),
         }
     }
 }
@@ -504,6 +572,29 @@ mod tests {
     use super::*;
     use maple_agent::store::{StorePaths, StoreState, lifecycle::StoreMode};
     use std::io::Read;
+
+    #[tokio::test]
+    async fn expired_generated_passphrase_is_a_typed_source_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(StorePaths::new(root.path())).unwrap());
+        let host = PasswordHost::default();
+        let error = host
+            .dispatch(
+                store,
+                "assess_store_password",
+                &serde_json::json!({
+                    "password":"an unregistered passphrase", "generated_id":"expired"
+                }),
+                vec![],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "passwords-expired");
+        assert_eq!(
+            error.message,
+            "Generate a new passphrase or choose your own password."
+        );
+    }
 
     #[tokio::test]
     async fn repeated_generated_setup_authenticates_without_reusing_its_receipt() {

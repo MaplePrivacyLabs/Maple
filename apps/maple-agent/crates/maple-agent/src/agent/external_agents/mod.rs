@@ -49,13 +49,13 @@ use super::config::unix_ms;
 use super::questions::QuestionBroker;
 use super::runtime::AgentRuntime;
 use super::timeline::{
-    MAPLE_NOTICE_ENTRY, MAX_AGENT_SESSION_TITLE_CHARS, bounded_timeline_text, notice_entry_data,
-    notice_item, stored_tool_row_id,
+    MAPLE_NOTICE_ENTRY, MAX_AGENT_SESSION_TITLE_CHARS, bounded_timeline_text, notice_item,
+    stored_tool_row_id,
 };
 use super::{
     AgentEventDispatcher, AgentPermissionDecision, AgentPermissionRequest, AgentRunEvent,
-    AgentRuntimeHandle, AgentServiceEvent, AgentSubagent, AgentTimelineItem, ExternalAgentRef,
-    emit_agent_event,
+    AgentRuntimeHandle, AgentServiceEvent, AgentSubagent, AgentTimelineItem, AgentTimelineLabel,
+    ExternalAgentRef, emit_agent_event,
 };
 use app_server::{AgentClient, AppServerClient, RequestMethod, ServerMessage};
 use codex::{CodexEvent, CodexItem, CodexServerRequest};
@@ -1989,6 +1989,11 @@ impl ExternalAgent {
                 self.provider_name(),
                 outcome.verb()
             ),
+            AgentTimelineLabel {
+                kind: format!("external-{}", outcome.status()),
+                name: Some(self.agent_id.clone()),
+                detail: Some(self.provider_name().into()),
+            },
         );
         if let Err(error) = runtime
             .deliver_hidden(
@@ -2016,15 +2021,27 @@ impl ExternalAgent {
                 &context,
                 "undelivered",
                 "The task could not be resumed. Send a message to read the agent's result.",
+                super::timeline::label("external-undelivered"),
             );
         }
     }
 
     /// Leave a notice in the task's transcript.
-    fn notice(&self, context: &ExtensionContext, kind: &str, text: &str) {
+    fn notice(
+        &self,
+        context: &ExtensionContext,
+        kind: &str,
+        text: &str,
+        label: AgentTimelineLabel,
+    ) {
         let id = format!("external-{}-{kind}-{}", self.agent_id, unix_ms());
-        context.append_entry(MAPLE_NOTICE_ENTRY, Some(notice_entry_data(&id, text)));
-        self.emit_item(notice_item(id, "Agent notice", text, pi_ai::now_ms()));
+        context.append_entry(
+            MAPLE_NOTICE_ENTRY,
+            Some(json!({"id": id, "text": text, "label": label})),
+        );
+        let mut item = notice_item(id, "Agent notice", text, pi_ai::now_ms());
+        item.label = Some(label);
+        self.emit_item(item);
     }
 
     async fn last_row_id(&self) -> String {
@@ -2274,6 +2291,7 @@ fn activity_row_item(
         _ => "completed",
     };
     AgentTimelineItem {
+        label: None,
         persisted: None,
         live: None,
         truncated: None,

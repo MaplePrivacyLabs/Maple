@@ -6,6 +6,7 @@
 //! settings. The Local API card is on every plan: a key can belong to another
 //! account, and a listener left on after a downgrade must still turn off.
 
+use crate::ui::i18n::{UiText, tr};
 use gpui::{
     Context, Div, Entity, Focusable, ScrollAnchor, ScrollHandle, SharedString, Window, div,
     prelude::*,
@@ -57,7 +58,7 @@ pub(super) enum ApiKeysTarget {
 
 pub(super) struct ApiKeysState {
     pub(super) keys: Option<Vec<MapleApiKey>>,
-    pub(super) error: Option<String>,
+    pub(super) error: Option<UiText>,
     pub(super) name: Entity<TextInput>,
     pub(super) creating: bool,
     /// The key just created, shown once until dismissed.
@@ -69,7 +70,7 @@ pub(super) struct ApiKeysState {
     /// The key name awaiting delete confirmation.
     pub(super) confirm_delete: Option<String>,
     pub(super) deleting: Option<String>,
-    pub(super) notice: Option<String>,
+    pub(super) notice: Option<UiText>,
 }
 
 impl ApiKeysState {
@@ -80,7 +81,7 @@ impl ApiKeysState {
         cx: &mut Context<SettingsScreen>,
     ) -> Self {
         let name = cx.new(move |cx| {
-            TextInput::new("Key name, for example “Cursor”", cx)
+            TextInput::localized("settings-api-keys-key-name-for-example-cursor", cx)
                 .with_tab_index(tab_order::KEY_NAME)
                 .application_vim(application_vim_enabled)
                 .on_application_escape(move |window, cx| window.focus(&application_focus, cx))
@@ -113,8 +114,8 @@ impl SettingsScreen {
     pub(super) fn load_api_keys(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.list_api_keys(&user_id).await },
+        self.call_presented(
+            async move { backend.call_presented("list_api_keys", (&user_id,)).await },
             cx,
             |this, result, cx| {
                 match result {
@@ -122,7 +123,7 @@ impl SettingsScreen {
                         this.api_keys.keys = Some(keys);
                         this.api_keys.error = None;
                     }
-                    Err(message) => this.api_keys.error = Some(message),
+                    Err(message) => this.api_keys.error = Some(message.into()),
                 }
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
@@ -201,8 +202,8 @@ impl SettingsScreen {
             return;
         }
         let name = self.api_keys.name.read(cx).text();
-        if let Err(message) = crate::backend::validate_api_key_name(&name) {
-            self.api_keys.notice = Some(message);
+        if let Err(message) = crate::backend::validate_api_key_name_presented(&name) {
+            self.api_keys.notice = Some(crate::ui::host_errors::failure_text(&message));
             cx.notify();
             return;
         }
@@ -212,14 +213,18 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.create_api_key(&user_id, name).await },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented("create_api_key", (&user_id, name))
+                    .await
+            },
             cx,
             |this, result, cx| {
                 this.api_keys.creating = false;
                 match result {
                     Ok(created) => this.show_created_key(created, cx),
-                    Err(message) => this.api_keys.notice = Some(message),
+                    Err(message) => this.api_keys.notice = Some(message.into()),
                 }
                 this.reconcile_application_vim_target();
                 cx.notify();
@@ -259,8 +264,13 @@ impl SettingsScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let name = name.to_string();
-        self.call(
-            async move { backend.delete_api_key(&user_id, &name).await.map(|()| name) },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented::<()>("delete_api_key", (&user_id, &name))
+                    .await
+                    .map(|()| name)
+            },
             cx,
             |this, result, cx| {
                 this.api_keys.deleting = None;
@@ -278,7 +288,7 @@ impl SettingsScreen {
                             this.api_keys.created = None;
                         }
                     }
-                    Err(message) => this.api_keys.notice = Some(message),
+                    Err(message) => this.api_keys.notice = Some(message.into()),
                 }
                 this.reconcile_application_vim_target();
                 cx.notify();
@@ -306,7 +316,7 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title("API"))
+            .child(section_title(&tr("settings-section-api")))
             .child(self.render_api_intro(cx))
             .child(if unlocked {
                 self.render_credits_strip(cx)
@@ -326,14 +336,14 @@ impl SettingsScreen {
             .gap_x_1p5()
             .text_sm()
             .text_color(gpui::rgb(theme::text_secondary()))
-            .child("Connect AI apps and tools to Maple with an OpenAI-compatible API.")
+            .child(tr("settings-api-intro"))
             .child(
                 self.application_target(
                     || SettingsTarget::ApiKeys(ApiKeysTarget::LearnMore),
                     div()
                         .id("api-learn-more")
                         .role(gpui::Role::Link)
-                        .aria_label("Learn more about the API")
+                        .aria_label(tr("settings-api-learn-more"))
                         .text_color(gpui::rgb(theme::link()))
                         .focus_visible(widgets::focus_ring)
                         .hover(|style| style.underline().cursor_pointer())
@@ -343,7 +353,7 @@ impl SettingsScreen {
                             |_, _| crate::ui::rich_text::open_link(PROXY_DOCS_URL),
                             cx,
                         ))
-                        .child("Learn more"),
+                        .child(tr("settings-local-api-learn-more")),
                 ),
             )
     }
@@ -358,8 +368,8 @@ impl SettingsScreen {
             .justify_between()
             .gap_4()
             .child(super::setting_copy(
-                "Unlock API access",
-                "API keys and credits come with the Pro, Max, and Team plans.",
+                tr("settings-api-keys-unlock-api-access"),
+                tr("settings-api-keys-api-keys-and-credits-come-with-the-pro-max-and-team-plans"),
             ))
             .child(
                 self.application_target(
@@ -369,7 +379,7 @@ impl SettingsScreen {
                         .tab_index(tab_order::PLAN)
                         .on_click(cx.listener(move |this, _, _, cx| see_plans(this, cx)))
                         .on_key_down(Self::on_press_key(see_plans, cx))
-                        .child("See plans"),
+                        .child(tr("settings-api-keys-see-plans")),
                 ),
             )
     }
@@ -384,8 +394,8 @@ impl SettingsScreen {
             .justify_between()
             .gap_4()
             .child(super::setting_copy(
-                "API credits",
-                &self.billing.credits.balance_label(),
+                tr("settings-api-keys-api-credits"),
+                self.billing.credits.balance_label(),
             ))
             .child(
                 self.application_target(
@@ -395,7 +405,7 @@ impl SettingsScreen {
                         .tab_index(tab_order::PLAN)
                         .on_click(cx.listener(move |this, _, _, cx| buy_more(this, cx)))
                         .on_key_down(Self::on_press_key(buy_more, cx))
-                        .child("Buy more"),
+                        .child(tr("settings-api-keys-buy-more")),
                 ),
             )
     }
@@ -413,11 +423,13 @@ impl SettingsScreen {
                 .into_any_element()
         };
         match self.api_keys.keys.as_deref() {
-            Some([]) => rows.push(placeholder("No API keys yet.".to_string())),
+            Some([]) => rows.push(placeholder(
+                tr("settings-api-keys-no-api-keys-yet").to_string(),
+            )),
             Some(keys) => rows.extend(keys.iter().map(|key| self.render_key_row(key, cx))),
             None => rows.push(placeholder(match &self.api_keys.error {
-                Some(message) => message.clone(),
-                None => "Loading keys…".to_string(),
+                Some(message) => message.resolve().to_string(),
+                None => tr("settings-api-keys-loading-keys").to_string(),
             })),
         }
         widgets::card_stack(rows)
@@ -432,8 +444,8 @@ impl SettingsScreen {
             .flex_col()
             .gap_3()
             .child(super::setting_copy(
-                "API keys",
-                "Give each app its own key. You can copy a key only once, when you create it.",
+                tr("settings-api-keys-api-keys"),
+                tr("settings-api-key-per-app-help"),
             ))
             .child(
                 div()
@@ -459,9 +471,9 @@ impl SettingsScreen {
                                 })
                                 .on_key_down(Self::on_press_key(Self::create_api_key, cx))
                                 .child(if creating {
-                                    "Creating…"
+                                    tr("settings-api-keys-creating")
                                 } else {
-                                    "Create key"
+                                    tr("settings-api-keys-create-key")
                                 }),
                         ),
                     ),
@@ -484,9 +496,8 @@ impl SettingsScreen {
             .flex_col()
             .gap_2()
             .child(super::setting_copy(
-                &format!("“{}” is ready", created.name),
-                "Copy the key now. For your privacy it is not stored anywhere you can \
-                 read it back.",
+                self.messages.get("settings-api-key-ready", [("arg1", created.name.clone().into())]),
+                tr("settings-api-keys-copy-the-key-now-for-your-privacy-it-is-not-stored-anywhere-you-c"),
             ))
             .child(
                 div()
@@ -535,7 +546,7 @@ impl SettingsScreen {
                                     this.dismiss_created_key(cx);
                                 }))
                                 .on_key_down(Self::on_press_key(Self::dismiss_created_key, cx))
-                                .child("Done"),
+                                .child(tr("settings-api-keys-done")),
                         ),
                     ),
             )
@@ -555,19 +566,22 @@ impl SettingsScreen {
                 .py_1p5()
                 .when(deleting, |el| el.opacity(0.6))
                 .child(if deleting {
-                    "Deleting…"
+                    tr("settings-api-keys-deleting")
                 } else {
-                    "Confirm delete"
+                    tr("settings-api-keys-confirm-delete")
                 })
         } else {
             widgets::icon_button(
                 delete_id,
                 "trash-2",
-                "Delete key",
+                tr("settings-api-delete-key"),
                 widgets::ROW_ICON,
                 theme::text_muted(),
             )
-            .aria_label(format!("Delete key {}", key.name))
+            .aria_label(self.messages.get(
+                "settings-api-delete-key-name",
+                [("name", key.name.clone().into())],
+            ))
         };
         let delete_button = self.application_target(
             {
@@ -598,7 +612,7 @@ impl SettingsScreen {
                                 this.cancel_delete_key(cx);
                             }))
                             .on_key_down(Self::on_press_key(Self::cancel_delete_key, cx))
-                            .child("Cancel"),
+                            .child(tr("settings-password-cancel")),
                     ),
                 )
             })
@@ -610,7 +624,15 @@ impl SettingsScreen {
             .gap_4()
             .child(super::setting_copy(
                 &key.name,
-                &format!("Created {}", super::account::member_since(&key.created_at)),
+                self.messages.get(
+                    "settings-api-key-created",
+                    [(
+                        "arg1",
+                        super::account::member_since(&key.created_at, &self.messages)
+                            .to_string()
+                            .into(),
+                    )],
+                ),
             ))
             .child(actions)
             .into_any_element()
@@ -644,6 +666,29 @@ mod tests {
                 cx,
             )
         })
+    }
+
+    #[gpui::test]
+    fn typed_name_validation_follows_locale_without_losing_input(cx: &mut TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let settings = screen(cx);
+        settings.update(cx, |this, cx| {
+            let name = "x".repeat(crate::backend::MAX_API_KEY_NAME_LENGTH + 1);
+            this.api_keys
+                .name
+                .update(cx, |input, cx| input.set_text(&name, cx));
+            this.create_api_key(cx);
+            assert!(!this.api_keys.creating);
+            let notice = this.api_keys.notice.as_ref().expect("invalid key name");
+            crate::ui::i18n::apply_preference(Some("en"));
+            let english = notice.resolve();
+            assert!(english.contains("key name"));
+            crate::ui::i18n::apply_preference(Some("es"));
+            assert_ne!(notice.resolve(), english);
+            crate::ui::i18n::apply_preference(Some("en"));
+            assert_eq!(notice.resolve(), english);
+            assert_eq!(this.api_keys.name.read(cx).text(), name);
+        });
     }
 
     #[gpui::test]

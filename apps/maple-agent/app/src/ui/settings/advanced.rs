@@ -1,6 +1,7 @@
 //! Local advanced preferences and capability-gated encryption controls. A
 //! remote task selection never redirects these settings to another computer.
 
+use crate::ui::i18n::{MessageCache, UiText, tr, tr_args};
 use gpui::{App, Context, Div, Entity, EventEmitter, div, prelude::*};
 use maple_agent::store::{
     StoreState,
@@ -20,7 +21,7 @@ pub(super) struct AdvancedState {
     pub confirmation: Entity<TextInput>,
     pub erase: bool,
     pub busy: bool,
-    pub notice: Option<String>,
+    pub notice: Option<UiText>,
     success: Option<&'static str>,
     mode_notice_acknowledging: Option<StoreModeNotice>,
     mode_notice_acknowledged: Option<StoreModeNotice>,
@@ -32,7 +33,7 @@ impl AdvancedState {
         Self {
             status: None,
             form: None,
-            confirmation: cx.new(|cx| TextInput::new("Type ERASE", cx)),
+            confirmation: cx.new(|cx| TextInput::localized("settings-advanced-type-erase", cx)),
             erase: false,
             busy: false,
             notice: None,
@@ -66,9 +67,10 @@ impl SettingsScreen {
     /// Other Settings sections are not a recipient for encryption dialogs.
     pub(crate) fn show_local_store_notice(
         &mut self,
-        message: String,
+        message: impl Into<UiText>,
         cx: &mut Context<Self>,
     ) -> bool {
+        let message = message.into();
         if self.section != Section::Advanced {
             return false;
         }
@@ -118,10 +120,10 @@ impl SettingsScreen {
 
     pub(super) fn load_advanced_status(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
-        self.call(
+        self.call_presented(
             async move {
                 backend
-                    .local_control::<StoreStatus>("store_status", ())
+                    .local_control_presented::<StoreStatus>("store_status", ())
                     .await
             },
             cx,
@@ -134,7 +136,7 @@ impl SettingsScreen {
                         );
                         this.advanced.status = Some(status);
                     }
-                    Err(message) => this.advanced.notice = Some(message),
+                    Err(message) => this.advanced.notice = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -208,7 +210,9 @@ impl SettingsScreen {
         }
         let confirmation = self.advanced.confirmation.read(cx).text();
         if confirmation != "ERASE" {
-            self.advanced.notice = Some("Type ERASE exactly to continue.".into());
+            self.advanced.notice = Some(UiText::key(
+                "settings-advanced-type-erase-exactly-to-continue",
+            ));
             cx.notify();
             return;
         }
@@ -220,10 +224,10 @@ impl SettingsScreen {
         self.advanced.notice = None;
         self.advanced.success = None;
         let backend = self.backend.clone();
-        self.call(
+        self.call_presented(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "erase_local_data",
                         ConfirmationRequest {
                             confirmation: &confirmation,
@@ -239,7 +243,7 @@ impl SettingsScreen {
                         this.advanced.erase = false;
                         this.advanced.form = None;
                     }
-                    Err(message) => this.advanced.notice = Some(message),
+                    Err(message) => this.advanced.notice = Some(message.into()),
                 }
                 this.load_advanced_status(cx);
                 cx.notify();
@@ -263,10 +267,10 @@ impl SettingsScreen {
         self.advanced.mode_notice_acknowledging = Some(notice.clone());
         let backend = self.backend.clone();
         let requested = notice.clone();
-        self.call(
+        self.call_presented(
             async move {
                 backend
-                    .local_control::<bool>(
+                    .local_control_presented::<bool>(
                         "acknowledge_mode_change_notice",
                         (&requested.store_id, &requested.notice_id),
                     )
@@ -288,8 +292,9 @@ impl SettingsScreen {
                     && apply_mode_notice_ack(status, &notice, acknowledged)
                     && !acknowledged
                 {
-                    this.advanced.notice =
-                        Some("This notice could not be dismissed. Try again.".into());
+                    this.advanced.notice = Some(UiText::key(
+                        "settings-advanced-this-notice-could-not-be-dismissed-try-again",
+                    ));
                 }
                 cx.notify();
             },
@@ -313,18 +318,28 @@ impl SettingsScreen {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child("Changes need saving"),
+                            .child(tr("settings-advanced-changes-need-saving")),
                     )
-                    .child(div().text_sm().child(failure.message()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(crate::ui::host_errors::persistence_text(failure).resolve()),
+                    )
                     .child(
                         widgets::secondary_button("advanced-retry-store-persistence")
                             .on_click(cx.listener(|_this, _, _, cx| cx.emit(RetryStorePersistence)))
-                            .child("Retry saving"),
+                            .child(tr("settings-advanced-retry-saving")),
                     ),
             );
         }
         if let Some(notice) = attention
-            && self.advanced.notice.as_deref() != Some(notice.message.as_str())
+            && self
+                .advanced
+                .notice
+                .as_ref()
+                .map(UiText::resolve)
+                .as_deref()
+                != Some(notice.presentation().resolve().as_ref())
             && persistence.is_none_or(|failure| failure.message() != notice.message.as_str())
         {
             pane = pane.child(
@@ -332,16 +347,20 @@ impl SettingsScreen {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child("Local storage needs attention"),
+                            .child(tr("settings-advanced-local-storage-needs-attention")),
                     )
-                    .child(div().text_sm().child(notice.message.clone())),
+                    .child(div().text_sm().child(notice.presentation().resolve())),
             );
         }
         if let Some(notice) = mode_notice {
             let acknowledging = self.advanced.mode_notice_acknowledging.as_ref() == Some(notice);
             pane = pane.child(
                 local_store_notice_card()
-                    .child(div().text_sm().child(notice.message.clone()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(mode_notice_text(notice, &self.messages)),
+                    )
                     .child(
                         widgets::ghost_button("advanced-dismiss-mode-notice")
                             .when(acknowledging, |button| button.opacity(0.5))
@@ -349,17 +368,18 @@ impl SettingsScreen {
                                 cx.listener(|this, _, _, cx| this.dismiss_local_mode_notice(cx)),
                             )
                             .child(if acknowledging {
-                                "Dismissing…"
+                                tr("settings-advanced-dismissing")
                             } else {
-                                "Dismiss"
+                                tr("settings-advanced-dismiss")
                             }),
                     ),
             );
         }
         if !form_open
             && let Some(notice) = &self.advanced.notice
-            && mode_notice.is_none_or(|mode| mode.message.as_str() != notice.as_str())
-            && persistence.is_none_or(|failure| failure.message() != notice.as_str())
+            && mode_notice
+                .is_none_or(|mode| mode_notice_text(mode, &self.messages) != notice.resolve())
+            && persistence.is_none_or(|failure| failure.message() != notice.resolve().as_ref())
         {
             pane = pane.child(
                 div()
@@ -374,18 +394,23 @@ impl SettingsScreen {
     pub(super) fn render_advanced(&self, cx: &mut Context<Self>) -> Div {
         let mut pane = div().flex().flex_col().gap_4();
         if !self.advanced.available() {
-            pane = self.render_local_store_notices(pane.child(section_title("Local data")), cx);
+            pane = self.render_local_store_notices(
+                pane.child(section_title(&tr("settings-advanced-local-data"))),
+                cx,
+            );
             if !self.advanced_has_content() {
                 pane = pane.child(
                     div()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_secondary()))
-                        .child("Your local Maple data doesn't need attention."),
+                        .child(tr("settings-advanced-no-attention")),
                 );
             }
             return pane;
         }
-        pane = pane.child(section_title("Encryption on this computer"));
+        pane = pane.child(section_title(&tr(
+            "settings-advanced-encryption-on-this-computer",
+        )));
         if let Some(form) = &self.advanced.form {
             let pane = self.encryption_context(pane.child(form.clone()), true);
             return self.render_local_store_notices(pane, cx);
@@ -397,7 +422,7 @@ impl SettingsScreen {
                     .p_3()
                     .bg(gpui::rgb(theme::bg_elevated()))
                     .text_color(gpui::rgb(theme::status_success()))
-                    .child(success),
+                    .child(tr(success)),
             );
         }
         let password = self
@@ -414,17 +439,17 @@ impl SettingsScreen {
                     theme::text_primary()
                 }))
                 .child(if password {
-                    "Encryption is on"
+                    tr("settings-advanced-encryption-is-on")
                 } else {
-                    "Encryption is off"
+                    tr("settings-advanced-encryption-is-off")
                 }),
         );
         pane=pane.child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child(if password {
-            "Maple's copy of your conversation text, settings and sign-in on this computer is encrypted with your unlock password. Maple asks for it each time it starts. Attached files and images remain unencrypted."
-        } else {"Your conversation text, settings and sign-in are stored on this computer, readable only by your user account. Set an unlock password to encrypt them. Attached files and images remain unencrypted."}));
+            tr("settings-advanced-maple-s-copy-of-your-conversation-text-settings-and-sign-in-on-th")
+        } else {tr("settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co")}));
         if self.advanced.erase {
             pane = pane
-                .child(div().text_sm().child(ERASE_COPY))
+                .child(div().text_sm().child(tr(ERASE_COPY)))
                 .child(self.advanced.confirmation.clone())
                 .child(
                     widgets::primary_button("advanced-erase-confirm")
@@ -432,7 +457,7 @@ impl SettingsScreen {
                         .on_click(
                             cx.listener(|this, _event, _window, cx| this.erase_local_store(cx)),
                         )
-                        .child("Erase this version's local data"),
+                        .child(tr("settings-advanced-erase-this-version-s-local-data")),
                 )
                 .child(
                     widgets::ghost_button("advanced-erase-cancel")
@@ -440,7 +465,7 @@ impl SettingsScreen {
                             this.advanced.erase = false;
                             cx.notify();
                         }))
-                        .child("Cancel"),
+                        .child(tr("settings-advanced-cancel")),
                 );
         } else {
             pane = pane
@@ -461,9 +486,9 @@ impl SettingsScreen {
                                     )
                                 }))
                                 .child(if password {
-                                    "Change password…"
+                                    tr("settings-advanced-change-password")
                                 } else {
-                                    "Set unlock password…"
+                                    tr("settings-advanced-set-unlock-password")
                                 }),
                         )
                         .when(password, |row| {
@@ -472,7 +497,7 @@ impl SettingsScreen {
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.open_password_form(PasswordAction::Remove, cx)
                                     }))
-                                    .child("Remove password…"),
+                                    .child(tr("settings-advanced-remove-password")),
                             )
                         }),
                 )
@@ -484,7 +509,7 @@ impl SettingsScreen {
                             this.advanced.success = None;
                             cx.notify();
                         }))
-                        .child("Erase local data…"),
+                        .child(tr("settings-advanced-erase-local-data")),
                 );
         }
         pane = self.encryption_context(pane, password);
@@ -493,7 +518,7 @@ impl SettingsScreen {
 
     fn encryption_context(&self, mut pane: Div, password: bool) -> Div {
         if self.advanced.remote_enabled {
-            pane=pane.child(div().text_sm().child("While Maple is locked, your other computers can't reach this one. After a restart, open Maple and unlock it to turn remote access back on."));
+            pane=pane.child(div().text_sm().child(tr("settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a")));
         }
         if password {
             for integration in self
@@ -504,12 +529,12 @@ impl SettingsScreen {
                 .filter(|integration| integration.enabled_for_new_tasks)
             {
                 let copy = match integration.id.as_str() {
-                    "claude" => Some(
-                        "Claude Code keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.",
-                    ),
-                    "codex" => Some(
-                        "Codex keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.",
-                    ),
+                    "claude" => Some(tr(
+                        "settings-advanced-claude-code-keeps-its-own-copy-of-the-work-maple-hands-it-in-its",
+                    )),
+                    "codex" => Some(tr(
+                        "settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own-fo",
+                    )),
                     _ => None,
                 };
                 if let Some(copy) = copy {
@@ -533,6 +558,31 @@ fn local_store_notice_card() -> Div {
         .p_3()
         .bg(gpui::rgb(theme::bg_elevated()))
         .text_color(gpui::rgb(theme::status_warning()))
+}
+
+/// Only presentation uses the additive metadata; acknowledgement retains the
+/// original store and notice identities, including for legacy hosts.
+fn mode_notice_text(notice: &StoreModeNotice, messages: &MessageCache) -> gpui::SharedString {
+    let key = match notice.kind.as_deref() {
+        Some("password_set") => "flows-mode-notice-set",
+        Some("password_changed") => "flows-mode-notice-changed",
+        Some("password_rotated") => "flows-mode-notice-rotated",
+        Some("password_removed") => "flows-mode-notice-removed",
+        _ => return notice.message.clone().into(),
+    };
+    let Some(at_ms) = notice.at_ms else {
+        return notice.message.clone().into();
+    };
+    let Some(date) = chrono::DateTime::from_timestamp_millis(at_ms) else {
+        return notice.message.clone().into();
+    };
+    messages.computed(key, &at_ms.to_string(), || {
+        // Preserve the source record's UTC time and minute precision.
+        tr_args(
+            key,
+            [("date", date.format("%Y-%m-%d %H:%M UTC").to_string().into())],
+        )
+    })
 }
 
 /// Return whether this reply still belongs to the visible authenticated notice.
@@ -564,15 +614,74 @@ fn filter_acknowledged_mode_notice(
 
 fn password_success_message(action: PasswordAction) -> &'static str {
     match action {
-        PasswordAction::Set | PasswordAction::Setup => "Encryption enabled on this computer.",
-        PasswordAction::Change => "Your unlock password was changed.",
-        PasswordAction::Remove => "Your unlock password was removed.",
+        PasswordAction::Set | PasswordAction::Setup => {
+            "settings-advanced-encryption-enabled-on-this-computer"
+        }
+        PasswordAction::Change => "settings-advanced-your-unlock-password-was-changed",
+        PasswordAction::Remove => "settings-advanced-your-unlock-password-was-removed",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_mode_notice_switches_language_without_changing_acknowledgement() {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let messages = MessageCache::default();
+        for kind in [
+            "password_set",
+            "password_changed",
+            "password_rotated",
+            "password_removed",
+        ] {
+            let notice: StoreModeNotice = serde_json::from_value(serde_json::json!({
+                "store_id": "current", "notice_id": "exact", "message": "Legacy fallback",
+                "kind": kind, "at_ms": 0
+            }))
+            .unwrap();
+            let original = notice.clone();
+            crate::ui::i18n::apply_preference(Some("en"));
+            let english = mode_notice_text(&notice, &messages);
+            assert!(english.contains("1970-01-01 00:00 UTC"));
+            assert!(english.contains("on this computer"));
+            crate::ui::i18n::apply_preference(Some("es"));
+            let spanish = mode_notice_text(&notice, &messages);
+            assert!(spanish.contains("1970-01-01 00:00 UTC"));
+            assert!(spanish.contains("en esta computadora"));
+            assert_ne!(english, spanish);
+            crate::ui::i18n::apply_preference(Some("en"));
+            assert_eq!(mode_notice_text(&notice, &messages), english);
+            assert_eq!(notice, original);
+        }
+    }
+
+    #[test]
+    fn retained_mode_notice_preserves_legacy_unknown_and_invalid_metadata() {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let messages = MessageCache::default();
+        for metadata in [
+            serde_json::json!({}),
+            serde_json::json!({"kind":"future_kind", "at_ms":0}),
+            serde_json::json!({"kind":"password_set"}),
+            serde_json::json!({"kind":"password_set", "at_ms":i64::MAX}),
+        ] {
+            let mut value = serde_json::json!({"store_id":"current", "notice_id":"exact", "message":"Original host message"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(metadata.as_object().unwrap().clone());
+            let notice: StoreModeNotice = serde_json::from_value(value).unwrap();
+            for locale in ["en", "es", "en"] {
+                crate::ui::i18n::apply_preference(Some(locale));
+                assert_eq!(
+                    mode_notice_text(&notice, &messages).as_ref(),
+                    "Original host message"
+                );
+            }
+        }
+    }
+
     #[test]
     fn password_ui_requires_explicit_host_capability() {
         let status: StoreStatus =
@@ -665,12 +774,17 @@ mod tests {
             )
         });
         settings.update(cx, |settings, cx| {
-            assert!(!settings.show_local_store_notice("Needs attention.".into(), cx));
+            assert!(!settings.show_local_store_notice("Needs attention.", cx));
             assert!(settings.advanced.notice.is_none());
             settings.section = Section::Advanced;
-            assert!(settings.show_local_store_notice("Needs attention.".into(), cx));
+            assert!(settings.show_local_store_notice("Needs attention.", cx));
             assert_eq!(
-                settings.advanced.notice.as_deref(),
+                settings
+                    .advanced
+                    .notice
+                    .as_ref()
+                    .map(UiText::resolve)
+                    .as_deref(),
                 Some("Needs attention.")
             );
         });
@@ -719,8 +833,8 @@ mod tests {
     }
     #[test]
     fn erase_copy_names_only_this_version_and_preserves_previous_data() {
-        assert!(ERASE_COPY.contains("this version's store"));
-        assert!(ERASE_COPY.contains("previous app data remain untouched"));
-        assert!(ERASE_COPY.contains("remote pairings"));
+        assert!(tr(ERASE_COPY).contains("this version's store"));
+        assert!(tr(ERASE_COPY).contains("previous app data remain untouched"));
+        assert!(tr(ERASE_COPY).contains("remote pairings"));
     }
 }

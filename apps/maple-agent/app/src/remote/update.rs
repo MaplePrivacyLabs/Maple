@@ -148,23 +148,6 @@ pub enum BlockedReason {
     Unknown,
 }
 
-impl BlockedReason {
-    #[cfg(feature = "desktop")]
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::PasswordProtected => "Its data is password protected. Update it there.",
-            Self::UnsupportedInstallation => "This installation updates only on that computer.",
-            Self::UpdatesDisabled => "Updates are off for this build.",
-            Self::UpdateNotReady => "The update isn’t ready there yet.",
-            Self::Busy => "It’s busy. Try again shortly.",
-            Self::DesktopUnavailable => "Open Maple on that computer to update it.",
-            Self::CoordinatorUnavailable => "Update it on that computer.",
-            Self::PairingConfirmationRequired => "Pair it again to update it remotely.",
-            Self::Unknown => "It can’t be updated remotely.",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationState {
@@ -374,24 +357,6 @@ pub enum InstallRefusal {
     Unavailable,
     /// An older execution host installs only an update it already downloaded.
     DownloadRequired,
-}
-
-impl InstallRefusal {
-    #[cfg(feature = "desktop")]
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::AuthorizationChanged => "The pairing changed. Check again, or pair it again.",
-            Self::UpdateChanged => "The update changed. Check again.",
-            Self::NotReady => "It wasn’t ready. Check again.",
-            Self::Unsupported => "This version can’t update remotely. Update it there.",
-            Self::AccountChanged => "The account changed. Reopen Settings.",
-            Self::Busy => "It was busy. Check again shortly.",
-            Self::Unavailable => "It didn’t accept the request. Check again.",
-            Self::DownloadRequired => {
-                "It must download the update first. Turn on automatic downloads there, or update it there."
-            }
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]

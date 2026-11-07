@@ -1,5 +1,11 @@
 //! Constants used throughout the Responses API
 
+/// The sliding window measures only this many of a conversation's newest rows.
+/// This is the LIMIT of `get_conversation_context_metadata`.
+pub const ACTIVE_WINDOW_ROWS: usize = 1_000;
+/// Stands in for source that left the sliding window.
+pub const TRUNCATION_MARKER: &str = "[Previous messages truncated due to context limits]";
+
 /// Channel buffer sizes
 pub const STORAGE_CHANNEL_BUFFER: usize = 1024;
 pub const CLIENT_CHANNEL_BUFFER: usize = 1024;

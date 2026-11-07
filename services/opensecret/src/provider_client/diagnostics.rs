@@ -48,6 +48,8 @@ pub struct UpstreamDiagnostic {
     // Exact input-validation rejection; broader context/output-limit summaries
     // never authorize recovery. Upstream text and counts are not retained.
     input_context_overflow: bool,
+    // The Continuum proxy's own size refusal, raised before it forwards anything.
+    proxy_context_overflow: bool,
 }
 
 impl UpstreamDiagnostic {
@@ -58,11 +60,18 @@ impl UpstreamDiagnostic {
             error_type: None,
             summary: None,
             input_context_overflow: false,
+            proxy_context_overflow: false,
         }
     }
 
     pub(crate) fn is_input_context_overflow(&self) -> bool {
         self.body_state == DiagnosticBodyState::Complete && self.input_context_overflow
+    }
+
+    /// The request was too large for the proxy, so no route was ever tried: it
+    /// arrives as a 500, but it says nothing about provider health.
+    pub(crate) fn is_proxy_context_overflow(&self) -> bool {
+        self.body_state == DiagnosticBodyState::Complete && self.proxy_context_overflow
     }
 }
 
@@ -140,7 +149,22 @@ fn parse_complete_body(body: &[u8]) -> UpstreamDiagnostic {
         summary,
         input_context_overflow: input_validation_labels(error)
             && message.is_some_and(known_input_context_overflow),
+        proxy_context_overflow: error.get("code").is_none()
+            && error.get("type").and_then(Value::as_str) == Some("")
+            && message.is_some_and(known_proxy_context_overflow),
     }
+}
+
+/// Continuum's proxy derives a shard key from a request's content and refuses
+/// past its size limit: `mutators.go` under `privatemode-public`, wrapped by its
+/// forwarder. Match the exact message, as any other 500 is a real route failure.
+fn known_proxy_context_overflow(message: &str) -> bool {
+    const PREFIX: &str = "mutating request: applying endpoint-specific mutator: mutating request: \
+                          generating shard key: context too large: ~";
+    message
+        .strip_prefix(PREFIX)
+        .and_then(|rest| rest.strip_suffix(" tokens"))
+        .is_some_and(|tokens| !tokens.is_empty() && tokens.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The message grammar must not override conflicting structured error metadata.
@@ -437,6 +461,31 @@ mod tests {
             let diagnostic = from_json(json!({"error": error})).await;
             assert!(!diagnostic.is_input_context_overflow());
             assert!(!format!("{diagnostic:?}").contains("private-"));
+        }
+    }
+
+    const PROXY_OVERFLOW: &str = "mutating request: applying endpoint-specific mutator: mutating request: generating shard key: context too large: ~1062098 tokens";
+
+    #[tokio::test]
+    async fn only_the_exact_proxy_size_refusal_is_recognized() {
+        let diagnostic = from_json(json!({"error": {"message": PROXY_OVERFLOW, "type": ""}})).await;
+        assert!(diagnostic.is_proxy_context_overflow());
+        assert!(!diagnostic.is_input_context_overflow());
+        assert!(!format!("{diagnostic:?}").contains("1062098"));
+
+        for error in [
+            json!({"message": format!("{PROXY_OVERFLOW} private-prompt-canary"), "type": ""}),
+            json!({"message": format!("private-prompt-canary {PROXY_OVERFLOW}"), "type": ""}),
+            json!({"message": PROXY_OVERFLOW.replace("~1062098", "~"), "type": ""}),
+            json!({"message": PROXY_OVERFLOW.replace("~1062098", "~lots"), "type": ""}),
+            json!({"message": PROXY_OVERFLOW.replace("~1062098", "1062098"), "type": ""}),
+            json!({"message": "context too large: ~1062098 tokens", "type": ""}),
+            json!({"message": PROXY_OVERFLOW}),
+            json!({"message": PROXY_OVERFLOW, "type": "server_error"}),
+            json!({"message": PROXY_OVERFLOW, "type": "", "code": "overloaded"}),
+        ] {
+            let diagnostic = from_json(json!({"error": error})).await;
+            assert!(!diagnostic.is_proxy_context_overflow());
         }
     }
 

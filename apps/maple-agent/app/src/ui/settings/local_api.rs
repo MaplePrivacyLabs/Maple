@@ -2,6 +2,7 @@
 //! pane. Each calling application supplies one of the account keys listed
 //! below it.
 
+use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, Entity, Focusable, SharedString, Window, div, prelude::*};
 
 use super::api_keys::tab_order;
@@ -9,7 +10,7 @@ use super::{SettingsScreen, SettingsTarget, setting_copy};
 use crate::local_api::{LocalApiConfig, LocalApiState, LocalApiStatus};
 use crate::ui::{text_input::TextInput, theme, widgets};
 
-const INVALID_PORT: &str = "Enter a port between 1 and 65535.";
+const INVALID_PORT: &str = "settings-local-api-enter-a-port-between-1-and-65535";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum LocalApiTarget {
@@ -28,7 +29,7 @@ pub(super) struct LocalApiUiState {
     typed_port: Result<u16, &'static str>,
     base_url: SharedString,
     /// The line under the card's title for the latest status.
-    detail: SharedString,
+    detail: UiText,
     saving: bool,
     refreshing: bool,
     host_epoch: u64,
@@ -43,7 +44,7 @@ impl LocalApiUiState {
         cx: &mut Context<SettingsScreen>,
     ) -> Self {
         let port = cx.new(move |cx| {
-            TextInput::new("Port (1–65535)", cx)
+            TextInput::localized("settings-local-api-port-1-65535", cx)
                 .with_tab_index(tab_order::LOCAL_PORT)
                 .application_vim(application_vim_enabled)
                 .on_application_escape(move |window, cx| window.focus(&application_focus, cx))
@@ -62,7 +63,7 @@ impl LocalApiUiState {
             port,
             typed_port: Err(INVALID_PORT),
             base_url: SharedString::default(),
-            detail: SharedString::default(),
+            detail: UiText::key(OFF_DETAIL),
             saving: false,
             refreshing: false,
             host_epoch: 0,
@@ -174,7 +175,7 @@ impl SettingsScreen {
                     }
                     Err(_) => {
                         this.local_api.notice = Some(
-                            "Could not read the local API status. Reconnect to this computer and try again.",
+                            "settings-local-api-could-not-read-the-local-api-status-reconnect-to-this-computer-an",
                         );
                     }
                 }
@@ -260,7 +261,7 @@ impl SettingsScreen {
                     Err(_) => {
                         this.refresh_local_api_status(cx);
                         this.local_api.notice = Some(
-                            "Could not update the local API. Refresh its status and try again.",
+                            "settings-local-api-could-not-update-the-local-api-refresh-its-status-and-try-again",
                         );
                     }
                 }
@@ -338,18 +339,9 @@ impl SettingsScreen {
                 .gap_1()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child(
-                    "Add the base URL and an API key to your AI app's provider settings. Requests \
-                     use Maple's secure backend and your API credits.",
-                )
-                .child(
-                    "Serves /v1/models, /v1/chat/completions, /v1/embeddings, and /v1/systemone. \
-                     Browser requests are blocked.",
-                )
-                .child(
-                    "Stays on while Maple is running and unlocked, even with the window closed. \
-                     Signing out, locking, or quitting stops it.",
-                )
+                .child(tr("settings-local-api-connect-help"))
+                .child(tr("settings-local-api-routes-help"))
+                .child(tr("settings-local-api-lifecycle-help"))
                 .into_any_element(),
         );
         widgets::card_stack(rows)
@@ -362,15 +354,15 @@ impl SettingsScreen {
         let enabled = status.is_some_and(|status| status.config.enabled);
         let (label, color) = match status {
             Some(status) => (state_label(status), state_color(status)),
-            None if state.refreshing => ("Checking…", theme::text_muted()),
-            None => ("Unavailable", theme::status_error()),
+            None if state.refreshing => (tr("settings-local-api-checking"), theme::text_muted()),
+            None => (tr("settings-local-api-unavailable"), theme::status_error()),
         };
         let detail = if state.saving {
-            SharedString::from("Updating local API settings…")
+            tr("settings-local-api-updating-local-api-settings")
         } else if status.is_some() {
-            state.detail.clone()
+            state.detail.resolve()
         } else {
-            SharedString::from(OFF_DETAIL)
+            tr(OFF_DETAIL)
         };
         let copy = div()
             .id("local-api-status")
@@ -384,7 +376,7 @@ impl SettingsScreen {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(row_title("Local API"))
+                    .child(row_title(tr("settings-local-api-local-api")))
                     .child(widgets::status_badge(label, color)),
             )
             .child(
@@ -409,7 +401,7 @@ impl SettingsScreen {
                                 cx.listener(|this, _, _, cx| this.refresh_local_api_status(cx)),
                             )
                             .on_key_down(Self::on_press_key(Self::refresh_local_api_status, cx))
-                            .child("Refresh status"),
+                            .child(tr("settings-local-api-refresh-status")),
                     ),
                 )
             })
@@ -431,10 +423,10 @@ impl SettingsScreen {
                     || SettingsTarget::LocalApi(LocalApiTarget::Enabled),
                     widgets::switch("local-api-enabled", enabled)
                         .debug_selector(|| "local-api-enabled".to_string())
-                        .aria_label("Enable local API on this computer")
+                        .aria_label(tr("settings-local-api-enable-local-api-on-this-computer"))
                         .when(!state.can_configure(), |switch| {
                             switch.opacity(0.5).aria_description(
-                            "Unavailable while local API settings are loading or being updated.",
+                            tr("settings-local-api-unavailable-while-local-api-settings-are-loading-or-being-updated"),
                         )
                         })
                         .when(state.can_configure(), |switch| {
@@ -460,7 +452,7 @@ impl SettingsScreen {
                     .child(controls),
             )
             .when_some(state.notice, |column, message| {
-                column.child(banner(message.into()))
+                column.child(banner(tr(message)))
             })
             .when_some(
                 status.and_then(|status| status.error.clone()),
@@ -481,7 +473,7 @@ impl SettingsScreen {
                     .flex_col()
                     .gap_1()
                     .min_w_0()
-                    .child(row_title("Base URL"))
+                    .child(row_title(tr("settings-local-api-base-url")))
                     .child(
                         div()
                             .font_family(crate::assets::FONT_MONO)
@@ -494,7 +486,7 @@ impl SettingsScreen {
                 self.application_target(
                     || SettingsTarget::LocalApi(LocalApiTarget::CopyUrl),
                     widgets::copy_button("local-api-copy-url", url, None, Some(cx.entity_id()))
-                        .aria_label("Copy local API base URL")
+                        .aria_label(tr("settings-local-api-copy-local-api-base-url"))
                         .tab_index(tab_order::LOCAL_COPY_URL)
                         .on_key_down(Self::on_press_key(Self::copy_local_api_url, cx)),
                 ),
@@ -531,19 +523,19 @@ impl SettingsScreen {
                     .flex_col()
                     .gap_1()
                     .min_w_0()
-                    .child(row_title("Port"))
+                    .child(row_title(tr("settings-local-api-port")))
                     .child(
                         div()
                             .text_xs()
                             .text_color(gpui::rgb(theme::status_error()))
-                            .child(message),
+                            .child(tr(message)),
                     ),
                 None => setting_copy(
-                    "Port",
+                    tr("settings-local-api-port"),
                     if matches!(status.state, LocalApiState::Stopped | LocalApiState::Failed) {
-                        "Always on 127.0.0.1."
+                        tr("settings-local-api-port-address")
                     } else {
-                        "Turn the API off to change its port."
+                        tr("settings-local-api-stop-to-edit")
                     },
                 ),
             })
@@ -566,11 +558,11 @@ impl SettingsScreen {
                                     }))
                                     .on_key_down(Self::on_press_key(Self::save_local_api_port, cx))
                                     .child(if !enabled {
-                                        "Save"
+                                        tr("settings-remote-save")
                                     } else if status.state == LocalApiState::Stopped {
-                                        "Save and resume"
+                                        tr("settings-local-api-save-resume")
                                     } else {
-                                        "Save and retry"
+                                        tr("settings-local-api-save-retry")
                                     }),
                             ),
                         )
@@ -580,12 +572,12 @@ impl SettingsScreen {
     }
 }
 
-fn row_title(label: &'static str) -> Div {
+fn row_title(label: impl Into<SharedString>) -> Div {
     div()
         .text_sm()
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(gpui::rgb(theme::text_primary()))
-        .child(label)
+        .child(label.into())
 }
 
 fn parse_port(value: &str) -> Result<u16, &'static str> {
@@ -597,17 +589,16 @@ fn parse_port(value: &str) -> Result<u16, &'static str> {
         .ok_or(INVALID_PORT)
 }
 
-const OFF_DETAIL: &str =
-    "Let AI apps on this computer connect with an API key, even while you use a remote agent.";
+const OFF_DETAIL: &str = "settings-local-api-off-help";
 
-fn state_label(status: &LocalApiStatus) -> &'static str {
+fn state_label(status: &LocalApiStatus) -> SharedString {
     match status.state {
-        LocalApiState::Stopped if status.config.enabled => "Paused",
-        LocalApiState::Stopped => "Off",
-        LocalApiState::Starting => "Starting…",
-        LocalApiState::Running => "Running",
-        LocalApiState::Stopping => "Stopping…",
-        LocalApiState::Failed => "Could not start",
+        LocalApiState::Stopped if status.config.enabled => tr("settings-local-api-paused"),
+        LocalApiState::Stopped => tr("settings-local-api-off"),
+        LocalApiState::Starting => tr("settings-local-api-starting"),
+        LocalApiState::Running => tr("settings-local-api-running"),
+        LocalApiState::Stopping => tr("settings-local-api-stopping"),
+        LocalApiState::Failed => tr("settings-local-api-could-not-start"),
     }
 }
 
@@ -620,24 +611,25 @@ fn state_color(status: &LocalApiStatus) -> u32 {
     }
 }
 
-fn state_detail(status: &LocalApiStatus) -> SharedString {
+fn state_detail(status: &LocalApiStatus) -> UiText {
     match (status.state, status.active_requests) {
-        (LocalApiState::Running, 0) => "Ready for requests from apps on this computer.".into(),
-        (LocalApiState::Running, 1) => "1 active request".into(),
-        (LocalApiState::Running, active) => format!("{active} active requests").into(),
-        (LocalApiState::Stopped, _) if status.config.enabled => {
-            "Select Resume to accept requests on this computer.".into()
+        (LocalApiState::Running, 0) => UiText::key("settings-local-api-ready-help"),
+        (LocalApiState::Running, active) => {
+            UiText::message("settings-local-api-requests", [("count", active.into())])
         }
-        (LocalApiState::Failed, _) => "Check the port, then try again.".into(),
-        _ => OFF_DETAIL.into(),
+        (LocalApiState::Stopped, _) if status.config.enabled => {
+            UiText::key("settings-local-api-resume-help")
+        }
+        (LocalApiState::Failed, _) => UiText::key("settings-local-api-failed-help"),
+        _ => UiText::key(OFF_DETAIL),
     }
 }
 
-fn retry_label(status: &LocalApiStatus) -> &'static str {
+fn retry_label(status: &LocalApiStatus) -> SharedString {
     if status.state == LocalApiState::Stopped {
-        "Resume"
+        tr("settings-local-api-resume")
     } else {
-        "Retry start"
+        tr("settings-local-api-retry-start")
     }
 }
 
@@ -829,21 +821,50 @@ mod tests {
     fn detail_counts_requests_and_explains_stopped_states() {
         let mut running = status(1, LocalApiState::Running, true, 8123);
         assert_eq!(
-            state_detail(&running),
+            state_detail(&running)
+                .resolve()
+                .replace(['\u{2068}', '\u{2069}'], ""),
             "Ready for requests from apps on this computer."
         );
         running.active_requests = 1;
-        assert_eq!(state_detail(&running), "1 active request");
-        running.active_requests = 3;
-        assert_eq!(state_detail(&running), "3 active requests");
         assert_eq!(
-            state_detail(&status(2, LocalApiState::Stopped, false, 8123)),
-            OFF_DETAIL
+            state_detail(&running)
+                .resolve()
+                .replace(['\u{2068}', '\u{2069}'], ""),
+            "1 active request"
+        );
+        running.active_requests = 3;
+        assert_eq!(
+            state_detail(&running)
+                .resolve()
+                .replace(['\u{2068}', '\u{2069}'], ""),
+            "3 active requests"
         );
         assert_eq!(
-            state_detail(&status(3, LocalApiState::Stopped, true, 8123)),
+            state_detail(&status(2, LocalApiState::Stopped, false, 8123)).resolve(),
+            tr(OFF_DETAIL)
+        );
+        assert_eq!(
+            state_detail(&status(3, LocalApiState::Stopped, true, 8123)).resolve(),
             "Select Resume to accept requests on this computer."
         );
+    }
+
+    #[test]
+    fn cached_status_detail_follows_language_without_another_host_snapshot() {
+        let _guard = crate::ui::i18n::TestLocalizationGuard::enable();
+        let detail = state_detail(&status(1, LocalApiState::Running, true, 8123));
+        for (locale, expected) in [
+            ("en", "Ready for requests from apps on this computer."),
+            (
+                "es",
+                "Lista para recibir solicitudes de las aplicaciones de este equipo.",
+            ),
+            ("en", "Ready for requests from apps on this computer."),
+        ] {
+            crate::ui::i18n::apply_preference(Some(locale));
+            assert_eq!(detail.resolve().as_ref(), expected);
+        }
     }
 
     #[gpui::test]

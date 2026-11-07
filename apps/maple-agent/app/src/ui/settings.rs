@@ -2,6 +2,7 @@
 //! settings layout. Sections: General (defaults), Account, Additional instructions,
 //! Integrations, Keyboard Shortcuts, Usage, About.
 
+use crate::ui::i18n::{UiText, tr};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -37,11 +38,15 @@ mod advanced;
 mod api_credits;
 mod api_keys;
 mod billing;
+mod general;
+use general::{font_label, theme_label, voice_label};
 mod catalog;
 #[cfg(feature = "proxy")]
 mod local_api;
 mod mcp;
 mod navigation;
+pub(crate) mod presentation;
+mod shortcut_labels;
 use self::account::AccountState;
 #[cfg(feature = "acp")]
 use self::acp::AcpUiState;
@@ -80,7 +85,7 @@ pub enum Section {
 }
 
 impl Section {
-    fn label(self) -> &'static str {
+    fn id(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Account => "Account",
@@ -96,6 +101,24 @@ impl Section {
             Self::About => "About",
             Self::Advanced => "Privacy & Security",
         }
+    }
+
+    fn label(self) -> gpui::SharedString {
+        super::i18n::tr(match self {
+            Self::General => "settings-section-general",
+            Self::Account => "settings-section-account",
+            Self::Billing => "settings-section-billing",
+            Self::Api => "settings-section-api",
+            #[cfg(feature = "acp")]
+            Self::Acp => "settings-section-acp",
+            Self::Shortcuts => "settings-section-shortcuts",
+            Self::Prompt => "settings-section-prompt",
+            Self::Integrations => "settings-section-integrations",
+            Self::Remote => "settings-section-remote",
+            Self::Usage => "settings-section-usage",
+            Self::About => "settings-section-about",
+            Self::Advanced => "settings-section-advanced",
+        })
     }
 
     const ALL: &[Self] = &[
@@ -120,6 +143,7 @@ impl Section {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingMenu {
     Appearance,
+    Language,
     ChatFont,
     ChatSize,
     Voice,
@@ -131,6 +155,7 @@ impl SettingMenu {
     fn id(self) -> &'static str {
         match self {
             Self::Appearance => "appearance",
+            Self::Language => "language",
             Self::ChatFont => "chat-font",
             Self::ChatSize => "chat-size",
             Self::Voice => "voice",
@@ -145,6 +170,8 @@ fn option_id(menu: SettingMenu, index: usize) -> gpui::SharedString {
 }
 
 pub struct SettingsScreen {
+    locale: fluent_templates::LanguageIdentifier,
+    messages: super::i18n::MessageCache,
     /// Backend-call bridges retained for thread-affinity; see
     /// [`crate::ui::task::call`].
     bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
@@ -174,7 +201,7 @@ pub struct SettingsScreen {
     mcp_address: Option<catalog::McpAddressPrompt>,
     /// The app being tried at its usual address, before asking for another.
     mcp_usual_address: Option<&'static maple_agent::agent::McpCatalogEntry>,
-    mcp_notice: Option<String>,
+    mcp_notice: Option<UiText>,
     mcp_saving: bool,
     /// The server whose browser sign-in is in progress.
     mcp_signing_in: Option<String>,
@@ -189,16 +216,16 @@ pub struct SettingsScreen {
     catalog_visible: Vec<&'static maple_agent::agent::McpCatalogEntry>,
     /// Device-local integrations discovered by the runtime; None until loaded.
     integrations: Option<Vec<AgentIntegration>>,
-    integration_notice: Option<String>,
+    integration_notice: Option<UiText>,
     integration_saving: HashSet<String>,
     /// Editor for the user's additional instructions (harness instructions).
     prompt_editor: Entity<TextInput>,
-    prompt_notice: Option<String>,
+    prompt_notice: Option<UiText>,
     shortcut_snapshot: ShortcutSnapshot,
     shortcut_search: Entity<TextInput>,
     shortcut_query: String,
     shortcut_list_cache: ShortcutListCache,
-    shortcut_notice: Option<String>,
+    shortcut_notice: Option<UiText>,
     shortcut_recorder: Option<ShortcutRecorder>,
     shortcut_interceptor: Option<Subscription>,
     shortcut_reset_confirmation: bool,
@@ -415,29 +442,31 @@ impl SettingsScreen {
         let application_focus = cx.focus_handle();
         let prompt_application_focus = application_focus.clone();
         let prompt_editor = cx.new(move |cx| {
-            let mut input = TextInput::new("Add instructions for every task…", cx)
-                .with_tab_index(1)
-                .multiline(16)
-                .spell_check()
-                .application_vim(application_vim_enabled)
-                .on_application_escape(move |window, cx| {
-                    window.focus(&prompt_application_focus, cx)
-                });
+            let mut input =
+                TextInput::localized("settings-settings-add-instructions-for-every-task", cx)
+                    .with_tab_index(1)
+                    .multiline(16)
+                    .spell_check()
+                    .application_vim(application_vim_enabled)
+                    .on_application_escape(move |window, cx| {
+                        window.focus(&prompt_application_focus, cx)
+                    });
             input.set_text(&prompt_text, cx);
             input
         });
         let search_application_focus = application_focus.clone();
         let shortcut_search = cx.new(move |cx| {
-            TextInput::new("Search by command, context, or shortcut…", cx)
-                .with_tab_index(2)
-                .application_vim(application_vim_enabled)
-                .on_application_escape(move |window, cx| {
-                    window.focus(&search_application_focus, cx)
-                })
+            TextInput::localized(
+                "settings-settings-search-by-command-context-or-shortcut",
+                cx,
+            )
+            .with_tab_index(2)
+            .application_vim(application_vim_enabled)
+            .on_application_escape(move |window, cx| window.focus(&search_application_focus, cx))
         });
         let catalog_application_focus = application_focus.clone();
         let catalog_search = cx.new(move |cx| {
-            TextInput::new("Search apps…", cx)
+            TextInput::localized("settings-catalog-search", cx)
                 .with_tab_index(3)
                 .application_vim(application_vim_enabled)
                 .on_application_escape(move |window, cx| {
@@ -466,6 +495,8 @@ impl SettingsScreen {
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
         let mut this = Self {
+            locale: super::i18n::current_locale(),
+            messages: Default::default(),
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             integrations_backend,
@@ -581,7 +612,7 @@ impl SettingsScreen {
                         this.mcp_servers = Some(servers);
                         this.refresh_catalog();
                     }
-                    Err(message) => this.mcp_notice = Some(message),
+                    Err(message) => this.mcp_notice = Some(message.into()),
                 }
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
@@ -605,7 +636,7 @@ impl SettingsScreen {
                     }
                     Err(message) => {
                         this.integrations = Some(Vec::new());
-                        this.integration_notice = Some(message);
+                        this.integration_notice = Some(message.into());
                     }
                 }
                 if this.settings.application_vim_enabled {
@@ -636,8 +667,9 @@ impl SettingsScreen {
             return;
         };
         if !currently_enabled && !can_enable {
-            self.integration_notice =
-                Some("This integration is not ready to enable on this device.".to_string());
+            self.integration_notice = Some(UiText::key(
+                "settings-settings-this-integration-is-not-ready-to-enable-on-this-device",
+            ));
             cx.notify();
             return;
         }
@@ -662,7 +694,7 @@ impl SettingsScreen {
                 this.integration_saving.remove(&id);
                 match result {
                     Ok(integrations) => this.integrations = Some(integrations),
-                    Err(message) => this.integration_notice = Some(message),
+                    Err(message) => this.integration_notice = Some(message.into()),
                 }
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
@@ -684,8 +716,9 @@ impl SettingsScreen {
             .find(|integration| integration.id == id)
             .is_some_and(integration_can_setup);
         if !can_setup {
-            self.integration_notice =
-                Some("This integration does not need setup on this device.".to_string());
+            self.integration_notice = Some(UiText::key(
+                "settings-settings-this-integration-does-not-need-setup-on-this-device",
+            ));
             cx.notify();
             return;
         }
@@ -694,7 +727,7 @@ impl SettingsScreen {
         let permissions = match self.integrations_backend.begin_integration_setup(&id) {
             Ok(permissions) => permissions,
             Err(message) => {
-                self.integration_notice = Some(message);
+                self.integration_notice = Some(message.into());
                 cx.notify();
                 return;
             }
@@ -726,8 +759,8 @@ impl SettingsScreen {
                     }
                     Err(message) => {
                         this.integration_notice = Some(match this.integration_notice.take() {
-                            Some(notice) => format!("{notice} {message}"),
-                            None => message,
+                            Some(notice) => format!("{notice} {message}").into(),
+                            None => message.into(),
                         });
                     }
                 }
@@ -759,7 +792,7 @@ impl SettingsScreen {
                         this.mcp_editor = None;
                         this.refresh_catalog();
                     }
-                    Err(message) => this.mcp_notice = Some(message),
+                    Err(message) => this.mcp_notice = Some(message.into()),
                 }
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
@@ -806,7 +839,12 @@ impl SettingsScreen {
                 name: presence.name.clone(),
                 has_value: presence.has_value,
                 action: McpSecretAction::Keep,
-                input: field("Enter a new value", "", 10 + index as isize, true),
+                input: field(
+                    &tr("settings-settings-enter-a-new-value"),
+                    "",
+                    10 + index as isize,
+                    true,
+                ),
             })
             .collect();
         let saved_headers = existing
@@ -819,7 +857,12 @@ impl SettingsScreen {
                 name: presence.name.clone(),
                 has_value: presence.has_value,
                 action: McpSecretAction::Keep,
-                input: field("Enter a new value", "", 200 + index as isize, true),
+                input: field(
+                    &tr("settings-settings-enter-a-new-value"),
+                    "",
+                    200 + index as isize,
+                    true,
+                ),
             })
             .collect();
         self.mcp_editor = Some(McpEditor {
@@ -829,13 +872,13 @@ impl SettingsScreen {
             http,
             timeout_seconds: existing.as_ref().map(|s| s.timeout_seconds).unwrap_or(300),
             name: field(
-                "My server",
+                &tr("settings-settings-my-server"),
                 existing.as_ref().map(|s| s.name.as_str()).unwrap_or(""),
                 1,
                 false,
             ),
             description: field(
-                "What this server helps the agent do",
+                &tr("settings-settings-what-this-server-helps-the-agent-do"),
                 existing
                     .as_ref()
                     .map(|s| s.description.as_str())
@@ -866,7 +909,7 @@ impl SettingsScreen {
             scopes: Vec::new(),
         };
         if request.name.is_empty() || request.url.is_empty() {
-            self.mcp_notice = Some("Enter a server name and URL".to_string());
+            self.mcp_notice = Some(UiText::key("settings-catalog-server-required"));
             cx.notify();
             return;
         }
@@ -879,22 +922,25 @@ impl SettingsScreen {
         };
         let name = editor.name.read(cx).text().trim().to_string();
         if name.is_empty() {
-            self.mcp_notice = Some("Enter a server name".to_string());
+            self.mcp_notice = Some(UiText::key("settings-settings-enter-a-server-name"));
             cx.notify();
             return;
         }
         let existing = self.mcp_servers.as_deref().unwrap_or_default();
         if name_collides(existing, editor.original_name.as_deref(), &name) {
-            self.mcp_notice = Some(format!("A server named {name:?} already exists"));
+            self.mcp_notice = Some(UiText::message(
+                "settings-server-exists",
+                [("name", (name).to_string().into())],
+            ));
             cx.notify();
             return;
         }
         let target = editor.target.read(cx).text().trim().to_string();
         if target.is_empty() {
             self.mcp_notice = Some(if editor.http {
-                "Enter the server URL".to_string()
+                UiText::key("settings-settings-enter-the-server-url")
             } else {
-                "Enter the server command".to_string()
+                UiText::key("settings-settings-enter-the-server-command")
             });
             cx.notify();
             return;
@@ -934,13 +980,13 @@ impl SettingsScreen {
                 })
             {
                 return Err(
-                    "Clear each saved HTTP header before switching to Standard IO.".to_string(),
+                    tr("settings-settings-clear-each-saved-http-header-before-switching-to-standard-io").to_string(),
                 );
             }
             Ok(())
         })();
         if let Err(message) = edits {
-            self.mcp_notice = Some(message);
+            self.mcp_notice = Some(message.into());
             cx.notify();
             return;
         }
@@ -1041,6 +1087,13 @@ impl SettingsScreen {
     /// share this order, so an index means the same option in both.
     fn menu_options(&self, menu: SettingMenu) -> Vec<SettingOption> {
         match menu {
+            SettingMenu::Language => super::i18n::LANGUAGES
+                .iter()
+                .map(|locale| SettingOption {
+                    label: super::i18n::preference_label(*locale).to_string(),
+                    current: self.settings.locale.as_deref() == *locale,
+                })
+                .collect(),
             SettingMenu::Appearance => [
                 theme::Preference::System,
                 theme::Preference::Dark,
@@ -1048,14 +1101,14 @@ impl SettingsScreen {
             ]
             .iter()
             .map(|&preference| SettingOption {
-                label: preference.label().to_string(),
+                label: theme_label(preference).to_string(),
                 current: self.theme == preference,
             })
             .collect(),
             SettingMenu::ChatFont => crate::ui::typography::ChatFontFamily::ALL
                 .iter()
                 .map(|&family| SettingOption {
-                    label: family.label().to_string(),
+                    label: font_label(family).to_string(),
                     current: crate::ui::typography::ChatFontFamily::parse(
                         &self.settings.chat_font_family,
                     ) == family,
@@ -1072,8 +1125,8 @@ impl SettingsScreen {
                 .collect(),
             SettingMenu::Voice => settings::TTS_VOICES
                 .iter()
-                .map(|(id, label)| SettingOption {
-                    label: label.to_string(),
+                .map(|(id, _)| SettingOption {
+                    label: voice_label(id),
                     current: *id == self.settings.tts_voice,
                 })
                 .collect(),
@@ -1090,17 +1143,19 @@ impl SettingsScreen {
     /// The saved value shown on the dropdown's trigger button.
     fn menu_value(&self, menu: SettingMenu) -> String {
         match menu {
-            SettingMenu::Appearance => self.theme.label().to_string(),
-            SettingMenu::ChatFont => {
-                crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family)
-                    .label()
-                    .to_string()
+            SettingMenu::Language => {
+                super::i18n::preference_label(self.settings.locale.as_deref()).to_string()
             }
+            SettingMenu::Appearance => theme_label(self.theme).to_string(),
+            SettingMenu::ChatFont => font_label(crate::ui::typography::ChatFontFamily::parse(
+                &self.settings.chat_font_family,
+            ))
+            .to_string(),
             SettingMenu::ChatSize => format!(
                 "{} px",
                 crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size)
             ),
-            SettingMenu::Voice => settings::tts_voice_label(&self.settings.tts_voice).to_string(),
+            SettingMenu::Voice => voice_label(&self.settings.tts_voice),
             SettingMenu::SpeechSpeed => format!("{:.1}\u{d7}", self.settings.tts_speed),
         }
     }
@@ -1121,85 +1176,6 @@ impl SettingsScreen {
         }
     }
 
-    fn chat_appearance_preview(&self) -> Div {
-        let family = crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family);
-        let size = crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size);
-        let speaker = |name: &'static str| {
-            div()
-                .text_xs()
-                .font_family(crate::assets::FONT_BODY)
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(name)
-        };
-        // The settings pane and user bubbles both sit on elevated fills in
-        // dark mode. Recess a real chat well (`bg_app`) so assistant text
-        // and the user bubble separate from the card, matching the transcript.
-        widgets::card_row()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .font_family(crate::assets::FONT_BODY)
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(format!("Live preview · {} · {size} px", family.label())),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .rounded(theme::RADIUS_MD)
-                    .border_1()
-                    .border_color(gpui::rgb(theme::border()))
-                    .bg(gpui::rgb(if theme::is_light() {
-                        theme::bg_sidebar()
-                    } else {
-                        theme::bg_app()
-                    }))
-                    .px_3()
-                    .py_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        crate::ui::typography::chat_reading(div())
-                            .max_w(gpui::relative(0.82))
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .child(speaker("Assistant"))
-                            .child(
-                                "Clear, comfortable text makes longer conversations easier to follow.",
-                            )
-                            .child(
-                                div()
-                                    .font_weight(crate::ui::typography::emphasis_weight())
-                                    .child("Bold should look crisp, not blurry."),
-                            ),
-                    )
-                    .child(
-                        div().w_full().flex().justify_end().child(
-                            crate::ui::typography::chat_reading(div())
-                                .px_3()
-                                .py_2()
-                                .rounded(theme::RADIUS_MD)
-                                .bg(gpui::rgb(theme::bg_user_bubble()))
-                                .border_1()
-                                .border_color(gpui::rgb(theme::user_bubble_border()))
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .text_color(gpui::rgb(theme::text_primary()))
-                                .child(speaker("You"))
-                                .child("This size feels just right."),
-                        ),
-                    ),
-            )
-    }
-
     /// Apply the option at `index`: an absolute set, so the local copy
     /// and the file end in the same state whatever the file held.
     pub(super) fn pick_setting_option(
@@ -1209,6 +1185,15 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match menu {
+            SettingMenu::Language => {
+                let Some(locale) = super::i18n::LANGUAGES.get(index) else {
+                    return;
+                };
+                let locale = locale.map(str::to_owned);
+                super::i18n::apply_preference(locale.as_deref());
+                cx.refresh_windows();
+                self.edit_setting(move |settings| settings.locale = locale, cx);
+            }
             SettingMenu::Appearance => {
                 let Some(preference) = [
                     theme::Preference::System,
@@ -1302,8 +1287,11 @@ impl SettingsScreen {
             crate::notify::notify(
                 cx,
                 "settings:test",
-                "Desktop notifications on",
-                &format!("You will see alerts like this at {enabled_at}."),
+                &super::i18n::tr("settings-notification-test-title"),
+                &super::i18n::tr_args(
+                    "settings-notification-test-body",
+                    [("time", enabled_at.into())],
+                ),
                 &[],
             );
         }
@@ -1332,7 +1320,11 @@ impl SettingsScreen {
             let options = self.menu_options(menu);
             let dropdown = Menu::new(
                 gpui::SharedString::from(format!("setting-menu-{}", menu.id())),
-                px(260.),
+                px(if menu == SettingMenu::Voice {
+                    360.
+                } else {
+                    260.
+                }),
             )
             .label(title.to_string())
             .max_height(px(320.))
@@ -1356,7 +1348,15 @@ impl SettingsScreen {
             }));
             self.popup.render(dropdown, Placement::BelowEnd, window, cx)
         });
-        let slug = title.to_lowercase().replace(' ', "-");
+        let slug = match menu {
+            SettingMenu::Appearance => "appearance",
+            SettingMenu::Language => "language",
+            SettingMenu::ChatFont => "chat-font",
+            SettingMenu::ChatSize => "text-size",
+            SettingMenu::Voice => "speech-voice",
+            SettingMenu::SpeechSpeed => "speech-speed",
+        }
+        .to_owned();
         let button =
             widgets::secondary_button(gpui::SharedString::from(format!("setting-value-{slug}")))
                 .debug_selector(move || format!("setting-value-{slug}"))
@@ -1367,7 +1367,14 @@ impl SettingsScreen {
                 .child(self.menu_value_label(menu))
                 .child(icon("chevron-down", px(12.), theme::text_muted()));
         widgets::card_row()
-            .id(setting_row_id(title))
+            .id(gpui::SharedString::from(format!(
+                "setting-{}",
+                match menu {
+                    SettingMenu::ChatSize => "text-size",
+                    SettingMenu::Voice => "speech-voice",
+                    _ => menu.id(),
+                }
+            )))
             .flex()
             .items_center()
             .justify_between()
@@ -1413,7 +1420,9 @@ impl SettingsScreen {
         settings::update_settings_in_background(move |s| s.harness_instructions = instructions);
         self.backend
             .set_harness_instructions(self.settings.effective_harness_instructions());
-        self.prompt_notice = Some("Saved. New tasks use these instructions.".to_string());
+        self.prompt_notice = Some(UiText::key(
+            "settings-settings-saved-new-tasks-use-these-instructions",
+        ));
         cx.notify();
     }
 
@@ -1443,8 +1452,11 @@ impl SettingsScreen {
             self.reconcile_application_vim_target();
         }
         self.shortcut_notice = Some(match result {
-            Ok(()) => "Shortcut settings applied.".to_string(),
-            Err(message) => format!("Shortcut change failed: {message}"),
+            Ok(()) => UiText::key("settings-settings-shortcut-settings-applied"),
+            Err(message) => UiText::message(
+                "settings-shortcut-change-failed",
+                [("message", (message).to_string().into())],
+            ),
         });
         cx.notify();
     }
@@ -1489,7 +1501,9 @@ impl SettingsScreen {
         match (plain, keystroke.key.as_str()) {
             (true, "escape") => {
                 self.stop_shortcut_recording();
-                self.shortcut_notice = Some("Shortcut recording cancelled.".to_string());
+                self.shortcut_notice = Some(UiText::key(
+                    "settings-settings-shortcut-recording-cancelled",
+                ));
             }
             (true, "backspace") => {
                 if let Some(recorder) = self.shortcut_recorder.as_mut() {
@@ -1504,8 +1518,9 @@ impl SettingsScreen {
                 if recorder.strokes.len() < 4 {
                     recorder.strokes.push(portable_keystroke_token(keystroke));
                 } else {
-                    self.shortcut_notice =
-                        Some("A shortcut can contain at most four strokes.".to_string());
+                    self.shortcut_notice = Some(UiText::key(
+                        "settings-settings-a-shortcut-can-contain-at-most-four-strokes",
+                    ));
                 }
             }
         }
@@ -1517,7 +1532,9 @@ impl SettingsScreen {
             return;
         };
         if recorder.strokes.is_empty() {
-            self.shortcut_notice = Some("Press at least one shortcut key.".to_string());
+            self.shortcut_notice = Some(UiText::key(
+                "settings-settings-press-at-least-one-shortcut-key",
+            ));
             return;
         }
         let slot_id = recorder.slot_id.clone();
@@ -1544,7 +1561,10 @@ impl SettingsScreen {
                 }
             }
             Err(message) => {
-                self.shortcut_notice = Some(format!("Cannot use that shortcut: {message}"));
+                self.shortcut_notice = Some(UiText::message(
+                    "settings-shortcut-invalid",
+                    [("message", (message).to_string().into())],
+                ));
             }
         }
     }
@@ -1624,6 +1644,13 @@ fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: Shor
 
 impl Render for SettingsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let locale = super::i18n::current_locale();
+        if self.locale != locale {
+            self.locale = locale;
+            self.rebuild_shortcut_list_cache();
+            self.refresh_credit_placeholder(cx);
+            self.refresh_catalog();
+        }
         // First, so focus requested below wins over a dropdown handing it
         // back.
         self.popup.sync_focus(window, cx);
@@ -1691,13 +1718,13 @@ impl Render for SettingsScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.close(cx);
                             }))
-                            .child("← Back"),
+                            .child(super::i18n::tr("settings-back")),
                     )
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child("Settings"),
+                            .child(super::i18n::tr("settings-title")),
                     )
                     .child(div().flex_1())
                     .child(
@@ -1719,7 +1746,7 @@ impl Render for SettingsScreen {
                             .on_click(cx.listener(|_this, _event, _window, cx| {
                                 cx.emit(SignOutRequested);
                             }))
-                            .child("Sign out"),
+                            .child(super::i18n::tr("settings-sign-out")),
                     ),
             ))
             .child(
@@ -1751,7 +1778,7 @@ impl SettingsScreen {
         div()
             .id("settings-nav")
             .role(gpui::Role::TabList)
-            .aria_label("Settings sections")
+            .aria_label(super::i18n::tr("settings-sections"))
             .aria_orientation(gpui::Orientation::Vertical)
             .w(gpui::px(220.))
             .h_full()
@@ -1768,7 +1795,7 @@ impl SettingsScreen {
                 div()
                     .id(gpui::SharedString::from(format!(
                         "settings-nav-{}",
-                        section.label()
+                        section.id()
                     )))
                     .role(gpui::Role::Tab)
                     .aria_label(section.label())
@@ -1821,158 +1848,7 @@ impl SettingsScreen {
                 pane = pane.child(self.render_advanced(cx));
             }
             Section::General => {
-                pane = pane
-                    .child(section_title("Defaults"))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Web),
-                        toggle_row(
-                            "New tasks can use the web",
-                            "Offers web_search and open_url to the model. Each task can \
-                             switch web access on or off from its composer.",
-                            self.settings.default_web_enabled,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_web_default(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Appearance),
-                        self.setting_menu_row(
-                            "Appearance",
-                            "Follow the system theme, or force dark or light.",
-                            SettingMenu::Appearance,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .child(section_title("Chat appearance"))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ChatFont),
-                        self.setting_menu_row(
-                            "Chat font",
-                            crate::ui::typography::ChatFontFamily::parse(
-                                &self.settings.chat_font_family,
-                            )
-                            .note(),
-                            SettingMenu::ChatFont,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ChatSize),
-                        self.setting_menu_row(
-                            "Text size",
-                            "Size of conversation and composer text. Sidebar and buttons stay Manrope.",
-                            SettingMenu::ChatSize,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .child(self.chat_appearance_preview())
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ToolDetails),
-                        toggle_row(
-                            "Show tool call details",
-                            "Tool cards include their input and output payloads.",
-                            self.settings.tool_details,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_tool_details(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Notifications),
-                        toggle_row(
-                            "Desktop notifications",
-                            "Notify when a task finishes or needs your input while \
-                             the window is not focused.",
-                            self.settings.desktop_notifications,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_desktop_notifications(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::PasswordNotificationDetails),
-                        toggle_row(
-                            "Show task details in password mode",
-                            "Include task titles and questions in desktop notifications. \
-                             Your operating system may retain this text after Maple quits.",
-                            self.settings.password_notification_details,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_password_notification_details(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ReduceMotion),
-                        toggle_row(
-                            "Reduce motion",
-                            "Hold spinners and pulsing dots still and skip reveal \
-                             animations.",
-                            self.settings.reduce_motion,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_reduce_motion(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ToolSummaries),
-                        toggle_row(
-                            "Summarize tool calls",
-                            "Completed tool calls with long output get a one-line \
-                             summary on their cards.",
-                            self.settings.tool_summaries,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_tool_summaries(cx);
-                            }),
-                        ),
-                    ))
-                    .child(section_title("Editing"))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ComposerVim),
-                        toggle_row(
-                            "Vim mode in composer",
-                            "Use Normal, Insert, and Visual editing modes in the main chat composer. Other text fields stay unchanged.",
-                            self.settings.composer_vim_enabled,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_composer_vim(cx);
-                            }),
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::ApplicationVim),
-                        toggle_row(
-                            "Vim navigation across the app",
-                            "Navigate stable sidebar, transcript, dialog, and Settings targets. Ordinary text fields still edit normally.",
-                            self.settings.application_vim_enabled,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_application_vim(cx);
-                            }),
-                        ),
-                    ))
-                    .child(section_title("Voice"))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::Voice),
-                        self.setting_menu_row(
-                            "Speech voice",
-                            "The voice that reads messages aloud.",
-                            SettingMenu::Voice,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::General(GeneralTarget::SpeechSpeed),
-                        self.setting_menu_row(
-                            "Speech speed",
-                            "How fast messages are read aloud.",
-                            SettingMenu::SpeechSpeed,
-                            window,
-                            cx,
-                        ),
-                    ));
+                pane = self.render_general(pane, window, cx);
             }
             Section::Account => {
                 pane = pane.child(self.render_account_pane(cx));
@@ -2005,36 +1881,36 @@ impl SettingsScreen {
                         .flex()
                         .items_baseline()
                         .gap_2()
-                        .child(section_title("Plan"))
+                        .child(section_title(&tr("settings-settings-plan")))
                         .when_some(self.plan.as_ref(), |row, plan| {
                             row.child(
                                 div()
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(gpui::rgb(theme::accent()))
-                                    .child(plan.plan_label.clone()),
+                                    .child(presentation::plan_name(plan, &self.messages)),
                             )
                         }),
                 );
                 pane = pane.child(match &self.plan {
-                    Some(plan) => plan_card(plan),
+                    Some(plan) => plan_card(plan, &self.messages),
                     None => div()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child("Plan usage unavailable"),
+                        .child(tr("settings-settings-plan-usage-unavailable")),
                 });
             }
             Section::About => {
                 pane = pane
-                    .child(section_title("About"))
+                    .child(section_title(&tr("settings-settings-about")))
                     .child(info_row(
-                        "Version",
+                        &tr("settings-settings-version"),
                         format!("v{}", crate::ui::titlebar::TitleBar::version()),
                     ))
                     .child(self.render_update_row(cx))
                     .child(toggle_row(
-                        "Automatically download updates",
-                        "Download verified updates in the background. Installation always waits for Restart to Update.",
+                        tr("settings-settings-automatically-download-updates"),
+                        tr("settings-settings-download-verified-updates-in-the-background-installation-always-w"),
                         self.settings.automatic_update_downloads,
                         cx.listener(|this, _, _, cx| {
                             let enabled = !this.settings.automatic_update_downloads;
@@ -2068,7 +1944,7 @@ impl SettingsScreen {
                     row.child(
                         widgets::ghost_button("updates-later")
                             .on_click(request(UpdateAction::Later))
-                            .child("Later"),
+                            .child(tr("settings-settings-later")),
                     )
                 },
             )
@@ -2078,7 +1954,7 @@ impl SettingsScreen {
                     row.child(
                         widgets::ghost_button("updates-manual")
                             .on_click(request(UpdateAction::ManualDownload))
-                            .child("Download manually"),
+                            .child(tr("settings-settings-download-manually")),
                     )
                 },
             )
@@ -2086,7 +1962,7 @@ impl SettingsScreen {
                 row.child(
                     widgets::primary_button("updates-primary")
                         .on_click(request(action))
-                        .child(self.update.primary_label),
+                        .child(presentation::update_action(action)),
                 )
             })
             .map(|row| match update_check(&self.update) {
@@ -2109,7 +1985,7 @@ impl SettingsScreen {
                     widgets::icon_button(
                         "updates-check",
                         "rotate-cw",
-                        label,
+                        tr(label),
                         widgets::ROW_ICON,
                         theme::text_secondary(),
                     )
@@ -2118,7 +1994,11 @@ impl SettingsScreen {
             });
         let has_actions = update_check(&self.update) != UpdateCheck::Hidden
             || next_update_action(&self.update).is_some();
-        info_row("Update", self.update.label.clone()).when(has_actions, |row| row.child(actions))
+        info_row(
+            &tr("settings-settings-update"),
+            presentation::update_label(&self.update, &self.messages),
+        )
+        .when(has_actions, |row| row.child(actions))
     }
 }
 
@@ -2148,9 +2028,9 @@ fn update_check(update: &crate::update::Snapshot) -> UpdateCheck {
     {
         UpdateCheck::Hidden
     } else if update.state == State::Error {
-        UpdateCheck::Ready("Retry")
+        UpdateCheck::Ready("settings-settings-retry")
     } else {
-        UpdateCheck::Ready("Check for updates")
+        UpdateCheck::Ready("settings-settings-check-for-updates")
     }
 }
 
@@ -2168,7 +2048,7 @@ impl SettingsScreen {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(section_title("Keyboard Shortcuts"))
+                    .child(section_title(&tr("settings-settings-keyboard-shortcuts")))
                     .when(
                         modified_count > 0 || self.shortcut_snapshot.last_error.is_some(),
                         |row| {
@@ -2179,7 +2059,7 @@ impl SettingsScreen {
                                         this.shortcut_notice = None;
                                         cx.notify();
                                     }))
-                                    .child("Reset all"),
+                                    .child(tr("settings-settings-reset-all")),
                             )
                         },
                     ),
@@ -2189,7 +2069,7 @@ impl SettingsScreen {
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(
-                        "Customize the shortcuts Maple already ships. This page does not add commands or change what an action can do.",
+                        tr("settings-settings-customize-the-shortcuts-maple-already-ships-this-page-does-not-ad"),
                     ),
             )
             .child(widgets::input_frame().text_sm().child(self.shortcut_search.clone()))
@@ -2197,17 +2077,19 @@ impl SettingsScreen {
                 div()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(format!(
-                        "{} bindings · {modified_count} modified",
-                        self.shortcut_snapshot.rows.len()
-                    )),
+                    .child(self.messages.get("settings-shortcut-counts", [("arg1", (self.shortcut_snapshot.rows.len()).to_string().into()), ("modified-count", (modified_count).to_string().into())]).to_string()),
             );
 
         if let Some(error) = &self.shortcut_snapshot.last_error {
             pane = pane.child(
-                widgets::banner(theme::status_warning()).child(format!(
-                    "Saved shortcut overrides were not applied; Maple kept the complete default map. {error}"
-                )),
+                widgets::banner(theme::status_warning()).child(
+                    self.messages
+                        .get(
+                            "settings-shortcut-overrides-invalid",
+                            [("error", (error).to_string().into())],
+                        )
+                        .to_string(),
+                ),
             );
         }
         if let Some(warning) = &self.shortcut_snapshot.compatibility_warning {
@@ -2224,12 +2106,15 @@ impl SettingsScreen {
                     .gap_3()
                     .child(div().flex_1().child(
                         if self.shortcut_snapshot.last_error.is_some() && modified_count == 0 {
-                            "Clear the invalid saved shortcut overrides?".to_string()
+                            tr("settings-settings-clear-the-invalid-saved-shortcut-overrides")
+                                .to_string()
                         } else {
-                            format!(
-                                "Reset all {modified_count} shortcut change{}?",
-                                if modified_count == 1 { "" } else { "s" }
-                            )
+                            self.messages
+                                .get(
+                                    "settings-shortcut-reset-confirm",
+                                    [("modified-count", (modified_count).to_string().into())],
+                                )
+                                .to_string()
                         },
                     ))
                     .child(
@@ -2237,7 +2122,7 @@ impl SettingsScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);
                             }))
-                            .child("Reset"),
+                            .child(tr("settings-settings-reset")),
                     )
                     .child(
                         widgets::ghost_button("shortcuts-reset-all-cancel")
@@ -2245,7 +2130,7 @@ impl SettingsScreen {
                                 this.shortcut_reset_confirmation = false;
                                 cx.notify();
                             }))
-                            .child("Cancel"),
+                            .child(tr("settings-settings-cancel")),
                     ),
             );
         }
@@ -2258,7 +2143,7 @@ impl SettingsScreen {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child("No shortcuts match this search."),
+                    .child(tr("settings-settings-no-shortcuts-match-this-search")),
             );
         } else {
             pane =
@@ -2275,11 +2160,11 @@ impl SettingsScreen {
             .rows
             .iter()
             .find(|row| row.slot_id == recorder.slot_id)
-            .map(|row| row.label.as_str())
-            .unwrap_or(recorder.slot_id.as_str())
+            .map(|row| shortcut_labels::label(&row.label))
+            .unwrap_or_else(|| recorder.slot_id.clone().into())
             .to_string();
         let sequence = if recorder.strokes.is_empty() {
-            "Waiting for keys…".to_string()
+            tr("settings-settings-waiting-for-keys").to_string()
         } else {
             recorder.strokes.join(" ")
         };
@@ -2297,7 +2182,7 @@ impl SettingsScreen {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child(format!("Recording: {label}")),
+                    .child(self.messages.get("settings-shortcut-recording", [("label", (label).to_string().into())]).to_string()),
             )
             .child(shortcut_keycap(sequence, true))
             .child(
@@ -2305,9 +2190,9 @@ impl SettingsScreen {
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(if recorder.reviewing_conflicts {
-                        "Review the conflicts below before saving."
+                        tr("settings-settings-review-the-conflicts-below-before-saving")
                     } else {
-                        "Press up to four keys. Enter saves, Backspace removes the latest stroke, and Escape cancels."
+                        tr("settings-settings-press-up-to-four-keys-enter-saves-backspace-removes-the-latest-st")
                     }),
             );
 
@@ -2323,17 +2208,26 @@ impl SettingsScreen {
                         .rows
                         .iter()
                         .find(|row| row.slot_id == conflict.other_slot_id)
-                        .map(|row| row.label.as_str())
-                        .unwrap_or(conflict.other_slot_id.as_str());
+                        .map(|row| shortcut_labels::label(&row.label))
+                        .unwrap_or_else(|| conflict.other_slot_id.clone().into());
                     div()
                         .text_xs()
                         .text_color(gpui::rgb(theme::status_warning()))
-                        .child(format!(
-                            "{} with {} ({})",
-                            shortcut_conflict_label(conflict),
-                            other,
-                            conflict.other_slot_id
-                        ))
+                        .child(
+                            self.messages
+                                .get(
+                                    "settings-shortcut-collision",
+                                    [
+                                        (
+                                            "arg1",
+                                            (shortcut_conflict_label(conflict)).to_string().into(),
+                                        ),
+                                        ("arg2", (other).to_string().into()),
+                                        ("arg3", (conflict.other_slot_id).to_string().into()),
+                                    ],
+                                )
+                                .to_string(),
+                        )
                 }))
                 .child(
                     div()
@@ -2344,7 +2238,7 @@ impl SettingsScreen {
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.save_recorded_shortcut(true, cx);
                                 }))
-                                .child("Replace conflicts"),
+                                .child(tr("settings-settings-replace-conflicts")),
                         )
                         .when(can_keep_both, |actions| {
                             actions.child(
@@ -2352,7 +2246,7 @@ impl SettingsScreen {
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.save_recorded_shortcut(false, cx);
                                     }))
-                                    .child("Keep both"),
+                                    .child(tr("settings-settings-keep-both")),
                             )
                         })
                         .child(
@@ -2361,7 +2255,7 @@ impl SettingsScreen {
                                     this.stop_shortcut_recording();
                                     cx.notify();
                                 }))
-                                .child("Cancel"),
+                                .child(tr("settings-settings-cancel")),
                         ),
                 );
         } else {
@@ -2371,7 +2265,7 @@ impl SettingsScreen {
                         this.stop_shortcut_recording();
                         cx.notify();
                     }))
-                    .child("Cancel"),
+                    .child(tr("settings-settings-cancel")),
             );
         }
         card
@@ -2389,7 +2283,7 @@ impl SettingsScreen {
         let current = row
             .current_sequence
             .clone()
-            .unwrap_or_else(|| "Unbound".to_string());
+            .unwrap_or_else(|| tr("settings-settings-unbound").to_string());
         let card = widgets::card_row()
             .flex()
             .items_center()
@@ -2411,7 +2305,7 @@ impl SettingsScreen {
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(gpui::rgb(theme::text_primary()))
-                                    .child(row.label.clone()),
+                                    .child(shortcut_labels::label(&row.label)),
                             )
                             .when(row.modified, |title| {
                                 title.child(
@@ -2422,7 +2316,7 @@ impl SettingsScreen {
                                         .text_xs()
                                         .bg(gpui::rgb(theme::bg_sidebar_pill()))
                                         .text_color(gpui::rgb(theme::accent()))
-                                        .child("Modified"),
+                                        .child(tr("settings-settings-modified")),
                                 )
                             }),
                     )
@@ -2432,7 +2326,7 @@ impl SettingsScreen {
                             .text_color(gpui::rgb(theme::text_muted()))
                             .child(format!(
                                 "{} · {}",
-                                row.category,
+                                shortcut_labels::category(&row.category),
                                 shortcut_context_label(row.context.as_deref()),
                             )),
                     )
@@ -2441,11 +2335,14 @@ impl SettingsScreen {
                             div()
                                 .text_xs()
                                 .text_color(gpui::rgb(theme::status_warning()))
-                                .child(format!(
-                                    "{} shortcut conflict{}",
-                                    row.conflicts.len(),
-                                    if row.conflicts.len() == 1 { "" } else { "s" }
-                                )),
+                                .child(
+                                    self.messages
+                                        .get(
+                                            "settings-shortcut-conflicts",
+                                            [("arg1", (row.conflicts.len()).to_string().into())],
+                                        )
+                                        .to_string(),
+                                ),
                         )
                     }),
             )
@@ -2460,7 +2357,14 @@ impl SettingsScreen {
                         div()
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
-                            .child(format!("Default: {}", row.default_sequence)),
+                            .child(
+                                self.messages
+                                    .get(
+                                        "settings-shortcut-default",
+                                        [("arg1", (row.default_sequence).to_string().into())],
+                                    )
+                                    .to_string(),
+                            ),
                     ),
             )
             .child(
@@ -2475,7 +2379,7 @@ impl SettingsScreen {
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             this.begin_shortcut_recording(record_id.clone(), cx);
                         }))
-                        .child("Record"),
+                        .child(tr("settings-settings-record")),
                     )
                     .when(row.current_sequence.is_some(), |actions| {
                         actions.child(
@@ -2490,7 +2394,7 @@ impl SettingsScreen {
                                     cx,
                                 );
                             }))
-                            .child("Disable"),
+                            .child(tr("settings-settings-disable")),
                         )
                     })
                     .when(row.modified, |actions| {
@@ -2506,7 +2410,7 @@ impl SettingsScreen {
                                     cx,
                                 );
                             }))
-                            .child("Reset"),
+                            .child(tr("settings-settings-reset")),
                         )
                     }),
             );
@@ -2518,15 +2422,13 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title("Additional instructions"))
+            .child(section_title(&tr("settings-settings-additional-instructions")))
             .child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(
-                        "Added to every task after Maple's own system prompt. Use it for \
-                         preferences such as tone, language, or how you like to work. \
-                         Changes apply to tasks started after you save.",
+                        tr("settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr"),
                     ),
             )
             .child(
@@ -2551,7 +2453,7 @@ impl SettingsScreen {
                         || SettingsTarget::PromptSave,
                         pill_button(
                             "prompt-save".to_string(),
-                            "Save",
+                            tr("settings-settings-save"),
                             true,
                             cx.listener(|this, _event, _window, cx| this.save_prompt(cx)),
                         ),
@@ -2560,7 +2462,7 @@ impl SettingsScreen {
                         || SettingsTarget::PromptClear,
                         pill_button(
                             "prompt-clear".to_string(),
-                            "Clear",
+                            tr("settings-settings-clear"),
                             false,
                             cx.listener(|this, _event, _window, cx| this.clear_prompt(cx)),
                         ),
@@ -2582,22 +2484,22 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title("Integrations"))
+            .child(section_title(&tr("settings-settings-integrations")))
             .child(div().text_sm().child(match self.integrations_backend.remote_host() {
-                Some(host) => format!("Execution computer: {}. Native setup and permissions must be completed there.", &host[..host.len().min(10)]),
-                None => "Execution computer: This computer".to_string(),
+                Some(host) => self.messages.get("settings-execution-computer", [("arg1", (host[..host.len().min(10)]).to_string().into())]).to_string(),
+                None => tr("settings-settings-execution-computer-this-computer").to_string(),
             }))
             .child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child("Manage integrations here. Enable coding agents to make them available in the composer, then select them for each task."),
+                    .child(tr("settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa")),
             );
 
         if let Some(notice) = &self.integration_notice {
             pane = pane.child(widgets::notice(
                 "integration-notice-close",
-                gpui::SharedString::from(notice.clone()),
+                notice.resolve(),
                 cx.listener(|this, _event, _window, cx| {
                     this.integration_notice = None;
                     cx.notify();
@@ -2605,14 +2507,14 @@ impl SettingsScreen {
             ));
         }
 
-        pane = pane.child(subsection_title("Built into Maple"));
+        pane = pane.child(subsection_title(&tr("settings-built-in")));
         match &self.integrations {
             None => {
                 pane = pane.child(
                     div()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child("Detecting integrations…"),
+                        .child(tr("settings-settings-detecting-integrations")),
                 );
             }
             Some(integrations) => {
@@ -2629,7 +2531,7 @@ impl SettingsScreen {
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_muted()))
-                            .child("No supported integrations detected on this device."),
+                            .child(tr("settings-settings-no-supported-integrations-detected-on-this-device")),
                     );
                 }
             }
@@ -2637,7 +2539,9 @@ impl SettingsScreen {
 
         match &self.mcp_servers {
             Some(servers) if !servers.is_empty() => {
-                pane = pane.child(catalog::section_heading(subsection_title("Connected")));
+                pane = pane.child(catalog::section_heading(subsection_title(&tr(
+                    "settings-settings-connected",
+                ))));
                 pane = pane.children(servers.iter().map(|server| {
                     let name = server.name.clone();
                     let summary = match &server.target {
@@ -2681,9 +2585,9 @@ impl SettingsScreen {
                         .child(pill_button(
                             format!("mcp-toggle-{name}"),
                             if server.enabled {
-                                "Enabled"
+                                tr("settings-settings-enabled")
                             } else {
-                                "Disabled"
+                                tr("settings-settings-disabled")
                             },
                             server.enabled,
                             cx.listener({
@@ -2695,7 +2599,7 @@ impl SettingsScreen {
                             widgets::icon_button(
                                 gpui::SharedString::from(format!("mcp-edit-{name}")),
                                 "pencil",
-                                "Edit",
+                                tr("settings-settings-edit"),
                                 widgets::ROW_ICON,
                                 theme::text_secondary(),
                             )
@@ -2708,7 +2612,7 @@ impl SettingsScreen {
                             widgets::icon_button(
                                 gpui::SharedString::from(format!("mcp-remove-{name}")),
                                 "trash-2",
-                                "Remove",
+                                tr("settings-settings-remove"),
                                 widgets::ROW_ICON,
                                 theme::status_error(),
                             )
@@ -2735,8 +2639,13 @@ impl SettingsScreen {
         let saving = self.integration_saving.contains(&integration.id);
         let enabled = integration.enabled_for_new_tasks;
         let cua_driver = is_cua_driver(&integration.id);
-        let display_name = integration.name.clone();
-        let description = integration.description.clone();
+        let display_name = if cua_driver {
+            tr("settings-integration-cua-name")
+        } else {
+            integration.name.clone().into()
+        };
+        let description =
+            presentation::integration_description(&integration.id, &integration.description);
         let mut details = div()
             .flex_1()
             .min_w_0()
@@ -2774,7 +2683,7 @@ impl SettingsScreen {
                     .gap_1()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(CUA_CREDIT)
+                    .child(tr(CUA_CREDIT))
                     .child(
                         div()
                             .flex()
@@ -2786,7 +2695,7 @@ impl SettingsScreen {
                                     .on_click(|_, _, _| {
                                         crate::ui::rich_text::open_link(CUA_PROJECT_URL)
                                     })
-                                    .child("Cua team"),
+                                    .child(tr("settings-settings-cua-team")),
                             )
                             .child("."),
                     ),
@@ -2799,8 +2708,9 @@ impl SettingsScreen {
                 .flat_map(|permissions| permissions.required.iter())
             {
                 metadata = metadata.child(cua_permission_badge(
-                    permission.kind.label(),
+                    presentation::permission(permission.kind),
                     permission.granted,
+                    &self.messages,
                 ));
             }
             details = details.child(metadata);
@@ -2809,7 +2719,14 @@ impl SettingsScreen {
                 div()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(format!("Version {version}")),
+                    .child(
+                        self.messages
+                            .get(
+                                "settings-integration-version",
+                                [("version", (version).to_string().into())],
+                            )
+                            .to_string(),
+                    ),
             );
         }
         if let Some(detail) = &integration.detail {
@@ -2820,7 +2737,7 @@ impl SettingsScreen {
                     // A detail can carry the address of something the user has
                     // to fetch, which needs more room than a short status line.
                     .line_clamp(3)
-                    .child(detail.clone()),
+                    .child(presentation::integration_detail(integration, detail)),
             );
         }
 
@@ -2832,7 +2749,7 @@ impl SettingsScreen {
                     || SettingsTarget::IntegrationSetup(integration.id.clone()),
                     pill_button(
                         format!("integration-setup-{}", integration.id),
-                        "Set up",
+                        tr("settings-settings-set-up"),
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.setup_integration(&id, cx);
@@ -2849,7 +2766,11 @@ impl SettingsScreen {
                     || SettingsTarget::Integration(integration.id.clone()),
                     pill_button(
                         format!("integration-toggle-{}", integration.id),
-                        if enabled { "Enabled" } else { "Enable" },
+                        if enabled {
+                            tr("settings-settings-enabled")
+                        } else {
+                            tr("settings-settings-enable")
+                        },
                         enabled,
                         cx.listener(move |this, _event, _window, cx| {
                             this.toggle_integration(&id, cx);
@@ -2909,7 +2830,7 @@ impl SettingsScreen {
         let sign_in_error = self
             .sign_in_error_for(editor.name.read(cx).text().trim())
             .map(str::to_string);
-        let field = |label: &'static str, hint: &'static str, input: Entity<TextInput>| {
+        let field = |label: &str, hint: &str, input: Entity<TextInput>| {
             div()
                 .flex()
                 .flex_col()
@@ -2919,7 +2840,7 @@ impl SettingsScreen {
                         .text_xs()
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(gpui::rgb(theme::text_secondary()))
-                        .child(label),
+                        .child(label.to_string()),
                 )
                 .child(widgets::input_frame().text_sm().child(input))
                 .when(!hint.is_empty(), |col| {
@@ -2927,11 +2848,11 @@ impl SettingsScreen {
                         div()
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
-                            .child(hint),
+                            .child(hint.to_string()),
                     )
                 })
         };
-        let transport_segment = |id: &'static str, label: &'static str, active: bool| {
+        let transport_segment = |id: &'static str, label: gpui::SharedString, active: bool| {
             div()
                 .id(id)
                 .px_3()
@@ -2966,13 +2887,13 @@ impl SettingsScreen {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(gpui::rgb(theme::text_primary()))
                     .child(if editor.original_name.is_some() {
-                        "Edit server"
+                        tr("settings-settings-edit-server")
                     } else {
-                        "New server"
+                        tr("settings-settings-new-server")
                     }),
             )
-            .child(field("Name", "", editor.name.clone()))
-            .child(field("Description", "", editor.description.clone()))
+            .child(field(&tr("settings-settings-name"), "", editor.name.clone()))
+            .child(field(&tr("settings-settings-description"), "", editor.description.clone()))
             .child(
                 div()
                     .flex()
@@ -2983,7 +2904,7 @@ impl SettingsScreen {
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(gpui::rgb(theme::text_secondary()))
-                            .child("Transport"),
+                            .child(tr("settings-settings-transport")),
                     )
                     .child(
                         div()
@@ -2996,7 +2917,7 @@ impl SettingsScreen {
                             .child(
                                 transport_segment(
                                     "mcp-transport-stdio",
-                                    "Standard IO (STDIO)",
+                                    tr("settings-settings-standard-io-stdio"),
                                     !editor.http,
                                 )
                                 .on_click(cx.listener(
@@ -3017,7 +2938,7 @@ impl SettingsScreen {
                             .child(
                                 transport_segment(
                                     "mcp-transport-http",
-                                    "Streamable HTTP",
+                                    tr("settings-settings-streamable-http"),
                                     editor.http,
                                 )
                                 .on_click(cx.listener(
@@ -3038,27 +2959,27 @@ impl SettingsScreen {
                     ),
             )
             .child(if editor.http {
-                field("URL", "", editor.target.clone())
+                field(&tr("settings-settings-url"), "", editor.target.clone())
             } else {
-                field("Command", "", editor.target.clone())
+                field(&tr("settings-settings-command"), "", editor.target.clone())
             })
             .when(!editor.saved_environment.is_empty(), |col| {
-                col.child(subsection_title("Environment values"))
+                col.child(subsection_title(&tr("settings-settings-environment-values")))
                     .child(self.render_mcp_secret_fields(&editor.saved_environment, false, cx))
             })
             .when(!editor.saved_headers.is_empty(), |col| {
-                col.child(subsection_title("Header values"))
+                col.child(subsection_title(&tr("settings-settings-header-values")))
                     .child(self.render_mcp_secret_fields(&editor.saved_headers, true, cx))
             })
             .child(field(
-                "New environment values",
-                "KEY=value pairs separated by semicolons. Existing values use the choices above.",
+                &tr("settings-settings-new-environment-values"),
+                &tr("settings-settings-key-value-pairs-separated-by-semicolons-existing-values-use-the-c"),
                 editor.environment.clone(),
             ))
             .when(editor.http, |col| {
                 col.child(field(
-                    "New headers",
-                    "Name=value pairs separated by semicolons.",
+                    &tr("settings-settings-new-headers"),
+                    &tr("settings-settings-name-value-pairs-separated-by-semicolons"),
                     editor.headers.clone(),
                 ))
             })
@@ -3074,29 +2995,32 @@ impl SettingsScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.submit_mcp_editor(cx);
                             }))
-                            .child("Save"),
+                            .child(tr("settings-settings-save")),
                     )
-                    .when(editor.http && editor.original.is_none(), |row| {
-                        row.child(if signing_in {
-                            widgets::ghost_button("mcp-sign-in")
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.cancel_mcp_sign_in(cx);
-                                }))
-                                .child(spinner(
-                                    "mcp-sign-in",
-                                    widgets::ROW_ICON,
-                                    theme::text_secondary(),
-                                ))
-                                .child("Stop signing in")
-                        } else {
-                            widgets::ghost_button("mcp-sign-in")
-                                .when(self.mcp_signing_in.is_some(), |el| el.opacity(0.5))
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.sign_in_mcp_editor(cx);
-                                }))
-                                .child("Sign in with browser")
-                        })
-                    })
+                    .when(
+                        editor.http && editor.original.is_none(),
+                        |row| {
+                            row.child(if signing_in {
+                                widgets::ghost_button("mcp-sign-in")
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.cancel_mcp_sign_in(cx);
+                                    }))
+                                    .child(spinner(
+                                        "mcp-sign-in",
+                                        widgets::ROW_ICON,
+                                        theme::text_secondary(),
+                                    ))
+                                    .child(tr("settings-catalog-stop-sign-in"))
+                            } else {
+                                widgets::ghost_button("mcp-sign-in")
+                                    .when(self.mcp_signing_in.is_some(), |el| el.opacity(0.5))
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.sign_in_mcp_editor(cx);
+                                    }))
+                                    .child(tr("settings-catalog-browser-sign-in"))
+                            })
+                        },
+                    )
                     .child(
                         widgets::ghost_button("mcp-cancel")
                             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -3107,7 +3031,7 @@ impl SettingsScreen {
                                 this.mcp_notice = None;
                                 cx.notify();
                             }))
-                            .child("Cancel"),
+                            .child(tr("settings-settings-cancel")),
                     ),
             )
             .when_some(sign_in_error, |form, message| {
@@ -3123,7 +3047,7 @@ impl SettingsScreen {
 
 /// Plan usage meter: plan pill, percent used, reset date, progress bar.
 /// Mirrors the sidebar card at a larger size.
-fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
+fn plan_card(plan: &crate::billing::PlanUsage, messages: &super::i18n::MessageCache) -> Div {
     let fraction = f32::from(plan.percent_used) / 100.0;
     div()
         .w_full()
@@ -3145,14 +3069,31 @@ fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(gpui::rgb(theme::text_primary()))
                         .whitespace_nowrap()
-                        .child(format!("{}% used", plan.percent_used)),
+                        .child(
+                            messages
+                                .get(
+                                    "settings-usage-percent",
+                                    [("arg1", (plan.percent_used).to_string().into())],
+                                )
+                                .to_string(),
+                        ),
                 )
                 .child(
                     div()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_muted()))
                         .whitespace_nowrap()
-                        .child(format!("· Resets {}", plan.resets_label)),
+                        .child(
+                            messages
+                                .get(
+                                    "settings-usage-resets",
+                                    [(
+                                        "arg1",
+                                        presentation::reset_date(plan, messages).to_string().into(),
+                                    )],
+                                )
+                                .to_string(),
+                        ),
                 ),
         )
         .child(
@@ -3218,7 +3159,7 @@ fn integration_can_setup(integration: &AgentIntegration) -> bool {
         && !cua_permissions_ready(integration.permissions.as_ref())
 }
 
-fn integration_availability(integration: &AgentIntegration) -> (&'static str, u32) {
+fn integration_availability(integration: &AgentIntegration) -> (gpui::SharedString, u32) {
     if integration.enabled_for_new_tasks
         && is_cua_driver(&integration.id)
         && matches!(
@@ -3227,20 +3168,27 @@ fn integration_availability(integration: &AgentIntegration) -> (&'static str, u3
         )
         && !cua_permissions_ready(integration.permissions.as_ref())
     {
-        return ("Needs setup", theme::status_warning());
+        return (tr("settings-settings-needs-setup"), theme::status_warning());
     }
 
     match &integration.availability {
-        AgentIntegrationAvailability::NotDetected => ("Not detected", theme::text_muted()),
+        AgentIntegrationAvailability::NotDetected => {
+            (tr("settings-settings-not-detected"), theme::text_muted())
+        }
         AgentIntegrationAvailability::Available if is_cua_driver(&integration.id) => {
             if cua_permissions_ready(integration.permissions.as_ref()) {
-                ("Ready", theme::status_success())
+                (tr("settings-settings-ready"), theme::status_success())
             } else {
-                ("Available", theme::status_success())
+                (tr("settings-settings-available"), theme::status_success())
             }
         }
-        AgentIntegrationAvailability::Available => ("Detected", theme::status_success()),
-        AgentIntegrationAvailability::SetupRequired => ("Setup required", theme::status_warning()),
+        AgentIntegrationAvailability::Available => {
+            (tr("settings-settings-detected"), theme::status_success())
+        }
+        AgentIntegrationAvailability::SetupRequired => (
+            tr("settings-settings-setup-required"),
+            theme::status_warning(),
+        ),
     }
 }
 
@@ -3248,22 +3196,29 @@ fn cua_permissions_ready(permissions: Option<&AgentIntegrationPermissions>) -> b
     permissions.is_some_and(AgentIntegrationPermissions::ready)
 }
 
-fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option<String> {
-    let missing = permissions.first_missing()?;
-    let guidance = missing.guidance()?;
-    Some(format!("{}: {guidance}", missing.label()))
+fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option<UiText> {
+    use maple_agent::agent::AgentIntegrationPermissionKind;
+    Some(UiText::key(match permissions.first_missing()? {
+        AgentIntegrationPermissionKind::Accessibility => {
+            "settings-permission-guidance-accessibility"
+        }
+        AgentIntegrationPermissionKind::ScreenRecording => {
+            "settings-permission-guidance-screen-recording"
+        }
+        AgentIntegrationPermissionKind::DesktopHelper => return None,
+    }))
 }
 
 /// Credit for the open-source project behind computer use, whose mark is
 /// the card's icon. The card follows it with "Cua team", linked.
-const CUA_CREDIT: &str = "Powered by Cua, an open-source project from the";
+const CUA_CREDIT: &str = "settings-settings-powered-by-cua-an-open-source-project-from-the";
 const CUA_PROJECT_URL: &str = "https://cua.ai";
 
-fn cua_backend_label(_integration: &AgentIntegration) -> &'static str {
-    "Built into Maple"
+fn cua_backend_label(_integration: &AgentIntegration) -> gpui::SharedString {
+    tr("settings-settings-built-into-maple")
 }
 
-fn integration_metadata_badge(label: &'static str) -> Div {
+fn integration_metadata_badge(label: gpui::SharedString) -> Div {
     div()
         .px_2()
         .py_0p5()
@@ -3275,11 +3230,15 @@ fn integration_metadata_badge(label: &'static str) -> Div {
         .child(label)
 }
 
-fn cua_permission_badge(label: &'static str, granted: bool) -> Div {
+fn cua_permission_badge(
+    label: gpui::SharedString,
+    granted: bool,
+    messages: &super::i18n::MessageCache,
+) -> Div {
     let (status, color) = if granted {
-        ("on", theme::status_success())
+        ("settings-permission-granted", theme::status_success())
     } else {
-        ("needed", theme::status_warning())
+        ("settings-permission-needed", theme::status_warning())
     };
     div()
         .px_2()
@@ -3293,7 +3252,7 @@ fn cua_permission_badge(label: &'static str, granted: bool) -> Div {
         .text_xs()
         .text_color(gpui::rgb(theme::text_muted()))
         .child(div().size(px(5.)).rounded_full().bg(gpui::rgb(color)))
-        .child(format!("{label} {status}"))
+        .child(messages.get(status, [("permission", label.to_string().into())]))
 }
 
 fn is_cua_driver(id: &str) -> bool {
@@ -3303,7 +3262,7 @@ fn is_cua_driver(id: &str) -> bool {
 /// Small on/off pill used in list rows.
 fn pill_button(
     id: String,
-    label: &'static str,
+    label: gpui::SharedString,
     on: bool,
     handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
@@ -3373,26 +3332,40 @@ fn shortcut_keycap(label: String, bound: bool) -> Div {
         .child(label)
 }
 
-fn shortcut_context_label(context: Option<&str>) -> &str {
+fn shortcut_context_label(context: Option<&str>) -> gpui::SharedString {
     match context {
-        None => "Global",
-        Some("Chat") => "Chat",
-        Some("Transcript") => "Transcript",
-        Some(crate::ui::popup::MENU_CONTEXT) => "Menus",
-        Some("TextInput") | Some(crate::keymap::STANDARD_TEXT_CONTEXT) => "Text fields",
-        Some(crate::ui::text_input::vim_actions::NORMAL_CONTEXT) => "Composer — Normal",
-        Some(crate::ui::text_input::vim_actions::VISUAL_CONTEXT) => "Composer — Visual",
-        Some(crate::ui::text_input::vim_actions::INSERT_CONTEXT) => "Composer — Insert",
-        Some(crate::ui::text_input::vim_actions::WAITING_CONTEXT) => "Composer — Pending key",
-        Some(context) => context,
+        None => tr("settings-settings-global"),
+        Some("Chat") => tr("settings-settings-chat"),
+        Some("Transcript") => tr("settings-settings-transcript"),
+        Some(crate::ui::popup::MENU_CONTEXT) => tr("settings-settings-menus"),
+        Some("TextInput") | Some(crate::keymap::STANDARD_TEXT_CONTEXT) => {
+            tr("settings-settings-text-fields")
+        }
+        Some(crate::ui::text_input::vim_actions::NORMAL_CONTEXT) => {
+            tr("settings-settings-composer-normal")
+        }
+        Some(crate::ui::text_input::vim_actions::VISUAL_CONTEXT) => {
+            tr("settings-settings-composer-visual")
+        }
+        Some(crate::ui::text_input::vim_actions::INSERT_CONTEXT) => {
+            tr("settings-settings-composer-insert")
+        }
+        Some(crate::ui::text_input::vim_actions::WAITING_CONTEXT) => {
+            tr("settings-settings-composer-pending-key")
+        }
+        Some(context) => context.to_string().into(),
     }
 }
 
 fn shortcut_row_matches(row: &crate::shortcuts::ShortcutRow, query: &str) -> bool {
     query.is_empty()
-        || row.label.to_lowercase().contains(query)
+        || shortcut_labels::label(&row.label)
+            .to_lowercase()
+            .contains(query)
         || row.slot_id.to_lowercase().contains(query)
-        || row.category.to_lowercase().contains(query)
+        || shortcut_labels::category(&row.category)
+            .to_lowercase()
+            .contains(query)
         || row
             .context
             .as_deref()
@@ -3411,13 +3384,13 @@ fn shortcut_row_matches(row: &crate::shortcuts::ShortcutRow, query: &str) -> boo
 
 fn shortcut_conflict_label(conflict: &ShortcutConflict) -> String {
     let kind = match conflict.kind {
-        ShortcutConflictKind::Exact => "Exact collision",
-        ShortcutConflictKind::Prefix => "Prefix collision",
+        ShortcutConflictKind::Exact => tr("settings-settings-exact-collision"),
+        ShortcutConflictKind::Prefix => tr("settings-settings-prefix-collision"),
     };
     let overlap = match conflict.overlap {
-        ShortcutContextOverlap::Equivalent => "same context",
-        ShortcutContextOverlap::Scoped => "overlapping scoped context",
-        ShortcutContextOverlap::Possible => "possibly overlapping context",
+        ShortcutContextOverlap::Equivalent => tr("settings-settings-same-context"),
+        ShortcutContextOverlap::Scoped => tr("settings-settings-overlapping-scoped-context"),
+        ShortcutContextOverlap::Possible => tr("settings-settings-possibly-overlapping-context"),
     };
     format!("{kind}, {overlap}")
 }
@@ -3450,7 +3423,8 @@ fn portable_keystroke_token(keystroke: &gpui::Keystroke) -> String {
 }
 
 /// Title and description column shared by every settings row.
-pub(crate) fn setting_copy(title: &str, description: &str) -> Div {
+pub(crate) fn setting_copy(title: impl AsRef<str>, description: impl AsRef<str>) -> Div {
+    let (title, description) = (title.as_ref(), description.as_ref());
     div()
         .flex()
         .flex_col()
@@ -3471,13 +3445,6 @@ pub(crate) fn setting_copy(title: &str, description: &str) -> Div {
         )
 }
 
-fn setting_row_id(title: &str) -> gpui::SharedString {
-    gpui::SharedString::from(format!(
-        "setting-{}",
-        title.to_lowercase().replace(' ', "-")
-    ))
-}
-
 /// One dropdown choice as data: the label shown in the menu and whether
 /// it is the saved value.
 struct SettingOption {
@@ -3487,13 +3454,13 @@ struct SettingOption {
 
 /// An on/off setting with a switch. The whole row is the click target.
 fn toggle_row(
-    title: &str,
-    description: &str,
+    title: gpui::SharedString,
+    description: gpui::SharedString,
     on: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
     widgets::card_row()
-        .id(setting_row_id(title))
+        .id("setting-automatically-download-updates")
         .flex()
         .items_center()
         .justify_between()
@@ -3504,7 +3471,7 @@ fn toggle_row(
         .child(widgets::switch(
             gpui::SharedString::from(format!(
                 "setting-switch-{}",
-                title.to_lowercase().replace(' ', "-")
+                "automatically-download-updates"
             )),
             on,
         ))
@@ -3550,7 +3517,7 @@ mod tests {
             update.primary = primary;
             update
         };
-        let check = UpdateCheck::Ready("Check for updates");
+        let check = UpdateCheck::Ready("settings-settings-check-for-updates");
 
         assert_eq!(update_check(&snapshot(State::Idle, None)), check);
         assert_eq!(
@@ -3559,7 +3526,7 @@ mod tests {
         );
         assert_eq!(
             update_check(&snapshot(State::Error, Some(UpdateAction::Check))),
-            UpdateCheck::Ready("Retry")
+            UpdateCheck::Ready("settings-settings-retry")
         );
         for state in [State::Checking, State::Downloading, State::Installing] {
             assert_eq!(update_check(&snapshot(state, None)), UpdateCheck::Running);
@@ -3787,19 +3754,19 @@ mod tests {
         // an empty requirement list is a ready integration, not a blocked one.
         let permissions = AgentIntegrationPermissions::none_required();
         assert!(cua_permissions_ready(Some(&permissions)));
-        assert_eq!(integration_setup_notice(&permissions), None);
+        assert!(integration_setup_notice(&permissions).is_none());
     }
 
     #[test]
     fn the_setup_notice_names_the_requirement_and_its_remedy() {
         let notice = integration_setup_notice(&macos_permissions(false, false))
             .expect("a missing grant produces a notice");
-        assert!(notice.starts_with("Accessibility: "));
-        assert!(notice.contains("System Settings"));
+        assert!(notice.resolve().contains("Accessibility"));
+        assert!(notice.resolve().contains("System Settings"));
 
         let notice = integration_setup_notice(&macos_permissions(true, false))
             .expect("a missing grant produces a notice");
-        assert!(notice.starts_with("Screen Recording: "));
+        assert!(notice.resolve().contains("Screen Recording"));
 
         // A compositor helper's remedy changes as the user works through it,
         // so it is written once on the integration itself. A second copy here
@@ -3808,7 +3775,7 @@ mod tests {
             maple_agent::agent::AgentIntegrationPermissionKind::DesktopHelper,
             false,
         );
-        assert_eq!(integration_setup_notice(&helper), None);
+        assert!(integration_setup_notice(&helper).is_none());
     }
 
     #[test]

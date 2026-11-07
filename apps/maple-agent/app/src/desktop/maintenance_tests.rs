@@ -21,6 +21,7 @@ enum HostCommand {
     State(StoreState),
     ReleaseFlush,
     AutomaticDownloads(bool),
+    ReconnectWithLocale(&'static str),
 }
 
 struct FixtureHost {
@@ -130,6 +131,7 @@ impl FixtureHost {
                 let mut running = runtime_survives;
                 let mut pending_flush = None;
                 let mut automatic_downloads = true;
+                let mut saved_locale = None;
                 loop {
                     tokio::select! {
                         command = control.recv() => {
@@ -139,13 +141,18 @@ impl FixtureHost {
                                     state = next;
                                     store_id = generation;
                                     let id = pending.take().expect("an admitted password operation");
-                                    if protocol::write(&mut output, &protocol::Message::Response { id, result }).await.is_err() { break; }
+                                    if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result }).await.is_err() { break; }
+                                }
+                                HostCommand::ReconnectWithLocale(locale) => {
+                                    saved_locale = Some(locale.to_string());
+                                    if protocol::write(&mut output, &protocol::Message::Event(Box::new(AgentServiceEvent::HostReconnected))).await.is_err() { break; }
+                                    continue;
                                 }
                                 HostCommand::State(next) => state = next,
                                 HostCommand::AutomaticDownloads(enabled) => automatic_downloads = enabled,
                                 HostCommand::ReleaseFlush => {
                                     let id = pending_flush.take().expect("a deferred settings flush");
-                                    if protocol::write(&mut output, &protocol::Message::Response { id, result: Ok(Value::Null) }).await.is_err() { break; }
+                                    if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result: Ok(Value::Null) }).await.is_err() { break; }
                                     continue;
                                 }
                             }
@@ -171,6 +178,7 @@ impl FixtureHost {
                                 "get_ui_settings" => {
                                     let settings = crate::settings::AppSettings {
                                         automatic_update_downloads: automatic_downloads,
+                                        locale: saved_locale.clone(),
                                         ..Default::default()
                                     };
                                     Ok(serde_json::to_value(settings).unwrap())
@@ -209,7 +217,7 @@ impl FixtureHost {
                                 // readiness regression and must never contact a real service.
                                 _ => Err("Optional fixture operation unavailable".into()),
                             };
-                            if protocol::write(&mut output, &protocol::Message::Response { id:request.id, result }).await.is_err() { break; }
+                            if protocol::write(&mut output, &protocol::Message::Response { failure: None, id:request.id, result }).await.is_err() { break; }
                         }
                     }
                 }
@@ -958,4 +966,50 @@ fn explicit_quit_before_soft_detach_commit_keeps_host_stop_priority(cx: &mut gpu
     settle(cx);
     crate::settings::discard_decrypted_cache();
     settings_store.close().unwrap();
+}
+
+#[gpui::test]
+fn reconnect_and_password_maintenance_preserve_saved_language(cx: &mut gpui::TestAppContext) {
+    let _locale = ui::i18n::TestLocalizationGuard::enable();
+    let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+    ui::i18n::apply_preference(None);
+    let system = ui::i18n::current_locale();
+    let saved = if system == "es" { "en" } else { "es" };
+    let host = FixtureHost::new();
+    let app = shell(&host, cx, true, &settings);
+    ui::i18n::apply_preference(Some(saved));
+    let cx = window(&app, cx);
+    host.commands
+        .send(HostCommand::ReconnectWithLocale(saved))
+        .unwrap();
+    wait(cx, "reconnected settings refresh", |cx| {
+        app.update(cx, |app, _| {
+            app.settings.locale.as_deref() == Some(saved)
+                && !app.password_settings_refreshing
+                && !app.password_settings_refresh_pending
+        })
+    });
+    assert_eq!(ui::i18n::current_locale().to_string(), saved);
+    let operation = host.begin("change_store_password");
+    wait(cx, "password maintenance", |cx| {
+        app.update(cx, |app, _| app.password_settings_refresh_pending)
+    });
+    assert_eq!(ui::i18n::current_locale().to_string(), saved);
+    host.finish(None);
+    wait(cx, "maintenance settings refresh", |cx| {
+        operation.is_finished()
+            && app.update(cx, |app, _| {
+                !app.password_settings_refreshing && !app.password_settings_refresh_pending
+            })
+    });
+    assert_eq!(ui::i18n::current_locale().to_string(), saved);
+    host.commands
+        .send(HostCommand::State(StoreState::Locked))
+        .unwrap();
+    wait(cx, "locked store clears language", |cx| {
+        app.update(cx, |app, _| matches!(app.screen, Screen::StoreGate(_)))
+    });
+    assert_eq!(ui::i18n::current_locale(), system);
+    drop(host);
+    settle(cx);
 }

@@ -10,7 +10,7 @@ use maple_agent::store::records::{CredentialTokens, SecretString, StoredCredenti
 use maple_agent::store::{AccountId, Store};
 use maple_sdk::OpenSecretClient;
 
-use super::LocalBackend;
+use super::{HostFailure, LocalBackend};
 
 pub(super) const PENDING_DELETION_MESSAGE: &str = "Account deletion has an unknown outcome. Maple has retained your local history and blocked this account. Local history will remain retained until a successful server confirmation or an authoritative server resolution is available. Signing out or a rejected retry cannot resolve an earlier lost response.";
 const WRONG_CODE_MESSAGE: &str = "That confirmation code is wrong or has expired";
@@ -21,6 +21,8 @@ pub struct AccountDeletionStatus {
     pub user_id: String,
     pub started_ms: i64,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 struct Intent {
@@ -51,10 +53,12 @@ trait DeletionTransport: Send {
 struct SdkTransport(OpenSecretClient);
 
 impl SdkTransport {
-    fn prepare(api_url: &str, tokens: &CredentialTokens) -> Result<Self, String> {
+    fn prepare(api_url: &str, tokens: &CredentialTokens) -> Result<Self, HostFailure> {
         let environment = maple_agent::open_secret_config::configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(api_url.to_owned(), environment)
-            .map_err(|_| "Could not prepare account deletion".to_string())?
+            .map_err(|_| {
+                HostFailure::new("deletion-prepare", "Could not prepare account deletion")
+            })?
             .with_client_app(maple_sdk::ClientApp::Work);
         client
             .set_tokens(
@@ -64,7 +68,12 @@ impl SdkTransport {
                     .as_ref()
                     .map(|token| token.expose().to_owned()),
             )
-            .map_err(|_| "Could not prepare account deletion credentials".to_string())?;
+            .map_err(|_| {
+                HostFailure::new(
+                    "deletion-credentials",
+                    "Could not prepare account deletion credentials",
+                )
+            })?;
         Ok(Self(client))
     }
 }
@@ -98,37 +107,42 @@ impl DeletionTransport for SdkTransport {
 }
 
 impl LocalBackend {
-    pub(super) fn pending_deletion_status(&self) -> Result<Option<AccountDeletionStatus>, String> {
+    pub(super) fn pending_deletion_status_presented(
+        &self,
+    ) -> Result<Option<AccountDeletionStatus>, HostFailure> {
         let Some(store) = self.store.as_ref() else {
             return Ok(None);
         };
-        let pending = store
-            .pending_account_deletion(&self.api_url)
-            .map_err(|_| "Could not read account deletion status".to_string())?;
+        let pending = store.pending_account_deletion(&self.api_url).map_err(|_| {
+            HostFailure::new("deletion-status", "Could not read account deletion status")
+        })?;
         Ok(
             pending.map(|(_, user_id, _, started_ms)| AccountDeletionStatus {
                 user_id,
                 started_ms,
                 message: PENDING_DELETION_MESSAGE.to_owned(),
+                label: Some("deletion-pending".into()),
             }),
         )
     }
 
-    pub async fn account_deletion_status(&self) -> Result<Option<AccountDeletionStatus>, String> {
-        self.pending_deletion_status()
+    pub async fn account_deletion_status_presented(
+        &self,
+    ) -> Result<Option<AccountDeletionStatus>, HostFailure> {
+        self.pending_deletion_status_presented()
     }
 
     /// Host dispatch drains remote/ACP work before taking the account writer
     /// gate. This method drains local work, then durably blocks the account
     /// before the first possible server dispatch. It never restores a pending
     /// credential into the ordinary authentication/runtime machinery.
-    pub async fn confirm_account_deletion(
+    pub async fn confirm_account_deletion_presented(
         &self,
         user_id: &str,
         confirmation_code: String,
         plaintext_secret: String,
-    ) -> Result<(), String> {
-        self.confirm_account_deletion_using(
+    ) -> Result<(), HostFailure> {
+        self.confirm_account_deletion_using_presented(
             user_id,
             confirmation_code,
             plaintext_secret,
@@ -137,19 +151,25 @@ impl LocalBackend {
         .await
     }
 
-    async fn confirm_account_deletion_using<D: DeletionTransport>(
+    async fn confirm_account_deletion_using_presented<D: DeletionTransport>(
         &self,
         user_id: &str,
         confirmation_code: String,
         plaintext_secret: String,
-        prepare: impl FnOnce(&CredentialTokens) -> Result<D, String>,
-    ) -> Result<(), String> {
+        prepare: impl FnOnce(&CredentialTokens) -> Result<D, HostFailure>,
+    ) -> Result<(), HostFailure> {
         let code = confirmation_code.trim().to_owned();
         if code.is_empty() {
-            return Err("Enter the confirmation code from the email".into());
+            return Err(HostFailure::new(
+                "deletion-code",
+                "Enter the confirmation code from the email",
+            ));
         }
         if code.len() > 256 || plaintext_secret.is_empty() || plaintext_secret.len() > 256 {
-            return Err("The account deletion confirmation is invalid".into());
+            return Err(HostFailure::new(
+                "deletion-invalid",
+                "The account deletion confirmation is invalid",
+            ));
         }
         // The durable generation also fences delayed responses; this lock
         // serializes local retries against login/logout and credential restore.
@@ -157,7 +177,7 @@ impl LocalBackend {
         let store = self
             .store
             .as_ref()
-            .ok_or("Local store is unavailable")?
+            .ok_or_else(|| HostFailure::new("deletion-store", "Local store is unavailable"))?
             .clone();
         let initial = lookup_intent(&store, &self.api_url, user_id)?;
 
@@ -168,7 +188,7 @@ impl LocalBackend {
         let spill_store = Arc::clone(&store);
         blocking(move || maple_agent::store::spill::SpillRoot::new(spill_store.paths())
             .and_then(|spills| spills.cleanup())
-            .map_err(|_| "Could not clear temporary task output. No new account deletion request was sent.".to_string())).await?;
+            .map_err(|_| HostFailure::new("deletion-spill", "Could not clear temporary task output. No new account deletion request was sent."))).await?;
         self.cancel_oauth();
         self.auth.clear_auth(user_id).await?;
 
@@ -179,7 +199,10 @@ impl LocalBackend {
             || intent.resumed != initial.resumed
             || (intent.resumed && intent.generation != initial.generation)
         {
-            return Err("The host account changed. Reopen this screen before continuing.".into());
+            return Err(HostFailure::new(
+                "deletion-account-changed",
+                "The host account changed. Reopen this screen before continuing.",
+            ));
         }
         if !intent.resumed {
             intent.generation = initial.generation;
@@ -195,7 +218,12 @@ impl LocalBackend {
         if let Err(error) = blocking(move || {
             begin_store
                 .begin_account_deletion(account, &generation, chrono::Utc::now().timestamp_millis())
-                .map_err(|_| "Could not save account deletion intent".to_string())
+                .map_err(|_| {
+                    HostFailure::new(
+                        "deletion-save-intent",
+                        "Could not save account deletion intent",
+                    )
+                })
         })
         .await
         {
@@ -213,18 +241,25 @@ impl LocalBackend {
     }
 }
 
-fn lookup_intent(store: &Store, api_url: &str, user_id: &str) -> Result<Intent, String> {
-    if let Some((account, pending_user, generation, _)) = store
-        .pending_account_deletion(api_url)
-        .map_err(|_| "Could not read account deletion intent".to_string())?
+fn lookup_intent(store: &Store, api_url: &str, user_id: &str) -> Result<Intent, HostFailure> {
+    if let Some((account, pending_user, generation, _)) =
+        store.pending_account_deletion(api_url).map_err(|_| {
+            HostFailure::new(
+                "deletion-read-intent",
+                "Could not read account deletion intent",
+            )
+        })?
     {
         if pending_user != user_id {
-            return Err("The host account changed. Reopen this screen before continuing.".into());
+            return Err(HostFailure::new(
+                "deletion-account-changed",
+                "The host account changed. Reopen this screen before continuing.",
+            ));
         }
         let credentials = store
             .pending_deletion_credentials(account, &generation, api_url)
-            .map_err(|_| PENDING_DELETION_MESSAGE.to_string())?
-            .ok_or_else(|| PENDING_DELETION_MESSAGE.to_string())?;
+            .map_err(|_| HostFailure::new("deletion-pending", PENDING_DELETION_MESSAGE))?
+            .ok_or_else(|| HostFailure::new("deletion-pending", PENDING_DELETION_MESSAGE))?;
         return Ok(Intent {
             account,
             generation,
@@ -234,9 +269,19 @@ fn lookup_intent(store: &Store, api_url: &str, user_id: &str) -> Result<Intent, 
     }
     let credentials = store
         .credentials(api_url)
-        .map_err(|_| "Could not read saved credentials".to_string())?
+        .map_err(|_| {
+            HostFailure::new(
+                "deletion-read-credentials",
+                "Could not read saved credentials",
+            )
+        })?
         .filter(|credentials| credentials.user_id == user_id)
-        .ok_or("The host account changed. Reopen this screen before continuing.")?;
+        .ok_or_else(|| {
+            HostFailure::new(
+                "deletion-account-changed",
+                "The host account changed. Reopen this screen before continuing.",
+            )
+        })?;
     Ok(Intent {
         account: credentials.owner.account,
         generation: uuid::Uuid::new_v4().to_string(),
@@ -245,21 +290,21 @@ fn lookup_intent(store: &Store, api_url: &str, user_id: &str) -> Result<Intent, 
     })
 }
 
-fn finish_attempt(store: &Store, intent: &Intent, attempt: Attempt) -> Result<(), String> {
+fn finish_attempt(store: &Store, intent: &Intent, attempt: Attempt) -> Result<(), HostFailure> {
     if attempt.outcome == Outcome::Success {
         return store.confirm_account_deletion(intent.account, &intent.generation)
-            .map_err(|_| "The server confirmed account deletion, but Maple could not save that confirmation. Local history is retained pending recovery.".into());
+            .map_err(|_| HostFailure::new("deletion-confirmation-save", "The server confirmed account deletion, but Maple could not save that confirmation. Local history is retained pending recovery."));
     }
     let tokens = attempt
         .tokens
-        .ok_or_else(|| PENDING_DELETION_MESSAGE.to_owned())?;
+        .ok_or_else(|| HostFailure::new("deletion-pending", PENDING_DELETION_MESSAGE))?;
     if tokens != intent.credentials.tokens {
         let revision = intent
             .credentials
             .owner
             .revision
             .checked_add(1)
-            .ok_or_else(|| PENDING_DELETION_MESSAGE.to_owned())?;
+            .ok_or_else(|| HostFailure::new("deletion-pending", PENDING_DELETION_MESSAGE))?;
         store
             .replace_pending_deletion_credentials(
                 &intent.credentials.owner,
@@ -270,23 +315,65 @@ fn finish_attempt(store: &Store, intent: &Intent, attempt: Attempt) -> Result<()
                 &tokens,
                 chrono::Utc::now().timestamp_millis(),
             )
-            .map_err(|_| PENDING_DELETION_MESSAGE.to_owned())?;
+            .map_err(|_| HostFailure::new("deletion-pending", PENDING_DELETION_MESSAGE))?;
     }
     if attempt.outcome == Outcome::RejectedCode && !intent.resumed {
         store
             .abort_account_deletion(intent.account, &intent.generation)
-            .map_err(|_| PENDING_DELETION_MESSAGE.to_owned())?;
-        return Err(WRONG_CODE_MESSAGE.to_owned());
+            .map_err(|_| HostFailure::new("deletion-pending", PENDING_DELETION_MESSAGE))?;
+        return Err(HostFailure::new("deletion-wrong-code", WRONG_CODE_MESSAGE));
     }
-    Err(PENDING_DELETION_MESSAGE.to_owned())
+    Err(HostFailure::new(
+        "deletion-pending",
+        PENDING_DELETION_MESSAGE,
+    ))
 }
 
 async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
+    work: impl FnOnce() -> Result<T, HostFailure> + Send + 'static,
+) -> Result<T, HostFailure> {
     tokio::task::spawn_blocking(work).await.map_err(|_| {
-        "Account deletion persistence was interrupted; local history is retained".to_string()
+        HostFailure::new(
+            "deletion-interrupted",
+            "Account deletion persistence was interrupted; local history is retained",
+        )
     })?
+}
+
+impl LocalBackend {
+    pub(super) fn pending_deletion_status(&self) -> Result<Option<AccountDeletionStatus>, String> {
+        self.pending_deletion_status_presented()
+            .map_err(|failure| failure.message)
+    }
+    pub async fn account_deletion_status(&self) -> Result<Option<AccountDeletionStatus>, String> {
+        self.account_deletion_status_presented()
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn confirm_account_deletion(
+        &self,
+        user_id: &str,
+        confirmation_code: String,
+        plaintext_secret: String,
+    ) -> Result<(), String> {
+        self.confirm_account_deletion_presented(user_id, confirmation_code, plaintext_secret)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    #[cfg(test)]
+    async fn confirm_account_deletion_using<D: DeletionTransport>(
+        &self,
+        user_id: &str,
+        code: String,
+        secret: String,
+        prepare: impl FnOnce(&CredentialTokens) -> Result<D, String>,
+    ) -> Result<(), String> {
+        self.confirm_account_deletion_using_presented(user_id, code, secret, |tokens| {
+            prepare(tokens).map_err(HostFailure::from)
+        })
+        .await
+        .map_err(|failure| failure.message)
+    }
 }
 
 #[cfg(test)]

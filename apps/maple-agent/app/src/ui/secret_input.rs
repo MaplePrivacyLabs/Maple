@@ -266,6 +266,7 @@ pub struct SecretInput {
     buffer: SecretBuffer,
     focus: FocusHandle,
     placeholder: SharedString,
+    placeholder_key: Option<&'static str>,
     masks: SharedString,
     tab_index: Option<isize>,
     selecting: bool,
@@ -280,10 +281,23 @@ impl EventEmitter<SecretInputChanged> for SecretInput {}
 impl EventEmitter<SecretInputSubmitted> for SecretInput {}
 
 impl SecretInput {
+    /// A catalog-backed placeholder and accessibility label that follow live language changes.
+    pub fn localized(key: &'static str, cx: &mut Context<Self>) -> Self {
+        let mut input = Self::new("", cx);
+        input.placeholder_key = Some(key);
+        input
+    }
+
+    fn placeholder(&self) -> SharedString {
+        self.placeholder_key
+            .map_or_else(|| self.placeholder.clone(), super::i18n::tr)
+    }
+
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
             buffer: SecretBuffer::default(),
             focus: cx.focus_handle(),
+            placeholder_key: None,
             placeholder: placeholder.to_owned().into(),
             masks: "".into(),
             tab_index: None,
@@ -817,7 +831,7 @@ impl Element for SecretElement {
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
         let text = if input.is_empty() {
-            input.placeholder.clone()
+            input.placeholder()
         } else {
             input.masks.clone()
         };
@@ -988,8 +1002,8 @@ impl Render for SecretInput {
         div()
             .id(("secret-input", cx.entity_id().as_u64()))
             .role(gpui::Role::TextInput)
-            .aria_label(self.placeholder.clone())
-            .aria_placeholder(self.placeholder.clone())
+            .aria_label(self.placeholder())
+            .aria_placeholder(self.placeholder())
             .key_context("TextInput SecretInput input_role = other editor_vim_mode = disabled")
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)

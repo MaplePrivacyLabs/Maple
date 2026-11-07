@@ -10,7 +10,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::LocalBackend;
+use super::{HostFailure, LocalBackend};
 
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_NAME_BYTES: usize = 1024;
@@ -48,69 +48,100 @@ pub struct ProjectFolderPage {
 }
 
 impl LocalBackend {
-    pub async fn browse_project_folders(
+    pub async fn browse_project_folders_presented(
         &self,
         user_id: &str,
         request: ProjectFolderRequest,
-    ) -> Result<ProjectFolderPage, String> {
-        self.authorize_account(user_id)?;
+    ) -> Result<ProjectFolderPage, HostFailure> {
+        self.authorize_account_presented(user_id)?;
         self.open_store()?;
         tokio::task::spawn_blocking(move || browse(request, dirs::home_dir()))
             .await
-            .map_err(|_| "Folder browser worker did not complete".to_string())?
+            .map_err(|_| {
+                HostFailure::new(
+                    "folder-browser-worker",
+                    "Folder browser worker did not complete",
+                )
+            })?
     }
 
-    pub async fn create_project_folder(
+    pub async fn create_project_folder_presented(
         &self,
         user_id: &str,
         parent_path: String,
         name: String,
-    ) -> Result<String, String> {
-        self.authorize_account(user_id)?;
+    ) -> Result<String, HostFailure> {
+        self.authorize_account_presented(user_id)?;
         self.open_store()?;
         // Account dispatch holds its read gate until this admitted operation
         // finishes, including when a remote controller disconnects.
         tokio::task::spawn_blocking(move || create(&parent_path, &name))
             .await
-            .map_err(|_| "Folder creation worker did not complete".to_string())?
+            .map_err(|_| {
+                HostFailure::new(
+                    "folder-create-worker",
+                    "Folder creation worker did not complete",
+                )
+            })?
     }
 }
 
-fn path_text(path: &Path) -> Result<String, String> {
-    let text = path
-        .to_str()
-        .ok_or("This folder path is not valid Unicode")?;
+fn path_text(path: &Path) -> Result<String, HostFailure> {
+    let text = path.to_str().ok_or_else(|| {
+        HostFailure::new("folder-unicode", "This folder path is not valid Unicode")
+    })?;
     if text.len() > MAX_PATH_BYTES {
-        return Err("This folder path is too long".into());
+        return Err(HostFailure::new(
+            "folder-long",
+            "This folder path is too long",
+        ));
     }
     Ok(text.to_owned())
 }
 
-fn absolute_path(path: &str) -> Result<&Path, String> {
+fn absolute_path(path: &str) -> Result<&Path, HostFailure> {
     if path.is_empty() || path.len() > MAX_PATH_BYTES || path.contains('\0') {
-        return Err("Enter a valid absolute folder path".into());
+        return Err(HostFailure::new(
+            "folder-path",
+            "Enter a valid absolute folder path",
+        ));
     }
     let path = Path::new(path);
     if !path.is_absolute() {
-        return Err("Enter an absolute folder path on this computer".into());
+        return Err(HostFailure::new(
+            "folder-absolute",
+            "Enter an absolute folder path on this computer",
+        ));
     }
     Ok(path)
 }
 
-fn folder_error(error: io::Error) -> String {
+fn folder_error(error: io::Error) -> HostFailure {
     match error.kind() {
-        io::ErrorKind::NotFound => "This folder no longer exists".into(),
-        io::ErrorKind::PermissionDenied => "Permission denied for this folder".into(),
-        io::ErrorKind::AlreadyExists => "A file or folder with this name already exists".into(),
-        io::ErrorKind::NotADirectory => "This path is not a folder".into(),
-        _ => "Could not access this folder".into(),
+        io::ErrorKind::NotFound => {
+            HostFailure::new("folder-missing", "This folder no longer exists")
+        }
+        io::ErrorKind::PermissionDenied => {
+            HostFailure::new("folder-permission", "Permission denied for this folder")
+        }
+        io::ErrorKind::AlreadyExists => HostFailure::new(
+            "folder-exists",
+            "A file or folder with this name already exists",
+        ),
+        io::ErrorKind::NotADirectory => {
+            HostFailure::new("folder-directory", "This path is not a folder")
+        }
+        _ => HostFailure::new("folder-access", "Could not access this folder"),
     }
 }
 
-fn canonical_folder(path: &Path) -> Result<PathBuf, String> {
+fn canonical_folder(path: &Path) -> Result<PathBuf, HostFailure> {
     let path = path.canonicalize().map_err(folder_error)?;
     if !path.metadata().map_err(folder_error)?.is_dir() {
-        return Err("This path is not a folder".into());
+        return Err(HostFailure::new(
+            "folder-directory",
+            "This path is not a folder",
+        ));
     }
     path_text(&path)?;
     Ok(path)
@@ -119,15 +150,20 @@ fn canonical_folder(path: &Path) -> Result<PathBuf, String> {
 fn browse(
     request: ProjectFolderRequest,
     home: Option<PathBuf>,
-) -> Result<ProjectFolderPage, String> {
+) -> Result<ProjectFolderPage, HostFailure> {
     let root = match request.path.as_deref() {
         Some(path) => canonical_folder(absolute_path(path)?)?,
-        None => canonical_folder(&home.ok_or("This computer's home folder is unavailable")?)?,
+        None => canonical_folder(&home.ok_or_else(|| {
+            HostFailure::new("folder-home", "This computer's home folder is unavailable")
+        })?)?,
     };
     if let Some(after) = &request.after
         && (after.is_empty() || after.len() > MAX_NAME_BYTES || after.contains('\0'))
     {
-        return Err("Invalid folder page cursor".into());
+        return Err(HostFailure::new(
+            "folder-cursor",
+            "Invalid folder page cursor",
+        ));
     }
     let limit = usize::from(request.limit).clamp(1, MAX_PAGE_ENTRIES);
     let names = scan_names(&root, &request, limit, MAX_SCANNED_ENTRIES)?;
@@ -154,14 +190,17 @@ fn browse(
             .peek()
             .map(|_| page.entries.last().unwrap().name.clone());
         if serde_json::to_vec(&page)
-            .map_err(|_| "Could not encode folder page")?
+            .map_err(|_| HostFailure::new("folder-encode", "Could not encode folder page"))?
             .len()
             > MAX_PAGE_BYTES
         {
             page.entries.pop();
             page.next = page.entries.last().map(|entry| entry.name.clone());
             if page.entries.is_empty() {
-                return Err("This folder entry is too large to display".into());
+                return Err(HostFailure::new(
+                    "folder-large",
+                    "This folder entry is too large to display",
+                ));
             }
             break;
         }
@@ -174,14 +213,14 @@ fn scan_names(
     request: &ProjectFolderRequest,
     limit: usize,
     scan_limit: usize,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, HostFailure> {
     let mut names = BinaryHeap::with_capacity(limit + 2);
     for (index, entry) in fs::read_dir(root).map_err(folder_error)?.enumerate() {
         if index == scan_limit {
-            return Err(
-                "This folder has too many entries to browse. Enter a child folder's full path."
-                    .into(),
-            );
+            return Err(HostFailure::new(
+                "folder-many",
+                "This folder has too many entries to browse. Enter a child folder's full path.",
+            ));
         }
         let entry = entry.map_err(folder_error)?;
         // Non-Unicode names cannot round-trip through the JSON path contract.
@@ -207,7 +246,7 @@ fn scan_names(
     Ok(names.into_sorted_vec())
 }
 
-fn validate_child_name(name: &str) -> Result<(), String> {
+fn validate_child_name(name: &str) -> Result<(), HostFailure> {
     let mut components = Path::new(name).components();
     if name.trim().is_empty()
         || name.len() > MAX_NAME_BYTES
@@ -216,12 +255,15 @@ fn validate_child_name(name: &str) -> Result<(), String> {
         || !matches!(components.next(), Some(Component::Normal(_)))
         || components.next().is_some()
     {
-        return Err("Enter one folder name without path separators".into());
+        return Err(HostFailure::new(
+            "folder-name",
+            "Enter one folder name without path separators",
+        ));
     }
     Ok(())
 }
 
-fn create(parent: &str, name: &str) -> Result<String, String> {
+fn create(parent: &str, name: &str) -> Result<String, HostFailure> {
     validate_child_name(name)?;
     let parent = canonical_folder(absolute_path(parent)?)?;
     let path = parent.join(name);
@@ -232,9 +274,42 @@ fn create(parent: &str, name: &str) -> Result<String, String> {
     path_text(&canonical_folder(&path)?)
 }
 
+impl LocalBackend {
+    pub async fn browse_project_folders(
+        &self,
+        user_id: &str,
+        request: ProjectFolderRequest,
+    ) -> Result<ProjectFolderPage, String> {
+        self.browse_project_folders_presented(user_id, request)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn create_project_folder(
+        &self,
+        user_id: &str,
+        parent_path: String,
+        name: String,
+    ) -> Result<String, String> {
+        self.create_project_folder_presented(user_id, parent_path, name)
+            .await
+            .map_err(|failure| failure.message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_io_failures_and_invalid_names_have_source_codes() {
+        let failure = folder_error(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_eq!(failure.code, "folder-permission");
+        assert_eq!(failure.message, "Permission denied for this folder");
+        assert_eq!(
+            validate_child_name("../outside").unwrap_err().code,
+            "folder-name"
+        );
+    }
 
     fn request(path: &Path) -> ProjectFolderRequest {
         ProjectFolderRequest {
@@ -299,7 +374,7 @@ mod tests {
         assert!(absolute_path("/invalid\0path").is_err());
         assert!(absolute_path(&"/".repeat(MAX_PATH_BYTES + 1)).is_err());
         assert_eq!(
-            folder_error(io::ErrorKind::PermissionDenied.into()),
+            folder_error(io::ErrorKind::PermissionDenied.into()).message,
             "Permission denied for this folder"
         );
     }
@@ -318,11 +393,12 @@ mod tests {
         assert!(
             scan_names(root.path(), &query, 2, 104)
                 .unwrap_err()
+                .message
                 .contains("too many entries")
         );
         assert_eq!(scan_names(root.path(), &query, 2, 105).unwrap().len(), 3);
         query.after = Some("x".repeat(MAX_NAME_BYTES + 1));
-        assert!(browse(query, None).unwrap_err().contains("cursor"));
+        assert!(browse(query, None).unwrap_err().message.contains("cursor"));
     }
 
     #[test]
@@ -338,12 +414,14 @@ mod tests {
         assert!(
             create(&parent, "new folder")
                 .unwrap_err()
+                .message
                 .contains("already exists")
         );
         fs::write(root.path().join("file"), b"untouched").unwrap();
         assert!(
             create(&parent, "file")
                 .unwrap_err()
+                .message
                 .contains("already exists")
         );
         assert_eq!(fs::read(root.path().join("file")).unwrap(), b"untouched");
@@ -394,11 +472,13 @@ mod tests {
         assert!(
             create(&page.path, "link")
                 .unwrap_err()
+                .message
                 .contains("already exists")
         );
         assert!(
             create(&page.path, "broken")
                 .unwrap_err()
+                .message
                 .contains("already exists")
         );
         // A selected folder is not a sandbox; creation through an explicitly
@@ -424,7 +504,10 @@ mod tests {
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o0)).unwrap();
         let result = browse(request(root.path()), None);
         fs::set_permissions(root.path(), original).unwrap();
-        assert_eq!(result.unwrap_err(), "Permission denied for this folder");
+        assert_eq!(
+            result.unwrap_err().message,
+            "Permission denied for this folder"
+        );
     }
 
     #[cfg(unix)]

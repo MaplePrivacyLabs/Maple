@@ -639,6 +639,11 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
+`MAPLE_ENABLE_LOCALIZATION=1` enables the localization preview in **all** build
+profiles, including Dev and Prod. It defaults off: Language settings are hidden
+and UI text uses English. Restart to change the gate; saved locale preferences
+are preserved. See [localization](docs/localization.md).
+
 ### File locations
 
 The application database lives in `<local data>/store-v1/`. An absolute

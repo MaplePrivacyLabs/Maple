@@ -307,6 +307,7 @@ pub async fn reply_with_limit(
         Err(error) => match message {
             Message::Response { id, .. } => wire::encode(
                 &Message::Response {
+                    failure: None,
                     id: *id,
                     result: Err("Remote reply is too large to transfer".into()),
                 },
@@ -336,6 +337,7 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
     // uncertain and must disconnect/query the receipt, never report not-sent.
     let Ok(body) = wire::encode(&command.params, body_limit(command.method)) else {
         return Ok(Message::Response {
+            failure: None,
             id,
             result: Err("Remote request is too large. Try a smaller message.".into()),
         });

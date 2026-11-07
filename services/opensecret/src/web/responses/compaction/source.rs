@@ -1,7 +1,7 @@
 //! Response-local ciphertext reuse. Fresh source metadata remains authoritative;
 //! neither cached payloads nor transport batches replace checkpoint validation.
 
-use super::{policy::MAX_SOURCE_BATCH_BYTES, telemetry};
+use super::telemetry;
 use crate::{
     db::{DBConnection, DBError},
     models::{
@@ -17,6 +17,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 const MAX_BATCH_ROWS: usize = 128;
+/// Transport only: rows still reach the caller in one list, so this bounds a
+/// single database read rather than a selection.
+const MAX_SOURCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHE_ROWS: usize = 1024;
 
@@ -631,12 +634,12 @@ mod tests {
                 .iter()
                 .all(|raw| !covered.contains(&metadata(raw).key)));
             let planning = make_planning(&source, &checkpoint);
-            let plan = context::plan_batch(
+            let plan = context::plan(
                 &planning,
                 &checkpoint,
+                &context::ActiveContext::default(),
                 &policy,
                 false,
-                policy.summary_input_budget,
             )
             .unwrap();
             if plan.summary_work.is_empty() {
@@ -662,13 +665,6 @@ mod tests {
                 .summary_work
                 .iter()
                 .flat_map(|work| {
-                    assert!(
-                        work.items
-                            .iter()
-                            .map(|item| item.source_bytes)
-                            .sum::<usize>()
-                            <= MAX_SOURCE_BATCH_BYTES
-                    );
                     assert!(
                         work.items
                             .iter()
@@ -698,9 +694,13 @@ mod tests {
             publications += 1;
             assert!(publications < 4);
         }
-        assert_eq!(publications, 2);
-        assert_eq!(payload_fetches[0].1, MAX_SOURCE_BATCH_BYTES);
-        assert!(payload_fetches[0].1 < total_bytes);
+        // One selection is one publication, though its rows arrive over several
+        // reads: transport bytes bound a database read, not a summary.
+        assert_eq!(publications, 1);
+        assert!(payload_fetches.len() > 2);
+        assert!(payload_fetches
+            .iter()
+            .all(|(_, bytes)| *bytes <= MAX_SOURCE_BATCH_BYTES));
         assert_eq!(
             payload_fetches
                 .iter()
@@ -742,12 +742,12 @@ mod tests {
             trigger_tokens: 20_000,
             ..policy
         };
-        assert!(context::plan_batch(
+        assert!(context::plan(
             &planning,
             &checkpoint,
+            &context::ActiveContext::default(),
             &quiet_policy,
             false,
-            quiet_policy.summary_input_budget
         )
         .unwrap()
         .summary_work

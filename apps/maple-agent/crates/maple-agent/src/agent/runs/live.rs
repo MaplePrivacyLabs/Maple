@@ -129,12 +129,15 @@ impl LiveSnapshot {
                 }
                 timeline::reply_items(reply)
             }
-            SessionMessage::Custom(custom) if custom.display => vec![timeline::notice_item(
-                format!("custom{}", custom.timestamp),
-                "Agent notice",
-                &content_text(&custom.content),
-                custom.timestamp,
-            )],
+            SessionMessage::Custom(custom) if custom.display => {
+                vec![timeline::labeled_notice_item(
+                    format!("custom{}", custom.timestamp),
+                    "notice",
+                    "Agent notice",
+                    &content_text(&custom.content),
+                    custom.timestamp,
+                )]
+            }
             SessionMessage::Llm(Message::ToolResult(result)) => {
                 let id = self
                     .tools
@@ -569,6 +572,7 @@ fn bounded_item(
         let title = text(&item.title);
         let text_content = text(&item.text);
         let mut bounded = AgentTimelineItem {
+            label: item.label.clone(),
             persisted: item.persisted.clone(),
             live: item.live.clone(),
             truncated: Some(item.truncated.unwrap_or(original).max(original)),

@@ -1,13 +1,6 @@
-//! Response-local attempt identities and unpublished, bounded prefix folding.
-//!
-//! A tiny image placeholder can cost less than a checkpoint wrapper while its
-//! ciphertext fills a whole source batch. Retaining that summary provisionally
-//! lets the next bounded batch add useful context without publishing a larger
-//! prompt or collecting all historical image ciphertext in one plan.
+//! Response-local attempt identities and source-race decisions.
 
-use super::context::{CheckpointPayload, ContextItemKey, ContextSnapshot};
-use crate::{model_config::ReasoningReplay, models::response_compaction::CompactionSnapshot};
-use std::collections::HashMap;
+use crate::model_config::ReasoningReplay;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -39,71 +32,6 @@ fn replay_tag(replay: ReasoningReplay) -> u8 {
         ReasoningReplay::None => 0,
         ReasoningReplay::CurrentTurn => 1,
         ReasoningReplay::All => 2,
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct SourceRevision {
-    head: Option<Uuid>,
-    fingerprint: [u8; 32],
-    active_responses: Vec<Uuid>,
-}
-
-impl SourceRevision {
-    pub(super) fn new(source: &CompactionSnapshot) -> Self {
-        Self {
-            head: source.checkpoint.as_ref().map(|record| record.uuid),
-            fingerprint: source.fingerprint,
-            active_responses: source.active_response_uuids.clone(),
-        }
-    }
-}
-
-pub(super) struct StagedCheckpoint {
-    revision: SourceRevision,
-    pub payload: CheckpointPayload,
-    // Only exact token metadata survives from earlier bounded batches. Their
-    // prompt messages and image ciphertext are not retained by this draft.
-    source_tokens: HashMap<ContextItemKey, usize>,
-    pub allowed_urls: Vec<String>,
-}
-
-impl StagedCheckpoint {
-    pub(super) fn new(
-        revision: SourceRevision,
-        payload: CheckpointPayload,
-        source_tokens: impl IntoIterator<Item = (ContextItemKey, usize)>,
-        allowed_urls: Vec<String>,
-    ) -> Self {
-        Self {
-            revision,
-            payload,
-            source_tokens: source_tokens.into_iter().collect(),
-            allowed_urls,
-        }
-    }
-
-    pub(super) fn matches(&self, revision: &SourceRevision) -> bool {
-        self.revision == *revision
-    }
-
-    pub(super) fn restore_source_tokens(&self, snapshot: &mut ContextSnapshot) {
-        for item in &mut snapshot.items {
-            if let Some(tokens) = self.source_tokens.get(&item.key) {
-                item.estimated_tokens = *tokens;
-            }
-        }
-    }
-
-    pub(super) fn advance(
-        &mut self,
-        payload: CheckpointPayload,
-        source_tokens: impl IntoIterator<Item = (ContextItemKey, usize)>,
-        allowed_urls: Vec<String>,
-    ) {
-        self.payload = payload;
-        self.source_tokens.extend(source_tokens);
-        self.allowed_urls = allowed_urls;
     }
 }
 

@@ -4,6 +4,7 @@ pub(crate) mod application_vim;
 pub mod chat;
 pub mod context_ring;
 pub mod decorations;
+pub(crate) mod i18n;
 pub mod icons;
 pub mod login;
 pub mod markdown;
@@ -28,3 +29,7 @@ pub(crate) mod update_confirmation;
 pub mod widgets;
 
 pub mod remote;
+
+pub(crate) mod timeline_labels;
+
+pub(crate) mod host_errors;
