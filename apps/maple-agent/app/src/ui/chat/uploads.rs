@@ -67,7 +67,7 @@ impl UploadFence {
 pub(super) struct PendingUpload {
     pub session: String,
     pub count: usize,
-    pub label: SharedString,
+    pub label: UiText,
     pub fence: UploadFence,
     pub cancel_on_drop: bool,
     backend: Arc<AgentBackend>,
@@ -103,7 +103,7 @@ async fn cancel_operations(
     session: String,
     mut operations: Vec<String>,
     active: usize,
-) -> Result<(), String> {
+) -> Result<(), UiFailure> {
     if !operations.is_empty() {
         let active = active.min(operations.len() - 1);
         operations.rotate_left(active);
@@ -120,8 +120,9 @@ async fn cancel_operations(
         let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             for attempt in 0..attempts {
                 if backend
-                    .cancel_attachment_upload(&user, request.clone())
+                    .call_presented::<()>("cancel_attachment_upload", (&user, request.clone()))
                     .await
+                    .map_err(UiFailure::from)
                     .is_ok()
                 {
                     break;
@@ -176,11 +177,10 @@ impl ChatScreen {
             {
                 if let Some(upload) = self.attachment_uploads.get_mut(&id) {
                     upload.label = if recovering {
-                        "Files ready · waiting for the host to recover"
+                        UiText::key("chat-upload-wait-recovery")
                     } else {
-                        "Files ready · waiting for the previous send"
-                    }
-                    .into();
+                        UiText::key("chat-upload-wait-send")
+                    };
                 }
                 continue;
             }
@@ -208,7 +208,13 @@ impl ChatScreen {
             self.finish_attachment_send(
                 id,
                 send.clone(),
-                Ok((send, Err("Upload cancelled. No message was sent.".into()))),
+                Ok((
+                    send,
+                    Err(UiFailure::Local(
+                        "chat-upload-cancelled-unsent",
+                        "Upload cancelled. No message was sent.",
+                    )),
+                )),
                 cx,
             );
             return;
@@ -217,12 +223,13 @@ impl ChatScreen {
         let user = self.user_id.clone();
         let send_id = id.clone();
         let retained = send.clone();
-        self.call(
+        self.call_semantic(
             async move {
                 let result = backend
-                    .send_message_identified(&user, request, send_id)
-                    .await;
-                Ok((send, result))
+                    .send_message_identified_presented(&user, request, send_id)
+                    .await
+                    .map_err(UiFailure::from);
+                Ok::<_, UiFailure>((send, result))
             },
             cx,
             move |this, result, cx| {
@@ -235,7 +242,7 @@ impl ChatScreen {
         &mut self,
         send_id: String,
         mut retained: UnresolvedSend,
-        result: Result<(UnresolvedSend, Result<String, String>), String>,
+        result: Result<(UnresolvedSend, Result<String, UiFailure>), UiFailure>,
         cx: &mut Context<Self>,
     ) {
         let mut pending = self.attachment_uploads.remove(&send_id);
@@ -280,14 +287,17 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) -> (UploadFence, tokio::sync::mpsc::UnboundedSender<usize>) {
         let fence = UploadFence::default();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<usize>();
         if !drafts.is_empty() {
             self.attachment_uploads.insert(
                 send_id.to_string(),
                 PendingUpload {
                     session: session.to_string(),
                     count: drafts.len(),
-                    label: format!("Uploading files · 0 of {}", drafts.len()).into(),
+                    label: UiText::message(
+                        "chat-upload-progress",
+                        [("completed", 0.into()), ("count", drafts.len().into())],
+                    ),
                     fence: fence.clone(),
                     cancel_on_drop: true,
                     backend: self.backend.clone(),
@@ -307,9 +317,13 @@ impl ChatScreen {
                                 if upload.fence.cancelled() {
                                     return;
                                 }
-                                upload.label =
-                                    format!("Uploading files · {completed} of {}", upload.count)
-                                        .into();
+                                upload.label = UiText::message(
+                                    "chat-upload-progress",
+                                    [
+                                        ("completed", completed.into()),
+                                        ("count", upload.count.into()),
+                                    ],
+                                );
                                 cx.notify();
                             }
                         })
@@ -331,14 +345,14 @@ impl ChatScreen {
         if !upload.fence.cancel() {
             return;
         }
-        upload.label = "Cancelling upload…".into();
+        upload.label = UiText::key("chat-upload-cancelling");
         let backend = upload.backend.clone();
         let user = upload.user.clone();
         let session = upload.session.clone();
         let operations = upload.operations.clone();
         let active = upload.fence.active_operation();
         // This runs concurrently with import, not behind its blocking await.
-        self.call(
+        self.call_semantic(
             cancel_operations(backend, user, session, operations, active),
             cx,
             |_, _, _| {},
@@ -365,12 +379,15 @@ pub(super) async fn commit_attachments(
     drafts: &mut [DraftAttachment],
     fence: &UploadFence,
     progress: tokio::sync::mpsc::UnboundedSender<usize>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, UiFailure> {
     let mut ids = Vec::with_capacity(drafts.len());
     for (index, draft) in drafts.iter_mut().enumerate() {
         fence.set_active_operation(index);
         if fence.cancelled() {
-            return Err("Upload cancelled. No message was sent.".into());
+            return Err(UiFailure::Local(
+                "chat-upload-cancelled-unsent",
+                "Upload cancelled. No message was sent.",
+            ));
         }
         if let Some((committed_session, _)) = &draft.committed
             && committed_session == session
@@ -380,17 +397,20 @@ pub(super) async fn commit_attachments(
             // a lost status reply must retain the cached identity and bytes.
             let query = tokio::time::timeout(
                 std::time::Duration::from_secs(15),
-                backend.attachment_upload_status(
-                    user,
-                    AttachmentUploadRequest {
-                        session_id: session.to_owned(),
-                        operation_id: draft.operation_id.clone(),
-                    },
+                backend.call_presented::<maple_agent::store::AttachmentUploadStatus>(
+                    "attachment_upload_status",
+                    (
+                        user,
+                        AttachmentUploadRequest {
+                            session_id: session.to_owned(),
+                            operation_id: draft.operation_id.clone(),
+                        },
+                    ),
                 ),
             );
             let status = tokio::select! {
-                result = query => result.map_err(|_| "Could not confirm the retained file upload. Your draft is retained; try again when the connection recovers.".to_string())??,
-                () = fence.wait_cancelled() => return Err("Upload cancelled. No message was sent.".into()),
+                result = query => result.map_err(|_| UiFailure::Local("chat-upload-retained-unconfirmed", "Could not confirm the retained file upload. Your draft is retained; try again when the connection recovers."))??,
+                () = fence.wait_cancelled() => return Err(UiFailure::Local("chat-upload-cancelled-unsent", "Upload cancelled. No message was sent.")),
             };
             match status {
                 AttachmentUploadStatus::Complete(attachment) => {
@@ -405,27 +425,40 @@ pub(super) async fn commit_attachments(
                     // attached to the same operation throughout the retry.
                     draft.committed = None;
                 }
-                AttachmentUploadStatus::Cancelled => return Err("The file upload was cancelled. Your draft is retained.".into()),
-                AttachmentUploadStatus::Uploading => return Err("The retained file upload is still in progress. Your draft is retained; try again when it completes.".into()),
+                AttachmentUploadStatus::Cancelled => {
+                    return Err(UiFailure::Local(
+                        "chat-upload-receipt-cancelled",
+                        "The file upload was cancelled. Your draft is retained.",
+                    ));
+                }
+                AttachmentUploadStatus::Uploading => {
+                    return Err(UiFailure::Local(
+                        "chat-upload-retained-pending",
+                        "The retained file upload is still in progress. Your draft is retained; try again when it completes.",
+                    ));
+                }
             }
         }
-        let staged = draft
-            .staged
-            .as_ref()
-            .ok_or("Attachment is still being prepared")?;
-        let import = backend.import_attachment(
-            user,
-            ImportAttachmentRequest {
-                session_id: session.to_string(),
-                operation_id: draft.operation_id.clone(),
-                path: staged.path.to_string_lossy().into_owned(),
-                name: draft.name.clone(),
-                mime_type: draft.mime_type.clone(),
-            },
+        let staged = draft.staged.as_ref().ok_or(UiFailure::Local(
+            "chat-upload-preparing",
+            "Attachment is still being prepared",
+        ))?;
+        let import = backend.call_presented::<maple_agent::store::StoredAttachment>(
+            "import_attachment",
+            (
+                user,
+                ImportAttachmentRequest {
+                    session_id: session.to_string(),
+                    operation_id: draft.operation_id.clone(),
+                    path: staged.path.to_string_lossy().into_owned(),
+                    name: draft.name.clone(),
+                    mime_type: draft.mime_type.clone(),
+                },
+            ),
         );
         let imported = tokio::select! {
-            result = import => result,
-            () = fence.wait_cancelled() => return Err("Upload cancelled. No message was sent.".into()),
+            result = import => result.map_err(UiFailure::from),
+            () = fence.wait_cancelled() => return Err(UiFailure::Local("chat-upload-cancelled-unsent", "Upload cancelled. No message was sent.")),
         };
         let imported = match imported {
             Ok(attachment) => attachment,
@@ -434,26 +467,37 @@ pub(super) async fn commit_attachments(
                 // immutable operation once; never guess or resend a prompt.
                 let query = tokio::time::timeout(
                     std::time::Duration::from_secs(15),
-                    backend.attachment_upload_status(
-                        user,
-                        AttachmentUploadRequest {
-                            session_id: session.to_string(),
-                            operation_id: draft.operation_id.clone(),
-                        },
+                    backend.call_presented::<maple_agent::store::AttachmentUploadStatus>(
+                        "attachment_upload_status",
+                        (
+                            user,
+                            AttachmentUploadRequest {
+                                session_id: session.to_string(),
+                                operation_id: draft.operation_id.clone(),
+                            },
+                        ),
                     ),
                 );
                 let status = tokio::select! {
                     result = query => result.ok().and_then(Result::ok),
-                    () = fence.wait_cancelled() => return Err("Upload cancelled. No message was sent.".into()),
+                    () = fence.wait_cancelled() => return Err(UiFailure::Local("chat-upload-cancelled-unsent", "Upload cancelled. No message was sent.")),
                 };
                 resolve_upload_receipt(error, status)?
             }
-            Err(_) => return Err("Upload cancelled. No message was sent.".into()),
+            Err(_) => {
+                return Err(UiFailure::Local(
+                    "chat-upload-cancelled-unsent",
+                    "Upload cancelled. No message was sent.",
+                ));
+            }
         };
         if fence.cancelled() {
             // The bounded cancellation worker handles publication races. Return
             // the draft promptly; never wait for a second cancellation RPC.
-            return Err("Upload cancelled. No message was sent.".into());
+            return Err(UiFailure::Local(
+                "chat-upload-cancelled-unsent",
+                "Upload cancelled. No message was sent.",
+            ));
         }
         draft.committed = Some((session.to_string(), imported.id.clone()));
         ids.push(imported.id);
@@ -463,17 +507,19 @@ pub(super) async fn commit_attachments(
 }
 
 fn resolve_upload_receipt(
-    error: String,
+    error: UiFailure,
     status: Option<AttachmentUploadStatus>,
-) -> Result<StoredAttachment, String> {
+) -> Result<StoredAttachment, UiFailure> {
     match status {
         Some(AttachmentUploadStatus::Complete(attachment)) => Ok(attachment),
-        Some(AttachmentUploadStatus::Cancelled) => {
-            Err("The file upload was cancelled. Your draft is retained.".into())
-        }
-        Some(AttachmentUploadStatus::Uploading) | None => Err(format!(
-            "File upload could not be confirmed: {error}. Your draft is retained; try again when the connection recovers."
+        Some(AttachmentUploadStatus::Cancelled) => Err(UiFailure::Local(
+            "chat-upload-receipt-cancelled",
+            "The file upload was cancelled. Your draft is retained.",
         )),
+        Some(AttachmentUploadStatus::Uploading) | None => {
+            let fallback = error.raw_message().map(|raw| format!("File upload could not be confirmed: {raw}. Your draft is retained; try again when the connection recovers."));
+            Err(error.with_context("chat-upload-confirm-failed", vec![], fallback))
+        }
         Some(AttachmentUploadStatus::Missing) => Err(error),
     }
 }
@@ -558,6 +604,7 @@ mod tests {
                 if protocol::write(
                     &mut server,
                     &protocol::Message::Response {
+                        failure: None,
                         id: request.id,
                         result,
                     },
@@ -600,7 +647,7 @@ mod tests {
         let mut drafts = vec![first, second];
         let (backend, host, task) = upload_host(root.path());
         host.lock().unwrap().fail_second = true;
-        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel::<usize>();
         let failure = commit_attachments(
             &backend,
             "user",
@@ -611,7 +658,11 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(failure.contains("second-file failure"));
+        assert!(
+            failure
+                .raw_message()
+                .is_some_and(|raw| raw.contains("second-file failure"))
+        );
         let committed = drafts[0].committed.clone().unwrap();
         let operation = drafts[0].operation_id.clone();
         assert!(drafts[1].committed.is_none());
@@ -625,7 +676,7 @@ mod tests {
             host.fail_status = true;
             host.fail_second = false;
         }
-        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel::<usize>();
         assert!(
             commit_attachments(
                 &backend,
@@ -647,7 +698,7 @@ mod tests {
         );
 
         host.lock().unwrap().fail_status = false;
-        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel::<usize>();
         let ids = commit_attachments(
             &backend,
             "user",

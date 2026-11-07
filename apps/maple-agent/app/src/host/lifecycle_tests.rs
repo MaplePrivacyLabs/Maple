@@ -455,3 +455,44 @@ async fn shutdown_cancels_oauth_registered_after_its_admission_writer_was_queued
         .unwrap()
         .unwrap();
 }
+
+#[tokio::test]
+async fn owner_dispatch_emits_semantic_gate_failure_before_admission() {
+    let root = directory();
+    let store =
+        Arc::new(Store::unavailable(StorePaths::new(root.path()), StoreState::Locked).unwrap());
+    let backend = Arc::new(
+        LocalBackend::new_with_store("http://127.0.0.1:1".into(), String::new(), store.clone())
+            .unwrap(),
+    );
+    let receipts = Arc::new(receipts::Receipts::new(store.clone()));
+    let (events, _) = broadcast::channel(8);
+    let remote =
+        crate::remote::manager::Manager::new(backend.clone(), events.clone(), receipts.clone());
+    let owner = OwnerContext::new(Some(&store));
+    let _operation = owner.operation.lock().await;
+    let _admission = owner.admission.write().await;
+    let failure = tokio::time::timeout(
+        Duration::from_millis(100),
+        owner.dispatch(
+            &backend,
+            &remote,
+            &events,
+            protocol::SensitiveRequest(Request {
+                id: 1,
+                method: "login".into(),
+                send_id: None,
+                params: json!(["synthetic", "synthetic"]),
+            }),
+            receipts,
+            &ConnectionGeneration(None, None),
+        ),
+    )
+    .await
+    .expect("locked rejection must not await admission")
+    .unwrap_err();
+    assert_eq!(failure.code, "store-locked");
+    assert_eq!(failure.message, LOCKED_MESSAGE);
+    assert!(!store.paths().database().exists());
+    assert!(!store.paths().keys().exists());
+}

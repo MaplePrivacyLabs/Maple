@@ -77,7 +77,7 @@ impl UploadHost {
                             (request.id, result)
                         }
                     };
-                    if protocol::write(&mut output, &protocol::Message::Response {
+                    if protocol::write(&mut output, &protocol::Message::Response { failure: None,
                         id: response.0,
                         result: response.1,
                     }).await.is_err() {
@@ -495,7 +495,7 @@ fn sign_out_ignores_preference_failure_but_preserves_runtime_failure(cx: &mut Te
     chat.update(cx, |chat, _| {
         assert!(chat.accept_send_results);
         assert_eq!(
-            chat.notice.as_deref(),
+            chat.notice.as_ref().map(UiText::resolve).as_deref(),
             Some("Synthetic runtime shutdown failure")
         );
         chat.notice = None;

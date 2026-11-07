@@ -1,10 +1,9 @@
 //! Controller-local imports and execution-host upload receipts. Only the local
 //! IPC endpoint accepts a filesystem path; remote upload metadata never does.
-use super::{AgentBackend, LocalBackend};
+use super::{AgentBackend, HostFailure, LocalBackend};
 use crate::host::protocol::Request;
 use maple_agent::store::{AccountId, Store};
 use maple_agent::store::{AttachmentUploadMetadata, AttachmentUploadStart};
-pub use maple_agent::store::{AttachmentUploadStatus, StoredAttachment};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -37,7 +36,9 @@ pub(crate) struct PreparedImport {
 
 /// Hash and transfer the same open regular file. A changed source cannot be
 /// silently published: the execution store validates the advertised digest.
-pub(crate) async fn prepare(request: &ImportAttachmentRequest) -> Result<PreparedImport, String> {
+pub(crate) async fn prepare_presented(
+    request: &ImportAttachmentRequest,
+) -> Result<PreparedImport, HostFailure> {
     let request = request.clone();
     tokio::task::spawn_blocking(move || {
         let mut options = std::fs::OpenOptions::new();
@@ -49,38 +50,50 @@ pub(crate) async fn prepare(request: &ImportAttachmentRequest) -> Result<Prepare
             // we can verify that the opened object is a regular file.
             options.custom_flags(libc::O_NONBLOCK);
         }
-        let mut file = options
-            .open(&request.path)
-            .map_err(|_| "The staged attachment could not be opened")?;
-        let attributes = file
-            .metadata()
-            .map_err(|_| "Could not inspect the attachment")?;
+        let mut file = options.open(&request.path).map_err(|_| {
+            HostFailure::new(
+                "attachment-open",
+                "The staged attachment could not be opened",
+            )
+        })?;
+        let attributes = file.metadata().map_err(|_| {
+            HostFailure::new("attachment-inspect", "Could not inspect the attachment")
+        })?;
         if !attributes.is_file()
             || attributes.len() > maple_agent::store::MAX_ATTACHMENT_BYTES as u64
         {
-            return Err("Attachments must be regular files of at most 30 MiB".into());
+            return Err(HostFailure::new(
+                "attachment-regular",
+                "Attachments must be regular files of at most 30 MiB",
+            ));
         }
         let mut hash = Sha256::new();
         let mut count = 0u64;
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            let read = file
-                .read(&mut buffer)
-                .map_err(|_| "Could not read the attachment")?;
+            let read = file.read(&mut buffer).map_err(|_| {
+                HostFailure::new("attachment-read", "Could not read the attachment")
+            })?;
             if read == 0 {
                 break;
             }
             count += read as u64;
             if count > maple_agent::store::MAX_ATTACHMENT_BYTES as u64 {
-                return Err("Attachment exceeds the 30 MiB limit".into());
+                return Err(HostFailure::new(
+                    "attachment-large",
+                    "Attachment exceeds the 30 MiB limit",
+                ));
             }
             hash.update(&buffer[..read]);
         }
         if count != attributes.len() {
-            return Err("Attachment changed while preparing it".into());
+            return Err(HostFailure::new(
+                "attachment-changed",
+                "Attachment changed while preparing it",
+            ));
         }
         file.seek(SeekFrom::Start(0))
-            .map_err(|_| "Could not read the attachment")?;
+            .map_err(|_| HostFailure::new("attachment-read", "Could not read the attachment"))?;
         Ok(PreparedImport {
             file,
             metadata: AttachmentUploadMetadata {
@@ -92,31 +105,7 @@ pub(crate) async fn prepare(request: &ImportAttachmentRequest) -> Result<Prepare
         })
     })
     .await
-    .map_err(|_| "Attachment worker did not complete".to_string())?
-}
-
-impl AgentBackend {
-    pub async fn import_attachment(
-        &self,
-        user: &str,
-        request: ImportAttachmentRequest,
-    ) -> Result<StoredAttachment, String> {
-        self.call("import_attachment", (user, request)).await
-    }
-    pub async fn attachment_upload_status(
-        &self,
-        user: &str,
-        request: AttachmentUploadRequest,
-    ) -> Result<AttachmentUploadStatus, String> {
-        self.call("attachment_upload_status", (user, request)).await
-    }
-    pub async fn cancel_attachment_upload(
-        &self,
-        user: &str,
-        request: AttachmentUploadRequest,
-    ) -> Result<(), String> {
-        self.call("cancel_attachment_upload", (user, request)).await
-    }
+    .map_err(|_| HostFailure::new("attachment-worker", "Attachment worker did not complete"))?
 }
 
 pub(crate) fn handles(method: &str) -> bool {
@@ -126,18 +115,18 @@ pub(crate) fn handles(method: &str) -> bool {
     )
 }
 
-pub(crate) async fn context(
+pub(crate) async fn context_presented(
     backend: &LocalBackend,
     user: &str,
-) -> Result<(Arc<Store>, AccountId), String> {
-    backend.authorize_account(user)?;
+) -> Result<(Arc<Store>, AccountId), HostFailure> {
+    backend.authorize_account_presented(user)?;
     let store = backend
         .store()
         .cloned()
-        .ok_or("Local store is unavailable")?;
+        .ok_or_else(|| HostFailure::new("attachment-store", "Local store is unavailable"))?;
     let account_store = store.clone();
     let user = user.to_owned();
-    let account = blocking(move || {
+    let account = blocking_presented(move || {
         account_store
             .account_id(&user)?
             .ok_or(maple_agent::store::StoreError::NotFound)
@@ -146,33 +135,34 @@ pub(crate) async fn context(
     Ok((store, account))
 }
 
-pub(crate) async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking_presented<T: Send + 'static>(
     operation: impl FnOnce() -> maple_agent::store::StoreResult<T> + Send + 'static,
-) -> Result<T, String> {
+) -> Result<T, HostFailure> {
     tokio::task::spawn_blocking(operation)
         .await
-        .map_err(|_| "Attachment worker did not complete".to_string())?
-        .map_err(|error| error.to_string())
+        .map_err(|_| HostFailure::new("attachment-worker", "Attachment worker did not complete"))?
+        .map_err(HostFailure::from)
 }
 
-pub(crate) async fn dispatch(
+pub(crate) async fn dispatch_presented(
     backend: &LocalBackend,
     request: Request,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, HostFailure> {
     if request.method == "import_attachment" {
         let (user, request): (String, ImportAttachmentRequest) =
-            serde_json::from_value(request.params)
-                .map_err(|_| "Invalid attachment import parameters")?;
-        backend.authorize_account(&user)?;
-        let prepared = prepare(&request).await?;
+            serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("attachment-request", "Invalid attachment import parameters")
+            })?;
+        backend.authorize_account_presented(&user)?;
+        let prepared = prepare_presented(&request).await?;
         let (store, start) = {
             let account_guard = backend.account_gate.clone().read_owned().await;
-            let (store, account) = context(backend, &user).await?;
+            let (store, account) = context_presented(backend, &user).await?;
             let target = store.clone();
             let session = request.session_id;
             let operation = request.operation_id;
             let metadata = prepared.metadata;
-            let start = blocking(move || {
+            let start = blocking_presented(move || {
                 // A cancelled request must not release account ownership while
                 // its blocking begin/crash-reconciliation still runs.
                 let _account = account_guard;
@@ -189,61 +179,114 @@ pub(crate) async fn dispatch(
                 let writer = tokio::task::spawn_blocking(move || {
                     let mut buffer = [0u8; 64 * 1024];
                     loop {
-                        let n = file
-                            .read(&mut buffer)
-                            .map_err(|_| "Could not read staged attachment".to_string())?;
+                        let n = file.read(&mut buffer).map_err(|_| {
+                            HostFailure::new(
+                                "attachment-staged-read",
+                                "Could not read staged attachment",
+                            )
+                        })?;
                         if n == 0 {
                             break;
                         }
                         writer
                             .write_chunk(&buffer[..n])
-                            .map_err(|e| e.to_string())?;
+                            .map_err(HostFailure::from)?;
                     }
-                    Ok::<_, String>(writer)
+                    Ok::<_, HostFailure>(writer)
                 })
                 .await
-                .map_err(|_| "Attachment worker did not complete")??;
+                .map_err(|_| {
+                    HostFailure::new("attachment-worker", "Attachment worker did not complete")
+                })??;
                 let prepare_store = store.clone();
-                let prepared = blocking(move || writer.prepare(&prepare_store)).await?;
+                let prepared = blocking_presented(move || writer.prepare(&prepare_store)).await?;
                 let account_guard = backend.account_gate.clone().read_owned().await;
-                backend.authorize_account(&user)?;
-                blocking(move || {
+                backend.authorize_account_presented(&user)?;
+                blocking_presented(move || {
                     let _account = account_guard;
                     prepared.publish(&store)
                 })
                 .await?
             }
         };
-        return serde_json::to_value(attachment).map_err(|_| "Could not encode attachment".into());
+        return serde_json::to_value(attachment)
+            .map_err(|_| HostFailure::new("attachment-encode", "Could not encode attachment"));
     }
-    let (user, upload): (String, AttachmentUploadRequest) =
-        serde_json::from_value(request.params).map_err(|_| "Invalid attachment operation")?;
+    let (user, upload): (String, AttachmentUploadRequest) = serde_json::from_value(request.params)
+        .map_err(|_| {
+            HostFailure::new(
+                "attachment-operation-request",
+                "Invalid attachment operation",
+            )
+        })?;
     // Remote dispatch already holds a read-side account guard. The caller of
     // local dispatch owns this short guard, never across an upload.
-    let (store, account) = context(backend, &user).await?;
+    let (store, account) = context_presented(backend, &user).await?;
     let value = match request.method.as_str() {
         "attachment_upload_status" => serde_json::to_value(
-            blocking(move || {
+            blocking_presented(move || {
                 store.attachment_upload_status(account, &upload.session_id, &upload.operation_id)
             })
             .await?,
         ),
         "cancel_attachment_upload" => {
-            blocking(move || {
+            blocking_presented(move || {
                 store.cancel_attachment_upload(account, &upload.session_id, &upload.operation_id)
             })
             .await?;
             Ok(serde_json::Value::Null)
         }
-        _ => return Err("Unknown attachment operation".into()),
+        _ => {
+            return Err(HostFailure::new(
+                "attachment-operation",
+                "Unknown attachment operation",
+            ));
+        }
     };
-    value.map_err(|_| "Could not encode attachment operation".into())
+    value.map_err(|_| {
+        HostFailure::new(
+            "attachment-operation-encode",
+            "Could not encode attachment operation",
+        )
+    })
+}
+impl AgentBackend {
+    pub async fn cancel_attachment_upload(
+        &self,
+        user: &str,
+        request: AttachmentUploadRequest,
+    ) -> Result<(), String> {
+        self.call("cancel_attachment_upload", (user, request)).await
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn prepare(request: &ImportAttachmentRequest) -> Result<PreparedImport, String> {
+    prepare_presented(request)
+        .await
+        .map_err(|failure| failure.message)
+}
+pub(crate) async fn context(
+    backend: &LocalBackend,
+    user: &str,
+) -> Result<(Arc<Store>, AccountId), String> {
+    context_presented(backend, user)
+        .await
+        .map_err(|failure| failure.message)
+}
+pub(crate) async fn dispatch(
+    backend: &LocalBackend,
+    request: Request,
+) -> Result<serde_json::Value, String> {
+    dispatch_presented(backend, request)
+        .await
+        .map_err(|failure| failure.message)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use maple_agent::store::{NewTask, TaskKind};
+    use maple_agent::store::{AttachmentUploadStatus, NewTask, StoredAttachment, TaskKind};
 
     pub(crate) fn fixture(root: &std::path::Path) -> LocalBackend {
         let mut backend = LocalBackend::isolated_for_test(root);

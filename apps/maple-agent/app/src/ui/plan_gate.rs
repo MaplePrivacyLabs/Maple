@@ -5,15 +5,14 @@
 
 use gpui::{Context, EventEmitter, FocusHandle, Render, SharedString, Window, div, prelude::*, px};
 
+use super::i18n::{UiText, tr};
 use super::{theme, widgets};
 
-pub const TITLE: &str = "Maple Work isn't available on the Free plan";
-const BODY: &str = "Free use isn't available at this time. Upgrade your plan on the Maple \
-                    website, then check again.";
-const GUEST_BODY: &str = "On the website, choose Log in as Anonymous and enter this Account ID \
-                          and your password. Anonymous accounts pay with Bitcoin.";
-pub const STILL_FREE: &str = "Your account is still on the Free plan.";
-pub const CHECK_FAILED: &str = "Couldn't check your plan. Try again.";
+pub const TITLE: &str = "flows-plan-title";
+const BODY: &str = "flows-plan-body";
+const GUEST_BODY: &str = "flows-plan-guest-body";
+pub const STILL_FREE: &str = "flows-plan-still-free";
+pub const CHECK_FAILED: &str = "flows-plan-check-failed";
 
 /// What the gate asks of the desktop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +27,7 @@ pub struct PlanGate {
     guest_account_id: Option<SharedString>,
     checking: bool,
     signing_out: bool,
-    notice: Option<SharedString>,
+    notice: Option<UiText>,
     focus: FocusHandle,
     focus_pending: bool,
 }
@@ -57,7 +56,7 @@ impl PlanGate {
     pub fn finish_check(&mut self, notice: Option<&'static str>, cx: &mut Context<Self>) {
         self.checking = false;
         if notice.is_some() {
-            self.notice = notice.map(Into::into);
+            self.notice = notice.map(UiText::key);
         }
         cx.notify();
     }
@@ -75,7 +74,7 @@ impl PlanGate {
     fn open_website(&mut self, cx: &mut Context<Self>) {
         self.notice = Some(
             match crate::backend::open_in_browser(crate::billing::PRICING_URL, "pricing") {
-                Ok(()) => "Opened the pricing page in your browser.".into(),
+                Ok(()) => UiText::key("flows-plan-opened"),
                 Err(message) => message.into(),
             },
         );
@@ -91,7 +90,7 @@ impl PlanGate {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(GUEST_BODY),
+                    .child(tr(GUEST_BODY)),
             )
             .child(
                 div()
@@ -125,10 +124,10 @@ impl Render for PlanGate {
         let busy = self.checking || self.signing_out;
         let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(500.));
         let button =
-            |button: gpui::Stateful<gpui::Div>, selector: &'static str, label: &'static str| {
+            |button: gpui::Stateful<gpui::Div>, selector: &'static str, label: SharedString| {
                 button
                     .debug_selector(move || selector.to_string())
-                    .aria_label(label)
+                    .aria_label(label.clone())
                     .py_1p5()
                     .when(busy, |button| button.opacity(0.6))
                     .child(label)
@@ -147,7 +146,7 @@ impl Render for PlanGate {
                     .id("plan-gate")
                     .debug_selector(|| "plan-gate".to_string())
                     .role(gpui::Role::Dialog)
-                    .aria_label(TITLE)
+                    .aria_label(tr(TITLE))
                     .track_focus(&self.focus)
                     .w(width)
                     .p_5()
@@ -164,13 +163,13 @@ impl Render for PlanGate {
                             .text_lg()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child(TITLE),
+                            .child(tr(TITLE)),
                     )
                     .child(
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_secondary()))
-                            .child(BODY),
+                            .child(tr(BODY)),
                     )
                     .when_some(self.guest_account_id.clone(), |card, id| {
                         card.child(self.render_guest_id(id, cx))
@@ -197,9 +196,9 @@ impl Render for PlanGate {
                                     widgets::ghost_button("plan-gate-sign-out"),
                                     "plan-gate-sign-out",
                                     if self.signing_out {
-                                        "Signing out…"
+                                        tr("flows-plan-signing-out")
                                     } else {
-                                        "Sign out"
+                                        tr("flows-plan-sign-out")
                                     },
                                 )
                                 .when(!busy, |button| {
@@ -222,9 +221,9 @@ impl Render for PlanGate {
                                             widgets::secondary_button("plan-gate-check"),
                                             "plan-gate-check",
                                             if self.checking {
-                                                "Checking…"
+                                                tr("flows-plan-checking")
                                             } else {
-                                                "Check again"
+                                                tr("flows-plan-check")
                                             },
                                         )
                                         .when(
@@ -240,7 +239,7 @@ impl Render for PlanGate {
                                         button(
                                             widgets::primary_button("plan-gate-website"),
                                             "plan-gate-website",
-                                            "Upgrade on the website",
+                                            tr("flows-plan-upgrade"),
                                         )
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.open_website(cx)),
@@ -292,6 +291,27 @@ mod tests {
         let bounds = cx.debug_bounds(selector).expect(selector);
         cx.simulate_click(bounds.center(), Modifiers::default());
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn notice_follows_locale_without_resetting_account_or_busy_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _locale = super::super::i18n::TestLocalizationGuard::enable();
+        let gate = cx.new(|cx| PlanGate::new(Some("guest-fixture".into()), cx));
+        gate.update(cx, |gate, cx| {
+            gate.finish_check(Some(STILL_FREE), cx);
+            gate.signing_out = true;
+            for (locale, expected) in [
+                ("en", "Your account is still on the Free plan."),
+                ("es", "Tu cuenta sigue en el plan Gratis."),
+            ] {
+                super::super::i18n::apply_preference(Some(locale));
+                assert_eq!(gate.notice.as_ref().unwrap().resolve().as_ref(), expected);
+                assert_eq!(gate.guest_account_id(), Some("guest-fixture"));
+                assert!(gate.signing_out);
+            }
+        });
     }
 
     #[gpui::test]

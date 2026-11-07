@@ -6,20 +6,20 @@ use std::sync::Arc;
 
 use maple_agent::agent::{
     AgentDesktopQueueSnapshot, AgentMcpConnectionError, AgentPersistedRowIdentity,
-    AgentQueuedMessage, AgentRuntimeStatus, AgentServiceEvent, AgentSessionSummary, AgentTaskState,
-    AgentTimelineItem,
+    AgentRuntimeStatus, AgentServiceEvent, AgentSessionSummary, AgentTaskState, AgentTimelineItem,
 };
+#[cfg(test)]
+use maple_agent::store::NavigationProjectPage;
 use maple_agent::store::{AccountId, PageTransport, Store};
 pub use maple_agent::store::{
-    AttachmentRangeReply, HistoryAnchorRequest, HistoryPage, HistoryPageRequest,
-    NavigationGetTasksReply, NavigationGroupPage, NavigationGroupQuery, NavigationProjectPage,
-    NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery, OpenTaskPageRequest,
-    ProjectSummary, RowRange, RowRangeRequest, TaskSummary, TimelineRow,
+    AttachmentRangeReply, HistoryAnchorRequest, HistoryPageRequest, NavigationGroupQuery,
+    NavigationSearchQuery, NavigationTaskQuery, OpenTaskPageRequest, ProjectSummary,
+    RowRangeRequest, TaskSummary, TimelineRow,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use super::{AgentBackend, LocalBackend};
+use super::{AgentBackend, HostFailure, LocalBackend};
 use crate::host::protocol::Request;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,30 +173,7 @@ impl AgentBackend {
             + 1
     }
 
-    pub async fn navigation_bootstrap(&self, user: &str) -> Result<NavigationBootstrap, String> {
-        self.call("navigation_bootstrap", (user,)).await
-    }
-    pub async fn list_tasks(
-        &self,
-        user: &str,
-        request: NavigationTaskQuery,
-    ) -> Result<NavigationTaskPage, String> {
-        self.call("list_tasks", (user, request)).await
-    }
-    pub async fn pinned_tasks(
-        &self,
-        user: &str,
-        request: PinnedTasksRequest,
-    ) -> Result<NavigationTaskPage, String> {
-        self.call("pinned_tasks", (user, request)).await
-    }
-    pub async fn get_tasks(
-        &self,
-        user: &str,
-        request: GetTasksRequest,
-    ) -> Result<NavigationGetTasksReply, String> {
-        self.call("get_tasks", (user, request)).await
-    }
+    #[cfg(test)]
     pub async fn list_projects(
         &self,
         user: &str,
@@ -204,39 +181,48 @@ impl AgentBackend {
     ) -> Result<NavigationProjectPage, String> {
         self.call("list_projects", (user, request)).await
     }
-    pub async fn list_project_groups(
-        &self,
-        user: &str,
-        request: NavigationGroupQuery,
-    ) -> Result<NavigationGroupPage, String> {
-        self.call("list_project_groups", (user, request)).await
-    }
-    pub async fn search_tasks(
-        &self,
-        user: &str,
-        request: NavigationSearchQuery,
-    ) -> Result<NavigationTaskPage, String> {
-        self.call("search_tasks", (user, request)).await
-    }
+    #[cfg(test)]
     pub async fn open_task(
         &self,
         user: &str,
         request: OpenTaskPageRequest,
         intent: u64,
     ) -> Result<PagedTaskDetail, String> {
-        self.subscribe_task(user, &request.task, intent).await?;
-        self.call("open_task", (user, request)).await
+        self.open_task_presented(user, request, intent)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    #[cfg(test)]
+    pub async fn subscribe_task(&self, user: &str, task: &str, intent: u64) -> Result<(), String> {
+        self.subscribe_task_presented(user, task, intent)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn open_task_presented(
+        &self,
+        user: &str,
+        request: OpenTaskPageRequest,
+        intent: u64,
+    ) -> Result<PagedTaskDetail, HostFailure> {
+        self.subscribe_task_presented(user, &request.task, intent)
+            .await?;
+        self.call_presented("open_task", (user, request)).await
     }
 
     /// Select transcript deltas before sending to a newly created task. The
     /// caller reserves the intent synchronously with its navigation action.
-    pub async fn subscribe_task(&self, user: &str, task: &str, intent: u64) -> Result<(), String> {
+    pub async fn subscribe_task_presented(
+        &self,
+        user: &str,
+        task: &str,
+        intent: u64,
+    ) -> Result<(), HostFailure> {
         #[cfg(test)]
         let subscribe = matches!(&self.client, super::BackendClient::Host(_));
         #[cfg(not(test))]
         let subscribe = true;
         if subscribe {
-            self.call::<()>(
+            self.call_presented::<()>(
                 "subscribe",
                 (
                     user,
@@ -249,23 +235,6 @@ impl AgentBackend {
             .await?;
         }
         Ok(())
-    }
-    pub async fn history_before_anchor(
-        &self,
-        user: &str,
-        request: HistoryAnchorRequest,
-    ) -> Result<HistoryPage, String> {
-        self.call("history_before", (user, request)).await
-    }
-    pub async fn history_forward_after(
-        &self,
-        user: &str,
-        request: HistoryAnchorRequest,
-    ) -> Result<HistoryPage, String> {
-        self.call("history_forward", (user, request)).await
-    }
-    pub async fn read_row(&self, user: &str, request: RowRangeRequest) -> Result<RowRange, String> {
-        self.call("read_row", (user, request)).await
     }
     pub async fn read_attachment(
         &self,
@@ -280,13 +249,6 @@ impl AgentBackend {
         request: StoreToolSummaryRequest,
     ) -> Result<(), String> {
         self.call("store_tool_summary", (user, request)).await
-    }
-    pub async fn queued_message(
-        &self,
-        user: &str,
-        request: QueuedMessageRequest,
-    ) -> Result<AgentQueuedMessage, String> {
-        self.call("queued_message", (user, request)).await
     }
 }
 
@@ -311,12 +273,15 @@ pub(super) fn is_paging(method: &str) -> bool {
     )
 }
 
-async fn context(backend: &LocalBackend, user: &str) -> Result<(Arc<Store>, AccountId), String> {
-    backend.authorize_account(user)?;
+async fn context(
+    backend: &LocalBackend,
+    user: &str,
+) -> Result<(Arc<Store>, AccountId), HostFailure> {
+    backend.authorize_account_presented(user)?;
     let store = backend
         .store()
         .cloned()
-        .ok_or("Local store is unavailable")?;
+        .ok_or_else(|| HostFailure::new("paging-store", "Local store is unavailable"))?;
     let account_store = store.clone();
     let user = user.to_owned();
     let account = blocking(move || match account_store.account_id(&user)? {
@@ -329,11 +294,11 @@ async fn context(backend: &LocalBackend, user: &str) -> Result<(Arc<Store>, Acco
 
 async fn blocking<T: Send + 'static>(
     operation: impl FnOnce() -> maple_agent::store::StoreResult<T> + Send + 'static,
-) -> Result<T, String> {
+) -> Result<T, HostFailure> {
     tokio::task::spawn_blocking(operation)
         .await
-        .map_err(|_| "Local store worker did not complete".to_owned())?
-        .map_err(|error| error.to_string())
+        .map_err(|_| HostFailure::new("paging-worker", "Local store worker did not complete"))?
+        .map_err(HostFailure::from)
 }
 
 fn ensure_workspace_project(
@@ -356,23 +321,25 @@ fn ensure_workspace_project(
     Ok(())
 }
 
-fn parse<T: DeserializeOwned>(params: Value) -> Result<(String, T), String> {
-    serde_json::from_value(params).map_err(|_| "Invalid host paging parameters".to_owned())
+fn parse<T: DeserializeOwned>(params: Value) -> Result<(String, T), HostFailure> {
+    serde_json::from_value(params)
+        .map_err(|_| HostFailure::new("paging-request", "Invalid host paging parameters"))
 }
 
-fn encode(value: impl Serialize) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|_| "Could not encode host page".to_owned())
+fn encode(value: impl Serialize) -> Result<Value, HostFailure> {
+    serde_json::to_value(value)
+        .map_err(|_| HostFailure::new("paging-encode", "Could not encode host page"))
 }
 
-pub(super) async fn dispatch(
+pub(super) async fn dispatch_presented(
     backend: &LocalBackend,
     request: Request,
     transport: PageTransport,
-) -> Result<Value, String> {
+) -> Result<Value, HostFailure> {
     let method = request.method.as_str();
     if method == "navigation_bootstrap" {
-        let (user,): (String,) =
-            serde_json::from_value(request.params).map_err(|_| "Invalid host paging parameters")?;
+        let (user,): (String,) = serde_json::from_value(request.params)
+            .map_err(|_| HostFailure::new("paging-request", "Invalid host paging parameters"))?;
         let (store, account) = context(backend, &user).await?;
         let workspace_store = store.clone();
         blocking(move || ensure_workspace_project(&workspace_store, account)).await?;
@@ -398,8 +365,12 @@ pub(super) async fn dispatch(
                         name_revision: metadata.name_revision,
                         is_default_workspace: metadata.is_default_workspace,
                         position: record.as_ref().and_then(|record| record.position),
-                        last_used_ms: i64::try_from(metadata.last_used_ms)
-                            .map_err(|_| "Project metadata has an invalid timestamp")?,
+                        last_used_ms: i64::try_from(metadata.last_used_ms).map_err(|_| {
+                            HostFailure::new(
+                                "paging-timestamp",
+                                "Project metadata has an invalid timestamp",
+                            )
+                        })?,
                         truncated: false,
                     })
                 }
@@ -570,11 +541,16 @@ pub(super) async fn dispatch(
                 .items
                 .into_iter()
                 .find(|message| message.queue_id == query.queue_id)
-                .ok_or("The queued message is no longer available")?;
+                .ok_or_else(|| {
+                    HostFailure::new("paging-queue", "The queued message is no longer available")
+                })?;
             ensure_reply(&message, reply_budget(transport))?;
             encode(message)
         }
-        _ => Err("Unknown Maple paging operation".into()),
+        _ => Err(HostFailure::new(
+            "paging-operation",
+            "Unknown Maple paging operation",
+        )),
     }
 }
 
@@ -586,7 +562,7 @@ async fn navigation_bootstrap_page(
     default_project: Option<ProjectSummary>,
     pending_questions: Vec<AgentServiceEvent>,
     transport: PageTransport,
-) -> Result<NavigationBootstrap, String> {
+) -> Result<NavigationBootstrap, HostFailure> {
     let mut response = NavigationBootstrap {
         runtime_status,
         project_root: root.clone(),
@@ -602,7 +578,12 @@ async fn navigation_bootstrap_page(
     let mut budget = cap
         .checked_sub(serialized_bytes(&response)?.saturating_add(2048))
         .filter(|remaining| *remaining >= 2048)
-        .ok_or("Navigation metadata exceeds its serialized page budget")?;
+        .ok_or_else(|| {
+            HostFailure::new(
+                "paging-navigation-budget",
+                "Navigation metadata exceeds its serialized page budget",
+            )
+        })?;
     for _ in 0..8 {
         let page_store = store.clone();
         let projects = blocking(move || {
@@ -627,7 +608,10 @@ async fn navigation_bootstrap_page(
         }
         budget = reduced;
     }
-    Err("Navigation metadata exceeds its serialized page budget".into())
+    Err(HostFailure::new(
+        "paging-navigation-budget",
+        "Navigation metadata exceeds its serialized page budget",
+    ))
 }
 
 async fn open_task(
@@ -635,14 +619,17 @@ async fn open_task(
     user: &str,
     request: OpenTaskPageRequest,
     transport: PageTransport,
-) -> Result<PagedTaskDetail, String> {
+) -> Result<PagedTaskDetail, HostFailure> {
     let (store, account) = context(backend, user).await?;
     let handle = backend.service().handle_for_user(user).await?;
     let requested = request
         .limit_bytes
         .unwrap_or(transport.caps().default_open_bytes);
     if !(16 * 1024..=transport.caps().max_reply_bytes).contains(&requested) {
-        return Err("Invalid open-task page budget".into());
+        return Err(HostFailure::new(
+            "paging-open-budget",
+            "Invalid open-task page budget",
+        ));
     }
     let cap = requested.min(reply_budget(transport));
     let row_limit = request
@@ -653,7 +640,10 @@ async fn open_task(
             50
         });
     if row_limit == 0 || row_limit > 500 {
-        return Err("Invalid open-task row limit".into());
+        return Err(HostFailure::new(
+            "paging-row-limit",
+            "Invalid open-task row limit",
+        ));
     }
     handle.ensure_task_history_ready(&request.task).await?;
     // Start with the whole budget so immutable metadata (notably canonical
@@ -757,17 +747,26 @@ async fn open_task(
         if response_bytes > cap {
             let reduced = persisted_budget.saturating_sub(response_bytes - cap + 256);
             if reduced < 4096 || reduced >= persisted_budget {
-                return Err("Host reply exceeds its serialized page budget".into());
+                return Err(HostFailure::new(
+                    "paging-reply-budget",
+                    "Host reply exceeds its serialized page budget",
+                ));
             }
             persisted_budget = reduced;
             continue;
         }
         return Ok(response);
     }
-    Err("Task history changed while it was opening; try opening it again".into())
+    Err(HostFailure::new(
+        "paging-changed",
+        "Task history changed while it was opening; try opening it again",
+    ))
 }
 
-fn fit_queue(queue: &mut AgentDesktopQueueSnapshot, cap: usize) -> Result<Vec<String>, String> {
+fn fit_queue(
+    queue: &mut AgentDesktopQueueSnapshot,
+    cap: usize,
+) -> Result<Vec<String>, HostFailure> {
     let mut previews = Vec::new();
     while serialized_bytes(queue)? > cap {
         let mut changed = false;
@@ -785,24 +784,45 @@ fn fit_queue(queue: &mut AgentDesktopQueueSnapshot, cap: usize) -> Result<Vec<St
             }
         }
         if !changed {
-            return Err("Queued-message metadata exceeds the page budget".into());
+            return Err(HostFailure::new(
+                "paging-queue-budget",
+                "Queued-message metadata exceeds the page budget",
+            ));
         }
     }
     Ok(previews)
 }
 
-fn serialized_bytes(value: &impl Serialize) -> Result<usize, String> {
+fn serialized_bytes(value: &impl Serialize) -> Result<usize, HostFailure> {
     serde_json::to_vec(value)
         .map(|bytes| bytes.len())
-        .map_err(|_| "Could not encode bounded host reply".into())
+        .map_err(|_| {
+            HostFailure::new(
+                "paging-bounded-encode",
+                "Could not encode bounded host reply",
+            )
+        })
 }
 
-fn ensure_reply(value: &impl Serialize, cap: usize) -> Result<(), String> {
+fn ensure_reply(value: &impl Serialize, cap: usize) -> Result<(), HostFailure> {
     if serialized_bytes(value)? > cap {
-        Err("Host reply exceeds its serialized page budget".into())
+        Err(HostFailure::new(
+            "paging-reply-budget",
+            "Host reply exceeds its serialized page budget",
+        ))
     } else {
         Ok(())
     }
+}
+
+pub(crate) async fn dispatch(
+    backend: &LocalBackend,
+    request: Request,
+    transport: PageTransport,
+) -> Result<Value, String> {
+    dispatch_presented(backend, request, transport)
+        .await
+        .map_err(|failure| failure.message)
 }
 
 #[cfg(test)]
@@ -847,6 +867,7 @@ mod tests {
             reply_budget(PageTransport::Remote)
         );
         let response = crate::host::protocol::Message::Response {
+            failure: None,
             id: u64::MAX,
             result: Ok(payload),
         };

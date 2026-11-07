@@ -1,4 +1,6 @@
 //! Stock status-icon backend; no service supervisor or custom native tray code.
+use crate::ui::i18n::{current_locale, tr};
+use std::cell::RefCell;
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuItem},
@@ -9,13 +11,24 @@ pub enum Action {
     Quit,
     CheckForUpdates,
 }
-pub struct StatusIcon(TrayIcon);
+pub struct StatusIcon {
+    tray: TrayIcon,
+    open: MenuItem,
+    check: MenuItem,
+    quit: MenuItem,
+    presentation: RefCell<Option<(fluent_templates::LanguageIdentifier, bool, bool)>>,
+}
 impl StatusIcon {
     pub fn new() -> Result<(Self, tokio::sync::mpsc::Receiver<Action>), String> {
         let menu = Menu::new();
-        let open = MenuItem::with_id("maple-open", "Open Maple", true, None);
-        let check = MenuItem::with_id("maple-updates", "Check for Updates…", true, None);
-        let quit = MenuItem::with_id("maple-quit", "Quit Maple", true, None);
+        let open = MenuItem::with_id("maple-open", tr("native-open-maple").as_ref(), true, None);
+        let check = MenuItem::with_id(
+            "maple-updates",
+            tr("native-check-updates").as_ref(),
+            true,
+            None,
+        );
+        let quit = MenuItem::with_id("maple-quit", tr("native-quit-maple").as_ref(), true, None);
         menu.append_items(&[&open, &check, &quit])
             .map_err(|_| "Could not create the Maple tray menu")?;
         let image = image::load_from_memory(include_bytes!("../packaging/maple-agent.png"))
@@ -27,7 +40,7 @@ impl StatusIcon {
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
             .with_menu(Box::new(menu))
-            .with_tooltip("Maple — remote access off")
+            .with_tooltip(tr("native-remote-off").as_ref())
             .build()
             .map_err(|_| "The desktop tray is unavailable")?;
         tray.set_visible(false)
@@ -42,17 +55,38 @@ impl StatusIcon {
             };
             let _ = sender.try_send(action);
         }));
-        Ok((Self(tray), receiver))
+        Ok((
+            Self {
+                tray,
+                open,
+                check,
+                quit,
+                presentation: RefCell::new(None),
+            },
+            receiver,
+        ))
     }
     pub fn set_state(&self, remote_enabled: bool, store_resident: bool) {
-        let _ = self.0.set_tooltip(Some(if remote_enabled {
-            "Maple — remote access on"
+        let next = (current_locale(), remote_enabled, store_resident);
+        let mut previous = self.presentation.borrow_mut();
+        if previous.as_ref() == Some(&next) {
+            return;
+        }
+        if previous.as_ref().map(|state| &state.0) != Some(&next.0) {
+            self.open.set_text(tr("native-open-maple").as_ref());
+            self.check.set_text(tr("native-check-updates").as_ref());
+            self.quit.set_text(tr("native-quit-maple").as_ref());
+        }
+        let tooltip = tr(if remote_enabled {
+            "native-remote-on"
         } else if store_resident {
-            "Maple — local data unlocked or changing"
+            "native-store-resident"
         } else {
-            "Maple — remote access off"
-        }));
-        let _ = self.0.set_visible(remote_enabled || store_resident);
+            "native-remote-off"
+        });
+        let _ = self.tray.set_tooltip(Some(tooltip.as_ref()));
+        let _ = self.tray.set_visible(remote_enabled || store_resident);
+        *previous = Some(next);
     }
 }
 

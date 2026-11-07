@@ -43,10 +43,13 @@ fn strong_matching_change_explains_missing_current_and_preserves_secrets(
         let reason = form
             .validation_message(cx)
             .expect("missing-current feedback");
-        assert!(reason.to_lowercase().contains("current"));
+        assert!(reason.resolve().to_lowercase().contains("current"));
 
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.resolve().as_ref())
+        );
         assert!(form.current.read(cx).is_empty());
         form.password
             .read(cx)
@@ -65,11 +68,14 @@ fn mismatch_has_specific_feedback_and_does_not_consume_any_field(cx: &mut gpui::
         set_secret(&form.current, CURRENT, cx);
         fill_new_password(form, "different synthetic confirmation", cx);
         let reason = form.validation_message(cx).expect("mismatch feedback");
-        assert!(reason.to_lowercase().contains("match"));
+        assert!(reason.resolve().to_lowercase().contains("match"));
         assert!(!form.can_submit(cx));
 
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.resolve().as_ref())
+        );
         form.current
             .read(cx)
             .with_secret(|value| assert_eq!(value, CURRENT));
@@ -93,9 +99,12 @@ fn strong_password_requires_confirmation_with_an_explicit_reason(cx: &mut gpui::
         let reason = form
             .validation_message(cx)
             .expect("confirmation-required feedback");
-        assert!(reason.to_lowercase().contains("confirm"));
+        assert!(reason.resolve().to_lowercase().contains("confirm"));
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.resolve().as_ref())
+        );
         assert_no_submission(form);
     });
 }
@@ -109,7 +118,7 @@ fn weak_password_reports_strength_instead_of_silently_ignoring_save(cx: &mut gpu
         form.assess(cx);
         assert_eq!(form.assessment.unwrap().level, StrengthLevel::TooEasy);
         let reason = form.validation_message(cx).expect("weak-password feedback");
-        let lower = reason.to_lowercase();
+        let lower = reason.resolve().to_lowercase();
         assert!(
             lower.contains("strong")
                 || lower.contains("easy")
@@ -117,7 +126,10 @@ fn weak_password_reports_strength_instead_of_silently_ignoring_save(cx: &mut gpu
                 || lower.contains("guess")
         );
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.resolve().as_ref())
+        );
         assert_no_submission(form);
     });
 }
@@ -133,10 +145,13 @@ fn an_overlength_password_reports_its_bound_before_confirmation(cx: &mut gpui::T
         let reason = form
             .validation_message(cx)
             .expect("password-length feedback");
-        let lower = reason.to_lowercase();
+        let lower = reason.resolve().to_lowercase();
         assert!(lower.contains("long") || lower.contains("1024") || lower.contains("1,024"));
         form.submit(cx);
-        assert_eq!(form.message.as_deref(), Some(reason));
+        assert_eq!(
+            form.message.as_ref().map(UiText::resolve).as_deref(),
+            Some(reason.resolve().as_ref())
+        );
         assert_eq!(form.password.read(cx).len_chars(), 1025);
         assert_no_submission(form);
     });
@@ -295,6 +310,8 @@ fn change_keyboard_navigation_and_save_explain_missing_current_without_consuming
         assert!(form.confirmation_matches);
         assert!(
             form.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .is_some_and(|message| message.contains("current"))
         );
@@ -327,6 +344,8 @@ fn change_keyboard_navigation_and_save_explain_missing_current_without_consuming
         let form = entity.read(app);
         assert!(
             form.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .is_some_and(|message| message.contains("current"))
         );
@@ -417,6 +436,8 @@ fn an_uncertain_generated_attempt_retains_the_phrase_but_blocks_resubmission(
         assert!(form.suggestion_retry_blocked);
         assert!(
             form.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .unwrap()
                 .contains("Keep this passphrase")
@@ -469,7 +490,12 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(gate.bridges.borrow().is_empty());
         assert!(
-            gate.message.as_deref().unwrap().contains("unlock password"),
+            gate.message
+                .as_ref()
+                .map(UiText::resolve)
+                .as_deref()
+                .unwrap()
+                .contains("unlock password"),
             "unexpected unlock feedback: {:?}",
             gate.message
         );
@@ -497,6 +523,8 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(
             gate.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .unwrap()
                 .contains("Type ERASE exactly")
@@ -510,6 +538,8 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
         assert!(!gate.busy);
         assert!(
             gate.message
+                .as_ref()
+                .map(UiText::resolve)
                 .as_deref()
                 .unwrap()
                 .contains("Type ERASE exactly")
@@ -558,5 +588,51 @@ fn needs_setup_gate_keyboard_opens_the_typed_password_form(cx: &mut gpui::TestAp
         assert!(!form.suggested);
         assert!(!form.generating);
         assert!(!form.busy);
+    });
+}
+
+#[gpui::test]
+fn locale_switch_preserves_password_validation_and_destructive_confirmation(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _locale = super::super::i18n::TestLocalizationGuard::enable();
+    let entity = form(cx, PasswordAction::Change);
+    entity.update(cx, |form, cx| {
+        fill_new_password(form, STRONG, cx);
+        form.submit(cx);
+        let english = form.message.as_ref().unwrap().resolve();
+        super::super::i18n::apply_preference(Some("es"));
+        assert_ne!(form.message.as_ref().unwrap().resolve(), english);
+        assert_eq!(form.message, form.validation_message(cx));
+        form.password
+            .read(cx)
+            .with_secret(|secret| assert_eq!(secret, STRONG));
+        form.confirmation
+            .read(cx)
+            .with_secret(|secret| assert_eq!(secret, STRONG));
+        assert_no_submission(form);
+    });
+    let backend =
+        Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+    let gate = cx.new(|cx| StoreGate::new_mounted(backend, StoreState::Locked, cx));
+    gate.update(cx, |gate, cx| {
+        gate.open_erase(cx);
+        gate.confirmation
+            .update(cx, |input, cx| input.set_text("BORRAR", cx));
+        gate.reset(false, cx);
+        assert!(
+            gate.message
+                .as_ref()
+                .unwrap()
+                .resolve()
+                .starts_with("Escribe")
+        );
+        super::super::i18n::apply_preference(Some("en"));
+        assert!(gate.message.as_ref().unwrap().resolve().starts_with("Type"));
+        assert!(gate.message.as_ref().unwrap().resolve().contains("ERASE"));
+        assert_eq!(gate.confirmation.read(cx).text(), "BORRAR");
+        assert!(gate.erase);
+        assert!(!gate.busy);
+        assert!(gate.bridges.borrow().is_empty());
     });
 }

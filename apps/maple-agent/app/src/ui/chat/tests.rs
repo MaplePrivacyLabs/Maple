@@ -1079,6 +1079,7 @@ mod state_tests {
 
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            label: None,
             persisted: None,
             live: None,
             truncated: None,
@@ -1106,6 +1107,75 @@ mod state_tests {
     /// Serializes constructions that read the shared settings snapshot while
     /// another fixture installs its own host-backed settings cache.
     use crate::settings::SETTINGS_IO_LOCK as SETTINGS_LOCK;
+
+    #[gpui::test]
+    fn locale_switch_preserves_draft_task_filter_and_semantic_notice(cx: &mut TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::apply_preference(Some("en"));
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.sessions = vec![summary("chosen", "User title: Configuración")];
+            chat.selected_session = Some("chosen".into());
+            chat.sync_sidebar(cx);
+            chat.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_project_filter(Some("/user/project".into()), cx);
+            });
+            let composer = cx.new(|cx| TextInput::new("", cx));
+            composer.update(cx, |input, cx| input.set_text("/comp", cx));
+            chat.composer = Some(composer);
+            chat.notice = Some(UiText::key("chat-compacted"));
+            let generation = chat.selection_generation;
+            for (locale, title, notice, description) in [
+                (
+                    "es",
+                    "Nueva tarea",
+                    "Conversación compactada",
+                    "Resume la conversación",
+                ),
+                (
+                    "en",
+                    "New Task",
+                    "Conversation compacted",
+                    "Summarize the conversation",
+                ),
+            ] {
+                crate::ui::i18n::apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                assert_eq!(chat.selected_title.as_ref(), title);
+                assert_eq!(chat.notice.as_ref().unwrap().resolve().as_ref(), notice);
+                assert_eq!(chat.composer.as_ref().unwrap().read(cx).text_ref(), "/comp");
+                assert_eq!(chat.selected_session.as_deref(), Some("chosen"));
+                assert_eq!(chat.selection_generation, generation);
+                assert_eq!(chat.sessions[0].title, "User title: Configuración");
+                assert_eq!(
+                    chat.sidebar.read(cx).project_filter(),
+                    Some("/user/project")
+                );
+                assert_eq!(chat.slash_entries[0].name, "compact");
+                assert!(chat.slash_entries[0].description.starts_with(description));
+            }
+            chat.replace_timeline(
+                (0..20)
+                    .map(|index| item(&format!("row-{index}"), "message", Some("User content")))
+                    .collect(),
+            );
+            chat.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 7,
+                offset_in_item: px(13.),
+            });
+            let anchor = chat.list_state.logical_scroll_top();
+            for locale in ["es", "en"] {
+                crate::ui::i18n::apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                let after = chat.list_state.logical_scroll_top();
+                assert_eq!(after.item_ix, anchor.item_ix);
+                assert_eq!(after.offset_in_item, anchor.offset_in_item);
+                assert_eq!(chat.selected_title.as_ref(), "User title: Configuración");
+                assert_eq!(chat.timeline[7].text.as_deref(), Some("User content"));
+                assert_eq!(chat.composer.as_ref().unwrap().read(cx).text_ref(), "/comp");
+            }
+        });
+    }
 
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         let _guard = SETTINGS_LOCK.lock();
@@ -1938,6 +2008,17 @@ mod state_tests {
             // A call the drop cut off adds no row of its own.
             this.notice = Some("The Maple host disconnected. Reconnect before retrying.".into());
             assert!(this.render_notice(cx).is_none());
+            this.notice = Some(UiText::context(
+                "chat-answer-failed",
+                "message",
+                UiText::Raw("The Maple host disconnected. Reconnect before retrying.".into()),
+            ));
+            assert!(
+                this.render_notice(cx).is_some(),
+                "an interrupted action must remain visible"
+            );
+            this.notice = None;
+
             this.notice = None;
             cx.notify();
         });
@@ -2618,7 +2699,7 @@ mod state_tests {
             }];
             this.send_text("a stray reply".to_string(), cx);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
             assert!(this.question_focus_pending);
@@ -2748,7 +2829,7 @@ mod state_tests {
             }];
             assert!(this.try_command(Some("s1"), "/deploy staging", cx));
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Loading skill…")
             );
         });
@@ -3068,7 +3149,7 @@ mod state_tests {
             this.booting = false;
             this.send_text("next".to_string(), cx);
             assert_ne!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
         });
@@ -3100,7 +3181,7 @@ mod state_tests {
             this.booting = false;
             this.send_text("still typing here".to_string(), cx);
             assert_ne!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
             // Escape must not cancel the other session's run.
@@ -3150,7 +3231,7 @@ mod state_tests {
             this.select_project_root("relative".to_string(), cx);
             assert!(!this.root_selecting);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Enter an absolute directory path")
             );
         });
@@ -3679,7 +3760,7 @@ mod state_tests {
 
             this.fail_new_session_setup(
                 summary_at("created", "New Task", &absolute_fixture_root("work")),
-                "Could not change web access: boom".to_string(),
+                "Could not change web access: boom".into(),
                 generation,
                 cx,
             );
@@ -3690,7 +3771,7 @@ mod state_tests {
             assert!(!this.draft);
             assert!(!this.awaiting_first_token, "nothing was sent");
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Could not change web access: boom")
             );
             assert_eq!(this.composer.clone().unwrap().read(cx).text(), "hello");
@@ -3754,7 +3835,7 @@ mod state_tests {
             );
 
             // The create fails: the text stays, and the history has it.
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
             assert_eq!(this.composer_text(cx).as_deref(), Some("hello"));
             assert!(this.prompt_history.contains(&"hello".to_string()));
             assert!(this.draft);
@@ -3807,7 +3888,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.contains("back in the composer")),
+                    .is_some_and(|notice| notice.resolve().contains("back in the composer")),
                 "{:?}",
                 this.notice
             );
@@ -3826,7 +3907,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.contains("Press Up")),
+                    .is_some_and(|notice| notice.resolve().contains("Press Up")),
                 "{:?}",
                 this.notice
             );
@@ -3955,7 +4036,7 @@ mod state_tests {
             let generation = this.selection_generation;
             this.finish_new_session(summary_at("created", "New Task", &root), generation, cx);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Loading skill…")
             );
             assert!(!this.awaiting_first_token, "no plain message went out");
@@ -3996,7 +4077,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.starts_with("Message not sent")),
+                    .is_some_and(|notice| notice.resolve().starts_with("Message not sent")),
                 "{:?}",
                 this.notice
             );
@@ -4036,7 +4117,7 @@ mod state_tests {
             assert!(!this.root_selecting, "the switch did not start");
             assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Wait for the new task to be created, then switch projects")
             );
 
@@ -4059,13 +4140,13 @@ mod state_tests {
             this.send_text("hello".to_string(), cx);
             assert!(this.session_setup_pending);
 
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
 
             assert!(!this.session_setup_pending);
             assert!(this.pending_first_send.is_none());
             assert_eq!(this.selected_session, None);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("no runtime")
             );
         });
@@ -4094,7 +4175,7 @@ mod state_tests {
                 this.pending_first_send,
                 Some(FirstSend::SideQuestion("what is this".to_string()))
             );
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
 
             this.slash_commands = vec![AgentSlashCommand {
                 name: "deploy".to_string(),
@@ -4107,7 +4188,7 @@ mod state_tests {
                 Some(FirstSend::Command("/deploy staging".to_string()))
             );
             // Unknown commands still fall through to a normal send.
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
             assert!(!this.try_command(None, "/definitely-not-a-command", cx));
         });
     }
@@ -6216,7 +6297,10 @@ mod state_tests {
                 .update(cx, |sidebar, cx| sidebar.set_archived_expanded(true, cx));
             let sidebar = this.sidebar.read(cx);
 
-            assert_eq!(sidebar.row_step_label_for_test("s1"), Some("Settle"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s1").as_deref(),
+                Some("Settle")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s1"),
                 vec![
@@ -6228,13 +6312,19 @@ mod state_tests {
                 ]
             );
 
-            assert_eq!(sidebar.row_step_label_for_test("s2"), Some("Archive"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s2").as_deref(),
+                Some("Archive")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s2"),
                 vec!["Rename task", "Reopen task", "Archive task", "Delete task"]
             );
 
-            assert_eq!(sidebar.row_step_label_for_test("s3"), Some("Delete"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s3").as_deref(),
+                Some("Delete")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s3"),
                 vec!["Rename task", "Reopen task", "Delete task"]
@@ -6424,7 +6514,10 @@ mod state_tests {
                 .update(cx, |sidebar, cx| sidebar.toggle_task_pin("s1", cx));
             assert_eq!(this.sidebar_pinned(cx), vec![0]);
             assert_eq!(
-                this.sidebar.read(cx).row_step_label_for_test("s1"),
+                this.sidebar
+                    .read(cx)
+                    .row_step_label_for_test("s1")
+                    .as_deref(),
                 Some("Settle")
             );
 
@@ -6439,7 +6532,10 @@ mod state_tests {
             assert_eq!(this.sidebar_settled(cx), vec![0]);
             assert_eq!(this.sidebar_active(cx), vec![1]);
             assert_eq!(
-                this.sidebar.read(cx).row_step_label_for_test("s1"),
+                this.sidebar
+                    .read(cx)
+                    .row_step_label_for_test("s1")
+                    .as_deref(),
                 Some("Archive")
             );
 
@@ -7909,6 +8005,8 @@ mod state_tests {
         for plan in [
             None,
             Some(crate::billing::PlanUsage {
+                product_name: None,
+                reset_at: None,
                 plan_label: "Pro".into(),
                 percent_used: 42,
                 resets_label: "tomorrow".into(),
@@ -8862,21 +8960,20 @@ mod state_tests {
                     path: "/shared".into(),
                 };
                 let labels = sidebar.project_menu_labels_for_test(&target);
-                assert_eq!(labels.first(), Some(&"Rename project"));
-                assert!(
-                    labels
-                        .iter()
-                        .all(|label| matches!(*label, "Rename project" | "Move up" | "Move down"))
-                );
+                assert_eq!(labels.first().map(String::as_str), Some("Rename project"));
+                assert!(labels.iter().all(|label| matches!(
+                    label.as_str(),
+                    "Rename project" | "Move up" | "Move down"
+                )));
             }
             let local = ProjectTarget {
                 computer: None,
                 path: "/shared".into(),
             };
             let own_menu = sidebar.project_menu_labels_for_test(&local);
-            assert!(own_menu.contains(&"Rename project"));
-            assert!(own_menu.contains(&"Open folder"));
-            assert!(own_menu.contains(&"Remove project"));
+            assert!(own_menu.contains(&"Rename project".to_string()));
+            assert!(own_menu.contains(&"Open folder".to_string()));
+            assert!(own_menu.contains(&"Remove project".to_string()));
         });
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
@@ -9075,7 +9172,7 @@ mod state_tests {
                 .iter()
                 .any(|event| matches!(event, SidebarEvent::Navigate(_) | SidebarEvent::Select(_)))
         );
-        assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.as_ref() == "East is unavailable")));
+        assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.resolve().as_ref() == "East is unavailable")));
     }
 
     /// A task's rename ends when its field loses focus or the pointer
@@ -9509,8 +9606,8 @@ mod state_tests {
         });
         wait_until(&chat, cx, "invalid rename rejected", |this| {
             this.notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("128"))
+                .as_ref()
+                .is_some_and(|notice| notice.resolve().contains("128"))
         });
         chat.update(cx, |this, cx| {
             assert!(!this.sidebar.read(cx).project_rename_pending(&root));
@@ -10320,8 +10417,8 @@ mod state_tests {
             assert!(this.draft_attachments.is_empty());
             assert!(
                 this.notice
-                    .as_deref()
-                    .is_some_and(|notice| notice.contains("not a PNG, JPEG, or WebP"))
+                    .as_ref()
+                    .is_some_and(|notice| notice.resolve().contains("not a PNG, JPEG, or WebP"))
             );
         });
     }
@@ -10338,8 +10435,8 @@ mod state_tests {
             assert_eq!(this.draft_attachments.len(), MAX_DRAFT_ATTACHMENTS);
             assert!(
                 this.notice
-                    .as_deref()
-                    .is_some_and(|notice| notice.contains("at most"))
+                    .as_ref()
+                    .is_some_and(|notice| notice.resolve().contains("at most"))
             );
         });
     }
@@ -11850,6 +11947,196 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn local_error_text_switches_locale_without_mutating_raw_rows_or_receipts(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::host::receipts::Outcome;
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.selected_session = Some("s1".into());
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            composer.update(cx, |input, cx| input.set_text("newer draft", cx));
+            chat.composer = Some(composer);
+            chat.host_recovery.unavailable = true;
+            chat.finish_send(
+                "failure".into(),
+                UnresolvedSend {
+                    backend: chat.backend.clone(),
+                    outcome: None,
+                    session: "s1".into(),
+                    text: "original draft".into(),
+                    attachments: vec![],
+                    from_composer: true,
+                },
+                Err(crate::backend::HostFailure::new(
+                    "host-disconnected",
+                    "untouched host diagnostic",
+                )
+                .into()),
+                cx,
+            );
+            let item = chat.timeline.last().unwrap().clone();
+            let raw_row = serde_json::to_value(&item).unwrap();
+            let receipt = Some(Outcome::Finished(Err("untouched host diagnostic".into())));
+            for locale in ["en", "es", "en"] {
+                apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                let (title, body) =
+                    transcript::error_presentation(&item, &chat.local_error_text, &chat.messages);
+                assert_eq!(
+                    title.unwrap(),
+                    crate::ui::i18n::tr("chat-send-failed-heading")
+                );
+                assert_eq!(
+                    body.unwrap(),
+                    crate::ui::i18n::tr("runtime-error-host-disconnected")
+                );
+                assert_eq!(
+                    serde_json::to_value(chat.timeline.last().unwrap()).unwrap(),
+                    raw_row
+                );
+                assert_eq!(chat.unresolved_sends["failure"].outcome, receipt);
+                assert_eq!(chat.composer_text(cx).as_deref(), Some("newer draft"));
+            }
+            let mut replacement = item.clone();
+            replacement.text = Some("replacement raw content".into());
+            chat.apply_timeline_item("s1", replacement);
+            assert!(!chat.local_error_text.contains_key(&item.id));
+            assert_eq!(
+                transcript::error_presentation(
+                    &chat.timeline[0],
+                    &chat.local_error_text,
+                    &chat.messages
+                )
+                .1
+                .unwrap()
+                .as_ref(),
+                "replacement raw content"
+            );
+            chat.push_local_error("Send failed", "raw", UiText::key("chat-task-cancelled"), cx);
+            assert_eq!(chat.local_error_text.len(), 1);
+            for index in 0..2000 {
+                chat.timeline
+                    .push(user_item(&format!("evict-{index}"), "user content"));
+            }
+            chat.bound_transcript_window(true);
+            chat.rebuild_window(None);
+            assert!(
+                chat.local_error_text.is_empty(),
+                "eviction drops semantic state"
+            );
+            chat.push_local_error("Send failed", "raw", UiText::key("chat-task-cancelled"), cx);
+            assert_eq!(chat.local_error_text.len(), 1);
+            chat.set_active_session(
+                summary("other", "Another task"),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+            assert!(
+                chat.local_error_text.is_empty(),
+                "task replacement drops semantic state"
+            );
+            assert_eq!(chat.unresolved_sends["failure"].outcome, receipt);
+        });
+    }
+
+    #[gpui::test]
+    fn typed_send_failures_preserve_receipt_authority_and_task_fences(cx: &mut TestAppContext) {
+        use crate::host::receipts::Outcome;
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            chat.composer = Some(composer.clone());
+            chat.host_recovery.unavailable = true;
+            for selected in ["s1", "other"] {
+                for kind in 0..4 {
+                    chat.unresolved_sends.clear();
+                    chat.selected_session = Some(selected.into());
+                    chat.replace_timeline(Vec::new());
+                    chat.awaiting_first_token = true;
+                    composer.update(cx, |input, cx| input.set_text("newer draft", cx));
+                    let (failure, diagnostic) = match kind {
+                        0 => (
+                            UiFailure::from(crate::backend::HostFailure::new(
+                                "host-disconnected",
+                                "original host diagnostic",
+                            )),
+                            Some("original host diagnostic"),
+                        ),
+                        1 => (
+                            UiFailure::Local(
+                                "chat-upload-cancelled-unsent",
+                                "Upload cancelled. No message was sent.",
+                            ),
+                            Some("Upload cancelled. No message was sent."),
+                        ),
+                        2 => (UiFailure::Cancelled("chat-agent-task-cancelled"), None),
+                        _ => (
+                            UiFailure::Local(
+                                "chat-upload-preparing",
+                                "Attachment is still being prepared",
+                            )
+                            .with_context(
+                                "chat-upload-confirm-failed",
+                                vec![],
+                                None,
+                            ),
+                            None,
+                        ),
+                    };
+                    chat.finish_send(
+                        "typed-send".into(),
+                        UnresolvedSend {
+                            backend: chat.backend.clone(),
+                            outcome: None,
+                            session: "s1".into(),
+                            text: "original draft".into(),
+                            attachments: vec![],
+                            from_composer: true,
+                        },
+                        Err(failure),
+                        cx,
+                    );
+                    let send = &chat.unresolved_sends["typed-send"];
+                    assert_eq!(send.session, "s1");
+                    assert_eq!(send.text, "original draft");
+                    assert_eq!(
+                        send.outcome,
+                        diagnostic.map(|raw| Outcome::Finished(Err(raw.into())))
+                    );
+                    assert_eq!(send.awaiting_receipt(), diagnostic.is_none());
+                    assert_eq!(composer.read(cx).text_ref(), "newer draft");
+                    assert!(chat.active_runs.is_empty());
+                    if selected == "other" {
+                        assert!(
+                            chat.timeline.is_empty(),
+                            "failure must not enter the newly selected task"
+                        );
+                        assert!(chat.awaiting_first_token);
+                    } else {
+                        assert!(!chat.awaiting_first_token);
+                        assert_eq!(chat.timeline.len(), usize::from(diagnostic.is_some()));
+                    }
+                    if diagnostic.is_none() {
+                        assert_eq!(
+                            chat.notice.as_ref().unwrap(),
+                            &UiText::key("chat-send-uncertain")
+                        );
+                    } else {
+                        assert_eq!(
+                            chat.notice.as_ref().unwrap(),
+                            &UiText::key("chat-send-failed-retained")
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[gpui::test]
     fn receipt_completion_uncertainty_never_restores_or_replays_the_original_draft(
         cx: &mut TestAppContext,
     ) {
@@ -11872,7 +12159,7 @@ mod state_tests {
                     text: "already admitted original message".into(),
                     from_composer: true,
                     attachments: vec![DraftAttachment::for_test(50, "image.png", true)],
-                }, Err(format!("Send outcome unknown ({id}). Reload this task before sending again; it may already be running.")), cx);
+                }, Err(format!("Send outcome unknown ({id}). Reload this task before sending again; it may already be running.").into()), cx);
                 assert_eq!(composer.read(cx).text_ref(), draft);
                 assert!(chat.draft_attachments.is_empty());
                 assert_eq!(chat.unresolved_sends[&id].attachments.len(), 1);
@@ -12037,6 +12324,7 @@ mod state_tests {
                         chat.notice
                             .as_ref()
                             .unwrap()
+                            .resolve()
                             .contains("may have taken effect")
                     );
                 }
@@ -12506,8 +12794,9 @@ mod state_tests {
                     assert_eq!(this.timeline.len(), 1, "no invented history");
                     assert!(
                         this.notice
-                            .as_deref()
+                            .as_ref()
                             .unwrap()
+                            .resolve()
                             .starts_with("Skill not sent")
                     );
                 }
@@ -12730,7 +13019,8 @@ mod state_tests {
             // The isolated backend deliberately has no running agent. Wait
             // for that exact outcome rather than racing its fast callback.
             wait_until(&chat, cx, "first create rejection", |this| {
-                this.notice.as_deref() == Some("Agent runtime is not running")
+                this.notice.as_ref().map(UiText::resolve).as_deref()
+                    == Some("Agent runtime is not running")
             });
             chat.update(cx, |this, cx| {
                 assert!(this.pending_first_send.is_none());

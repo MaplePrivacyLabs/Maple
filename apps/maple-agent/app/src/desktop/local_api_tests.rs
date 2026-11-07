@@ -74,6 +74,7 @@ impl FixtureHost {
                         let hold = pending_holds.lock().unwrap().pop_front();
                         if let Some(hold) = hold {
                             let response = protocol::Message::Response {
+                                failure: None,
                                 id: request.id,
                                 result: Ok(json!(service.status())),
                             };
@@ -116,6 +117,7 @@ impl FixtureHost {
                     if protocol::write(
                         &mut *output.lock().await,
                         &protocol::Message::Response {
+                            failure: None,
                             id: request.id,
                             result,
                         },

@@ -144,11 +144,12 @@ pub fn danger_button(id: impl Into<ElementId>) -> Stateful<Div> {
 pub fn icon_button(
     id: impl Into<ElementId>,
     name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
 ) -> Stateful<Div> {
-    icon_button_base(id, name, label, size, color).tooltip(tooltip(label, None))
+    let label = label.into();
+    icon_button_base(id, name, label.clone(), size, color).tooltip(tooltip(label, None))
 }
 
 /// [`icon_button`] for a control that fires `action`: its tooltip also
@@ -157,18 +158,20 @@ pub fn icon_button(
 pub fn icon_button_for_action(
     id: impl Into<ElementId>,
     name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
     action: &dyn Action,
 ) -> Stateful<Div> {
-    icon_button_base(id, name, label, size, color).tooltip(tooltip_for_action(label, action))
+    let label = label.into();
+    icon_button_base(id, name, label.clone(), size, color)
+        .tooltip(tooltip_for_action(label, action))
 }
 
 fn icon_button_base(
     id: impl Into<ElementId>,
     name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
 ) -> Stateful<Div> {
@@ -212,11 +215,16 @@ pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
 
 /// A labeled checkbox row. The caller supplies its tab index and click/key
 /// handlers, so mouse and keyboard activation share the same state change.
-pub fn checkbox(id: impl Into<ElementId>, checked: bool, label: &'static str) -> Stateful<Div> {
+pub fn checkbox(
+    id: impl Into<ElementId>,
+    checked: bool,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let label = label.into();
     div()
         .id(id)
         .role(Role::CheckBox)
-        .aria_label(label)
+        .aria_label(label.clone())
         .aria_toggled(if checked {
             gpui::Toggled::True
         } else {
@@ -286,7 +294,8 @@ pub fn switch_track(on: bool) -> Div {
 
 /// Small status pill beside a card's title (an integration's availability,
 /// a paired computer's update state). `color` tints only the label.
-pub fn status_badge(label: &'static str, color: u32) -> Div {
+pub fn status_badge(label: impl Into<SharedString>, color: u32) -> Div {
+    let label = label.into();
     div()
         .flex_none()
         .px_2()
@@ -387,7 +396,16 @@ pub fn notice(
         .text_color(gpui::rgb(theme::text_primary()))
         .child(icon("zap", ROW_ICON, theme::status_warning()))
         .child(div().flex_1().min_w_0().line_clamp(2).child(text))
-        .child(icon_button(id, "x", "Dismiss", px(12.), theme::text_muted()).on_click(on_close))
+        .child(
+            icon_button(
+                id,
+                "x",
+                super::i18n::tr("native-dismiss"),
+                px(12.),
+                theme::text_muted(),
+            )
+            .on_click(on_close),
+        )
 }
 
 /// Icon size in a popup menu row or an [`icon_button`] in a list row.
@@ -470,16 +488,16 @@ fn format_keystroke(keystroke: &gpui::KeybindingKeystroke) -> String {
     } else {
         let mut parts = Vec::new();
         if modifiers.control {
-            parts.push("Ctrl".to_string());
+            parts.push(super::i18n::tr("native-key-control").to_string());
         }
         if modifiers.alt {
-            parts.push("Alt".to_string());
+            parts.push(super::i18n::tr("native-key-alt").to_string());
         }
         if modifiers.shift {
-            parts.push("Shift".to_string());
+            parts.push(super::i18n::tr("native-key-shift").to_string());
         }
         if modifiers.platform {
-            parts.push("Win".to_string());
+            parts.push(super::i18n::tr("native-key-platform").to_string());
         }
         parts.push(key_glyph(key));
         out = parts.join("+");
@@ -489,20 +507,20 @@ fn format_keystroke(keystroke: &gpui::KeybindingKeystroke) -> String {
 
 fn key_glyph(key: &str) -> String {
     match key {
-        "escape" => "Esc".to_string(),
+        "escape" => super::i18n::tr("native-key-escape").to_string(),
         "enter" => "↵".to_string(),
         "backspace" => "⌫".to_string(),
         "delete" => "⌦".to_string(),
         "tab" => "⇥".to_string(),
-        "space" => "Space".to_string(),
+        "space" => super::i18n::tr("native-key-space").to_string(),
         "up" => "↑".to_string(),
         "down" => "↓".to_string(),
         "left" => "←".to_string(),
         "right" => "→".to_string(),
-        "pageup" => "PgUp".to_string(),
-        "pagedown" => "PgDn".to_string(),
-        "home" => "Home".to_string(),
-        "end" => "End".to_string(),
+        "pageup" => super::i18n::tr("native-key-pageup").to_string(),
+        "pagedown" => super::i18n::tr("native-key-pagedown").to_string(),
+        "home" => super::i18n::tr("native-key-home").to_string(),
+        "end" => super::i18n::tr("native-key-end").to_string(),
         key if key.chars().count() == 1 => key.to_uppercase(),
         key => key.to_string(),
     }
@@ -612,7 +630,7 @@ pub fn copy_button(
     div()
         .id(id)
         .role(Role::Button)
-        .aria_label("Copy")
+        .aria_label(super::i18n::tr("common-copy"))
         .flex()
         .items_center()
         .gap_1()
@@ -662,7 +680,11 @@ pub fn copy_button(
                 theme::text_secondary()
             },
         ))
-        .child(if copied { "Copied" } else { "Copy" })
+        .child(super::i18n::tr(if copied {
+            "common-copied"
+        } else {
+            "common-copy"
+        }))
 }
 
 #[cfg(test)]

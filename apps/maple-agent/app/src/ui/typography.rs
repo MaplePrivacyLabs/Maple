@@ -63,24 +63,6 @@ impl ChatFontFamily {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::System => "System",
-            Self::Manrope => "Manrope",
-            Self::Geist => "Geist",
-            Self::Serif => "Serif",
-        }
-    }
-
-    pub fn note(self) -> &'static str {
-        match self {
-            Self::System => "The familiar interface font for your device.",
-            Self::Manrope => "Maple's brand face, with a compact modern feel.",
-            Self::Geist => "A lighter grotesque that pairs with Geist Mono.",
-            Self::Serif => "A traditional reading style with distinct letterforms.",
-        }
-    }
-
     fn family_name(self) -> &'static str {
         match self {
             Self::System => assets::FONT_SYSTEM,

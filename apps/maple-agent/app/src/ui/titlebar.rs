@@ -166,6 +166,12 @@ fn control(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(super::i18n::tr(match id {
+            "title-minimize" => "native-minimize",
+            "title-maximize" => "native-maximize",
+            _ => "native-close",
+        }))
         .flex()
         .items_center()
         .justify_center()

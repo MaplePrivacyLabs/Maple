@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{cell::RefCell, sync::Arc};
 
+use super::i18n::{MessageCache, UiText, tr};
 use super::{
     secret_input::{SecretInput, SecretInputChanged},
     text_input::TextInput,
@@ -56,6 +57,7 @@ pub(crate) enum RepairPanelKind {
 pub(crate) struct RepairStateChanged;
 
 pub(crate) struct RepairPanel {
+    messages: MessageCache,
     backend: Arc<AgentBackend>,
     actions_available: bool,
     authenticated: bool,
@@ -66,7 +68,7 @@ pub(crate) struct RepairPanel {
     reviewed_all: bool,
     busy: bool,
     progress: RepairProgress,
-    message: Option<String>,
+    message: Option<UiText>,
     bridges: RefCell<Vec<gpui::Task<()>>>,
     _subscriptions: Vec<Subscription>,
     _progress_task: Option<gpui::Task<()>>,
@@ -83,13 +85,14 @@ impl RepairPanel {
         let RepairPanelKind::Damaged {
             password: requires_password,
         } = kind;
-        let password = cx.new(|cx| SecretInput::new("Current unlock password", cx));
-        let confirmation = cx.new(|cx| TextInput::new("Type the confirmation exactly", cx));
+        let password = cx.new(|cx| SecretInput::localized("flows-repair-password", cx));
+        let confirmation = cx.new(|cx| TextInput::localized("flows-repair-confirmation", cx));
         let changed = cx.subscribe(
             &password,
             |_this, _input, _event: &SecretInputChanged, cx| cx.notify(),
         );
         let mut this = Self {
+            messages: Default::default(),
             backend,
             actions_available,
             authenticated: !requires_password,
@@ -111,11 +114,14 @@ impl RepairPanel {
     }
     fn call<T: Send + 'static>(
         &self,
-        future: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+        future: impl std::future::Future<Output = Result<T, crate::backend::HostFailure>>
+        + Send
+        + 'static,
         cx: &mut Context<Self>,
-        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+        then: impl FnOnce(&mut Self, Result<T, super::task::Failure>, &mut Context<Self>) + 'static,
     ) {
-        let bridge = super::task::call(&self.backend, future, cx, then);
+        let bridge =
+            super::task::call_semantic(&self.backend, future, "flows-task-cancelled", cx, then);
         super::task::retain(&self.bridges, bridge);
     }
     fn poll_progress(&mut self, cx: &mut Context<Self>) {
@@ -131,7 +137,7 @@ impl RepairPanel {
                 let result = backend
                     .spawn(async move {
                         control
-                            .local_control::<RepairProgress>("repair_progress", ())
+                            .local_control_presented::<RepairProgress>("repair_progress", ())
                             .await
                     })
                     .await;
@@ -156,15 +162,15 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<bool>("cancel_store_repair", ())
+                    .local_control_presented::<bool>("cancel_store_repair", ())
                     .await
             },
             cx,
             |this, result, cx| {
                 this.message = Some(match result {
-                    Ok(true) => "Cancelling recovery before replacement…".into(),
-                    Ok(false) => "Recovery can no longer be cancelled. Wait for its result.".into(),
-                    Err(message) => message,
+                    Ok(true) => UiText::key("flows-repair-cancelling"),
+                    Ok(false) => UiText::key("flows-repair-cannot-cancel"),
+                    Err(message) => message.into(),
                 });
                 cx.notify();
             },
@@ -175,7 +181,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<RepairStatus>("repair_status", ())
+                    .local_control_presented::<RepairStatus>("repair_status", ())
                     .await
             },
             cx,
@@ -189,7 +195,7 @@ impl RepairPanel {
                             this.load_preview(preview_id, 0, cx);
                         }
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -206,7 +212,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "authenticate_repair_password",
                         PasswordRequest {
                             password: &password,
@@ -222,7 +228,7 @@ impl RepairPanel {
                         this.authenticated = true;
                         this.restore(cx);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -238,7 +244,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "check_store_integrity",
                         serde_json::json!({"kind":"full"}),
                     )
@@ -249,7 +255,7 @@ impl RepairPanel {
                 this.busy = false;
                 match result {
                     Ok(report) => this.diagnostic = Some(report),
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -267,7 +273,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<SalvagePage>("preview_salvage", ())
+                    .local_control_presented::<SalvagePage>("preview_salvage", ())
                     .await
             },
             cx,
@@ -278,7 +284,7 @@ impl RepairPanel {
                         this.reviewed_all = true;
                         this.preview = Some(page);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -293,7 +299,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<SalvagePage>(
+                    .local_control_presented::<SalvagePage>(
                         "salvage_preview_page",
                         serde_json::json!({"preview_id":preview_id,"offset":offset}),
                     )
@@ -307,7 +313,7 @@ impl RepairPanel {
                         this.reviewed_all = true;
                         this.preview = Some(page);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -323,8 +329,7 @@ impl RepairPanel {
         let preview_id = preview.preview_id.clone();
         let confirmation = self.confirmation.read(cx).text();
         if confirmation != "SAVE READABLE DATA" {
-            self.message =
-                Some("Type SAVE READABLE DATA exactly after reviewing the preview.".into());
+            self.message = Some(UiText::key("flows-repair-confirm-required"));
             cx.notify();
             return;
         }
@@ -334,7 +339,7 @@ impl RepairPanel {
         self.call(
             async move {
                 backend
-                    .local_control::<Value>(
+                    .local_control_presented::<Value>(
                         "salvage_store",
                         serde_json::json!({"preview_id":preview_id,"confirmation":confirmation}),
                     )
@@ -348,7 +353,7 @@ impl RepairPanel {
                         this.preview = None;
                         cx.emit(RepairStateChanged);
                     }
-                    Err(message) => this.message = Some(message),
+                    Err(message) => this.message = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -363,22 +368,12 @@ impl Render for RepairPanel {
             .flex_col()
             .gap_3()
             .text_color(gpui::rgb(theme::text_primary()));
-        pane = pane.child(div().text_sm().child(
-            "Inspect this computer's current local store. Previous app data is left untouched.",
-        ));
+        pane = pane.child(div().text_sm().child(tr("flows-repair-intro")));
         if !self.authenticated && !self.actions_available {
-            pane = pane.child(
-                div()
-                    .text_sm()
-                    .child("Diagnostics for an encrypted store are unavailable in this build."),
-            );
+            pane = pane.child(div().text_sm().child(tr("flows-repair-unavailable")));
         } else if !self.authenticated {
             pane = pane
-                .child(
-                    div().text_sm().child(
-                        "Enter the current unlock password to inspect this encrypted store.",
-                    ),
-                )
+                .child(div().text_sm().child(tr("flows-repair-authenticate-body")))
                 .child(self.password.clone())
                 .when(self.actions_available, |pane| {
                     pane.child(
@@ -386,18 +381,22 @@ impl Render for RepairPanel {
                             .on_click(
                                 cx.listener(|this, _event, _window, cx| this.authenticate(cx)),
                             )
-                            .child(gpui::text!("Authenticate for diagnostics")),
+                            .child(gpui::text!(tr("flows-repair-authenticate"))),
                     )
                 });
         } else {
             pane = pane.child(
                 widgets::secondary_button("repair-diagnostics")
                     .on_click(cx.listener(|this, _event, _window, cx| this.check(cx)))
-                    .child(gpui::text!("Check integrity")),
+                    .child(gpui::text!(tr("flows-repair-check"))),
             );
             if let Some(report) = &self.diagnostic {
                 pane = pane
-                    .child(div().text_sm().child(diagnostic_summary(report)))
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(diagnostic_summary(report, &self.messages)),
+                    )
                     .child(
                         widgets::secondary_button("copy-repair-diagnostic")
                             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -407,30 +406,38 @@ impl Render for RepairPanel {
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                                 }
                             }))
-                            .child(gpui::text!("Copy a diagnostic report")),
+                            .child(gpui::text!(tr("flows-repair-copy"))),
                     );
             }
             if self.actions_available {
                 pane = pane
-                    .child(div().text_sm().child(
-                        "Experimental recovery can save some readable data. Previewing is limited to five minutes and may stop without a result. A failed or cancelled preview leaves the original unchanged.",
-                    ))
+                    .child(div().text_sm().child(tr("flows-repair-preview-body")))
                     .child(
                         widgets::secondary_button("repair-preview-salvage")
                             .on_click(cx.listener(|this, _event, _window, cx| this.preview(cx)))
-                            .child(gpui::text!("Preview experimental recovery")),
+                            .child(gpui::text!(tr("flows-repair-preview"))),
                     );
             }
             if self.actions_available
                 && let Some(preview) = &self.preview
             {
                 pane = pane
-                    .child(div().text_sm().child(format!(
-                        "{} tasks and {} readable source rows can be kept. {} tasks and {} rows will be dropped. {} retained tasks need their timelines rebuilt.",
-                        preview.retained_tasks, preview.retained_rows, preview.dropped_tasks,
-                        preview.dropped_rows_count, preview.tasks_to_rebuild,
+                    .child(div().text_sm().child(self.messages.get(
+                        "flows-repair-preview-counts",
+                        [
+                            ("tasks", preview.retained_tasks.into()),
+                            ("rows", preview.retained_rows.into()),
+                            ("droppedTasks", preview.dropped_tasks.into()),
+                            ("droppedRows", preview.dropped_rows_count.into()),
+                            ("rebuild", preview.tasks_to_rebuild.into()),
+                        ],
                     )))
-                    .children(preview.dropped_rows.iter().map(|row| div().text_xs().child(row.to_string())));
+                    .children(
+                        preview
+                            .dropped_rows
+                            .iter()
+                            .map(|row| div().text_xs().child(row.to_string())),
+                    );
                 if let Some(offset) = preview.next_offset {
                     let id = preview.preview_id.clone();
                     pane = pane.child(
@@ -438,45 +445,42 @@ impl Render for RepairPanel {
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 this.load_preview(id.clone(), offset, cx)
                             }))
-                            .child(gpui::text!("Review next dropped rows")),
+                            .child(gpui::text!(tr("flows-repair-next"))),
                     );
                 }
-                pane = pane.child(div().text_sm().child(
-                    "Saving readable data permanently deletes the original damaged store after its verified replacement is installed. The listed unreadable data will be lost. Type SAVE READABLE DATA to confirm.",
-                ));
+                pane = pane.child(div().text_sm().child(tr("flows-repair-save-body")));
                 if self.reviewed_all {
                     pane = pane.child(self.confirmation.clone()).child(
                         widgets::primary_button("repair-save-readable")
                             .on_click(
                                 cx.listener(|this, _event, _window, cx| this.save_readable(cx)),
                             )
-                            .child(gpui::text!("Save readable data and replace original")),
+                            .child(gpui::text!(tr("flows-repair-save"))),
                     );
                 }
             }
         }
         if self.busy || self.progress.busy {
-            let bytes = if self.progress.total > 0 {
-                format!(
-                    " {} of {} bytes.",
-                    self.progress.completed, self.progress.total
-                )
-            } else {
-                String::new()
-            };
-            pane = pane.child(div().text_sm().child(format!(
-                "Local recovery: {}.{bytes}",
-                if self.progress.phase.is_empty() {
-                    "preparing"
+            pane = pane.child(div().text_sm().child(self.messages.get(
+                if self.progress.total > 0 {
+                    "flows-repair-progress-bytes"
                 } else {
-                    &self.progress.phase
-                }
+                    "flows-repair-progress"
+                },
+                [
+                    (
+                        "phase",
+                        phase_label(&self.progress.phase).to_string().into(),
+                    ),
+                    ("completed", self.progress.completed.into()),
+                    ("total", self.progress.total.into()),
+                ],
             )));
             if self.progress.cancellable {
                 pane = pane.child(
                     widgets::secondary_button("repair-cancel")
                         .on_click(cx.listener(|this, _event, _window, cx| this.cancel(cx)))
-                        .child(gpui::text!("Cancel")),
+                        .child(gpui::text!(tr("flows-repair-cancel"))),
                 );
             }
         }
@@ -496,7 +500,7 @@ impl Render for RepairPanel {
 struct PasswordRequest<'a> {
     password: &'a str,
 }
-fn diagnostic_summary(report: &Value) -> String {
+fn diagnostic_summary(report: &Value, messages: &MessageCache) -> gpui::SharedString {
     let status = report
         .pointer("/outcome/status")
         .and_then(Value::as_str)
@@ -509,10 +513,49 @@ fn diagnostic_summary(report: &Value) -> String {
         .get("findings")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
-    format!(
-        "Integrity check: {status}. Complete: {}. Findings: {findings}. The diagnostic report contains no task content.",
-        if complete { "yes" } else { "no" }
+    messages.get(
+        "flows-repair-diagnostic",
+        [
+            ("status", diagnostic_status(status).to_string().into()),
+            (
+                "complete",
+                tr(if complete {
+                    "flows-repair-yes"
+                } else {
+                    "flows-repair-no"
+                })
+                .to_string()
+                .into(),
+            ),
+            ("findings", findings.into()),
+        ],
     )
+}
+
+/// Presentation of the host's machine phase codes; future codes remain readable.
+pub(super) fn phase_label(phase: &str) -> gpui::SharedString {
+    match phase {
+        "idle" => tr("flows-repair-phase-idle"),
+        "" | "preparing" => tr("flows-repair-phase-preparing"),
+        "exporting" => tr("flows-repair-phase-exporting"),
+        "verifying" => tr("flows-repair-phase-verifying"),
+        "committing" => tr("flows-repair-phase-committing"),
+        "complete" => tr("flows-repair-phase-complete"),
+        "checking" => tr("flows-repair-phase-checking"),
+        "previewing" => tr("flows-repair-phase-previewing"),
+        "authenticating" => tr("flows-repair-phase-authenticating"),
+        other => other.to_owned().into(),
+    }
+}
+
+fn diagnostic_status(status: &str) -> gpui::SharedString {
+    match status {
+        "clean" => tr("flows-repair-status-clean"),
+        "partial" => tr("flows-repair-status-partial"),
+        "damaged" => tr("flows-repair-status-damaged"),
+        "unknown" => tr("flows-repair-status-unknown"),
+        other => other.to_owned().into(),
+    }
 }
 
 #[cfg(test)]
@@ -521,7 +564,7 @@ mod tests {
     #[test]
     fn diagnostic_summary_uses_only_redacted_status_and_counts() {
         let report = serde_json::json!({"outcome":{"status":"partial"},"complete":false,"findings":[{"kind":"timeout"}],"untrusted":"synthetic-content"});
-        let text = diagnostic_summary(&report);
+        let text = diagnostic_summary(&report, &MessageCache::default());
         assert!(text.contains("partial"));
         assert!(text.contains("Findings: 1"));
         assert!(!text.contains("synthetic-content"));

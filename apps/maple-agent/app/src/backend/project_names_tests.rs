@@ -113,9 +113,16 @@ async fn project_rename_ipc_preserves_account_boundary_and_recovery_metadata() {
         let command: protocol::Request = protocol::read(&mut server).await.unwrap();
         let id = command.id;
         let result = crate::backend::dispatch(&backend, command).await;
-        protocol::write(&mut server, &protocol::Message::Response { id, result })
-            .await
-            .unwrap();
+        protocol::write(
+            &mut server,
+            &protocol::Message::Response {
+                failure: None,
+                id,
+                result,
+            },
+        )
+        .await
+        .unwrap();
     };
     let (message, ()) =
         tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(send, serve) })
@@ -260,6 +267,7 @@ async fn remote_call(
         streams::reply(
             &mut tx,
             &protocol::Message::Response {
+                failure: None,
                 id: command.id,
                 result,
             },
@@ -308,9 +316,16 @@ async fn project_folder_ipc_and_iroh_use_owner_paths_and_preserve_account_guards
         let command: protocol::Request = protocol::read(&mut server).await.unwrap();
         let id = command.id;
         let result = crate::backend::dispatch(&backend, command).await;
-        protocol::write(&mut server, &protocol::Message::Response { id, result })
-            .await
-            .unwrap();
+        protocol::write(
+            &mut server,
+            &protocol::Message::Response {
+                failure: None,
+                id,
+                result,
+            },
+        )
+        .await
+        .unwrap();
     };
     let (response, ()) = tokio::join!(send, serve);
     let protocol::Message::Response {

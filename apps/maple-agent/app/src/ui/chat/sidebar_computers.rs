@@ -102,7 +102,7 @@ struct ComputerHostPage {
     search_text: String,
     archived_count: u64,
     loading: HashSet<String>,
-    errors: HashMap<String, String>,
+    errors: HashMap<String, UiText>,
     loaded: HashSet<String>,
     retained_heads: HashSet<String>,
     /// First pages a refresh is replacing. Their rows stay on screen, so the
@@ -247,14 +247,29 @@ async fn computer_task_page(
     user: String,
     query: catalog::TaskQuery,
     manual: Option<catalog::ManualOrder>,
-) -> Result<NavigationTaskPage, String> {
+) -> Result<NavigationTaskPage, UiFailure> {
     if let Some(order) = manual {
         return reader.page(backend, user, query, order).await;
     }
     match query {
-        catalog::TaskQuery::Tasks(query) => backend.list_tasks(&user, query).await,
-        catalog::TaskQuery::Search(query) => backend.search_tasks(&user, query).await,
-        catalog::TaskQuery::Pinned(query) => backend.pinned_tasks(&user, query).await,
+        catalog::TaskQuery::Tasks(query) => backend
+            .call_presented::<maple_agent::store::NavigationTaskPage>("list_tasks", (&user, query))
+            .await
+            .map_err(UiFailure::from),
+        catalog::TaskQuery::Search(query) => backend
+            .call_presented::<maple_agent::store::NavigationTaskPage>(
+                "search_tasks",
+                (&user, query),
+            )
+            .await
+            .map_err(UiFailure::from),
+        catalog::TaskQuery::Pinned(query) => backend
+            .call_presented::<maple_agent::store::NavigationTaskPage>(
+                "pinned_tasks",
+                (&user, query),
+            )
+            .await
+            .map_err(UiFailure::from),
     }
 }
 
@@ -266,7 +281,7 @@ async fn manual_computer_groups(
     user: String,
     mut page: NavigationGroupPage,
     order: catalog::ManualOrder,
-) -> Result<NavigationGroupPage, String> {
+) -> Result<NavigationGroupPage, UiFailure> {
     let mut remaining = 200usize;
     for group in &mut page.groups {
         let budget = remaining.min(20) as u16;
@@ -351,7 +366,6 @@ fn computer_revision(computers: &[Computer]) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     for computer in computers {
         computer.key.hash(&mut hash);
-        computer.label.hash(&mut hash);
         computer.backend.as_ref().map(Arc::as_ptr).hash(&mut hash);
         computer.host_epoch.hash(&mut hash);
         computer.loading.hash(&mut hash);
@@ -950,7 +964,7 @@ impl Sidebar {
                         generation: self.group_pages.generation,
                         kind: ComputerPageKind::ArchiveCount,
                         cursor: None,
-                        label: "Loading archived task count…".into(),
+                        label: tr("chat-loading-archive-count"),
                         loading: false,
                     },
                     cx,
@@ -967,7 +981,7 @@ impl Sidebar {
                         generation: self.group_pages.generation,
                         kind: ComputerPageKind::Projects,
                         cursor: None,
-                        label: "Loading projects…".into(),
+                        label: tr("chat-loading-projects"),
                         loading: false,
                     },
                     cx,
@@ -999,7 +1013,7 @@ impl Sidebar {
                             generation: self.group_pages.generation,
                             kind,
                             cursor: None,
-                            label: "Loading tasks…".into(),
+                            label: tr("chat-loading-tasks"),
                             loading: false,
                         },
                         cx,
@@ -1018,7 +1032,7 @@ impl Sidebar {
                             generation: self.group_pages.generation,
                             kind: ComputerPageKind::Archived,
                             cursor: None,
-                            label: "Loading archived tasks…".into(),
+                            label: tr("chat-loading-archived"),
                             loading: false,
                         },
                         cx,
@@ -1084,41 +1098,53 @@ impl Sidebar {
         let matched_roots = page.search_roots.clone();
         let search_text = page.search_text.clone();
         let request = action.clone();
-        self.call(
+        self.call_semantic(
             async move {
                 match &request.kind {
                     ComputerPageKind::ArchiveCount => backend
-                        .list_project_groups(
-                            &user,
-                            NavigationGroupQuery {
-                                limit_groups: 1,
-                                per_project: 1,
-                                cursor: None,
-                            },
+                        .call_presented::<maple_agent::store::NavigationGroupPage>(
+                            "list_project_groups",
+                            (
+                                &user,
+                                NavigationGroupQuery {
+                                    limit_groups: 1,
+                                    per_project: 1,
+                                    cursor: None,
+                                },
+                            ),
                         )
                         .await
+                        .map_err(UiFailure::from)
                         .map(|page| ComputerPageReply::ArchiveCount(page.archived_count)),
                     ComputerPageKind::Projects => backend
-                        .list_projects(
-                            &user,
-                            ProjectPageRequest {
-                                cursor: request.cursor.clone(),
-                                limit: 50,
-                            },
+                        .call_presented::<maple_agent::store::NavigationProjectPage>(
+                            "list_projects",
+                            (
+                                &user,
+                                ProjectPageRequest {
+                                    cursor: request.cursor.clone(),
+                                    limit: 50,
+                                },
+                            ),
                         )
                         .await
+                        .map_err(UiFailure::from)
                         .map(ComputerPageReply::Projects),
                     ComputerPageKind::Groups => {
                         let groups = backend
-                            .list_project_groups(
-                                &user,
-                                NavigationGroupQuery {
-                                    limit_groups: 20,
-                                    per_project: 20,
-                                    cursor: request.cursor.clone(),
-                                },
+                            .call_presented::<maple_agent::store::NavigationGroupPage>(
+                                "list_project_groups",
+                                (
+                                    &user,
+                                    NavigationGroupQuery {
+                                        limit_groups: 20,
+                                        per_project: 20,
+                                        cursor: request.cursor.clone(),
+                                    },
+                                ),
                             )
-                            .await?;
+                            .await
+                            .map_err(UiFailure::from)?;
                         let groups = if let Some(order) = manual {
                             manual_computer_groups(reader, backend, user, groups, order).await?
                         } else {
@@ -1191,7 +1217,7 @@ impl Sidebar {
     fn apply_computer_page(
         &mut self,
         action: ComputerMore,
-        result: Result<ComputerPageReply, String>,
+        result: Result<ComputerPageReply, UiFailure>,
         cx: &mut Context<Self>,
     ) {
         let key = action.kind.key();
@@ -1207,13 +1233,13 @@ impl Sidebar {
         page.loading.remove(&key);
         let result = match result {
             Ok(reply) => reply,
-            Err(error) if error == catalog::CANCELLED => {
+            Err(UiFailure::Local(catalog::CANCELLED, _)) => {
                 self.load_computer_page(action, cx);
                 return;
             }
             Err(error) => {
                 page.finish_refresh(&action.kind);
-                page.errors.insert(key, error);
+                page.errors.insert(key, error.into());
                 self.finish_computer_revalidation(cx);
                 self.rebuild_entries();
                 cx.notify();
@@ -1379,9 +1405,12 @@ impl Sidebar {
             cursor,
             loading: loading || held,
             label: if failed {
-                format!("Could not load tasks — retry {label}").into()
+                self.messages.get(
+                    "chat-load-tasks-retry",
+                    [("label", label.to_string().into())],
+                )
             } else if progress && !held {
-                "Loading tasks…".into()
+                tr("chat-loading-tasks")
             } else {
                 label.to_string().into()
             },
@@ -1715,7 +1744,7 @@ impl Sidebar {
                             generation: self.group_pages.generation,
                             kind,
                             cursor: cursor.clone(),
-                            label: "Loading tasks…".into(),
+                            label: tr("chat-loading-tasks"),
                             loading: false,
                         });
                     }
@@ -1772,7 +1801,7 @@ impl Sidebar {
                         settled,
                     },
                     cursor,
-                    "more tasks",
+                    &tr("chat-more-tasks"),
                 );
             }
         }
@@ -1807,7 +1836,10 @@ impl Sidebar {
             &computer.key,
             kind,
             cursor,
-            &format!("more from {}", computer.label),
+            &self.messages.get(
+                "chat-more-from",
+                [("name", computer.label.to_string().into())],
+            ),
         );
     }
 
@@ -2066,7 +2098,10 @@ impl Sidebar {
                     &computer.key,
                     ComputerPageKind::ArchiveCount,
                     None,
-                    &format!("archived task count from {}", computer.label),
+                    &self.messages.get(
+                        "chat-archive-count-from",
+                        [("name", computer.label.to_string().into())],
+                    ),
                 );
             }
         }
@@ -2087,7 +2122,10 @@ impl Sidebar {
                         &computer.key,
                         ComputerPageKind::Archived,
                         next,
-                        &format!("more archived tasks from {}", computer.label),
+                        &self.messages.get(
+                            "chat-more-archived-from",
+                            [("name", computer.label.to_string().into())],
+                        ),
                     );
                 }
             }
@@ -2474,10 +2512,10 @@ impl Sidebar {
                                 task.row.pin_id.clone(),
                                 &task.row.group,
                                 "pin",
-                                "Unpin task",
+                                tr("chat-unpin-task"),
                             )
                             .opacity(1.)
-                            .tooltip(widgets::tooltip("Unpin", None))
+                            .tooltip(widgets::tooltip(tr("chat-unpin"), None))
                             .on_click(cx.listener(
                                 move |this, _event, _window, cx| {
                                     cx.stop_propagation();
@@ -2506,9 +2544,9 @@ impl Sidebar {
                     if computer.loading {
                         None
                     } else if computer.backend.is_none() {
-                        Some("Offline".into())
+                        Some(tr("chat-offline"))
                     } else if computer.projects.is_empty() {
-                        Some("No projects yet".into())
+                        Some(tr("chat-no-projects"))
                     } else {
                         None
                     }
@@ -2523,8 +2561,10 @@ impl Sidebar {
                     computer: computer.key.clone(),
                     destination: Destination::NewProject,
                 };
-                let new_project_label: SharedString =
-                    format!("New project on {}", computer.label).into();
+                let new_project_label: SharedString = self.messages.get(
+                    "chat-new-project-on-computer",
+                    [("name", computer.label.to_string().into())],
+                );
                 div()
                     .id(SharedString::from(format!("computer-{:?}", computer.key)))
                     .group(action_group.clone())
@@ -2602,7 +2642,7 @@ impl Sidebar {
                                                 header_button(
                                                     "connection-new-project",
                                                     "folder-plus",
-                                                    "New project",
+                                                    tr("chat-new-project-button"),
                                                     false,
                                                 )
                                                 .aria_label(new_project_label)
@@ -3288,9 +3328,20 @@ mod revalidation_tests {
                     },
                 );
             }
+            let mut relabeled = sidebar.computers.as_ref().clone();
+            relabeled[0].label = "Esta computadora".into();
+            sidebar.set_computers(Arc::new(relabeled), cx);
+            assert_eq!(sidebar.group_pages.generation, generation);
+            assert!(
+                !sidebar.group_pages.revalidation_pending,
+                "presentation changes must not invalidate task paging"
+            );
             for revision in 0..20 {
                 let mut computers = sidebar.computers.as_ref().clone();
-                computers[0].label = format!("Updated computer {revision}").into();
+                computers[0].project_names.insert(
+                    "/fixture/project".into(),
+                    format!("Updated project {revision}"),
+                );
                 sidebar.set_computers(Arc::new(computers), cx);
             }
             assert_eq!(sidebar.group_pages.generation, generation);

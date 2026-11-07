@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Maple usa Automatización solo cuando una acción de uso de la computadora necesita comunicarse con otra app.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Maple graba tu micrófono cuando eliges dictar un mensaje.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Maple guarda su espacio de trabajo predeterminado en Documents/Maple, donde el agente trabaja con los archivos de tus tareas.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Maple captura la pantalla cuando activas explícitamente el uso de la computadora, para que el agente pueda ver e interactuar con las apps que le pidas controlar.</string>
+</dict>
+</plist>

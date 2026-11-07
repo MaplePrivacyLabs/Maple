@@ -9,6 +9,8 @@ fn screen(cx: &mut TestAppContext) -> Entity<RemoteScreen> {
     // No status request or timer: drive state transitions without connecting
     // to a developer's host or changing pairing authority.
     cx.new(|cx| RemoteScreen {
+        locale: crate::ui::i18n::current_locale(),
+        messages: Default::default(),
         backend,
         account: "account-a".into(),
         active: false,
@@ -191,7 +193,14 @@ fn incoming_pairing_closes_the_code_but_an_outgoing_grant_does_not(cx: &mut Test
         status.peers.get_mut("peer").unwrap().controls_this_computer = true;
         screen.update_status(status, cx);
         assert!(screen.local_code.is_none());
-        assert!(screen.notice.as_ref().unwrap().contains("Computer paired"));
+        assert!(
+            screen
+                .notice
+                .as_ref()
+                .unwrap()
+                .resolve()
+                .contains("Computer paired")
+        );
         assert!(screen.status.as_ref().unwrap().peers["peer"].controls_this_computer);
     });
 }
@@ -218,7 +227,14 @@ fn settings_reentry_keeps_the_open_window_with_existing_controllers(cx: &mut Tes
         status.peers.get_mut("existing").unwrap().grant = [2; 16];
         screen.update_status(status, cx);
         assert!(screen.local_code.is_none());
-        assert!(screen.notice.as_ref().unwrap().contains("Computer paired"));
+        assert!(
+            screen
+                .notice
+                .as_ref()
+                .unwrap()
+                .resolve()
+                .contains("Computer paired")
+        );
     });
 }
 
@@ -372,7 +388,7 @@ fn an_available_offer_can_be_requested_without_downloading_it_first() {
             info.update.blocked = Some(blocked);
             assert_eq!(
                 install_blocked(&info).as_deref(),
-                Some(blocked.message()),
+                Some(presentation::blocked(blocked).as_ref()),
                 "{blocked:?}"
             );
         }
@@ -430,7 +446,7 @@ fn an_older_hosts_download_refusal_is_definite_and_short(cx: &mut TestAppContext
         screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
             request: request.clone(),
             phase: InstallPhase::Sending,
-            label: String::new(),
+            label: String::new().into(),
             from_receipt: false,
         });
         screen.apply_install_reply(
@@ -443,8 +459,13 @@ fn an_older_hosts_download_refusal_is_definite_and_short(cx: &mut TestAppContext
         );
         let attempt = screen.computer_updates["a"].attempt.as_ref().unwrap();
         assert_eq!(attempt.phase, InstallPhase::Failed);
-        assert!(attempt.label.contains("must download the update first"));
-        assert!(!attempt.label.contains("Do not resend"));
+        assert!(
+            attempt
+                .label
+                .resolve()
+                .contains("must download the update first")
+        );
+        assert!(!attempt.label.resolve().contains("Do not resend"));
         // Nothing was admitted there; a fresh check allows another try.
         screen.apply_peer_info_result(
             "a",
@@ -469,13 +490,18 @@ fn version_advisory_uses_known_app_versions_not_protocol_or_package_identity() {
     assert!(version_note(&info, "1.2.3").is_none());
 
     let note = version_note(&info, "1.2.4").unwrap();
-    assert_eq!(note, "This computer runs v1.2.4.");
+    assert_eq!(plain(&note), "This computer runs v1.2.4.");
     for unknown in ["unknown", "", "not-a-version"] {
         info.running.version = unknown.into();
         assert!(version_note(&info, "1.2.4").is_none());
     }
     info.running.version = "1.2.3".into();
     assert!(version_note(&info, "unknown").is_none());
+}
+
+// Exact English wording is still checked; Fluent isolation is covered in i18n tests.
+fn plain(text: &str) -> String {
+    text.replace(['\u{2068}', '\u{2069}'], "")
 }
 
 fn note(update: &ComputerUpdate) -> Option<&str> {
@@ -530,7 +556,7 @@ fn version_advisory_clears_for_equal_unknown_or_unsupported_peer_versions(cx: &m
     screen.read_with(cx, |screen, _| {
         let note = note(&screen.computer_updates["a"]).unwrap();
         assert_eq!(
-            note,
+            plain(note),
             format!("This computer runs v{}.", env!("CARGO_PKG_VERSION"))
         );
     });
@@ -593,15 +619,17 @@ fn peer_status_distinguishes_protocol_refusal_from_offline_revoked_and_invalid_f
                 let update = &screen.computer_updates["a"];
                 assert_eq!(update.phase, *phase, "{error}");
                 assert_eq!(
-                    update.badge == Some(("Update needed", Tone::Warning)),
+                    update.badge == Some(("settings-remote-update-needed", Tone::Warning)),
                     *phase == PeerInfoPhase::Incompatible,
                     "{error}"
                 );
                 assert!(!update.install_available);
                 // No version comparison or blocked reason from a stale report.
-                assert!(note(update).is_none_or(|note| note == PROTOCOL_UPDATE_REQUIRED));
+                assert!(
+                    note(update).is_none_or(|note| note == tr(PROTOCOL_UPDATE_REQUIRED).as_ref())
+                );
                 if has_cached_info {
-                    assert!(update.status_line.starts_with("v0.0.6"));
+                    assert!(plain(&update.status_line).starts_with("v0.0.6"));
                     assert!(!update.status_line.contains("available"));
                     assert!(update.info.is_some(), "the old report remains historical");
                 } else {
@@ -614,7 +642,7 @@ fn peer_status_distinguishes_protocol_refusal_from_offline_revoked_and_invalid_f
         screen.apply_peer_info("a", [1; 16], 1, Ok(Some(ready_peer())));
         let update = &screen.computer_updates["a"];
         assert_eq!(update.phase, PeerInfoPhase::Loaded);
-        assert_eq!(update.status_line, "v0.0.6 · v0.0.7 available");
+        assert_eq!(plain(&update.status_line), "v0.0.6 · v0.0.7 available");
         assert_eq!(update.action, CardAction::Update);
         assert!(update.install_available);
     });
@@ -651,7 +679,7 @@ fn protocol_refusal_cancels_consent_and_disables_cached_remote_update_offer(
     screen.read_with(cx, |screen, _| {
         assert_eq!(
             note(&screen.computer_updates["a"]),
-            Some(PROTOCOL_UPDATE_REQUIRED)
+            Some(tr(PROTOCOL_UPDATE_REQUIRED).as_ref())
         );
     });
     screen.read_with(cx, |screen, _| {
@@ -689,11 +717,7 @@ fn installing_a_different_target_warns_without_requiring_the_client_to_update(
                 .detail
                 .contains(&format!("v{}", target.version))
         );
-        assert!(
-            confirmation
-                .detail
-                .contains(&format!("v{}", env!("CARGO_PKG_VERSION")))
-        );
+        assert!(plain(&confirmation.detail).contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
         assert!(confirmation.detail.contains("won’t restart"));
         assert!(screen.computer_updates["a"].install_available);
         assert!(screen.computer_updates["a"].attempt.is_none());
@@ -820,7 +844,7 @@ fn remote_update_consent_defaults_to_cancel_without_touching_client(cx: &mut Tes
         cx.run_until_parked();
         assert!(cx.debug_bounds("remote-update-confirmation").is_some());
         screen.read_with(cx, |screen, _| {
-            let text = &screen.install_confirmation.as_ref().unwrap().detail;
+            let text = plain(&screen.install_confirmation.as_ref().unwrap().detail);
             for required in [
                 "Office a",
                 "v0.0.7",
@@ -871,7 +895,7 @@ fn old_peer_status_fallback_does_not_remove_ordinary_remote_access(cx: &mut Test
         let update = &screen.computer_updates["a"];
         assert_eq!(update.phase, PeerInfoPhase::Unsupported);
         assert!(!update.install_available);
-        assert_eq!(update.status_line, "Version unknown");
+        assert_eq!(plain(&update.status_line), "Version unknown");
         assert!(
             update.note.is_none(),
             "projects are in the sidebar; no filler"
@@ -997,7 +1021,7 @@ fn lost_install_ack_keeps_nonce_and_never_replays_or_updates_client(cx: &mut Tes
         screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
             request: request.clone(),
             phase: InstallPhase::Sending,
-            label: String::new(),
+            label: String::new().into(),
             from_receipt: false,
         });
         screen.apply_install_reply("a", [1; 16], &request, Err("Disconnected".into()));
@@ -1005,7 +1029,7 @@ fn lost_install_ack_keeps_nonce_and_never_replays_or_updates_client(cx: &mut Tes
         let attempt = screen.computer_updates["a"].attempt.as_ref().unwrap();
         assert_eq!(attempt.phase, InstallPhase::Uncertain);
         assert_eq!(attempt.request, request);
-        assert_eq!(attempt.label, UNCONFIRMED_INSTALL);
+        assert_eq!(attempt.label.resolve(), tr(UNCONFIRMED_INSTALL));
         assert!(!screen.computer_updates["a"].install_available);
 
         let mut acknowledged = ready_peer();
@@ -1059,16 +1083,22 @@ fn settings_reentry_adopts_pending_operation_without_enabling_another_install(
             if state == OperationState::Unknown {
                 // Still unconfirmed: the only way on is a fresh status check.
                 assert_eq!(update.action, CardAction::CheckAgain);
-                assert_eq!(update.badge.map(|(label, _)| label), Some("Unconfirmed"));
+                assert_eq!(
+                    update.badge.map(|(key, _)| tr(key).to_string()).as_deref(),
+                    Some("Unconfirmed")
+                );
             } else {
                 assert_eq!(update.action, CardAction::None);
-                assert_eq!(update.badge.map(|(label, _)| label), Some("Updating"));
+                assert_eq!(
+                    update.badge.map(|(key, _)| tr(key).to_string()).as_deref(),
+                    Some("Updating")
+                );
             }
             let attempt = update.attempt.as_ref().unwrap();
             assert_eq!(attempt.request.operation_id, operation_id);
-            assert_eq!(note(update), Some(attempt.label.as_str()));
+            assert_eq!(note(update), Some(attempt.label.resolve().as_ref()));
             if state == OperationState::PendingAck {
-                assert!(attempt.label.contains("Nothing has started"));
+                assert!(attempt.label.resolve().contains("Nothing has started"));
             }
         }
     });
@@ -1094,7 +1124,7 @@ fn historical_attempt(phase: InstallPhase) -> InstallAttempt {
             target: target_release(),
         },
         phase,
-        label: UNCONFIRMED_INSTALL.into(),
+        label: UiText::key(UNCONFIRMED_INSTALL),
         from_receipt: true,
     }
 }
@@ -1123,7 +1153,7 @@ fn current_and_idle_without_offers_do_not_show_download_instructions() {
                 ..Default::default()
             };
             update.refresh_presentation();
-            assert!(update.status_line.starts_with("v0.0.6"));
+            assert!(plain(&update.status_line).starts_with("v0.0.6"));
             assert_eq!(
                 update.badge.is_some(),
                 state == UpdateState::Current,
@@ -1157,8 +1187,8 @@ fn current_and_idle_without_offers_do_not_show_download_instructions() {
         update.info.as_mut().unwrap().update.state = UpdateState::Ready;
         update.info.as_mut().unwrap().update.offered = Some(target_release());
         update.refresh_presentation();
-        assert_eq!(note(&update), Some(reason.message()));
-        assert_eq!(update.status_line, "v0.0.6 · v0.0.7 available");
+        assert_eq!(note(&update), Some(presentation::blocked(reason).as_ref()));
+        assert_eq!(plain(&update.status_line), "v0.0.6 · v0.0.7 available");
         assert!(!update.install_available);
     }
 }
@@ -1171,7 +1201,7 @@ fn confirmed_remote_outcome_stays_historical_after_later_upgrade() {
         ..Default::default()
     };
     update.reconcile_operation();
-    let confirmed = update.attempt.as_ref().unwrap().label.clone();
+    let confirmed = update.attempt.as_ref().unwrap().label.resolve();
     assert_eq!(confirmed, "Updated to v0.0.7.");
     for status in [None, Some(OperationState::Failed)] {
         let mut later = historical_info(status);
@@ -1183,9 +1213,12 @@ fn confirmed_remote_outcome_stays_historical_after_later_upgrade() {
         update.refresh_presentation();
         let attempt = update.attempt.as_ref().unwrap();
         assert_eq!(attempt.phase, InstallPhase::Succeeded);
-        assert_eq!(attempt.label, confirmed);
-        assert_eq!(update.status_line, "v0.0.8");
-        assert_eq!(update.badge.map(|(label, _)| label), Some("Up to date"));
+        assert_eq!(attempt.label.resolve(), confirmed);
+        assert_eq!(plain(&update.status_line), "v0.0.8");
+        assert_eq!(
+            update.badge.map(|(key, _)| tr(key).to_string()).as_deref(),
+            Some("Up to date")
+        );
         // A past success is history: the card says nothing about it.
         assert!(only_version_note(&update));
         assert!(!update.install_available);
@@ -1214,8 +1247,8 @@ fn running_target_or_later_version_does_not_prove_an_old_request_succeeded() {
                 update.reconcile_operation();
                 let attempt = update.attempt.as_ref().unwrap();
                 assert_ne!(attempt.phase, InstallPhase::Succeeded);
-                assert!(!attempt.label.contains("completed"));
-                assert!(!attempt.label.contains("now running"));
+                assert!(!attempt.label.resolve().contains("completed"));
+                assert!(!attempt.label.resolve().contains("now running"));
             }
         }
     }
@@ -1335,16 +1368,19 @@ fn reported_status_is_not_presented_as_a_fresh_update_check() {
             ..Default::default()
         };
         update.refresh_presentation();
-        let reported = update.status_line.clone();
+        let reported = plain(&update.status_line);
         assert!(reported.starts_with("v0.0.6"));
         update.query = PeerInfoQuery::Check;
         update.refresh_presentation();
-        assert_eq!(update.status_line, reported);
+        assert_eq!(plain(&update.status_line), reported);
         // A failed check keeps only history: no offer, badge or action.
         update.phase = PeerInfoPhase::Unreachable;
         update.refresh_presentation();
-        assert_eq!(update.status_line, "v0.0.6 when last seen");
-        assert_eq!(update.badge.map(|(label, _)| label), Some("Not reachable"));
+        assert_eq!(plain(&update.status_line), "v0.0.6 when last seen");
+        assert_eq!(
+            update.badge.map(|(key, _)| tr(key).to_string()).as_deref(),
+            Some("Not reachable")
+        );
         assert_eq!(update.action, CardAction::CheckAgain);
         assert!(!update.install_available);
     }
@@ -1358,7 +1394,10 @@ fn reported_status_is_not_presented_as_a_fresh_update_check() {
     cold.phase = PeerInfoPhase::Unreachable;
     cold.refresh_presentation();
     assert_eq!(cold.status_line, "Version unknown");
-    assert_eq!(cold.badge.map(|(label, _)| label), Some("Not reachable"));
+    assert_eq!(
+        cold.badge.map(|(key, _)| tr(key).to_string()).as_deref(),
+        Some("Not reachable")
+    );
 }
 
 #[gpui::test]
@@ -1450,7 +1489,7 @@ fn failed_check_keeps_only_historical_values_and_sanitized_legacy_or_offline_mes
                 Err("private-canary https://user:token@example.invalid/private".into()),
             );
             let update = &screen.computer_updates["a"];
-            assert_eq!(update.status_line, "v0.0.6 when last seen");
+            assert_eq!(plain(&update.status_line), "v0.0.6 when last seen");
             assert!(!update.install_available);
             for text in [Some(update.status_line.as_str()), note(update)]
                 .into_iter()
@@ -1491,7 +1530,7 @@ fn definite_install_refusal_is_not_uncertain_and_requires_a_new_check(cx: &mut T
             screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
                 request: request.clone(),
                 phase: InstallPhase::Sending,
-                label: String::new(),
+                label: String::new().into(),
                 from_receipt: false,
             });
             screen.apply_install_reply(
@@ -1503,8 +1542,11 @@ fn definite_install_refusal_is_not_uncertain_and_requires_a_new_check(cx: &mut T
             let update = &screen.computer_updates["a"];
             let attempt = update.attempt.as_ref().unwrap();
             assert_eq!(attempt.phase, InstallPhase::Failed);
-            assert!(attempt.label.contains(reason.message()));
-            assert!(!attempt.label.contains("Do not resend"));
+            assert_eq!(
+                attempt.label.resolve(),
+                presentation::refused(reason).resolve()
+            );
+            assert!(!attempt.label.resolve().contains("Do not resend"));
             assert!(!screen.can_install("a"));
             screen.apply_peer_info("a", [1; 16], 1, Ok(Some(ready_peer())));
             assert!(
@@ -1537,7 +1579,7 @@ fn typed_acceptance_requires_the_original_operation_and_target(cx: &mut TestAppC
             screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
                 request: request.clone(),
                 phase: InstallPhase::Sending,
-                label: String::new(),
+                label: String::new().into(),
                 from_receipt: false,
             });
             let receipt = InstallAccepted {
@@ -1581,7 +1623,7 @@ fn incoming_repair_does_not_erase_an_uncertain_outgoing_install(cx: &mut TestApp
         screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
             request: request.clone(),
             phase: InstallPhase::Uncertain,
-            label: UNCONFIRMED_INSTALL.into(),
+            label: UiText::key(UNCONFIRMED_INSTALL),
             from_receipt: false,
         });
         screen.computer_updates.get_mut("a").unwrap().query = PeerInfoQuery::Check;
@@ -1661,7 +1703,10 @@ fn outgoing_repair_invalidates_status_and_keeps_unresolved_install_identity(
                 assert_eq!(update.attempt.as_ref().unwrap().request, request);
                 assert_eq!(update.attempt.as_ref().unwrap().phase, expected);
                 if phase == InstallPhase::Sending {
-                    assert_eq!(update.attempt.as_ref().unwrap().label, UNCONFIRMED_INSTALL);
+                    assert_eq!(
+                        update.attempt.as_ref().unwrap().label.resolve(),
+                        tr(UNCONFIRMED_INSTALL)
+                    );
                 }
                 assert!(!screen.can_install("a"));
                 let generation = update.generation;
@@ -1726,7 +1771,7 @@ fn lost_outgoing_authority_preserves_unknown_request_through_repair(cx: &mut Tes
             screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
                 request: request.clone(),
                 phase: InstallPhase::Sending,
-                label: String::new(),
+                label: String::new().into(),
                 from_receipt: false,
             });
             let original = screen.status.clone().unwrap();
@@ -1745,7 +1790,10 @@ fn lost_outgoing_authority_preserves_unknown_request_through_repair(cx: &mut Tes
             screen.update_status(original, cx);
             let update = &screen.computer_updates["a"];
             assert_eq!(update.attempt.as_ref().unwrap().request, request);
-            assert_eq!(update.attempt.as_ref().unwrap().label, UNCONFIRMED_INSTALL);
+            assert_eq!(
+                update.attempt.as_ref().unwrap().label.resolve(),
+                tr(UNCONFIRMED_INSTALL)
+            );
             let generation = update.generation;
             screen.apply_peer_info_result(
                 "a",
@@ -1867,8 +1915,12 @@ fn every_card_state_is_one_short_line_with_at_most_one_action() {
         };
         update.reconcile_operation();
         update.refresh_presentation();
-        assert_eq!(update.status_line, line, "{name}");
-        assert_eq!(update.badge.map(|(label, _)| label), badge, "{name}");
+        assert_eq!(plain(&update.status_line), line, "{name}");
+        assert_eq!(
+            update.badge.map(|(key, _)| tr(key).to_string()).as_deref(),
+            badge,
+            "{name}"
+        );
         assert_eq!(update.action, action, "{name}");
         for text in [Some(update.status_line.as_str()), note(&update)]
             .into_iter()
@@ -1887,7 +1939,7 @@ fn every_card_state_is_one_short_line_with_at_most_one_action() {
             "password protected" => {
                 assert_eq!(
                     note(&update),
-                    Some(BlockedReason::PasswordProtected.message())
+                    Some(presentation::blocked(BlockedReason::PasswordProtected).as_ref())
                 )
             }
             _ => {}

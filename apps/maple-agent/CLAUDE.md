@@ -179,3 +179,14 @@ This app must feel instant. Treat frame time and UI-thread stalls as bugs.
   cached view. Avoid `Window::refresh`; it discards every cached view.
 - Release builds use fat LTO and one codegen unit. Use release builds
   for any performance check; the dev profile is `opt-level = 1`.
+
+## Localization
+
+Use the embedded Fluent catalog and `ui::i18n` for new UI labels, including
+accessibility text; see [localization](docs/localization.md) for extraction and
+locale enablement. Cache parameterized messages when their state changes. Keep
+element IDs, protocol values, model prompts, user content and persisted timeline
+text unchanged. Language changes apply live; invalidate cached translated text
+when the locale changes. Extend the converted-module guard as each module is
+extracted. Keep host error codes source-owned and format
+them in the UI; preserve raw diagnostics for unknown codes and recovery logic.

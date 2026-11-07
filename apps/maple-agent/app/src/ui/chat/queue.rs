@@ -10,7 +10,9 @@ use maple_agent::agent::AgentQueuedMessage;
 
 use super::{COMPOSER_PLACEHOLDER, ChatScreen, QUEUE_EDIT_PLACEHOLDER, QueueEdit};
 use crate::backend::QueuedMessageRequest;
+use crate::ui::i18n::{UiText, tr};
 use crate::ui::icons::icon;
+use crate::ui::task::Failure as UiFailure;
 use crate::ui::theme;
 
 impl ChatScreen {
@@ -40,17 +42,21 @@ impl ChatScreen {
         let queue_id = queue_id.to_string();
         let target = session_id.clone();
         let queued = queue_id.clone();
-        self.call(
+        self.call_semantic(
             async move {
                 backend
-                    .queued_message(
-                        &user_id,
-                        QueuedMessageRequest {
-                            task: session_id,
-                            queue_id,
-                        },
+                    .call_presented::<maple_agent::agent::AgentQueuedMessage>(
+                        "queued_message",
+                        (
+                            &user_id,
+                            QueuedMessageRequest {
+                                task: session_id,
+                                queue_id,
+                            },
+                        ),
                     )
                     .await
+                    .map_err(UiFailure::from)
             },
             cx,
             move |this, result, cx| {
@@ -63,7 +69,7 @@ impl ChatScreen {
                     Ok(item) if item.session_id == target && item.queue_id == queued => {
                         this.send_to_session(&target, item.text, true, Some(queued), cx);
                     }
-                    Ok(_) => this.notice = Some("The queued message changed; try again".into()),
+                    Ok(_) => this.notice = Some(UiText::key("chat-queue-changed")),
                     Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
@@ -86,11 +92,15 @@ impl ChatScreen {
         let generation = self.selection_generation;
         let queue_id = queue_id.to_string();
         let target = session_id.clone();
-        self.call(
+        self.call_semantic(
             async move {
                 backend
-                    .cancel_queued_message(&user_id, &session_id, &queue_id)
+                    .call_presented::<maple_agent::agent::AgentDesktopQueueSnapshot>(
+                        "cancel_queued_message",
+                        (&user_id, &session_id, &queue_id),
+                    )
                     .await
+                    .map_err(UiFailure::from)
             },
             cx,
             move |this, result, cx| {
@@ -132,47 +142,61 @@ impl ChatScreen {
         let queue_id = queue_id.to_string();
         let target = session_id.clone();
         let held_id = queue_id.clone();
-        self.call(
+        self.call_semantic(
             async move {
                 let item = backend
-                    .queued_message(
-                        &user_id,
-                        QueuedMessageRequest {
-                            task: session_id.clone(),
-                            queue_id: queue_id.clone(),
-                        },
+                    .call_presented::<maple_agent::agent::AgentQueuedMessage>(
+                        "queued_message",
+                        (
+                            &user_id,
+                            QueuedMessageRequest {
+                                task: session_id.clone(),
+                                queue_id: queue_id.clone(),
+                            },
+                        ),
                     )
-                    .await?;
+                    .await
+                    .map_err(UiFailure::from)?;
                 if item.session_id != session_id || item.queue_id != queue_id {
-                    return Err("The queued message changed; try again".to_string());
+                    return Ok(None);
                 }
                 backend
-                    .begin_queued_message_edit(&user_id, &session_id, &queue_id)
-                    .await?;
+                    .call_presented::<()>(
+                        "begin_queued_message_edit",
+                        (&user_id, &session_id, &queue_id),
+                    )
+                    .await
+                    .map_err(UiFailure::from)?;
                 // Read again under the hold: another client could have edited
                 // this message between the first read and acquiring the hold.
                 match backend
-                    .queued_message(
-                        &user_id,
-                        QueuedMessageRequest {
-                            task: session_id.clone(),
-                            queue_id: queue_id.clone(),
-                        },
+                    .call_presented::<maple_agent::agent::AgentQueuedMessage>(
+                        "queued_message",
+                        (
+                            &user_id,
+                            QueuedMessageRequest {
+                                task: session_id.clone(),
+                                queue_id: queue_id.clone(),
+                            },
+                        ),
                     )
                     .await
+                    .map_err(UiFailure::from)
                 {
                     Ok(current)
                         if current.session_id == session_id && current.queue_id == queue_id =>
                     {
-                        Ok(current.text)
+                        Ok(Some(current.text))
                     }
                     result => {
                         let _ = backend
-                            .end_queued_message_edit(&user_id, &session_id, &queue_id)
-                            .await;
-                        Err(result
-                            .err()
-                            .unwrap_or_else(|| "The queued message changed; try again".to_string()))
+                            .call_presented::<()>(
+                                "end_queued_message_edit",
+                                (&user_id, &session_id, &queue_id),
+                            )
+                            .await
+                            .map_err(UiFailure::from);
+                        result.map(|_| None)
                     }
                 }
             },
@@ -180,7 +204,7 @@ impl ChatScreen {
             move |this, result, cx| {
                 this.queue_busy = false;
                 match result {
-                    Ok(text)
+                    Ok(Some(text))
                         if this.selection_generation == generation && this.is_selected(&target) =>
                     {
                         let draft = this
@@ -195,11 +219,16 @@ impl ChatScreen {
                         if let Some(composer) = this.composer.clone() {
                             composer.update(cx, |input, cx| {
                                 input.set_text(&text, cx);
-                                input.set_placeholder(QUEUE_EDIT_PLACEHOLDER, cx);
+                                input.set_placeholder_key(QUEUE_EDIT_PLACEHOLDER, cx);
                             });
                         }
                     }
-                    Ok(_) => {
+                    Ok(None) => {
+                        if this.selection_generation == generation && this.is_selected(&target) {
+                            this.notice = Some(UiText::key("chat-queue-changed"));
+                        }
+                    }
+                    Ok(Some(_)) => {
                         // Selection moved while the hold was requested.
                         this.release_queue_hold(&target, &held_id, cx);
                     }
@@ -237,7 +266,7 @@ impl ChatScreen {
         if let Some(composer) = self.composer.clone() {
             composer.update(cx, |input, cx| {
                 input.set_text(&edit.draft, cx);
-                input.set_placeholder(COMPOSER_PLACEHOLDER, cx);
+                input.set_placeholder_key(COMPOSER_PLACEHOLDER, cx);
             });
         }
         cx.notify();
@@ -263,16 +292,20 @@ impl ChatScreen {
         let user_id = self.user_id.clone();
         let session_id = session_id.to_string();
         let queue_id = queue_id.to_string();
-        self.call(
+        self.call_semantic(
             async move {
                 backend
-                    .end_queued_message_edit(&user_id, &session_id, &queue_id)
+                    .call_presented::<()>(
+                        "end_queued_message_edit",
+                        (&user_id, &session_id, &queue_id),
+                    )
                     .await
+                    .map_err(UiFailure::from)
             },
             cx,
             |_this, result, _cx| {
                 if let Err(message) = result {
-                    log::debug!("end_queued_message_edit failed: {message}");
+                    log::debug!("end_queued_message_edit failed: {message:?}");
                 }
             },
         );
@@ -284,9 +317,12 @@ impl ChatScreen {
             return None;
         }
         let busy = self.queue_busy;
-        let action = |id: String, icon_name: &'static str| {
+        let action = |id: String, icon_name: &'static str, label: &'static str| {
             div()
                 .id(SharedString::from(id))
+                .role(gpui::Role::Button)
+                .aria_label(tr(label))
+                .tooltip(crate::ui::widgets::tooltip(tr(label), None))
                 .size_5()
                 .flex()
                 .items_center()
@@ -313,7 +349,10 @@ impl ChatScreen {
                     div()
                         .text_xs()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child(format!("{} queued for after this turn", self.queue.len())),
+                        .child(
+                            self.messages
+                                .get("chat-queue-count", [("count", self.queue.len().into())]),
+                        ),
                 )
                 .children(self.queue.iter().enumerate().map(|(index, item)| {
                     let steer_id = item.queue_id.clone();
@@ -324,7 +363,7 @@ impl ChatScreen {
                         .as_ref()
                         .is_some_and(|edit| edit.queue_id == item.queue_id);
                     let preview: SharedString = if editing {
-                        "Editing in the composer…".into()
+                        tr("chat-queue-editing")
                     } else {
                         self.queue_previews.get(index).cloned().unwrap_or_default()
                     };
@@ -357,33 +396,54 @@ impl ChatScreen {
                         })
                         .when(!editing, |row| {
                             row.child(
-                                action(format!("queue-steer-{}", item.queue_id), "arrow-up")
-                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                action(
+                                    format!("queue-steer-{}", item.queue_id),
+                                    "arrow-up",
+                                    "chat-queue-send-now",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _event, _window, cx| {
                                         this.steer_queued(&steer_id, cx);
-                                    })),
+                                    },
+                                )),
                             )
                             .child(
-                                action(format!("queue-edit-{}", item.queue_id), "pencil").on_click(
-                                    cx.listener(move |this, _event, _window, cx| {
+                                action(
+                                    format!("queue-edit-{}", item.queue_id),
+                                    "pencil",
+                                    "chat-queue-edit",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _event, _window, cx| {
                                         this.edit_queued(&edit_id, cx);
-                                    }),
-                                ),
+                                    },
+                                )),
                             )
                             .child(
-                                action(format!("queue-remove-{}", item.queue_id), "x").on_click(
-                                    cx.listener(move |this, _event, _window, cx| {
+                                action(
+                                    format!("queue-remove-{}", item.queue_id),
+                                    "x",
+                                    "chat-queue-remove",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _event, _window, cx| {
                                         this.remove_queued(&remove_id, cx);
-                                    }),
-                                ),
+                                    },
+                                )),
                             )
                         })
                         .when(editing, |row| {
                             row.child(
-                                action(format!("queue-discard-{}", item.queue_id), "x").on_click(
-                                    cx.listener(|this, _event, _window, cx| {
+                                action(
+                                    format!("queue-discard-{}", item.queue_id),
+                                    "x",
+                                    "chat-queue-discard",
+                                )
+                                .on_click(cx.listener(
+                                    |this, _event, _window, cx| {
                                         this.discard_queue_edit(cx);
-                                    }),
-                                ),
+                                    },
+                                )),
                             )
                         })
                 })),

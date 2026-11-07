@@ -297,6 +297,7 @@ fn a_finished_skill_load_says_whether_it_loaded() {
     let loading = notice_item("t".into(), "x", "", 0);
     let mut previous = loading.clone();
     previous.title = Some("Loading skill: deploy".into());
+    previous.label = Some(tool_label("load_skill", &json!({"name": "deploy"})));
     let mut done = loading;
     done.item_type = "tool".into();
     done.status = Some("completed".into());
@@ -305,4 +306,86 @@ fn a_finished_skill_load_says_whether_it_loaded() {
         merged_tool_title(&previous, &done).as_deref(),
         Some("Loaded skill: deploy")
     );
+}
+
+#[test]
+fn english_skill_heading_does_not_create_semantics() {
+    let mut previous = notice_item("legacy".into(), "Loading skill: deploy", "", 0);
+    let mut incoming = previous.clone();
+    incoming.item_type = "tool".into();
+    incoming.status = Some("completed".into());
+    incoming.title = None;
+    merge_item(&mut previous, incoming);
+    assert_eq!(previous.title.as_deref(), Some("Loaded skill: deploy"));
+    assert!(previous.label.is_none());
+}
+
+#[test]
+fn partial_tool_updates_preserve_semantic_detail() {
+    for (name, args, detail) in [
+        ("bash", json!({"command":"cargo test"}), "cargo test"),
+        ("load_skill", json!({"name":"deploy"}), "deploy"),
+    ] {
+        let mut previous = notice_item("tool".into(), "", "", 0);
+        previous.item_type = "tool".into();
+        previous.label = Some(tool_label(name, &args));
+        for status in ["running", "completed"] {
+            let mut incoming = previous.clone();
+            incoming.label = Some(tool_label(name, &Value::Null));
+            incoming.status = Some(status.into());
+            merge_item(&mut previous, incoming);
+            assert_eq!(
+                previous.label.as_ref().unwrap().detail.as_deref(),
+                Some(detail)
+            );
+        }
+        if name == "load_skill" {
+            assert_eq!(previous.title.as_deref(), Some("Loaded skill: deploy"));
+        }
+    }
+}
+
+#[test]
+fn errors_carry_heading_semantics_without_replacing_provider_detail() {
+    use super::super::provider::{
+        AUTHENTICATION_ERROR_MESSAGE, CONTEXT_OVERFLOW_MESSAGE, CREDITS_EXHAUSTED_MESSAGE,
+    };
+    for (message, kind) in [
+        (AUTHENTICATION_ERROR_MESSAGE, "error-authentication"),
+        (CREDITS_EXHAUSTED_MESSAGE, "error-credits"),
+        (CONTEXT_OVERFLOW_MESSAGE, "error-context"),
+        ("opaque provider diagnostic", "error-agent"),
+    ] {
+        let item = error_item(message.into());
+        assert_eq!(item.label.unwrap().kind, kind);
+        assert_eq!(item.text.as_deref(), Some(message));
+    }
+}
+
+#[test]
+fn provider_body_metadata_preserves_retry_diagnostics_and_clock_specificity() {
+    use super::super::provider::*;
+    for (message, code) in [
+        (AUTHENTICATION_ERROR_MESSAGE, "authentication"),
+        (CREDITS_EXHAUSTED_MESSAGE, "credits"),
+        (CONTEXT_OVERFLOW_MESSAGE, "context"),
+        (RATE_LIMIT_MESSAGE, "rate-limit"),
+        (ENDPOINT_NOT_FOUND_MESSAGE, "endpoint"),
+        (REQUEST_TIMEOUT_MESSAGE, "timeout"),
+        (CONNECT_ERROR_MESSAGE, "connect"),
+        (NETWORK_ERROR_MESSAGE, "network"),
+        (STREAM_TIMEOUT_MESSAGE, "stream-timeout"),
+        (STREAM_ERROR_MESSAGE, "stream"),
+        (ATTESTATION_VERIFICATION_ERROR_MESSAGE, "attestation"),
+        (DEVICE_CLOCK_ERROR_MESSAGE, "clock"),
+        (SECURE_CONNECTION_ERROR_MESSAGE, "secure-connection"),
+    ] {
+        let raw = format!("Request failed (500): {message}");
+        let row = error_item(raw.clone());
+        assert_eq!(row.label.unwrap().name.as_deref(), Some(code));
+        assert_eq!(row.text.as_deref(), Some(raw.as_str()));
+    }
+    let row = error_item("unknown provider diagnostic".into());
+    assert!(row.label.unwrap().name.is_none());
+    assert_eq!(row.text.as_deref(), Some("unknown provider diagnostic"));
 }

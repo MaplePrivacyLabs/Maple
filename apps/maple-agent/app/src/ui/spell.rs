@@ -18,8 +18,12 @@ static GENERATION: AtomicU32 = AtomicU32::new(0);
 
 /// Current dictionary generation; compare with the value saved at the
 /// last check to see if a re-check is needed.
-pub fn generation() -> u32 {
-    GENERATION.load(Ordering::Acquire)
+pub fn generation() -> (u32, bool) {
+    (GENERATION.load(Ordering::Acquire), enabled())
+}
+
+fn enabled() -> bool {
+    super::i18n::current_locale().language.as_str() == "en"
 }
 
 /// Words the user added with "Add to dictionary". Persisted one per line
@@ -156,6 +160,9 @@ fn should_check(text: &str, range: &Range<usize>, word: &str) -> bool {
 /// only when it holds a curly quote, and the lower-case form is built
 /// only for a word the dictionary already rejected.
 pub fn misspelled_ranges(text: &str) -> Vec<Range<usize>> {
+    if !enabled() {
+        return Vec::new();
+    }
     let Some(dictionary) = dictionary() else {
         return Vec::new();
     };
@@ -219,6 +226,9 @@ const MAX_SUGGEST_LEN: usize = 20;
 /// background for each newly flagged word after `misspelled_ranges`
 /// instead of making this call async.
 pub fn suggestions(word: &str, limit: usize) -> Vec<String> {
+    if !enabled() {
+        return Vec::new();
+    }
     let Some(dictionary) = dictionary() else {
         return Vec::new();
     };
@@ -240,6 +250,21 @@ mod tests {
         while !is_ready() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn spanish_disables_english_dictionary_and_switching_back_restores_it() {
+        let _guard = crate::ui::i18n::TestLocalizationGuard::enable();
+        load();
+        crate::ui::i18n::apply_preference(Some("en"));
+        let english_generation = generation();
+        assert!(!misspelled_ranges("chekc").is_empty());
+        crate::ui::i18n::apply_preference(Some("es"));
+        assert_ne!(generation(), english_generation);
+        assert!(misspelled_ranges("mañana chekc").is_empty());
+        assert!(suggestions("mañana", 4).is_empty());
+        crate::ui::i18n::apply_preference(Some("en"));
+        assert!(!misspelled_ranges("chekc").is_empty());
     }
 
     #[test]

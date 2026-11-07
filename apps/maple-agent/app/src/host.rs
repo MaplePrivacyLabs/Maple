@@ -1,7 +1,9 @@
 //! One on-demand process owns a profile's backend. Frontends attach over
 //! OS-private IPC; closing a frontend never tears down another client's runtime.
 
+pub(crate) mod failure;
 pub(crate) mod hardening;
+use failure::HostFailure;
 pub(crate) mod ipc;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -42,12 +44,16 @@ const RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 const MAX_CLIENTS: usize = 32;
 const MAX_CALLS: usize = 16;
-type Pending = HashMap<u64, oneshot::Sender<Result<SensitiveValue, String>>>;
+type Pending = HashMap<u64, oneshot::Sender<Result<SensitiveValue, HostFailure>>>;
 
 fn decode_response<R: DeserializeOwned>(method: &str, value: SensitiveValue) -> Result<R, String> {
     let result = if matches!(
         method,
-        "generate_store_passphrase" | "request_account_deletion" | "create_api_key" | "oauth_start"
+        "generate_store_passphrase"
+            | "request_account_deletion"
+            | "create_api_key"
+            | "oauth_start"
+            | "oauth_start_localized"
     ) {
         // These small responses contain secrets. Borrowing creates the typed
         // value while the original JSON remains guarded through success or a
@@ -59,7 +65,7 @@ fn decode_response<R: DeserializeOwned>(method: &str, value: SensitiveValue) -> 
     result.map_err(|_| "Incompatible Maple host response; restart Maple".into())
 }
 
-fn deliver_response(state: &ClientState, id: u64, result: Result<SensitiveValue, String>) {
+fn deliver_response(state: &ClientState, id: u64, result: Result<SensitiveValue, HostFailure>) {
     if let Some(sender) = state
         .pending
         .lock()
@@ -207,14 +213,35 @@ impl RemoteClient {
         self.call_identified(method, params, send_id).await
     }
 
+    pub async fn call_presented<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<R, HostFailure> {
+        let send_id = (method == "send_message").then(|| uuid::Uuid::new_v4().to_string());
+        self.call_identified_presented(method, params, send_id)
+            .await
+    }
+
     pub async fn call_identified<R: DeserializeOwned>(
         &self,
         method: &str,
         params: impl Serialize,
         send_id: Option<String>,
     ) -> Result<R, String> {
+        self.call_identified_presented(method, params, send_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+
+    pub(crate) async fn call_identified_presented<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+        send_id: Option<String>,
+    ) -> Result<R, HostFailure> {
         let mut params = serde_json::to_value(params)
-            .map_err(|_| "Could not encode host request".to_string())?;
+            .map_err(|_| HostFailure::new("request-encoding", "Could not encode host request"))?;
         for _ in 0..3 {
             let (result, generation) = self.call_value(method, params, send_id.clone()).await?;
             if method == "store_status"
@@ -243,7 +270,7 @@ impl RemoteClient {
                 params = serde_json::Value::Null;
                 continue;
             }
-            return decode_response(method, result);
+            return decode_response(method, result).map_err(HostFailure::from);
         }
         Err("Maple local data changed repeatedly. Reconnect and retry.".into())
     }
@@ -253,7 +280,7 @@ impl RemoteClient {
         method: &str,
         params: serde_json::Value,
         send_id: Option<String>,
-    ) -> Result<(SensitiveValue, u64), String> {
+    ) -> Result<(SensitiveValue, u64), HostFailure> {
         let generation = self.state.generation.load(Ordering::Relaxed);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = protocol::SensitiveRequest(Request {
@@ -266,16 +293,21 @@ impl RemoteClient {
             .permits
             .acquire()
             .await
-            .map_err(|_| "Host disconnected".to_string())?;
+            .map_err(|_| HostFailure::new("host-disconnected", "Host disconnected"))?;
         let (sender, reply) = oneshot::channel();
         {
             let mut pending = self.state.pending.lock().unwrap();
             if generation != self.state.generation.load(Ordering::Relaxed) {
-                return Err("The Maple host disconnected before this operation was sent.".into());
+                return Err(HostFailure::new(
+                    "host-disconnected-before-send",
+                    "The Maple host disconnected before this operation was sent.",
+                ));
             }
             pending
                 .as_mut()
-                .ok_or("The Maple host disconnected")?
+                .ok_or_else(|| {
+                    HostFailure::new("host-disconnected-current", "The Maple host disconnected")
+                })?
                 .insert(id, sender);
         }
         let _pending = PendingCall {
@@ -288,7 +320,7 @@ impl RemoteClient {
         }
         let result = match (sent, reply.await) {
             (Ok(()), Ok(Err(error)))
-                if error.starts_with("Send outcome unknown") && send_id.is_some() =>
+                if error.message.starts_with("Send outcome unknown") && send_id.is_some() =>
             {
                 SensitiveValue::new(
                     recover_send(&self.endpoint, send_id.as_deref().unwrap()).await?,
@@ -298,7 +330,10 @@ impl RemoteClient {
             (_, _) => match send_id {
                 Some(id) => SensitiveValue::new(recover_send(&self.endpoint, &id).await?),
                 None => {
-                    return Err("The Maple host disconnected. Reconnect before retrying.".into());
+                    return Err(HostFailure::new(
+                        "host-disconnected-retry",
+                        "The Maple host disconnected. Reconnect before retrying.",
+                    ));
                 }
             },
         };
@@ -444,8 +479,8 @@ async fn client_connection(
                     // the acknowledgement is lost or the host is unresponsive.
                     let _ = tokio::time::timeout(Duration::from_secs(2), async {
                     while let Some(message) = incoming.recv().await {
-                        if let IncomingMessage::Response { id, result } = message {
-                            deliver_response(state, id, result);
+                        if let IncomingMessage::Response { id, result, failure } = message {
+                            deliver_response(state, id, result.map_err(|message| failure.unwrap_or_else(|| message.into())));
                             if id == request.id { break; }
                         }
                     }
@@ -459,8 +494,8 @@ async fn client_connection(
                     let _ = events.send(AgentServiceEvent::RemoteAccessEnded(reason)).await;
                     return true;
                 }
-                Some(IncomingMessage::Response { id, result }) => {
-                    deliver_response(state, id, result);
+                Some(IncomingMessage::Response { id, result, failure }) => {
+                    deliver_response(state, id, result.map_err(|message| failure.unwrap_or_else(|| message.into())));
                 }
                 Some(IncomingMessage::Event(event)) => {
                     match &*event {
@@ -744,6 +779,11 @@ impl Drop for ActiveStoreOperationGuard<'_> {
 
 #[derive(Clone, Serialize)]
 struct CompletionNotice {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<HostFailure>,
     operation_id: String,
     message: String,
     is_error: bool,
@@ -805,10 +845,10 @@ fn attach_mode_notice_receipt(
 
 fn completion_message(
     method: &str,
-    result: &Result<serde_json::Value, String>,
+    result: &Result<serde_json::Value, HostFailure>,
 ) -> Option<CompletionNotice> {
     let message = match result {
-        Err(error) => error.clone(),
+        Err(error) => error.message.clone(),
         Ok(value) => {
             let pending = pending_store_metadata(value);
             let base = match method {
@@ -842,7 +882,26 @@ fn completion_message(
             }
         }
     };
+    let (label, pending, failure) = match result {
+        Err(failure) => (None, false, Some(failure.clone())),
+        Ok(value) => {
+            let label = if method == "unlock"
+                && value
+                    .get("used_previous_password")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            {
+                "unlock-previous"
+            } else {
+                method
+            };
+            (Some(label.to_owned()), pending_store_metadata(value), None)
+        }
+    };
     Some(CompletionNotice {
+        label,
+        pending,
+        failure,
         operation_id: uuid::Uuid::new_v4().to_string(),
         message,
         is_error: result.is_err(),
@@ -886,6 +945,10 @@ const LOCKED_MESSAGE: &str =
 const SETUP_MESSAGE: &str = "Maple needs local store setup. Open Maple to continue.";
 
 fn gate(state: &StoreState, method: &str) -> Result<(), String> {
+    gate_presented(state, method).map_err(|failure| failure.message)
+}
+
+fn gate_presented(state: &StoreState, method: &str) -> Result<(), HostFailure> {
     if *state == StoreState::Open {
         return Ok(());
     }
@@ -925,18 +988,21 @@ fn gate(state: &StoreState, method: &str) -> Result<(), String> {
     if allowed {
         return Ok(());
     }
-    Err(match state {
-        StoreState::Locked => LOCKED_MESSAGE.to_owned(),
-        StoreState::NeedsSetup => SETUP_MESSAGE.to_owned(),
-        StoreState::Maintenance => {
-            "Maple is finishing a local store operation. Try again when it finishes.".into()
-        }
-        StoreState::Damaged { .. } => {
-            "Maple's local store needs attention. Open Maple to continue.".into()
-        }
-        StoreState::Refused { reason } => reason.message().to_owned(),
+    let (code, message) = match state {
+        StoreState::Locked => ("store-locked", LOCKED_MESSAGE.to_owned()),
+        StoreState::NeedsSetup => ("store-setup", SETUP_MESSAGE.to_owned()),
+        StoreState::Maintenance => (
+            "store-busy",
+            "Maple is finishing a local store operation. Try again when it finishes.".into(),
+        ),
+        StoreState::Damaged { .. } => (
+            "store-damaged",
+            "Maple's local store needs attention. Open Maple to continue.".into(),
+        ),
+        StoreState::Refused { reason } => return Err((*reason).into()),
         StoreState::Open => unreachable!(),
-    })
+    };
+    Err(HostFailure::new(code, message))
 }
 
 fn operation_progress_value(
@@ -1138,16 +1204,16 @@ impl OwnerContext {
         request: protocol::SensitiveRequest,
         receipts: Arc<receipts::Receipts>,
         generation: &ConnectionGeneration,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, HostFailure> {
         let method_owned = request.method.clone();
         let method = method_owned.as_str();
         if let Some(error) = repair::retired_operation_error(method) {
-            return Err(error.to_owned());
+            return Err(error.into());
         }
-        gate(&self.state(backend), method)?; // Must precede remote_* routing.
+        gate_presented(&self.state(backend), method)?; // Must precede remote_* routing.
         #[cfg(feature = "proxy")]
         if matches!(method, "get_local_api_status" | "stop_local_api") {
-            return backend::dispatch(backend, request.into_request()).await;
+            return backend::dispatch_presented(backend, request.into_request()).await;
         }
         if method == "store_status" {
             let mut status = self.status(backend)?;
@@ -1156,7 +1222,10 @@ impl OwnerContext {
             return Ok(status);
         }
         if method == "host_status" {
-            return self.host_status(backend, remote).await;
+            return self
+                .host_status(backend, remote)
+                .await
+                .map_err(HostFailure::from);
         }
         #[cfg(feature = "proxy")]
         if matches!(
@@ -1176,7 +1245,7 @@ impl OwnerContext {
             .ok_or("Local storage is unavailable")?
             .clone();
         if method == "store_progress" {
-            return self.operation_progress(&store);
+            return self.operation_progress(&store).map_err(HostFailure::from);
         }
         if method == "cancel_store_operation" {
             let repair_cancelled = self.repairs.cancel();
@@ -1196,7 +1265,7 @@ impl OwnerContext {
             let _busy = BusyOperation(&self.busy);
             let _admission = self.admission.write().await;
             generation.check(backend, method)?;
-            gate(&self.state(backend), method)?;
+            gate_presented(&self.state(backend), method)?;
             let _account = backend.account_gate.write().await;
             backend.retry_store_persistence().await?;
             self.retained_failure.store(false, Ordering::Release);
@@ -1227,7 +1296,7 @@ impl OwnerContext {
             }
             let _operation = self.operation.lock().await;
             generation.check(backend, method)?;
-            gate(&self.state(backend), method)?;
+            gate_presented(&self.state(backend), method)?;
             passwords::validate_before_drain(store.clone(), method, &request.params).await?;
             let destructive = matches!(method, "erase_local_data" | "start_fresh");
             let drain_operation = repair_operation
@@ -1274,7 +1343,7 @@ impl OwnerContext {
                 if store.state() == StoreState::Open {
                     backend.resume_store_admission();
                 }
-                return Err(error);
+                return Err(error.into());
             }
             if store_operation && drain_operation {
                 let _ = events.send(Arc::new(AgentServiceEvent::StoreStateChanged {
@@ -1285,7 +1354,7 @@ impl OwnerContext {
                 if method == "confirm_account_deletion" {
                     // backend::dispatch takes its own account writer after ACP
                     // and remote have stopped, avoiding a lifetime-reader deadlock.
-                    return dispatch_with_receipt(backend, request.into_request(), receipts).await;
+                    return backend::dispatch_presented(backend, request.into_request()).await;
                 }
                 let (_exclusive_account, _shared_account) = if drain_operation {
                     (Some(backend.account_gate.write().await), None)
@@ -1295,11 +1364,11 @@ impl OwnerContext {
                 #[cfg(feature = "proxy")]
                 if drain_operation { backend.local_api.stop().await; }
                 generation.check(backend, method)?;
-                gate(&store.state(), method)?;
+                gate_presented(&store.state(), method)?;
                 if drain_operation && !destructive {
                     let (running, background) = backend.store_activity().await?;
                     if running != 0 || background != 0 {
-                        return Err("Wait for running tasks to finish.".into());
+                        return Err(HostFailure::new("host-running-tasks", "Wait for running tasks to finish."));
                     }
                 }
                 if destructive {
@@ -1313,7 +1382,7 @@ impl OwnerContext {
                     })
                     .await
                     .map_err(|_| "Local reset cleanup did not finish")?
-                    .map_err(|error| error.to_string())?;
+                    .map_err(HostFailure::from)?;
                 } else if drain_operation {
                     // Ordinary changes and Quit still require every source write.
                     backend.shutdown_host().await?;
@@ -1323,7 +1392,7 @@ impl OwnerContext {
                 }
                 if self.shutdown_requested.load(Ordering::Acquire) {
                     return Err(
-                        "Maple is stopping. Retry the operation after reopening Maple.".into(),
+                        HostFailure::new("host-stopping", "Maple is stopping. Retry the operation after reopening Maple."),
                     );
                 }
                 let context = backend
@@ -1351,7 +1420,7 @@ impl OwnerContext {
                         backend.forget_store_session().await?;
                     }
                     reset
-                        .map_err(|error| error.to_string())
+                        .map_err(HostFailure::from)
                         .and_then(|status| serde_json::to_value(status)
                             .map_err(|_| "Could not encode local store status".into()))
                 } else if setup_acknowledgement {
@@ -1445,7 +1514,7 @@ impl OwnerContext {
         }
         let _admission = self.admission.read().await;
         generation.check(backend, method)?;
-        gate(&self.state(backend), method)?;
+        gate_presented(&self.state(backend), method)?;
         if method == "acknowledge_mode_change_notice" {
             let (store_id, notice_id): (&str, &str) =
                 serde::Deserialize::deserialize(&request.params)
@@ -1511,7 +1580,12 @@ impl OwnerContext {
                             .attach(request.expected_account)
                             .await?,
                     )
-                    .map_err(|_| "Could not encode desktop updater response".to_owned())
+                    .map_err(|_| {
+                        HostFailure::new(
+                            "updater-response-encoding",
+                            "Could not encode desktop updater response",
+                        )
+                    })
                 }
                 "remote_update_publish" => {
                     backend
@@ -1532,7 +1606,12 @@ impl OwnerContext {
                         )
                         .await?,
                 )
-                .map_err(|_| "Could not encode desktop updater response".to_owned()),
+                .map_err(|_| {
+                    HostFailure::new(
+                        "updater-response-encoding",
+                        "Could not encode desktop updater response",
+                    )
+                }),
                 "remote_update_refresh_take" => serde_json::to_value(
                     backend
                         .remote_updates
@@ -1542,7 +1621,12 @@ impl OwnerContext {
                         )
                         .await?,
                 )
-                .map_err(|_| "Could not encode desktop updater response".to_owned()),
+                .map_err(|_| {
+                    HostFailure::new(
+                        "updater-response-encoding",
+                        "Could not encode desktop updater response",
+                    )
+                }),
                 "remote_update_refresh_complete" => {
                     backend
                         .remote_updates
@@ -1566,9 +1650,16 @@ impl OwnerContext {
             };
         }
         if method.starts_with("remote_") {
-            remote.dispatch(request.into_request()).await
+            remote
+                .dispatch(request.into_request())
+                .await
+                .map_err(HostFailure::from)
+        } else if !matches!(method, "send_message" | "send_outcome") {
+            backend::dispatch_presented(backend, request.into_request()).await
         } else {
-            dispatch_with_receipt(backend, request.into_request(), receipts).await
+            dispatch_with_receipt(backend, request.into_request(), receipts)
+                .await
+                .map_err(HostFailure::from)
         }
     }
     async fn exclusive_admission<'a>(
@@ -2221,7 +2312,7 @@ async fn serve_client_inner(
     });
     let _reader = AbortOnDrop(reader.abort_handle());
     let (responses, mut response_rx) =
-        mpsc::channel::<(protocol::SensitiveMessage, bool)>(MAX_CALLS);
+        mpsc::channel::<(protocol::SensitiveMessage, bool, Option<HostFailure>)>(MAX_CALLS);
     let mut task_subscription = subscription::Subscription::default();
     let mut calls = tokio::task::JoinSet::new();
     let result: Result<bool, String> = async {
@@ -2230,7 +2321,7 @@ async fn serve_client_inner(
             request = request_rx.recv(), if calls.len() < MAX_CALLS => {
                 let Some(request) = request else { return Ok(false); };
                 if request.method == "detach" {
-                    write_message(&mut output, &Message::Response { id: request.id, result: Ok(serde_json::Value::Null) }).await?;
+                    write_message(&mut output, &Message::Response { failure: None, id: request.id, result: Ok(serde_json::Value::Null) }).await?;
                     return Ok(true);
                 }
                 if request.method == "subscribe" {
@@ -2244,7 +2335,7 @@ async fn serve_client_inner(
                         task_subscription.set(filter)?;
                         Ok(serde_json::Value::Null)
                     })();
-                    write_message(&mut output, &Message::Response { id:request.id,result }).await?;
+                    write_message(&mut output, &Message::Response { failure: None, id:request.id,result }).await?;
                     if !generation.is_current(&backend) { return Ok(false); }
                     continue;
                 }
@@ -2253,7 +2344,9 @@ async fn serve_client_inner(
                 calls.spawn(async move {
                     let id = request.id;
                     let before = backend.saved_user_id();
-                    let result = owner.dispatch(&backend, &remote, &events, request, receipts, &generation).await;
+                    let presented = owner.dispatch(&backend, &remote, &events, request, receipts, &generation).await;
+                    let failure = presented.as_ref().err().filter(|failure| failure.code != "unknown").cloned();
+                    let result = presented.map_err(|failure| failure.message);
                     let after = backend.saved_user_id();
                     if before != after {
                         remote.shutdown().await;
@@ -2264,13 +2357,13 @@ async fn serve_client_inner(
                         if before != after { let _ = events.send(Arc::new(AgentServiceEvent::AccountChanged(after))); }
                     }
                     let rebind = owner.needs_rebind(&backend, &generation);
-                    let _ = responses.send((protocol::SensitiveMessage(Message::Response { id, result }), rebind)).await;
+                    let _ = responses.send((protocol::SensitiveMessage(Message::Response { failure: None, id, result }), rebind, failure)).await;
                 });
             }
             _ = calls.join_next(), if !calls.is_empty() => {},
             response = response_rx.recv() => {
-                if let Some((response, rebind)) = response {
-                    write_message(&mut output, &response.0).await?;
+                if let Some((response, rebind, failure)) = response {
+                    write_presented_message(&mut output, &response.0, failure.as_ref()).await?;
                     if rebind { return Ok(false); }
                 }
             }
@@ -3195,6 +3288,47 @@ impl Drop for AbortOnDrop {
     }
 }
 
+#[derive(Serialize)]
+enum PresentedMessage<'a> {
+    Response {
+        id: u64,
+        result: &'a Result<serde_json::Value, String>,
+        failure: &'a HostFailure,
+    },
+}
+
+async fn write_presented_message(
+    output: &mut (impl tokio::io::AsyncWrite + Unpin),
+    message: &Message,
+    failure: Option<&HostFailure>,
+) -> Result<(), String> {
+    if let (
+        Message::Response {
+            id,
+            result: result @ Err(_),
+            ..
+        },
+        Some(failure),
+    ) = (message, failure)
+    {
+        tokio::time::timeout(
+            START_TIMEOUT,
+            protocol::write(
+                output,
+                &PresentedMessage::Response {
+                    id: *id,
+                    result,
+                    failure,
+                },
+            ),
+        )
+        .await
+        .map_err(|_| "Host client stopped receiving updates".to_string())?
+    } else {
+        write_message(output, message).await
+    }
+}
+
 async fn write_message(
     output: &mut (impl tokio::io::AsyncWrite + Unpin),
     message: &Message,
@@ -3241,7 +3375,7 @@ pub(crate) async fn dispatch_remote_with_receipt(
     receipts: Arc<receipts::Receipts>,
     session: &maple_agent::maple_api::MapleApiSession,
     account: &str,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, HostFailure> {
     let _guard = backend.account_gate.read().await;
     if !session.remote_session_active().await || backend.saved_user_id().as_deref() != Some(account)
     {
@@ -3258,7 +3392,12 @@ pub(crate) async fn dispatch_remote_with_receipt(
     {
         return Err("Remote request account mismatch".into());
     }
-    dispatch_receipt(backend, request, receipts, true).await
+    if !matches!(request.method.as_str(), "send_message" | "send_outcome") {
+        return backend::dispatch_remote_inner_presented(backend, request).await;
+    }
+    dispatch_receipt(backend, request, receipts, true)
+        .await
+        .map_err(HostFailure::from)
 }
 
 async fn dispatch_with_receipt(
@@ -3506,13 +3645,18 @@ mod tests {
         assert_eq!(decoded.passphrase.expose(), "maple-wipe-test-secret-typed");
         assert!(decoded.required);
 
-        for method in ["request_account_deletion", "create_api_key", "oauth_start"] {
+        for method in [
+            "request_account_deletion",
+            "create_api_key",
+            "oauth_start",
+            "oauth_start_localized",
+        ] {
             let value = SensitiveValue::new(serde_json::Value::String(
                 "maple-wipe-test-secret-small-response".into(),
             ));
             assert!(decode_response::<bool>(method, value).is_err());
         }
-        assert_eq!(protocol::test_secret_wipes(), 5);
+        assert_eq!(protocol::test_secret_wipes(), 6);
     }
 
     #[test]
@@ -3643,7 +3787,7 @@ mod tests {
         .await
         .expect("retired repair cannot wait for a runtime drain");
         assert_eq!(
-            result.unwrap_err(),
+            result.unwrap_err().message,
             repair::retired_operation_error("repair_store").unwrap()
         );
         assert_eq!(snapshot(store.paths().root(), &shared_memory), before);

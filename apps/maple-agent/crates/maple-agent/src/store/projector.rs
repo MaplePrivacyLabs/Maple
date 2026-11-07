@@ -26,7 +26,7 @@ mod stored;
 use stored::StoredItem;
 
 /// Bump whenever the shared timeline builders or their merge rules change.
-pub(crate) const TIMELINE_FORMAT: i64 = 2;
+pub(crate) const TIMELINE_FORMAT: i64 = 4;
 const CHUNK_ENTRIES: usize = 1_000;
 const CHUNK_ROWS: usize = 1_000;
 const CHUNK_BYTES: usize = 1024 * 1024;
@@ -187,8 +187,9 @@ fn operations(
         EntryKind::Message {
             message: SessionMessage::Custom(custom),
         } if custom.display => {
-            vec![insert(timeline::notice_item(
+            vec![insert(timeline::labeled_notice_item(
                 format!("custom{}", custom.timestamp),
+                "notice",
                 "Agent notice",
                 &content_text(&custom.content),
                 custom.timestamp,
@@ -202,10 +203,10 @@ fn operations(
                 data.get("id").and_then(serde_json::Value::as_str),
                 data.get("text").and_then(serde_json::Value::as_str),
             ) {
-                (Some(id), Some(text)) => vec![insert(timeline::notice_item(
+                (Some(id), Some(text)) => vec![insert(timeline::stored_notice_item(
                     id.into(),
-                    "Agent notice",
                     text,
+                    data,
                     entry.timestamp,
                 ))],
                 _ => Vec::new(),
@@ -224,15 +225,17 @@ fn operations(
                 .into_iter()
                 .collect()
         }
-        EntryKind::Compaction { .. } => vec![insert(timeline::notice_item(
+        EntryKind::Compaction { .. } => vec![insert(timeline::labeled_notice_item(
             format!("compaction-{}", entry.id),
+            "compacted",
             "Context compacted",
             "Earlier messages were summarized to make room in the context.",
             entry.timestamp,
         ))],
         EntryKind::BranchSummary { summary, .. } if !summary.is_empty() => {
-            vec![insert(timeline::notice_item(
+            vec![insert(timeline::labeled_notice_item(
                 format!("branch-summary-{}", entry.id),
+                "branch-summary",
                 "Branch summary",
                 summary,
                 entry.timestamp,

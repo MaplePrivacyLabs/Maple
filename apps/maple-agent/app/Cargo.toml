@@ -15,6 +15,9 @@ default = ["desktop", "acp", "proxy"]
 # The gpui window. Without it the binary is headless and needs no display
 # libraries; only `acp` and `proxy` modes remain.
 desktop = [
+    "dep:fluent-bundle",
+    "dep:fluent-templates",
+    "dep:sys-locale",
     "dep:gpui",
     "dep:gpui-platform",
     "dep:image",
@@ -38,6 +41,9 @@ acp = ["maple-agent/acp"]
 proxy = ["dep:maple-proxy", "dep:axum", "dep:tower-http", "dep:hyper", "dep:hyper-util", "dep:futures-util"]
 
 [dependencies]
+fluent-bundle = { version = "0.16", optional = true }
+fluent-templates = { version = "0.15.1", default-features = false, features = ["macros", "walkdir"], optional = true }
+sys-locale = { version = "0.3", optional = true }
 dirs = "6"
 maple-agent = { path = "../crates/maple-agent", default-features = false }
 maple-billing = { path = "../crates/maple-billing" }
@@ -113,6 +119,8 @@ raw-window-handle = { version = "0.6", optional = true }
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_ErrorReporting", "Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+fluent-syntax = "0.12"
+syn = { version = "2", features = ["full", "visit"] }
 tempfile = "3"
 parking_lot = "0.12"
 # The gpui test harness. Keep this out of [dependencies]: with test-support on,

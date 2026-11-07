@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 use super::attachments::split_attachment_prompt;
 use super::external_agents;
-use super::types::AgentTimelineItem;
+use super::types::{AgentTimelineItem, AgentTimelineLabel};
 
 pub(crate) const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
 pub(crate) const MAX_AGENT_ERROR_CHARS: usize = 1_200;
@@ -37,9 +37,95 @@ pub(crate) const MAX_AGENT_ERROR_CHARS: usize = 1_200;
 pub(crate) const MAPLE_NOTICE_ENTRY: &str = "maple.notice";
 pub(crate) const STOPPED_NOTICE_TEXT: &str = "Stopped by user";
 
-/// The data of a notice entry.
+/// Legacy notice data used to verify backward-compatible projection.
+#[cfg(test)]
 pub(crate) fn notice_entry_data(id: &str, text: &str) -> Value {
     json!({ "id": id, "text": text })
+}
+
+pub(crate) fn label(kind: &str) -> AgentTimelineLabel {
+    AgentTimelineLabel {
+        kind: kind.into(),
+        name: None,
+        detail: None,
+    }
+}
+
+fn tool_label(name: &str, args: &Value) -> AgentTimelineLabel {
+    let keys: &[&str] = if name == "load_skill" {
+        &["name"]
+    } else if matches!(name, "bash" | "powershell" | "shell") {
+        &[
+            "command",
+            "path",
+            "file_path",
+            "file",
+            "pattern",
+            "query",
+            "url",
+            "uri",
+        ]
+    } else {
+        &[
+            "path",
+            "file_path",
+            "file",
+            "command",
+            "pattern",
+            "query",
+            "url",
+            "uri",
+        ]
+    };
+    let detail = keys
+        .iter()
+        .find_map(|key| args.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            bounded_timeline_text(
+                if name == "load_skill" {
+                    value
+                } else {
+                    value.lines().next().unwrap_or(value)
+                },
+                MAX_AGENT_SESSION_TITLE_CHARS,
+            )
+        });
+    AgentTimelineLabel {
+        kind: "tool".into(),
+        name: Some(bounded_timeline_text(name, 256)),
+        detail,
+    }
+}
+
+pub(crate) fn labeled_notice_item(
+    id: String,
+    kind: &str,
+    title: &str,
+    text: &str,
+    timestamp: Timestamp,
+) -> AgentTimelineItem {
+    let mut item = notice_item(id, title, text, timestamp);
+    item.label = Some(label(kind));
+    item
+}
+
+pub(crate) fn stored_notice_item(
+    id: String,
+    text: &str,
+    data: &Value,
+    timestamp: Timestamp,
+) -> AgentTimelineItem {
+    let mut item = labeled_notice_item(id, "notice", "Agent notice", text, timestamp);
+    if let Some(value) = data.get("label") {
+        item.label = serde_json::from_value(value.clone()).ok();
+    }
+    item
+}
+
+pub(crate) fn stopped_notice_data(id: &str) -> Value {
+    json!({"id": id, "text": STOPPED_NOTICE_TEXT, "label": label("stopped")})
 }
 
 fn user_row_id(timestamp: Timestamp) -> String {
@@ -132,8 +218,9 @@ pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineIte
                 }
                 SessionMessage::Llm(Message::System(_)) => {}
                 SessionMessage::Custom(custom) if custom.display => {
-                    items.push(notice_item(
+                    items.push(labeled_notice_item(
                         format!("custom{}", custom.timestamp),
+                        "notice",
                         "Agent notice",
                         &content_text(&custom.content),
                         custom.timestamp,
@@ -153,10 +240,10 @@ pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineIte
                     data.get("id").and_then(Value::as_str),
                     data.get("text").and_then(Value::as_str),
                 ) {
-                    items.push(notice_item(
+                    items.push(stored_notice_item(
                         id.to_string(),
-                        "Agent notice",
                         text,
+                        data,
                         entry.timestamp,
                     ));
                 }
@@ -173,16 +260,18 @@ pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineIte
                 }
             }
             EntryKind::Compaction { .. } => {
-                items.push(notice_item(
+                items.push(labeled_notice_item(
                     format!("compaction-{}", entry.id),
+                    "compacted",
                     "Context compacted",
                     "Earlier messages were summarized to make room in the context.",
                     entry.timestamp,
                 ));
             }
             EntryKind::BranchSummary { summary, .. } if !summary.is_empty() => {
-                items.push(notice_item(
+                items.push(labeled_notice_item(
                     format!("branch-summary-{}", entry.id),
+                    "branch-summary",
                     "Branch summary",
                     summary,
                     entry.timestamp,
@@ -237,6 +326,12 @@ pub(crate) fn merge_item(previous: &mut AgentTimelineItem, incoming: AgentTimeli
         && matches!(incoming.item_type.as_str(), "message" | "thinking")
         && incoming.text.is_some();
     previous.title = merged_tool_title(previous, &incoming);
+    if let Some(label) = incoming.label.clone() {
+        match &mut previous.label {
+            Some(previous) => previous.merge_from(label),
+            None => previous.label = Some(label),
+        }
+    }
     if append {
         previous
             .text
@@ -276,6 +371,7 @@ pub(crate) fn user_item(
         None => (text, None),
     };
     AgentTimelineItem {
+        label: None,
         persisted: None,
         live: None,
         truncated: None,
@@ -334,6 +430,7 @@ pub(crate) fn reply_items(reply: &AssistantMessage) -> Vec<AgentTimelineItem> {
 
 fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        label: Some(label("thinking")),
         persisted: None,
         live: None,
         truncated: None,
@@ -353,6 +450,7 @@ fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimeli
 
 fn text_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        label: None,
         persisted: None,
         live: None,
         truncated: None,
@@ -372,6 +470,10 @@ fn text_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineIt
 
 fn tool_call_item(reply_timestamp: Timestamp, call: &ToolCall, status: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        label: Some(tool_label(
+            &call.name,
+            &Value::Object(call.arguments.clone()),
+        )),
         persisted: None,
         live: None,
         truncated: None,
@@ -400,6 +502,7 @@ pub(crate) fn tool_result_item(
     timestamp: Timestamp,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        label: None,
         persisted: None,
         live: None,
         truncated: None,
@@ -427,8 +530,9 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
         .error_message
         .clone()
         .unwrap_or_else(|| "The model's reply failed".to_string());
-    let (title, text) = error_row_copy(&message);
+    let (title, text, kind) = error_row_copy(&message);
     AgentTimelineItem {
+        label: Some(error_label(kind, &message)),
         persisted: None,
         live: None,
         truncated: None,
@@ -446,35 +550,44 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
     }
 }
 
+fn error_label(kind: &str, message: &str) -> AgentTimelineLabel {
+    let mut label = label(kind);
+    label.name = super::provider::error_presentation(message).map(str::to_owned);
+    label
+}
+
 /// The row heading and body for a failed reply. An out-of-usage refusal
 /// drops Pi's status wrapper so the transcript shows the sentence itself.
-fn error_row_copy(message: &str) -> (&'static str, String) {
+fn error_row_copy(message: &str) -> (&'static str, String, &'static str) {
     if message.contains(super::provider::USAGE_LIMIT_MESSAGE) {
         (
             "Out of usage",
             super::provider::USAGE_LIMIT_MESSAGE.to_string(),
+            "error-usage",
         )
     } else {
+        let (title, kind) = error_title(message);
         (
-            error_title(message),
+            title,
             bounded_timeline_text(message, MAX_AGENT_ERROR_CHARS),
+            kind,
         )
     }
 }
 
 /// The row heading for a failed reply.
-fn error_title(message: &str) -> &'static str {
+fn error_title(message: &str) -> (&'static str, &'static str) {
     use super::provider::{
         AUTHENTICATION_ERROR_MESSAGE, CONTEXT_OVERFLOW_MESSAGE, CREDITS_EXHAUSTED_MESSAGE,
     };
     if message.contains(AUTHENTICATION_ERROR_MESSAGE) {
-        "Authentication failed"
+        ("Authentication failed", "error-authentication")
     } else if message.contains(CREDITS_EXHAUSTED_MESSAGE) {
-        "Credits exhausted"
+        ("Credits exhausted", "error-credits")
     } else if message.contains(CONTEXT_OVERFLOW_MESSAGE) {
-        "Context limit exceeded"
+        ("Context limit exceeded", "error-context")
     } else {
-        "Agent error"
+        ("Agent error", "error-agent")
     }
 }
 
@@ -485,6 +598,7 @@ pub(crate) fn notice_item(
     timestamp: Timestamp,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        label: None,
         persisted: None,
         live: None,
         truncated: None,
@@ -505,8 +619,9 @@ pub(crate) fn notice_item(
 /// An error row that belongs to no message, such as a run that could not start.
 pub(crate) fn error_item(message: String) -> AgentTimelineItem {
     let now = pi_ai::now_ms();
-    let (title, text) = error_row_copy(&message);
+    let (title, text, kind) = error_row_copy(&message);
     AgentTimelineItem {
+        label: Some(error_label(kind, &message)),
         persisted: None,
         live: None,
         truncated: None,
@@ -577,8 +692,9 @@ impl LiveTimeline {
                     });
                     Vec::new()
                 }
-                SessionMessage::Custom(custom) if custom.display => vec![notice_item(
+                SessionMessage::Custom(custom) if custom.display => vec![labeled_notice_item(
                     format!("custom{}", custom.timestamp),
+                    "notice",
                     "Agent notice",
                     &content_text(&custom.content),
                     custom.timestamp,
@@ -607,6 +723,7 @@ impl LiveTimeline {
                 };
                 let arguments = args.as_object().cloned().unwrap_or_default();
                 vec![AgentTimelineItem {
+                    label: Some(tool_label(tool_name, args)),
                     persisted: None,
                     live: None,
                     truncated: None,
@@ -698,6 +815,7 @@ impl LiveTimeline {
                 let row = tool_row_id(reply.timestamp, id);
                 self.tool_rows.insert(id.clone(), row.clone());
                 vec![AgentTimelineItem {
+                    label: Some(tool_label(name, &Value::Null)),
                     persisted: None,
                     live: None,
                     truncated: None,
@@ -834,13 +952,20 @@ pub(crate) fn merged_tool_title(
     previous: &AgentTimelineItem,
     incoming: &AgentTimelineItem,
 ) -> Option<String> {
-    const LOADING_SKILL_PREFIX: &str = "Loading skill: ";
-
-    if incoming.item_type == "tool"
-        && let Some(skill_name) = previous
+    // Preserve the pre-metadata raw-title behavior for legacy rows only.
+    // This fallback does not manufacture semantic metadata from English.
+    let skill_name = match &previous.label {
+        Some(label) if label.kind == "tool" && label.name.as_deref() == Some("load_skill") => {
+            label.detail.as_deref()
+        }
+        None => previous
             .title
             .as_deref()
-            .and_then(|title| title.strip_prefix(LOADING_SKILL_PREFIX))
+            .and_then(|title| title.strip_prefix("Loading skill: ")),
+        _ => None,
+    };
+    if incoming.item_type == "tool"
+        && let Some(skill_name) = skill_name
     {
         let prefix = match incoming.status.as_deref() {
             Some("completed") => Some("Loaded skill: "),
