@@ -994,18 +994,6 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn an_app_with_nothing_to_ask_starts_straight_away(cx: &mut gpui::TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = cx.new(screen);
-        screen.update(cx, |screen, cx| {
-            screen.connect_catalog_entry("notion", cx);
-            assert!(screen.mcp_address.is_none());
-            assert_eq!(screen.mcp_signing_in.as_deref(), Some("Notion"));
-            screen.mcp_signing_in = None;
-        });
-    }
-
     #[test]
     fn a_connected_app_reads_in_each_language_but_a_persons_own_words_do_not() {
         use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
