@@ -13,6 +13,7 @@ trademark of its owner and is used only to identify that app. Fetched 2026-11-04
 | dropbox | https://fjord.dropboxstatic.com/warp/conversion/dropbox/warp/icons/Dropbox-logo-nav.svg |
 | evernote | https://evernote.com/images/evernote-logo-icon.svg |
 | gitlab | https://about.gitlab.com/images/ico/favicon-192x192.png |
+| home-assistant | https://github.com/home-assistant.png (verified organization) |
 | intercom | https://github.com/intercom.png (verified organization) |
 | linear | https://linear.app/static/favicon.svg |
 | miro | https://framerusercontent.com/images/6FBG66PBxjV2QFaDfIdUi5mi9A.png |
@@ -25,6 +26,7 @@ trademark of its owner and is used only to identify that app. Fetched 2026-11-04
 | stripe | https://images.stripeassets.com/fzn2n1nzq965/1hgcBNd12BfT9VLgbId7By/01d91920114b124fb4cf6d448f9f06eb/favicon.svg |
 | supabase | https://supabase.com/favicon/apple-icon-180x180.png |
 | todoist | https://www.todoist.com/static/android-chrome-256x256.png |
+| vana | https://github.com/vana-com.png (linked from vana.org) |
 | vercel | https://assets.vercel.com/image/upload/q_auto/front/favicon/vercel/apple-touch-icon-256x256.png |
 | wix | https://www.wix.com/favicon.ico |
 | wordpress | https://0.gravatar.com/blavatar/653166773dc88127bd3afe0b6dfe5ea7?s=114&d=https%3A%2F%2Fs1.wp.com%2Fi%2Fwebclip.png |

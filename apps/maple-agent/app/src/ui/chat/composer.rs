@@ -621,7 +621,10 @@ impl ChatScreen {
                                 {
                                     tr("settings-integration-cua-description")
                                 } else {
-                                    server.description.clone().into()
+                                    crate::ui::settings::saved_description(
+                                        &server.display_name,
+                                        &server.description,
+                                    )
                                 },
                             ),
                     )

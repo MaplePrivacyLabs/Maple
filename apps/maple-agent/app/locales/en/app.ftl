@@ -1897,6 +1897,10 @@ flows-task-cancelled = The task was cancelled
 ## Flows: direct pricing-page browser errors
 runtime-error-browser-pricing-link = Could not open pricing: unexpected link
 runtime-error-browser-pricing-open = Could not open pricing in your browser
+runtime-error-mcp-no-address = Enter an address first.
+runtime-error-mcp-invalid-address = Sign-in needs an http:// or https:// address.
+runtime-error-mcp-unreachable = Maple could not reach this address. Check it and try again.
+runtime-error-mcp-no-server = Maple reached this address, but found no MCP server there.
 
 settings-settings-connected = Connected
 
@@ -1943,6 +1947,18 @@ settings-catalog-summary-supabase = Manage your databases and projects
 settings-catalog-summary-sentry = Look into your errors and issues
 settings-catalog-summary-playwright = Browse websites, click through pages and fill in forms
 settings-catalog-summary-xcode = Build and test your Xcode projects
+settings-catalog-summary-vana = Use the personal data you choose to share
+settings-catalog-summary-home-assistant = See and control your smart home
+# The field in the pop-up that asks where an app is. Also its screen reader name.
+settings-catalog-address = Address
+# Title of that pop-up. $name is the app, such as Home Assistant.
+settings-catalog-address-title = Connect { $name }
+settings-catalog-address-label-vana = Local MCP endpoint
+# Settings > Server and Local MCP endpoint are Vana Desktop's own words.
+settings-catalog-address-help-vana = In Vana Desktop, open Settings > Server and copy the Local MCP endpoint.
+settings-catalog-address-label-home-assistant = Home Assistant address
+# Model Context Protocol is the integration's name in Home Assistant.
+settings-catalog-address-help-home-assistant = Add the Model Context Protocol integration in Home Assistant, then check this is the address you open it at.
 
 # ACP client setup
 settings-section-acp = ACP

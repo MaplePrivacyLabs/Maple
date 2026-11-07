@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use super::oauth::McpSignIn;
+use super::oauth::{McpSignIn, McpSignInError, sign_in_endpoint};
 use crate::store::records::McpTarget;
 
 /// How long a new app gets to start and list its tools, unless it says.
@@ -83,12 +83,49 @@ pub enum McpCatalogConnection {
     Package(McpCatalogPackage),
     /// A command that some other app installs.
     Command(McpCatalogCommand),
+    /// A server in an app the person runs, at an address only they know.
+    Address(McpCatalogAddress),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpCatalogRemote {
     pub url: String,
+}
+
+/// What the pop-up asks for before an app at the person's own address can connect.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpCatalogAddress {
+    pub label: String,
+    /// Where the person finds it.
+    pub help: String,
+    /// Where it is on most setups, tried before asking.
+    pub default: String,
+    /// The server's path, which the person may leave off.
+    pub path: String,
+    pub app_name: String,
+    pub get_url: String,
+}
+
+impl McpCatalogAddress {
+    /// The server's address from what the person gave.
+    fn server_url(&self, given: &str) -> Result<String, McpSignInError> {
+        let given = given.trim();
+        if given.is_empty() {
+            return Err(McpSignInError::NoAddress);
+        }
+        let given = if given.contains("://") {
+            given.to_string()
+        } else {
+            format!("http://{given}")
+        };
+        let mut url = sign_in_endpoint(&given)?;
+        if url.path() == "/" {
+            url.set_path(&self.path);
+        }
+        Ok(url.to_string())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -169,22 +206,43 @@ impl McpCatalogEntry {
         })
     }
 
+    /// The browser sign-in for an app at the address the person gave.
+    pub fn sign_in_at(&self, given: &str) -> Result<McpSignIn, McpSignInError> {
+        let address = self.address().ok_or(McpSignInError::InvalidAddress)?;
+        Ok(McpSignIn {
+            name: self.name.clone(),
+            description: self.summary.clone(),
+            url: address.server_url(given)?,
+            scopes: Vec::new(),
+        })
+    }
+
     pub fn remote(&self) -> Option<&McpCatalogRemote> {
         match &self.connect {
             McpCatalogConnection::Remote(remote) => Some(remote),
-            McpCatalogConnection::Package(_) | McpCatalogConnection::Command(_) => None,
+            _ => None,
         }
     }
 
-    /// What a saved server of this app runs or reaches.
-    pub fn target(&self) -> McpTarget {
+    /// What the person has to give before this app can connect.
+    pub fn address(&self) -> Option<&McpCatalogAddress> {
+        match &self.connect {
+            McpCatalogConnection::Address(address) => Some(address),
+            _ => None,
+        }
+    }
+
+    /// What a saved server of this app runs or reaches, where the catalog
+    /// alone can say.
+    pub fn target(&self) -> Option<McpTarget> {
         let line = |words: Vec<&str>| McpTarget::Stdio {
             command: words.join(" "),
         };
-        match &self.connect {
+        Some(match &self.connect {
             McpCatalogConnection::Remote(remote) => McpTarget::StreamableHttp {
                 url: remote.url.clone(),
             },
+            McpCatalogConnection::Address(_) => return None,
             McpCatalogConnection::Package(package) => {
                 let (runner, spec) = match package.registry_type {
                     McpCatalogRegistry::Npm => (
@@ -209,7 +267,7 @@ impl McpCatalogEntry {
                     .chain(command.arguments.iter().map(String::as_str))
                     .collect(),
             ),
-        }
+        })
     }
 
     fn runs_on(&self, platform: Option<McpCatalogPlatform>) -> bool {
@@ -241,7 +299,6 @@ pub fn mcp_catalog() -> &'static [McpCatalogEntry] {
 mod tests {
     use std::collections::HashSet;
 
-    use super::super::oauth::sign_in_endpoint;
     use super::super::{
         edit_to_validation_server, name_to_key, normalize_mcp_servers, split_command,
     };
@@ -261,13 +318,19 @@ mod tests {
                 entry.name
             );
             assert!(!entry.summary.is_empty(), "{} has no summary", entry.name);
+            let target = match entry.address() {
+                Some(address) => McpTarget::StreamableHttp {
+                    url: entry.sign_in_at(&address.default).unwrap().url,
+                },
+                None => entry.target().unwrap(),
+            };
             let edit = McpServerEdit {
                 key: name_to_key(&entry.name),
                 name: entry.name.clone(),
                 description: entry.summary.clone(),
                 enabled: false,
                 timeout_seconds: 300,
-                target: entry.target(),
+                target,
                 environment: Vec::new(),
                 headers: Vec::new(),
             };
@@ -296,7 +359,7 @@ mod tests {
     fn a_local_app_is_pinned_and_says_what_it_needs() {
         for entry in every_entry()
             .iter()
-            .filter(|entry| entry.remote().is_none())
+            .filter(|entry| entry.remote().is_none() && entry.address().is_none())
         {
             assert_eq!(entry.auth, McpCatalogAuth::None, "{}", entry.name);
             assert!(!entry.requires.is_empty(), "{}", entry.name);
@@ -320,7 +383,7 @@ mod tests {
                 );
             }
             // What is saved reads back as the same words.
-            let McpTarget::Stdio { command } = entry.target() else {
+            let Some(McpTarget::Stdio { command }) = entry.target() else {
                 panic!("{} is not a local command", entry.name);
             };
             assert_eq!(
@@ -333,20 +396,77 @@ mod tests {
     }
 
     #[test]
+    fn an_address_is_taken_as_the_person_gave_it() {
+        let entry = every_entry()
+            .iter()
+            .find(|entry| entry.id == "home-assistant")
+            .unwrap();
+        let url = |given: &str| entry.sign_in_at(given).map(|sign_in| sign_in.url);
+        for given in [
+            "http://homeassistant.local:8123",
+            "http://homeassistant.local:8123/",
+            " homeassistant.local:8123 ",
+        ] {
+            assert_eq!(
+                url(given).unwrap(),
+                "http://homeassistant.local:8123/api/mcp"
+            );
+        }
+        assert_eq!(
+            url("https://home.example.com").unwrap(),
+            "https://home.example.com/api/mcp"
+        );
+        assert_eq!(
+            url("http://192.168.1.20:8123/api/mcp/assist").unwrap(),
+            "http://192.168.1.20:8123/api/mcp/assist"
+        );
+        assert_eq!(url("  ").unwrap_err(), McpSignInError::NoAddress);
+        assert_eq!(
+            url("100.64.0.1:8123").unwrap(),
+            "http://100.64.0.1:8123/api/mcp"
+        );
+        assert_eq!(
+            url("http://home.example.com:8123").unwrap(),
+            "http://home.example.com:8123/api/mcp"
+        );
+        assert_eq!(
+            url("ftp://home.example.com").unwrap_err(),
+            McpSignInError::InvalidAddress
+        );
+    }
+
+    #[test]
+    fn an_app_at_a_persons_own_address_says_how_to_find_it() {
+        let apps: Vec<_> = every_entry()
+            .iter()
+            .filter(|entry| entry.address().is_some())
+            .collect();
+        assert_eq!(apps.len(), 2);
+        for entry in apps {
+            let address = entry.address().unwrap();
+            assert_eq!(entry.auth, McpCatalogAuth::Oauth, "{}", entry.name);
+            assert_eq!(entry.target(), None, "{}", entry.name);
+            assert!(address.path.starts_with('/'), "{}", entry.name);
+            assert!(address.get_url.starts_with("https://"), "{}", entry.name);
+            assert!(entry.sign_in_at(&address.default).is_ok(), "{}", entry.name);
+        }
+    }
+
+    #[test]
     fn a_package_runs_at_its_exact_version() {
         let entry = |id: &str| every_entry().iter().find(|entry| entry.id == id).unwrap();
         assert_eq!(
             entry("playwright").target(),
-            McpTarget::Stdio {
+            Some(McpTarget::Stdio {
                 command: "npx -y @playwright/mcp@0.0.83 --isolated --output-dir ~/.cache/maple/playwright"
                     .into()
-            }
+            })
         );
         assert_eq!(
             entry("xcode").target(),
-            McpTarget::Stdio {
+            Some(McpTarget::Stdio {
                 command: "xcrun mcpbridge".into()
-            }
+            })
         );
     }
 

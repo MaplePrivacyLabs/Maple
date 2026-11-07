@@ -34,11 +34,12 @@ impl super::AgentBackend {
         &self,
         user_id: &str,
         request: maple_agent::agent::McpSignIn,
-    ) -> Result<Vec<McpDefinition>, String> {
+    ) -> Result<Vec<McpDefinition>, super::HostFailure> {
         if self.remote_host.is_some() {
             return Err("Sign in from This Computer. Paired computers cannot do this yet.".into());
         }
-        self.call("sign_in_mcp_server", (user_id, request)).await
+        self.call_presented("sign_in_mcp_server", (user_id, request))
+            .await
     }
 
     pub async fn cancel_mcp_sign_in(&self, user_id: &str, name: &str) -> Result<(), String> {
@@ -126,6 +127,27 @@ enum SecretUpdateInput<'a> {
 mod tests {
     use super::*;
     use maple_agent::store::records::SecretString;
+
+    // The UI acts on this code, and a legacy String dispatch would flatten it.
+    #[test]
+    fn a_sign_in_failure_keeps_its_code_through_dispatch() {
+        let backend =
+            super::super::AgentBackend::for_test("http://127.0.0.1:1".into(), String::new())
+                .unwrap();
+        let failure = backend
+            .runtime_handle()
+            .block_on(backend.sign_in_mcp_server(
+                "user",
+                maple_agent::agent::McpSignIn {
+                    name: "Example".into(),
+                    description: String::new(),
+                    url: "ftp://example.com/mcp".into(),
+                    scopes: Vec::new(),
+                },
+            ))
+            .unwrap_err();
+        assert_eq!(failure.code, "mcp-invalid-address");
+    }
 
     #[test]
     fn explicit_request_adapter_round_trips_operations_without_response_serialization() {

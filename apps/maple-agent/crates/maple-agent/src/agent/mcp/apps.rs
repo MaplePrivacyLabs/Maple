@@ -143,13 +143,16 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let key = name_to_key(&entry.name);
+        let target = entry
+            .target()
+            .ok_or_else(|| "This app is not available here.".to_string())?;
         let edit = McpServerEdit {
             key: key.clone(),
             name: entry.name.clone(),
             description: entry.summary.clone(),
             enabled: true,
             timeout_seconds: default_mcp_timeout_seconds(),
-            target: entry.target(),
+            target,
             environment: Vec::new(),
             headers: Vec::new(),
         };

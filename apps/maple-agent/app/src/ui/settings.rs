@@ -47,6 +47,7 @@ mod mcp;
 mod navigation;
 pub(crate) mod presentation;
 mod shortcut_labels;
+
 use self::account::AccountState;
 #[cfg(feature = "acp")]
 use self::acp::AcpUiState;
@@ -56,6 +57,7 @@ use self::billing::BillingState;
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
+pub(crate) use catalog::saved_description;
 
 /// Emitted when the user leaves settings.
 pub struct SettingsClosed(pub AppSettings);
@@ -198,12 +200,15 @@ pub struct SettingsScreen {
     /// Account MCP servers; None until loaded.
     mcp_servers: Option<Vec<McpDefinition>>,
     mcp_editor: Option<McpEditor>,
+    mcp_address: Option<catalog::McpAddressPrompt>,
+    /// The app being tried at its usual address, before asking for another.
+    mcp_usual_address: Option<&'static maple_agent::agent::McpCatalogEntry>,
     mcp_notice: Option<UiText>,
     mcp_saving: bool,
     /// The server whose browser sign-in is in progress.
     mcp_signing_in: Option<String>,
     /// The server whose sign-in last failed, and why.
-    mcp_sign_in_error: Option<(String, String)>,
+    mcp_sign_in_error: Option<(String, UiText)>,
     /// The app that needs something first, and what.
     mcp_app_missing: Option<(String, maple_agent::agent::McpAppMissing)>,
     catalog_search: Entity<TextInput>,
@@ -519,6 +524,8 @@ impl SettingsScreen {
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
+            mcp_address: None,
+            mcp_usual_address: None,
             mcp_notice: None,
             mcp_saving: false,
             mcp_signing_in: None,
@@ -1666,6 +1673,8 @@ impl Render for SettingsScreen {
         if std::mem::take(&mut self.api_keys.reveal_card) {
             self.api_keys.card_anchor.scroll_to(window, cx);
         }
+        self.focus_mcp_address(window, cx);
+        let mcp_address = self.render_mcp_address(window, cx);
         div()
             .key_context(self.application_vim_context())
             .track_focus(&self.application_focus)
@@ -1687,6 +1696,7 @@ impl Render for SettingsScreen {
             .on_action(cx.listener(Self::app_vim_previous_annotation))
             .on_action(cx.listener(Self::app_vim_count))
             .on_action(cx.listener(Self::app_vim_move_region))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1761,6 +1771,7 @@ impl Render for SettingsScreen {
                             )),
                     ),
             )
+            .children(mcp_address)
     }
 }
 
@@ -2562,7 +2573,10 @@ impl SettingsScreen {
                                         div()
                                             .text_xs()
                                             .text_color(gpui::rgb(theme::text_secondary()))
-                                            .child(server.description.clone()),
+                                            .child(catalog::saved_description(
+                                                &server.name,
+                                                &server.description,
+                                            )),
                                     )
                                 })
                                 .child(
@@ -2818,9 +2832,7 @@ impl SettingsScreen {
 
     fn render_mcp_editor(&self, editor: &McpEditor, cx: &mut Context<Self>) -> Div {
         let signing_in = self.mcp_editor_signing_in(cx);
-        let sign_in_error = self
-            .sign_in_error_for(editor.name.read(cx).text().trim())
-            .map(str::to_string);
+        let sign_in_error = self.sign_in_error_for(editor.name.read(cx).text().trim());
         let field = |label: &str, hint: &str, input: Entity<TextInput>| {
             div()
                 .flex()
