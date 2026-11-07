@@ -168,6 +168,9 @@ struct MapleApp {
     remote_enabled: Arc<std::sync::atomic::AtomicBool>,
     store_resident: Arc<std::sync::atomic::AtomicBool>,
     store_load_epoch: u64,
+    /// Counts `StoreStateChanged` events handled, so a slower store_status
+    /// reply cannot overrule a state the host reported after it.
+    store_state_event: u64,
     store_ready: bool,
     store_id: Option<String>,
     store_notice: Option<UiText>,
@@ -564,6 +567,7 @@ impl MapleApp {
         self.password_settings_refresh_pending = true;
         let epoch = self.store_load_epoch;
         let backend = self.backend.clone();
+        let state_event = self.store_state_event;
         let query = backend.clone().spawn(async move {
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -575,6 +579,13 @@ impl MapleApp {
             let result = query.await;
             let _ = this.update(cx, |this, cx| {
                 if this.store_load_epoch != epoch {
+                    return;
+                }
+                // A state event that arrived after this query was sent is
+                // newer, and its own handling already ran. This reply may
+                // predate it: a Maintenance answer landing after Open would
+                // pause the chat again with nothing left to resume it.
+                if this.store_state_event != state_event {
                     return;
                 }
                 if let Ok(Ok(Ok(status))) = result {
@@ -719,6 +730,7 @@ impl MapleApp {
                 &event
             {
                 self.forward_service_events(std::mem::take(&mut batch), cx);
+                self.store_state_event = self.store_state_event.wrapping_add(1);
                 if *state == maple_agent::store::StoreState::Maintenance {
                     self.pause_local_chat_for_store_maintenance(cx);
                 }
@@ -3820,6 +3832,7 @@ pub fn run() {
                         remote_enabled: root_enabled,
                         store_resident: root_resident,
                         store_load_epoch: 0,
+                        store_state_event: 0,
                         store_ready: false,
                         store_id: None,
                         store_notice: None,
@@ -4794,6 +4807,7 @@ mod tests {
                 remote_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 store_resident: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 store_load_epoch: 0,
+                store_state_event: 0,
                 store_ready: true,
                 store_id: None,
                 store_notice: None,

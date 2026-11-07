@@ -553,7 +553,7 @@ mod tests {
                 let backend = Arc::new(
                     AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
                 );
-                cx.new(|cx| ChatScreen::new_inner(backend, "account".into(), cx))
+                cx.new(|cx| ChatScreen::new_inner_for_test(backend, "account".into(), cx))
             };
             chat.update(cx, |chat, cx| {
                 chat.handle_service_event(AgentServiceEvent::RemoteAccessEnded(reason), cx);

@@ -1190,7 +1190,7 @@ mod state_tests {
         // parking is allowed; the backend runtime and attachment worker run on tokio.
         cx.executor().allow_parking();
         let screen = cx.new(|cx| {
-            let mut screen = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut screen = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
             screen.selected_session = Some("s1".to_string());
             screen
         });
@@ -1269,6 +1269,19 @@ mod state_tests {
         cx.update(|window, _| window.activate_window());
         cx.run_until_parked();
         (chat, cx)
+    }
+
+    /// The sidebar asks for its saved order as it is built, and the fixture's
+    /// backend refuses on a real thread. A late refusal raised a notice that
+    /// moved the layout under tests that had already measured it.
+    #[gpui::test]
+    fn fixture_leaves_no_saved_order_request_to_raise_a_late_notice(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        // The refusal takes about a millisecond; give a late one ample time.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cx.run_until_parked();
+        let notice = chat.read_with(cx, |this, _| this.notice.clone());
+        assert!(notice.is_none(), "unexpected notice: {notice:?}");
     }
 
     fn todo_item(id: &str, todos: serde_json::Value) -> AgentTimelineItem {
@@ -1682,7 +1695,7 @@ mod state_tests {
         // parking is allowed; the backend runtime and attachment worker run on tokio.
         cx.executor().allow_parking();
         let screen = cx.new(|cx| {
-            ChatScreen::new_inner(
+            ChatScreen::new_inner_for_test(
                 std::sync::Arc::new(
                     crate::backend::AgentBackend::for_test(
                         "http://127.0.0.1:9".to_string(),
@@ -5435,7 +5448,7 @@ mod state_tests {
         cx.executor().allow_parking();
         let backend = Arc::new(AgentBackend::for_remote_test("peer").unwrap());
         cx.new(|cx| {
-            let mut screen = ChatScreen::new_inner(backend, "user".into(), cx);
+            let mut screen = ChatScreen::new_inner_for_test(backend, "user".into(), cx);
             screen.selected_session = Some("s1".into());
             screen
         })
@@ -6975,6 +6988,15 @@ mod state_tests {
         press(cx, "sort-manual");
         assert_eq!(view(cx).sort, SidebarSort::Manual);
         closed(cx);
+        // Manual sort saves its order to this fixture's dead backend. Let the
+        // refusal land here, not while a later menu is open.
+        wait_until(&chat, cx, "refused order save", |this| {
+            this.notice.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            this.notice = None;
+            cx.notify();
+        });
         for (selector, group) in [
             ("group-project", SidebarGroup::Project),
             ("group-status", SidebarGroup::Status),
@@ -10631,7 +10653,7 @@ mod state_tests {
                 )
                 .expect("backend"),
             );
-            let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut this = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
             this.sessions = (0..200)
                 .map(|n| summary(&format!("s{n}"), &format!("Task {n}")))
@@ -11030,7 +11052,7 @@ mod state_tests {
                 )
                 .expect("backend"),
             );
-            let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut this = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
             this.application_vim_enabled = application_vim_enabled;
             this.application_focus = application_vim_enabled.then(|| cx.focus_handle());
@@ -11271,7 +11293,7 @@ mod state_tests {
                 .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
             chat.selected_session = Some("s1".to_string());
             chat.application_vim_enabled = true;
             chat.application_focus = Some(cx.focus_handle());

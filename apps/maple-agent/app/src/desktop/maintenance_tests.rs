@@ -22,6 +22,10 @@ enum HostCommand {
     ReleaseFlush,
     AutomaticDownloads(bool),
     ReconnectWithLocale(&'static str),
+    /// Answer the next store_status that arrives during Maintenance as of
+    /// its arrival, but send that answer only on ReleaseStatus.
+    HoldNextStatus,
+    ReleaseStatus,
 }
 
 struct FixtureHost {
@@ -133,6 +137,8 @@ impl FixtureHost {
                 let mut pending_flush = None;
                 let mut automatic_downloads = true;
                 let mut saved_locale = None;
+                let mut hold_status = false;
+                let mut held_status = None;
                 loop {
                     tokio::select! {
                         command = control.recv() => {
@@ -154,6 +160,16 @@ impl FixtureHost {
                                 HostCommand::ReleaseFlush => {
                                     let id = pending_flush.take().expect("a deferred settings flush");
                                     if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result: Ok(Value::Null) }).await.is_err() { break; }
+                                    continue;
+                                }
+                                HostCommand::HoldNextStatus => {
+                                    hold_status = true;
+                                    recorded.lock().unwrap().push("hold store_status".into());
+                                    continue;
+                                }
+                                HostCommand::ReleaseStatus => {
+                                    let (id, result) = held_status.take().expect("a held store_status");
+                                    if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result }).await.is_err() { break; }
                                     continue;
                                 }
                             }
@@ -218,6 +234,12 @@ impl FixtureHost {
                                 // readiness regression and must never contact a real service.
                                 _ => Err("Optional fixture operation unavailable".into()),
                             };
+                            if request.method == "store_status" && hold_status && state == StoreState::Maintenance {
+                                hold_status = false;
+                                held_status = Some((request.id, result));
+                                recorded.lock().unwrap().push("held store_status".into());
+                                continue;
+                            }
                             if protocol::write(&mut output, &protocol::Message::Response { failure: None, id:request.id, result }).await.is_err() { break; }
                         }
                     }
@@ -459,6 +481,37 @@ fn successful_password_operations_restart_once_and_preserve_parked_chat(
         drop(host);
         settle(cx);
     }
+}
+
+/// The Maintenance event sends a store_status check, and its answer can
+/// reach the UI after the host's later Open event. That stale Maintenance
+/// must not pause the reopened chat, because no further event resumes it.
+#[gpui::test]
+fn a_late_maintenance_status_cannot_pause_the_reopened_chat(cx: &mut gpui::TestAppContext) {
+    let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+    let host = FixtureHost::new();
+    let app = shell(&host, cx, true, &settings);
+    let chat = app.read_with(cx, |app, _| app.local_chat.clone().unwrap());
+    let cx = window(&app, cx);
+    host.commands.send(HostCommand::HoldNextStatus).unwrap();
+    wait(cx, "status hold", |_| host.count("hold store_status") == 1);
+    let operation = host.begin("change_store_password");
+    wait(cx, "held Maintenance check", |_| {
+        host.count("held store_status") == 1
+    });
+    host.finish(None);
+    wait(cx, "runtime recovery", |cx| {
+        operation.is_finished() && host.count("start_runtime") == 1 && chat_ready(&app, cx)
+    });
+    host.commands.send(HostCommand::ReleaseStatus).unwrap();
+    wait(cx, "stale Maintenance answer", |_| {
+        host.backend.host_calls_in_flight_for_test() == 0
+    });
+    settle(cx);
+    app.update(cx, |app, _| assert!(!app.password_settings_refresh_pending));
+    assert_preserved(&app, &chat, &host, cx);
+    drop(host);
+    settle(cx);
 }
 
 #[gpui::test]
@@ -858,6 +911,12 @@ fn committed_restart_retry_quit_and_close_do_not_contact_the_retired_host(
         }
     }
     let cx = window(&app, cx);
+    // Every call checks retirement before it is sent, so only calls sent
+    // earlier can still reach the host. Let those land before clearing, or
+    // a slow startup store_status is counted against close and quit.
+    wait(cx, "calls sent before retirement", |_| {
+        host.backend.host_calls_in_flight_for_test() == 0
+    });
     host.requests.lock().unwrap().clear();
     cx.update(close_window);
     cx.update(|_, cx| quit_app(cx));

@@ -369,6 +369,16 @@ impl AgentBackend {
         }
     }
 
+    /// Host calls sent and not yet answered. A fixture host records each
+    /// request before it replies, so at zero it has seen every call sent.
+    #[cfg(all(test, feature = "desktop"))]
+    pub(crate) fn host_calls_in_flight_for_test(&self) -> usize {
+        match &self.client {
+            BackendClient::Host(client) => client.calls_in_flight_for_test(),
+            BackendClient::InProcess(_) => 0,
+        }
+    }
+
     pub fn new(api_url: String, _harness_instructions: String) -> Result<Self, String> {
         let api_url = maple_agent::maple_api::validate_api_url(&api_url)?;
         let runtime = Runtime::new().map_err(|e| format!("Could not start host client: {e}"))?;
