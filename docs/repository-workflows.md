@@ -289,7 +289,15 @@ CI image does not raise the shipped deployment targets: Research supports
 macOS 13.4 and iOS 16.0.
 
 Research Linux packaging builds AppImage and DEB with Tauri, then the RPM from
-the normalized DEB payload. `scripts/ci/sccache-stats.sh` reports compiler-cache
+the normalized DEB payload. AppImage staging bundles libglvnd's GL/GLES dispatch
+libraries, leaving GPU vendor drivers on the host. The existing string patcher
+rewrites libepoxy's Nix fallback directory to `$ORIGIN` and literal Nix library
+filenames (including GStreamer's libsoup loader) to bundled sonames before closure
+repair. The patcher retains its build interpreter until these rewrites finish,
+then receives the distributable interpreter. Portability verification rejects those paths in ELF runtime constants
+(`.rodata`), separately from DT_NEEDED and RPATH checks; obsolete dynamic strings
+and source locations are not runtime dependencies. Plugin search directories and
+patterns are outside this literal-library check. `scripts/ci/sccache-stats.sh` reports compiler-cache
 statistics with the build's own cache configuration.
 The packaged executable runs on the host's glibc, so it links against zig's
 glibc `LINUX_GLIBC_FLOOR` (`scripts/ci/_common.sh`; 2.39, Ubuntu 24.04) through
