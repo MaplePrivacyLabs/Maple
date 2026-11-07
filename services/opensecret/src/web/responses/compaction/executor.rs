@@ -1,9 +1,9 @@
 //! Paid summary execution through the existing model/provider boundary.
-//! No tool is exposed or executed by these requests. A caller publishes coverage
-//! only after every fragment has been successfully folded into the summary.
+//! No tool is exposed or executed by these requests. One request summarizes one
+//! bounded selection; a caller publishes coverage only after that request succeeds.
 
 use super::{context::SummaryWork, policy::CompactionPolicy, summary, CompactionBudget};
-use crate::web::responses::context_observability::ContextMetrics;
+use crate::web::responses::{constants::TRUNCATION_MARKER, context_observability::ContextMetrics};
 use crate::{
     inference::{AttemptFailureKind, AttemptStage, AttemptTerminal},
     models::users::User,
@@ -23,11 +23,90 @@ use crate::{
     ApiError, AppState,
 };
 use axum::http::HeaderMap;
-use std::{collections::VecDeque, sync::Arc};
+use serde_json::{json, Value};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::time::Instant;
 
-const MAX_FRAGMENT_REDUCTIONS: usize = 3;
 const MAX_SUMMARY_TEXT_BYTES: usize = 256 * 1024;
+
+/// Separates how long one helper's upstream took from total preparation time,
+/// including for a helper still pending when a deadline or cancellation stops it.
+/// A value of zero means that stage was never reached. Numeric metadata only.
+struct HelperTiming {
+    user_id: uuid::Uuid,
+    response_id: uuid::Uuid,
+    started: Instant,
+    stream_opened_ms: AtomicU64,
+    first_chunk_ms: AtomicU64,
+    first_text_ms: AtomicU64,
+    last_chunk_ms: AtomicU64,
+    chunks: AtomicU64,
+    outcome: Option<&'static str>,
+}
+
+impl HelperTiming {
+    fn new(user_id: uuid::Uuid, response_id: uuid::Uuid) -> Self {
+        Self {
+            user_id,
+            response_id,
+            started: Instant::now(),
+            stream_opened_ms: AtomicU64::new(0),
+            first_chunk_ms: AtomicU64::new(0),
+            first_text_ms: AtomicU64::new(0),
+            last_chunk_ms: AtomicU64::new(0),
+            chunks: AtomicU64::new(0),
+            outcome: None,
+        }
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1)
+    }
+
+    fn stream_opened(&self) {
+        self.stream_opened_ms
+            .store(self.elapsed_ms(), Ordering::Relaxed);
+    }
+
+    fn chunk(&self, added_text: bool) {
+        let now = self.elapsed_ms();
+        self.chunks.fetch_add(1, Ordering::Relaxed);
+        self.last_chunk_ms.store(now, Ordering::Relaxed);
+        let _ = self
+            .first_chunk_ms
+            .compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed);
+        if added_text {
+            let _ =
+                self.first_text_ms
+                    .compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed);
+        }
+    }
+
+    fn finish(&mut self, outcome: &'static str) {
+        self.outcome = Some(outcome);
+    }
+}
+
+/// Explicit cancellation drops the worker holding this helper, so the record
+/// is written here rather than on a path that a dropped future never reaches.
+impl Drop for HelperTiming {
+    fn drop(&mut self) {
+        let (user_id, response_id) = (self.user_id, self.response_id);
+        tracing::info!(event = "responses.compaction.helper_timing", %user_id, %response_id,
+            outcome = self.outcome.unwrap_or("dropped"), elapsed_ms = self.elapsed_ms(),
+            stream_opened_ms = self.stream_opened_ms.load(Ordering::Relaxed),
+            first_chunk_ms = self.first_chunk_ms.load(Ordering::Relaxed),
+            first_text_ms = self.first_text_ms.load(Ordering::Relaxed),
+            last_chunk_ms = self.last_chunk_ms.load(Ordering::Relaxed),
+            chunks = self.chunks.load(Ordering::Relaxed),
+            "Compaction summary upstream timing");
+    }
+}
 
 fn log_summary_rejection(
     error: summary::SummaryError,
@@ -210,13 +289,19 @@ pub(crate) fn is_context_rejection(error: &CompletionExecutionError) -> bool {
     let Some(crate::inference::AttemptTerminal::Failed { failure, .. }) = error.terminal() else {
         return false;
     };
-    failure.kind == AttemptFailureKind::HttpStatus
-        && failure.stage == AttemptStage::AwaitingResponse
-        && failure.status == Some(400)
-        && failure
-            .upstream_diagnostic
-            .as_deref()
-            .is_some_and(|diagnostic| diagnostic.is_input_context_overflow())
+    if failure.kind != AttemptFailureKind::HttpStatus
+        || failure.stage != AttemptStage::AwaitingResponse
+    {
+        return false;
+    }
+    let Some(diagnostic) = failure.upstream_diagnostic.as_deref() else {
+        return false;
+    };
+    match failure.status {
+        Some(400) => diagnostic.is_input_context_overflow(),
+        Some(500) => diagnostic.is_proxy_context_overflow(),
+        _ => false,
+    }
 }
 
 pub(crate) struct SummaryExecutor<'a> {
@@ -232,179 +317,157 @@ pub(crate) struct SummaryExecutor<'a> {
 }
 
 impl SummaryExecutor<'_> {
+    /// One helper request for the whole selection. A provider that rejects its
+    /// size returns `InputLimit`, so the caller can narrow that selection.
     pub(super) async fn summarize(
         &self,
         work: &SummaryWork,
         policy: &CompactionPolicy,
     ) -> Result<String, SummaryExecutionError> {
-        let started = Instant::now();
         self.check_execution()?;
-        let messages: Vec<_> = work
+        if work
             .items
             .iter()
-            .flat_map(|item| item.summary_messages.iter().cloned())
-            .collect();
-        if messages.is_empty() {
+            .all(|item| item.summary_messages.is_empty())
+        {
             return Ok(summary::identity_only_checkpoint(
                 work.previous_summary.as_deref(),
             ));
         }
-        // A conservative byte-sized first partition is followed by request-size
-        // estimates and a narrowly classified provider-overflow safety net.
-        let fragment_bytes = policy.summary_input_budget.saturating_mul(2).max(4);
-        let pieces = summary::transcript_fragments(&messages, fragment_bytes).map_err(|error| {
+        let mut messages = Vec::new();
+        for item in &work.items {
+            if work.active_start == Some(item.key) {
+                messages.push(json!({ "role": "assistant", "content": TRUNCATION_MARKER }));
+            }
+            messages.extend(item.summary_messages.iter().cloned());
+        }
+        let transcript = summary::serialize_transcript(&messages).map_err(|error| {
             tracing::warn!(event = "responses.compaction.helper_failed", user_id = %self.user.uuid,
                 response_id = %self.execution.response_id(), reason = error.category(),
                 stage = "transcript_preparation", "Compaction summary transcript could not be prepared");
             SummaryExecutionError::Unsafe(ApiError::InternalServerError)
         })?;
-        let mut fragments = fragment_batches(pieces, fragment_bytes);
-        tracing::info!(event = "responses.compaction.helper_batch_started", user_id = %self.user.uuid,
-            response_id = %self.execution.response_id(), source_items = work.items.len(),
-            source_messages = messages.len(), fragments = fragments.len(), input_budget = policy.summary_input_budget,
-            previous_summary_present = work.previous_summary.is_some(), "Compaction summary batch started");
-        let mut previous = work.previous_summary.clone();
-        let mut completed_fragments = 0usize;
-        while let Some((fragment, reductions)) = fragments.pop_front() {
-            self.check_execution()?;
-            let messages = summary::fragment_summary_messages(&fragment, previous.as_deref());
-            let estimate = count_tokens(
-                &serde_json::to_string(&messages)
-                    .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?,
-            );
-            if estimate > policy.summary_input_budget {
-                tracing::debug!(event = "responses.compaction.helper_fragment_split", user_id = %self.user.uuid,
-                    response_id = %self.execution.response_id(), estimated_tokens = estimate,
-                    input_budget = policy.summary_input_budget, reductions, reason = "estimated_input_limit",
-                    "Compaction summary fragment needs a smaller input");
-                split_front_for_estimate(&mut fragments, fragment, reductions)?;
-                continue;
-            }
-            self.budget
-                .begin_call()
-                .map_err(|_| SummaryExecutionError::Capacity)?;
-            let request = build_compaction_model_request(self.body, &messages);
-            let call_started = Instant::now();
-            tracing::info!(event = "responses.compaction.helper_call_started", user_id = %self.user.uuid,
-                response_id = %self.execution.response_id(), fragment_index = completed_fragments,
-                fragments_pending = fragments.len(), estimated_tokens = estimate, reductions,
-                "Compaction summary provider call started");
-            let billing =
-                BillingContext::new(AuthMethod::Jwt, self.body.model.clone(), self.client_app);
-            let execution =
-                CompletionExecutionContext::new(billing, self.routing, self.cache_policy);
-            // Helpers are independently billed work under this owned Response;
-            // their failure never authorizes replaying the caller's request.
-            let response = async {
-                let mut completion = get_bounded_chat_completion_response_for_execution(
-                    self.state,
-                    self.user,
-                    request,
-                    &HeaderMap::new(),
-                    execution,
-                    self.execution.clone(),
-                )
-                .await
-                .map_err(|error| SummaryExecutionError::Provider(Box::new(error)))?;
-                collect_summary_stream_with_progress(
-                    &mut completion.stream,
-                    self.budget.metrics.as_ref(),
-                    Some(&self.budget.progress),
-                )
-                .await
-            };
-            // Dropping this helper future is local cancellation, not an
-            // invented provider failure. Ordinary provider observation/usage
-            // guards retain their established terminal semantics.
-            let response = await_summary_step(
-                self.execution,
-                self.deadline,
-                self.budget.initial_preparation_deadline(),
-                response,
+        let source_messages = transcript.len();
+        let messages = summary::summary_messages(transcript, work.previous_summary.as_deref());
+        if !fits_provider_request(&messages)? {
+            tracing::warn!(event = "responses.compaction.helper_input_rejected", user_id = %self.user.uuid,
+                response_id = %self.execution.response_id(), reason = "request_byte_limit",
+                "Compaction summary request exceeds the provider request size");
+            return Err(SummaryExecutionError::InputLimit);
+        }
+        self.budget
+            .begin_call()
+            .map_err(|_| SummaryExecutionError::Capacity)?;
+        let request = build_compaction_model_request(self.body, &messages);
+        let (user_id, response_id) = (self.user.uuid, self.execution.response_id());
+        tracing::info!(event = "responses.compaction.helper_call_started", %user_id, %response_id,
+            source_items = work.items.len(), source_messages,
+            previous_summary_present = work.previous_summary.is_some(),
+            "Compaction summary provider call started");
+        let billing =
+            BillingContext::new(AuthMethod::Jwt, self.body.model.clone(), self.client_app);
+        let execution = CompletionExecutionContext::new(billing, self.routing, self.cache_policy);
+        let mut timing = HelperTiming::new(user_id, response_id);
+        // Helpers are independently billed work under this owned Response; their
+        // failure never authorizes replaying the caller's request.
+        let response = async {
+            let mut completion = get_bounded_chat_completion_response_for_execution(
+                self.state,
+                self.user,
+                request,
+                &HeaderMap::new(),
+                execution,
+                self.execution.clone(),
             )
-            .await;
-            match response {
-                Err(SummaryExecutionError::Cancelled) => {
-                    tracing::info!(event = "responses.compaction.helper_cancelled", user_id = %self.user.uuid,
-                        response_id = %self.execution.response_id(), stage = "awaiting_provider",
-                        elapsed_ms = call_started.elapsed().as_millis() as u64,
-                        "Compaction summary provider call cancelled");
-                    return Err(SummaryExecutionError::Cancelled);
+            .await
+            .map_err(|error| SummaryExecutionError::Provider(Box::new(error)))?;
+            timing.stream_opened();
+            collect_summary_stream_with_progress(
+                &mut completion.stream,
+                self.budget.metrics.as_ref(),
+                Some(&self.budget.progress),
+                Some(&timing),
+            )
+            .await
+        };
+        // Dropping this helper future is local cancellation, not an invented
+        // provider failure. Ordinary provider observation/usage guards retain
+        // their established terminal semantics.
+        let response = await_summary_step(
+            self.execution,
+            self.deadline,
+            self.budget.initial_preparation_deadline(),
+            response,
+        )
+        .await;
+        let elapsed_ms = timing.elapsed_ms();
+        match response {
+            Err(SummaryExecutionError::Cancelled) => {
+                timing.finish("cancelled");
+                tracing::info!(event = "responses.compaction.helper_cancelled", %user_id, %response_id,
+                    stage = "awaiting_provider", elapsed_ms,
+                    "Compaction summary provider call cancelled");
+                Err(SummaryExecutionError::Cancelled)
+            }
+            Err(SummaryExecutionError::Deadline) => {
+                timing.finish("deadline");
+                tracing::warn!(event = "responses.compaction.helper_deadline", %user_id, %response_id,
+                    stage = "awaiting_provider", elapsed_ms,
+                    "Compaction summary provider call reached its deadline");
+                Err(SummaryExecutionError::Deadline)
+            }
+            Err(SummaryExecutionError::InitialPreparationBudget) => {
+                timing.finish("initial_preparation_budget");
+                tracing::warn!(event = "responses.compaction.helper_initial_preparation_budget",
+                    %user_id, %response_id, stage = "awaiting_provider", elapsed_ms,
+                    "Compaction summary initial preparation budget exhausted");
+                Err(SummaryExecutionError::InitialPreparationBudget)
+            }
+            Ok(response) => {
+                timing.finish("completed");
+                let next = summary::parse_summary_response(&response).map_err(|error| {
+                    log_summary_rejection(error, &response, user_id, response_id, elapsed_ms);
+                    SummaryExecutionError::InvalidSummary
+                })?;
+                // Native model/provider generation limits are not cl100k limits.
+                // Keep only the independent untrusted byte bound.
+                if next.len() > MAX_SUMMARY_TEXT_BYTES {
+                    tracing::warn!(event = "responses.compaction.helper_rejected", %user_id, %response_id,
+                        reason = "output_byte_limit", output_bytes = next.len(),
+                        output_byte_limit = MAX_SUMMARY_TEXT_BYTES,
+                        "Compaction summary response exceeded its byte limit");
+                    return Err(SummaryExecutionError::InvalidSummary);
                 }
-                Err(SummaryExecutionError::Deadline) => {
-                    tracing::warn!(event = "responses.compaction.helper_deadline", user_id = %self.user.uuid,
-                        response_id = %self.execution.response_id(), stage = "awaiting_provider",
-                        elapsed_ms = call_started.elapsed().as_millis() as u64,
-                        "Compaction summary provider call reached its deadline");
-                    return Err(SummaryExecutionError::Deadline);
+                if !summary_fits_next_helper_input(&next, policy) {
+                    tracing::warn!(event = "responses.compaction.helper_rejected", %user_id, %response_id,
+                        reason = "next_helper_input_limit", output_bytes = next.len(),
+                        input_budget = policy.summary_input_budget,
+                        "Compaction summary cannot fit a later helper input");
+                    return Err(SummaryExecutionError::InvalidSummary);
                 }
-                Err(SummaryExecutionError::InitialPreparationBudget) => {
-                    tracing::warn!(event = "responses.compaction.helper_initial_preparation_budget", user_id = %self.user.uuid,
-                        response_id = %self.execution.response_id(), stage = "awaiting_provider",
-                        elapsed_ms = call_started.elapsed().as_millis() as u64,
-                        "Compaction summary initial preparation budget exhausted");
-                    return Err(SummaryExecutionError::InitialPreparationBudget);
-                }
-                Ok(response) => {
-                    let next = summary::parse_summary_response(&response).map_err(|error| {
-                        log_summary_rejection(
-                            error,
-                            &response,
-                            self.user.uuid,
-                            self.execution.response_id(),
-                            call_started.elapsed().as_millis() as u64,
-                        );
-                        SummaryExecutionError::InvalidSummary
-                    })?;
-                    // Native model/provider generation limits are not cl100k
-                    // limits. Keep only the independent untrusted byte bound.
-                    if next.len() > MAX_SUMMARY_TEXT_BYTES {
-                        tracing::warn!(event = "responses.compaction.helper_rejected", user_id = %self.user.uuid,
-                            response_id = %self.execution.response_id(), reason = "output_byte_limit",
-                            output_bytes = next.len(), output_byte_limit = MAX_SUMMARY_TEXT_BYTES,
-                            "Compaction summary response exceeded its byte limit");
-                        return Err(SummaryExecutionError::InvalidSummary);
-                    }
-                    if !summary_fits_next_helper_input(&next, policy) {
-                        tracing::warn!(event = "responses.compaction.helper_rejected", user_id = %self.user.uuid,
-                            response_id = %self.execution.response_id(), reason = "next_helper_input_limit",
-                            output_bytes = next.len(), input_budget = policy.summary_input_budget,
-                            "Compaction summary cannot fit a later bounded helper input");
-                        return Err(SummaryExecutionError::InvalidSummary);
-                    }
-                    tracing::info!(event = "responses.compaction.helper_call_completed", user_id = %self.user.uuid,
-                        response_id = %self.execution.response_id(), fragment_index = completed_fragments,
-                        output_bytes = next.len(), elapsed_ms = call_started.elapsed().as_millis() as u64,
-                        metadata = ?summary::response_metadata(&response),
-                        "Compaction summary provider call completed");
-                    completed_fragments += 1;
-                    previous = Some(next);
-                }
-                Err(SummaryExecutionError::Provider(error)) if is_context_rejection(&error) => {
-                    tracing::warn!(event = "responses.compaction.helper_fragment_split", user_id = %self.user.uuid,
-                        response_id = %self.execution.response_id(), reason = "provider_input_limit", reductions,
-                        elapsed_ms = call_started.elapsed().as_millis() as u64,
-                        "Compaction summary provider rejected the input size");
-                    split_front(&mut fragments, fragment, reductions)?;
-                }
-                Err(SummaryExecutionError::Provider(error)) => {
-                    log_summary_provider_failure(
-                        &error,
-                        self.user.uuid,
-                        self.execution.response_id(),
-                        call_started.elapsed().as_millis() as u64,
-                    );
-                    return Err(SummaryExecutionError::Provider(error));
-                }
-                Err(error) => return Err(error),
+                tracing::info!(event = "responses.compaction.helper_call_completed", %user_id, %response_id,
+                    output_bytes = next.len(), elapsed_ms,
+                    metadata = ?summary::response_metadata(&response),
+                    "Compaction summary provider call completed");
+                Ok(next)
+            }
+            Err(SummaryExecutionError::Provider(error)) if is_context_rejection(&error) => {
+                timing.finish("input_limit");
+                tracing::warn!(event = "responses.compaction.helper_input_rejected", %user_id, %response_id,
+                    reason = "provider_input_limit", elapsed_ms,
+                    "Compaction summary provider rejected the input size");
+                Err(SummaryExecutionError::InputLimit)
+            }
+            Err(SummaryExecutionError::Provider(error)) => {
+                timing.finish("provider_failure");
+                log_summary_provider_failure(&error, user_id, response_id, elapsed_ms);
+                Err(SummaryExecutionError::Provider(error))
+            }
+            Err(error) => {
+                timing.finish("failed");
+                Err(error)
             }
         }
-        tracing::info!(event = "responses.compaction.helper_batch_completed", user_id = %self.user.uuid,
-            response_id = %self.execution.response_id(), completed_fragments,
-            elapsed_ms = started.elapsed().as_millis() as u64, "Compaction summary batch completed");
-        previous.ok_or(SummaryExecutionError::Unsafe(
-            ApiError::MessageExceedsContextLimit,
-        ))
     }
 
     fn check_execution(&self) -> Result<(), SummaryExecutionError> {
@@ -414,8 +477,8 @@ impl SummaryExecutor<'_> {
             self.budget.initial_preparation_deadline(),
         ) {
             tracing::warn!(event = "responses.compaction.helper_stopped", user_id = %self.user.uuid,
-                response_id = %self.execution.response_id(), stage = "before_fragment",
-                reason = error.category(), "Compaction summary execution cannot start another fragment");
+                response_id = %self.execution.response_id(), stage = "before_helper",
+                reason = error.category(), "Compaction summary execution cannot start");
             return Err(error);
         }
         Ok(())
@@ -436,13 +499,14 @@ async fn collect_summary_stream(
     stream: &mut tokio::sync::mpsc::Receiver<CompletionChunk>,
     metrics: &ContextMetrics,
 ) -> Result<serde_json::Value, SummaryExecutionError> {
-    collect_summary_stream_with_progress(stream, metrics, None).await
+    collect_summary_stream_with_progress(stream, metrics, None, None).await
 }
 
 async fn collect_summary_stream_with_progress(
     stream: &mut tokio::sync::mpsc::Receiver<CompletionChunk>,
     metrics: &ContextMetrics,
     progress: Option<&super::progress::ProgressPublisher>,
+    timing: Option<&HelperTiming>,
 ) -> Result<serde_json::Value, SummaryExecutionError> {
     let mut summary = summary::SummaryStreamAccumulator::new(MAX_SUMMARY_TEXT_BYTES);
     let mut usage_recorded = false;
@@ -451,7 +515,11 @@ async fn collect_summary_stream_with_progress(
             CompletionChunk::StreamChunk(chunk) => {
                 let previous_bytes = summary.visible_text_bytes();
                 summary.observe(&chunk).map_err(invalid_stream_summary)?;
-                if summary.visible_text_bytes() > previous_bytes {
+                let added_text = summary.visible_text_bytes() > previous_bytes;
+                if let Some(timing) = timing {
+                    timing.chunk(added_text);
+                }
+                if added_text {
                     if let Some(progress) = progress {
                         progress.sampled().await;
                     }
@@ -496,92 +564,29 @@ async fn collect_summary_stream_with_progress(
     ))
 }
 
+/// Continuum's proxy refuses a request past 4,000,000 bytes of content, whatever
+/// the model's window. Measure the real request, with a margin, rather than send
+/// what it would refuse: narrowing here costs no provider call.
+fn fits_provider_request(messages: &[Value]) -> Result<bool, SummaryExecutionError> {
+    const MAX_REQUEST_BYTES: usize = 3_900_000;
+    serde_json::to_vec(messages)
+        .map(|request| request.len() <= MAX_REQUEST_BYTES)
+        .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))
+}
+
 /// A generation allowance is not a helper-input budget. Before publishing a
 /// checkpoint, ensure that a later update can carry this whole summary plus the
-/// existing instructions and a useful fragment of new transcript. This check
-/// never changes the provider's output limit or the caller's answer allowance.
+/// existing instructions and useful new transcript. This check never changes the
+/// provider's output limit or the caller's answer allowance.
 fn summary_fits_next_helper_input(text: &str, policy: &CompactionPolicy) -> bool {
-    const NEXT_FRAGMENT_RESERVE_TOKENS: usize = 512;
-    let request = summary::fragment_summary_messages(&[], Some(text));
+    const NEXT_SOURCE_RESERVE_TOKENS: usize = 512;
+    let request = summary::summary_messages(Vec::<Value>::new(), Some(text));
     serde_json::to_string(&request)
         .map(|request| {
-            count_tokens(&request).saturating_add(NEXT_FRAGMENT_RESERVE_TOKENS)
+            count_tokens(&request).saturating_add(NEXT_SOURCE_RESERVE_TOKENS)
                 <= policy.summary_input_budget
         })
         .unwrap_or(false)
-}
-
-fn fragment_batches(
-    pieces: Vec<summary::TranscriptFragment>,
-    max_bytes: usize,
-) -> VecDeque<(Vec<summary::TranscriptFragment>, usize)> {
-    let mut batches = VecDeque::new();
-    let mut current = Vec::new();
-    let mut bytes = 0usize;
-    for piece in pieces {
-        let next_bytes = piece.serialized_bytes();
-        if !current.is_empty() && bytes.saturating_add(next_bytes) > max_bytes {
-            batches.push_back((std::mem::take(&mut current), 0));
-            bytes = 0;
-        }
-        current.push(piece);
-        bytes = bytes.saturating_add(next_bytes);
-    }
-    if !current.is_empty() {
-        batches.push_back((current, 0));
-    }
-    batches
-}
-
-fn split_front(
-    fragments: &mut VecDeque<(Vec<summary::TranscriptFragment>, usize)>,
-    fragment: Vec<summary::TranscriptFragment>,
-    reductions: usize,
-) -> Result<(), SummaryExecutionError> {
-    if reductions >= MAX_FRAGMENT_REDUCTIONS {
-        return Err(SummaryExecutionError::InputLimit);
-    }
-    let (left, right) = split_fragment(fragment)?;
-    fragments.push_front((right, reductions + 1));
-    fragments.push_front((left, reductions + 1));
-    Ok(())
-}
-
-/// A growing previous summary changes the useful source fragment size. Pure
-/// input fitting is lossless and spends no provider rejection/retry allowance:
-/// every split strictly reduces item count or UTF-8 text length, so it terminates
-/// at a fitting fragment or a minimal fragment that cannot fit the instructions.
-fn split_front_for_estimate(
-    fragments: &mut VecDeque<(Vec<summary::TranscriptFragment>, usize)>,
-    fragment: Vec<summary::TranscriptFragment>,
-    provider_reductions: usize,
-) -> Result<(), SummaryExecutionError> {
-    let (left, right) = split_fragment(fragment)?;
-    fragments.push_front((right, provider_reductions));
-    fragments.push_front((left, provider_reductions));
-    Ok(())
-}
-
-fn split_fragment(
-    mut fragment: Vec<summary::TranscriptFragment>,
-) -> Result<
-    (
-        Vec<summary::TranscriptFragment>,
-        Vec<summary::TranscriptFragment>,
-    ),
-    SummaryExecutionError,
-> {
-    let (left, right) = if fragment.len() > 1 {
-        let right = fragment.split_off(fragment.len() / 2);
-        (fragment, right)
-    } else {
-        let piece = fragment.pop().ok_or(SummaryExecutionError::InputLimit)?;
-        let (left, right) = piece
-            .split()
-            .map_err(|_| SummaryExecutionError::InputLimit)?;
-        (vec![left], vec![right])
-    };
-    Ok((left, right))
 }
 
 #[cfg(test)]
@@ -768,6 +773,7 @@ mod tests {
                 &mut rx,
                 &ContextMetrics::default(),
                 Some(&progress),
+                None,
             )
             .await;
             if visible {
@@ -807,7 +813,8 @@ mod tests {
             collect_summary_stream_with_progress(
                 &mut rx,
                 &ContextMetrics::default(),
-                Some(&progress)
+                Some(&progress),
+                None,
             )
             .await,
             Err(SummaryExecutionError::InvalidSummary)
@@ -982,47 +989,71 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn helper_timing_separates_stream_stages_and_survives_a_dropped_helper() {
+        use crate::web::responses::ResponseExecutionRegistry;
+        use tokio::time::Duration;
+
+        let registry = ResponseExecutionRegistry::default();
+        let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
+        let execution = registration.execution();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tx.send(CompletionChunk::StreamChunk(
+            json!({"choices": [{"index": 0, "delta": {
+                "role": "assistant", "reasoning_content": "PRIVATE_REASONING", "content": null
+            }}]}),
+        ))
+        .await
+        .unwrap();
+        tx.send(summary_stream_chunk(
+            "PRIVATE_SUMMARY",
+            serde_json::Value::Null,
+        ))
+        .await
+        .unwrap();
+        let timing = HelperTiming::new(Uuid::new_v4(), Uuid::new_v4());
+        let metrics = ContextMetrics::default();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        // The stream never ends: this is the stalled helper a deadline stops.
+        let result = await_summary_step(
+            &execution,
+            Instant::now() + Duration::from_secs(1),
+            Some(Instant::now() + Duration::from_millis(30)),
+            async {
+                timing.stream_opened();
+                collect_summary_stream_with_progress(&mut rx, &metrics, None, Some(&timing)).await
+            },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SummaryExecutionError::InitialPreparationBudget)
+        ));
+        assert_eq!(timing.chunks.load(Ordering::Relaxed), 2);
+        let opened = timing.stream_opened_ms.load(Ordering::Relaxed);
+        let first_chunk = timing.first_chunk_ms.load(Ordering::Relaxed);
+        let first_text = timing.first_text_ms.load(Ordering::Relaxed);
+        let last_chunk = timing.last_chunk_ms.load(Ordering::Relaxed);
+        assert!(opened >= 5 && first_chunk >= opened);
+        assert!(first_text >= first_chunk && last_chunk >= first_text);
+        // The pending stage stays visible: elapsed outlives the last chunk.
+        assert!(timing.elapsed_ms() > last_chunk);
+
+        // A worker dropped by cancellation still reports what its helper reached.
+        let logs = crate::web::responses::compaction::telemetry::capture_logs(move || drop(timing));
+        assert!(logs.contains("responses.compaction.helper_timing"));
+        assert!(logs.contains("outcome=\"dropped\""));
+        assert!(logs.contains("first_text_ms"));
+        assert!(!logs.contains("PRIVATE"));
+    }
+
     #[test]
-    fn grown_summary_repartitions_large_new_input_without_spending_provider_reductions() {
-        let policy = CompactionPolicy::from_context_window(20_000, 0, 2048);
-        let previous = "fact ".repeat(8_000);
-        assert!(summary_fits_next_helper_input(&previous, &policy));
-        let message = json!({"role": "tool", "tool_call_id": "call_1", "content": "new data ".repeat(20_000)});
-        let original = summary::serialize_transcript(std::slice::from_ref(&message)).unwrap();
-        let pieces = summary::transcript_fragments(&[message], usize::MAX).unwrap();
-        let mut pending = fragment_batches(pieces, usize::MAX);
-        let mut splits = 0;
-        let fitted = loop {
-            let (fragment, reductions) = pending.pop_front().unwrap();
-            assert_eq!(reductions, 0);
-            let request = summary::fragment_summary_messages(&fragment, Some(&previous));
-            if count_tokens(&serde_json::to_string(&request).unwrap())
-                <= policy.summary_input_budget
-            {
-                break fragment;
-            }
-            split_front_for_estimate(&mut pending, fragment, reductions).unwrap();
-            splits += 1;
-        };
-        assert!(
-            splits > MAX_FRAGMENT_REDUCTIONS,
-            "pure fitting must exceed the old paid-rejection split allowance"
-        );
-        let mut all = fitted;
-        for (fragment, reductions) in pending {
-            assert_eq!(reductions, 0);
-            all.extend(fragment);
-        }
-        let request = summary::fragment_summary_messages(&all, None);
-        let data: serde_json::Value =
-            serde_json::from_str(request[1]["content"].as_str().unwrap()).unwrap();
-        let restored: String = data["conversation"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|piece| piece["serialized_message_fragment"].as_str().unwrap())
-            .collect();
-        assert_eq!(restored, original);
+    fn an_unreached_helper_stage_reports_zero() {
+        let timing = HelperTiming::new(Uuid::new_v4(), Uuid::new_v4());
+        timing.chunk(false);
+        assert_eq!(timing.stream_opened_ms.load(Ordering::Relaxed), 0);
+        assert_eq!(timing.first_text_ms.load(Ordering::Relaxed), 0);
+        assert!(timing.first_chunk_ms.load(Ordering::Relaxed) > 0);
     }
 
     #[test]
@@ -1191,52 +1222,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn batches_keep_small_messages_together_and_reductions_keep_every_fragment() {
-        let messages: Vec<_> = (0..20)
-            .map(|index| json!({ "role": "user", "content": format!("Fact {index}") }))
-            .collect();
-        let pieces = summary::transcript_fragments(&messages, 20_000).unwrap();
-        let mut batches = fragment_batches(pieces, 20_000);
-        assert_eq!(batches.len(), 1);
-        let (whole, reductions) = batches.pop_front().unwrap();
-        assert_eq!(whole.len(), messages.len());
-        let original = summary::fragment_summary_messages(&whole, None);
-        split_front(&mut batches, whole, reductions).unwrap();
-        assert_eq!(batches.len(), 2);
-        let reduced: Vec<_> = batches
-            .into_iter()
-            .flat_map(|(pieces, reduction)| {
-                assert_eq!(reduction, 1);
-                pieces
-            })
-            .collect();
-        assert_eq!(summary::fragment_summary_messages(&reduced, None), original);
-        let (fragment, _) = fragment_batches(
-            summary::transcript_fragments(&[json!({ "role": "tool", "tool_call_id": "call_1", "content": "€🙂 tool output" })], 20_000).unwrap(),
-            20_000,
-        )
-        .pop_front()
-        .unwrap();
-        let mut reduced = VecDeque::new();
-        split_front(&mut reduced, fragment, 0).unwrap();
-        assert_eq!(reduced.len(), 2);
-        for (pieces, reduction) in &reduced {
-            assert_eq!(*reduction, 1);
-            let request = summary::fragment_summary_messages(pieces, None);
-            let data: serde_json::Value =
-                serde_json::from_str(request[1]["content"].as_str().unwrap()).unwrap();
-            assert_eq!(data["conversation"][0]["provenance"]["role"], "tool");
-            assert_eq!(
-                data["conversation"][0]["provenance"]["tool_call_id"],
-                "call_1"
-            );
+    const PROXY_OVERFLOW: &str = "mutating request: applying endpoint-specific mutator: mutating request: generating shard key: context too large: ~1062098 tokens";
+
+    #[tokio::test]
+    async fn the_proxy_size_refusal_authorizes_recovery_only_as_its_own_500() {
+        let refusal =
+            diagnostic(json!({"error": {"message": PROXY_OVERFLOW, "type": ""}}).to_string()).await;
+        let mut failure = http_failure(Some(refusal));
+        failure.status = Some(500);
+        assert!(is_context_rejection(&failed(failure.clone())));
+        for status in [None, Some(400), Some(502), Some(503)] {
+            let mut failure = failure.clone();
+            failure.status = status;
+            assert!(!is_context_rejection(&failed(failure)));
         }
-        let (fragment, _) = reduced.pop_front().unwrap();
-        assert!(matches!(
-            split_front(&mut reduced, fragment, MAX_FRAGMENT_REDUCTIONS),
-            Err(SummaryExecutionError::InputLimit)
-        ));
+        let mut other_500 = http_failure(Some(strict_diagnostic().await));
+        other_500.status = Some(500);
+        assert!(!is_context_rejection(&failed(other_500)));
+        let mut plain_500 = http_failure(None);
+        plain_500.status = Some(500);
+        assert!(!is_context_rejection(&failed(plain_500)));
+    }
+
+    #[test]
+    fn a_helper_request_past_the_proxy_size_is_not_sent() {
+        let sized = |bytes: usize| vec![json!({"role": "user", "content": "x".repeat(bytes)})];
+        assert!(fits_provider_request(&sized(3_800_000)).unwrap());
+        assert!(!fits_provider_request(&sized(4_000_000)).unwrap());
     }
 
     #[tokio::test]

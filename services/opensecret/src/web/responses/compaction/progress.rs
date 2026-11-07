@@ -51,7 +51,7 @@ impl ProgressState {
     fn sampled(&mut self, now: Instant) -> Option<CompactionProgress> {
         let item_id = self.pending.as_ref()?.id;
         // One cadence spans the entire logical Response, including sequential
-        // checkpoint prefixes, tool turns, helper fragments, and replans.
+        // checkpoints, tool turns, and replans.
         if self
             .last_progress_at
             .is_some_and(|previous| now.saturating_duration_since(previous) < PROGRESS_INTERVAL)
